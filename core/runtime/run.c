@@ -81,6 +81,7 @@ extern void PsyX_Shutdown(void);
 extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
+extern void PsyX_UpdateInput(void);
 
 /* Phase 1e infra-triangle (core/runtime/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
@@ -344,6 +345,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     double next_yield_ms = (double)start;
 
     while (!quit) {
+        /* Drain SDL events + refresh pad state before the game runs. PsyCross's
+         * libpad reads keyboard via SDL_GetKeyboardState (pumped here) and
+         * writes the bitfield into the buffer registered by PadInitDirect, so
+         * the recompiled PadGetState sees live input. Our SDL_SetEventFilter
+         * already swallows QUIT/CLOSE/ESC before this poll, so PsyCross's own
+         * exit-on-quit path inside PsyX_Sys_DoPollEvent never fires. */
+        PsyX_UpdateInput();
+
         /* Hand control to the game until the next VSync(0) yield. */
         co_switch((cothread_t)openpete_game_fiber);
 
