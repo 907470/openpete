@@ -231,6 +231,22 @@ void psyq_DrawOTag(CPUState* cpu) {
                    s_calls, cpu->a0, cpu->ra);
     }
 
+    /* Per-OT primitive-code histogram. Indexed by (code & 0xF0) >> 4 so
+     * we can see at a glance whether the chain contains polys (0x20/0x30),
+     * lines (0x40/0x50), sprites/tiles (0x60/0x70), DR_LOAD (0xA0),
+     * draw-env (0xE0), or unknown. Also tracks the last frame DrawOTag
+     * fired in, so we can confirm whether the cutscene main loop keeps
+     * issuing draws past the early-boot window. Dumped every 60 frames. */
+    static uint32_t s_hist[16] = {0};
+    static uint32_t s_anchor_slots = 0;
+    static uint32_t s_total_slots  = 0;
+    static uint32_t s_hist_calls   = 0;
+    static uint32_t s_last_frame   = 0xFFFFFFFFu;
+    static uint32_t s_last_dump    = 0;
+    if (openpete_frame != s_last_frame) {
+        s_last_frame = openpete_frame;
+    }
+
     uint32_t addr = cpu->a0;
     while (g_ot_slot_count < (int)(sizeof(g_ot_slot_host) / sizeof(g_ot_slot_host[0]))) {
         if (addr == 0u) break;
@@ -278,14 +294,102 @@ void psyq_DrawOTag(CPUState* cpu) {
         g_ot_scratch_used += slot_size;
         g_ot_slot_host[g_ot_slot_count++] = out;
 
-        /* Header: addr filled in below; len = payload longs; pgxp_index = none. */
-        uint16_t lenField  = (uint16_t)(payload_bytes / 4u);
+        /* Decide whether this PSX entry encodes a real GP0 primitive. The
+         * non-singlePrimitive ParsePrimitivesLinkedList walker walks the slot
+         * via `currentPacket += (primLength + P_LEN) * 4` where primLength is
+         * what `ProcessXxx` returned, and stops only at `endPacket =
+         * basePacket + (lenField + P_LEN) * 4`. If lenField doesn't equal the
+         * expected primLength for this code, the walker either short-circuits
+         * (skipping payload) or overshoots and parses garbage as a fresh
+         * P_TAG — which has crashed runs by interpreting random bytes as a
+         * DR_LOAD (0xA0) and SEGV'ing inside `LoadImage`.
+         *
+         * Spyro's PSX-side `plen` (high byte of P_TAG) sometimes diverges
+         * from PsyCross's hardcoded primLength — so derive lenField from the
+         * code byte itself, falling back to lenField=0 (anchor / skip) for
+         * unknown codes. */
+        uint8_t  code_byte = (plen != 0u) ? host[7] : 0u;
+        uint16_t expected_longs = 0u;
+        if (plen != 0u) {
+            uint8_t hi = code_byte & 0xF0u;
+            uint8_t sub = code_byte & 0x0Cu;
+            switch (hi) {
+                case 0x00:
+                    if ((code_byte & 0x0Fu) == 0x00u) expected_longs = 3u;       /* NOP */
+                    else if ((code_byte & 0x0Fu) == 0x01u) expected_longs = 5u;  /* DR_MOVE */
+                    break;
+                case 0x20: /* flat polys */
+                    if      (sub == 0x0u) expected_longs = 4u;   /* POLY_F3 */
+                    else if (sub == 0x4u) expected_longs = 7u;   /* POLY_FT3 */
+                    else if (sub == 0x8u) expected_longs = 5u;   /* POLY_F4 */
+                    else if (sub == 0xCu) expected_longs = 9u;   /* POLY_FT4 */
+                    break;
+                case 0x30: /* gouraud polys */
+                    if      (sub == 0x0u) expected_longs = 6u;   /* POLY_G3 */
+                    else if (sub == 0x4u) expected_longs = 9u;   /* POLY_GT3 */
+                    else if (sub == 0x8u) expected_longs = 8u;   /* POLY_G4 */
+                    else if (sub == 0xCu) expected_longs = 12u;  /* POLY_GT4 */
+                    break;
+                case 0x40: /* flat lines */
+                    /* 0x40 LineF2=3, 0x48 LineF3=5, 0x4C LineF4=6 */
+                    if      ((code_byte & 0x0Eu) == 0x00u) expected_longs = 3u;
+                    else if ((code_byte & 0x0Eu) == 0x08u) expected_longs = 5u;
+                    else if ((code_byte & 0x0Eu) == 0x0Cu) expected_longs = 6u;
+                    break;
+                case 0x50: /* gouraud lines */
+                    if      ((code_byte & 0x0Eu) == 0x00u) expected_longs = 4u;  /* LineG2 */
+                    else if ((code_byte & 0x0Eu) == 0x08u) expected_longs = 7u;  /* LineG3 */
+                    else if ((code_byte & 0x0Eu) == 0x0Cu) expected_longs = 9u;  /* LineG4 */
+                    break;
+                case 0x60: /* TILE / SPRT free-size */
+                    /* 0x60=TILE(3), 0x64=SPRT(4), 0x68=TILE_1(2), 0x6C=SPRT(4) */
+                    if      ((code_byte & 0x0Cu) == 0x0u) expected_longs = 3u;
+                    else if ((code_byte & 0x0Cu) == 0x4u) expected_longs = 4u;
+                    else if ((code_byte & 0x0Cu) == 0x8u) expected_longs = 2u;
+                    break;
+                case 0x70: /* TILE_8/16, SPRT_8/16 */
+                    /* 0x70=TILE_8(2), 0x74=SPRT_8(3), 0x78=TILE_16(2), 0x7C=SPRT_16(3) */
+                    if      ((code_byte & 0x0Cu) == 0x0u) expected_longs = 2u;
+                    else if ((code_byte & 0x0Cu) == 0x4u) expected_longs = 3u;
+                    else if ((code_byte & 0x0Cu) == 0x8u) expected_longs = 2u;
+                    else if ((code_byte & 0x0Cu) == 0xCu) expected_longs = 3u;
+                    break;
+                case 0xA0: /* DR_LOAD — variable; getlen returns slot's lenField */
+                    expected_longs = (uint16_t)(payload_bytes / 4u);
+                    break;
+                case 0xE0:
+                    /* DR_ENV / DR_TPAGE — variable-length GP0 env packets that
+                     * `ProcessDrawEnv` walks until it hits a subtype-0 long.
+                     * The PSX-side P_TAG.len doesn't always equal the count
+                     * of valid env codes, which makes the non-singlePrimitive
+                     * walker overshoot ("got invalid tag length 255, code 237"
+                     * + downstream "Unhandled zero length f0 primitive" spam).
+                     * Skip them as anchors until we walk env codes ourselves
+                     * to derive the real length — the env state was already
+                     * applied via the matching `psyq_PutDrawEnv` call. */
+                    expected_longs = 0u;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        bool is_known_prim = (expected_longs != 0u);
+        uint16_t lenField  = is_known_prim ? expected_longs : 0u;
         uint16_t pgxpField = 0xFFFFu;
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
         if (payload_bytes != 0u) {
             std::memcpy(out + 12, host + 4, payload_bytes);
-            if (plen != 0u) openpete_primitives_drawn++;
+            if (is_known_prim) {
+                openpete_primitives_drawn++;
+                s_hist[(code_byte & 0xF0u) >> 4u]++;
+                s_total_slots++;
+            } else {
+                s_anchor_slots++;
+            }
+        } else {
+            s_anchor_slots++;
         }
 
         if (next == 0x00FFFFFFu) break;
@@ -301,32 +405,41 @@ void psyq_DrawOTag(CPUState* cpu) {
         std::memcpy(g_ot_slot_host[i], &next_host, sizeof(uintptr_t));
     }
 
-    /* Submit each converted slot as a single-primitive call.
+    /* Walk the host-side chain in non-singlePrimitive mode and let PsyCross
+     * batch splits across slots. The earlier DrawPrim-per-slot path forced
+     * `g_DrawPrimMode=1` on every slot which fragmented vertex batches and
+     * (empirically) prevented any geometry from reaching pixels even though
+     * the chain contained tens of thousands of valid POLY_G3/POLY_GT4 prims.
      *
-     * Why not PsyCross's DrawOTag? It walks the chain via
-     * ParsePrimitivesLinkedList(p, 0), whose inner loop advances by
-     * `(primLength + P_LEN) * 4` bytes per sub-primitive. With P_LEN=3
-     * (extended pointers on x86_64) and PSX OT entries that don't always
-     * pack cleanly into that step (e.g. a primitive whose ParsePrimitive
-     * returns a hardcoded primLength different from what tagLength implies),
-     * the loop walks past the slot's payload into uninitialised scratch and
-     * occasionally hits a 0xA?-class byte that triggers LoadImage on garbage.
-     *
-     * Using DrawPrim path (singlePrimitive=1) bypasses that loop entirely:
-     * each slot is one primitive, parsed once. DrawAllSplits flushes the
-     * accumulated batches at end. */
+     * Each slot's `len` field is the primitive's PSX-side P_TAG length, which
+     * matches the primLength returned by ProcessGouraudPoly/ProcessFlatPoly,
+     * so the inner `(primLength + P_LEN) * 4` advance lands cleanly on the
+     * next slot — no over-walk into scratch. */
     if (g_ot_slot_count > 0) {
         if (PsyX_BeginScene()) {
             ClearSplits();
         }
-        for (int i = 0; i < g_ot_slot_count; i++) {
-            uint8_t*  s = g_ot_slot_host[i];
-            uint16_t  lf;
-            std::memcpy(&lf, s + 8, 2);
-            if (lf == 0u) continue;  /* OT anchor / terminator entry */
-            DrawPrim(s);
-        }
+        extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
+        ParsePrimitivesLinkedList((u_long*)g_ot_slot_host[0], 0);
         DrawAllSplits();
+    }
+
+    s_hist_calls++;
+    if (openpete_frame >= s_last_dump + 60u) {
+        s_last_dump = openpete_frame;
+        OPL_INFO_F("thunks",
+                   "DrawOTag@f%u calls=%u prims=%u anchors=%u hist "
+                   "0x:%u 1x:%u 2x:%u 3x:%u 4x:%u 5x:%u 6x:%u 7x:%u "
+                   "8x:%u 9x:%u Ax:%u Bx:%u Cx:%u Dx:%u Ex:%u Fx:%u",
+                   openpete_frame, s_hist_calls, s_total_slots, s_anchor_slots,
+                   s_hist[0],  s_hist[1],  s_hist[2],  s_hist[3],
+                   s_hist[4],  s_hist[5],  s_hist[6],  s_hist[7],
+                   s_hist[8],  s_hist[9],  s_hist[10], s_hist[11],
+                   s_hist[12], s_hist[13], s_hist[14], s_hist[15]);
+        for (int i = 0; i < 16; i++) s_hist[i] = 0;
+        s_anchor_slots = 0;
+        s_total_slots  = 0;
+        s_hist_calls   = 0;
     }
 }
 
