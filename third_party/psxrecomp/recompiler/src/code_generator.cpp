@@ -826,8 +826,12 @@ std::string CodeGenerator::translate_basic_block(
 
     std::stringstream ss;
 
-    // Block label
-    ss << fmt::format("block_{:08X}:\n", block.start_addr);
+    // Block label. Trailing `;` (null statement) so the label can be
+    // followed directly by a declaration without tripping the C-language
+    // "a label can only be part of a statement" constraint — GCC 10
+    // (MinGW) treats it as an error; GCC 11 only warns. The mid-block
+    // branch-target emitter further down already does this.
+    ss << fmt::format("block_{:08X}:;\n", block.start_addr);
 
     // Translate each instruction in the block
     uint32_t addr = block.start_addr;
