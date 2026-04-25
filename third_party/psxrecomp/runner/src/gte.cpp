@@ -11,19 +11,69 @@ namespace GTE {
 // Common helpers
 // ---------------------------------------------------------------------------
 
-// Perspective division: H * 0x20000 / SZ3, result capped at 0x1FFFF
+// Leading-zero count for the perspective-division reciprocal lookup.
+static uint32_t gte_leadingzerocount(uint32_t lzcs) {
+    if (!lzcs) return 32;
+    uint32_t lzcr = lzcs;
+    static const uint8_t debruijn32[32] = {
+        0, 31,  9, 30,  3,  8, 13, 29,  2,  5,  7, 21, 12, 24, 28, 19,
+        1, 10,  4, 14,  6, 22, 25, 20, 11, 15, 23, 26, 16, 27, 17, 18
+    };
+    lzcr |= lzcr >> 1;
+    lzcr |= lzcr >> 2;
+    lzcr |= lzcr >> 4;
+    lzcr |= lzcr >> 8;
+    lzcr |= lzcr >> 16;
+    lzcr++;
+    return debruijn32[(uint32_t)(lzcr * 0x076be629u) >> 27];
+}
+
+// Perspective division using the PSX GTE's Newton-Raphson reciprocal table.
+// Bit-exact with PsyCross / real hardware, replacing a naive `H*0x20000/SZ3`
+// that drifts ±1 LSB and made silhouette-edge vertices flicker as Z changes.
+//
+// Returns the unsigned divide result (max 0x1FFFF). Sets FLAG_DIV_OVF when
+// `numerator >= 2*denominator` (the hardware's "saturate to 0x1FFFF" path).
 static int32_t gte_divide(uint16_t H, uint16_t SZ3, uint32_t& FLAG) {
-    if (SZ3 == 0) {
+    if (H >= (uint32_t)SZ3 * 2u) {
         FLAG |= FLAG_DIV_OVF;
         return 0x1FFFF;
     }
-    // (H * 0x20000 / SZ3 + 1) / 2 — correct PS1 formula with rounding
-    int64_t result = (((int64_t)H * 0x20000) / SZ3 + 1) / 2;
-    if (result > 0x1FFFF) {
+
+    static const uint8_t table[] = {
+        0xff, 0xfd, 0xfb, 0xf9, 0xf7, 0xf5, 0xf3, 0xf1, 0xef, 0xee, 0xec, 0xea, 0xe8, 0xe6, 0xe4, 0xe3,
+        0xe1, 0xdf, 0xdd, 0xdc, 0xda, 0xd8, 0xd6, 0xd5, 0xd3, 0xd1, 0xd0, 0xce, 0xcd, 0xcb, 0xc9, 0xc8,
+        0xc6, 0xc5, 0xc3, 0xc1, 0xc0, 0xbe, 0xbd, 0xbb, 0xba, 0xb8, 0xb7, 0xb5, 0xb4, 0xb2, 0xb1, 0xb0,
+        0xae, 0xad, 0xab, 0xaa, 0xa9, 0xa7, 0xa6, 0xa4, 0xa3, 0xa2, 0xa0, 0x9f, 0x9e, 0x9c, 0x9b, 0x9a,
+        0x99, 0x97, 0x96, 0x95, 0x94, 0x92, 0x91, 0x90, 0x8f, 0x8d, 0x8c, 0x8b, 0x8a, 0x89, 0x87, 0x86,
+        0x85, 0x84, 0x83, 0x82, 0x81, 0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x7a, 0x79, 0x78, 0x77, 0x75, 0x74,
+        0x73, 0x72, 0x71, 0x70, 0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x69, 0x68, 0x67, 0x66, 0x65, 0x64,
+        0x63, 0x62, 0x61, 0x60, 0x5f, 0x5e, 0x5d, 0x5d, 0x5c, 0x5b, 0x5a, 0x59, 0x58, 0x57, 0x56, 0x55,
+        0x54, 0x53, 0x53, 0x52, 0x51, 0x50, 0x4f, 0x4e, 0x4d, 0x4d, 0x4c, 0x4b, 0x4a, 0x49, 0x48, 0x48,
+        0x47, 0x46, 0x45, 0x44, 0x43, 0x43, 0x42, 0x41, 0x40, 0x3f, 0x3f, 0x3e, 0x3d, 0x3c, 0x3c, 0x3b,
+        0x3a, 0x39, 0x39, 0x38, 0x37, 0x36, 0x36, 0x35, 0x34, 0x33, 0x33, 0x32, 0x31, 0x31, 0x30, 0x2f,
+        0x2e, 0x2e, 0x2d, 0x2c, 0x2c, 0x2b, 0x2a, 0x2a, 0x29, 0x28, 0x28, 0x27, 0x26, 0x26, 0x25, 0x24,
+        0x24, 0x23, 0x22, 0x22, 0x21, 0x20, 0x20, 0x1f, 0x1e, 0x1e, 0x1d, 0x1d, 0x1c, 0x1b, 0x1b, 0x1a,
+        0x19, 0x19, 0x18, 0x18, 0x17, 0x16, 0x16, 0x15, 0x15, 0x14, 0x14, 0x13, 0x12, 0x12, 0x11, 0x11,
+        0x10, 0x0f, 0x0f, 0x0e, 0x0e, 0x0d, 0x0d, 0x0c, 0x0c, 0x0b, 0x0a, 0x0a, 0x09, 0x09, 0x08, 0x08,
+        0x07, 0x07, 0x06, 0x06, 0x05, 0x05, 0x04, 0x04, 0x03, 0x03, 0x02, 0x02, 0x01, 0x01, 0x00, 0x00,
+        0x00,
+    };
+
+    int shift = (int)gte_leadingzerocount(SZ3) - 16;
+    if (shift < 0) shift = 0;
+
+    int r1 = ((int)SZ3 << shift) & 0x7fff;
+    int r2 = (int)table[(r1 + 0x40) >> 7] + 0x101;
+    int r3 = ((0x80 - (r2 * (r1 + 0x8000))) >> 8) & 0x1ffff;
+    uint32_t reciprocal = (uint32_t)((r2 * r3) + 0x80) >> 8;
+
+    uint32_t result = (uint32_t)(((uint64_t)reciprocal * ((uint32_t)H << shift) + 0x8000ULL) >> 16);
+    if (result > 0x1FFFFu) {
         FLAG |= FLAG_DIV_OVF;
         return 0x1FFFF;
     }
-    return static_cast<int32_t>(result);
+    return (int32_t)result;
 }
 
 // Transform a vertex by Light matrix → IR1/IR2/IR3 (step 1 of lighting)
@@ -87,23 +137,53 @@ static void color_output(GTEState* gte) {
         gte->saturate_color(gte->MAC3 >> 4, 2));
 }
 
-// Depth cue from current IR values using IR0 interpolation toward far color
-// MAC = FC * 0x1000 - (BK + LC*IR) * 0x1000 ; then IR = (BK+LC*IR) + IR0 * MAC / 0x1000
-static void depth_cue_from_ir(GTEState* gte) {
-    // Interpolate: result = IR + IR0 * (FC - IR) / 0x1000
-    int64_t mac1 = ((int64_t)gte->FC[0] << 12) - ((int64_t)gte->IR1 << 12);
-    int64_t mac2 = ((int64_t)gte->FC[1] << 12) - ((int64_t)gte->IR2 << 12);
-    int64_t mac3 = ((int64_t)gte->FC[2] << 12) - ((int64_t)gte->IR3 << 12);
-    // Scale by IR0 and add back
-    mac1 = (int64_t)gte->IR1 + ((gte->IR0 * (mac1 >> 12)) >> 12);
-    mac2 = (int64_t)gte->IR2 + ((gte->IR0 * (mac2 >> 12)) >> 12);
-    mac3 = (int64_t)gte->IR3 + ((gte->IR0 * (mac3 >> 12)) >> 12);
-    gte->MAC1 = static_cast<int32_t>(mac1);
-    gte->MAC2 = static_cast<int32_t>(mac2);
-    gte->MAC3 = static_cast<int32_t>(mac3);
+// Apply depth cueing in *color* space, exactly mirroring PsyCross's reference
+// (which itself follows the Nocash GTE spec / hardware sequence). Callers compute
+// the pre-cue MAC values (RGBC*IR for NCDS/CDP/DPCL, RGBC<<16 for DPCS/DPCT,
+// IR<<12 for INTPL) and pass them in unshifted; this helper finishes:
+//
+//   diff_ir   = saturate_ir((FC<<12 - color_MAC) >> 12, lm=0)   ; intermediate
+//   final_MAC = (color_MAC + IR0 * diff_ir) >> 12
+//   IR        = saturate_ir(final_MAC, lm=true)
+//   push_rgb(saturate_color(final_MAC >> 4))
+//
+// The intermediate IR-saturation step is significant: very large color_MAC
+// values vs FC saturate the delta to ±0x7FFF *before* the IR0 multiply, which
+// is what real hardware does and which the previous implementation skipped.
+static void color_depth_cue_finish(GTEState* gte,
+                                    int64_t mac1, int64_t mac2, int64_t mac3) {
+    int32_t fc_diff1 = static_cast<int32_t>((((int64_t)gte->FC[0] << 12) - mac1) >> 12);
+    int32_t fc_diff2 = static_cast<int32_t>((((int64_t)gte->FC[1] << 12) - mac2) >> 12);
+    int32_t fc_diff3 = static_cast<int32_t>((((int64_t)gte->FC[2] << 12) - mac3) >> 12);
+    int32_t ir_d1 = gte->saturate_ir(fc_diff1, 1, false);
+    int32_t ir_d2 = gte->saturate_ir(fc_diff2, 2, false);
+    int32_t ir_d3 = gte->saturate_ir(fc_diff3, 3, false);
+    int64_t total1 = mac1 + (int64_t)gte->IR0 * ir_d1;
+    int64_t total2 = mac2 + (int64_t)gte->IR0 * ir_d2;
+    int64_t total3 = mac3 + (int64_t)gte->IR0 * ir_d3;
+    gte->MAC1 = static_cast<int32_t>(total1 >> 12);
+    gte->MAC2 = static_cast<int32_t>(total2 >> 12);
+    gte->MAC3 = static_cast<int32_t>(total3 >> 12);
     gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
     gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
     gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
+    gte->push_rgb(
+        gte->saturate_color(gte->MAC1 >> 4, 0),
+        gte->saturate_color(gte->MAC2 >> 4, 1),
+        gte->saturate_color(gte->MAC3 >> 4, 2));
+}
+
+// NCDS / NCDT / CDP variant: post-lighting (IR holds BK+LCM*L*V) and the
+// pre-cue MAC is RGBC * IR scaled left by 4 (matching the spec's
+// `[R*IR1, G*IR2, B*IR3] SHL 4` step).
+static void color_depth_cue_from_lit_ir(GTEState* gte) {
+    uint8_t r0 = (gte->RGB[0] >> 0)  & 0xFF;
+    uint8_t g0 = (gte->RGB[0] >> 8)  & 0xFF;
+    uint8_t b0 = (gte->RGB[0] >> 16) & 0xFF;
+    int64_t mac1 = (int64_t)(r0 << 4) * gte->IR1;
+    int64_t mac2 = (int64_t)(g0 << 4) * gte->IR2;
+    int64_t mac3 = (int64_t)(b0 << 4) * gte->IR3;
+    color_depth_cue_finish(gte, mac1, mac2, mac3);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,12 +322,25 @@ void gte_ncct(GTEState* gte, uint32_t instr) {
 
 // ---------------------------------------------------------------------------
 // NCDS (0x13) — Normal Color Depth Cue Single
+//
+// Per Nocash spec / PsyCross reference:
+//   IR  = LLM * V  SAR sf*12, lm
+//   IR  = (BK*0x1000 + LCM * IR)  SAR sf*12, lm
+//   MAC = (RGBC<<4) * IR + IR0 * sat_ir((FC*0x1000 - (RGBC<<4)*IR) SAR 12, lm=0)
+//   MAC = MAC SAR sf*12
+//   IR  = sat_ir(MAC, lm)
+//   push RGB FIFO with sat_color(MAC>>4)
+//
+// The previous implementation interpolated IR (the lighting result) toward FC
+// *before* multiplying by RGBC, which produced `(1-IR0)*RGBC*L + IR0*RGBC*FC`
+// instead of the correct `(1-IR0)*RGBC*L + IR0*FC`. Visible in Spyro's intro
+// cutscene as a vertex-color-tinted fog (snow mountains turning purple/cyan
+// instead of reading as a clean blue atmospheric haze).
 // ---------------------------------------------------------------------------
 void gte_ncds_internal(GTEState* gte, int16_t* V) {
     light_transform(gte, V);
     light_color(gte);
-    depth_cue_from_ir(gte);
-    color_output(gte);
+    color_depth_cue_from_lit_ir(gte);
 }
 
 void gte_ncds(GTEState* gte, uint32_t instr) {
@@ -298,29 +391,22 @@ void gte_nct(GTEState* gte, uint32_t instr) {
 }
 
 // ---------------------------------------------------------------------------
-// DPCS (0x10) — Depth Cueing Single (from RGBC color)
+// DPCS (0x10) — Depth Cueing Single (from RGBC color, no lighting)
+// pre-cue MAC = RGBC << 16 (matches PsyCross's `(R << 16)`)
 // ---------------------------------------------------------------------------
 void gte_dpcs(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
     uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
     uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
     uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
-    // MAC = RGBC << 4
-    gte->IR1 = gte->saturate_ir(r << 4, 1, false);
-    gte->IR2 = gte->saturate_ir(g << 4, 2, false);
-    gte->IR3 = gte->saturate_ir(b << 4, 3, false);
-    // Interpolate toward far color using IR0
-    depth_cue_from_ir(gte);
-    // Output
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    color_depth_cue_finish(gte,
+                           (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16);
     gte->set_error_flag();
 }
 
 // ---------------------------------------------------------------------------
-// DPCT (0x2A) — Depth Cueing Triple (from RGB FIFO entries)
+// DPCT (0x2A) — Depth Cueing Triple (RGB FIFO walk; new value is pushed each
+// iteration, so RGB[0] *after* the prior push is the next input).
 // ---------------------------------------------------------------------------
 void gte_dpct(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
@@ -328,64 +414,42 @@ void gte_dpct(GTEState* gte, uint32_t instr) {
         uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
         uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
         uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
-        gte->IR1 = gte->saturate_ir(r << 4, 1, false);
-        gte->IR2 = gte->saturate_ir(g << 4, 2, false);
-        gte->IR3 = gte->saturate_ir(b << 4, 3, false);
-        depth_cue_from_ir(gte);
-        gte->push_rgb(
-            gte->saturate_color(gte->MAC1 >> 4, 0),
-            gte->saturate_color(gte->MAC2 >> 4, 1),
-            gte->saturate_color(gte->MAC3 >> 4, 2));
+        color_depth_cue_finish(gte,
+                               (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16);
     }
     gte->set_error_flag();
 }
 
 // ---------------------------------------------------------------------------
-// DPCL (0x29) — Depth Cueing Light (from IR, uses existing lighting result)
+// DPCL (0x29) — Depth Cueing Light (uses pre-loaded IR for lighting; NCDS
+// without the LLM*V and BK+LCM*IR prelude).
 // ---------------------------------------------------------------------------
 void gte_dpcl(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    // IR already contains lighting result, multiply by RGBC
-    uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
-    uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
-    uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
-    gte->MAC1 = (r * gte->IR1) >> 8;
-    gte->MAC2 = (g * gte->IR2) >> 8;
-    gte->MAC3 = (b * gte->IR3) >> 8;
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
-    // Depth cue toward far color
-    depth_cue_from_ir(gte);
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    color_depth_cue_from_lit_ir(gte);
     gte->set_error_flag();
 }
 
 // ---------------------------------------------------------------------------
-// INTPL (0x11) — Interpolation (IR toward far color using IR0)
+// INTPL (0x11) — Interpolation: pre-cue MAC = IR << 12.
 // ---------------------------------------------------------------------------
 void gte_intpl(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    depth_cue_from_ir(gte);
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    color_depth_cue_finish(gte,
+                           (int64_t)gte->IR1 << 12,
+                           (int64_t)gte->IR2 << 12,
+                           (int64_t)gte->IR3 << 12);
     gte->set_error_flag();
 }
 
 // ---------------------------------------------------------------------------
-// CDP (0x14) — Color Depth Cue (light color + depth cue, no normal transform)
+// CDP (0x14) — Color Depth Cue (skip LLM*V; IR1/2/3 come in pre-loaded).
+// Equivalent to NCDS minus the light_transform step.
 // ---------------------------------------------------------------------------
 void gte_cdp(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    // IR1/IR2/IR3 already set (from previous NCS or similar)
     light_color(gte);
-    depth_cue_from_ir(gte);
-    color_output(gte);
+    color_depth_cue_from_lit_ir(gte);
     gte->set_error_flag();
 }
 
