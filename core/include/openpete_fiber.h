@@ -19,6 +19,7 @@ extern void*    openpete_host_fiber;     /* set in openpete_run before fiber spa
 extern void*    openpete_game_fiber;
 extern unsigned openpete_frame;          /* incremented on each VSync(0) yield */
 extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
+extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through; this is
  * the "VBlank yield" used by the VSync(0) thunk. */

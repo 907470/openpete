@@ -422,6 +422,12 @@ void psyq_DrawOTag(CPUState* cpu) {
         extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
         ParsePrimitivesLinkedList((u_long*)g_ot_slot_host[0], 0);
         DrawAllSplits();
+        /* Tell the host loop this iter's GL backbuffer holds fresh game pixels.
+         * Spyro is a 30fps game: it calls VSync(0) twice per logical frame, so
+         * if the host loop swapped on every yield we'd flash the bare clear-
+         * colour every other frame. The host now only EndScene/SwapWindow when
+         * this flag is set. */
+        openpete_present_pending = 1;
     }
 
     s_hist_calls++;

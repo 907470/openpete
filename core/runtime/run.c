@@ -318,10 +318,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "debug-triangle enabled — emitting hardcoded POLY_F3 each frame");
     }
 
-    /* Open the first scene before entering the game. DrawOTag/PutDispEnv/etc.
-     * issued from inside Initialize() get flushed by the PsyX_EndScene that
-     * runs when the first VSync(0) yields control back. */
-    PsyX_BeginScene();
+    /* Don't open a scene here — Spyro is a 30fps game (two PSX vblanks per
+     * logical frame), so the host loop yields twice per DrawOTag. We let the
+     * DrawOTag thunk start the scene on demand via its own PsyX_BeginScene()
+     * call, and only EndScene + SwapWindow on host iterations where DrawOTag
+     * actually fired. Empty iterations leave the front buffer untouched, so
+     * the previous game frame stays visible until the next DrawOTag.
+     *
+     * Net effect: GL output is naturally 30fps and there's no yellow flash
+     * between game frames. (Phase 1f rendering fix.) */
 
     Uint32 start = SDL_GetTicks();
     int    exit_code = OPENPETE_EXIT_OK;
@@ -340,8 +345,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_debug_triangle_emit();
         }
 
-        /* Game yielded. End the frame (flushes GPU queue, presents). */
-        PsyX_EndScene();
+        /* Game yielded. Only present if the iter actually drew — see the
+         * note above the pre-loop block. */
+        if (openpete_present_pending) {
+            PsyX_EndScene();
+            openpete_present_pending = 0;
+        }
 
         if (opts->screenshot_on_frame >= 0 &&
             (int)openpete_frame == opts->screenshot_on_frame) {
@@ -382,7 +391,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         openpete_primitives_drawn = 0u;
 
-        if (!quit) PsyX_BeginScene();
+        /* No PsyX_BeginScene here — DrawOTag starts the scene on demand. */
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

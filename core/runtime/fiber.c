@@ -13,6 +13,7 @@ void*    openpete_host_fiber       = NULL;
 void*    openpete_game_fiber       = NULL;
 unsigned openpete_frame             = 0u;
 unsigned openpete_primitives_drawn  = 0u;
+int      openpete_present_pending   = 0;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */
