@@ -188,27 +188,6 @@ void psyq_MoveImage(CPUState* cpu) {
 
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
-    /* PsyCross's PsyX_EndScene asserts disp.x >= 0 / disp.y >= 0 inside
-     * GR_CopyRGBAFramebufferToVRAM. RECT16 fields are signed shorts, and
-     * after LoadCutscene ran with two missing overlays (func_80024054,
-     * func_800857CC) we saw the renderer trip on a negative x. Log the
-     * offending DispEnv once so we can identify which call site, then
-     * clamp to keep the renderer alive. */
-    if (env && (env->disp.x < 0 || env->disp.y < 0)) {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
-            OPL_WARN_F("thunks",
-                       "PutDispEnv: clamping negative disp rect "
-                       "(x=%d y=%d w=%d h=%d isinter=%u isrgb24=%u) ra=0x%08X",
-                       (int)env->disp.x, (int)env->disp.y,
-                       (int)env->disp.w, (int)env->disp.h,
-                       (unsigned)env->isinter, (unsigned)env->isrgb24,
-                       cpu->ra);
-        }
-        if (env->disp.x < 0) env->disp.x = 0;
-        if (env->disp.y < 0) env->disp.y = 0;
-    }
     PutDispEnv(env);
 }
 
