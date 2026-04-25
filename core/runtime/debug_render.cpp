@@ -12,7 +12,11 @@
 
 #include "psx/libgte.h"  // SVECTOR forward referenced by libgpu.h
 #include "psx/libgpu.h"
+#include "PsyX/common/glad.h"
+#include "PsyX/PsyX_public.h"
+#include <SDL.h>
 
+#include <cstdlib>
 #include <cstring>
 
 static POLY_F3 s_tri;
@@ -47,12 +51,44 @@ extern "C" void openpete_debug_triangle_init(void) {
     setRGB0(&s_drawenv, 0x00, 0x40, 0x60);  /* dark teal */
 }
 
-/* PsyCross's screenshot dumper. Implemented in PsyX_main.cpp without extern
- * "C", so we declare it in C++ linkage and surface a C-callable wrapper for
- * run.c. Writes ./SCREENSHOT.BMP via glReadPixels. */
-void PsyX_TakeScreenshot();
+/* Screenshot dumper. PsyCross ships a `PsyX_TakeScreenshot()` but it produces
+ * an upside-down image: glReadPixels returns rows bottom-up (GL origin is
+ * bottom-left), SDL_CreateRGBSurfaceFrom treats row 0 as the surface top,
+ * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
+ * flip. We re-implement here with an explicit row flip. */
 extern "C" void openpete_psyx_take_screenshot(void) {
-    PsyX_TakeScreenshot();
+    int w = 0, h = 0;
+    PsyX_GetScreenSize(&w, &h);
+    if (w <= 0 || h <= 0) return;
+
+    const size_t pitch = (size_t)w * 4u;
+    unsigned char* pixels = (unsigned char*)std::malloc(pitch * (size_t)h);
+    if (!pixels) return;
+
+    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+
+    /* In-place row flip: swap row i with row h-1-i. */
+    unsigned char* tmp = (unsigned char*)std::malloc(pitch);
+    if (tmp) {
+        for (int i = 0; i < h / 2; ++i) {
+            unsigned char* a = pixels + (size_t)i * pitch;
+            unsigned char* b = pixels + (size_t)(h - 1 - i) * pitch;
+            std::memcpy(tmp, a, pitch);
+            std::memcpy(a, b, pitch);
+            std::memcpy(b, tmp, pitch);
+        }
+        std::free(tmp);
+    }
+
+    SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
+        pixels, w, h, /*depth=*/32, /*pitch=*/(int)pitch,
+        /*Rmask=*/0x00FF0000u, /*Gmask=*/0x0000FF00u,
+        /*Bmask=*/0x000000FFu, /*Amask=*/0xFF000000u);
+    if (surface) {
+        SDL_SaveBMP(surface, "SCREENSHOT.BMP");
+        SDL_FreeSurface(surface);
+    }
+    std::free(pixels);
 }
 
 extern "C" void openpete_debug_triangle_emit(void) {
