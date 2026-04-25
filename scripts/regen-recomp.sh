@@ -95,10 +95,32 @@ regen_overlay titlescreen \
     --forced-entry=0x8007ABAC \
     --forced-entry=0x8007CEE4
 
-regen_overlay level_10 \
-    "$WAD_DIR/level_0_artisans_home_code.ovl" \
-    0x8007AA38 \
-    func_level_10_ \
-    --forced-entry=0x8007D9C8
+# level_10 jump-table targets: psxrecomp emits a switch with `case` arms
+# only for entries it recognized as functions/blocks; entries pointing to
+# undiscovered code fall through to `default: call_by_address(cpu, v0)`
+# and stub-miss at runtime. Two-pass regen: first translate to discover
+# the tables, then re-translate with every table entry as a forced entry.
+LEVEL_10_OVL="$WAD_DIR/level_0_artisans_home_code.ovl"
+LEVEL_10_JTBL="games/spyro-1/manifest/level_10_jumptable_targets.txt"
+if [[ -f "$LEVEL_10_OVL" ]]; then
+    regen_overlay level_10 \
+        "$LEVEL_10_OVL" \
+        0x8007AA38 \
+        func_level_10_ \
+        --forced-entry=0x8007D9C8
+    echo "[regen] Extracting level_10 jump-table targets"
+    python3 tools/extract_jumptable_targets.py \
+        "$OUT/level_10/level_10.bin_full.c" \
+        "$LEVEL_10_OVL" \
+        --load-addr=0x8007AA38 \
+        "$LEVEL_10_JTBL"
+    echo "[regen] Re-translating level_10 with jump-table forced entries"
+    regen_overlay level_10 \
+        "$LEVEL_10_OVL" \
+        0x8007AA38 \
+        func_level_10_ \
+        --forced-entry=0x8007D9C8 \
+        --extra-funcs="$LEVEL_10_JTBL"
+fi
 
 echo "[regen] Done — rebuild the project to pick up the new C output."
