@@ -574,9 +574,29 @@ void psyq_CdControlB(CPUState* cpu) {
                                    (u_char*)PTR(cpu->a2));
 }
 
+/* PsyCross internals we need to keep coherent across the data-read /
+ * music-position split. `g_CD_com` is the "last command" int CdLastCom()
+ * returns. `readMode` is the enum CdReadSync switches on (0 = RM_DATA,
+ * 1 = RM_XA_AUDIO). Both are file-scope (non-static) globals in
+ * third_party/PsyCross/src/psx/LIBCD.C, so we link to them by name. */
+extern "C" int g_CD_com;
+extern "C" int readMode;  /* enum ReadMode; 0=RM_DATA, 1=RM_XA_AUDIO */
+
 void psyq_CdControlF(CPUState* cpu) {
-    cpu->v0 = (uint32_t)CdControlF((u_char)cpu->a0,
-                                   (u_char*)PTR(cpu->a1));
+    u_char com = (u_char)cpu->a0;
+    /* PsyCross's CdControlF treats CdlGetlocP as "the caller is starting
+     * CDDA/XA streaming" and flips readMode to RM_XA_AUDIO. Spyro's music
+     * loop calls CdControlF(CdlGetlocP, NULL) just to poll the current
+     * playback position — it doesn't switch mode. The bogus mode flip
+     * then makes the next data CdRead read AudioSector-sized chunks
+     * (2304B vs 2048B) and overrun the game's buffer. Track g_CD_com
+     * ourselves for CdLastCom and skip PsyCross's switch entirely. */
+    if (com == CdlGetlocP) {
+        g_CD_com = com;
+        cpu->v0 = 0u;  /* CdControlF returns int (0) for the GetlocP case */
+        return;
+    }
+    cpu->v0 = (uint32_t)CdControlF(com, (u_char*)PTR(cpu->a1));
 }
 
 void psyq_CdRead(CPUState* cpu) {
@@ -589,7 +609,14 @@ void psyq_CdRead(CPUState* cpu) {
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we
      * drain inline here and then fire the cb so g_CdState.m_IsReading
-     * clears. */
+     * clears.
+     *
+     * Force readMode = RM_DATA before draining: Spyro's CdRead path is
+     * always data sectors (mode bits 0x80 = CdlModeSpeed). XA streaming
+     * uses CdControlF(CdlReadS, ...) instead. Without this, a stale
+     * RM_XA_AUDIO from prior music polling makes CdReadSync read the
+     * wrong sector size and trip the assert(0) else-branch. */
+    readMode = 0;  /* RM_DATA */
     extern int CdReadSync(int mode, u_char* result);
     int remaining = CdReadSync(/*mode=*/0, /*result=*/NULL);
     if (remaining > 0) {
@@ -611,7 +638,18 @@ void psyq_CdRead(CPUState* cpu) {
 
 void psyq_CdSync(CPUState* cpu) {
     int mode = (int)cpu->a0;
-    int rc = CdSync(mode, (u_char*)PTR(cpu->a1));
+    /* PsyCross's CdSync writes into result[0..7] whenever g_CD_com ==
+     * CdlGetlocP, regardless of whether the caller asked for the data.
+     * Spyro's music loop sets that com via CdControlF(CdlGetlocP, NULL),
+     * then non-music code calls CdSync(1, NULL) just for the return
+     * value (LoadCutscene, CDLoadSync, CDLoadAsync, CDLoadTime). With
+     * a NULL result PsyCross then SIGSEGVs on result[0] = ...
+     *
+     * Pass a stack scratch buffer when the caller didn't supply one;
+     * the writes are harmless and PsyCross still returns CdlComplete. */
+    u_char  scratch[8];
+    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    int rc = CdSync(mode, result);
     /* Don't log every CdSync — busy-loops would flood. Sample every 1024. */
     static uint32_t calls = 0;
     if ((++calls & 0x3FFFFFu) == 1u) {
