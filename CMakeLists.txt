@@ -21,13 +21,13 @@ find_package(SDL2 REQUIRED)
 # Which games to enable. Phase 0b only spyro-1 is wired up.
 set(OPENPETE_GAMES "spyro-1" CACHE STRING "Games to build (semicolon-separated)")
 
-# PsyCross integration. Phase 1b builds the static lib but does NOT link
-# it into per-game binaries — generated PSYQ stubs satisfy the link first.
-# Phase 1c flips the default ON and replaces stubs with real PsyCross
-# thunks. PsyCross's CMake calls find_package(OPENAL REQUIRED), so this
-# requires `libopenal-dev` (Linux). We default OFF so a fresh checkout
-# builds without the dev headers.
-option(OPENPETE_BUILD_PSYCROSS "Build third_party/PsyCross as a static lib" OFF)
+# PsyCross integration (Phase 1c+). Builds the static lib and links it
+# into openpete_core; psyq_thunks.cpp routes recompiled PSYQ calls into
+# PsyCross. PsyCross's CMake calls find_package(OpenAL REQUIRED), so a
+# Linux build needs `libopenal-dev`. Disable with -DOPENPETE_BUILD_PSYCROSS=OFF
+# if you need a non-PsyCross link path (the per-game thunks will then
+# fall through to the abort-on-call weak stubs in psyq_stubs.c).
+option(OPENPETE_BUILD_PSYCROSS "Build third_party/PsyCross as a static lib" ON)
 if(OPENPETE_BUILD_PSYCROSS)
     add_subdirectory(third_party/PsyCross)
 endif()

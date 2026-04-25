@@ -26,13 +26,12 @@ add_library(openpete_core STATIC
     ${PSXRECOMP_RUNNER}/src/iso_reader.cpp
 )
 
-# libco: cooperative single-fiber scheduler. The vendored libco/libco.c
-# `#include`s a per-architecture source (amd64.c, arm.c, ...) that wasn't
-# fetched in Phase 0b — only libco.c + libco.h made it in. Phase 1c
-# regenerates the vendor with the platform sources before any fibers
-# actually get created. For Phase 1b we only call co_active(), which has
-# a trivial header-only fallback (see core/runtime/libco_shim.c).
-target_sources(openpete_core PRIVATE runtime/libco_shim.c)
+# libco: cooperative single-fiber scheduler. third_party/libco/libco.c
+# `#include`s a per-arch sibling (amd64.c on x86_64 Linux/macOS, fiber.c
+# under MinGW). The Phase 1b shim has been retired now that we ship the
+# real implementations.
+target_sources(openpete_core PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/libco/libco.c)
 
 target_include_directories(openpete_core
     PUBLIC
@@ -60,6 +59,17 @@ elseif(TARGET SDL2::SDL2)
 else()
     target_include_directories(openpete_core PUBLIC ${SDL2_INCLUDE_DIRS})
     target_link_libraries(openpete_core PUBLIC ${SDL2_LIBRARIES})
+endif()
+
+# PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by
+# PSYQ-targeted thunks. Phase 1c flips this default ON; downstream targets
+# include PsyCross/include and link `psycross_static` automatically.
+if(TARGET psycross_static)
+    target_link_libraries(openpete_core PUBLIC psycross_static)
+    target_include_directories(openpete_core PUBLIC
+        ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
+        ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx)
+    target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_PSYCROSS=1)
 endif()
 
 # Fail the build (cheap automated check) if anyone smuggles a Spyro

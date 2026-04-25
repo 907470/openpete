@@ -14,11 +14,15 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
 
-    # Phase 1b PSYQ stubs — abort-on-call placeholders so unresolved
-    # PSYQ externs don't break linkage. Phase 1c regenerates this file
-    # with real ABI thunks into PsyCross.
+    # PSYQ symbol stubs — `__attribute__((weak))` abort-on-call. Each
+    # thunk in psyq_thunks.c is `strong` and overrides its same-named
+    # weak stub at link time. Anything not yet thunked aborts on first
+    # call, surfacing the next missing PSYQ surface.
     ${SPYRO_GENERATED}/psyq_stubs.c
     psyq_stub_runtime.c
+
+    # Hand-written PSYQ → PsyCross ABI thunks (Phase 1c).
+    psyq_thunks.cpp
 )
 
 # Generated C addresses psx_runtime.h via the include path provided by

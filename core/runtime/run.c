@@ -32,6 +32,32 @@ extern uint8_t* openpete_psx_read_file(const char* path, size_t* out_size);
 
 extern void openpete_psx_set_diag_cpu(CPUState* cpu);
 
+#ifdef OPENPETE_HAS_PSYCROSS
+/* PsyCross window/GL initialiser. Must be called before any libgpu/libgte
+ * call (ResetGraph, SetGeomScreen, etc.) — those touch internal SDL/GL
+ * state set up here. */
+extern void PsyX_Initialise(char* windowName, int screenWidth,
+                            int screenHeight, int fullscreen);
+extern void PsyX_Shutdown(void);
+extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
+#endif
+
+/* Given a .cue path, build the sibling .bin path. Caller frees.
+ * Returns NULL on alloc failure or unrecognised extension. */
+static char* derive_bin_path(const char* cue_path) {
+    if (!cue_path) return NULL;
+    size_t n = strlen(cue_path);
+    if (n < 4) return NULL;
+    char* p = (char*)malloc(n + 1);
+    if (!p) return NULL;
+    memcpy(p, cue_path, n + 1);
+    /* Replace ".cue"/".CUE" suffix with ".bin"/".BIN". */
+    if (strcmp(p + n - 4, ".cue") == 0)      memcpy(p + n - 4, ".bin", 4);
+    else if (strcmp(p + n - 4, ".CUE") == 0) memcpy(p + n - 4, ".BIN", 4);
+    else { free(p); return NULL; }
+    return p;
+}
+
 /* Phase 1b: try to load a PSX EXE; return 0 on success, non-zero on
  * failure (caller decides whether to continue without it). On success
  * sets *out_bytes (caller frees) and *out_size. */
@@ -71,6 +97,30 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     free(bytes);
     if (rc != 0) return OPENPETE_EXIT_PANIC;
 
+#ifdef OPENPETE_HAS_PSYCROSS
+    /* libgpu/libgte calls touch internal SDL/GL state that PsyX_Initialise
+     * sets up. For the smoke-test path we still want PsyCross alive. */
+    OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window", WIN_W, WIN_H);
+    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0);
+
+    /* Wire PsyCross's CDFS to the disc .bin so CdRead has real data.
+     * --disc PATH.cue derives the sibling .bin; otherwise we skip and
+     * CdRead returns failure (acceptable for the leaf smoke test). */
+    if (opts->disc_path) {
+        char* bin = derive_bin_path(opts->disc_path);
+        if (bin) {
+            OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
+            PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            free(bin);
+        } else {
+            OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
+                       opts->disc_path);
+        }
+    } else {
+        OPL_WARN_F("boot", "no --disc; CdRead will return no data");
+    }
+#endif
+
     if (opts->test_recomp_segv) {
         OPL_INFO_F("boot", "deliberately raising SIGSEGV to verify crash handler");
         volatile int* p = (int*)(uintptr_t)0;
@@ -81,6 +131,12 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     uint32_t entry = opts->test_recomp_call_addr;
     if (entry == 0) entry = cpu.pc;
 
+    if (opts->test_recomp_gp != 0) {
+        OPL_INFO_F("boot", "overriding cpu.gp 0x%08X -> 0x%08X (skipping PSYQ _96_init)",
+                   cpu.gp, opts->test_recomp_gp);
+        cpu.gp = opts->test_recomp_gp;
+    }
+
     OPL_INFO_F("boot", "dispatching recompiled function at 0x%08X", entry);
     int matched = psx_dispatch_compiled(&cpu, entry);
     if (!matched) {
@@ -88,6 +144,16 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
         return OPENPETE_EXIT_PANIC;
     }
     OPL_INFO_F("boot", "function returned: v0=0x%08X v1=0x%08X", cpu.v0, cpu.v1);
+
+    /* Optional post-dispatch probe: read 4 bytes at a PSX vaddr and log
+     * them. Used as a portable exit-criteria assertion (e.g. Spyro
+     * confirms `g_WadHeader.m_LevelEntry[0].m_Offset` is non-zero). */
+    if (opts->probe_addr != 0) {
+        uint8_t* ram = openpete_psx_get_ram();
+        uint32_t v = 0;
+        memcpy(&v, ram + (opts->probe_addr & 0x1FFFFFFFu), 4);
+        OPL_INFO_F("boot", "probe[0x%08X] = 0x%08X", opts->probe_addr, v);
+    }
 
     if (opts->test_recomp_expected_v0 != 0 &&
         cpu.v0 != opts->test_recomp_expected_v0) {

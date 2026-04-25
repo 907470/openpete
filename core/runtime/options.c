@@ -70,6 +70,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--test-recomp-expect-v0") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->test_recomp_expected_v0 = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--test-recomp-gp") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->test_recomp_gp = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--probe") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->probe_addr = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--test-segv") == 0) {
             opts->test_recomp_segv = true;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
@@ -87,6 +93,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
                 "  --test-recomp-call HEX     boot, dispatch one fn at HEX, exit\n"
                 "  --test-recomp-expect-v0 N  verify cpu->v0 after --test-recomp-call\n"
+                "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
+                "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */

@@ -54,6 +54,8 @@ typedef struct {
      * exit reporting cpu->v0. 0 = disabled. */
     uint32_t test_recomp_call_addr;
     uint32_t test_recomp_expected_v0;  /* 0 = don't check */
+    uint32_t test_recomp_gp;            /* override cpu->gp before dispatch (0 = leave alone) */
+    uint32_t probe_addr;                /* read 4 bytes at this PSX vaddr post-dispatch (0 = off) */
     bool     test_recomp_segv;          /* deliberately fault to verify crash handler */
 } openpete_options_t;
 

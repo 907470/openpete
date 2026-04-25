@@ -1,3 +1,8 @@
 upstream: https://github.com/higan-emu/libco
-files: libco.c + libco.h (master, fetched 2026-04-25)
-notes: single-file cooperative-fiber lib; vendored verbatim. No local patches yet.
+files: libco.c + libco.h (initial fetch 2026-04-25)
+       amd64.c + fiber.c + settings.h + valgrind.h (added 2026-04-25 via `gh api`)
+notes: single-file cooperative-fiber lib; vendored verbatim. amd64.c is the
+       per-arch implementation libco.c #includes for x86_64 Linux/macOS;
+       fiber.c is the Windows fallback used by the MinGW cross-build path.
+       settings.h is the build-config sibling both arch sources need. No
+       local patches.

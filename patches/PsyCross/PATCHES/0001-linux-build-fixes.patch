@@ -1,0 +1,82 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c112202..ce8a32b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,15 +2,35 @@ file(GLOB_RECURSE PSYCROSS_SRCS_C
+ 	"*.c"
+ )
+ 
++# The PSYQ surface lives under src/psx/*.C (uppercase) — Windows-derived
++# filenames the original devs never normalised. Linux globs are case-
++# sensitive, so we list those explicitly to avoid linker misses.
++file(GLOB_RECURSE PSYCROSS_SRCS_PSYQ
++	"src/psx/*.C"
++)
++
+ file(GLOB_RECURSE PSYCROSS_SRCS_CPP
+ 	"*.cpp"
+ )
+ 
+ set_source_files_properties( ${PSYCROSS_SRCS_C} PROPERTIES LANGUAGE C)
++set_source_files_properties( ${PSYCROSS_SRCS_PSYQ} PROPERTIES LANGUAGE CXX)
+ set_source_files_properties( ${PSYCROSS_SRCS_CPP} PROPERTIES LANGUAGE CXX)
+ #set_source_files_properties( "src/gte/PsyX_GTE.cpp" PROPERTIES LANGUAGE C)
+ 
+-add_library(psycross_static STATIC ${PSYCROSS_SRCS_C} ${PSYCROSS_SRCS_CPP})
++# rcossin_tbl.h is a generated brace-init-list of 16-bit values that
++# triggers narrowing-conversion errors under modern GCC C++17. The
++# values fit; the warning is conservative. Mute it for the PSYQ TUs.
++if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
++	set_source_files_properties(${PSYCROSS_SRCS_PSYQ}
++		PROPERTIES COMPILE_OPTIONS "-Wno-narrowing;-Wno-format;-fpermissive")
++endif()
++
++add_library(psycross_static STATIC
++	${PSYCROSS_SRCS_C}
++	${PSYCROSS_SRCS_PSYQ}
++	${PSYCROSS_SRCS_CPP}
++)
+ set_target_properties(psycross_static PROPERTIES OUTPUT_NAME "psycross")
+ target_include_directories(psycross_static PUBLIC "include" "include/psx")
+ 
+@@ -18,6 +38,6 @@ find_package(SDL2 REQUIRED)
+ target_link_libraries(psycross_static ${SDL2_LIBRARIES})
+ target_include_directories(psycross_static PRIVATE ${SDL2_INCLUDE_DIRS})
+ 
+-find_package(OPENAL REQUIRED)
+-target_link_libraries(psycross_static OpenAL)
+-target_include_directories(psycross_static PRIVATE ${OpenAL_BINARY_DIR} ${OpenAL_SOURCE_DIR}/include)
+\ No newline at end of file
++find_package(OpenAL REQUIRED)
++target_link_libraries(psycross_static ${OPENAL_LIBRARY})
++target_include_directories(psycross_static PRIVATE ${OPENAL_INCLUDE_DIR})
+\ No newline at end of file
+diff --git a/src/PsyX_main.cpp b/src/PsyX_main.cpp
+index aab0e6a..9a607e4 100644
+--- a/src/PsyX_main.cpp
++++ b/src/PsyX_main.cpp
+@@ -36,7 +36,10 @@ int strcasecmp(const char* _l, const char* _r)
+ 	return tolower(*l) - tolower(*r);
+ }
+ #elif !defined(_WIN32)
+-#include <strings.h>
++// PsyCross ships its own `include/psx/strings.h` (PSYQ surface) which shadows
++// the system `<strings.h>` on the include path, so we forward-declare the
++// POSIX symbol instead of relying on the header.
++extern "C" int strcasecmp(const char* s1, const char* s2);
+ #endif
+ 
+ SDL_Window* g_window = NULL;
+diff --git a/src/gpu/PsyX_GPU.cpp b/src/gpu/PsyX_GPU.cpp
+index 6e9e6f6..e4cd732 100644
+--- a/src/gpu/PsyX_GPU.cpp
++++ b/src/gpu/PsyX_GPU.cpp
+@@ -18,7 +18,7 @@
+ #define GET_CLUT_X(clut)        ((clut & 0x3F) << 4)
+ #define GET_CLUT_Y(clut)        (clut >> 6)
+ 
+-OT_TAG prim_terminator = { -1, 0 }; // P_TAG with zero primLength
++OT_TAG prim_terminator = { (uintptr_t)-1, 0 }; // P_TAG with zero primLength
+ 
+ DISPENV currentDispEnv;
+ DISPENV activeDispEnv;

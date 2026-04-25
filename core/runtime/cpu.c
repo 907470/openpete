@@ -21,6 +21,16 @@ static uint8_t g_scratch[SCRATCH_SIZE];
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
 uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 
+void* openpete_psx_to_host_ptr(uint32_t addr) {
+    if (addr == 0u) return NULL;
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys < RAM_SIZE) return &g_ram[phys];
+    if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
+        return &g_scratch[phys - 0x1F800000u];
+    }
+    return NULL;
+}
+
 /* Map a PSX virtual address to a host pointer; NULL if unmapped. */
 static uint8_t* mem_ptr(uint32_t addr) {
     /* Strip KSEG0/KSEG1/KUSEG segment bits. PSX uses unmapped segments

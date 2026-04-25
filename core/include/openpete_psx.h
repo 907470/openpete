@@ -33,6 +33,12 @@ void openpete_psx_runtime_init(CPUState* cpu);
 uint8_t* openpete_psx_get_ram(void);
 uint8_t* openpete_psx_get_scratch(void);
 
+/* Map a PSX virtual address to a host pointer. Returns NULL if `addr` is
+ * unmapped, OR if `addr == 0` (treated as PSX NULL). PSYQ thunks use this
+ * to translate pointer arguments (held in cpu->aN as PSX vaddrs) to host
+ * pointers PsyCross can dereference. */
+void* openpete_psx_to_host_ptr(uint32_t addr);
+
 /* Copy `size` bytes into g_ram at virtual address `addr`. */
 void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
 

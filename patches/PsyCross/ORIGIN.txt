@@ -1,0 +1,3 @@
+upstream: https://github.com/OpenSWE1R/psycross (PsyCross, the cross-platform PSYQ shim)
+files: full source tree (include/, src/, CMakeLists.txt) — fetched 2026-04-25
+notes: vendored verbatim. See PATCHES/ for local diffs (Linux build fixes).
