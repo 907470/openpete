@@ -1019,12 +1019,21 @@ std::string CodeGenerator::translate_basic_block(
                     //   P1: lui $R,hi; addiu $R,$R,lo; addu $D,$idx,$R; lw $D,0($D)
                     //   P2: lui $R,hi;                 addu $D,$R,$idx; lw $D,off($D)
                     // table_base = lui_val + addiu_val + lw_offset
+                    //
+                    // Also tracks the SLL feeding the ADDU so we can emit a
+                    // switch on the *index* register (cases 0..N-1) instead of
+                    // on the loaded address. Switching on the index makes the
+                    // dispatch immune to runtime corruption of the jump-table
+                    // bytes (see plans/psxrecomp-jumptable-baking.md).
                     uint32_t table_base  = 0;
                     uint32_t table_count = 0;
+                    uint32_t index_reg   = 0xFF;  // source of `sll _, idx, 2`
+                    bool     found_sll   = false;
                     {
                         uint32_t lw_base_reg   = 0xFF;   // base reg in the LW
                         int32_t  lw_offset     = 0;      // offset in the LW instruction
                         uint32_t addu_cand[2]  = {0xFF, 0xFF}; // rs, rt of ADDU
+                        uint32_t addu_dest     = 0xFF;   // rd of ADDU (= sll dest target)
                         uint32_t table_reg     = 0xFF;   // candidate for table base reg
                         uint32_t lui_val       = 0;
                         int16_t  addiu_val[2]  = {0, 0}; // per-candidate ADDIU
@@ -1041,6 +1050,7 @@ std::string CodeGenerator::translate_basic_block(
                             uint32_t s_rs = (si >> 21) & 0x1F;
                             uint32_t s_rt = (si >> 16) & 0x1F;
                             uint32_t s_rd = (si >> 11) & 0x1F;
+                            uint32_t s_sa = (si >> 6)  & 0x1F;
                             uint32_t s_fn = si & 0x3F;
 
                             // LW $jr_reg, offset($base)
@@ -1055,6 +1065,7 @@ std::string CodeGenerator::translate_basic_block(
                                 addu_cand[0] == 0xFF) {
                                 addu_cand[0] = s_rs;
                                 addu_cand[1] = s_rt;
+                                addu_dest    = s_rd;
                                 table_reg    = s_rt;  // initial guess; may flip on LUI match
                                 continue;
                             }
@@ -1087,12 +1098,28 @@ std::string CodeGenerator::translate_basic_block(
                                 }
                                 continue;
                             }
+                            // SLL $rd, $rt, 2  — the ×4 shift that turns the
+                            // index into a byte offset. The destination must
+                            // match one of the ADDU operands; the OTHER operand
+                            // is the table-base register. NOPs (sa=0) are
+                            // skipped because they fail the sa==2 check.
+                            if (s_op == 0x00 && s_fn == 0x00 && s_sa == 2 &&
+                                addu_cand[0] != 0xFF && !found_sll) {
+                                for (int c = 0; c < 2; c++) {
+                                    if (addu_cand[c] != 0xFF && s_rd == addu_cand[c]) {
+                                        index_reg = s_rt;
+                                        found_sll = true;
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
                             // SLTIU — table entry count
                             if (s_op == 0x0B && table_count == 0) {
                                 table_count = si & 0xFFFF;
                                 continue;
                             }
-                            if (found_lui && table_count != 0) break;
+                            if (found_lui && table_count != 0 && found_sll) break;
                         }
 
                         if (found_lui && table_count > 0 && table_count < 512) {
@@ -1100,11 +1127,67 @@ std::string CodeGenerator::translate_basic_block(
                                 (found_addiu[0] ? (uint32_t)(int32_t)addiu_val[0] : 0u);
                             table_base = base + (uint32_t)lw_offset;
                         }
+                        // If SLL's matched candidate is the same as table_reg,
+                        // detection is bogus (the ×4 result can't also be the
+                        // base address). Drop the SLL match; old path applies.
+                        if (found_sll && index_reg == table_reg && table_reg != 0xFF) {
+                            found_sll = false;
+                        }
+                        (void)addu_dest;
                     }
 
-                    // If we found a valid table, read entries and emit switch
+                    // If we found a valid table, emit switch.
+                    // Preferred path: when found_sll, switch on the index register
+                    // with cases 0..N-1, baking the table targets into the C source.
+                    // This dispatch is immune to runtime corruption of the jump-table
+                    // bytes — the loaded value into jr_rs is ignored.
                     bool emitted_switch = false;
-                    if (table_base != 0 && table_count > 0) {
+                    if (found_sll && table_base != 0 && table_count > 0) {
+                        // Read all entries up-front; abort to the old path if any read fails.
+                        std::vector<uint32_t> entries;
+                        entries.reserve(table_count);
+                        bool ok = true;
+                        for (uint32_t i = 0; i < table_count; i++) {
+                            auto eopt = exe_.read_word(table_base + i * 4);
+                            if (!eopt) { ok = false; break; }
+                            entries.push_back(*eopt);
+                        }
+                        if (ok) {
+                            ss << config_.indent << fmt::format(
+                                "/* jump table 0x{:08X}, {} entries — switching on index {} */\n",
+                                table_base, table_count, reg_name(index_reg));
+                            ss << config_.indent << fmt::format("switch ({}) {{\n", reg_name(index_reg));
+                            for (uint32_t i = 0; i < table_count; i++) {
+                                uint32_t t = entries[i];
+                                if (cfg.blocks.count(t) || extra_labels_.count(t)) {
+                                    ss << config_.indent << fmt::format(
+                                        "    case {}u: goto block_{:08X};\n", i, t);
+                                } else if (auto* ext = external_name_for(t)) {
+                                    ss << config_.indent << fmt::format(
+                                        "    case {}u: {}(cpu); return;\n", i, *ext);
+                                } else if (auto* man = manual_name_for(t)) {
+                                    ss << config_.indent << fmt::format(
+                                        "    case {}u: {}(cpu); return;\n", i, *man);
+                                } else if (known_functions_.count(t)) {
+                                    ss << config_.indent << fmt::format(
+                                        "    case {}u: {}{:08X}(cpu); return;\n",
+                                        i, config_.func_prefix, t);
+                                } else {
+                                    ss << config_.indent << fmt::format(
+                                        "    case {}u: call_by_address(cpu, 0x{:08X}u); return;\n", i, t);
+                                }
+                            }
+                            ss << config_.indent << fmt::format(
+                                "    default: call_by_address(cpu, {}); return;  /* out-of-range index */\n",
+                                reg_name(jr_rs));
+                            ss << config_.indent << "}\n";
+                            emitted_switch = true;
+                        }
+                    }
+                    // Fallback: old switch-on-loaded-address. Used when the
+                    // back-scan couldn't identify the index register, or when
+                    // the new emission aborted on a table-read failure.
+                    if (!emitted_switch && table_base != 0 && table_count > 0) {
                         std::set<uint32_t>    seen;
                         std::vector<uint32_t> targets;
                         for (uint32_t i = 0; i < table_count; i++) {

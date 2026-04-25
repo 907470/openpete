@@ -30,7 +30,7 @@ import struct
 import sys
 from pathlib import Path
 
-JTBL_RE = re.compile(r'/\*\s*jump table 0x([0-9A-Fa-f]+),\s*(\d+)\s*entries\s*\*/')
+JTBL_RE = re.compile(r'/\*\s*jump table 0x([0-9A-Fa-f]+),\s*(\d+)\s*entries\b[^*]*\*/')
 
 
 def harvest(c_path: Path, ovl_path: Path, load_addr: int) -> tuple[set[int], int, int]:
