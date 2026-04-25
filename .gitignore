@@ -7,3 +7,7 @@ compile_commands.json
 .DS_Store
 games/*/generated/
 third_party/psxrecomp/build/
+
+# Run artefacts (PsyX log, screenshot dump path).
+Spyro the Dragon.log
+SCREENSHOT.BMP
