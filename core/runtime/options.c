@@ -83,6 +83,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
+        } else if (strcmp(a, "--press") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->press_script = v; i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -102,7 +105,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
                 "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
-                "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n",
+                "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
+                "  --press SCRIPT             scripted key presses, e.g. '600:return,1200:x,1800:return'\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

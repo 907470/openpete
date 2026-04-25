@@ -68,6 +68,14 @@ typedef struct {
      * validate the full GL render path before real-game draw code is online
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
+
+    /* Test harness: scripted key presses. Comma-separated FRAME:KEY pairs,
+     * e.g. "600:return,1200:x,1800:return". Each press is held for ~10
+     * frames (~166ms at 60Hz) — long enough for the game's PadVSync to
+     * see m_Down rise and commit the press, short enough to release before
+     * the next event. Keys (matches default kbd map): return/enter, space,
+     * x, c, z, v, up, down, left, right. NULL = no scripted input. */
+    const char* press_script;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

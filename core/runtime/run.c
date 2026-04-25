@@ -255,6 +255,163 @@ static void game_fiber_entry(void) {
     while (1) co_switch((cothread_t)openpete_host_fiber);
 }
 
+/* --- Test harness: scripted key presses (--press FRAME:KEY,...) ---------
+ *
+ * Drives the title-screen flow without the user touching the keyboard. Each
+ * event holds the SDL keyboard state for HOLD_FRAMES frames — long enough
+ * for the recompiled PadVSync to commit the press into g_Pad.m_Down /
+ * m_Held, short enough to release before the next event. We write into the
+ * SDL state buffer directly (cast away const); SDL_PumpEvents only updates
+ * the buffer from incoming events, so our overrides survive across the
+ * pump unless the user actually presses the same key. */
+
+#define OPENPETE_PRESS_HOLD_FRAMES 10
+#define OPENPETE_PRESS_MAX_EVENTS  64
+
+typedef struct {
+    int          frame;     /* press start, in openpete_frame units */
+    SDL_Scancode scancode;
+} openpete_press_event_t;
+
+static SDL_Scancode openpete_keyname_to_scancode(const char* name) {
+    if (!strcmp(name, "return") || !strcmp(name, "enter")) return SDL_SCANCODE_RETURN;
+    if (!strcmp(name, "space"))                            return SDL_SCANCODE_SPACE;
+    if (!strcmp(name, "x"))                                return SDL_SCANCODE_X;
+    if (!strcmp(name, "c"))                                return SDL_SCANCODE_C;
+    if (!strcmp(name, "z"))                                return SDL_SCANCODE_Z;
+    if (!strcmp(name, "v"))                                return SDL_SCANCODE_V;
+    if (!strcmp(name, "up"))                               return SDL_SCANCODE_UP;
+    if (!strcmp(name, "down"))                             return SDL_SCANCODE_DOWN;
+    if (!strcmp(name, "left"))                             return SDL_SCANCODE_LEFT;
+    if (!strcmp(name, "right"))                            return SDL_SCANCODE_RIGHT;
+    return SDL_SCANCODE_UNKNOWN;
+}
+
+static int openpete_press_parse(const char* spec,
+                                openpete_press_event_t* out, int max_events) {
+    /* Format: "FRAME:KEY[,FRAME:KEY,...]" — destructive parse on a copy. */
+    char buf[1024];
+    size_t n = strlen(spec);
+    if (n >= sizeof(buf)) {
+        OPL_ERROR_F("press", "script too long (>%zu bytes)", sizeof(buf) - 1);
+        return -1;
+    }
+    memcpy(buf, spec, n + 1);
+
+    int count = 0;
+    char* save = NULL;
+    for (char* tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        if (count >= max_events) {
+            OPL_ERROR_F("press", "too many events (max %d)", max_events);
+            return -1;
+        }
+        char* colon = strchr(tok, ':');
+        if (!colon) {
+            OPL_ERROR_F("press", "expected FRAME:KEY in '%s'", tok);
+            return -1;
+        }
+        *colon = '\0';
+        int frame = atoi(tok);
+        const char* keyname = colon + 1;
+        SDL_Scancode sc = openpete_keyname_to_scancode(keyname);
+        if (sc == SDL_SCANCODE_UNKNOWN) {
+            OPL_ERROR_F("press", "unknown key '%s' (try return/space/x/c/z/v/up/down/left/right)",
+                        keyname);
+            return -1;
+        }
+        out[count].frame    = frame;
+        out[count].scancode = sc;
+        count++;
+    }
+    return count;
+}
+
+static void openpete_press_apply(const openpete_press_event_t* events, int count) {
+    /* Cast away const: SDL exposes an internal Uint8 array we can poke. */
+    Uint8* state = (Uint8*)SDL_GetKeyboardState(NULL);
+    if (!state) return;
+    /* For every scripted scancode, decide if any event window covers this
+     * frame. Inside a window: force state=1. Outside: force state=0 — this
+     * matters because SDL doesn't release the key on its own (we never sent
+     * a KEYUP event), so without an explicit zero the second event in a
+     * sequence would not produce a fresh up→down edge for the game's pad
+     * VSync handler. We only touch scancodes that appear in the script, so
+     * unrelated real keyboard input still works. */
+    for (int i = 0; i < count; i++) {
+        SDL_Scancode sc = events[i].scancode;
+        int active = 0;
+        for (int j = 0; j < count; j++) {
+            if (events[j].scancode != sc) continue;
+            int start = events[j].frame;
+            int end   = start + OPENPETE_PRESS_HOLD_FRAMES;
+            if ((int)openpete_frame >= start && (int)openpete_frame < end) {
+                active = 1; break;
+            }
+        }
+        Uint8 before = state[sc];
+        Uint8 want   = (Uint8)(active ? 1 : 0);
+        if (before != want) {
+            /* Log every transition so the press timeline is visible. */
+            OPL_INFO_F("press", "frame=%u scancode=%d %u→%u%s",
+                       openpete_frame, (int)sc,
+                       (unsigned)before, (unsigned)want,
+                       active ? " (press start)" : " (release)");
+        }
+        state[sc] = want;
+    }
+}
+
+/* After PsyX_UpdateInput, sample SDL_SCANCODE_RETURN to verify our writes
+ * weren't clobbered by PumpEvents. Only logs on transition (state change)
+ * and only while a press window is active. */
+static void openpete_press_verify(const openpete_press_event_t* events, int count) {
+    static Uint8 last_state = 0;
+    const Uint8* state = SDL_GetKeyboardState(NULL);
+    if (!state) return;
+    for (int i = 0; i < count; i++) {
+        int start = events[i].frame;
+        int end   = start + OPENPETE_PRESS_HOLD_FRAMES;
+        if ((int)openpete_frame >= start && (int)openpete_frame < end) {
+            Uint8 cur = state[events[i].scancode];
+            if (cur != last_state) {
+                OPL_INFO_F("press", "post-pump: frame=%u scancode=%d state=%u",
+                           openpete_frame, (int)events[i].scancode, (unsigned)cur);
+                last_state = cur;
+            }
+            return;  /* only one active event per frame */
+        }
+    }
+    /* No active window: reset baseline so a transition will log next time. */
+    last_state = 0;
+}
+
+/* Record mode: log every up→down transition for the keys we know how to map.
+ * Output format mirrors --press input ("frame:keyname"), so the user can copy
+ * the printed list straight into a --press flag for the next run. */
+static void openpete_record_keys(void) {
+    static struct { SDL_Scancode sc; const char* name; Uint8 prev; } watch[] = {
+        { SDL_SCANCODE_RETURN, "return", 0 },
+        { SDL_SCANCODE_SPACE,  "space",  0 },
+        { SDL_SCANCODE_X,      "x",      0 },
+        { SDL_SCANCODE_C,      "c",      0 },
+        { SDL_SCANCODE_Z,      "z",      0 },
+        { SDL_SCANCODE_V,      "v",      0 },
+        { SDL_SCANCODE_UP,     "up",     0 },
+        { SDL_SCANCODE_DOWN,   "down",   0 },
+        { SDL_SCANCODE_LEFT,   "left",   0 },
+        { SDL_SCANCODE_RIGHT,  "right",  0 },
+    };
+    const Uint8* state = SDL_GetKeyboardState(NULL);
+    if (!state) return;
+    for (size_t i = 0; i < sizeof(watch) / sizeof(watch[0]); i++) {
+        Uint8 cur = state[watch[i].sc];
+        if (cur && !watch[i].prev) {
+            OPL_INFO_F("record", "%u:%s", openpete_frame, watch[i].name);
+        }
+        watch[i].prev = cur;
+    }
+}
+
 static int run_recomp_fiber(const openpete_options_t* opts) {
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
@@ -344,7 +501,27 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const double frame_period_ms = 1000.0 / 60.0;  /* 16.6667 */
     double next_yield_ms = (double)start;
 
+    /* Parse --press script once. Empty/unset = no scripted input. */
+    openpete_press_event_t press_events[OPENPETE_PRESS_MAX_EVENTS];
+    int press_event_count = 0;
+    if (opts->press_script && *opts->press_script) {
+        press_event_count = openpete_press_parse(opts->press_script,
+                                                 press_events,
+                                                 OPENPETE_PRESS_MAX_EVENTS);
+        if (press_event_count < 0) return OPENPETE_EXIT_SETUP_ERROR;
+        OPL_INFO_F("press", "loaded %d scripted press event(s)", press_event_count);
+    }
+
     while (!quit) {
+        /* Apply scripted presses BEFORE PsyX_UpdateInput. PsyX's PumpEvents
+         * only writes to SDL keyboard state when an event for that key
+         * arrives, so our overrides survive across the pump unless the user
+         * physically taps the same key. PsyX then reads the state into
+         * g_PadBuffer this same iteration. */
+        if (press_event_count > 0) {
+            openpete_press_apply(press_events, press_event_count);
+        }
+
         /* Drain SDL events + refresh pad state before the game runs. PsyCross's
          * libpad reads keyboard via SDL_GetKeyboardState (pumped here) and
          * writes the bitfield into the buffer registered by PadInitDirect, so
@@ -352,6 +529,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * already swallows QUIT/CLOSE/ESC before this poll, so PsyCross's own
          * exit-on-quit path inside PsyX_Sys_DoPollEvent never fires. */
         PsyX_UpdateInput();
+
+        /* Verify scripted-press writes weren't clobbered by PumpEvents. */
+        if (press_event_count > 0) {
+            openpete_press_verify(press_events, press_event_count);
+        }
+
+        /* After the pump, watch for real-keyboard up→down transitions and log
+         * them in --press input format. Lets the user record a session by
+         * playing normally; the log lines are copy-pasteable into a --press
+         * flag for deterministic replay. */
+        openpete_record_keys();
 
         /* Hand control to the game until the next VSync(0) yield. */
         co_switch((cothread_t)openpete_game_fiber);
