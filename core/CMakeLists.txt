@@ -19,6 +19,14 @@ add_library(openpete_core STATIC
     runtime/crash.c
     runtime/exe_loader.cpp
 
+    # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
+    runtime/fiber.c
+
+    # Phase 1e infra-triangle: hardcoded POLY_F3 emit to validate the full
+    # PsyCross render pipeline without depending on overlay-resident Spyro
+    # code. C++ TU because PsyCross's libgpu.h uses static_assert.
+    runtime/debug_render.cpp
+
     # Vendored psxrecomp pieces we keep verbatim (per notes plan §5 Phase 1b
     # "keep gte.cpp + memory helpers + iso_reader"). Compiled directly here so
     # we don't drag the rest of psxrecomp's runtime.c into the build.

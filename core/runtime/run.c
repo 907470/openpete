@@ -6,6 +6,7 @@
 // gamestate dispatcher.
 
 #include "openpete.h"
+#include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
 #include "screenshot.h"
@@ -13,9 +14,11 @@
 
 #include <SDL.h>
 #include <libco.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>  /* _exit */
 
 #define WIN_W 640
 #define WIN_H 480
@@ -23,6 +26,42 @@
 #define CLEAR_R 0x10
 #define CLEAR_G 0x14
 #define CLEAR_B 0x20
+
+/* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
+ * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
+ * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
+ * calling exit(0) from inside PsyX_BeginScene (which can hang in WSL/GL with
+ * the game fiber and vblank thread still mid-flight). */
+static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static int openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
+    (void)userdata;
+    if (ev->type == SDL_QUIT) {
+        g_shutdown_requested = 1;
+        return 0;  /* drop so PsyX_Sys_DoPollEvent never sees it */
+    }
+    if (ev->type == SDL_WINDOWEVENT &&
+        ev->window.event == SDL_WINDOWEVENT_CLOSE) {
+        g_shutdown_requested = 1;
+        return 0;
+    }
+    if (ev->type == SDL_KEYDOWN &&
+        ev->key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+        g_shutdown_requested = 1;
+        return 0;
+    }
+    return 1;  /* keep everything else in queue for PsyCross */
+}
+
+static void openpete_on_sigint(int sig) {
+    (void)sig;
+    if (g_shutdown_requested) {
+        /* Second signal: something is hung in graceful shutdown — escape
+         * hatch so the user isn't stuck. _exit is async-signal-safe. */
+        _exit(130);  /* 128 + SIGINT */
+    }
+    g_shutdown_requested = 1;
+}
 
 /* Implemented in core/runtime/exe_loader.cpp. */
 extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
@@ -40,6 +79,13 @@ extern void PsyX_Initialise(char* windowName, int screenWidth,
                             int screenHeight, int fullscreen);
 extern void PsyX_Shutdown(void);
 extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
+extern char PsyX_BeginScene(void);
+extern void PsyX_EndScene(void);
+
+/* Phase 1e infra-triangle (core/runtime/debug_render.cpp). */
+extern void openpete_debug_triangle_init(void);
+extern void openpete_debug_triangle_emit(void);
+extern void openpete_psyx_take_screenshot(void);  /* writes ./SCREENSHOT.BMP */
 #endif
 
 /* Given a .cue path, build the sibling .bin path. Caller frees.
@@ -167,6 +213,199 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     return OPENPETE_EXIT_OK;
 }
 
+#ifdef OPENPETE_HAS_PSYCROSS
+/* Phase 1d main-loop driver: dispatch the recompiled function at
+ * `opts->run_recomp_addr` on a dedicated fiber. PSYQ thunks (psyq_VSync) yield
+ * back to the host fiber on VSync(0); the host ends the current PsyCross scene,
+ * advances the frame counter, runs exit checks, begins the next scene, and
+ * resumes the game. Returns when frame_limit/runtime exits or the dispatched
+ * function returns (which `main()` shouldn't, but guards against premature
+ * returns from any other entry point we point this at). */
+
+/* Game fiber state. Static rather than capture so the libco trampoline (which
+ * takes no args) can find it. */
+static struct {
+    CPUState cpu;
+    uint32_t entry;
+    uint32_t gp;
+    int      done;
+    int      dispatch_ok;
+} g_game;
+
+static void game_fiber_entry(void) {
+    if (g_game.gp != 0u) {
+        OPL_INFO_F("boot",
+                   "game fiber: overriding cpu.gp 0x%08X -> 0x%08X "
+                   "(skipping PSYQ _96_init)",
+                   g_game.cpu.gp, g_game.gp);
+        g_game.cpu.gp = g_game.gp;
+    }
+    OPL_INFO_F("boot", "game fiber: dispatching 0x%08X", g_game.entry);
+    g_game.dispatch_ok = psx_dispatch_compiled(&g_game.cpu, g_game.entry);
+    if (!g_game.dispatch_ok) {
+        OPL_ERROR_F("boot", "game fiber: no compiled body at 0x%08X", g_game.entry);
+    } else {
+        OPL_INFO_F("boot",
+                   "game fiber: dispatched function returned (v0=0x%08X)",
+                   g_game.cpu.v0);
+    }
+    g_game.done = 1;
+    /* Permanent yield — never resume. */
+    while (1) co_switch((cothread_t)openpete_host_fiber);
+}
+
+static int run_recomp_fiber(const openpete_options_t* opts) {
+    memset(&g_game, 0, sizeof(g_game));
+    openpete_psx_runtime_init(&g_game.cpu);
+    openpete_psx_set_diag_cpu(&g_game.cpu);
+
+    uint8_t* bytes = NULL;
+    size_t   len   = 0;
+    if (try_load_exe(opts, &bytes, &len) != 0) {
+        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc)");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    int rc = openpete_psx_boot(&g_game.cpu, bytes, len);
+    free(bytes);
+    if (rc != 0) return OPENPETE_EXIT_PANIC;
+
+    OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
+               WIN_W, WIN_H, (int)opts->headless);
+    /* Headless: tell SDL to use offscreen video before PsyX touches it. */
+    if (opts->headless) SDL_setenv("SDL_VIDEODRIVER", "offscreen", 0);
+    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0);
+
+    /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
+     * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
+     * PsyX_Exit() → exit(0), which in WSL+GL+libco tends to hang on static
+     * teardown. Our filter sets g_shutdown_requested; the host-fiber loop
+     * picks it up and we shut down through the normal path. */
+    SDL_SetEventFilter(openpete_sdl_event_filter, NULL);
+    signal(SIGINT,  openpete_on_sigint);
+#ifdef SIGTERM
+    signal(SIGTERM, openpete_on_sigint);
+#endif
+
+    if (opts->disc_path) {
+        char* bin = derive_bin_path(opts->disc_path);
+        if (bin) {
+            OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
+            PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            free(bin);
+        } else {
+            OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
+                       opts->disc_path);
+        }
+    }
+
+    g_game.entry = opts->run_recomp_addr;
+    g_game.gp    = opts->test_recomp_gp;
+
+    openpete_host_fiber = co_active();
+    /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
+     * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
+    openpete_game_fiber = co_create(8u * 1024u * 1024u, game_fiber_entry);
+    if (!openpete_game_fiber) {
+        OPL_ERROR_F("boot", "co_create failed (out of memory?)");
+        return OPENPETE_EXIT_PANIC;
+    }
+    OPL_INFO_F("boot", "fibers ready: host=%p game=%p",
+               openpete_host_fiber, openpete_game_fiber);
+
+    if (opts->debug_triangle) {
+        openpete_debug_triangle_init();
+        OPL_INFO_F("boot",
+                   "debug-triangle enabled — emitting hardcoded POLY_F3 each frame");
+    }
+
+    /* Open the first scene before entering the game. DrawOTag/PutDispEnv/etc.
+     * issued from inside Initialize() get flushed by the PsyX_EndScene that
+     * runs when the first VSync(0) yields control back. */
+    PsyX_BeginScene();
+
+    Uint32 start = SDL_GetTicks();
+    int    exit_code = OPENPETE_EXIT_OK;
+    const char* exit_reason = "frame-limit";
+    int    quit = 0;
+
+    while (!quit) {
+        /* Hand control to the game until the next VSync(0) yield. */
+        co_switch((cothread_t)openpete_game_fiber);
+
+        if (opts->debug_triangle) {
+            /* Re-issue the static triangle so it's drawn over whatever the
+             * game queued — guarantees a non-black on-screen pixel for the
+             * Phase 1e milestone even when the title-screen overlay is a
+             * stub. */
+            openpete_debug_triangle_emit();
+        }
+
+        /* Game yielded. End the frame (flushes GPU queue, presents). */
+        PsyX_EndScene();
+
+        if (opts->screenshot_on_frame >= 0 &&
+            (int)openpete_frame == opts->screenshot_on_frame) {
+            /* PsyCross's built-in glReadPixels → SCREENSHOT.BMP path.
+             * Phase 1e+: replace with a PNG path that honours --output. */
+            openpete_psyx_take_screenshot();
+            OPL_INFO_F("screenshot",
+                       "wrote ./SCREENSHOT.BMP on frame %u (--output=%s ignored for now)",
+                       openpete_frame, opts->screenshot_output);
+        }
+
+        if (g_shutdown_requested) {
+            quit = 1;
+            exit_reason = "user-quit";
+        }
+        if (!quit && g_game.done) {
+            quit = 1;
+            exit_reason = "game-returned";
+        }
+        if (!quit && opts->frame_limit > 0 &&
+            (int)openpete_frame >= opts->frame_limit) {
+            quit = 1;
+            exit_reason = "frame-limit";
+        }
+        if (!quit && opts->max_runtime_seconds > 0 &&
+            (SDL_GetTicks() - start)
+                > (Uint32)opts->max_runtime_seconds * 1000) {
+            quit = 1;
+            exit_reason = "max-runtime-seconds";
+        }
+
+        /* Sample log so the user can see the loop is alive. */
+        if ((openpete_frame & 0x3F) == 1u) {
+            OPL_INFO_F("loop",
+                       "frame=%u prims_last=%u elapsed_ms=%u",
+                       openpete_frame, openpete_primitives_drawn,
+                       (unsigned)(SDL_GetTicks() - start));
+        }
+        openpete_primitives_drawn = 0u;
+
+        if (!quit) PsyX_BeginScene();
+    }
+
+    Uint32 elapsed = SDL_GetTicks() - start;
+    OPL_INFO_F("exit",
+               "reason=%s frames=%u elapsed_ms=%u dispatch_ok=%d",
+               exit_reason, openpete_frame, elapsed, g_game.dispatch_ok);
+
+    /* Best-effort fiber teardown. Our game fiber is parked in its forever-
+     * yield loop, so co_delete is safe. */
+    if (openpete_game_fiber) {
+        co_delete((cothread_t)openpete_game_fiber);
+        openpete_game_fiber = NULL;
+    }
+
+    PsyX_Shutdown();
+
+    fprintf(stdout,
+            "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",
+            exit_reason, openpete_frame, elapsed, exit_code);
+    return exit_code;
+}
+#endif /* OPENPETE_HAS_PSYCROSS */
+
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
@@ -185,6 +424,14 @@ int openpete_run(const openpete_options_t* opts) {
     if (opts->test_recomp_call_addr != 0 || opts->test_recomp_segv) {
         return run_recomp_smoke_test(opts);
     }
+
+#ifdef OPENPETE_HAS_PSYCROSS
+    /* Phase 1d: dispatch entry on a fiber and drive a frame loop with VSync
+     * yielding back here for present + scene swap. */
+    if (opts->run_recomp_addr != 0) {
+        return run_recomp_fiber(opts);
+    }
+#endif
 
     if (opts->headless) {
         SDL_setenv("SDL_VIDEODRIVER", "offscreen", 0);

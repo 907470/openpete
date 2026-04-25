@@ -78,6 +78,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->probe_addr = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--test-segv") == 0) {
             opts->test_recomp_segv = true;
+        } else if (strcmp(a, "--run-recomp") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--debug-triangle") == 0) {
+            opts->debug_triangle = true;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -95,7 +100,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --test-recomp-expect-v0 N  verify cpu->v0 after --test-recomp-call\n"
                 "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
                 "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
-                "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n",
+                "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
+                "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
+                "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

@@ -17,10 +17,12 @@
  */
 
 extern "C" {
-#include "openpete_psx.h"
+#include "openpete_fiber.h"
 #include "openpete_log.h"
+#include "openpete_psx.h"
 }
 
+#include <cstring>
 #include <stdint.h>
 
 /* PsyCross PSYQ headers. Order matters: libgte.h defines SVECTOR before
@@ -69,19 +71,46 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
 }
 
+/* --- libgcc/crt0 --------------------------------------------------------- */
+
+void psyq___main(CPUState* cpu) {
+    /* libgcc constructor-runner. Spyro's `main()` is the only direct caller;
+     * with no PSX-style global ctors to chain, this is a no-op. */
+    (void)cpu;
+}
+
 /* --- libetc -------------------------------------------------------------- */
 
 void psyq_VSync(CPUState* cpu) {
+    /* libetc semantics:
+     *   mode  < 0 : query — return current vbl counter, no wait
+     *   mode == 0 : wait for next vblank, return updated counter
+     *   mode  > 0 : wait that many vblanks (Spyro doesn't seem to use this)
+     *
+     * Phase 1d: instead of busy-waiting in PsyCross's VSync, we yield to the
+     * host fiber, which presents the current scene + advances openpete_frame
+     * and resumes us. `openpete_frame` is the frame counter the game sees. */
     int mode = (int)cpu->a0;
-    int rc = VSync(mode);
-    static uint32_t calls = 0;
-    if ((++calls & 0x3FF) == 1) {
-        OPL_INFO_F("thunks", "VSync(%d) -> %d (call #%u)", mode, rc, calls);
+    static uint32_t calls = 0u;
+    if ((++calls & 0x3FFu) == 1u) {
+        OPL_INFO_F("thunks", "VSync(%d) frame=%u (call #%u)",
+                   mode, openpete_frame, calls);
     }
-    /* VSyncCallback fires once per VSync(0). Phase 1c: no real timer; we
-     * just dispatch on every call so PadVSync polls. */
-    if (g_vsync_cb && mode == 0) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-    cpu->v0 = (uint32_t)rc;
+    if (mode == 0) {
+        if (openpete_host_fiber) {
+            /* openpete_yield_to_host() bumps openpete_frame and switches to
+             * the host fiber. Returns when host resumes us for the next
+             * frame, so cpu->v0 below sees the post-yield frame counter. */
+            openpete_yield_to_host();
+        } else {
+            /* No fiber loop running (smoke-test path) — fall back to PsyCross's
+             * busy wait so semantics still match. */
+            (void)VSync(0);
+        }
+        /* Fire registered VSync callback (PadVSync polls pad state). */
+        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+    }
+    cpu->v0 = (uint32_t)openpete_frame;
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
@@ -165,6 +194,27 @@ void psyq_SetDrawMode(CPUState* cpu) {
 }
 
 void psyq_DrawOTag(CPUState* cpu) {
+    /* Count primitives traversed in the OT for the Phase 1d exit criterion
+     * "GamestateDraw emits ≥1 primitive per frame". OT walks a singly-linked
+     * list via the low 24 bits of each tag; chain ends when low24 == 0xFFFFFF.
+     * We mirror that walk against host RAM (PsyCross does a parallel walk in
+     * its own DrawOTag for actually issuing GR_ commands). */
+    uint32_t addr = cpu->a0;
+    uint32_t safety = 0u;
+    while (addr != 0u && safety < 0x100000u) {
+        uint8_t* p = (uint8_t*)openpete_psx_to_host_ptr(addr);
+        if (!p) break;
+        uint32_t tag;
+        memcpy(&tag, p, sizeof(tag));
+        uint32_t next  = tag & 0x00FFFFFFu;
+        uint32_t plen  = (tag >> 24) & 0xFFu;
+        if (plen != 0u) openpete_primitives_drawn++;
+        if (next == 0x00FFFFFFu) break;
+        /* OT uses 24-bit PSX addresses; or with 0x80000000 to lift them back
+         * to KSEG0 for our host translator. */
+        addr = next | 0x80000000u;
+        safety++;
+    }
     DrawOTag((u_long*)PTR(cpu->a0));
 }
 
@@ -282,7 +332,18 @@ void psyq_CdRead(CPUState* cpu) {
     if (remaining > 0) {
         OPL_WARN_F("thunks", "CdReadSync left %d sectors unread", remaining);
     }
+    /* Verify g_CdState.m_IsReading at 0x80076BB8 is cleared after the cb. */
+    uint8_t* ram = openpete_psx_get_ram();
+    uint32_t before = 0;
+    memcpy(&before, ram + 0x76BB8, 4);
     invoke_psx_callback(cpu, g_cd_read_cb, /*intr=CdlComplete=*/2u, 0u);
+    uint32_t after = 0;
+    memcpy(&after, ram + 0x76BB8, 4);
+    if (after != 0u) {
+        OPL_WARN_F("thunks",
+                   "CdRead: m_IsReading still set after callback (before=%u after=%u cb=0x%08X)",
+                   before, after, g_cd_read_cb);
+    }
 }
 
 void psyq_CdSync(CPUState* cpu) {
@@ -290,8 +351,13 @@ void psyq_CdSync(CPUState* cpu) {
     int rc = CdSync(mode, (u_char*)PTR(cpu->a1));
     /* Don't log every CdSync — busy-loops would flood. Sample every 1024. */
     static uint32_t calls = 0;
-    if ((++calls & 0x3FF) == 1) {
-        OPL_INFO_F("thunks", "CdSync(%d) -> %d (call #%u)", mode, rc, calls);
+    if ((++calls & 0x3FFFFFu) == 1u) {
+        uint8_t* ram = openpete_psx_get_ram();
+        uint32_t isReading = 0u;
+        memcpy(&isReading, ram + 0x76BB8, 4);
+        OPL_INFO_F("thunks",
+                   "CdSync(%d) -> %d (call #%u) m_IsReading=%u s0=0x%08X ra=0x%08X",
+                   mode, rc, calls, isReading, cpu->s0, cpu->ra);
     }
     cpu->v0 = (uint32_t)rc;
 }

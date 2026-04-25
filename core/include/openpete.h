@@ -57,6 +57,17 @@ typedef struct {
     uint32_t test_recomp_gp;            /* override cpu->gp before dispatch (0 = leave alone) */
     uint32_t probe_addr;                /* read 4 bytes at this PSX vaddr post-dispatch (0 = off) */
     bool     test_recomp_segv;          /* deliberately fault to verify crash handler */
+
+    /* Phase 1d main-loop driver. Dispatches the function at this PSX vaddr on a
+     * dedicated fiber; PSYQ thunks (VSync etc.) yield back to the host fiber,
+     * which presents via PsyCross and advances `openpete_frame` until exit. */
+    uint32_t run_recomp_addr;
+
+    /* Phase 1e infra-triangle. When set, the host fiber emits a hardcoded
+     * POLY_F3 each frame between PsyX_BeginScene and PsyX_EndScene. Used to
+     * validate the full GL render path before real-game draw code is online
+     * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
+    bool debug_triangle;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

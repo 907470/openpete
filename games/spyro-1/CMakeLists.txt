@@ -14,6 +14,14 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
 
+    # Titlescreen overlay (Phase 1d.5) — separate PS1 EXE shell wrapping the
+    # 14 KB bytes at WAD.WAD[0x5B800..0x5F000] loaded to vaddr 0x8007AA38.
+    # Its dispatcher is renamed via -D so it doesn't clash with the main
+    # EXE's; both feed into `psx_dispatch_compiled` from dispatch_chain.c.
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_full.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    dispatch_chain.c
+
     # PSYQ symbol stubs — `__attribute__((weak))` abort-on-call. Each
     # thunk in psyq_thunks.c is `strong` and overrides its same-named
     # weak stub at link time. Anything not yet thunked aborts on first
@@ -52,4 +60,25 @@ set_source_files_properties(
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
     PROPERTIES
         COMPILE_FLAGS "-w"
+)
+
+# Rename each generated dispatcher to its overlay-specific name so they can
+# coexist. `dispatch_chain.c` provides the real psx_dispatch_compiled and
+# fans out to each in turn. This keeps the generated files pristine — no
+# post-processing needed on every regen.
+set_source_files_properties(
+    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
+    PROPERTIES
+        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_main_exe"
+)
+set_source_files_properties(
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_full.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    PROPERTIES
+        COMPILE_FLAGS "-w"
+)
+set_source_files_properties(
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    PROPERTIES
+        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_titlescreen"
 )
