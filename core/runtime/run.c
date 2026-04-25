@@ -93,6 +93,12 @@ extern void openpete_psyx_take_screenshot(void);  /* writes ./SCREENSHOT.BMP */
  * actually run as fast as the pipeline allows. Without this Tab still
  * skips our wall-clock pacer, but GL vsync re-locks us to monitor refresh. */
 extern int g_skipSwapInterval;
+
+/* PsyCross's GL window — created by PsyX_Initialise. We need it so --headless
+ * can hide the window post-init (we keep a real GL driver for the context;
+ * SDL's offscreen driver gives back a context with NULL function pointers
+ * and we segfault on the first gl* call from GR_InitialisePSX). */
+extern SDL_Window* g_window;
 #endif
 
 /* Given a .cue path, build the sibling .bin path. Caller frees.
@@ -435,9 +441,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                WIN_W, WIN_H, (int)opts->headless);
-    /* Headless: tell SDL to use offscreen video before PsyX touches it. */
-    if (opts->headless) SDL_setenv("SDL_VIDEODRIVER", "offscreen", 0);
+    /* Headless still uses the real GL driver — SDL's "offscreen" video driver
+     * hands back a context with NULL gl* function pointers, so the first call
+     * from GR_InitialisePSX segfaults. We hide the window post-init below. A
+     * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
+     * pure-console CI needs Xvfb. */
     PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0);
+    if (opts->headless && g_window) {
+        SDL_HideWindow(g_window);
+        OPL_INFO_F("boot", "headless: hid PsyCross window (driver=%s)",
+                   SDL_GetCurrentVideoDriver());
+    }
 
     /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
      * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
@@ -648,7 +662,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * lock us to the monitor refresh, so the host loop wouldn't actually
          * spin faster than ~165 Hz on a 165 Hz display. */
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
-        bool unlock_fps = (kbd && kbd[SDL_SCANCODE_TAB]);
+        bool unlock_fps = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
         g_skipSwapInterval = unlock_fps ? 1 : 0;
         if (unlock_fps) {
             next_yield_ms = (double)SDL_GetTicks();
