@@ -87,6 +87,12 @@ extern void PsyX_UpdateInput(void);
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
 extern void openpete_psyx_take_screenshot(void);  /* writes ./SCREENSHOT.BMP */
+
+/* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the
+ * start of each scene, which uncaps the GL present and lets the host loop
+ * actually run as fast as the pipeline allows. Without this Tab still
+ * skips our wall-clock pacer, but GL vsync re-locks us to monitor refresh. */
+extern int g_skipSwapInterval;
 #endif
 
 /* Given a .cue path, build the sibling .bin path. Caller frees.
@@ -519,6 +525,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         OPL_INFO_F("press", "loaded %d scripted press event(s)", press_event_count);
     }
 
+    /* Tab-held detection used for both the wall-clock pacer AND throttling
+     * the SDL event pump: at 1000+ Hz, the per-iteration cost of SDL_PollEvent
+     * + PsyX_Pad_InternalPadUpdates dominates. Polling at 120 Hz wall-clock
+     * is plenty for catching Tab-release. We re-pump on every frame whenever
+     * Tab isn't held so input feels normal during play. */
+    Uint32 last_input_pump_ms = 0;
+
     while (!quit) {
         /* Apply scripted presses BEFORE PsyX_UpdateInput. PsyX's PumpEvents
          * only writes to SDL keyboard state when an event for that key
@@ -534,8 +547,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * writes the bitfield into the buffer registered by PadInitDirect, so
          * the recompiled PadGetState sees live input. Our SDL_SetEventFilter
          * already swallows QUIT/CLOSE/ESC before this poll, so PsyCross's own
-         * exit-on-quit path inside PsyX_Sys_DoPollEvent never fires. */
-        PsyX_UpdateInput();
+         * exit-on-quit path inside PsyX_Sys_DoPollEvent never fires.
+         *
+         * Tab-held throttle: cap the event pump at ~120 Hz so per-iteration
+         * cost drops at unlocked frame rate. We still pump *some* events so
+         * the Tab-release transition gets seen and we can drop back to 60Hz. */
+        const Uint8* kbd_pre = SDL_GetKeyboardState(NULL);
+        bool tab_held = (kbd_pre && kbd_pre[SDL_SCANCODE_TAB]);
+        Uint32 now_for_input = SDL_GetTicks();
+        if (!tab_held || (now_for_input - last_input_pump_ms) >= 8) {
+            PsyX_UpdateInput();
+            last_input_pump_ms = now_for_input;
+        }
 
         /* Verify scripted-press writes weren't clobbered by PumpEvents. */
         if (press_event_count > 0) {
@@ -618,9 +641,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * screens while iterating on a downstream gap. We re-anchor
          * next_yield_ms to "now" while Tab is held so that releasing it
          * resumes 60 Hz pacing without trying to catch up on dropped
-         * frames. */
+         * frames.
+         *
+         * Tab also flips PsyCross's g_skipSwapInterval — without that the
+         * GL present (SDL_GL_SwapWindow with swap interval 1) would still
+         * lock us to the monitor refresh, so the host loop wouldn't actually
+         * spin faster than ~165 Hz on a 165 Hz display. */
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
         bool unlock_fps = (kbd && kbd[SDL_SCANCODE_TAB]);
+        g_skipSwapInterval = unlock_fps ? 1 : 0;
         if (unlock_fps) {
             next_yield_ms = (double)SDL_GetTicks();
         } else {
