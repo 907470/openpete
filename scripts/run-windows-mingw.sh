@@ -20,7 +20,9 @@
 #       # walk past the title-screen prompts
 #
 # Each default is independent: pass an explicit value for any single
-# flag and only that one is overridden. Examples:
+# flag and only that one is overridden. `--press ""` (empty) is special:
+# it suppresses both the default press-script AND the .exe's --press
+# argument, so the title screen idles. Examples:
 #   # Just sanity smoke (overrides every default since --headless +
 #   # --frame-limit dominate, and we pass --disc/--run-recomp/--press
 #   # explicitly to neutralize them):
@@ -89,12 +91,10 @@ translate_if_linux() {
 }
 
 forwarded=()
-saw_disc=0
-i=1
+suppress_press=0  # explicit `--press ""` means "no presses"
 while (( $# )); do
     case "$1" in
         --disc|--exe-path|--output)
-            saw_disc=1  # only --disc actually means "saw disc", but cheap
             forwarded+=("$1")
             if [[ $# -ge 2 ]]; then
                 forwarded+=("$(translate_if_linux "$2")")
@@ -105,6 +105,25 @@ while (( $# )); do
             key="${1%%=*}"
             val="${1#*=}"
             forwarded+=("$key=$(translate_if_linux "$val")")
+            ;;
+        --press)
+            # `--press ""` (empty value) suppresses both the script's
+            # default press-script AND the .exe's --press option entirely.
+            # Useful when you want the title screen idle (e.g. for screen-
+            # shots before the keypress walk) but still want all the other
+            # boot-to-gameplay defaults.
+            if [[ $# -ge 2 && -z "$2" ]]; then
+                suppress_press=1
+                shift
+            elif [[ $# -ge 2 ]]; then
+                forwarded+=("$1" "$2")
+                shift
+            else
+                forwarded+=("$1")
+            fi
+            ;;
+        --press=)
+            suppress_press=1
             ;;
         *)
             forwarded+=("$1")
@@ -157,7 +176,9 @@ if ! has_flag --fast-boot-until-frame; then
     prepend --fast-boot-until-frame 850
 fi
 
-if ! has_flag --press; then
+if (( suppress_press )); then
+    yellow "  (--press '' suppressed; no keypress script)"
+elif ! has_flag --press; then
     DEFAULT_PRESS="861:return,931:return,1037:return,1073:return,1919:return"
     yellow "  (no --press; defaulting to title-screen walkthrough)"
     prepend --press "$DEFAULT_PRESS"
