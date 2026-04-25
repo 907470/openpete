@@ -11,3 +11,7 @@ third_party/psxrecomp/build/
 # Run artefacts (PsyX log, screenshot dump path).
 Spyro the Dragon.log
 SCREENSHOT.BMP
+
+# Local tooling not part of the build (cloned reference emulators, scratch
+# binaries, traces). Kept around for the GTE trace-vs-PsyCross workflow.
+.tools/

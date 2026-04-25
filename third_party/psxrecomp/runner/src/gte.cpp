@@ -3,6 +3,15 @@
 #include "automation.h"
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#include "psx/gtereg.h"   // PsyCross GTERegisters / GTE_operator (used as
+                          // ground-truth reference for the GTE trace logger)
+
+extern "C" {
+    extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
+}
 
 namespace PSXRecomp {
 namespace GTE {
@@ -828,10 +837,242 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 } // namespace PSXRecomp
 
 // ---------------------------------------------------------------------------
+// GTE trace logger — emits a CSV with two rows per logged op: psxrecomp's
+// own GTE ("rec") and PsyCross's GTE ("psy") run on identical pre-state.
+// Independent codebases on the same canonical CP2D/CP2C register layout, so
+// any post-state divergence flags a bug in one engine.
+//
+// Used to validate the GTE depth-cue + bit-exact divide rewrite (commit
+// 9467e0e) against the user-reported titlescreen-cutscene mountain-peak
+// flicker: 32,962 op pairs over frames 1100-1110 are bit-identical, which
+// rules out the GTE as the flicker source. Keep the logger around as a
+// regression check for any future GTE math change.
+//
+// Activate with env vars (all read once on first call):
+//   OPENPETE_GTE_TRACE     path to output CSV (no env = disabled)
+//   OPENPETE_GTE_TRACE_LO  inclusive lower openpete_frame (default 1100)
+//   OPENPETE_GTE_TRACE_HI  exclusive upper openpete_frame (default 1111)
+//   OPENPETE_GTE_TRACE_OPS comma-sep hex opcodes, default RTPS/NCLIP/RTPT/
+//                          AVSZ3/AVSZ4 ("01,06,30,2D,2E")
+//
+// Diff with: awk -F, '$2=="rec"' trace.csv > rec; '$2=="psy"' > psy; diff.
+//
+// pcsx-redux as ground truth was the original plan but build deps need apt
+// install (libcapstone-dev, libfreetype-dev, libavcodec-dev, libuv1-dev,
+// libglfw3-dev, ...) and we don't have sudo here. PsyCross is in-tree.
+// ---------------------------------------------------------------------------
+// PsyCross GTERegisters / GTE_operator pulled in via psx/gtereg.h above.
+
+namespace {
+
+struct GTETraceCfg {
+    FILE*    fp        = nullptr;
+    int      enabled   = -1; // -1 = uninit, 0 = disabled, 1 = enabled
+    unsigned frame_lo  = 1100u;
+    unsigned frame_hi  = 1111u;
+    uint64_t op_mask   = 0; // bit i set = log opcode i
+};
+GTETraceCfg g_gte_trace;
+
+uint64_t parse_op_mask(const char* s) {
+    uint64_t m = 0;
+    if (!s) return 0;
+    while (*s) {
+        char* end;
+        unsigned long v = std::strtoul(s, &end, 16);
+        if (v < 64) m |= (1ull << v);
+        if (*end == ',') s = end + 1;
+        else break;
+    }
+    return m;
+}
+
+FILE* gte_trace_init() {
+    if (g_gte_trace.enabled == 0) return nullptr;
+    if (g_gte_trace.enabled == 1) return g_gte_trace.fp;
+    const char* path = std::getenv("OPENPETE_GTE_TRACE");
+    if (!path || !*path) { g_gte_trace.enabled = 0; return nullptr; }
+    if (const char* lo = std::getenv("OPENPETE_GTE_TRACE_LO"))
+        g_gte_trace.frame_lo = (unsigned)std::strtoul(lo, nullptr, 0);
+    if (const char* hi = std::getenv("OPENPETE_GTE_TRACE_HI"))
+        g_gte_trace.frame_hi = (unsigned)std::strtoul(hi, nullptr, 0);
+    if (const char* ops = std::getenv("OPENPETE_GTE_TRACE_OPS"))
+        g_gte_trace.op_mask = parse_op_mask(ops);
+    if (!g_gte_trace.op_mask) {
+        g_gte_trace.op_mask = (1ull << 0x01) | (1ull << 0x06) |
+                              (1ull << 0x30) | (1ull << 0x2D) | (1ull << 0x2E);
+    }
+    g_gte_trace.fp = std::fopen(path, "w");
+    if (!g_gte_trace.fp) { g_gte_trace.enabled = 0; return nullptr; }
+    std::fprintf(g_gte_trace.fp,
+        "frame,engine,op,vidx,"
+        "Vx,Vy,Vz,"
+        "TRx,TRy,TRz,"
+        "RT00,RT01,RT02,RT10,RT11,RT12,RT20,RT21,RT22,"
+        "OFX,OFY,H,DQA,DQB,"
+        "MAC0,MAC1,MAC2,MAC3,IR0,IR1,IR2,IR3,"
+        "SZ0,SZ1,SZ2,SZ3,"
+        "SXY0,SXY1,SXY2,"
+        "RGB0,RGB1,RGB2,"
+        "FLAG\n");
+    std::fprintf(stdout, "[GTE-TRACE] writing to %s frames [%u,%u) ops=0x%llX\n",
+                 path, g_gte_trace.frame_lo, g_gte_trace.frame_hi,
+                 (unsigned long long)g_gte_trace.op_mask);
+    std::fflush(stdout);
+    g_gte_trace.enabled = 1;
+    return g_gte_trace.fp;
+}
+
+// Decode one register file (CP2D[32] + CP2C[32] in raw mtc2 form) into the
+// individual fields we want to log. This is the canonical PSX register
+// layout, identical between psxrecomp and PsyCross.
+struct DecodedGTE {
+    int16_t  V[3][3];
+    int32_t  TR[3];
+    int16_t  RT[3][3];
+    int32_t  OFX, OFY;
+    uint16_t H;
+    int16_t  DQA;
+    int32_t  DQB;
+    int32_t  MAC[4];
+    int16_t  IR[4];
+    uint16_t SZ[4];
+    uint32_t SXY[3];
+    uint32_t RGB[3];
+    uint32_t FLAG;
+};
+
+void decode_gte(DecodedGTE& d, const uint32_t* CP2D, const uint32_t* CP2C) {
+    auto lo16 = [](uint32_t w) { return (int16_t)(w & 0xFFFFu); };
+    auto hi16 = [](uint32_t w) { return (int16_t)((w >> 16) & 0xFFFFu); };
+    d.V[0][0] = lo16(CP2D[0]); d.V[0][1] = hi16(CP2D[0]); d.V[0][2] = lo16(CP2D[1]);
+    d.V[1][0] = lo16(CP2D[2]); d.V[1][1] = hi16(CP2D[2]); d.V[1][2] = lo16(CP2D[3]);
+    d.V[2][0] = lo16(CP2D[4]); d.V[2][1] = hi16(CP2D[4]); d.V[2][2] = lo16(CP2D[5]);
+    d.RT[0][0] = lo16(CP2C[0]); d.RT[0][1] = hi16(CP2C[0]); d.RT[0][2] = lo16(CP2C[1]);
+    d.RT[1][0] = hi16(CP2C[1]); d.RT[1][1] = lo16(CP2C[2]); d.RT[1][2] = hi16(CP2C[2]);
+    d.RT[2][0] = lo16(CP2C[3]); d.RT[2][1] = hi16(CP2C[3]); d.RT[2][2] = lo16(CP2C[4]);
+    d.TR[0] = (int32_t)CP2C[5]; d.TR[1] = (int32_t)CP2C[6]; d.TR[2] = (int32_t)CP2C[7];
+    d.OFX = (int32_t)CP2C[24]; d.OFY = (int32_t)CP2C[25];
+    d.H   = (uint16_t)(CP2C[26] & 0xFFFFu);
+    d.DQA = lo16(CP2C[27]); d.DQB = (int32_t)CP2C[28];
+    d.MAC[0] = (int32_t)CP2D[24]; d.MAC[1] = (int32_t)CP2D[25];
+    d.MAC[2] = (int32_t)CP2D[26]; d.MAC[3] = (int32_t)CP2D[27];
+    d.IR[0] = lo16(CP2D[8]);  d.IR[1] = lo16(CP2D[9]);
+    d.IR[2] = lo16(CP2D[10]); d.IR[3] = lo16(CP2D[11]);
+    d.SZ[0] = (uint16_t)(CP2D[16] & 0xFFFFu);
+    d.SZ[1] = (uint16_t)(CP2D[17] & 0xFFFFu);
+    d.SZ[2] = (uint16_t)(CP2D[18] & 0xFFFFu);
+    d.SZ[3] = (uint16_t)(CP2D[19] & 0xFFFFu);
+    d.SXY[0] = CP2D[12]; d.SXY[1] = CP2D[13]; d.SXY[2] = CP2D[14];
+    d.RGB[0] = CP2D[20]; d.RGB[1] = CP2D[21]; d.RGB[2] = CP2D[22];
+    d.FLAG = CP2C[31];
+}
+
+void gte_trace_emit(FILE* fp, const DecodedGTE& d, const char* engine,
+                    const char* op_label, int vidx) {
+    int vi = (vidx < 0 || vidx > 2) ? 0 : vidx;
+    std::fprintf(fp,
+        "%u,%s,%s,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,"
+        "%d,%d,%d,%d,%d,%d,%d,%d,%d,"
+        "%d,%d,%u,%d,%d,"
+        "%d,%d,%d,%d,%d,%d,%d,%d,"
+        "%u,%u,%u,%u,"
+        "0x%08X,0x%08X,0x%08X,"
+        "0x%08X,0x%08X,0x%08X,"
+        "0x%08X\n",
+        openpete_frame, engine, op_label, vidx,
+        d.V[vi][0], d.V[vi][1], d.V[vi][2],
+        d.TR[0], d.TR[1], d.TR[2],
+        d.RT[0][0], d.RT[0][1], d.RT[0][2],
+        d.RT[1][0], d.RT[1][1], d.RT[1][2],
+        d.RT[2][0], d.RT[2][1], d.RT[2][2],
+        d.OFX, d.OFY, (unsigned)d.H, d.DQA, d.DQB,
+        d.MAC[0], d.MAC[1], d.MAC[2], d.MAC[3],
+        d.IR[0], d.IR[1], d.IR[2], d.IR[3],
+        (unsigned)d.SZ[0], (unsigned)d.SZ[1], (unsigned)d.SZ[2], (unsigned)d.SZ[3],
+        d.SXY[0], d.SXY[1], d.SXY[2],
+        d.RGB[0], d.RGB[1], d.RGB[2],
+        d.FLAG);
+}
+
+void emit_op_rows(FILE* fp, const DecodedGTE& d_rec, const DecodedGTE& d_psy,
+                  uint8_t func) {
+    auto pair = [&](const char* op, int vidx) {
+        gte_trace_emit(fp, d_rec, "rec", op, vidx);
+        gte_trace_emit(fp, d_psy, "psy", op, vidx);
+    };
+    switch (func) {
+        case 0x01: pair("RTPS",    0); break;
+        case 0x30: pair("RTPT_v0", 0);
+                   pair("RTPT_v1", 1);
+                   pair("RTPT_v2", 2); break;
+        case 0x06: pair("NCLIP",  -1); break;
+        case 0x2D: pair("AVSZ3",  -1); break;
+        case 0x2E: pair("AVSZ4",  -1); break;
+        default:   break;
+    }
+}
+
+void gte_trace_log_post(uint8_t func, uint32_t cmd,
+                        const uint32_t pre_data[32], const uint32_t pre_ctrl[32],
+                        const uint32_t post_data[32], const uint32_t post_ctrl[32]) {
+    FILE* fp = gte_trace_init();
+    if (!fp) return;
+    if (openpete_frame < g_gte_trace.frame_lo) return;
+    if (openpete_frame >= g_gte_trace.frame_hi) {
+        if (g_gte_trace.enabled == 1) {
+            std::fflush(fp);
+            std::fclose(fp);
+            g_gte_trace.fp = nullptr;
+            g_gte_trace.enabled = 0;
+            std::fprintf(stdout, "[GTE-TRACE] window closed at frame %u\n", openpete_frame);
+            std::fflush(stdout);
+        }
+        return;
+    }
+    if (func >= 64 || !((g_gte_trace.op_mask >> func) & 1ull)) return;
+
+    DecodedGTE d_rec;
+    decode_gte(d_rec, post_data, post_ctrl);
+
+    // Run PsyCross's GTE on the same pre-state. gteRegs is global; save +
+    // restore the full copy so we don't perturb any other PsyCross consumer.
+    // (At time of writing, openpete doesn't actually use PsyCross's GTE for
+    // transform — only its GPU; so the save/restore is defensive.)
+    DecodedGTE d_psy{};
+    {
+        unsigned int saved_d[32], saved_c[32];
+        std::memcpy(saved_d, gteRegs.CP2D.r, sizeof(saved_d));
+        std::memcpy(saved_c, gteRegs.CP2C.r, sizeof(saved_c));
+        std::memcpy(gteRegs.CP2D.r, pre_data, sizeof(saved_d));
+        std::memcpy(gteRegs.CP2C.r, pre_ctrl, sizeof(saved_c));
+        // PsyCross GTE_operator clears its own FLAG inside; pass the full
+        // 25-bit cmd (it strips & 63 internally).
+        GTE_operator((int)cmd);
+        DecodedGTE tmp;
+        decode_gte(tmp, gteRegs.CP2D.r, gteRegs.CP2C.r);
+        d_psy = tmp;
+        std::memcpy(gteRegs.CP2D.r, saved_d, sizeof(saved_d));
+        std::memcpy(gteRegs.CP2C.r, saved_c, sizeof(saved_c));
+    }
+
+    emit_op_rows(fp, d_rec, d_psy, func);
+}
+} // namespace
+
+// ---------------------------------------------------------------------------
 // gte_execute — C-linkage bridge called from generated code
 // ---------------------------------------------------------------------------
+
 extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
     using namespace PSXRecomp::GTE;
+
+    /* Snapshot raw pre-state for trace logger before any decode side-effects */
+    uint32_t pre_data[32], pre_ctrl[32];
+    std::memcpy(pre_data, cpu->gte_data, sizeof(pre_data));
+    std::memcpy(pre_ctrl, cpu->gte_ctrl, sizeof(pre_ctrl));
 
     GTEState gte;
     // Skip reg 15 (SXYP: push-write, would corrupt SXY FIFO) and
@@ -875,6 +1116,9 @@ extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
 
     for (int i = 0; i < 32; i++) cpu->gte_data[i] = gte_mfc2(&gte, i);
     for (int i = 0; i < 32; i++) cpu->gte_ctrl[i] = gte_cfc2(&gte, i);
+
+    gte_trace_log_post(func, cmd, pre_data, pre_ctrl,
+                       cpu->gte_data, cpu->gte_ctrl);
 
     /* Diagnostic: log when RTPS/RTPT produces FLAG error bit (bit 31).
      * Print at most one sample per frame so a single early-boot burst can't
