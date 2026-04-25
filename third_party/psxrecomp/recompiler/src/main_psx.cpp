@@ -1,6 +1,9 @@
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -14,22 +17,137 @@
 #include "rabbitizer.hpp"
 #include "fmt/format.h"
 
+namespace {
+
+/* Parse "key = value" / "[[symbols]]" / "name = "..."" / "addr = 0x..."
+ * style TOML used by gen_psyq_toml.py and the manual-impl manifest. We do
+ * not pull in toml11 here — the format we emit is line-oriented and
+ * limited, so a hand-rolled parser stays cheap. */
+struct ExternalManifest {
+    uint32_t range_start = 0;
+    uint32_t range_end   = 0;
+    std::map<uint32_t, std::string> by_addr;
+};
+
+static std::string strip(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    return s.substr(a, b - a + 1);
+}
+
+static std::string strip_quotes(const std::string& s) {
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+        return s.substr(1, s.size() - 2);
+    return s;
+}
+
+static bool parse_toml_manifest(const std::string& path, ExternalManifest& out, std::string& err) {
+    std::ifstream f(path);
+    if (!f.is_open()) { err = "cannot open " + path; return false; }
+    std::string line;
+    bool in_block = false;
+    std::string cur_name;
+    uint32_t cur_addr = 0;
+    bool have_name = false, have_addr = false;
+    auto flush = [&] {
+        if (in_block && have_name && have_addr) {
+            out.by_addr.emplace(cur_addr, cur_name);
+        }
+        cur_name.clear();
+        have_name = have_addr = false;
+        cur_addr = 0;
+    };
+    while (std::getline(f, line)) {
+        std::string t = strip(line);
+        if (t.empty() || t[0] == '#') continue;
+        if (t == "[[symbols]]" || t == "[[manual]]") {
+            flush();
+            in_block = true;
+            continue;
+        }
+        if (!t.empty() && t[0] == '[') {
+            flush();
+            in_block = false;
+            continue;
+        }
+        size_t eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = strip(t.substr(0, eq));
+        std::string val = strip(t.substr(eq + 1));
+        if (in_block) {
+            if (key == "name") {
+                cur_name = strip_quotes(val);
+                have_name = true;
+            } else if (key == "addr") {
+                cur_addr = (uint32_t)std::strtoul(val.c_str(), nullptr, 0);
+                have_addr = true;
+            }
+        } else {
+            if (key == "range_start") {
+                out.range_start = (uint32_t)std::strtoul(val.c_str(), nullptr, 0);
+            } else if (key == "range_end") {
+                out.range_end = (uint32_t)std::strtoul(val.c_str(), nullptr, 0);
+            }
+        }
+    }
+    flush();
+    return true;
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
     fmt::print("PSXRecomp - PlayStation 1 Static Recompiler\n");
     fmt::print("============================================\n\n");
 
     if (argc < 2) {
-        fmt::print("Usage: {} <PS1-EXE file> [--extra-funcs <file>]\n", argv[0]);
-        fmt::print("Example: {} SLUS_006.30\n", argv[0]);
-        fmt::print("         {} SLUS_006.30 --extra-funcs discovered_functions.log\n\n", argv[0]);
+        fmt::print("Usage: {} <PS1-EXE file> [options]\n\n", argv[0]);
+        fmt::print("Options:\n");
+        fmt::print("  --output-dir=<dir>            Where to write *_full.c / *_dispatch.c (default: generated/)\n");
+        fmt::print("  --extra-funcs=<file>          Discovered-function address list\n");
+        fmt::print("  --external-symbols=<file>     PSYQ manifest (skip translation; emit externs)\n");
+        fmt::print("  --manual-impl=<file>          Manual-implementation manifest\n");
+        fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
+        fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         return 0;
     }
 
     std::filesystem::path exe_path = argv[1];
-    const char* extra_funcs_path = nullptr;
+    std::string output_dir       = "generated";
+    std::string extra_funcs_path;
+    std::string external_syms_path;
+    std::string manual_impl_path;
+    bool skip_on_error = false;
+    std::vector<uint32_t> forced_entries;
+
+    auto take_value = [](const std::string& a, const char* prefix) -> std::string {
+        size_t plen = std::strlen(prefix);
+        if (a.size() > plen && a.compare(0, plen, prefix) == 0 && a[plen] == '=')
+            return a.substr(plen + 1);
+        return std::string();
+    };
+
     for (int i = 2; i < argc; i++) {
-        if (std::string(argv[i]) == "--extra-funcs" && i + 1 < argc) {
-            extra_funcs_path = argv[++i];
+        std::string a = argv[i];
+        std::string v;
+        if (!(v = take_value(a, "--output-dir")).empty())            output_dir = v;
+        else if (!(v = take_value(a, "--extra-funcs")).empty())      extra_funcs_path = v;
+        else if (!(v = take_value(a, "--external-symbols")).empty()) external_syms_path = v;
+        else if (!(v = take_value(a, "--manual-impl")).empty())      manual_impl_path = v;
+        else if (!(v = take_value(a, "--forced-entry")).empty())
+            forced_entries.push_back((uint32_t)std::strtoul(v.c_str(), nullptr, 0));
+        else if (a == "--skip-on-error")                              skip_on_error = true;
+        // Legacy form: `--extra-funcs <file>` (space-separated).
+        else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
+        else if (a == "--external-symbols" && i + 1 < argc)           external_syms_path = argv[++i];
+        else if (a == "--manual-impl" && i + 1 < argc)                manual_impl_path = argv[++i];
+        else if (a == "--forced-entry" && i + 1 < argc)
+            forced_entries.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 0));
+        else if (a == "--output-dir" && i + 1 < argc)                 output_dir = argv[++i];
+        else if (a.size() > 2 && a[0] == '-' && a[1] == '-') {
+            fmt::print(stderr, "Unknown option: {}\n", a);
+            return 1;
         }
     }
 
@@ -153,15 +271,17 @@ int main(int argc, char** argv) {
 
     PSXRecomp::FunctionAnalyzer analyzer(*exe);
 
-    // Forced entry points: functions called from the dispatch table but not
-    // automatically detected by the heuristic-based function analysis.
-    // These are typically functions without standard prologues or epilogues.
-    // 0x8006B58C: game entrypoint (main boot sequence, called from test harness
-    //             and dispatch table; absorbed into func_8006B4EC without this).
-    analyzer.add_forced_entry(0x8006B58Cu);
+    // Forced entry points: addresses the analyzer wouldn't auto-discover (no
+    // standard prologue/epilogue, or only reached through a runtime dispatch).
+    // Provide them via --forced-entry=0xADDR (repeatable). Game-specific
+    // entries are NOT hardcoded here — keep the recompiler game-agnostic.
+    for (uint32_t e : forced_entries) {
+        fmt::print("Forced entry: 0x{:08X}\n", e);
+        analyzer.add_forced_entry(e);
+    }
 
     /* Load extra function addresses from discovered_functions.log */
-    if (extra_funcs_path) {
+    if (!extra_funcs_path.empty()) {
         std::ifstream ef(extra_funcs_path);
         if (ef.is_open()) {
             std::string line;
@@ -300,8 +420,8 @@ int main(int argc, char** argv) {
     codegen_config.emit_comments = true;
     codegen_config.emit_line_numbers = true;
 
-    // Load per-game annotations: annotations/<exe_stem>_annotations.csv
-    // Silently skipped if the file doesn't exist.
+    // Load per-game annotations: <output_dir>/../manifest/<stem>_annotations.csv,
+    // falling back to ./annotations/<stem>_annotations.csv for compat.
     PSXRecomp::AnnotationTable annotations;
     {
         std::string stem = exe_path.filename().string();
@@ -314,36 +434,50 @@ int main(int argc, char** argv) {
 
     PSXRecomp::CodeGenerator codegen(*exe, codegen_config);
     codegen.set_annotations(&annotations);
+    codegen.set_skip_on_error(skip_on_error);
 
-    // Generate code for first 5 functions (as examples)
-    fmt::print("=== C Code Generation Examples ===\n\n");
-    fmt::print("Generating code for first 5 functions...\n\n");
-
-    std::vector<PSXRecomp::Function> sample_funcs;
-    for (size_t i = 0; i < std::min(size_t(5), analysis_result.functions.size()); i++) {
-        sample_funcs.push_back(analysis_result.functions[i]);
+    // Load PSYQ external-symbol manifest. Targets in this map are NOT
+    // translated by the recompiler — they're emitted as extern declarations
+    // and PsyCross supplies the C bodies at link time.
+    ExternalManifest extman;
+    if (!external_syms_path.empty()) {
+        std::string err;
+        if (!parse_toml_manifest(external_syms_path, extman, err)) {
+            fmt::print(stderr, "⚠ External-symbols manifest failed: {}\n", err);
+            return 1;
+        }
+        fmt::print("✓ Loaded {} external symbols from {} (range 0x{:08X}..0x{:08X})\n\n",
+                   extman.by_addr.size(), external_syms_path,
+                   extman.range_start, extman.range_end);
+        codegen.set_external_symbols(extman.by_addr, extman.range_start, extman.range_end);
     }
 
-    auto generated = codegen.generate_all_functions(sample_funcs, all_cfgs);
-
-    // Print first generated function as example
-    if (!generated.empty()) {
-        fmt::print("Example Generated Function:\n");
-        fmt::print("---------------------------------------\n");
-        fmt::print("{}\n", generated[0].full_code);
-        fmt::print("---------------------------------------\n\n");
+    // Load manual-impl manifest. Each address listed gets an extern decl and
+    // the C body is supplied by hand-written code.
+    ExternalManifest manman;
+    if (!manual_impl_path.empty()) {
+        std::string err;
+        if (!parse_toml_manifest(manual_impl_path, manman, err)) {
+            fmt::print(stderr, "⚠ Manual-impl manifest failed: {}\n", err);
+            return 1;
+        }
+        fmt::print("✓ Loaded {} manual implementations from {}\n\n",
+                   manman.by_addr.size(), manual_impl_path);
+        codegen.set_manual_impls(manman.by_addr);
     }
 
-    // Generate full C file and save to the generated directory
-    // Use argv[2] as output path if provided, otherwise derive from input filename
-    // Use filename() not stem() because ".36" in SCUS_942.36 is part of the serial, not an extension
+    // Skip the printing of a 5-function preview: keep the run quiet so the
+    // tail of the log is dominated by stats and exit-criterion-relevant info.
+
+    // Use filename() not stem() because ".28" in SCUS_942.28 is part of the
+    // serial, not an extension.
     std::string exe_stem = exe_path.filename().string();
-    std::string output_filename;
-    if (argc >= 3) {
-        output_filename = argv[2];
-    } else {
-        output_filename = "generated/" + exe_stem + "_full.c";
-    }
+
+    std::filesystem::create_directories(output_dir);
+    std::string output_filename   = output_dir + "/" + exe_stem + "_full.c";
+    std::string dispatch_filename = output_dir + "/" + exe_stem + "_dispatch.c";
+    std::string discovered_log    = output_dir + "/discovered_functions.log";
+
     fmt::print("Generating complete C file: {}\n", output_filename);
 
     std::string full_c_code = codegen.generate_file(analysis_result.functions, all_cfgs);
@@ -359,31 +493,74 @@ int main(int argc, char** argv) {
         fmt::print(stderr, "⚠ Failed to write output file\n\n");
     }
 
-    // Generate dispatch table (tomba_dispatch.c)
-    // This maps PS1 addresses to compiled C functions so call_by_address() can
-    // dispatch dynamic jalr/jr calls to the right compiled function.
+    // Discovered-functions log — every function the analyzer landed on, in
+    // order, so future runs can replay the same entry-point set via
+    // --extra-funcs= and exit-criterion checks can grep for `main`.
     {
-        std::string dispatch_filename = "generated/" + exe_stem + "_dispatch.c";
+        std::ofstream df(discovered_log);
+        if (df.is_open()) {
+            df << "# Auto-generated by PSXRecomp.  One function start per line.\n";
+            for (const auto& func : analysis_result.functions) {
+                df << fmt::format("0x{:08X}  {}\n", func.start_addr, func.name);
+            }
+            fmt::print("✓ Wrote {} discovered functions to {}\n\n",
+                       analysis_result.functions.size(), discovered_log);
+        }
+    }
+
+    // Generate dispatch table. Maps PS1 addresses to compiled C functions
+    // so call_by_address() can dispatch dynamic jalr/jr calls to the right
+    // compiled function. External (PSYQ) and manual-impl entries are also
+    // wired in — they dispatch to the named C function rather than to a
+    // recompiled func_XXXXXXXX.
+    {
         fmt::print("Generating dispatch table: {}\n", dispatch_filename);
 
         std::ostringstream ds;
         ds << "/* Generated by PSXRecomp - dynamic dispatch table */\n";
         ds << "#include \"psx_runtime.h\"\n\n";
 
-        // Forward declarations
+        const auto& ext_syms = codegen.external_symbols();
+        const auto& man_imps = codegen.manual_impls();
+
+        // Forward declarations.
         ds << "/* Forward declarations for all recompiled functions */\n";
         for (const auto& func : analysis_result.functions) {
+            if (codegen.addr_is_external(func.start_addr)) continue;
+            if (man_imps.count(func.start_addr)) continue;
             ds << fmt::format("extern void func_{:08X}(CPUState* cpu);\n", func.start_addr);
+        }
+        if (!ext_syms.empty()) {
+            ds << "\n/* External (PSYQ) bodies — supplied by PsyCross. */\n";
+            for (const auto& [addr, name] : ext_syms) {
+                ds << fmt::format("extern void {}(CPUState* cpu);\n", name);
+            }
+        }
+        if (!man_imps.empty()) {
+            ds << "\n/* Manual implementations — supplied by hand-written C. */\n";
+            for (const auto& [addr, name] : man_imps) {
+                ds << fmt::format("extern void {}(CPUState* cpu);\n", name);
+            }
         }
         ds << "\n";
 
-        // Dispatch function
+        // Dispatch function.
         ds << "/* Maps PS1 address to compiled function. Returns 1 if dispatched, 0 if unknown. */\n";
         ds << "int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {\n";
         ds << "    switch (addr) {\n";
+        size_t total = 0;
         for (const auto& func : analysis_result.functions) {
-            ds << fmt::format("        case 0x{:08X}u: func_{:08X}(cpu); return 1;\n",
-                              func.start_addr, func.start_addr);
+            uint32_t a = func.start_addr;
+            if (auto it = ext_syms.find(a); it != ext_syms.end()) {
+                ds << fmt::format("        case 0x{:08X}u: {}(cpu); return 1;  /* PSYQ */\n",
+                                  a, it->second);
+            } else if (auto it2 = man_imps.find(a); it2 != man_imps.end()) {
+                ds << fmt::format("        case 0x{:08X}u: {}(cpu); return 1;  /* manual */\n",
+                                  a, it2->second);
+            } else {
+                ds << fmt::format("        case 0x{:08X}u: func_{:08X}(cpu); return 1;\n", a, a);
+            }
+            total++;
         }
         ds << "        default: return 0;\n";
         ds << "    }\n";
@@ -393,8 +570,7 @@ int main(int argc, char** argv) {
         if (dispatch_file.is_open()) {
             dispatch_file << ds.str();
             dispatch_file.close();
-            fmt::print("✓ Dispatch table written ({} entries)\n\n",
-                       analysis_result.functions.size());
+            fmt::print("✓ Dispatch table written ({} entries)\n\n", total);
         } else {
             fmt::print(stderr, "⚠ Failed to write dispatch file\n\n");
         }

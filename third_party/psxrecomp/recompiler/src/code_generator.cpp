@@ -661,7 +661,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x04: code = translate_sllv(instr); break;    // sllv
             case 0x06: code = translate_srlv(instr); break;    // srlv
             case 0x07: code = translate_srav(instr); break;    // srav
-            case 0x08: code = "return;  /* jr $ra */"; break;  // jr (assume return)
+            case 0x08:                                          // jr
+                {
+                    /* If rs == $ra (31), this is a function return.
+                     * Otherwise this is an indirect tail call (e.g., switch
+                     * jump table). Dispatch through the runtime so the
+                     * target's recompiled body executes, then return.
+                     * (jr in a normal control-flow position is handled by
+                     *  translate_basic_block; this fallback covers delay
+                     *  slots and any caller that bypasses the exit path.) */
+                    uint32_t rs = get_rs(instr);
+                    if (rs == 31) {
+                        code = "return;  /* jr $ra */";
+                    } else {
+                        code = fmt::format("call_by_address(cpu, {});  return;  /* jr {} */",
+                                           reg_name(rs), reg_name(rs));
+                    }
+                }
+                break;
             case 0x09:                                          // jalr
                 {
                     uint32_t rs = get_rs(instr);
@@ -964,19 +981,26 @@ std::string CodeGenerator::translate_basic_block(
                     }
                 } else if (block.exit_instr.type == ControlFlowType::Jump) {
                     // Unconditional jump
+                    uint32_t jt = block.exit_instr.target;
                     if (!block.successors.empty()) {
                         ss << config_.indent
                            << fmt::format("goto block_{:08X};  /* j */\n", block.successors[0]);
-                    } else if (block.exit_instr.target != 0 && known_functions_.count(block.exit_instr.target)) {
+                    } else if (jt != 0 && external_name_for(jt)) {
+                        ss << config_.indent
+                           << fmt::format("{}(cpu); return;  /* j -> external */\n",
+                                          *external_name_for(jt));
+                    } else if (jt != 0 && manual_name_for(jt)) {
+                        ss << config_.indent
+                           << fmt::format("{}(cpu); return;  /* j -> manual */\n",
+                                          *manual_name_for(jt));
+                    } else if (jt != 0 && known_functions_.count(jt)) {
                         // Jump target is out-of-function and is a known function start
                         ss << config_.indent
-                           << fmt::format("func_{:08X}(cpu); return;  /* j to split piece */\n",
-                                          block.exit_instr.target);
-                    } else if (block.exit_instr.target != 0) {
+                           << fmt::format("func_{:08X}(cpu); return;  /* j to split piece */\n", jt);
+                    } else if (jt != 0) {
                         // Jump target is a mid-function address — dispatch dynamically
                         ss << config_.indent
-                           << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* j to split (mid-func) */\n",
-                                          block.exit_instr.target);
+                           << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* j to split (mid-func) */\n", jt);
                     }
                 } else if (block.exit_instr.type == ControlFlowType::Return) {
                     // Return instruction
@@ -1107,7 +1131,11 @@ std::string CodeGenerator::translate_basic_block(
                     // Function call (jal)
                     ss << config_.indent << "cpu->ra = " << fmt::format("0x{:08X};  /* return address */\n", addr + 8);
                     uint32_t target = block.exit_instr.target;
-                    if (known_functions_.count(target) > 0) {
+                    if (auto* ext = external_name_for(target)) {
+                        ss << config_.indent << fmt::format("{}(cpu);  /* jal -> external */\n", *ext);
+                    } else if (auto* man = manual_name_for(target)) {
+                        ss << config_.indent << fmt::format("{}(cpu);  /* jal -> manual */\n", *man);
+                    } else if (known_functions_.count(target) > 0) {
                         ss << config_.indent << fmt::format("func_{:08X}(cpu);  /* jal */\n", target);
                     } else {
                         ss << config_.indent << fmt::format("call_by_address(cpu, 0x{:08X}u);  /* external jal */\n", target);
@@ -1119,7 +1147,13 @@ std::string CodeGenerator::translate_basic_block(
                         // Split-function: JAL continuation is outside this function piece.
                         // Tail-call to the continuation piece (at exit_addr + 8, past delay slot).
                         uint32_t cont_addr = block.exit_instr.address + 8;
-                        if (known_functions_.count(cont_addr)) {
+                        if (auto* ext = external_name_for(cont_addr)) {
+                            ss << config_.indent
+                               << fmt::format("{}(cpu); return;  /* jal cont: external */\n", *ext);
+                        } else if (auto* man = manual_name_for(cont_addr)) {
+                            ss << config_.indent
+                               << fmt::format("{}(cpu); return;  /* jal cont: manual */\n", *man);
+                        } else if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("func_{:08X}(cpu); return;  /* jal cont: split piece */\n", cont_addr);
                         } else {
@@ -1318,8 +1352,24 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
     }
 
     int total_lines = 0;
+    int n_external = 0, n_manual = 0, n_skipped_err = 0;
 
     for (const Function& func : functions) {
+        // External (PSYQ) symbols — body is supplied at link time by PsyCross.
+        // Do not emit a definition; the JAL emit path already routes calls to
+        // the named extern.
+        if (addr_is_external(func.start_addr)) {
+            n_external++;
+            continue;
+        }
+
+        // Manual implementation — same treatment as external, but the body is
+        // a hand-written C function the link step pulls in.
+        if (manual_name_for(func.start_addr)) {
+            n_manual++;
+            continue;
+        }
+
         if (func.is_data_section) {
             // Emit a stub for data sections - do not decode instructions
             GeneratedFunction stub;
@@ -1348,12 +1398,45 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
             fallthrough_name = ft_it->second;
         }
 
-        GeneratedFunction gen_func = generate_function(func, cfg, fallthrough_name);
+        GeneratedFunction gen_func;
+        bool ok = false;
+        if (skip_on_error_) {
+            try {
+                gen_func = generate_function(func, cfg, fallthrough_name);
+                ok = true;
+            } catch (const std::exception& e) {
+                fmt::print(stderr,
+                    "[skip-on-error] {} at 0x{:08X}: {}\n",
+                    func.name, func.start_addr, e.what());
+            } catch (...) {
+                fmt::print(stderr,
+                    "[skip-on-error] {} at 0x{:08X}: <unknown exception>\n",
+                    func.name, func.start_addr);
+            }
+            if (!ok) {
+                gen_func.function_name = func.name;
+                gen_func.signature = fmt::format("void {}(CPUState* cpu)", func.name);
+                gen_func.body = fmt::format(
+                    "{{\n"
+                    "    /* STUB: codegen failed for 0x{:08X}; --skip-on-error active. */\n"
+                    "    fprintf(stderr, \"PSXRecomp stub: {} (0x{:08X}) called but not translated\\n\");\n"
+                    "    abort();\n"
+                    "}}\n",
+                    func.start_addr, func.name, func.start_addr);
+                gen_func.full_code = gen_func.signature + "\n" + gen_func.body;
+                gen_func.line_count = 5;
+                n_skipped_err++;
+            }
+        } else {
+            gen_func = generate_function(func, cfg, fallthrough_name);
+        }
+
         total_lines += gen_func.line_count;
         results.push_back(gen_func);
     }
 
-    fmt::print("✓ Generated {} functions\n", results.size());
+    fmt::print("✓ Generated {} functions ({} external, {} manual, {} stubbed via --skip-on-error)\n",
+               results.size(), n_external, n_manual, n_skipped_err);
     fmt::print("✓ Total C code: {} lines\n\n", total_lines);
 
     return results;
@@ -1593,10 +1676,35 @@ std::string CodeGenerator::generate_file(
 
     set_known_functions(known_addrs);
 
-    // Generate all functions first (to collect names)
+    // Generate all functions first (to collect names). Externals and manual
+    // impls are filtered out inside generate_all_functions; their JAL targets
+    // resolve via extern declarations emitted below.
     auto gen_funcs = generate_all_functions(functions_mut, cfgs_mut);
 
-    // Forward declarations for all functions
+    // Externs for PSYQ (external) symbols — bodies supplied by PsyCross.
+    if (!external_symbols_.empty()) {
+        ss << "/* --- External (PSYQ) symbol declarations --- */\n";
+        ss << "/* Bodies supplied by PsyCross at link time. Function bodies are\n";
+        ss << " * NOT emitted in this translation unit; only externs and a\n";
+        ss << " * dispatch entry. */\n";
+        for (const auto& [addr, name] : external_symbols_) {
+            ss << fmt::format("extern void {}(CPUState* cpu);  /* PSYQ @ 0x{:08X} */\n",
+                              name, addr);
+        }
+        ss << "\n";
+    }
+
+    // Externs for manual-impl functions — bodies supplied by hand-written C.
+    if (!manual_impls_.empty()) {
+        ss << "/* --- Manual-implementation declarations --- */\n";
+        for (const auto& [addr, name] : manual_impls_) {
+            ss << fmt::format("extern void {}(CPUState* cpu);  /* manual @ 0x{:08X} */\n",
+                              name, addr);
+        }
+        ss << "\n";
+    }
+
+    // Forward declarations for all translated functions
     if (!gen_funcs.empty()) {
         ss << "/* Forward declarations */\n";
         for (const auto& gen_func : gen_funcs) {

@@ -1,0 +1,12 @@
+addr,kind,note
+# Per-function recompiler annotations for Spyro 1 (SCUS_942.28).
+# Format:
+#   addr  - hex (e.g. 0x80012204), or function name (e.g. func_80012204)
+#   kind  - one of: function, instruction
+#   note  - free-form text shown next to the generated function/instruction
+#
+# Examples:
+#   0x80012204,function,"main() — game entrypoint"
+#   0x800122a8,function,"Initialize() — six sub-inits run in sequence"
+#
+# Populated incrementally as Phase 1c surfaces tricky spots.

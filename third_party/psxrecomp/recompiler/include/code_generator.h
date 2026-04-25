@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -85,12 +86,65 @@ public:
     // Set annotation table (optional — no-op if not called)
     void set_annotations(const AnnotationTable* at) { annotations_ = at; }
 
+    // External symbols: addresses in [range_start, range_end) are NOT
+    // translated. JAL targets that resolve into the range are emitted as
+    // calls to the named extern (PSYQ symbols supplied by PsyCross).
+    void set_external_symbols(std::map<uint32_t, std::string> syms,
+                              uint32_t range_start, uint32_t range_end) {
+        external_symbols_ = std::move(syms);
+        external_range_start_ = range_start;
+        external_range_end_ = range_end;
+    }
+
+    // Manual implementations: addresses in this map are NOT translated. JAL
+    // targets are emitted as calls to the named C function (typically a
+    // hand-written port of a non-matching asm function).
+    void set_manual_impls(std::map<uint32_t, std::string> impls) {
+        manual_impls_ = std::move(impls);
+    }
+
+    // Skip-on-error: when codegen throws on a function, emit a stub that
+    // logs+aborts at runtime and continue translating.
+    void set_skip_on_error(bool v) { skip_on_error_ = v; }
+
+    // Inspectors used by main_psx.cpp when emitting the dispatch table.
+    // An address is "external" only if it has an entry in the symbol map.
+    // Addresses inside the PSYQ range but without an exported name are
+    // internal helpers — they get translated normally so they can be called
+    // from any path (e.g. when PsyCross's PSYQ replacement falls through to
+    // a PSYQ-internal helper that we haven't reimplemented).
+    bool addr_is_external(uint32_t addr) const {
+        return external_symbols_.count(addr) > 0;
+    }
+    const std::map<uint32_t, std::string>& external_symbols() const {
+        return external_symbols_;
+    }
+    const std::map<uint32_t, std::string>& manual_impls() const {
+        return manual_impls_;
+    }
+    uint32_t external_range_start() const { return external_range_start_; }
+    uint32_t external_range_end()   const { return external_range_end_; }
+
 private:
     const PS1Executable& exe_;
     CodeGenConfig config_;
     std::set<uint32_t> known_functions_;  // Addresses of functions in this compilation unit
     std::set<uint32_t> extra_labels_;    // Mid-block addresses that need inline labels (jump table targets)
     const AnnotationTable* annotations_ = nullptr;
+    std::map<uint32_t, std::string> external_symbols_;
+    uint32_t external_range_start_ = 0;
+    uint32_t external_range_end_   = 0;
+    std::map<uint32_t, std::string> manual_impls_;
+    bool skip_on_error_ = false;
+
+    const std::string* external_name_for(uint32_t addr) const {
+        auto it = external_symbols_.find(addr);
+        return it == external_symbols_.end() ? nullptr : &it->second;
+    }
+    const std::string* manual_name_for(uint32_t addr) const {
+        auto it = manual_impls_.find(addr);
+        return it == manual_impls_.end() ? nullptr : &it->second;
+    }
 
     // Instruction translation
     std::string translate_instruction(uint32_t addr, uint32_t instr);

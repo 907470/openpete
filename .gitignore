@@ -5,3 +5,5 @@ compile_commands.json
 *.obj
 *.swp
 .DS_Store
+games/*/generated/
+third_party/psxrecomp/build/
