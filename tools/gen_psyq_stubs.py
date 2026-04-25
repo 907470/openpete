@@ -61,7 +61,13 @@ HEADER = """\
 
 extern void psyq_stub_hit(const char* name, uint32_t addr, CPUState* cpu);
 
-#if defined(__GNUC__) || defined(__clang__)
+/* MinGW PE/COFF doesn't resolve undefined refs to weak-defined symbols
+ * across translation units (verified against ld 2.38). The MinGW link is
+ * arranged with psyq_thunks.cpp.obj listed before psyq_stubs.c.obj and
+ * uses `-Wl,--allow-multiple-definition`, so the strong thunks override
+ * the strong stubs by link order. On ELF (Linux/macOS), the weak attr is
+ * still used so thunks win cleanly without --allow-multiple-definition. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32)
 #define OPENPETE_WEAK __attribute__((weak))
 #else
 #define OPENPETE_WEAK

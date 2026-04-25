@@ -14,6 +14,19 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     set(SDL2_DIR "${CMAKE_SOURCE_DIR}/third_party/SDL2-mingw/x86_64-w64-mingw32/lib/cmake/SDL2"
         CACHE PATH "SDL2 cmake config dir")
+
+    # OpenAL has no Config-mode package file in the openal-soft prebuilt,
+    # so seed the cache vars FindOpenAL.cmake reads. Mirrors SDL2-mingw.
+    set(_OAL_ROOT "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32")
+    # PsyCross uses `#include <AL/al.h>` form, so point at the parent of
+    # AL/ (FindOpenAL.cmake's PATH_SUFFIXES allow either, but the one
+    # consumers expect is the prefix that makes the angle-bracket include
+    # legal). Header lookup: <AL/al.h> → ${OPENAL_INCLUDE_DIR}/AL/al.h.
+    set(OPENAL_INCLUDE_DIR "${_OAL_ROOT}/include"
+        CACHE PATH "OpenAL include dir (vendored MinGW prebuilt)" FORCE)
+    set(OPENAL_LIBRARY "${_OAL_ROOT}/lib/libOpenAL32.dll.a"
+        CACHE FILEPATH "OpenAL import library (vendored MinGW prebuilt)" FORCE)
+    unset(_OAL_ROOT)
 endif()
 
 find_package(SDL2 REQUIRED)
@@ -36,8 +49,19 @@ endif()
 # (PsyCross is the second). Adds a static lib `pcsx_redux_gte` exposing one
 # C-callable: pcsxr_gte_run(cmd, pre_data[32], pre_ctrl[32], post_data[32],
 # post_ctrl[32]).
+# pcsx_redux_gte is a GTE trace-logger reference (diagnostic only, not on
+# the runtime path) and requires C++23. MinGW-GCC 10 — the version Ubuntu
+# 22.04 ships in `gcc-mingw-w64-x86-64-posix` — caps at C++20, so default
+# the option OFF when cross-compiling. Native Linux/macOS keep it ON.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
+    set(_OPENPETE_PCSX_REDUX_GTE_DEFAULT OFF)
+else()
+    set(_OPENPETE_PCSX_REDUX_GTE_DEFAULT ON)
+endif()
 option(OPENPETE_BUILD_PCSX_REDUX_GTE
-       "Build third_party/pcsx_redux_gte as a static lib" ON)
+       "Build third_party/pcsx_redux_gte as a static lib"
+       ${_OPENPETE_PCSX_REDUX_GTE_DEFAULT})
+unset(_OPENPETE_PCSX_REDUX_GTE_DEFAULT)
 if(OPENPETE_BUILD_PCSX_REDUX_GTE)
     add_subdirectory(third_party/pcsx_redux_gte)
 endif()

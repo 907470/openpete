@@ -19,6 +19,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The whole sigaction-based handler is POSIX-only. On MinGW/Windows
+ * we fall back to a stub installer (Windows uses SetUnhandledExceptionFilter
+ * via different machinery; until that's wired up, crashes just take the
+ * default disposition). */
+#if !defined(_WIN32)
+
 #if defined(__GLIBC__) || defined(__APPLE__)
 #  include <execinfo.h>
 #  define OPENPETE_HAS_BACKTRACE 1
@@ -118,3 +124,13 @@ void openpete_psx_install_crash_handler(void) {
 #endif
     OPL_INFO_F("boot", "crash handler installed (SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS)");
 }
+
+#else  /* _WIN32 — POSIX sigaction surface unavailable under MinGW */
+
+void openpete_psx_set_diag_cpu(CPUState* cpu) { (void)cpu; }
+
+void openpete_psx_install_crash_handler(void) {
+    OPL_INFO_F("boot", "crash handler: stub (Windows/MinGW)");
+}
+
+#endif  /* !_WIN32 */

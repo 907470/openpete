@@ -30,16 +30,26 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
     dispatch_chain.c
 
-    # PSYQ symbol stubs — `__attribute__((weak))` abort-on-call. Each
-    # thunk in psyq_thunks.c is `strong` and overrides its same-named
-    # weak stub at link time. Anything not yet thunked aborts on first
-    # call, surfacing the next missing PSYQ surface.
+    # Hand-written PSYQ → PsyCross ABI thunks (Phase 1c). Listed BEFORE
+    # the generated stubs because under MinGW the stubs are emitted as
+    # strong defs (PE/COFF can't resolve undefined refs to weak across
+    # TUs) and we rely on `-Wl,--allow-multiple-definition` plus link
+    # order to let thunks win. ELF builds use `__attribute__((weak))`
+    # on the stubs and the order doesn't matter.
+    psyq_thunks.cpp
+
+    # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any
+    # thunk strongly defines them; on MinGW the macro becomes strong
+    # and the link order + --allow-multiple-definition resolves the
+    # collision in the thunk's favor.
     ${SPYRO_GENERATED}/psyq_stubs.c
     psyq_stub_runtime.c
-
-    # Hand-written PSYQ → PsyCross ABI thunks (Phase 1c).
-    psyq_thunks.cpp
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
+    target_link_options(openpete-spyro1 PRIVATE
+        -Wl,--allow-multiple-definition)
+endif()
 
 # Generated C addresses psx_runtime.h via the include path provided by
 # openpete_core (which adds psxrecomp/runner/include).
@@ -104,3 +114,14 @@ set_source_files_properties(
     PROPERTIES
         COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_level_10"
 )
+
+# OpenAL on Windows is always a runtime DLL load (no static .a in the
+# openal-soft prebuilt). Copy the renamed soft_oal.dll next to the .exe
+# so the loader resolves OpenAL32.dll without a system install.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
+    add_custom_command(TARGET openpete-spyro1 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
+            "$<TARGET_FILE_DIR:openpete-spyro1>/OpenAL32.dll"
+        VERBATIM)
+endif()
