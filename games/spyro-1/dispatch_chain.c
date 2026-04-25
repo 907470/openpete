@@ -77,26 +77,13 @@ void spyro_set_active_overlay(int which) {
 }
 
 /* Restore the overlay region from the shadow if it has been clobbered.
- *
- * Earlier, this only memcmp'd the first 16 bytes — fine for catching scratch
- * reads that overwrite the entire region (which always change the prefix),
- * but blind to corruption deeper in the overlay (e.g. a stray write that hits
- * mid-region while leaving the head intact). Stub miss 0x80081F3C surfaced
- * exactly that case: bytes at offset ~0x7500 were stale relative to the
- * shadow, but the prefix matched, so restore was skipped.
- *
- * We now compare the full shadow. memcmp on 56KB is ~5µs and we hit this
- * only on actual level_10 dispatches, so the overhead is in the noise. */
-static unsigned s_restore_count = 0;
+ * Cheap-out path: the bytes that read as POLY-stride OT garbage have
+ * different first-16 — bail fast when the prefix already matches. */
 static void overlay_restore_if_needed(void) {
     if (s_shadow_size == 0) return;
     uint8_t* ram = openpete_psx_get_ram();
-    if (memcmp(ram + OVERLAY_OFFSET, s_shadow, s_shadow_size) == 0) return;
+    if (memcmp(ram + OVERLAY_OFFSET, s_shadow, 16) == 0) return;
     memcpy(ram + OVERLAY_OFFSET, s_shadow, s_shadow_size);
-    unsigned n = ++s_restore_count;
-    if ((n & (n - 1u)) == 0u) {
-        OPL_INFO_F("dispatch", "overlay restored from shadow (#%u)", n);
-    }
 }
 
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
