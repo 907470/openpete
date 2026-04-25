@@ -35,6 +35,7 @@ extern "C" {
 #include "psx/libspu.h"
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
+#include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
 /* Internal PsyCross helpers we need to reach for the OT thunk. They live
@@ -223,6 +224,13 @@ void psyq_DrawOTag(CPUState* cpu) {
     g_ot_scratch_used = 0;
     g_ot_slot_count = 0;
 
+    static uint32_t s_calls = 0;
+    ++s_calls;
+    if ((s_calls & 0xFFFu) == 1u) {
+        OPL_INFO_F("thunks", "DrawOTag(#%u) ot=0x%08X ra=0x%08X",
+                   s_calls, cpu->a0, cpu->ra);
+    }
+
     uint32_t addr = cpu->a0;
     while (g_ot_slot_count < (int)(sizeof(g_ot_slot_host) / sizeof(g_ot_slot_host[0]))) {
         if (addr == 0u) break;
@@ -324,31 +332,63 @@ void psyq_DrawOTag(CPUState* cpu) {
 
 /* --- libgte -------------------------------------------------------------- */
 
+/* GTE state lives in two parallel stores: psxrecomp's `cpu->gte_data[]` /
+ * `cpu->gte_ctrl[]` (used by `gte_execute()` for COP2 instructions in the
+ * recompiled MIPS) and PsyCross's `gteRegs.CP2D` / `gteRegs.CP2C` (used
+ * by libgte funcs like SetTransMatrix). They are NOT synchronized.
+ *
+ * Without bridging, this manifests as TR=(0,0,0) on every RTPS — Spyro
+ * calls `SetTransMatrix` (writes PsyCross gteRegs), then RTPS via the
+ * recompiler (reads cpu->gte_ctrl, sees zeros). Sync at the boundary. */
+static void gte_sync_cpu_to_psyx(CPUState* cpu) {
+    for (int i = 0; i < 32; i++) {
+        gteRegs.CP2D.p[i].d = cpu->gte_data[i];
+        gteRegs.CP2C.p[i].d = cpu->gte_ctrl[i];
+    }
+}
+static void gte_sync_psyx_to_cpu(CPUState* cpu) {
+    for (int i = 0; i < 32; i++) {
+        cpu->gte_data[i] = gteRegs.CP2D.p[i].d;
+        cpu->gte_ctrl[i] = gteRegs.CP2C.p[i].d;
+    }
+}
+
 void psyq_InitGeom(CPUState* cpu) {
-    (void)cpu;
+    gte_sync_cpu_to_psyx(cpu);
     InitGeom();
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_SetGeomOffset(CPUState* cpu) {
+    gte_sync_cpu_to_psyx(cpu);
     SetGeomOffset((int)cpu->a0, (int)cpu->a1);
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_SetGeomScreen(CPUState* cpu) {
+    gte_sync_cpu_to_psyx(cpu);
     SetGeomScreen((int)cpu->a0);
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_SetTransMatrix(CPUState* cpu) {
+    gte_sync_cpu_to_psyx(cpu);
     SetTransMatrix((MATRIX*)PTR(cpu->a0));
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_MulMatrix0(CPUState* cpu) {
+    gte_sync_cpu_to_psyx(cpu);
     MulMatrix0((MATRIX*)PTR(cpu->a0),
                (MATRIX*)PTR(cpu->a1),
                (MATRIX*)PTR(cpu->a2));
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_MulMatrix(CPUState* cpu) {
+    gte_sync_cpu_to_psyx(cpu);
     MulMatrix((MATRIX*)PTR(cpu->a0), (MATRIX*)PTR(cpu->a1));
+    gte_sync_psyx_to_cpu(cpu);
 }
 
 /* --- libpad -------------------------------------------------------------- */
