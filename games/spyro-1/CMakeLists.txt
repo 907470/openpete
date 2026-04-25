@@ -14,12 +14,20 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
 
-    # Titlescreen overlay (Phase 1d.5) — separate PS1 EXE shell wrapping the
-    # 14 KB bytes at WAD.WAD[0x5B800..0x5F000] loaded to vaddr 0x8007AA38.
+    # Titlescreen overlay (Phase 1d.5) — synth PS1-EXE wrapper around the
+    # build/wad/titlescreen_code.ovl bytes, loaded to vaddr 0x8007AA38.
     # Its dispatcher is renamed via -D so it doesn't clash with the main
     # EXE's; both feed into `psx_dispatch_compiled` from dispatch_chain.c.
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_full.c
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    # Function-symbol prefix `func_titlescreen_` (set at recompile time)
+    # keeps its names unique versus other overlays at the same vaddr.
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_full.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
+
+    # Level 10 — Artisans Homeworld (Phase 2). Same overlay vaddr as
+    # titlescreen, different bytes at runtime. Function symbols use the
+    # `func_level_10_` prefix.
+    ${SPYRO_GENERATED}/level_10/level_10.bin_full.c
+    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
     dispatch_chain.c
 
     # PSYQ symbol stubs — `__attribute__((weak))` abort-on-call. Each
@@ -79,13 +87,20 @@ set_source_files_properties(
         COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_main_exe"
 )
 set_source_files_properties(
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_full.c
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_full.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
+    ${SPYRO_GENERATED}/level_10/level_10.bin_full.c
+    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
     PROPERTIES
         COMPILE_FLAGS "-w"
 )
 set_source_files_properties(
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.exe_dispatch.c
+    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
     PROPERTIES
         COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_titlescreen"
+)
+set_source_files_properties(
+    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
+    PROPERTIES
+        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_level_10"
 )

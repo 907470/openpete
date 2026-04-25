@@ -961,7 +961,7 @@ std::string CodeGenerator::translate_basic_block(
                                << fmt::format("goto block_{:08X};  /* taken */\n", branch_target);
                         } else if (known_functions_.count(branch_target)) {
                             ss << config_.indent << config_.indent
-                               << fmt::format("func_{:08X}(cpu); return;  /* taken: split piece */\n", branch_target);
+                               << fmt::format("{}{:08X}(cpu); return;  /* taken: split piece */\n", config_.func_prefix, branch_target);
                         } else {
                             ss << config_.indent << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* taken: split (mid-func) */\n", branch_target);
@@ -972,7 +972,7 @@ std::string CodeGenerator::translate_basic_block(
                                << fmt::format("goto block_{:08X};  /* not taken */\n", fall_through_addr);
                         } else if (known_functions_.count(fall_through_addr)) {
                             ss << config_.indent << config_.indent
-                               << fmt::format("func_{:08X}(cpu); return;  /* not taken: split piece */\n", fall_through_addr);
+                               << fmt::format("{}{:08X}(cpu); return;  /* not taken: split piece */\n", config_.func_prefix, fall_through_addr);
                         } else {
                             ss << config_.indent << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* not taken: split (mid-func) */\n", fall_through_addr);
@@ -996,7 +996,7 @@ std::string CodeGenerator::translate_basic_block(
                     } else if (jt != 0 && known_functions_.count(jt)) {
                         // Jump target is out-of-function and is a known function start
                         ss << config_.indent
-                           << fmt::format("func_{:08X}(cpu); return;  /* j to split piece */\n", jt);
+                           << fmt::format("{}{:08X}(cpu); return;  /* j to split piece */\n", config_.func_prefix, jt);
                     } else if (jt != 0) {
                         // Jump target is a mid-function address — dispatch dynamically
                         ss << config_.indent
@@ -1136,7 +1136,7 @@ std::string CodeGenerator::translate_basic_block(
                     } else if (auto* man = manual_name_for(target)) {
                         ss << config_.indent << fmt::format("{}(cpu);  /* jal -> manual */\n", *man);
                     } else if (known_functions_.count(target) > 0) {
-                        ss << config_.indent << fmt::format("func_{:08X}(cpu);  /* jal */\n", target);
+                        ss << config_.indent << fmt::format("{}{:08X}(cpu);  /* jal */\n", config_.func_prefix, target);
                     } else {
                         ss << config_.indent << fmt::format("call_by_address(cpu, 0x{:08X}u);  /* external jal */\n", target);
                     }
@@ -1155,7 +1155,7 @@ std::string CodeGenerator::translate_basic_block(
                                << fmt::format("{}(cpu); return;  /* jal cont: manual */\n", *man);
                         } else if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
-                               << fmt::format("func_{:08X}(cpu); return;  /* jal cont: split piece */\n", cont_addr);
+                               << fmt::format("{}{:08X}(cpu); return;  /* jal cont: split piece */\n", config_.func_prefix, cont_addr);
                         } else {
                             ss << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* jal cont: split */\n", cont_addr);
@@ -1184,7 +1184,7 @@ std::string CodeGenerator::translate_basic_block(
                         uint32_t cont_addr = block.exit_instr.address + 8;
                         if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
-                               << fmt::format("func_{:08X}(cpu); return;  /* jalr cont: split piece */\n", cont_addr);
+                               << fmt::format("{}{:08X}(cpu); return;  /* jalr cont: split piece */\n", config_.func_prefix, cont_addr);
                         } else {
                             ss << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* jalr cont: split */\n", cont_addr);
@@ -1648,7 +1648,7 @@ std::string CodeGenerator::generate_file(
                         nf.start_addr = targets[ti];
                         nf.end_addr = (ti + 1 < targets.size()) ? targets[ti + 1] : orig_end;
                         nf.size = nf.end_addr - nf.start_addr;
-                        nf.name = fmt::format("func_{:08X}", nf.start_addr);
+                        nf.name = fmt::format("{}{:08X}", config_.func_prefix, nf.start_addr);
                         nf.has_prologue = false;
                         nf.has_epilogue = false;
                         nf.stack_frame_size = 0;

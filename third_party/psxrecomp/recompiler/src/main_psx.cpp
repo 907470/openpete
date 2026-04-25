@@ -110,6 +110,7 @@ int main(int argc, char** argv) {
         fmt::print("  --external-prefix=<str>       Prepend <str> to every PSYQ symbol name (e.g. psyq_)\n");
         fmt::print("  --manual-impl=<file>          Manual-implementation manifest\n");
         fmt::print("  --manual-prefix=<str>         Prepend <str> to every manual-impl symbol name\n");
+        fmt::print("  --func-prefix=<str>           Replace 'func_' prefix on emitted func names (e.g. level_10_func_)\n");
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         return 0;
@@ -122,6 +123,7 @@ int main(int argc, char** argv) {
     std::string manual_impl_path;
     std::string external_prefix;   // prepended to every PSYQ symbol name
     std::string manual_prefix;     // prepended to every manual-impl name
+    std::string func_prefix = "func_"; // prefix for emitted func_<addr> names
     bool skip_on_error = false;
     std::vector<uint32_t> forced_entries;
 
@@ -143,6 +145,7 @@ int main(int argc, char** argv) {
             forced_entries.push_back((uint32_t)std::strtoul(v.c_str(), nullptr, 0));
         else if (!(v = take_value(a, "--external-prefix")).empty())   external_prefix = v;
         else if (!(v = take_value(a, "--manual-prefix")).empty())     manual_prefix = v;
+        else if (!(v = take_value(a, "--func-prefix")).empty())       func_prefix = v;
         else if (a == "--skip-on-error")                              skip_on_error = true;
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
@@ -153,6 +156,7 @@ int main(int argc, char** argv) {
         else if (a == "--output-dir" && i + 1 < argc)                 output_dir = argv[++i];
         else if (a == "--external-prefix" && i + 1 < argc)            external_prefix = argv[++i];
         else if (a == "--manual-prefix" && i + 1 < argc)              manual_prefix = argv[++i];
+        else if (a == "--func-prefix" && i + 1 < argc)                func_prefix = argv[++i];
         else if (a.size() > 2 && a[0] == '-' && a[1] == '-') {
             fmt::print(stderr, "Unknown option: {}\n", a);
             return 1;
@@ -310,6 +314,20 @@ int main(int argc, char** argv) {
 
     auto analysis_result = analyzer.analyze();
 
+    // Re-stamp function names with the configured --func-prefix. The analyzer
+    // hard-codes "func_<addr>"; per-overlay outputs need a unique prefix so
+    // their address-overlapping symbols don't collide at link time.
+    if (func_prefix != "func_") {
+        for (auto& f : analysis_result.functions) {
+            // Only rename names that start with the default "func_" — leave
+            // any analyzer-supplied symbolic names (jump-tables etc.) alone.
+            if (f.name.rfind("func_", 0) == 0) {
+                f.name = fmt::format("{}{:08X}", func_prefix, f.start_addr);
+            }
+        }
+        fmt::print("  ↪ applied --func-prefix='{}'\n", func_prefix);
+    }
+
     // Print summary statistics
     fmt::print("\n=== Function Analysis Summary ===\n\n");
     fmt::print("Total Functions: {}\n", analysis_result.functions.size());
@@ -427,6 +445,7 @@ int main(int argc, char** argv) {
     PSXRecomp::CodeGenConfig codegen_config;
     codegen_config.emit_comments = true;
     codegen_config.emit_line_numbers = true;
+    codegen_config.func_prefix = func_prefix;
 
     // Load per-game annotations: <output_dir>/../manifest/<stem>_annotations.csv,
     // falling back to ./annotations/<stem>_annotations.csv for compat.
@@ -550,7 +569,7 @@ int main(int argc, char** argv) {
         for (const auto& func : analysis_result.functions) {
             if (codegen.addr_is_external(func.start_addr)) continue;
             if (man_imps.count(func.start_addr)) continue;
-            ds << fmt::format("extern void func_{:08X}(CPUState* cpu);\n", func.start_addr);
+            ds << fmt::format("extern void {}(CPUState* cpu);\n", func.name);
         }
         if (!ext_syms.empty()) {
             ds << "\n/* External (PSYQ) bodies — supplied by PsyCross. */\n";
@@ -580,7 +599,7 @@ int main(int argc, char** argv) {
                 ds << fmt::format("        case 0x{:08X}u: {}(cpu); return 1;  /* manual */\n",
                                   a, it2->second);
             } else {
-                ds << fmt::format("        case 0x{:08X}u: func_{:08X}(cpu); return 1;\n", a, a);
+                ds << fmt::format("        case 0x{:08X}u: {}(cpu); return 1;\n", a, func.name);
             }
             total++;
         }

@@ -36,13 +36,17 @@ struct CodeGenConfig {
     bool optimize_zero_reg;       // Optimize away $zero assignments
     bool use_switch_for_blocks;   // Use switch instead of goto labels
     std::string indent;           // Indentation string (default: "    ")
+    std::string func_prefix;      // Prepended to every emitted func_<addr> name
+                                  // (default "func_"). Used to namespace per-overlay
+                                  // outputs whose address ranges overlap.
 
     CodeGenConfig()
         : emit_comments(true)
         , emit_line_numbers(true)
         , optimize_zero_reg(true)
         , use_switch_for_blocks(false)
-        , indent("    ") {}
+        , indent("    ")
+        , func_prefix("func_") {}
 };
 
 // Result of code generation for a function
