@@ -7,7 +7,16 @@
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
-  #if defined(__i386__)
+  /* Pick fiber.c on Windows BEFORE the arch-specific raw-asm options.
+   * libco's amd64.c does save Win64 non-volatiles, but it doesn't update
+   * the NT_TIB stack-base/stack-limit fields a fiber-switched stack
+   * needs. Win32 SEH unwind reads those fields, and the MSVCRT abort
+   * path goes through SEH — meaning any abort from inside a libco fiber
+   * silently terminates the process with no stderr output. fiber.c uses
+   * CreateFiber/SwitchToFiber, which Windows updates correctly. */
+  #if defined(_WIN32)
+    #include "fiber.c"
+  #elif defined(__i386__)
     #include "x86.c"
   #elif defined(__amd64__)
     #include "amd64.c"
@@ -19,8 +28,6 @@
     #include "ppc64v2.c"
   #elif defined(_ARCH_PPC) && !defined(__LITTLE_ENDIAN__)
     #include "ppc.c"
-  #elif defined(_WIN32)
-    #include "fiber.c"
   #else
     #include "sjlj.c"
   #endif
