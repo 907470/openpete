@@ -56,22 +56,43 @@ sudo apt-get install -y build-essential clang g++ pkg-config \
     libavutil-dev libcurl4-openssl-dev libglfw3-dev libswresample-dev \
     libuv1-dev zlib1g-dev g++-mipsel-linux-gnu cpp-mipsel-linux-gnu \
     binutils-mipsel-linux-gnu
-cd .tools/pcsx-redux && make BUILD=Release -j$(nproc)
+cd .tools/pcsx-redux
+# FFmpeg 4.4 (Ubuntu 22.04) needs the audio-file reader stubbed; 5+ has the
+# new AVChannelLayout / swr_alloc_set_opts2 API. A reader whose every open
+# fails is enough.
+make openbios            # build OpenBIOS first (used as bootstrap)
+make BUILD=Release -j8   # higher -j may OOM-kill cc1plus
+cp src/mips/openbios/openbios.bin ./openbios.bin
 ```
 
-(If sudo isn't available, the dockermake.sh path produces an AppImage:
-`./dockermake.sh appimage` — but Docker on WSL2 needs Docker Desktop with
-WSL integration enabled.)
+### Run the Lua dumper
 
-### Use the Lua dumper
+`scripts/pcsx-redux-gte-dump.lua` sets one Exec breakpoint per cop2 PC
+(populated from r_pete + r_environment in PSX.EXE), counts VSync events
+as frames, and emits a CSV at `/tmp/pcsx-redux-gte.csv` in the same
+column layout as the in-tree dumper.
 
-`scripts/pcsx-redux-gte-dump.lua` is a Lua script that, when pasted into
-pcsx-redux's Lua console, breakpoints on every cop2-instruction PC you
-list in its CONFIG block and writes a CSV in the same column layout as the
-in-tree dumper. So the same diff recipe works.
+Two non-obvious requirements:
 
-The catch: pcsx-redux's Lua API has no per-COP2-op event hook, so you have
-to enumerate the cop2 PCs manually:
+  1. **Pass `--debugger`**. Without it breakpoints (Lua or otherwise)
+     never fire, and nothing reports it.
+  2. **The invoker must return `true`** to keep the breakpoint armed.
+     A falsy return deletes the breakpoint,
+     so a BP that returns `false` fires exactly once. Returning `nil`
+     also deletes (it's coerced to false at the C boundary).
+
+Invocation:
+
+```sh
+cd .tools/pcsx-redux
+./pcsx-redux --no-ui --debugger --interpreter \
+    --bios ./openbios.bin \
+    --iso <spyro>/spyro-1/build/SCUS-94228.cue \
+    --run --dofile ../../scripts/pcsx-redux-gte-dump.lua
+```
+
+To regenerate the cop2 PC list (different game, or you want a wider
+range):
 
 ```sh
 mipsel-linux-gnu-objdump -d games/spyro-1/spyro-1/build/PSX.EXE \
@@ -79,6 +100,22 @@ mipsel-linux-gnu-objdump -d games/spyro-1/spyro-1/build/PSX.EXE \
     > /tmp/cop2-pcs.txt
 ```
 
-Paste the contents into `cop2_pcs = { ... }` in the Lua script. Restrict to
-the PCs inside the function(s) you're investigating (e.g. `r_pete` for the
-titlescreen cutscene) so the breakpoint count stays manageable.
+### Known gap: reaching the cutscene from a fresh boot
+
+OpenBIOS doesn't fully implement the pad-poll commands Spyro 1 issues
+(it logs `Unknown command for pad: 43` and ignores them), so scripted
+`setOverride(3)` Start presses don't advance past the title screen. A
+real Sony BIOS (e.g. SCPH-1001) would handle this — but that path
+currently SIGSEGVs pcsx-redux on `--run`, so neither path is end-to-end
+clean here without manual intervention.
+
+Workaround until that's fixed: run pcsx-redux interactively (drop
+`--no-ui`), navigate manually to the cutscene with the keyboard, save
+state at the cutscene entry, then re-run with the Lua script + a
+preloaded save state to dump from the cutscene frame range.
+
+Or — the simpler path — sidestep the live-emulation requirement
+entirely by vendoring pcsx-redux's GTE into openpete and adding a
+third "pcsx" engine to the in-tree trace logger. The GTE math has no
+dependencies beyond a stub `g_emulator->m_cpu->m_regs.{CP2D,CP2C}`
+register file plus PGXP no-ops. Same diff recipe, no input replay.
