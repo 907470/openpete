@@ -39,6 +39,13 @@ target_include_directories(openpete-spyro1 PRIVATE ${SPYRO_GENERATED})
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
+# Backtrace symbols: pass -rdynamic so non-static functions resolve to names
+# in the crash handler's backtrace_symbols_fd output. Cheap (~bigger symtab)
+# and only relevant on the Linux/glibc build path.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(openpete-spyro1 PRIVATE -rdynamic)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND TARGET SDL2::SDL2main)
     target_link_libraries(openpete-spyro1 PRIVATE SDL2::SDL2main)
 elseif(TARGET SDL2::SDL2main)

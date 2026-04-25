@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__GLIBC__) || defined(__APPLE__)
+#  include <execinfo.h>
+#  define OPENPETE_HAS_BACKTRACE 1
+#endif
+
 /* The runtime hands us a CPUState* via openpete_psx_set_diag_cpu (defined
  * here, header-decl optional). On a crash we print whatever we have. */
 static CPUState* g_diag_cpu = NULL;
@@ -38,6 +43,17 @@ static void on_signal(int sig) {
     } else {
         fprintf(stderr, "  (no CPUState registered)\n");
     }
+
+#ifdef OPENPETE_HAS_BACKTRACE
+    /* Host-side backtrace pinpoints the actual fault site (the recompiled MIPS
+     * pc field above is just whatever was last written to the saved CPU). */
+    {
+        void* frames[32];
+        int n = backtrace(frames, 32);
+        fprintf(stderr, "  host backtrace (%d frames):\n", n);
+        backtrace_symbols_fd(frames, n, fileno(stderr));
+    }
+#endif
     fflush(stderr);
 
     /* Restore default handler and re-raise so the OS can dump core etc. */

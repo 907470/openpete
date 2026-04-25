@@ -37,6 +37,14 @@ extern "C" {
 #include "psx/libapi.h"
 #include "PsyX/PsyX_public.h"
 
+/* Internal PsyCross helpers we need to reach for the OT thunk. They live
+ * in src/gpu/PsyX_GPU.h, which isn't on the public include path; redeclare
+ * the two we use. Both are linkable directly from the static lib. */
+extern "C" {
+    void ClearSplits();
+    void DrawAllSplits();
+}
+
 extern "C" {
 
 /* --- Helpers ------------------------------------------------------------- */
@@ -193,29 +201,125 @@ void psyq_SetDrawMode(CPUState* cpu) {
                 (RECT16*)PTR(cpu->read_word(cpu->sp + 0x10)));
 }
 
+/* OT-translation scratch buffer.
+ *
+ * The recompiled MIPS code writes 4-byte PSX P_TAGs (`addr:24 | len:8`) and
+ * 4-byte-aligned primitive payloads. PsyCross compiled with
+ * USE_EXTENDED_PRIM_POINTERS=1 (the default on x86_64) expects 12-byte P_TAG
+ * headers (`uintptr_t addr; uint16_t len; uint16_t pgxp_index`) followed by
+ * the same payload — i.e. the payload format is identical, only the header
+ * size differs. Walking the PSX chain with PsyCross macros dereferences a
+ * 24-bit field as a host pointer and SEGVs.
+ *
+ * Each frame we rebuild the chain in host scratch memory: one PsyCross-style
+ * P_TAG slot per PSX entry, payload memcpy'd verbatim, addr fields chained to
+ * the next host slot, last slot pointed at PsyCross's `prim_terminator`. */
+static uint8_t  g_ot_scratch[2u * 1024u * 1024u];
+static size_t   g_ot_scratch_used = 0;
+static uint8_t* g_ot_slot_host[16384];
+static int      g_ot_slot_count = 0;
+
 void psyq_DrawOTag(CPUState* cpu) {
-    /* Count primitives traversed in the OT for the Phase 1d exit criterion
-     * "GamestateDraw emits ≥1 primitive per frame". OT walks a singly-linked
-     * list via the low 24 bits of each tag; chain ends when low24 == 0xFFFFFF.
-     * We mirror that walk against host RAM (PsyCross does a parallel walk in
-     * its own DrawOTag for actually issuing GR_ commands). */
+    g_ot_scratch_used = 0;
+    g_ot_slot_count = 0;
+
     uint32_t addr = cpu->a0;
-    uint32_t safety = 0u;
-    while (addr != 0u && safety < 0x100000u) {
-        uint8_t* p = (uint8_t*)openpete_psx_to_host_ptr(addr);
-        if (!p) break;
+    while (g_ot_slot_count < (int)(sizeof(g_ot_slot_host) / sizeof(g_ot_slot_host[0]))) {
+        if (addr == 0u) break;
+        uint8_t* host = (uint8_t*)openpete_psx_to_host_ptr(addr);
+        if (!host) break;
+
         uint32_t tag;
-        memcpy(&tag, p, sizeof(tag));
-        uint32_t next  = tag & 0x00FFFFFFu;
-        uint32_t plen  = (tag >> 24) & 0xFFu;
-        if (plen != 0u) openpete_primitives_drawn++;
+        std::memcpy(&tag, host, 4);
+        uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
+        uint32_t next = tag & 0x00FFFFFFu;
+
+        /* Payload-size estimate. The PSX P_TAG length is 8-bit (max 1020 bytes
+         * payload), but variable-length primitives like LoadImage (code 0xA0)
+         * embed image data right after the struct that doesn't necessarily
+         * fit in 8 bits — the original GPU reads it via the rect's w×h. We
+         * peek at the code byte (offset 7 in PSX layout: tag@0..3, code@4..7
+         * with the high byte being the GP0 command code) and compute extra
+         * bytes from the embedded rect when needed. */
+        /* Only extend payload for real primitives (plen > 0). OT anchor
+         * entries have plen == 0; their post-tag bytes may contain stale
+         * data left from the previous frame and must not be interpreted. */
+        size_t payload_bytes = (size_t)plen * 4u;
+        if (plen >= 3) {
+            uint8_t code_byte = host[7];
+            if ((code_byte & 0xF0u) == 0xA0u) {
+                /* DR_LOAD: code[0]=cmd, code[1]=xy, code[2]=wh; image data
+                 * follows. Need at least 12 (code) + w*h*2 bytes. */
+                uint32_t wh;
+                std::memcpy(&wh, host + 4 + 8, 4);  /* code[2] @ offset tag(4)+code[0..1](8) */
+                uint32_t w = wh & 0xFFFFu;
+                uint32_t h = (wh >> 16) & 0xFFFFu;
+                size_t img_bytes = (size_t)w * (size_t)h * 2u;
+                size_t needed    = 12u + img_bytes;
+                if (needed > payload_bytes) payload_bytes = needed;
+            }
+        }
+
+        size_t slot_size = 12u + payload_bytes;
+        if (g_ot_scratch_used + slot_size > sizeof(g_ot_scratch)) {
+            OPL_WARN_F("thunks", "DrawOTag scratch overflow at slot %d (PSX 0x%08X)",
+                       g_ot_slot_count, addr);
+            break;
+        }
+        uint8_t* out = g_ot_scratch + g_ot_scratch_used;
+        g_ot_scratch_used += slot_size;
+        g_ot_slot_host[g_ot_slot_count++] = out;
+
+        /* Header: addr filled in below; len = payload longs; pgxp_index = none. */
+        uint16_t lenField  = (uint16_t)(payload_bytes / 4u);
+        uint16_t pgxpField = 0xFFFFu;
+        std::memcpy(out + 8,  &lenField,  2);
+        std::memcpy(out + 10, &pgxpField, 2);
+        if (payload_bytes != 0u) {
+            std::memcpy(out + 12, host + 4, payload_bytes);
+            if (plen != 0u) openpete_primitives_drawn++;
+        }
+
         if (next == 0x00FFFFFFu) break;
-        /* OT uses 24-bit PSX addresses; or with 0x80000000 to lift them back
-         * to KSEG0 for our host translator. */
         addr = next | 0x80000000u;
-        safety++;
     }
-    DrawOTag((u_long*)PTR(cpu->a0));
+
+    /* Patch each slot's addr to point at the next slot's host pointer; last
+     * slot terminates with `prim_terminator`. */
+    for (int i = 0; i < g_ot_slot_count; i++) {
+        uintptr_t next_host = (i + 1 < g_ot_slot_count)
+            ? (uintptr_t)g_ot_slot_host[i + 1]
+            : (uintptr_t)&prim_terminator;
+        std::memcpy(g_ot_slot_host[i], &next_host, sizeof(uintptr_t));
+    }
+
+    /* Submit each converted slot as a single-primitive call.
+     *
+     * Why not PsyCross's DrawOTag? It walks the chain via
+     * ParsePrimitivesLinkedList(p, 0), whose inner loop advances by
+     * `(primLength + P_LEN) * 4` bytes per sub-primitive. With P_LEN=3
+     * (extended pointers on x86_64) and PSX OT entries that don't always
+     * pack cleanly into that step (e.g. a primitive whose ParsePrimitive
+     * returns a hardcoded primLength different from what tagLength implies),
+     * the loop walks past the slot's payload into uninitialised scratch and
+     * occasionally hits a 0xA?-class byte that triggers LoadImage on garbage.
+     *
+     * Using DrawPrim path (singlePrimitive=1) bypasses that loop entirely:
+     * each slot is one primitive, parsed once. DrawAllSplits flushes the
+     * accumulated batches at end. */
+    if (g_ot_slot_count > 0) {
+        if (PsyX_BeginScene()) {
+            ClearSplits();
+        }
+        for (int i = 0; i < g_ot_slot_count; i++) {
+            uint8_t*  s = g_ot_slot_host[i];
+            uint16_t  lf;
+            std::memcpy(&lf, s + 8, 2);
+            if (lf == 0u) continue;  /* OT anchor / terminator entry */
+            DrawPrim(s);
+        }
+        DrawAllSplits();
+    }
 }
 
 /* --- libgte -------------------------------------------------------------- */
