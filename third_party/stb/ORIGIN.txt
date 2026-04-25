@@ -1,0 +1,4 @@
+upstream: https://github.com/nothings/stb
+files: stb_image_write.h (master, fetched 2026-04-25)
+notes: single-header public domain PNG/BMP/JPG writer.
+       Compile in exactly one translation unit with #define STB_IMAGE_WRITE_IMPLEMENTATION.

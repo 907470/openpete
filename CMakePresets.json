@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "linux-debug",
+      "displayName": "Linux native (Debug)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux native (RelWithDebInfo)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-mingw",
+      "displayName": "Windows x64 via MinGW (cross from Linux/WSL2)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-mingw",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows native MSVC (placeholder; not validated this phase)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "architecture": { "value": "x64" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "macos-universal",
+      "displayName": "macOS universal (placeholder; not validated this phase)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos-universal",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64;arm64"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-debug",     "configurePreset": "linux-debug" },
+    { "name": "linux-release",   "configurePreset": "linux-release" },
+    { "name": "windows-mingw",   "configurePreset": "windows-mingw" },
+    { "name": "windows-msvc",    "configurePreset": "windows-msvc" },
+    { "name": "macos-universal", "configurePreset": "macos-universal" }
+  ]
+}
