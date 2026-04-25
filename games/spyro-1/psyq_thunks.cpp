@@ -635,12 +635,28 @@ void psyq_CdControlF(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdControlF(com, (u_char*)PTR(cpu->a1));
 }
 
+/* Active-overlay tracker (defined in dispatch_chain.c). Each overlay's
+ * `LEVEL_BALLOON(id, …)` (overlays.ld) burns the overlay-id as the first
+ * word at +0x00. After CdRead settles bytes at 0x8007AA38 we read that
+ * word and update the dispatch state. Cutscene-style loads to the same
+ * vaddr write LevelHeader / VRAM bytes whose first word is never one of
+ * our overlay IDs, so they leave the tracker alone — but they DO clobber
+ * the overlay's bytes, so an actual fix for the data corruption still
+ * needs to keep level_10's bytes coherent (separate task). */
+extern void spyro_set_active_overlay(int which);
+enum {
+    SPYRO_OVERLAY_NONE        = 0,
+    SPYRO_OVERLAY_TITLESCREEN = 1,
+    SPYRO_OVERLAY_LEVEL_10    = 2,
+};
+
 void psyq_CdRead(CPUState* cpu) {
     int sectors = (int)cpu->a0;
     u_long* buf = (u_long*)PTR(cpu->a1);
     int     mode = (int)cpu->a2;
     OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X",
                sectors, cpu->a1, mode);
+
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we
@@ -669,6 +685,21 @@ void psyq_CdRead(CPUState* cpu) {
         OPL_WARN_F("thunks",
                    "CdRead: m_IsReading still set after callback (before=%u after=%u cb=0x%08X)",
                    before, after, g_cd_read_cb);
+    }
+
+    /* After the bytes have actually settled in RAM, peek the overlay-id
+     * word at 0x8007AA38. The recompiler treats `LEVEL_BALLOON(id, …)` as
+     * `LONG(id)`, so the id is the first word of every overlay; cutscene
+     * scratch writes to the same vaddr have a different first word and
+     * leave the tracker unchanged. */
+    if (cpu->a1 == 0x8007AA38u) {
+        uint32_t magic = 0;
+        memcpy(&magic, ram + 0x7AA38, 4);
+        if (magic == 0x0000000Bu) {
+            spyro_set_active_overlay(SPYRO_OVERLAY_LEVEL_10);
+        } else if (magic == 0x00000030u) {
+            spyro_set_active_overlay(SPYRO_OVERLAY_TITLESCREEN);
+        }
     }
 }
 
