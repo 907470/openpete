@@ -41,18 +41,21 @@ SYNTH="tools/synth_overlay_exe.py"
 mkdir -p "$OUT/titlescreen" "$OUT/level_10"
 
 # Main EXE forced entries:
-#   0x80024054 — code label inside r_pete renderer (computed-jump target;
-#                  recompiler's static analysis can't see it, so add explicitly)
 #   0x80032AB0 — small util only reached from the titlescreen overlay's
 #                  cutscene-frame-pump path; main-EXE callers use a different
 #                  entry, so the recompiler classified 0x80032AB8 as the
-#                  function start and missed 0x80032AB0
+#                  function start and missed 0x80032AB0.
+# Plus a manifest of `glabel D_<addr>` and adjacent MFC2-stub entries
+# from spyro-1/asm/**/*.s — handwritten asm computed-jump targets the
+# static analyzer can't see (collision.s GTE MAC1/MAC2/MAC3 dispatch
+# tables, etc.). 0x80024054 is in this manifest. Regenerate via
+# tools/extract_asm_dispatch_targets.py.
 echo "[regen] Recompiling PSX.EXE"
 "$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
     --output-dir="$OUT" \
     --external-symbols=games/spyro-1/manifest/psyq.toml \
     --external-prefix=psyq_ \
-    --forced-entry=0x80024054 \
+    --extra-funcs=games/spyro-1/manifest/asm_dispatch_targets.txt \
     --forced-entry=0x80032AB0 \
     --skip-on-error
 
