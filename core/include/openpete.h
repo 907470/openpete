@@ -76,6 +76,14 @@ typedef struct {
      * the next event. Keys (matches default kbd map): return/enter, space,
      * x, c, z, v, up, down, left, right. NULL = no scripted input. */
     const char* press_script;
+
+    /* Test harness: fast-forward VSync(0) calls until openpete_frame >= N.
+     * Bumps the frame counter without yielding to the host fiber, so the
+     * game advances as fast as possible without presenting/pacing. Skips
+     * Spyro's two 3.5s VSync busy-waits in Initialize() (Sony+Universal
+     * splash windows) — saves ~7s of black-screen boot per iteration. 0 =
+     * disabled. */
+    int fast_boot_until_frame;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

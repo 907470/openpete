@@ -106,18 +106,29 @@ void psyq_VSync(CPUState* cpu) {
                    mode, openpete_frame, calls);
     }
     if (mode == 0) {
-        if (openpete_host_fiber) {
+        if (openpete_fast_boot_until_frame > 0 &&
+            (int)openpete_frame < openpete_fast_boot_until_frame) {
+            /* Fast-boot: bump the counter without yielding so the game's
+             * Initialize() busy-waits run as fast as possible. Nothing is
+             * being rendered during these waits anyway (Sony+Universal
+             * splash windows are intentional VSync(-1) spins).
+             * Skip the VSync callback during fast-boot too: PadVSync would
+             * be writing to g_PadBuffer based on pre-input state, which is
+             * meaningless at boot and risks committing stale presses. */
+            openpete_frame++;
+        } else if (openpete_host_fiber) {
             /* openpete_yield_to_host() bumps openpete_frame and switches to
              * the host fiber. Returns when host resumes us for the next
              * frame, so cpu->v0 below sees the post-yield frame counter. */
             openpete_yield_to_host();
+            /* Fire registered VSync callback (PadVSync polls pad state). */
+            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         } else {
             /* No fiber loop running (smoke-test path) — fall back to PsyCross's
              * busy wait so semantics still match. */
             (void)VSync(0);
+            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         }
-        /* Fire registered VSync callback (PadVSync polls pad state). */
-        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
     }
     cpu->v0 = (uint32_t)openpete_frame;
 }
@@ -176,7 +187,29 @@ void psyq_MoveImage(CPUState* cpu) {
 }
 
 void psyq_PutDispEnv(CPUState* cpu) {
-    PutDispEnv((DISPENV*)PTR(cpu->a0));
+    DISPENV* env = (DISPENV*)PTR(cpu->a0);
+    /* PsyCross's PsyX_EndScene asserts disp.x >= 0 / disp.y >= 0 inside
+     * GR_CopyRGBAFramebufferToVRAM. RECT16 fields are signed shorts, and
+     * after LoadCutscene ran with two missing overlays (func_80024054,
+     * func_800857CC) we saw the renderer trip on a negative x. Log the
+     * offending DispEnv once so we can identify which call site, then
+     * clamp to keep the renderer alive. */
+    if (env && (env->disp.x < 0 || env->disp.y < 0)) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            OPL_WARN_F("thunks",
+                       "PutDispEnv: clamping negative disp rect "
+                       "(x=%d y=%d w=%d h=%d isinter=%u isrgb24=%u) ra=0x%08X",
+                       (int)env->disp.x, (int)env->disp.y,
+                       (int)env->disp.w, (int)env->disp.h,
+                       (unsigned)env->isinter, (unsigned)env->isrgb24,
+                       cpu->ra);
+        }
+        if (env->disp.x < 0) env->disp.x = 0;
+        if (env->disp.y < 0) env->disp.y = 0;
+    }
+    PutDispEnv(env);
 }
 
 void psyq_PutDrawEnv(CPUState* cpu) {

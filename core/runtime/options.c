@@ -86,6 +86,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--press") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->press_script = v; i++;
+        } else if (strcmp(a, "--fast-boot-until-frame") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->fast_boot_until_frame = atoi(v); i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -106,7 +109,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
                 "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
                 "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
-                "  --press SCRIPT             scripted key presses, e.g. '600:return,1200:x,1800:return'\n",
+                "  --press SCRIPT             scripted key presses, e.g. '600:return,1200:x,1800:return'\n"
+                "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

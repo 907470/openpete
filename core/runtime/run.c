@@ -459,6 +459,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     g_game.entry = opts->run_recomp_addr;
     g_game.gp    = opts->test_recomp_gp;
 
+    /* Wire optional fast-boot before any thunk runs. Read by psyq_VSync. */
+    openpete_fast_boot_until_frame = opts->fast_boot_until_frame;
+    if (openpete_fast_boot_until_frame > 0) {
+        OPL_INFO_F("boot", "fast-boot: skipping host yields until frame=%d",
+                   openpete_fast_boot_until_frame);
+    }
+
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
@@ -604,13 +611,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * above the loop). If we're already past the deadline (slow GL frame,
          * heavy game work, debugger pause), don't try to catch up by skipping
          * the wait — but if we fell behind by >100 ms (e.g. window drag), drop
-         * the accumulator forward so we don't busy-burn the next 6 frames. */
-        next_yield_ms += frame_period_ms;
-        Uint32 now_ms = SDL_GetTicks();
-        if ((double)now_ms < next_yield_ms) {
-            SDL_Delay((Uint32)(next_yield_ms - (double)now_ms));
-        } else if ((double)now_ms > next_yield_ms + 100.0) {
-            next_yield_ms = (double)now_ms;
+         * the accumulator forward so we don't busy-burn the next 6 frames.
+         *
+         * Hold Tab to disable the limiter and run as fast as the GL/CPU
+         * pipeline allows. Useful for chewing through cutscenes / loading
+         * screens while iterating on a downstream gap. We re-anchor
+         * next_yield_ms to "now" while Tab is held so that releasing it
+         * resumes 60 Hz pacing without trying to catch up on dropped
+         * frames. */
+        const Uint8* kbd = SDL_GetKeyboardState(NULL);
+        bool unlock_fps = (kbd && kbd[SDL_SCANCODE_TAB]);
+        if (unlock_fps) {
+            next_yield_ms = (double)SDL_GetTicks();
+        } else {
+            next_yield_ms += frame_period_ms;
+            Uint32 now_ms = SDL_GetTicks();
+            if ((double)now_ms < next_yield_ms) {
+                SDL_Delay((Uint32)(next_yield_ms - (double)now_ms));
+            } else if ((double)now_ms > next_yield_ms + 100.0) {
+                next_yield_ms = (double)now_ms;
+            }
         }
     }
 

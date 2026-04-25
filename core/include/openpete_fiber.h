@@ -21,6 +21,12 @@ extern unsigned openpete_frame;          /* incremented on each VSync(0) yield *
 extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
 extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 
+/* Fast-boot: while openpete_frame < this value, VSync(0) thunks bump the
+ * frame counter without yielding to the host. Lets the boot-intro busy
+ * waits run as fast as possible (no rendering happens during them anyway).
+ * 0 = disabled. Set by openpete_run from --fast-boot-until-frame. */
+extern int      openpete_fast_boot_until_frame;
+
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through; this is
  * the "VBlank yield" used by the VSync(0) thunk. */
 void openpete_yield_to_host(void);
