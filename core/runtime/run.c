@@ -333,6 +333,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
+    /* Wall-clock pacing: PSX vblank is 60 Hz NTSC. Each VSync(0) yield must
+     * advance >=1/60s of real time, otherwise the game fiber races ahead and
+     * the cutscene plays at >2x speed. PsyCross's swap-interval path only
+     * gates the GL present, and we present every other yield (Spyro is 30fps,
+     * see the DrawOTag note above), so vsync alone wouldn't pace the empty
+     * iterations. We pace every iteration here with a fractional accumulator
+     * to avoid the integer-ms drift you'd get from SDL_Delay(16). */
+    const double frame_period_ms = 1000.0 / 60.0;  /* 16.6667 */
+    double next_yield_ms = (double)start;
+
     while (!quit) {
         /* Hand control to the game until the next VSync(0) yield. */
         co_switch((cothread_t)openpete_game_fiber);
@@ -392,6 +402,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_primitives_drawn = 0u;
 
         /* No PsyX_BeginScene here — DrawOTag starts the scene on demand. */
+
+        /* Pace this vblank to ~16.667 ms wall time (see frame_period_ms note
+         * above the loop). If we're already past the deadline (slow GL frame,
+         * heavy game work, debugger pause), don't try to catch up by skipping
+         * the wait — but if we fell behind by >100 ms (e.g. window drag), drop
+         * the accumulator forward so we don't busy-burn the next 6 frames. */
+        next_yield_ms += frame_period_ms;
+        Uint32 now_ms = SDL_GetTicks();
+        if ((double)now_ms < next_yield_ms) {
+            SDL_Delay((Uint32)(next_yield_ms - (double)now_ms));
+        } else if ((double)now_ms > next_yield_ms + 100.0) {
+            next_yield_ms = (double)now_ms;
+        }
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;
