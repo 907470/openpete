@@ -15,5 +15,10 @@ void psyq_stub_hit(const char* name, uint32_t addr, CPUState* cpu) {
             "  ra=0x%08X sp=0x%08X gp=0x%08X\n",
             name, addr,
             cpu ? cpu->ra : 0u, cpu ? cpu->sp : 0u, cpu ? cpu->gp : 0u);
+    /* MinGW's stdio buffers stderr when stderr is redirected (e.g. via
+     * `>file 2>&1` or running .exe under WSL2 interop). abort() goes
+     * straight to TerminateProcess without flushing, so the stub-hit
+     * message would be lost — looking like a silent window-open/close. */
+    fflush(stderr);
     abort();
 }

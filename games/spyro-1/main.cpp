@@ -11,6 +11,14 @@
 #include <cstdio>
 
 int main(int argc, char** argv) {
+    /* MinGW buffers stderr when it isn't a TTY (true for `>file 2>&1`
+     * and for WSL2 interop pipes). abort() — which the PSYQ stubs use to
+     * surface unimplemented-surface hits — doesn't flush, so otherwise
+     * useful diagnostics get dropped right before exit. Unbuffer once at
+     * startup. Linux behaviour is unchanged (line-buffered → unbuffered
+     * is fine for stderr). */
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();

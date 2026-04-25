@@ -125,12 +125,63 @@ void openpete_psx_install_crash_handler(void) {
     OPL_INFO_F("boot", "crash handler installed (SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS)");
 }
 
-#else  /* _WIN32 — POSIX sigaction surface unavailable under MinGW */
+#else  /* _WIN32 — POSIX sigaction unavailable; use Win32 SEH instead */
 
-void openpete_psx_set_diag_cpu(CPUState* cpu) { (void)cpu; }
+#include <windows.h>
+
+static CPUState* g_diag_cpu = NULL;
+void openpete_psx_set_diag_cpu(CPUState* cpu) { g_diag_cpu = cpu; }
+
+static const char* seh_name(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION:    return "EXCEPTION_ACCESS_VIOLATION";
+        case EXCEPTION_STACK_OVERFLOW:      return "EXCEPTION_STACK_OVERFLOW";
+        case EXCEPTION_ILLEGAL_INSTRUCTION: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO:  return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_PRIV_INSTRUCTION:    return "EXCEPTION_PRIV_INSTRUCTION";
+        case EXCEPTION_BREAKPOINT:          return "EXCEPTION_BREAKPOINT";
+        case EXCEPTION_INT_OVERFLOW:        return "EXCEPTION_INT_OVERFLOW";
+        case 0xC0000409u:                   return "STATUS_STACK_BUFFER_OVERRUN";
+        default:                            return "?";
+    }
+}
+
+static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    fprintf(stderr, "\n=== openpete crash: %s (0x%08lX) ===\n",
+            seh_name(code), (unsigned long)code);
+    if (code == EXCEPTION_ACCESS_VIOLATION
+        && ep->ExceptionRecord->NumberParameters >= 2) {
+        fprintf(stderr, "  fault addr=0x%llx kind=%s\n",
+                (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1],
+                ep->ExceptionRecord->ExceptionInformation[0] == 0 ? "read" :
+                ep->ExceptionRecord->ExceptionInformation[0] == 1 ? "write" :
+                ep->ExceptionRecord->ExceptionInformation[0] == 8 ? "DEP" : "?");
+    }
+    CONTEXT* cx = ep->ContextRecord;
+    fprintf(stderr,
+            "  host RIP=0x%llx RSP=0x%llx RBP=0x%llx\n",
+            (unsigned long long)cx->Rip,
+            (unsigned long long)cx->Rsp,
+            (unsigned long long)cx->Rbp);
+    if (g_diag_cpu) {
+        fprintf(stderr,
+                "  pc=0x%08X ra=0x%08X sp=0x%08X gp=0x%08X\n"
+                "  v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X\n",
+                g_diag_cpu->pc, g_diag_cpu->ra, g_diag_cpu->sp, g_diag_cpu->gp,
+                g_diag_cpu->v0, g_diag_cpu->v1, g_diag_cpu->a0, g_diag_cpu->a1);
+    } else {
+        fprintf(stderr, "  (no CPUState registered)\n");
+    }
+    fflush(stderr);
+    /* Hand back to Windows so the OS still terminates / can produce a
+     * dump. EXECUTE_HANDLER would swallow the exception. */
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 void openpete_psx_install_crash_handler(void) {
-    OPL_INFO_F("boot", "crash handler: stub (Windows/MinGW)");
+    SetUnhandledExceptionFilter(on_seh);
+    OPL_INFO_F("boot", "crash handler installed (Win32 SEH unhandled-exception filter)");
 }
 
 #endif  /* !_WIN32 */
