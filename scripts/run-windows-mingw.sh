@@ -11,19 +11,34 @@
 # Usage:
 #   scripts/run-windows-mingw.sh [args passed to openpete-spyro1.exe...]
 #
-# Examples:
-#   # Sanity smoke-run, headless, screenshot at frame 30
+# With no args, the script defaults to "boot Spyro to gameplay":
+#   --disc <repo>/games/spyro-1/spyro-1/build/SCUS-94228.cue (or
+#       $OPENPETE_DISC if set)
+#   --run-recomp 0x80012204                 # Spyro main()
+#   --fast-boot-until-frame 850             # skip boot intro yields
+#   --press 861:return,931:return,1037:return,1073:return,1919:return
+#       # walk past the title-screen prompts
+#
+# Each default is independent: pass an explicit value for any single
+# flag and only that one is overridden. Examples:
+#   # Just sanity smoke (overrides every default since --headless +
+#   # --frame-limit dominate, and we pass --disc/--run-recomp/--press
+#   # explicitly to neutralize them):
 #   scripts/run-windows-mingw.sh --headless --frame-limit 60 \
 #       --screenshot-on-frame 30 --output /tmp/shot.png
 #
-#   # Boot the matching-decomp's main on the disc (windowed)
-#   scripts/run-windows-mingw.sh --run-recomp 0x80012204 \
-#       --fast-boot-until-frame 850 --max-runtime-seconds 60
+#   # Boot Spyro with a different runtime budget; defaults fill the
+#   # rest:
+#   scripts/run-windows-mingw.sh --max-runtime-seconds 30
 #
-# Disc resolution (when no `--disc` is in the args):
+# Disc resolution (when no `--disc` is in the args, first match wins):
 #   1. $OPENPETE_DISC (whatever location it points at, .cue or .bin)
-#   2. <repo>/games/spyro-1/spyro-1/build/SCUS-94228.cue (matching-decomp)
-#   3. (skipped — no implicit disc, .exe will run without)
+#   2. <repo>/games/spyro-1/spyro-1/build/SCUS-94228.cue
+#      (matching-decomp built inside the vendored submodule)
+#   3. <repo>/../spyro-1/build/SCUS-94228.cue
+#      (matching-decomp checked out as a sibling of openpete)
+#   4. <repo>/../roms/SCUS-94228/SCUS-94228.cue (per README §Disc)
+#   5. (skipped — no implicit disc, .exe will run without)
 #
 # Returns the exit code of the .exe (or the build step on build failure).
 
@@ -98,25 +113,54 @@ while (( $# )); do
     shift
 done
 
-# Reset saw_disc to actually-saw-disc (only --disc counts).
-saw_disc=0
-for a in "${forwarded[@]}"; do
-    case "$a" in --disc|--disc=*) saw_disc=1; break ;; esac
-done
+# --- Default-flag injection ----------------------------------------------
+# If any of these flags is missing from the argv, prepend the matching
+# default. They make zero-arg invocation "boot to gameplay": dispatch
+# main(), skip the boot-intro yields, and replay the keypress sequence
+# that walks past the title-screen prompts.
+has_flag() {
+    local needle="$1"
+    for a in "${forwarded[@]}"; do
+        case "$a" in "$needle"|"$needle="*) return 0 ;; esac
+    done
+    return 1
+}
 
-# --- Default disc when none was passed -----------------------------------
-if [[ $saw_disc -eq 0 ]]; then
+prepend() { forwarded=("$@" "${forwarded[@]}"); }
+
+if ! has_flag --disc; then
     DEFAULT_DISC=""
-    if [[ -n "${OPENPETE_DISC:-}" && -f "$OPENPETE_DISC" ]]; then
-        DEFAULT_DISC="$OPENPETE_DISC"
-    elif [[ -f "$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.cue" ]]; then
-        DEFAULT_DISC="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.cue"
-    fi
+    for candidate in \
+        "${OPENPETE_DISC:-}" \
+        "$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.cue" \
+        "$OPENPETE_ROOT/../spyro-1/build/SCUS-94228.cue" \
+        "$OPENPETE_ROOT/../roms/SCUS-94228/SCUS-94228.cue" \
+    ; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            DEFAULT_DISC="$candidate"
+            break
+        fi
+    done
     if [[ -n "$DEFAULT_DISC" ]]; then
-        DISC_W="$(wslpath -w "$DEFAULT_DISC")"
         yellow "  (no --disc passed; defaulting to $DEFAULT_DISC)"
-        forwarded=(--disc "$DISC_W" "${forwarded[@]}")
+        prepend --disc "$(wslpath -w "$DEFAULT_DISC")"
     fi
+fi
+
+if ! has_flag --run-recomp; then
+    yellow "  (no --run-recomp; defaulting to 0x80012204 — Spyro main)"
+    prepend --run-recomp 0x80012204
+fi
+
+if ! has_flag --fast-boot-until-frame; then
+    yellow "  (no --fast-boot-until-frame; defaulting to 850 — past boot intro)"
+    prepend --fast-boot-until-frame 850
+fi
+
+if ! has_flag --press; then
+    DEFAULT_PRESS="861:return,931:return,1037:return,1073:return,1919:return"
+    yellow "  (no --press; defaulting to title-screen walkthrough)"
+    prepend --press "$DEFAULT_PRESS"
 fi
 
 # --- Run -----------------------------------------------------------------
