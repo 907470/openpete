@@ -369,18 +369,42 @@ void psyq_DrawOTag(CPUState* cpu) {
                 case 0xA0: /* DR_LOAD — variable; getlen returns slot's lenField */
                     expected_longs = (uint16_t)(payload_bytes / 4u);
                     break;
-                case 0xE0:
-                    /* DR_ENV / DR_TPAGE — variable-length GP0 env packets that
-                     * `ProcessDrawEnv` walks until it hits a subtype-0 long.
-                     * The PSX-side P_TAG.len doesn't always equal the count
-                     * of valid env codes, which makes the non-singlePrimitive
-                     * walker overshoot ("got invalid tag length 255, code 237"
-                     * + downstream "Unhandled zero length f0 primitive" spam).
-                     * Skip them as anchors until we walk env codes ourselves
-                     * to derive the real length — the env state was already
-                     * applied via the matching `psyq_PutDrawEnv` call. */
-                    expected_longs = 0u;
+                case 0xE0: {
+                    /* DR_TPAGE / DR_MODE / DR_TWIN / DR_AREA / DR_OFFSET / DR_STP
+                     * — variable-length env packets. PSYQ's macros sometimes
+                     * over-allocate `plen`: e.g. `setDrawMode` calls
+                     * `setlen(p, 3)` while only writing `code[0]=E1xxxxx` and
+                     * `code[1]=E2xxxxx` (code[2] is uninitialized memory).
+                     * PsyCross's `ProcessDrawEnv` walks `polyTag->len` longs OR
+                     * stops at the first subtype-0 long, whichever comes first;
+                     * the OUTER walker then expects `primLength == tagLength`
+                     * to land on `endPacket`.
+                     *
+                     * To make those match we mimic ProcessDrawEnv's stop-rule
+                     * here and set `lenField` to the actual count of valid env
+                     * codes (subtypes 1..6). Anything else (subtype-0,
+                     * uninitialized 0xFF padding, etc.) terminates the walk.
+                     *
+                     * Earlier this branch dropped 0xE0 prims as anchors,
+                     * which silently lost any DR_TPAGE/DR_MODE the game
+                     * injects mid-frame to switch texture pages. Spyro's
+                     * cutscene OT chains don't currently exercise this (the
+                     * Ex column of psyq_DrawOTag's histogram stays at 0
+                     * through LoadCutscene), but other game states do, so
+                     * leaving env codes intact is the right default. */
+                    uint32_t env_count = 0u;
+                    uint32_t scan_max  = (uint32_t)plen;
+                    if (scan_max > 16u) scan_max = 16u;
+                    for (uint32_t i = 0; i < scan_max; ++i) {
+                        uint32_t code_word;
+                        std::memcpy(&code_word, host + 4 + i * 4u, 4);
+                        uint32_t sub = (code_word >> 24) & 0x0Fu;
+                        if (sub == 0u || sub > 6u) break;
+                        ++env_count;
+                    }
+                    expected_longs = (uint16_t)env_count;
                     break;
+                }
                 default:
                     break;
             }
