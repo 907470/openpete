@@ -1,16 +1,18 @@
-// core/runtime/run.c — Phase 0b run loop.
+// core/runtime/run.c — entry point: boot PSX EXE, optionally smoke-test a
+// recompiled function, then drop into the SDL run loop.
 //
-// Owns: SDL setup, render loop, frame counter, screenshot trigger,
-// exit-condition tracking. Game-agnostic — knows nothing about Spyro.
-//
-// Phase 1b will replace this with the recompiled-game dispatcher; for
-// now, the loop just clears to a colored background each frame.
+// Phase 1b adds the boot path. The actual main loop is still a clear-color
+// stub — Phase 1c will replace it with the recompiled `main` driving the
+// gamestate dispatcher.
 
 #include "openpete.h"
 #include "openpete_log.h"
+#include "openpete_psx.h"
 #include "screenshot.h"
+#include "game_extras.h"
 
 #include <SDL.h>
+#include <libco.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,12 +20,86 @@
 #define WIN_W 640
 #define WIN_H 480
 
-/* A faint blue-gray so we can visually distinguish "Phase 0b binary
- * actually drew something" vs "garbage / never ran". Also keeps the PNG
- * non-zero-byte. RGB 0x10/0x14/0x20. */
 #define CLEAR_R 0x10
 #define CLEAR_G 0x14
 #define CLEAR_B 0x20
+
+/* Implemented in core/runtime/exe_loader.cpp. */
+extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
+                                                const char* exe_filename,
+                                                size_t* out_size);
+extern uint8_t* openpete_psx_read_file(const char* path, size_t* out_size);
+
+extern void openpete_psx_set_diag_cpu(CPUState* cpu);
+
+/* Phase 1b: try to load a PSX EXE; return 0 on success, non-zero on
+ * failure (caller decides whether to continue without it). On success
+ * sets *out_bytes (caller frees) and *out_size. */
+static int try_load_exe(const openpete_options_t* opts,
+                        uint8_t** out_bytes, size_t* out_size) {
+    *out_bytes = NULL;
+    *out_size  = 0;
+
+    if (opts->exe_path) {
+        OPL_INFO_F("boot", "loading EXE from --exe-path: %s", opts->exe_path);
+        *out_bytes = openpete_psx_read_file(opts->exe_path, out_size);
+        return *out_bytes ? 0 : 1;
+    }
+    if (opts->disc_path) {
+        OPL_INFO_F("boot", "loading EXE from --disc: %s (%s)",
+                   opts->disc_path, game_get_exe_filename());
+        *out_bytes = openpete_psx_load_exe_from_disc(
+            opts->disc_path, game_get_exe_filename(), out_size);
+        return *out_bytes ? 0 : 1;
+    }
+    return 1;
+}
+
+/* Phase 1b smoke test: boot, dispatch one function, exit. */
+static int run_recomp_smoke_test(const openpete_options_t* opts) {
+    CPUState cpu;
+    openpete_psx_runtime_init(&cpu);
+    openpete_psx_set_diag_cpu(&cpu);
+
+    uint8_t* bytes = NULL;
+    size_t   len   = 0;
+    if (try_load_exe(opts, &bytes, &len) != 0) {
+        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc)");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    int rc = openpete_psx_boot(&cpu, bytes, len);
+    free(bytes);
+    if (rc != 0) return OPENPETE_EXIT_PANIC;
+
+    if (opts->test_recomp_segv) {
+        OPL_INFO_F("boot", "deliberately raising SIGSEGV to verify crash handler");
+        volatile int* p = (int*)(uintptr_t)0;
+        *p = 0;
+        return OPENPETE_EXIT_PANIC;
+    }
+
+    uint32_t entry = opts->test_recomp_call_addr;
+    if (entry == 0) entry = cpu.pc;
+
+    OPL_INFO_F("boot", "dispatching recompiled function at 0x%08X", entry);
+    int matched = psx_dispatch_compiled(&cpu, entry);
+    if (!matched) {
+        OPL_ERROR_F("boot", "no recompiled function at 0x%08X", entry);
+        return OPENPETE_EXIT_PANIC;
+    }
+    OPL_INFO_F("boot", "function returned: v0=0x%08X v1=0x%08X", cpu.v0, cpu.v1);
+
+    if (opts->test_recomp_expected_v0 != 0 &&
+        cpu.v0 != opts->test_recomp_expected_v0) {
+        OPL_ERROR_F("boot",
+                    "v0 mismatch: got=0x%08X expected=0x%08X",
+                    cpu.v0, opts->test_recomp_expected_v0);
+        return OPENPETE_EXIT_DIVERGENCE;
+    }
+    fprintf(stdout, "openpete-exit: reason=recomp-smoke-test v0=0x%08X code=0\n",
+            cpu.v0);
+    return OPENPETE_EXIT_OK;
+}
 
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
@@ -31,10 +107,20 @@ int openpete_run(const openpete_options_t* opts) {
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);
 
+    /* libco: capture the host fiber. Phase 1b uses only co_active(); Phase 1c
+     * creates the gameplay fiber so PSYQ calls can yield (VSync etc.). */
+    cothread_t host_fiber = co_active();
+    OPL_INFO_F("boot", "libco host fiber=%p", host_fiber);
+
+    openpete_psx_install_crash_handler();
+
+    /* Phase 1b smoke test: dispatch one recompiled function and exit before
+     * the SDL loop runs. */
+    if (opts->test_recomp_call_addr != 0 || opts->test_recomp_segv) {
+        return run_recomp_smoke_test(opts);
+    }
+
     if (opts->headless) {
-        /* Try the offscreen driver first (renders to memory; correct semantics).
-         * Some Linux distro packages don't ship it — fall back to "dummy",
-         * which is always present. Honor a pre-existing SDL_VIDEODRIVER. */
         SDL_setenv("SDL_VIDEODRIVER", "offscreen", 0);
         OPL_INFO_F("boot", "headless mode requested (preferred driver: %s)",
                    SDL_getenv("SDL_VIDEODRIVER"));
@@ -58,7 +144,6 @@ int openpete_run(const openpete_options_t* opts) {
 
     Uint32 window_flags = SDL_WINDOW_SHOWN;
     if (opts->headless) {
-        /* Offscreen driver still creates a window; hidden flag is harmless. */
         window_flags = SDL_WINDOW_HIDDEN;
     }
     SDL_Window* window = SDL_CreateWindow(
@@ -71,8 +156,6 @@ int openpete_run(const openpete_options_t* opts) {
         return OPENPETE_EXIT_PANIC;
     }
 
-    /* Headless: skip GPU acceleration (the offscreen/dummy drivers don't
-     * expose one) and go straight to software so SDL_RenderReadPixels works. */
     Uint32 renderer_flags = opts->headless ? SDL_RENDERER_SOFTWARE
                                            : SDL_RENDERER_ACCELERATED;
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, renderer_flags);
@@ -93,7 +176,7 @@ int openpete_run(const openpete_options_t* opts) {
     int exit_code = OPENPETE_EXIT_OK;
     const char* exit_reason = "window-closed";
     bool quit = false;
-    int  screenshot_status = 0; /* 0 ok, 1 failed; only meaningful if requested */
+    int  screenshot_status = 0;
 
     while (!quit) {
         SDL_Event ev;

@@ -47,6 +47,14 @@ typedef struct {
 
     /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
     const char* disc_path;
+    const char* exe_path;          /* Direct PSX EXE bytes (overrides disc) */
+
+    /* Phase 1b bring-up smoke test: skip the run loop and instead boot the
+     * PSX EXE, dispatch a single recompiled function at this address, and
+     * exit reporting cpu->v0. 0 = disabled. */
+    uint32_t test_recomp_call_addr;
+    uint32_t test_recomp_expected_v0;  /* 0 = don't check */
+    bool     test_recomp_segv;          /* deliberately fault to verify crash handler */
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

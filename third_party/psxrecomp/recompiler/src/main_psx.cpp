@@ -107,7 +107,9 @@ int main(int argc, char** argv) {
         fmt::print("  --output-dir=<dir>            Where to write *_full.c / *_dispatch.c (default: generated/)\n");
         fmt::print("  --extra-funcs=<file>          Discovered-function address list\n");
         fmt::print("  --external-symbols=<file>     PSYQ manifest (skip translation; emit externs)\n");
+        fmt::print("  --external-prefix=<str>       Prepend <str> to every PSYQ symbol name (e.g. psyq_)\n");
         fmt::print("  --manual-impl=<file>          Manual-implementation manifest\n");
+        fmt::print("  --manual-prefix=<str>         Prepend <str> to every manual-impl symbol name\n");
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         return 0;
@@ -118,6 +120,8 @@ int main(int argc, char** argv) {
     std::string extra_funcs_path;
     std::string external_syms_path;
     std::string manual_impl_path;
+    std::string external_prefix;   // prepended to every PSYQ symbol name
+    std::string manual_prefix;     // prepended to every manual-impl name
     bool skip_on_error = false;
     std::vector<uint32_t> forced_entries;
 
@@ -137,6 +141,8 @@ int main(int argc, char** argv) {
         else if (!(v = take_value(a, "--manual-impl")).empty())      manual_impl_path = v;
         else if (!(v = take_value(a, "--forced-entry")).empty())
             forced_entries.push_back((uint32_t)std::strtoul(v.c_str(), nullptr, 0));
+        else if (!(v = take_value(a, "--external-prefix")).empty())   external_prefix = v;
+        else if (!(v = take_value(a, "--manual-prefix")).empty())     manual_prefix = v;
         else if (a == "--skip-on-error")                              skip_on_error = true;
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
@@ -145,6 +151,8 @@ int main(int argc, char** argv) {
         else if (a == "--forced-entry" && i + 1 < argc)
             forced_entries.push_back((uint32_t)std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--output-dir" && i + 1 < argc)                 output_dir = argv[++i];
+        else if (a == "--external-prefix" && i + 1 < argc)            external_prefix = argv[++i];
+        else if (a == "--manual-prefix" && i + 1 < argc)              manual_prefix = argv[++i];
         else if (a.size() > 2 && a[0] == '-' && a[1] == '-') {
             fmt::print(stderr, "Unknown option: {}\n", a);
             return 1;
@@ -449,6 +457,13 @@ int main(int argc, char** argv) {
         fmt::print("✓ Loaded {} external symbols from {} (range 0x{:08X}..0x{:08X})\n\n",
                    extman.by_addr.size(), external_syms_path,
                    extman.range_start, extman.range_end);
+        if (!external_prefix.empty()) {
+            std::map<uint32_t, std::string> prefixed;
+            for (auto& [a, n] : extman.by_addr)
+                prefixed[a] = external_prefix + n;
+            extman.by_addr = std::move(prefixed);
+            fmt::print("  ↪ applied --external-prefix='{}'\n\n", external_prefix);
+        }
         codegen.set_external_symbols(extman.by_addr, extman.range_start, extman.range_end);
     }
 
@@ -463,6 +478,13 @@ int main(int argc, char** argv) {
         }
         fmt::print("✓ Loaded {} manual implementations from {}\n\n",
                    manman.by_addr.size(), manual_impl_path);
+        if (!manual_prefix.empty()) {
+            std::map<uint32_t, std::string> prefixed;
+            for (auto& [a, n] : manman.by_addr)
+                prefixed[a] = manual_prefix + n;
+            manman.by_addr = std::move(prefixed);
+            fmt::print("  ↪ applied --manual-prefix='{}'\n\n", manual_prefix);
+        }
         codegen.set_manual_impls(manman.by_addr);
     }
 

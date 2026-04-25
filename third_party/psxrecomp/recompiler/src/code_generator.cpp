@@ -1350,6 +1350,17 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
     for (const Function& f : functions) {
         func_name_by_addr[f.start_addr] = f.name;
     }
+    // Also seed the fallthrough lookup with external (PSYQ) and manual-impl
+    // symbols. A non-PSYQ function whose body falls into a PSYQ symbol must
+    // emit a tail call by the *external* name (e.g. `MulMatrix0`), not by
+    // the address-based `func_XXXXXXXX` (which has no body — it's an
+    // extern). Address-only names cause undefined references at link time.
+    for (const auto& [addr, name] : external_symbols_) {
+        func_name_by_addr[addr] = name;
+    }
+    for (const auto& [addr, name] : manual_impls_) {
+        func_name_by_addr[addr] = name;
+    }
 
     int total_lines = 0;
     int n_external = 0, n_manual = 0, n_skipped_err = 0;
