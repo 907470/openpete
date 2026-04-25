@@ -837,16 +837,16 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 } // namespace PSXRecomp
 
 // ---------------------------------------------------------------------------
-// GTE trace logger — emits a CSV with two rows per logged op: psxrecomp's
-// own GTE ("rec") and PsyCross's GTE ("psy") run on identical pre-state.
-// Independent codebases on the same canonical CP2D/CP2C register layout, so
-// any post-state divergence flags a bug in one engine.
+// GTE trace logger — emits a CSV with three rows per logged op: psxrecomp's
+// own GTE ("rec"), PsyCross's GTE ("psy"), and pcsx-redux's GTE ("pcsx") run
+// on identical pre-state. Three independent codebases on the same canonical
+// CP2D/CP2C register layout — divergence between any pair flags a bug in
+// one engine.
 //
 // Used to validate the GTE depth-cue + bit-exact divide rewrite (commit
 // 9467e0e) against the user-reported titlescreen-cutscene mountain-peak
-// flicker: 32,962 op pairs over frames 1100-1110 are bit-identical, which
-// rules out the GTE as the flicker source. Keep the logger around as a
-// regression check for any future GTE math change.
+// flicker. Keep the logger around as a regression check for any future GTE
+// math change.
 //
 // Activate with env vars (all read once on first call):
 //   OPENPETE_GTE_TRACE     path to output CSV (no env = disabled)
@@ -855,13 +855,16 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 //   OPENPETE_GTE_TRACE_OPS comma-sep hex opcodes, default RTPS/NCLIP/RTPT/
 //                          AVSZ3/AVSZ4 ("01,06,30,2D,2E")
 //
-// Diff with: awk -F, '$2=="rec"' trace.csv > rec; '$2=="psy"' > psy; diff.
-//
-// pcsx-redux as ground truth was the original plan but build deps need apt
-// install (libcapstone-dev, libfreetype-dev, libavcodec-dev, libuv1-dev,
-// libglfw3-dev, ...) and we don't have sudo here. PsyCross is in-tree.
+// Diff with: awk -F, '$2=="rec"' trace.csv > rec; '$2=="psy"' > psy;
+//            '$2=="pcsx"' > pcsx; diff rec psy; diff rec pcsx.
 // ---------------------------------------------------------------------------
 // PsyCross GTERegisters / GTE_operator pulled in via psx/gtereg.h above.
+
+extern "C" void pcsxr_gte_run(uint32_t cmd,
+                              const uint32_t pre_data[32],
+                              const uint32_t pre_ctrl[32],
+                              uint32_t       post_data[32],
+                              uint32_t       post_ctrl[32]);
 
 namespace {
 
@@ -998,19 +1001,20 @@ void gte_trace_emit(FILE* fp, const DecodedGTE& d, const char* engine,
 }
 
 void emit_op_rows(FILE* fp, const DecodedGTE& d_rec, const DecodedGTE& d_psy,
-                  uint8_t func) {
-    auto pair = [&](const char* op, int vidx) {
-        gte_trace_emit(fp, d_rec, "rec", op, vidx);
-        gte_trace_emit(fp, d_psy, "psy", op, vidx);
+                  const DecodedGTE& d_pcsx, uint8_t func) {
+    auto triple = [&](const char* op, int vidx) {
+        gte_trace_emit(fp, d_rec,  "rec",  op, vidx);
+        gte_trace_emit(fp, d_psy,  "psy",  op, vidx);
+        gte_trace_emit(fp, d_pcsx, "pcsx", op, vidx);
     };
     switch (func) {
-        case 0x01: pair("RTPS",    0); break;
-        case 0x30: pair("RTPT_v0", 0);
-                   pair("RTPT_v1", 1);
-                   pair("RTPT_v2", 2); break;
-        case 0x06: pair("NCLIP",  -1); break;
-        case 0x2D: pair("AVSZ3",  -1); break;
-        case 0x2E: pair("AVSZ4",  -1); break;
+        case 0x01: triple("RTPS",    0); break;
+        case 0x30: triple("RTPT_v0", 0);
+                   triple("RTPT_v1", 1);
+                   triple("RTPT_v2", 2); break;
+        case 0x06: triple("NCLIP",  -1); break;
+        case 0x2D: triple("AVSZ3",  -1); break;
+        case 0x2E: triple("AVSZ4",  -1); break;
         default:   break;
     }
 }
@@ -1048,17 +1052,22 @@ void gte_trace_log_post(uint8_t func, uint32_t cmd,
         std::memcpy(saved_c, gteRegs.CP2C.r, sizeof(saved_c));
         std::memcpy(gteRegs.CP2D.r, pre_data, sizeof(saved_d));
         std::memcpy(gteRegs.CP2C.r, pre_ctrl, sizeof(saved_c));
-        // PsyCross GTE_operator clears its own FLAG inside; pass the full
-        // 25-bit cmd (it strips & 63 internally).
         GTE_operator((int)cmd);
-        DecodedGTE tmp;
-        decode_gte(tmp, gteRegs.CP2D.r, gteRegs.CP2C.r);
-        d_psy = tmp;
+        decode_gte(d_psy, gteRegs.CP2D.r, gteRegs.CP2C.r);
         std::memcpy(gteRegs.CP2D.r, saved_d, sizeof(saved_d));
         std::memcpy(gteRegs.CP2C.r, saved_c, sizeof(saved_c));
     }
 
-    emit_op_rows(fp, d_rec, d_psy, func);
+    // Run pcsx-redux's GTE on the same pre-state. The vendored runner.cpp
+    // owns a private register file, so no save/restore needed.
+    DecodedGTE d_pcsx{};
+    {
+        uint32_t pcsx_data[32], pcsx_ctrl[32];
+        pcsxr_gte_run(cmd, pre_data, pre_ctrl, pcsx_data, pcsx_ctrl);
+        decode_gte(d_pcsx, pcsx_data, pcsx_ctrl);
+    }
+
+    emit_op_rows(fp, d_rec, d_psy, d_pcsx, func);
 }
 } // namespace
 

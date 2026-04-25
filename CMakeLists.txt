@@ -32,6 +32,16 @@ if(OPENPETE_BUILD_PSYCROSS)
     add_subdirectory(third_party/PsyCross)
 endif()
 
+# Vendored pcsx-redux GTE — third reference engine for the GTE trace logger
+# (PsyCross is the second). Adds a static lib `pcsx_redux_gte` exposing one
+# C-callable: pcsxr_gte_run(cmd, pre_data[32], pre_ctrl[32], post_data[32],
+# post_ctrl[32]).
+option(OPENPETE_BUILD_PCSX_REDUX_GTE
+       "Build third_party/pcsx_redux_gte as a static lib" ON)
+if(OPENPETE_BUILD_PCSX_REDUX_GTE)
+    add_subdirectory(third_party/pcsx_redux_gte)
+endif()
+
 add_subdirectory(core)
 
 foreach(game IN LISTS OPENPETE_GAMES)

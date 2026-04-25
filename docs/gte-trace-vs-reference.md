@@ -1,13 +1,24 @@
 # GTE side-by-side trace workflow
 
-Verifies psxrecomp's GTE math against an independent implementation by
-running both on identical pre-state for every COP2 op in a frame window
-and CSV-dumping the post-state.
+Verifies psxrecomp's GTE math against two independent implementations by
+running all three on identical pre-state for every COP2 op in a frame
+window and CSV-dumping the post-state. Three rows per op:
 
-## In-tree reference (PsyCross): the fast path
+| `engine` | source |
+|----------|--------|
+| `rec`    | psxrecomp's GTE (`third_party/psxrecomp/runner/src/gte.cpp`) |
+| `psy`    | PsyCross's GTE (`third_party/PsyCross/src/gte/PsyX_GTE.cpp`) |
+| `pcsx`   | pcsx-redux's GTE, vendored at `third_party/pcsx_redux_gte/` |
 
-PsyCross is already linked into `openpete-spyro1`, so this needs no setup
-beyond an env var.
+As of commit 9467e0e + the pcsx-redux vendoring, all three are bit-identical
+on 32,962 ops captured during Spyro 1's titlescreen cutscene frames
+1100-1110. So the GTE is *triply* verified, and the user-reported peak
+flicker has to come from somewhere downstream of the GTE math.
+
+## In-tree usage
+
+All three engines are already linked into `openpete-spyro1`, so this needs
+no setup beyond an env var.
 
 ```sh
 rm -f /tmp/openpete-gte.csv
@@ -20,30 +31,37 @@ OPENPETE_GTE_TRACE_OPS='01,06,30,2D,2E' \
     --fast-boot-until-frame 800
 ```
 
-Output is one row per engine per logged op, alternating `rec`,`psy`. To
-diff:
+Output is three rows per logged op, in the order `rec`, `psy`, `pcsx`.
+Diff them pairwise:
 
 ```sh
-awk -F, 'NR==1 || $2=="rec"' /tmp/openpete-gte.csv > /tmp/rec.csv
-awk -F, 'NR==1 || $2=="psy"' /tmp/openpete-gte.csv > /tmp/psy.csv
+awk -F, 'NR==1 || $2=="rec"'  /tmp/openpete-gte.csv > /tmp/rec.csv
+awk -F, 'NR==1 || $2=="psy"'  /tmp/openpete-gte.csv > /tmp/psy.csv
+awk -F, 'NR==1 || $2=="pcsx"' /tmp/openpete-gte.csv > /tmp/pcsx.csv
 diff <(awk -F, '{$2="";print}' /tmp/rec.csv) \
      <(awk -F, '{$2="";print}' /tmp/psy.csv)
+diff <(awk -F, '{$2="";print}' /tmp/rec.csv) \
+     <(awk -F, '{$2="";print}' /tmp/pcsx.csv)
 ```
 
-Or use `scripts/gte_diff.py` if you keep one around. As of the GTE rewrite
-in commit 9467e0e, every op pair on Spyro 1's titlescreen cutscene matches
-bit-for-bit — this is the canary that catches future GTE regressions.
+The expected outcome is empty diffs. As of commit 9467e0e + the pcsx-redux
+vendoring, every triple on Spyro 1's titlescreen cutscene matches bit-for-
+bit — this is the canary that catches future GTE regressions.
 
 Op codes: `01`=RTPS, `06`=NCLIP, `0C`=OP, `10`=DPCS, `11`=INTPL, `12`=MVMVA,
 `13`=NCDS, `14`=CDP, `16`=NCDT, `1B`=NCCS, `1C`=CC, `1E`=NCS, `20`=NCT,
 `28`=SQR, `29`=DPCL, `2A`=DPCT, `2D`=AVSZ3, `2E`=AVSZ4, `30`=RTPT, `3D`=GPF,
 `3E`=GPL, `3F`=NCCT.
 
-## Third-party reference (pcsx-redux): the slow path
+## Live pcsx-redux replay (alternative when you need real-game-state)
 
-Useful when PsyCross and psxrecomp **agree** on a divergence — i.e., both
-might be wrong vs the spec / real hardware. pcsx-redux's GTE was derived
-from Nocash's spec independently and is a strong tiebreaker.
+The vendored pcsx-redux GTE above runs *only* on pre-state captured by
+openpete. If you need to validate against pcsx-redux running the actual
+disc — e.g. to rule out openpete's MIPS recompiler producing different
+*inputs* to the GTE than the original code path would — use the live
+emulator path below. (Note: as of openpete commit 9467e0e + the vendored
+GTE, all three engines bit-match on captured pre-state, so this is rarely
+needed in practice.)
 
 ### Build pcsx-redux on Linux (one-time)
 

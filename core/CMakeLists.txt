@@ -80,6 +80,12 @@ if(TARGET psycross_static)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_PSYCROSS=1)
 endif()
 
+# Vendored pcsx-redux GTE — third reference engine for the trace logger in
+# third_party/psxrecomp/runner/src/gte.cpp.
+if(TARGET pcsx_redux_gte)
+    target_link_libraries(openpete_core PUBLIC pcsx_redux_gte)
+endif()
+
 # Fail the build (cheap automated check) if anyone smuggles a Spyro
 # address or Win32-only header into core/. The exit-criteria greps in
 # §5 Phase 0b live here as build-time guards.
