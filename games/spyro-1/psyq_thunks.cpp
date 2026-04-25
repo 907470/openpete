@@ -715,26 +715,58 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
 
 /* --- libmcrd ------------------------------------------------------------- */
 
+/* PsyCross's libmcrd is broken for our needs: MemCardAccept does
+ * fopen("0.MCD","rb") and unconditionally fread()s the result, segfaulting
+ * when no card file exists. It also indexes memoryCards[chan] with the raw
+ * PSX channel encoding (port B = 0x10), which is out-of-bounds.
+ *
+ * We override the title-screen-critical thunks with a self-contained "no
+ * card present" stub. Spyro's titlescreen state machine then routes
+ * through TS_SubState_NoMemoryCard → TS_SubState_WarningNoSave → loading,
+ * letting Start advance past the title without touching the disk. File
+ * I/O thunks (Read/Write/Create/Format) are not exercised on this path,
+ * so we leave them pointing at PsyCross. */
+
+namespace {
+struct McStubState {
+    int cmds;    /* last issued McFunc* (or -1 if none) */
+    int rslt;    /* last result (McErr*, or -1 if none) */
+    int status;  /* MemCardSync return: 1=Finished, 0=Active, -1=NothingRegistered */
+};
+McStubState g_mc = { -1, -1, -1 };
+}
+
 void psyq_MemCardInit(CPUState* cpu) {
-    MemCardInit((int)cpu->a0);
+    (void)cpu;
+    g_mc.cmds = -1;
+    g_mc.rslt = -1;
+    g_mc.status = -1;
 }
 
 void psyq_MemCardStart(CPUState* cpu) {
     (void)cpu;
-    MemCardStart();
+    /* No-op: comms are always "ready" since there's no real card. */
 }
 
 void psyq_MemCardStop(CPUState* cpu) {
     (void)cpu;
-    MemCardStop();
+    g_mc.cmds = -1;
+    g_mc.rslt = -1;
+    g_mc.status = -1;
 }
 
 void psyq_MemCardExist(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardExist((int)cpu->a0);
+    g_mc.cmds = McFuncExist;
+    g_mc.rslt = McErrCardNotExist;
+    g_mc.status = 1;  /* op completed */
+    cpu->v0 = 0u;     /* no card */
 }
 
 void psyq_MemCardAccept(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardAccept((int)cpu->a0);
+    g_mc.cmds = McFuncAccept;
+    g_mc.rslt = McErrCardNotExist;
+    g_mc.status = 1;
+    cpu->v0 = 0u;
 }
 
 void psyq_MemCardReadFile(CPUState* cpu) {
@@ -764,9 +796,14 @@ void psyq_MemCardFormat(CPUState* cpu) {
 }
 
 void psyq_MemCardSync(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardSync((int)cpu->a0,
-                                    (int*)PTR(cpu->a1),
-                                    (int*)PTR(cpu->a2));
+    /* mode 0 = Sync (block until done), 1 = Async (poll). Our ops always
+     * complete instantly, so both return 1 (McSyncRet_Finished) once any
+     * op has been issued. Before the first op, return -1 (NothingRegistered). */
+    int* cmds_out = (int*)PTR(cpu->a1);
+    int* rslt_out = (int*)PTR(cpu->a2);
+    if (cmds_out && g_mc.cmds != -1) *cmds_out = g_mc.cmds;
+    if (rslt_out && g_mc.rslt != -1) *rslt_out = g_mc.rslt;
+    cpu->v0 = (uint32_t)g_mc.status;
 }
 
 /* --- libapi -------------------------------------------------------------- */
