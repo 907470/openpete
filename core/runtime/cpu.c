@@ -83,31 +83,42 @@ static void write_byte(uint32_t addr, uint8_t value) {
  *   LWL/LWR pair builds a misaligned 32-bit word from two aligned reads.
  * We implement on top of read_word so segment/MMIO routing stays unified. */
 
+/* MIPS R3000 little-endian LWL/LWR/SWL/SWR semantics (psx-spx, "CPU
+ * Load/Store Opcodes"): LWL and SWL shift by (3 - (addr & 3)) * 8, LWR and
+ * SWR by (addr & 3) * 8.
+ * The previous formulas had the (addr&3) and (3 - addr&3) shift expressions
+ * swapped between L and R within each pair. The canonical 4-byte unaligned-
+ * load idiom `lwr 0(s); lwl 3(s)` only worked at certain alignments,
+ * leaving 1-2 bytes of stale data from prior `rt` mixed into the result.
+ * Bit `func_80022A2C`'s shaded-moby vertex loop (3-byte vertex stride):
+ * once per loop, s2 hit 4-aligned and lwl over-wrote rt with the next
+ * word's bytes — producing 0x7F-padding-sourced spike apex vertices in
+ * HUD digits, gems, and the loading-text fly-in. */
 static uint32_t do_lwl(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word    = read_word(aligned);
-    uint32_t shift   = (addr & 3u) * 8u;
+    uint32_t shift   = (3u - (addr & 3u)) * 8u;
     uint32_t mask    = 0xFFFFFFFFu << shift;
     return (rt & ~mask) | (word << shift);
 }
 static uint32_t do_lwr(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word    = read_word(aligned);
-    uint32_t shift   = (3u - (addr & 3u)) * 8u;
+    uint32_t shift   = (addr & 3u) * 8u;
     uint32_t mask    = 0xFFFFFFFFu >> shift;
     return (rt & ~mask) | (word >> shift);
 }
 static void do_swl(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t existing = read_word(aligned);
-    uint32_t shift   = (addr & 3u) * 8u;
+    uint32_t shift   = (3u - (addr & 3u)) * 8u;
     uint32_t mask    = 0xFFFFFFFFu >> shift;
     write_word(aligned, (existing & ~mask) | (rt >> shift));
 }
 static void do_swr(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t existing = read_word(aligned);
-    uint32_t shift   = (3u - (addr & 3u)) * 8u;
+    uint32_t shift   = (addr & 3u) * 8u;
     uint32_t mask    = 0xFFFFFFFFu << shift;
     write_word(aligned, (existing & ~mask) | (rt << shift));
 }

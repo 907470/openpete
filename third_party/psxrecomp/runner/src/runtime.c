@@ -1194,17 +1194,27 @@ static void write_byte(uint32_t addr, uint8_t value) {
         }
     } */
 }
+/* MIPS R3000 little-endian LWL/LWR semantics (psx-spx, "CPU Load/Store
+ * Opcodes"): LWL and SWL shift by (3 - (addr & 3)) * 8, LWR and SWR by
+ * (addr & 3) * 8. The previous formulas had the shift indices
+ * inverted between LWL and LWR; the canonical 4-byte unaligned-load idiom
+ * `lwr 0(s); lwl 3(s)` only worked partially, leaving 1-2 bytes from the
+ * prior `rt` value mixed into the result. This bit `func_80022A2C`'s
+ * shaded-moby vertex loop (3-byte vertex stride): when s2 hit 4-aligned
+ * during the cycle, lwl over-wrote `rt` with the next word's bytes,
+ * producing 0x7F-padding-sourced spike apex vertices in HUD digits, gems,
+ * and the loading-text fly-in. */
 static uint32_t do_lwl(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word; memcpy(&word, &g_ram[aligned & 0x1FFFFF], 4);
-    int shift = (addr & 3) * 8;
+    int shift = (3 - (addr & 3)) * 8;
     uint32_t mask = 0xFFFFFFFFu << shift;
     return (rt & ~mask) | (word << shift);
 }
 static uint32_t do_lwr(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word; memcpy(&word, &g_ram[aligned & 0x1FFFFF], 4);
-    int shift = ((3 - (addr & 3)) * 8);
+    int shift = (addr & 3) * 8;
     uint32_t mask = 0xFFFFFFFFu >> shift;
     return (rt & ~mask) | (word >> shift);
 }
