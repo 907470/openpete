@@ -314,8 +314,84 @@ void psyq_StopCallback(CPUState* cpu) {
 
 /* --- libgpu -------------------------------------------------------------- */
 
+/* psyq_libgpu_helpers ---------------------------------------------------- *
+ * Real PSYQ libgpu MIPS code (statically linked into Spyro's EXE) writes to
+ * a number of specific PSX-RAM addresses during ResetGraph / SetDef* /
+ * PutDispEnv / etc. Our thunks delegate behaviour to PsyCross, which
+ * manages host-side state without writing those PSX-side bytes. To keep the
+ * --seed-ram + --halt-at-pc diff loop's "byte-identical with pcsx-redux"
+ * invariant alive past GraphicsInitialize, we replicate the byte-level
+ * writes here. Disassembly references in comments map to the real PSYQ at
+ * 0x8005EA94+ in spyro-1/build/psx.elf. */
+
+/* Mirror a function's MIPS stack-frame prologue (sp -= frame_size; sw ra at
+ * sp+ra_off; optionally sw s-regs). PSYQ functions overwrite saved-register
+ * slots that an empty C thunk leaves at zero — these eight bytes per call
+ * accumulate fast and account for ~half the stack-region diff at MusicInit.
+ *
+ * `s_pushes` is a {offset, value} list of additional saved-reg writes
+ * matching real PSYQ's prologue. Pass NULL/0 for ra-only. */
+struct PsxStackPush { uint32_t offset; uint32_t value; };
+static void psyq_mirror_stack_frame(CPUState* cpu, uint32_t frame_size,
+                                    uint32_t ra_off,
+                                    const PsxStackPush* pushes, size_t n) {
+    uint32_t sp_b = cpu->sp;
+    cpu->sp = sp_b - frame_size;
+    cpu->write_word(cpu->sp + ra_off, cpu->ra);
+    for (size_t i = 0; i < n; i++) {
+        cpu->write_word(cpu->sp + pushes[i].offset, pushes[i].value);
+    }
+    cpu->sp = sp_b;
+}
+
+/* Real ResetGraph at 0x8005F2A4. For mode 0/3/5 (the init paths Spyro uses),
+ * PSYQ writes a 128-byte env struct at 0x80074A64 + helper structs via
+ * func_80061DEC. NTSC GPU yields gpu_type=0 (the default). */
 void psyq_ResetGraph(CPUState* cpu) {
-    cpu->v0 = (uint32_t)ResetGraph((int)cpu->a0);
+    int mode = (int)cpu->a0;
+    cpu->v0 = (uint32_t)ResetGraph(mode);
+
+    int sub = mode & 7;
+    if (sub == 0 || sub == 3 || sub == 5) {
+        const uint32_t ENV = 0x80074A64u;
+        /* memset(ENV, 0, 128) */
+        for (uint32_t a = ENV; a < ENV + 128u; a += 4u) cpu->write_word(a, 0u);
+        /* sb gpu_type @ENV+0; sb 1 @ENV+1 */
+        cpu->write_byte(ENV + 0u, 0u);   /* NTSC */
+        cpu->write_byte(ENV + 1u, 1u);
+        /* halfwords pulled from PSYQ tables at 0x80074AE4 / 0x80074AF8.
+         * For NTSC (gpu_type=0) the table low-halfwords are 0x0400 and
+         * 0x0200 — confirmed by xxd of pcsx-redux's RAM dump. */
+        cpu->write_half(ENV + 4u, 0x0400u);
+        cpu->write_half(ENV + 6u, 0x0200u);
+        /* Observed pcsx-redux: byte at ENV+8 (0x80074A6C) = 1. Source not
+         * yet localised in disassembly; matched by observation so the diff
+         * stays clean. */
+        cpu->write_byte(ENV + 8u, 1u);
+        /* memset(ENV+16, 0xFF, 92) -> 0x80074A74..0x80074ACF */
+        for (uint32_t a = ENV + 16u; a < ENV + 16u + 92u; a += 4u) {
+            cpu->write_word(a, 0xFFFFFFFFu);
+        }
+        /* memset(ENV+108, 0xFF, 20) -> 0x80074AD0..0x80074AE3 */
+        for (uint32_t a = ENV + 108u; a < ENV + 108u + 20u; a += 4u) {
+            cpu->write_word(a, 0xFFFFFFFFu);
+        }
+    }
+
+    /* func_80061DEC effects (called by ResetGraph): three word writes plus
+     * the BIOS-side gpu-type cache. Hardcoded results for NTSC mode 0:
+     * func_8005DF44 returns 0 ((sub==0 || sub==3 || sub==5) only). */
+    cpu->write_word(0x80074B6Cu, 0u);
+    cpu->write_word(0x80074B78u, 0u);
+    cpu->write_word(0x80074B68u, 0u);
+
+    /* ResetGraph's own MIPS prologue: sp -= 32; sw s0,16; sw s1,20; sw ra,24.
+     * (sw s2 at +20 was overwritten by sw s1 at the same slot.) */
+    PsxStackPush rg_pushes[] = {
+        {16u, cpu->s0},
+        {20u, cpu->s1},
+    };
+    psyq_mirror_stack_frame(cpu, 32u, 24u, rg_pushes, 2);
 }
 
 void psyq_SetDispMask(CPUState* cpu) {
