@@ -63,6 +63,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--halt-at-pc") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->halt_at_pc = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--halt-cpu-dump-output") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->halt_cpu_dump_output = v; i++;
         } else if (strcmp(a, "--log-format") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "json")  == 0) opts->log_format = OPENPETE_LOG_JSON;
@@ -130,6 +133,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
                 "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
                 "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
+                "  --halt-cpu-dump-output PATH also write 528B 'CSv1' CPU dump alongside RAM at halt\n"
                 "  --log-format json|plain    structured stderr (default plain)\n"
                 "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
                 "  --disc PATH                disc image (BIN/CUE)\n"

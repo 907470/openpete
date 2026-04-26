@@ -91,11 +91,64 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
  * engines capture state at the same function-entry instant rather than the
  * vsync-vs-syscall phase skew you'd get otherwise. Set once before fiber
  * dispatch; never written from the fiber. */
-uint32_t    openpete_halt_at_pc      = 0u;
-const char* openpete_halt_dump_path  = NULL;
-static int  openpete_halt_done       = 0;
+uint32_t    openpete_halt_at_pc          = 0u;
+const char* openpete_halt_dump_path      = NULL;
+const char* openpete_halt_cpu_dump_path  = NULL;
+static int  openpete_halt_done           = 0;
 
-static void openpete_halt_dump_and_exit(uint32_t addr) {
+/* Write a 528-byte 'CSv1' CPU dump matching the format produced by
+ * scripts/pcsx-redux-ram-dump.lua (so a single diff helper can post-
+ * process either side's dump). Layout:
+ *   0    magic 0x31765343 'CSv1'
+ *   4    32 GPRs (zero, at, v0..ra; MIPS register-number order)
+ * 132    pc / hi / lo
+ * 144    32 cop0 regs
+ * 272    32 GTE data regs (cop2)
+ * 400    32 GTE control regs (cop2c) */
+static void openpete_halt_dump_cpu(CPUState* cpu, uint32_t pc_at_halt) {
+    if (!openpete_halt_cpu_dump_path) return;
+    FILE* fp = fopen(openpete_halt_cpu_dump_path, "wb");
+    if (!fp) {
+        OPL_ERROR_F("halt-at-pc", "cpu fopen %s failed: %s",
+                    openpete_halt_cpu_dump_path, strerror(errno));
+        return;
+    }
+    uint32_t magic = 0x31765343u;
+    fwrite(&magic, 1, 4, fp);
+    /* 32 GPRs in MIPS register-number order. CPUState exposes named fields,
+     * but we know the layout matches: zero,at,v0,v1,a0..a3,t0..t7,
+     * s0..s7,t8,t9,k0,k1,gp,sp,fp,ra. Use an inline aggregate. */
+    uint32_t gpr[32] = {
+        0u,        cpu->at,   cpu->v0,   cpu->v1,
+        cpu->a0,   cpu->a1,   cpu->a2,   cpu->a3,
+        cpu->t0,   cpu->t1,   cpu->t2,   cpu->t3,
+        cpu->t4,   cpu->t5,   cpu->t6,   cpu->t7,
+        cpu->s0,   cpu->s1,   cpu->s2,   cpu->s3,
+        cpu->s4,   cpu->s5,   cpu->s6,   cpu->s7,
+        cpu->t8,   cpu->t9,   cpu->k0,   cpu->k1,
+        cpu->gp,   cpu->sp,   cpu->fp,   cpu->ra,
+    };
+    fwrite(gpr, 4, 32, fp);
+    fwrite(&pc_at_halt, 1, 4, fp);
+    fwrite(&cpu->hi, 1, 4, fp);
+    fwrite(&cpu->lo, 1, 4, fp);
+    /* cop0 / GTE banks: openpete's CPUState doesn't directly expose 32-word
+     * arrays for these (the recomp emits per-instruction state), so we
+     * write zeros. The diff helper's primary use is sp-based stack masking,
+     * which only needs gpr[29]. Future work: pipe through psxrecomp's
+     * gte_data / gte_ctrl mirrors when those become dump-time stable. */
+    static const uint32_t zero32[32] = {0};
+    fwrite(zero32, 4, 32, fp);  /* cop0  */
+    fwrite(zero32, 4, 32, fp);  /* gte_data */
+    fwrite(zero32, 4, 32, fp);  /* gte_ctrl */
+    fclose(fp);
+    OPL_INFO_F("halt-at-pc",
+               "cpu wrote 528 bytes to %s (pc=0x%08X gp=0x%08X sp=0x%08X ra=0x%08X)",
+               openpete_halt_cpu_dump_path,
+               pc_at_halt, cpu->gp, cpu->sp, cpu->ra);
+}
+
+static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
     openpete_halt_done = 1;
     const char* path = openpete_halt_dump_path
         ? openpete_halt_dump_path : "./ram.bin";
@@ -117,6 +170,7 @@ static void openpete_halt_dump_and_exit(uint32_t addr) {
                        addr, ram_size, path);
         }
     }
+    if (cpu) openpete_halt_dump_cpu(cpu, addr);
     fflush(stdout);
     fflush(stderr);
     /* Bypass the host-fiber teardown — we just want a clean exit with the
@@ -131,7 +185,7 @@ __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t add
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (openpete_halt_at_pc != 0u && addr == openpete_halt_at_pc &&
         !openpete_halt_done) {
-        openpete_halt_dump_and_exit(addr);
+        openpete_halt_dump_and_exit(cpu, addr);
         /* unreachable */
     }
     if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);

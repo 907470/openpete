@@ -72,6 +72,13 @@ typedef struct {
      * VSync(0) calls. */
     uint32_t halt_at_pc;
 
+    /* Optional CPU-state dump at halt-at-pc. NULL = disabled. Format
+     * matches scripts/pcsx-redux-ram-dump.lua's CSv1 (528 bytes:
+     * magic + 32 GPRs + pc/hi/lo + cop0 + GTE). Used to align stack-
+     * region diffs: knowing both sides' sp at the dump instant lets a
+     * post-process zero "below sp" before bytewise comparison. */
+    const char* halt_cpu_dump_output;
+
     /* Logging */
     openpete_log_format_t log_format;
     const char* log_level_spec;        /* e.g. "cd:debug,*:info" or NULL */
