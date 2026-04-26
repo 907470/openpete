@@ -749,7 +749,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_record_keys();
 
         /* Hand control to the game until the next VSync(0) yield. */
+        unsigned frame_before_yield = openpete_frame;
         co_switch((cothread_t)openpete_game_fiber);
+        bool ticked_this_iter = (openpete_frame != frame_before_yield);
 
         if (opts->debug_triangle) {
             /* Re-issue the static triangle so it's drawn over whatever the
@@ -906,7 +908,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         g_skipSwapInterval = unlock_fps ? 1 : 0;
         if (unlock_fps) {
             next_yield_ms = (double)SDL_GetTicks();
-        } else {
+        } else if (ticked_this_iter) {
+            /* Only pace VSync(0)-driven yields. dispatch.c's stub-and-yield for
+             * untranslated overlay funcs uses the no-tick variant; pacing those
+             * would multiply 16.67 ms by however many missing-symbol calls the
+             * game makes per logical frame (Sparx-heavy gameplay was 9+ stubs
+             * per frame → 5 fps). The frame counter advances only on real
+             * VSync(0), so gating on its delta is the safe signal. */
             next_yield_ms += frame_period_ms;
             Uint32 now_ms = SDL_GetTicks();
             if ((double)now_ms < next_yield_ms) {
