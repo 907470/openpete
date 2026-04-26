@@ -121,25 +121,54 @@ void psyq_VSync(CPUState* cpu) {
          * actual EXE size in the binary header is 0x65800), so ignore it and
          * use the up-to-date addresses from the live matching-decomp tree at
          * <spyro>/spyro-1/build/. */
-        const uint32_t kCutsceneIdxAddr    = 0x8007566Cu;
-        const uint32_t kCutsceneLayoutAddr = 0x80075680u;
-        const uint32_t kGamestateAddr      = 0x800757D8u; /* g_Gamestate */
-        const uint32_t kTSStateBase        = 0x80078D78u; /* g_TitlescreenState */
-        int gs = (int)safe_read32(kGamestateAddr);
-        int ts_mode     = (int)safe_read32(kTSStateBase + 0u);   /* m_Mode */
-        int ts_state    = (int)safe_read32(kTSStateBase + 4u);   /* m_State */
-        int ts_tick     = (int)safe_read32(kTSStateBase + 8u);   /* m_Tick */
-        int ts_demotype = (int)safe_read32(kTSStateBase + 28u);  /* m_DemoType */
-        int idx = (int)safe_read32(kCutsceneIdxAddr);
-        uint32_t layout = safe_read32(kCutsceneLayoutAddr);
-        uint32_t cur_tick_raw = safe_read32(layout);
-        uint32_t dur_raw      = safe_read32(layout + 8u);
+        const uint32_t kGamestateAddr   = 0x800757D8u; /* g_Gamestate */
+        const uint32_t kTSStateBase     = 0x80078D78u; /* g_TitlescreenState */
+        /* g_SonyImage @ 0x8006FCF4. Layout:
+         *   [0..0x1C00]   u_char m_Buf / DrawStateSonyBuf (union)
+         *   0x1C00..0x2000  WorldNearQueued[256]  (1024)
+         *   0x2000..0x2400  WorldFarQueued[256]   (1024)
+         *   0x2400..0x2800  ShadedMobys[256]      (1024) ← here
+         *   0x2800..        unk
+         */
+        const uint32_t kShadedMobysAddr = 0x8006FCF4u + 0x2400u; /* = 0x800720F4 */
+        int gs       = (int)safe_read32(kGamestateAddr);
+        int ts_state = (int)safe_read32(kTSStateBase + 4u);   /* m_State */
+        int ts_tick  = (int)safe_read32(kTSStateBase + 8u);   /* m_Tick */
         OPL_INFO_F("text-dump",
-                   "f%u VSync(0) gs=%d tsMode=%d tsState=%d tsTick=%d "
-                   "tsDemo=%d idx=%d cTick=%d cDur=%d layout=0x%08X",
-                   openpete_frame, gs, ts_mode, ts_state, ts_tick,
-                   ts_demotype, idx, (int)cur_tick_raw, (int)dur_raw,
-                   layout);
+                   "f%u VSync(0) gs=%d tsState=%d tsTick=%d",
+                   openpete_frame, gs, ts_state, ts_tick);
+        if (openpete_frame == 1309u) {
+            /* Walk g_SonyImage.m_ShadedMobys[] and dump each letter moby. */
+            for (int si = 0; si < 32; si++) {
+                uint32_t pMoby = safe_read32(kShadedMobysAddr + (uint32_t)si * 4u);
+                if (pMoby == 0u) {
+                    OPL_INFO_F("text-dump", "  ShadedMoby[%d] = NULL (end)", si);
+                    break;
+                }
+                if (pMoby < 0x80000000u || pMoby >= 0x80200000u) {
+                    OPL_INFO_F("text-dump", "  ShadedMoby[%d] = 0x%08X (bad)",
+                               si, pMoby);
+                    continue;
+                }
+                int px = (int)safe_read32(pMoby + 12u);
+                int py = (int)safe_read32(pMoby + 16u);
+                int pz = (int)safe_read32(pMoby + 20u);
+                /* Per Moby struct: m_Class is a short at offset 54 (after
+                 * m_RotationMatrix 32..51 + m_CollisionRegion at 52..53). */
+                uint32_t cls_word = safe_read32(pMoby + 52u);
+                int cls = (int)((int16_t)((cls_word >> 16) & 0xFFFFu));
+                /* m_Rotation Vector3D8 (3 chars). After Pod (u_char) at some
+                 * earlier offset; for now just dump 4 bytes near the expected
+                 * region for sanity. The exact byte offset of m_Rotation can
+                 * shift due to AnimationState packing — print row near 64. */
+                uint32_t row64 = safe_read32(pMoby + 64u);
+                uint32_t row68 = safe_read32(pMoby + 68u);
+                OPL_INFO_F("text-dump",
+                           "  ShadedMoby[%d]@0x%08X cls=%d pos=(%d,%d,%d) "
+                           "row64=0x%08X row68=0x%08X",
+                           si, pMoby, cls, px, py, pz, row64, row68);
+            }
+        }
     }
     if (mode == 0) {
         if (openpete_fast_boot_until_frame > 0 &&
