@@ -97,6 +97,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     const char* tag = NULL;
     int log_floor_query = 0;
     int log_pos_only = 0;
+    int log_vec_args = 0;
     switch (addr) {
         case 0x8002C85Cu: tag = "die";     break;
         case 0x8004A200u: tag = "physics"; break;
@@ -108,8 +109,38 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         case 0x8003FE40u: tag = "F8003FE40"; log_pos_only = 1; break;
         case 0x8003E318u: tag = "SlopeFC";   log_pos_only = 1; break;
         case 0x8003E758u: tag = "AdjAirC";   log_pos_only = 1; break;
+        /* Sub-calls inside func_8003FE40 — bisect where m_Position drifts. */
+        case 0x80040608u: tag = "F80040608"; log_pos_only = 1; break;
+        case 0x8004060Cu: tag = "F8004060C"; log_pos_only = 1; break;
+        case 0x8003EA68u: tag = "F8003EA68"; log_pos_only = 1; break;
+        case 0x8004E3C8u: tag = "F8004E3C8"; log_pos_only = 1; break;
+        case 0x8004BE4Cu: tag = "F8004BE4C"; log_pos_only = 1; break;
+        case 0x80017758u: tag = "VecAdd";    log_vec_args = 1; break;
+        case 0x80017700u: tag = "VecCopy";   log_vec_args = 1; break;
+        case 0x8001778Cu: tag = "VecSub";    log_vec_args = 1; break;
+        case 0x800176A0u: tag = "VecShL";    log_vec_args = 1; break;
+        case 0x800176C8u: tag = "VecShR";    log_vec_args = 1; break;
         case 0x8004D5ECu: tag = "floorQ";  log_floor_query = 1; break;
         default: return 0;
+    }
+    if (log_vec_args) {
+        /* Vec ops are called from many places. Only log when dst (a0) is the
+         * Spyro physics block: g_Spyro=0x80078A58, m_Velocity=+0x100,
+         * m_TrueVelocity=+0x10C, m_CollisionMovement=+0x12C, etc.
+         * Snitch on any write into [g_Spyro, g_Spyro+0x200). */
+        uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
+        if (a0 >= 0x80078A58u && a0 < 0x80078C58u) {
+            uint32_t sx=0, sy=0, sz=0;
+            sr32_safe(0x80078A58u + 0u, &sx);
+            sr32_safe(0x80078A58u + 4u, &sy);
+            sr32_safe(0x80078A58u + 8u, &sz);
+            OPL_INFO_F("hook",
+                       "%s f%u dst=0x%08X (g_Spyro+0x%X) src1=0x%08X src2=0x%08X "
+                       "pos=(%d,%d,%d) ra=0x%08X",
+                       tag, openpete_frame, a0, a0 - 0x80078A58u,
+                       a1, a2, (int)sx, (int)sy, (int)sz, cpu->ra);
+        }
+        return 0;
     }
     if (log_pos_only) {
         uint32_t sx2=0, sy2=0, sz2=0;
@@ -133,15 +164,25 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         sr32_safe(0x80078A58u + 0x10Cu,&trueVelX);
         sr32_safe(0x80078A58u + 0x110u,&trueVelY);
         sr32_safe(0x80078A58u + 0x114u,&trueVelZ);
+        /* g_CollisionPoint @ 0x80076B80, g_CollisionNormal @ 0x80077368 */
+        uint32_t cpx=0, cpy=0, cpz=0, cnx=0, cny=0, cnz=0;
+        sr32_safe(0x80076B80u, &cpx);
+        sr32_safe(0x80076B84u, &cpy);
+        sr32_safe(0x80076B88u, &cpz);
+        sr32_safe(0x80077368u, &cnx);
+        sr32_safe(0x8007736Cu, &cny);
+        sr32_safe(0x80077370u, &cnz);
         OPL_INFO_F("hook",
                    "%s f%u pos=(%d,%d,%d) state=%d ctrl=0x%X "
                    "vel=(%d,%d,%d) trueVel=(%d,%d,%d) "
-                   "collMov=(%d,%d,%d) ra=0x%08X",
+                   "collMov=(%d,%d,%d) cPt=(%d,%d,%d) cN=(%d,%d,%d) ra=0x%08X",
                    tag, openpete_frame,
                    (int)sx2, (int)sy2, (int)sz2, (int)mState, controlF,
                    (int)velX, (int)velY, (int)velZ,
                    (int)trueVelX, (int)trueVelY, (int)trueVelZ,
-                   (int)collMx, (int)collMy, (int)collMz, cpu->ra);
+                   (int)collMx, (int)collMy, (int)collMz,
+                   (int)cpx, (int)cpy, (int)cpz,
+                   (int)cnx, (int)cny, (int)cnz, cpu->ra);
         return 0;
     }
     if (log_floor_query) {
