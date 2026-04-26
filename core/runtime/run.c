@@ -805,6 +805,48 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                opts->ram_dump_on_frame);
                 }
             }
+            /* Optional CPU state dump alongside the RAM dump. Read
+             * g_game.cpu directly: the game fiber is yielded inside
+             * VSync(0), the host fiber is here, both share this static
+             * struct. Format matches the halt-at-pc path. */
+            if (opts->halt_cpu_dump_output) {
+                FILE* cfp = fopen(opts->halt_cpu_dump_output, "wb");
+                if (cfp) {
+                    const CPUState* c = &g_game.cpu;
+                    uint32_t magic = 0x31765343u;
+                    fwrite(&magic, 1, 4, cfp);
+                    uint32_t gpr[32] = {
+                        0u,    c->at, c->v0, c->v1,
+                        c->a0, c->a1, c->a2, c->a3,
+                        c->t0, c->t1, c->t2, c->t3,
+                        c->t4, c->t5, c->t6, c->t7,
+                        c->s0, c->s1, c->s2, c->s3,
+                        c->s4, c->s5, c->s6, c->s7,
+                        c->t8, c->t9, c->k0, c->k1,
+                        c->gp, c->sp, c->fp, c->ra,
+                    };
+                    fwrite(gpr, 4, 32, cfp);
+                    /* PC at dump moment is wherever the game fiber
+                     * yielded — typically inside VSync's host yield
+                     * (PSYQ-side), which means the game's call site of
+                     * VSync(). Without a fiber-aware unwinder we can't
+                     * know precisely; report 0 so consumers don't
+                     * mis-interpret. sp is the load-bearing field for
+                     * the masked diff. */
+                    uint32_t pc = 0u;
+                    fwrite(&pc, 1, 4, cfp);
+                    fwrite(&c->hi, 1, 4, cfp);
+                    fwrite(&c->lo, 1, 4, cfp);
+                    static const uint32_t zero32[32] = {0};
+                    fwrite(zero32, 4, 32, cfp);  /* cop0  */
+                    fwrite(zero32, 4, 32, cfp);  /* gted  */
+                    fwrite(zero32, 4, 32, cfp);  /* gtec  */
+                    fclose(cfp);
+                    OPL_INFO_F("ram-dump",
+                               "cpu wrote 528 bytes to %s (sp=0x%08X gp=0x%08X)",
+                               opts->halt_cpu_dump_output, c->sp, c->gp);
+                }
+            }
         }
 
 
