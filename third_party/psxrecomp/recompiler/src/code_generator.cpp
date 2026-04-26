@@ -1436,8 +1436,26 @@ GeneratedFunction CodeGenerator::generate_function(
             // Emit fallthrough if the last block is reachable (has predecessors
             // or is the entry block). Dead code after a return (e.g., padding
             // nops) has no predecessors and should NOT get a fallthrough call.
+            //
+            // Jump-table dispatch (jr $v0 with computed target) doesn't get
+            // recorded as predecessor edges in control_flow.cpp's CFG build
+            // (JumpRegister adds no successors). A block that's only reachable
+            // via a JT entry therefore appears unreachable here. If this
+            // function contains any JumpRegister exit, treat the orphan block
+            // as JT-reachable rather than dead padding. Spyro's
+            // SetOverlayPointers (0x8005A470) hits this — case 10's body falls
+            // sequentially into the next split function 0x8005A75C, but the
+            // JT-only path leaves block_8005A718 with no predecessors.
             const BasicBlock& last = cfg.blocks.at(cfg.block_order.back());
-            bool is_reachable = last.is_entry || !last.predecessors.empty();
+            bool has_jr_dispatch = false;
+            for (const auto& [_, blk] : cfg.blocks) {
+                if (blk.exit_instr.type == ControlFlowType::JumpRegister) {
+                    has_jr_dispatch = true;
+                    break;
+                }
+            }
+            bool is_reachable = last.is_entry || !last.predecessors.empty()
+                                || has_jr_dispatch;
             if (is_reachable) {
                 body_ss << fmt::format("    {}(cpu);  /* fallthrough to next function */\n",
                                        fallthrough_name);
