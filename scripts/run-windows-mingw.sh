@@ -50,6 +50,10 @@ OPENPETE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXE_REL="build/windows-mingw/games/spyro-1/openpete-spyro1.exe"
 EXE_ABS="$OPENPETE_ROOT/$EXE_REL"
 
+# Caller CWD — needed for resolving user-supplied relative paths (e.g.
+# `--bk2 openpete/games/...`) before we `cd` into OPENPETE_ROOT below.
+CALLER_CWD="$(pwd)"
+
 red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 green()  { printf '\033[32m%s\033[0m\n' "$*" >&2; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -79,12 +83,19 @@ fi
 
 # --- Args translation ----------------------------------------------------
 # WSL2 interop hands argv through verbatim; Linux paths in --disc /
-# --exe-path / --output won't resolve on the Windows side. Translate any
-# value that starts with '/' (treated as a Linux absolute path).
+# --exe-path / --output / --bk2 won't resolve on the Windows side.
+# Translate any value that starts with '/' (treated as a Linux absolute
+# path). Relative paths fall back to abspath-then-translate so a value
+# like `openpete/games/spyro-1/bk2/tas.bk2` (relative to CWD) still
+# reaches the .exe as a Windows-form absolute path.
 translate_if_linux() {
     local v="$1"
     if [[ "$v" == /* ]]; then
         wslpath -w "$v"
+    elif [[ -e "$CALLER_CWD/$v" ]]; then
+        # Relative path that exists from the user's invocation CWD —
+        # resolve and translate so the .exe sees a Windows path.
+        wslpath -w "$(realpath "$CALLER_CWD/$v")"
     else
         printf '%s' "$v"
     fi
@@ -94,14 +105,14 @@ forwarded=()
 suppress_press=0  # explicit `--press ""` means "no presses"
 while (( $# )); do
     case "$1" in
-        --disc|--exe-path|--output)
+        --disc|--exe-path|--output|--bk2)
             forwarded+=("$1")
             if [[ $# -ge 2 ]]; then
                 forwarded+=("$(translate_if_linux "$2")")
                 shift
             fi
             ;;
-        --disc=*|--exe-path=*|--output=*)
+        --disc=*|--exe-path=*|--output=*|--bk2=*)
             key="${1%%=*}"
             val="${1#*=}"
             forwarded+=("$key=$(translate_if_linux "$val")")
