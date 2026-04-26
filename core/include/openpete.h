@@ -41,6 +41,37 @@ typedef struct {
     int         screenshot_on_frame;   /* -1 = disabled */
     const char* screenshot_output;     /* path; default ./shot.png */
 
+    /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
+     * code yields. Used as the openpete side of the PCSX-Redux comparison
+     * loop (see scripts/pcsx-redux-ram-dump.lua). */
+    int         ram_dump_on_frame;     /* -1 = disabled */
+    const char* ram_dump_output;       /* path; default ./ram.bin */
+
+    /* Seed g_ram from a 2 MB file before the recomp dispatches. Used to
+     * pin-prime openpete with PCSX-Redux's RAM at the same instant — gives
+     * the recompiler a byte-identical starting state, so any subsequent
+     * divergence is purely the recomp's fault, not BIOS / _96_init / heap-
+     * init asymmetry between the two engines. NULL = disabled. */
+    const char* seed_ram_path;
+
+    /* Seed CPUState (32 GPRs + pc/hi/lo + cop0 + GTE) from a 528-byte file
+     * captured by scripts/pcsx-redux-ram-dump.lua. Applied AFTER seed-ram
+     * and after the boot's EXE-header init, so it overrides everything.
+     * Lets openpete start from the exact register state pcsxr was in at
+     * the same PC — the partner of --seed-ram for register-aligned diffs.
+     * NULL = disabled. File format: see core/runtime/run.c (load_cpu_seed). */
+    const char* seed_cpu_path;
+
+    /* Halt at recompiled-function entry. When the recomp's per-function
+     * intercept (psx_override_dispatch) sees this PSX vaddr, dump 2MB RAM
+     * to ram_dump_output and exit cleanly. 0 = disabled. Pair with the
+     * PCSX-Redux Lua dumper using the same PC to capture both engines at
+     * the *same* logical instant (function-entry boundary). A VBL count
+     * names different instants on the two sides: the Lua dumper counts
+     * vblank events inside the BIOS vblank interrupt, openpete counts
+     * VSync(0) calls. */
+    uint32_t halt_at_pc;
+
     /* Logging */
     openpete_log_format_t log_format;
     const char* log_level_spec;        /* e.g. "cd:debug,*:info" or NULL */

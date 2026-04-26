@@ -24,6 +24,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->display_name        = "OpenPete";
     opts->screenshot_on_frame = -1;
     opts->screenshot_output   = "./shot.png";
+    opts->ram_dump_on_frame   = -1;
+    opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
 }
 
@@ -46,6 +48,21 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;
+        } else if (strcmp(a, "--ram-dump-on-frame") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->ram_dump_on_frame = atoi(v); i++;
+        } else if (strcmp(a, "--ram-dump-output") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->ram_dump_output = v; i++;
+        } else if (strcmp(a, "--seed-ram") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->seed_ram_path = v; i++;
+        } else if (strcmp(a, "--seed-cpu") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->seed_cpu_path = v; i++;
+        } else if (strcmp(a, "--halt-at-pc") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->halt_at_pc = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--log-format") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "json")  == 0) opts->log_format = OPENPETE_LOG_JSON;
@@ -108,6 +125,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --headless                 no on-screen window (offscreen video driver)\n"
                 "  --screenshot-on-frame N    save PNG of frame N to --output then continue\n"
                 "  --output PATH              screenshot path (default ./shot.png)\n"
+                "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
+                "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
+                "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
+                "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
+                "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
                 "  --log-format json|plain    structured stderr (default plain)\n"
                 "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
                 "  --disc PATH                disc image (BIN/CUE)\n"

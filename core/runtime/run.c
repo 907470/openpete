@@ -17,6 +17,7 @@
 
 #include <SDL.h>
 #include <libco.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +74,48 @@ extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
 extern uint8_t* openpete_psx_read_file(const char* path, size_t* out_size);
 
 extern void openpete_psx_set_diag_cpu(CPUState* cpu);
+
+/* CPUState seed file format. Little-endian throughout. Total 528 bytes:
+ *   uint32_t magic            = 'CSv1' (LE 0x31765343)
+ *   uint32_t gpr[32]          = zero, at, v0, v1, a0..a3, t0..t7, s0..s7,
+ *                               t8, t9, k0, k1, gp, sp, fp, ra
+ *   uint32_t pc, hi, lo
+ *   uint32_t cop0[32]
+ *   uint32_t gte_data[32]
+ *   uint32_t gte_ctrl[32]
+ * Written by scripts/pcsx-redux-ram-dump.lua when PCSXR_DUMP_CPU is set. */
+#define OPENPETE_CPU_SEED_MAGIC 0x31765343u   /* 'CSv1' little-endian */
+#define OPENPETE_CPU_SEED_SIZE  528u
+
+static int load_cpu_seed(CPUState* cpu, const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        OPL_ERROR_F("seed-cpu", "fopen %s failed: %s", path, strerror(errno));
+        return -1;
+    }
+    uint32_t buf[OPENPETE_CPU_SEED_SIZE / 4];
+    size_t n = fread(buf, 1, sizeof(buf), fp);
+    fclose(fp);
+    if (n != sizeof(buf)) {
+        OPL_ERROR_F("seed-cpu", "%s: short read %zu of %u",
+                    path, n, OPENPETE_CPU_SEED_SIZE);
+        return -1;
+    }
+    if (buf[0] != OPENPETE_CPU_SEED_MAGIC) {
+        OPL_ERROR_F("seed-cpu", "%s: bad magic 0x%08X (expected 0x%08X 'CSv1')",
+                    path, buf[0], OPENPETE_CPU_SEED_MAGIC);
+        return -1;
+    }
+    /* GPRs: 32 contiguous uint32s in CPUState declaration order. */
+    memcpy(&cpu->zero,    &buf[1],    32 * sizeof(uint32_t));
+    cpu->pc = buf[33];
+    cpu->hi = buf[34];
+    cpu->lo = buf[35];
+    memcpy(cpu->cop0,     &buf[36],   32 * sizeof(uint32_t));
+    memcpy(cpu->gte_data, &buf[68],   32 * sizeof(uint32_t));
+    memcpy(cpu->gte_ctrl, &buf[100],  32 * sizeof(uint32_t));
+    return 0;
+}
 
 #ifdef OPENPETE_HAS_PSYCROSS
 /* PsyCross window/GL initialiser. Must be called before any libgpu/libgte
@@ -452,6 +495,41 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     free(bytes);
     if (rc != 0) return OPENPETE_EXIT_PANIC;
 
+    /* seed-cpu / seed-ram block. Both run AFTER openpete_psx_boot so the
+     * seeds win over the EXE-loader's writes. seed-cpu also short-circuits
+     * the --test-recomp-gp override below — if the user asked us to seed
+     * the full register set, we do not want a stale --test-recomp-gp value
+     * clobbering the seeded gp inside game_fiber_entry. */
+    if (opts->seed_cpu_path) {
+        if (load_cpu_seed(&g_game.cpu, opts->seed_cpu_path) != 0) {
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        OPL_INFO_F("seed-cpu",
+                   "primed from %s: pc=0x%08X gp=0x%08X sp=0x%08X ra=0x%08X",
+                   opts->seed_cpu_path,
+                   g_game.cpu.pc, g_game.cpu.gp,
+                   g_game.cpu.sp, g_game.cpu.ra);
+    }
+    if (opts->seed_ram_path) {
+        FILE* fp = fopen(opts->seed_ram_path, "rb");
+        if (!fp) {
+            OPL_ERROR_F("seed-ram", "fopen %s failed: %s",
+                        opts->seed_ram_path, strerror(errno));
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        const size_t ram_size = 2u * 1024u * 1024u;
+        size_t n = fread(openpete_psx_get_ram(), 1, ram_size, fp);
+        fclose(fp);
+        if (n != ram_size) {
+            OPL_ERROR_F("seed-ram",
+                        "short read from %s: %zu of %zu bytes",
+                        opts->seed_ram_path, n, ram_size);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        OPL_INFO_F("seed-ram", "g_ram primed from %s (%zu bytes)",
+                   opts->seed_ram_path, ram_size);
+    }
+
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                WIN_W, WIN_H, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
@@ -496,7 +574,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
 
     g_game.entry = opts->run_recomp_addr;
-    g_game.gp    = opts->test_recomp_gp;
+    /* When --seed-cpu is supplied, suppress the --test-recomp-gp override
+     * so it can't clobber the freshly-seeded gp inside game_fiber_entry. */
+    g_game.gp    = opts->seed_cpu_path ? 0u : opts->test_recomp_gp;
+
+    /* Wire halt-at-pc before dispatch so psx_override_dispatch sees it on
+     * the very first recompiled function-entry. dispatch.c owns the slot. */
+    if (opts->halt_at_pc != 0u) {
+        extern uint32_t    openpete_halt_at_pc;
+        extern const char* openpete_halt_dump_path;
+        openpete_halt_at_pc     = opts->halt_at_pc;
+        openpete_halt_dump_path = opts->ram_dump_output;
+        OPL_INFO_F("halt-at-pc",
+                   "armed: PC=0x%08X dump=%s",
+                   opts->halt_at_pc, opts->ram_dump_output);
+    }
 
     /* Wire optional fast-boot before any thunk runs. Read by psyq_VSync. */
     openpete_fast_boot_until_frame = opts->fast_boot_until_frame;
@@ -679,6 +771,36 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
+        }
+
+        /* RAM dump runs outside the present_pending gate so it still fires
+         * during fast-boot frames (which don't yield for present). Use >=
+         * with a one-shot guard because fast-boot can jump openpete_frame
+         * past the target between host iterations — equality would miss it. */
+        static int ram_dumped = 0;
+        if (!ram_dumped && opts->ram_dump_on_frame >= 0 &&
+            (int)openpete_frame >= opts->ram_dump_on_frame) {
+            ram_dumped = 1;
+            const char* path = opts->ram_dump_output;
+            FILE* fp = fopen(path, "wb");
+            if (!fp) {
+                OPL_ERROR_F("ram-dump", "fopen %s failed: %s",
+                            path, strerror(errno));
+            } else {
+                const size_t ram_size = 2u * 1024u * 1024u;
+                size_t n = fwrite(openpete_psx_get_ram(), 1, ram_size, fp);
+                fclose(fp);
+                if (n != ram_size) {
+                    OPL_ERROR_F("ram-dump",
+                                "short write to %s: %zu of %zu bytes",
+                                path, n, ram_size);
+                } else {
+                    OPL_INFO_F("ram-dump",
+                               "wrote %zu bytes to %s on frame %u (target=%d)",
+                               ram_size, path, openpete_frame,
+                               opts->ram_dump_on_frame);
+                }
+            }
         }
 
 

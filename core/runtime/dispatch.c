@@ -9,6 +9,7 @@
 #include "openpete_log.h"
 #include "openpete_psx.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,10 +84,56 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
     openpete_yield_to_host_no_tick();
 }
 
+/* Halt-at-PC: when set, psx_override_dispatch checks every dispatched
+ * function entry against this address; on match, dumps 2 MB g_ram to the
+ * configured path and exits the process cleanly. Used as the openpete-side
+ * partner of scripts/pcsx-redux-ram-dump.lua's BP-on-PC dump, so both
+ * engines capture state at the same function-entry instant rather than the
+ * vsync-vs-syscall phase skew you'd get otherwise. Set once before fiber
+ * dispatch; never written from the fiber. */
+uint32_t    openpete_halt_at_pc      = 0u;
+const char* openpete_halt_dump_path  = NULL;
+static int  openpete_halt_done       = 0;
+
+static void openpete_halt_dump_and_exit(uint32_t addr) {
+    openpete_halt_done = 1;
+    const char* path = openpete_halt_dump_path
+        ? openpete_halt_dump_path : "./ram.bin";
+    FILE* fp = fopen(path, "wb");
+    if (!fp) {
+        OPL_ERROR_F("halt-at-pc", "fopen %s failed: %s",
+                    path, strerror(errno));
+    } else {
+        const size_t ram_size = 2u * 1024u * 1024u;
+        size_t n = fwrite(openpete_psx_get_ram(), 1, ram_size, fp);
+        fclose(fp);
+        if (n != ram_size) {
+            OPL_ERROR_F("halt-at-pc",
+                        "short write to %s: %zu of %zu bytes",
+                        path, n, ram_size);
+        } else {
+            OPL_INFO_F("halt-at-pc",
+                       "halted at PC=0x%08X, wrote %zu bytes to %s",
+                       addr, ram_size, path);
+        }
+    }
+    fflush(stdout);
+    fflush(stderr);
+    /* Bypass the host-fiber teardown — we just want a clean exit with the
+     * dump on disk. The host loop's normal exit path requires yielding back
+     * through SDL/PsyCross which can hang under headless GL on WSL. */
+    _Exit(0);
+}
+
 /* Per-function intercept gate emitted at the top of every generated body.
  * Phase 1b: never intercepts. Phase 1c+ wires per-game quirks here. */
 __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
+    if (openpete_halt_at_pc != 0u && addr == openpete_halt_at_pc &&
+        !openpete_halt_done) {
+        openpete_halt_dump_and_exit(addr);
+        /* unreachable */
+    }
     if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);
     (void)cpu; (void)addr;
     return 0;
