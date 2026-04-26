@@ -760,7 +760,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     } else if (cop_op == 0x02) { // CFC2 - move from COP2 control
                         code = fmt::format("{} = cpu->gte_ctrl[{}];  /* cfc2 */", reg_name(rt), rd);
                     } else if (cop_op == 0x04) { // MTC2 - move to COP2 data
-                        code = fmt::format("cpu->gte_data[{}] = {};  /* mtc2 */", rd, reg_name(rt));
+                        // Reg 30 (LZCS) updates LZCR side-effect; reg 28 (IRGB)
+                        // unpacks into IR1/IR2/IR3. A direct array write would
+                        // skip both — that's how Spyro 1's func_8004BE4C produced
+                        // bogus collision points (LZCR stale → bad isqrt scale).
+                        if (rd == 30) {
+                            code = fmt::format(
+                                "{{ uint32_t _v = {}; cpu->gte_data[30] = _v; "
+                                "uint32_t _u = ((int32_t)_v < 0) ? ~_v : _v; "
+                                "uint32_t _c = 0; if (_u == 0) {{ _c = 32; }} "
+                                "else {{ while (!(_u & 0x80000000u)) {{ _u <<= 1; _c++; }} }} "
+                                "cpu->gte_data[31] = _c; }}  /* mtc2 LZCS+LZCR */",
+                                reg_name(rt));
+                        } else if (rd == 28) {
+                            code = fmt::format(
+                                "{{ uint32_t _v = {}; cpu->gte_data[28] = _v & 0x7FFFu; "
+                                "cpu->gte_data[9]  = (_v & 0x1Fu) << 7; "
+                                "cpu->gte_data[10] = ((_v >> 5) & 0x1Fu) << 7; "
+                                "cpu->gte_data[11] = ((_v >> 10) & 0x1Fu) << 7; }}  /* mtc2 IRGB+IR1-3 */",
+                                reg_name(rt));
+                        } else {
+                            code = fmt::format("cpu->gte_data[{}] = {};  /* mtc2 */", rd, reg_name(rt));
+                        }
                     } else if (cop_op == 0x06) { // CTC2 - move to COP2 control
                         code = fmt::format("cpu->gte_ctrl[{}] = {};  /* ctc2 */", rd, reg_name(rt));
                     } else if ((cop_op & 0x10) != 0) { // GTE command (bit 25 set)
@@ -789,7 +810,26 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     uint32_t rs = get_rs(instr);
                     uint32_t rt = get_rt(instr);
                     int16_t offset = get_imm16(instr);
-                    if (offset == 0) {
+                    std::string addr_expr = (offset == 0)
+                        ? std::string(reg_name(rs))
+                        : fmt::format("{} + {}", reg_name(rs), offset);
+                    // Like MTC2, regs 28/30 have side-effects (IRGB→IR1-3, LZCS→LZCR).
+                    if (rt == 30) {
+                        code = fmt::format(
+                            "{{ uint32_t _v = cpu->read_word({}); cpu->gte_data[30] = _v; "
+                            "uint32_t _u = ((int32_t)_v < 0) ? ~_v : _v; "
+                            "uint32_t _c = 0; if (_u == 0) {{ _c = 32; }} "
+                            "else {{ while (!(_u & 0x80000000u)) {{ _u <<= 1; _c++; }} }} "
+                            "cpu->gte_data[31] = _c; }}  /* lwc2 LZCS+LZCR ({}) */",
+                            addr_expr, addr_expr);
+                    } else if (rt == 28) {
+                        code = fmt::format(
+                            "{{ uint32_t _v = cpu->read_word({}); cpu->gte_data[28] = _v & 0x7FFFu; "
+                            "cpu->gte_data[9]  = (_v & 0x1Fu) << 7; "
+                            "cpu->gte_data[10] = ((_v >> 5) & 0x1Fu) << 7; "
+                            "cpu->gte_data[11] = ((_v >> 10) & 0x1Fu) << 7; }}  /* lwc2 IRGB+IR1-3 ({}) */",
+                            addr_expr, addr_expr);
+                    } else if (offset == 0) {
                         code = fmt::format("cpu->gte_data[{}] = cpu->read_word({});  /* lwc2 gte[{}], ({}) */",
                                           rt, reg_name(rs), rt, reg_name(rs));
                     } else {
