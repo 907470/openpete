@@ -22,6 +22,7 @@ extern "C" {
 #include "openpete_psx.h"
 }
 
+#include <cstdio>
 #include <cstring>
 #include <stdint.h>
 
@@ -192,7 +193,24 @@ void psyq_PutDispEnv(CPUState* cpu) {
 }
 
 void psyq_PutDrawEnv(CPUState* cpu) {
-    PutDrawEnv((DRAWENV*)PTR(cpu->a0));
+    DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
+    /* Log clip rect during the loading-text frame window. If clip-bottom
+     * < ~140 then PSX would have scissored the spike-quad tips and openpete
+     * needs to do the same. */
+    if (openpete_frame >= 1305 && openpete_frame <= 1315) {
+        OPL_INFO_F("text-dump",
+                   "f%u PutDrawEnv clip=(%d,%d %dx%d) ofs=(%d,%d) "
+                   "tw=(%d,%d %dx%d) tpage=0x%04X dfe=%d isbg=%d "
+                   "r0=%u g0=%u b0=%u",
+                   openpete_frame,
+                   env->clip.x, env->clip.y, env->clip.w, env->clip.h,
+                   env->ofs[0], env->ofs[1],
+                   env->tw.x, env->tw.y, env->tw.w, env->tw.h,
+                   (unsigned)env->tpage,
+                   (int)env->dfe, (int)env->isbg,
+                   (unsigned)env->r0, (unsigned)env->g0, (unsigned)env->b0);
+    }
+    PutDrawEnv(env);
 }
 
 void psyq_SetDefDispEnv(CPUState* cpu) {
@@ -255,8 +273,18 @@ void psyq_DrawOTag(CPUState* cpu) {
     static uint32_t s_hist_calls   = 0;
     static uint32_t s_last_frame   = 0xFFFFFFFFu;
     static uint32_t s_last_dump    = 0;
+
+    /* Diagnostic: payload dump for the loading-transition fly-in text frames
+     * (~1305..1315). Captures up to 64 prims/frame as hex so we can decode
+     * vertex XY and decide whether bad geometry is GPU-side or upstream. See
+     * notes/plans/loading-text-spike-triangles.md. */
+    static const uint32_t kTextDumpFrameMin = 1305;
+    static const uint32_t kTextDumpFrameMax = 1315;
+    static int            s_text_dumped_this_frame = 0;
+
     if (openpete_frame != s_last_frame) {
         s_last_frame = openpete_frame;
+        s_text_dumped_this_frame = 0;
     }
 
     uint32_t addr = cpu->a0;
@@ -415,6 +443,31 @@ void psyq_DrawOTag(CPUState* cpu) {
         uint16_t pgxpField = 0xFFFFu;
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
+
+        /* Frame-windowed payload dump. Logs hex of the first up-to-12 longs
+         * after the 4-byte PSX P_TAG, so the consumer can decode vertex XY
+         * for POLY_GT3/GT4/G3/G4 (longs 1, 4, 7[, 10]). */
+        if (is_known_prim &&
+            openpete_frame >= kTextDumpFrameMin &&
+            openpete_frame <= kTextDumpFrameMax &&
+            s_text_dumped_this_frame < 6000) {
+            char hex[256];
+            size_t off = 0;
+            uint32_t n = expected_longs < 12u ? (uint32_t)expected_longs : 12u;
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t w;
+                std::memcpy(&w, host + 4u + i * 4u, 4);
+                int wrote = std::snprintf(hex + off, sizeof(hex) - off,
+                                          "%08X ", w);
+                if (wrote <= 0 || (size_t)wrote >= sizeof(hex) - off) break;
+                off += (size_t)wrote;
+            }
+            OPL_INFO_F("text-dump",
+                       "f%u slot%d psx=0x%08X code=0x%02X len=%u: %s",
+                       openpete_frame, g_ot_slot_count, addr,
+                       (unsigned)code_byte, (unsigned)expected_longs, hex);
+            s_text_dumped_this_frame++;
+        }
         if (payload_bytes != 0u) {
             std::memcpy(out + 12, host + 4, payload_bytes);
             if (is_known_prim) {

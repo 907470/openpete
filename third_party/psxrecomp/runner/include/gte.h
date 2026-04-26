@@ -35,6 +35,7 @@ struct GTEState {
     int16_t V0[3], V1[3], V2[3];       // Vertex vectors (s3.12)
     int32_t SXY[4];                      // Screen XY FIFO (packed: X low16, Y high16)
     uint16_t SZ[4];                      // Screen Z FIFO (unsigned 16-bit)
+    uint32_t RGBC;                       // CP2D[6]: vertex input color/code (separate from FIFO)
     uint32_t RGB[4];                     // RGB color FIFO (packed R,G,B,CD bytes)
 
     // === Control Registers (matrices, vectors, config) ===
@@ -128,7 +129,7 @@ struct GTEState {
     }
 
     void push_rgb(uint8_t r, uint8_t g, uint8_t b) {
-        uint8_t cd = (RGB[0] >> 24) & 0xFF; // Code byte from RGBC
+        uint8_t cd = (RGBC >> 24) & 0xFF; // Code byte from RGBC (CP2D[6])
         RGB[0] = RGB[1]; RGB[1] = RGB[2];
         RGB[2] = (cd << 24) | (b << 16) | (g << 8) | r;
     }

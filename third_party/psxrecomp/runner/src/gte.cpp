@@ -128,9 +128,9 @@ static void light_color(GTEState* gte) {
 
 // Multiply IR by RGBC color and push to RGB FIFO (step 3 of color output)
 static void color_output(GTEState* gte) {
-    uint8_t r0 = (gte->RGB[0] >> 0)  & 0xFF;
-    uint8_t g0 = (gte->RGB[0] >> 8)  & 0xFF;
-    uint8_t b0 = (gte->RGB[0] >> 16) & 0xFF;
+    uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
+    uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
+    uint8_t b0 = (gte->RGBC >> 16) & 0xFF;
     int64_t mac1 = ((int64_t)r0 * gte->IR1) << 4;
     int64_t mac2 = ((int64_t)g0 * gte->IR2) << 4;
     int64_t mac3 = ((int64_t)b0 * gte->IR3) << 4;
@@ -160,7 +160,8 @@ static void color_output(GTEState* gte) {
 // values vs FC saturate the delta to ±0x7FFF *before* the IR0 multiply, which
 // is what real hardware does and which the previous implementation skipped.
 static void color_depth_cue_finish(GTEState* gte,
-                                    int64_t mac1, int64_t mac2, int64_t mac3) {
+                                    int64_t mac1, int64_t mac2, int64_t mac3,
+                                    bool lm) {
     int32_t fc_diff1 = static_cast<int32_t>((((int64_t)gte->FC[0] << 12) - mac1) >> 12);
     int32_t fc_diff2 = static_cast<int32_t>((((int64_t)gte->FC[1] << 12) - mac2) >> 12);
     int32_t fc_diff3 = static_cast<int32_t>((((int64_t)gte->FC[2] << 12) - mac3) >> 12);
@@ -173,9 +174,9 @@ static void color_depth_cue_finish(GTEState* gte,
     gte->MAC1 = static_cast<int32_t>(total1 >> 12);
     gte->MAC2 = static_cast<int32_t>(total2 >> 12);
     gte->MAC3 = static_cast<int32_t>(total3 >> 12);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
+    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
+    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
+    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
     gte->push_rgb(
         gte->saturate_color(gte->MAC1 >> 4, 0),
         gte->saturate_color(gte->MAC2 >> 4, 1),
@@ -185,14 +186,14 @@ static void color_depth_cue_finish(GTEState* gte,
 // NCDS / NCDT / CDP variant: post-lighting (IR holds BK+LCM*L*V) and the
 // pre-cue MAC is RGBC * IR scaled left by 4 (matching the spec's
 // `[R*IR1, G*IR2, B*IR3] SHL 4` step).
-static void color_depth_cue_from_lit_ir(GTEState* gte) {
-    uint8_t r0 = (gte->RGB[0] >> 0)  & 0xFF;
-    uint8_t g0 = (gte->RGB[0] >> 8)  & 0xFF;
-    uint8_t b0 = (gte->RGB[0] >> 16) & 0xFF;
+static void color_depth_cue_from_lit_ir(GTEState* gte, bool lm) {
+    uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
+    uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
+    uint8_t b0 = (gte->RGBC >> 16) & 0xFF;
     int64_t mac1 = (int64_t)(r0 << 4) * gte->IR1;
     int64_t mac2 = (int64_t)(g0 << 4) * gte->IR2;
     int64_t mac3 = (int64_t)(b0 << 4) * gte->IR3;
-    color_depth_cue_finish(gte, mac1, mac2, mac3);
+    color_depth_cue_finish(gte, mac1, mac2, mac3, lm);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,15 +347,16 @@ void gte_ncct(GTEState* gte, uint32_t instr) {
 // cutscene as a vertex-color-tinted fog (snow mountains turning purple/cyan
 // instead of reading as a clean blue atmospheric haze).
 // ---------------------------------------------------------------------------
-void gte_ncds_internal(GTEState* gte, int16_t* V) {
+void gte_ncds_internal(GTEState* gte, int16_t* V, bool lm) {
     light_transform(gte, V);
     light_color(gte);
-    color_depth_cue_from_lit_ir(gte);
+    color_depth_cue_from_lit_ir(gte, lm);
 }
 
 void gte_ncds(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_ncds_internal(gte, gte->V0);
+    bool lm = (instr >> 10) & 1;
+    gte_ncds_internal(gte, gte->V0, lm);
     gte->set_error_flag();
 }
 
@@ -363,9 +365,10 @@ void gte_ncds(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_ncdt(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_ncds_internal(gte, gte->V0);
-    gte_ncds_internal(gte, gte->V1);
-    gte_ncds_internal(gte, gte->V2);
+    bool lm = (instr >> 10) & 1;
+    gte_ncds_internal(gte, gte->V0, lm);
+    gte_ncds_internal(gte, gte->V1, lm);
+    gte_ncds_internal(gte, gte->V2, lm);
     gte->set_error_flag();
 }
 
@@ -405,11 +408,13 @@ void gte_nct(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_dpcs(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
-    uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
-    uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
+    bool lm = (instr >> 10) & 1;
+    uint8_t r = (gte->RGBC >> 0)  & 0xFF;
+    uint8_t g = (gte->RGBC >> 8)  & 0xFF;
+    uint8_t b = (gte->RGBC >> 16) & 0xFF;
     color_depth_cue_finish(gte,
-                           (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16);
+                           (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16,
+                           lm);
     gte->set_error_flag();
 }
 
@@ -419,12 +424,14 @@ void gte_dpcs(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_dpct(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
+    bool lm = (instr >> 10) & 1;
     for (int i = 0; i < 3; i++) {
         uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
         uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
         uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
         color_depth_cue_finish(gte,
-                               (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16);
+                               (int64_t)r << 16, (int64_t)g << 16, (int64_t)b << 16,
+                               lm);
     }
     gte->set_error_flag();
 }
@@ -435,7 +442,8 @@ void gte_dpct(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_dpcl(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    color_depth_cue_from_lit_ir(gte);
+    bool lm = (instr >> 10) & 1;
+    color_depth_cue_from_lit_ir(gte, lm);
     gte->set_error_flag();
 }
 
@@ -444,10 +452,12 @@ void gte_dpcl(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_intpl(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
+    bool lm = (instr >> 10) & 1;
     color_depth_cue_finish(gte,
                            (int64_t)gte->IR1 << 12,
                            (int64_t)gte->IR2 << 12,
-                           (int64_t)gte->IR3 << 12);
+                           (int64_t)gte->IR3 << 12,
+                           lm);
     gte->set_error_flag();
 }
 
@@ -457,8 +467,9 @@ void gte_intpl(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_cdp(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
+    bool lm = (instr >> 10) & 1;
     light_color(gte);
-    color_depth_cue_from_lit_ir(gte);
+    color_depth_cue_from_lit_ir(gte, lm);
     gte->set_error_flag();
 }
 
@@ -660,7 +671,7 @@ void gte_mtc2(GTEState* gte, uint8_t reg, uint32_t value) {
         case 3:  gte->V1[2] = value & 0xFFFF; break;
         case 4:  gte->V2[0] = value & 0xFFFF; gte->V2[1] = value >> 16; break;
         case 5:  gte->V2[2] = value & 0xFFFF; break;
-        case 6:  gte->RGB[0] = value; break;
+        case 6:  gte->RGBC = value; break;
         case 7:  gte->OTZ = value & 0xFFFF; break;
         case 8:  gte->IR0 = static_cast<int16_t>(value & 0xFFFF); break;
         case 9:  gte->IR1 = static_cast<int16_t>(value & 0xFFFF); break;
@@ -717,7 +728,7 @@ uint32_t gte_mfc2(GTEState* gte, uint8_t reg) {
         case 3:  return static_cast<uint16_t>(gte->V1[2]);
         case 4:  return (static_cast<uint16_t>(gte->V2[1]) << 16) | static_cast<uint16_t>(gte->V2[0]);
         case 5:  return static_cast<uint16_t>(gte->V2[2]);
-        case 6:  return gte->RGB[0];
+        case 6:  return gte->RGBC;
         case 7:  return gte->OTZ;
         case 8:  return static_cast<int32_t>(gte->IR0);  // sign-extend
         case 9:  return static_cast<int32_t>(gte->IR1);
@@ -1015,7 +1026,31 @@ void emit_op_rows(FILE* fp, const DecodedGTE& d_rec, const DecodedGTE& d_psy,
         case 0x06: triple("NCLIP",  -1); break;
         case 0x2D: triple("AVSZ3",  -1); break;
         case 0x2E: triple("AVSZ4",  -1); break;
-        default:   break;
+        case 0x0C: triple("OP",     -1); break;
+        case 0x10: triple("DPCS",   -1); break;
+        case 0x11: triple("INTPL",  -1); break;
+        case 0x12: triple("MVMVA",  -1); break;
+        case 0x13: triple("NCDS",    0); break;
+        case 0x14: triple("CDP",    -1); break;
+        case 0x16: triple("NCDT_v0", 0);
+                   triple("NCDT_v1", 1);
+                   triple("NCDT_v2", 2); break;
+        case 0x1B: triple("NCCS",    0); break;
+        case 0x1C: triple("CC",     -1); break;
+        case 0x1E: triple("NCS",     0); break;
+        case 0x20: triple("NCT_v0",  0);
+                   triple("NCT_v1",  1);
+                   triple("NCT_v2",  2); break;
+        case 0x28: triple("SQR",    -1); break;
+        case 0x29: triple("DPCL",   -1); break;
+        case 0x2A: triple("DPCT",   -1); break;
+        case 0x3D: triple("GPF",    -1); break;
+        case 0x3E: triple("GPL",    -1); break;
+        case 0x3F: triple("NCCT_v0", 0);
+                   triple("NCCT_v1", 1);
+                   triple("NCCT_v2", 2); break;
+        default:
+            triple("UNK",  -1); break;
     }
 }
 
