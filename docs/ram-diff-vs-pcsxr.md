@@ -202,26 +202,54 @@ pc=0x8001ED5C sp=0x801FFFD8 ra=0x80012284 gp=0x80075264
 
 so cmp-masked.py's stack masking works as designed.
 
-### Frame-0 (first GamestateDraw) — open issue
+### Frame-0 heap diff — synchronous-CD timing skew (resolved as known)
 
-Masked diff at `--halt-at-pc 0x8001ED5C --halt-hit 1`:
+Masked diff at `--halt-at-pc 0x8001ED5C --halt-hit N` (Nth call to
+`GamestateDraw`):
+
+| hit N | total | kernel | EXE | post-EXE | heap |
+|------:|------:|-------:|----:|---------:|-----:|
+| 1     | 79,702 | 402  | 247 | 28       | **79,025** |
+| 5     | 79,893 | 421  | 340 | 84       | 79,048 |
+| 10    | 73,632 | 426  | 348 | 84       | 72,774 |
+| 30    |  6,722 | 434  | 348 | 84       |  **5,856** |
+
+The 79 KB heap diff at frame 0 is **op-only nonzero** at clusters from
+0x80147BB0 to 0x801C5800. Bisection: heap diff is 0 at every halt
+inside `Initialize()` (through `func_8005B7D8`, `StartCutscenePlayback`,
+`func_8002D170`); it appears once main's loop is reached. The smoking
+gun is in the openpete log — two large CdReads land before the first
+`GamestateDraw`:
 
 ```
-sp=0x801FFFD8  total=79702  kernel=402  EXE=247  post-EXE=28  heap=79025
+thunks: CdRead sectors=128 buf=0x80147BB0 mode=0x80   # 256 KB
+thunks: CdRead sectors=116 buf=0x8018B800 mode=0x80   # 237 KB
 ```
 
-All 79,025 heap bytes are **op-only nonzero** (op writes data, oracle
-leaves zero) at clusters around 0x80168000-0x80188000 (the .level_34
-overlay load region per psx.map) and 0x80140000+. Pattern of writes
-suggests openpete is preloading or eagerly decompressing data that
-real PSYQ defers — possibly `func_80017F24`'s RGB24 image
-decompression or psxrecomp's overlay manager loading more than what
-Initialize triggers.
+These addresses cover the diff region exactly.
 
-That's the next open thread: bisect *which* call writes those bytes
-on the openpete side and figure out whether to make openpete defer
-the writes (to match real PSYQ timing) or accept them as a benign
-"openpete writes early" timing skew.
+**Root cause**: `psyq_CdRead`
+([games/spyro-1/psyq_thunks.cpp:1101](../games/spyro-1/psyq_thunks.cpp))
+calls `CdReadSync(0, NULL)` *inline*, so every CdRead transfer
+completes synchronously before the thunk returns. pcsxr's interpreter,
+running real PSX cycle counts, leaves those transfers pending across
+many frames; the bytes show up gradually as the CD subsystem ticks.
+The diff converges from 79 KB → 5.8 KB between frame 1 and frame 30 as
+pcsxr catches up.
+
+**Status**: known timing skew, not an openpete recompiler bug.
+Genuine same-instant frame-0 RAM parity would require either:
+
+  - (a) deferring `CdReadSync` to fire over many host yields (mirrors
+        real PSX ~150 KB/sec single-speed throughput),
+  - (b) a "settle" wait — halt N frames after the target PC and let
+        pcsxr's pending reads complete before diffing, or
+  - (c) live with the skew, mask CD-target buffers in the differ.
+
+Halting at frame 30+ already gives a clean ≪10 KB heap diff — that's
+the practical baseline for "frames 1-10 verification" work going
+forward. The libgpu kernel/EXE init residual (~700 bytes) is unchanged
+across frames and is the remaining bug surface for byte-exact parity.
 
 The libgpu pass is two pieces: (a) `psyq_ResetGraph` writes the
 128-byte env struct at `0x80074A64` plus three helper-table words at
