@@ -173,8 +173,17 @@ void psyq_ClearImage(CPUState* cpu) {
 }
 
 void psyq_LoadImage(CPUState* cpu) {
-    cpu->v0 = (uint32_t)LoadImage((RECT16*)PTR(cpu->a0),
-                                  (u_long*)PTR(cpu->a1));
+    RECT16* r = (RECT16*)PTR(cpu->a0);
+    /* Log for the loading-text window so we can correlate VRAM upload
+     * timing with the fly-in animation. See plans/loading-text-spike-
+     * triangles.md. */
+    if (openpete_frame >= 1280 && openpete_frame <= 1315 && r) {
+        OPL_INFO_F("text-dump",
+                   "f%u LoadImage rect=(%d,%d %dx%d) src=0x%08X",
+                   openpete_frame, r->x, r->y, r->w, r->h,
+                   (unsigned)cpu->a1);
+    }
+    cpu->v0 = (uint32_t)LoadImage(r, (u_long*)PTR(cpu->a1));
 }
 
 void psyq_StoreImage(CPUState* cpu) {
@@ -183,12 +192,26 @@ void psyq_StoreImage(CPUState* cpu) {
 }
 
 void psyq_MoveImage(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MoveImage((RECT16*)PTR(cpu->a0),
-                                  (int)cpu->a1, (int)cpu->a2);
+    RECT16* r = (RECT16*)PTR(cpu->a0);
+    if (openpete_frame >= 1280 && openpete_frame <= 1315 && r) {
+        OPL_INFO_F("text-dump",
+                   "f%u MoveImage rect=(%d,%d %dx%d) -> dst=(%d,%d)",
+                   openpete_frame, r->x, r->y, r->w, r->h,
+                   (int)cpu->a1, (int)cpu->a2);
+    }
+    cpu->v0 = (uint32_t)MoveImage(r, (int)cpu->a1, (int)cpu->a2);
 }
 
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
+    if (openpete_frame >= 1305 && openpete_frame <= 1315 && env) {
+        OPL_INFO_F("text-dump",
+                   "f%u PutDispEnv disp=(%d,%d %dx%d) screen=(%d,%d %dx%d) isinter=%d isrgb24=%d",
+                   openpete_frame,
+                   env->disp.x, env->disp.y, env->disp.w, env->disp.h,
+                   env->screen.x, env->screen.y, env->screen.w, env->screen.h,
+                   (int)env->isinter, (int)env->isrgb24);
+    }
     PutDispEnv(env);
 }
 
