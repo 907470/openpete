@@ -84,9 +84,32 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
 /* --- libgcc/crt0 --------------------------------------------------------- */
 
 void psyq___main(CPUState* cpu) {
-    /* libgcc constructor-runner. Spyro's `main()` is the only direct caller;
-     * with no PSX-style global ctors to chain, this is a no-op. */
-    (void)cpu;
+    /* libgcc constructor-runner. Real PSYQ __main at 0x8005B988:
+     *   - load *(0x800730BC) — "already initialized" flag
+     *   - if zero: write 1 to it (mark initialized)
+     *   - walks __CTOR_LIST__ at 0x80010000 calling each ctor (loop count
+     *     in s1 — Spyro has 0 ctors so the loop is skipped)
+     *   - in addition, push ra at sp+12 of __main's own frame (sp -= 16)
+     *
+     * Without these byte-level effects, --seed-ram + --halt-at-pc
+     * comparison against pcsx-redux shows the 5 bytes as diffs at the very
+     * first halt point inside Initialize(). Replicating them keeps the
+     * "first frame == pcsx-redux RAM" invariant intact for the diff loop
+     * (see docs/ram-diff-vs-pcsxr.md). */
+    const uint32_t INIT_FLAG_ADDR = 0x800730BCu;
+    if (cpu->read_word(INIT_FLAG_ADDR) == 0u) {
+        cpu->write_word(INIT_FLAG_ADDR, 1u);
+    }
+    /* Mirror __main's stack-frame use. PSYQ pushes 16 bytes (sp-=16) and
+     * stores ra at sp+12. The recompiler's calling convention doesn't need
+     * a frame for the thunk, but pcsx-redux executes the real MIPS code
+     * which leaves these bytes on the stack; matching them gives a clean
+     * byte-for-byte alignment at function-entry halt points. */
+    uint32_t sp_before = cpu->sp;
+    cpu->sp = sp_before - 16u;
+    cpu->write_word(cpu->sp + 12u, cpu->ra);
+    /* PSYQ restores sp before returning (lw ra, 12(sp); addiu sp, sp, 16). */
+    cpu->sp = sp_before;
 }
 
 /* --- libetc -------------------------------------------------------------- */

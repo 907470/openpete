@@ -127,32 +127,75 @@ the first few functions main calls in order. Halt at each in sequence
 and watch where the diff jumps from "small" to "large" — the first
 "large" PC is the first diverging function.
 
-## Known residual at GamestateUpdate (2026-04-26)
+## Bisection inside `Initialize()` — current baseline (2026-04-26)
 
-With the recipe above and Spyro 1's `main → Initialize() → GamestateUpdate`
-(seed at main entry, oracle at GamestateUpdate entry):
+With the recipe above and Spyro 1's `main → Initialize() → ...`, halting
+both sides at function-entry boundaries via `--halt-at-pc`. **Halt PCs
+must be game functions, not PSYQ thunks** — the dispatch chain handles
+PSYQ as `case 0xADDR: psyq_FOO(cpu); return 1`, which bypasses
+`psx_override_dispatch`, so a halt on a PSYQ PC will silently never fire.
+Game functions (anything with a recompiled body in `PSX.EXE_full.c`) hit
+the override gate and halt cleanly.
 
-| seeding | total diff | kernel | EXE | heap | stack |
+Sweep across `Initialize()`'s game-function call chain, with
+`--seed-ram` + `--seed-cpu` from main entry:
+
+| halt at | total diff | kernel | EXE | heap | stack |
 |---------|-----------:|-------:|----:|-----:|------:|
-| none                   | 18,948    | 14,828 | 199    | 3,099   | 450    |
-| `--seed-ram` only      | 3,532     | 0      | 11     | 3,099   | 55     |
-| `--seed-ram` + `--seed-cpu` | 1,142,591 | 532  | 319,464 | 746,072 | 58,066 |
+| `0x80012204` main entry              | **0**   | 0   | 0   | 0 | 0   |
+| `0x800122a8` GraphicsInitialize      | **0**   | 0   | 0   | 0 | 0   |
+| `0x80012460` MemoryCardInitialize    | 381     | 69  | 176 | 0 | 136 |
+| `0x800123c8` GamepadInitialize       | 773     | 451 | 191 | 0 | 131 |
+| `0x8005595c` SpuInitialize           | 905     | 453 | 301 | 0 | 129 |
+| `0x80012480` CDInitialize            | 931     | 447 | 310 | 0 | 152 |
+| `0x8001256c` MusicInitialize         | 1,150   | 525 | 404 | 0 | 190 |
+| `0x8003385c` GamestateUpdate         | 1.14 M  | 532 | 319,464 | 746,072 | 58,066 |
 
-The first two rows are at frame 0 (post-first-vsync) — small residuals
-because openpete has only run main for a single frame. The third row is
-at GamestateUpdate (post-`Initialize()`); openpete has executed all of
-`Initialize()` and the diff is dominated by **PSYQ-thunk implementation
-asymmetry**: pcsxr runs the real PSYQ MIPS code (statically linked into
-the EXE, hits the BIOS for kernel calls); openpete intercepts PSYQ entry
-points as C thunks in `core/runtime/psyq_thunks.cpp` and skips the real
-bodies.
+Direction of every cluster up through MusicInit: **pcsxr-only nonzero ≫
+openpete-only**. That is, the bytes that differ are bytes pcsxr wrote
+(via real PSYQ MIPS code) that openpete's C thunks didn't write. So the
+remaining bug surface is "PSYQ thunks aren't byte-faithful with the real
+PSYQ libraries pcsxr executes."
 
-The 0xFF heap-sentinel pattern at `0x80074A74` is the fingerprint: pcsxr's
-`InitHeap()` path writes those sentinels, openpete's thunk doesn't.
+### Two thunks already faithful
+
+- `psyq___main` (commit *this commit*). The 5 bytes that diverged at the
+  GraphicsInitialize halt before this fix were: a "init done" sentinel
+  byte at `0x800730BC`, plus 4 bytes of saved-`ra` in `__main`'s own
+  stack frame at `0x801FFFD4`. The thunk now writes both, taking the
+  GraphicsInit halt diff from 5 → 0.
+
+### Big remaining offenders, in priority order
+
+1. **`libgpu` family** — `psyq_ResetGraph`, `psyq_SetDefDrawEnv`,
+   `psyq_SetDefDispEnv`, `psyq_PutDrawEnv`/`PutDispEnv`,
+   `psyq_ClearImage`, `psyq_DrawSync`. Real PSYQ
+   `ResetGraph()` writes a DRAWENV struct at `0x80074A64` and an OT/jtb
+   table at `0x80074A1C` (boot log: `ResetGraph:jtb=80074a1c,env=80074a64`).
+   Openpete's thunks delegate to PsyCross which manages host-side state
+   without writing these PSX-side bytes. ~116 bytes / call.
+2. **`libpad` / `MemCardInit`** — kernel-region writes (BIOS pad slot
+   state at `0x800091BE..0x80009245`). Probably the BIOS-side kernel
+   memory openpete has no equivalent of.
+3. Stack divergence (~130 bytes/halt and growing): every PSYQ thunk
+   skips its own MIPS prologue's `sw $ra/s0..` push, so saved-register
+   slots in each thunk's would-be stack frame stay at zero.
+
+### Heap explosion past `MusicInit`
+
+The jump from 1,150 → 1.14M bytes between MusicInitialize and
+GamestateUpdate is dominated by the rest of `Initialize()`:
+`InitGeom`, `SetGeomOffset`/`Screen`, the RGB24 image-decompression loop
+(`func_80017F24`, ~360 KB Memset writes), `WadInitialize` + `CDLoadSync`
+(reads 2 KB of WAD header into `g_OverlaySpacePointer`), and lots of
+PSYQ display traffic. Bisecting *that* requires intermediate halt PCs
+inside the image loop or post-WAD; many of those would-be halt points
+are PSYQ functions that won't fire on `--halt-at-pc`. A separate diff
+loop using `--ram-dump-on-frame` may be more practical for that span.
 
 So the harness is sound — register state, RAM seed, halt instant are all
-verified working. The next iteration is to bisect inside `Initialize()`
-and identify which thunk needs faithful byte-level implementation.
+verified working byte-for-byte at main entry, and the bisection has
+revealed that the remaining bug surface is concentrated in PSYQ thunks.
 
 ## Files
 
