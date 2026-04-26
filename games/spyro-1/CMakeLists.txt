@@ -48,7 +48,11 @@ add_executable(openpete-spyro1
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     target_link_options(openpete-spyro1 PRIVATE
-        -Wl,--allow-multiple-definition)
+        -Wl,--allow-multiple-definition
+        # Override SDL2main's -mwindows so the .exe is a console-subsystem
+        # binary; otherwise stdout/stderr aren't attached to the parent
+        # terminal when launched via WSL2 interop.
+        -mconsole)
 endif()
 
 # Generated C addresses psx_runtime.h via the include path provided by
