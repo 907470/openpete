@@ -106,6 +106,37 @@ void psyq_VSync(CPUState* cpu) {
         OPL_INFO_F("thunks", "VSync(%d) frame=%u (call #%u)",
                    mode, openpete_frame, calls);
     }
+    /* Cutscene tick / DeltaTime trace — see plans/loading-text-spike-triangles.md
+     * task #4. Logs g_CutsceneIdx, g_CutsceneLayout->m_CurrentTick, and
+     * g_DeltaTime once per VSync(0) in the loading-text window. Addresses are
+     * for the openpete-bundled spyro-1 build (psx.map @ 3fdc740). */
+    if (mode == 0 && openpete_frame >= 1050u && openpete_frame <= 1310u) {
+        auto safe_read32 = [](uint32_t addr) -> uint32_t {
+            if (addr < 0x80000000u || addr >= 0x80200000u) return 0xFFFFFFFFu;
+            void* p = PTR(addr);
+            return p ? *(uint32_t*)p : 0xFFFFFFFFu;
+        };
+        /* Per spyro-1/build/psx.map (3fdc740): the openpete-bundled
+         * games/spyro-1/spyro-1/build/psx.map is stale (.main shown as 0x32000;
+         * actual EXE size in the binary header is 0x65800), so ignore it and
+         * use the up-to-date addresses from the live matching-decomp tree at
+         * <spyro>/spyro-1/build/. */
+        const uint32_t kCutsceneIdxAddr    = 0x8007566Cu;
+        const uint32_t kCutsceneLayoutAddr = 0x80075680u;
+        const uint32_t kDeltaTimeAddr      = 0x800756CCu; /* g_DeltaTime */
+        const uint32_t kGamestateAddr      = 0x800757D8u; /* g_Gamestate */
+        int idx = (int)safe_read32(kCutsceneIdxAddr);
+        uint32_t layout = safe_read32(kCutsceneLayoutAddr);
+        int dt = (int)safe_read32(kDeltaTimeAddr);
+        int gs = (int)safe_read32(kGamestateAddr);
+        uint32_t cur_tick_raw = safe_read32(layout);
+        uint32_t mobyct_raw   = safe_read32(layout + 12u);
+        uint32_t dur_raw      = safe_read32(layout + 8u);
+        OPL_INFO_F("text-dump",
+                   "f%u VSync(0) gs=%d idx=%d tick=%d dur=%d mobys=%d dt=%d layout=0x%08X",
+                   openpete_frame, gs, idx, (int)cur_tick_raw, (int)dur_raw,
+                   (int)mobyct_raw, dt, layout);
+    }
     if (mode == 0) {
         if (openpete_fast_boot_until_frame > 0 &&
             (int)openpete_frame < openpete_fast_boot_until_frame) {
