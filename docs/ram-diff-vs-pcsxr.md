@@ -138,18 +138,27 @@ Game functions (anything with a recompiled body in `PSX.EXE_full.c`) hit
 the override gate and halt cleanly.
 
 Sweep across `Initialize()`'s game-function call chain, with
-`--seed-ram` + `--seed-cpu` from main entry:
+`--seed-ram` + `--seed-cpu` from main entry. Three rows per halt: raw
+baseline, after `psyq___main` thunk fix, and after the libgpu thunk
+pass (commits `2d3e998` + `4cf43cb` + `89e67dd`):
 
-| halt at | total diff | kernel | EXE | heap | stack |
-|---------|-----------:|-------:|----:|-----:|------:|
-| `0x80012204` main entry              | **0**   | 0   | 0   | 0 | 0   |
-| `0x800122a8` GraphicsInitialize      | **0**   | 0   | 0   | 0 | 0   |
-| `0x80012460` MemoryCardInitialize    | 381     | 69  | 176 | 0 | 136 |
-| `0x800123c8` GamepadInitialize       | 773     | 451 | 191 | 0 | 131 |
-| `0x8005595c` SpuInitialize           | 905     | 453 | 301 | 0 | 129 |
-| `0x80012480` CDInitialize            | 931     | 447 | 310 | 0 | 152 |
-| `0x8001256c` MusicInitialize         | 1,150   | 525 | 404 | 0 | 190 |
-| `0x8003385c` GamestateUpdate         | 1.14 M  | 532 | 319,464 | 746,072 | 58,066 |
+| halt at | baseline | +__main | +libgpu |
+|---------|---------:|--------:|--------:|
+| `0x80012204` main entry              | 0       | 0       | 0       |
+| `0x800122a8` GraphicsInitialize      | 5       | 0       | 0       |
+| `0x80012460` MemoryCardInitialize    | 386     | 381     | **247** |
+| `0x800123c8` GamepadInitialize       | 778     | 773     | **642** |
+| `0x8005595c` SpuInitialize           | 910     | 905     | **780** |
+| `0x80012480` CDInitialize            | 936     | 931     | **812** |
+| `0x8001256c` MusicInitialize         | 1,155   | 1,150   | **1,041** |
+| `0x8003385c` GamestateUpdate         | 1.14 M  | (n/a)   | (n/a)   |
+
+The libgpu pass is two pieces: (a) `psyq_ResetGraph` writes the
+128-byte env struct at `0x80074A64` plus three helper-table words at
+`0x80074B68/6C/78` — recovers ~117 bytes one-time; (b) every libgpu
+thunk now calls `psyq_mirror_stack_frame(...)` to write its MIPS
+prologue's saved-register pushes to the PSX stack, recovering ~10–20
+bytes per call point and propagating downstream.
 
 Direction of every cluster up through MusicInit: **pcsxr-only nonzero ≫
 openpete-only**. That is, the bytes that differ are bytes pcsxr wrote
@@ -157,29 +166,53 @@ openpete-only**. That is, the bytes that differ are bytes pcsxr wrote
 remaining bug surface is "PSYQ thunks aren't byte-faithful with the real
 PSYQ libraries pcsxr executes."
 
-### Two thunks already faithful
+### Already-faithful thunks
 
-- `psyq___main` (commit *this commit*). The 5 bytes that diverged at the
+- `psyq___main` (commit `2d3e998`). The 5 bytes that diverged at the
   GraphicsInitialize halt before this fix were: a "init done" sentinel
   byte at `0x800730BC`, plus 4 bytes of saved-`ra` in `__main`'s own
-  stack frame at `0x801FFFD4`. The thunk now writes both, taking the
-  GraphicsInit halt diff from 5 → 0.
+  stack frame at `0x801FFFD4`. GraphicsInit halt diff went 5 → 0.
+- `psyq_ResetGraph` (commit `4cf43cb`). Writes the 128-byte env struct
+  at `0x80074A64` plus three helper-table words via `func_80061DEC`'s
+  effects. NTSC mode 0 only.
+- libgpu prologue mirrors (commit `89e67dd`). `SetDispMask`,
+  `SetGraphDebug`, `DrawSync`, `ClearImage`, `PutDrawEnv`, `PutDispEnv`,
+  `SetDefDrawEnv` each call `psyq_mirror_stack_frame(...)` matching the
+  real MIPS function's prologue (`sp -= N; sw ra/s0..` slots).
+
+### `psyq_mirror_stack_frame` helper
+
+```cpp
+struct PsxStackPush { uint32_t offset; uint32_t value; };
+static void psyq_mirror_stack_frame(CPUState* cpu, uint32_t frame_size,
+                                    uint32_t ra_off,
+                                    const PsxStackPush* pushes, size_t n);
+```
+
+Pattern for any new PSYQ thunk: disassemble the real function's
+prologue, read off `addiu sp, sp, -N` and the `sw <reg>, off(sp)`
+instructions, encode as a `PsxStackPush` array. `ra` is mandatory and
+gets its own dedicated `ra_off` parameter. The helper restores `sp`
+before returning — caller's invariants stay intact.
 
 ### Big remaining offenders, in priority order
 
-1. **`libgpu` family** — `psyq_ResetGraph`, `psyq_SetDefDrawEnv`,
-   `psyq_SetDefDispEnv`, `psyq_PutDrawEnv`/`PutDispEnv`,
-   `psyq_ClearImage`, `psyq_DrawSync`. Real PSYQ
-   `ResetGraph()` writes a DRAWENV struct at `0x80074A64` and an OT/jtb
-   table at `0x80074A1C` (boot log: `ResetGraph:jtb=80074a1c,env=80074a64`).
-   Openpete's thunks delegate to PsyCross which manages host-side state
-   without writing these PSX-side bytes. ~116 bytes / call.
-2. **`libpad` / `MemCardInit`** — kernel-region writes (BIOS pad slot
-   state at `0x800091BE..0x80009245`). Probably the BIOS-side kernel
-   memory openpete has no equivalent of.
-3. Stack divergence (~130 bytes/halt and growing): every PSYQ thunk
-   skips its own MIPS prologue's `sw $ra/s0..` push, so saved-register
-   slots in each thunk's would-be stack frame stay at zero.
+1. **`libpad` / `MemCardInit` / kernel state** — BIOS pad slot state at
+   `0x800091BE..0x80009245` (~69 bytes constant from MemoryCardInit on).
+   Probably the BIOS-side kernel memory openpete has no equivalent of.
+2. **`func_80061DEC` and other PSYQ-internal sub-calls inside ResetGraph**
+   — write to ~50 bytes spread across `0x80073924..0x8007398B`,
+   `0x80074990..0x800749A3`, `0x80074B58..0x80074B7C`, `0x80075978..0x8007598F`.
+   Looks like libgpu's command-buffer dispatch table init.
+3. **Sub-call stack frames** — real `ResetGraph` calls `Memset`,
+   `func_80061DEC`, etc.; each pushes its own frame *below* ResetGraph's.
+   Our mirror only covers the top-level frame, leaving the
+   `caller_sp - resetgraph_frame - sub_call_frame` regions zero (~110
+   bytes residual at MemoryCardInit).
+4. **PsyCross-side scratch on the stack** (e.g. `CDFS_Init` writes the
+   `STEM.CNF;1` filename at `0x801FFE30`). Real PSYQ doesn't write that
+   string there. Hard to suppress without rewriting PsyCross's path
+   handling.
 
 ### Heap explosion past `MusicInit`
 
