@@ -11,6 +11,9 @@
 #include "openpete_psx.h"
 #include "screenshot.h"
 #include "game_extras.h"
+#include "bk2_movie.h"
+
+#include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
 #include <SDL.h>
 #include <libco.h>
@@ -555,6 +558,24 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         OPL_INFO_F("press", "loaded %d scripted press event(s)", press_event_count);
     }
 
+    /* --bk2: load BizHawk movie once, picked up per-frame in the loop. */
+    bk2_movie_t bk2 = {0};
+    int bk2_offset = 0;
+    bool bk2_active = (opts->bk2_path && *opts->bk2_path);
+    if (bk2_active) {
+        if (bk2_movie_load(opts->bk2_path, &bk2) != 0) {
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        bk2_offset = opts->bk2_frame_offset_set
+            ? opts->bk2_frame_offset
+            : -bk2.first_input_frame;
+        OPL_INFO_F("bk2",
+                   "loaded %d frames from %s, first input at bk2-frame=%d, "
+                   "openpete_frame=%d → bk2-frame=openpete_frame-(%d)",
+                   bk2.frame_count, opts->bk2_path, bk2.first_input_frame,
+                   bk2_offset, bk2_offset);
+    }
+
     /* Tab-held detection used for both the wall-clock pacer AND throttling
      * the SDL event pump: at 1000+ Hz, the per-iteration cost of SDL_PollEvent
      * + PsyX_Pad_InternalPadUpdates dominates. Polling at 120 Hz wall-clock
@@ -570,6 +591,33 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * g_PadBuffer this same iteration. */
         if (press_event_count > 0) {
             openpete_press_apply(press_events, press_event_count);
+        }
+
+        /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
+         * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
+         * Out-of-range frames (before the offset, or past the movie's end)
+         * fall back to 0xFFFF — i.e. no buttons pressed — so the menu sits
+         * idle until the recorded run starts. */
+        if (bk2_active) {
+            int bk2_frame = (int)openpete_frame - bk2_offset;
+            unsigned short bits = 0xFFFF;
+            if (bk2_frame >= 0 && bk2_frame < bk2.frame_count) {
+                bits = bk2.frames[bk2_frame];
+            } else if (bk2_frame >= bk2.frame_count && opts->bk2_stop_on_end) {
+                quit = 1;
+                exit_reason = "bk2-end";
+                break;
+            }
+            /* Log every input transition so the user can audit the timeline
+             * the same way --press logs every press start/release. */
+            static unsigned short last_bits = 0xFFFF;
+            if (bits != last_bits) {
+                OPL_INFO_F("bk2",
+                           "openpete_frame=%u bk2_frame=%d bits=0x%04X",
+                           openpete_frame, bk2_frame, bits);
+                last_bits = bits;
+            }
+            g_PsyX_Pad_InputOverride = bits;
         }
 
         /* Drain SDL events + refresh pad state before the game runs. PsyCross's
@@ -696,6 +744,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 next_yield_ms = (double)now_ms;
             }
         }
+    }
+
+    if (bk2_active) {
+        bk2_movie_free(&bk2);
+        g_PsyX_Pad_InputOverride = 0xFFFF;
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

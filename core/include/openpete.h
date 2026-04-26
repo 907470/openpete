@@ -84,6 +84,24 @@ typedef struct {
      * splash windows) — saves ~7s of black-screen boot per iteration. 0 =
      * disabled. */
     int fast_boot_until_frame;
+
+    /* BizHawk .bk2 movie replay (alternative to --press, with full pad
+     * fidelity instead of keyboard scancodes). NULL = disabled. See
+     * notes/plans/openpete-bk2-input.md. Mutually exclusive with
+     * press_script. */
+    const char* bk2_path;
+
+    /* Map bk2 frame 0 to openpete_frame `bk2_frame_offset`. Negative is
+     * legal — a positive value here means "skip the first N bk2 frames".
+     * INT_MIN = "unset"; the host loop then auto-picks
+     * -bk2.first_input_frame so the first pressed bk2 frame lands at
+     * openpete_frame=0 (use --fast-boot-until-frame to skip splashes). */
+    int  bk2_frame_offset;
+    bool bk2_frame_offset_set;
+
+    /* When set, exit after the last bk2 frame instead of holding the last
+     * input forever. */
+    bool bk2_stop_on_end;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

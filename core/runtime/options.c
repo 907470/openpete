@@ -89,6 +89,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--fast-boot-until-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fast_boot_until_frame = atoi(v); i++;
+        } else if (strcmp(a, "--bk2") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->bk2_path = v; i++;
+        } else if (strcmp(a, "--bk2-frame-offset") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->bk2_frame_offset = atoi(v);
+            opts->bk2_frame_offset_set = true;
+            i++;
+        } else if (strcmp(a, "--bk2-stop-on-end") == 0) {
+            opts->bk2_stop_on_end = true;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -110,6 +120,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
                 "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
                 "  --press SCRIPT             scripted key presses, e.g. '600:return,1200:x,1800:return'\n"
+                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 digital pad). Mutex with --press\n"
+                "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
+                "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
@@ -117,6 +130,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             fprintf(stderr, "openpete: unknown arg: %s\n", a);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+    }
+
+    if (opts->press_script && opts->bk2_path) {
+        fprintf(stderr, "openpete: --press and --bk2 are mutually exclusive\n");
+        return OPENPETE_EXIT_SETUP_ERROR;
     }
     return OPENPETE_EXIT_OK;
 }
