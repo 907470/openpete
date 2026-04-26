@@ -110,7 +110,7 @@ void psyq_VSync(CPUState* cpu) {
      * task #4. Logs g_CutsceneIdx, g_CutsceneLayout->m_CurrentTick, and
      * g_DeltaTime once per VSync(0) in the loading-text window. Addresses are
      * for the openpete-bundled spyro-1 build (psx.map @ 3fdc740). */
-    if (mode == 0 && openpete_frame >= 1050u && openpete_frame <= 1310u) {
+    if (mode == 0 && openpete_frame >= 1050u && openpete_frame <= 1700u) { /* TODO remove */
         auto safe_read32 = [](uint32_t addr) -> uint32_t {
             if (addr < 0x80000000u || addr >= 0x80200000u) return 0xFFFFFFFFu;
             void* p = PTR(addr);
@@ -182,11 +182,30 @@ void psyq_VSync(CPUState* cpu) {
              * meaningless at boot and risks committing stale presses. */
             openpete_frame++;
         } else if (openpete_host_fiber) {
-            /* openpete_yield_to_host() bumps openpete_frame and switches to
-             * the host fiber. Returns when host resumes us for the next
-             * frame, so cpu->v0 below sees the post-yield frame counter. */
+            /* Spyro 1 is a 30fps game: real-PSX game iter takes ~2 vblanks
+             * because the 33MHz MIPS CPU's update+draw work fits in 1.5
+             * vblanks, so VSync(0) waits for the next vblank → total iter
+             * = 2 vblanks = 33ms = 30Hz. On modern hosts the recompiled C
+             * runs in ~1ms, so a single yield-to-host (paced at 60Hz wall-
+             * clock) makes the game effectively run at 60fps — which is
+             * 2x real-PSX speed for any code that increments per-iter
+             * counters without going through DeltaTime (e.g.
+             * g_TitlescreenState.m_Tick++, g_GameTick++). The clamped
+             * DeltaTime path (clamp(g_UnprocessedFrames, 2, 4)) is
+             * unaffected because both PSX and openpete settle on
+             * DeltaTime=2 either way.
+             *
+             * Fix: yield TWICE per VSync(0) so the host advances 2 frames
+             * before resuming the game, matching real-PSX 30fps cadence
+             * for Spyro 1. The PadVSync callback fires after each yield
+             * so g_UnprocessedFrames reaches 2 (= real-PSX value).
+             *
+             * TODO: plumb the iter-yield count into game_extras_impl.c
+             * so 60fps games can override it. Hardcoded for Spyro 1 now.
+             */
             openpete_yield_to_host();
-            /* Fire registered VSync callback (PadVSync polls pad state). */
+            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+            openpete_yield_to_host();
             if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         } else {
             /* No fiber loop running (smoke-test path) — fall back to PsyCross's
