@@ -56,7 +56,7 @@ extern "C" void openpete_debug_triangle_init(void) {
  * bottom-left), SDL_CreateRGBSurfaceFrom treats row 0 as the surface top,
  * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
  * flip. We re-implement here with an explicit row flip. */
-extern "C" void openpete_psyx_take_screenshot(void) {
+extern "C" void openpete_psyx_take_screenshot(const char* path) {
     int w = 0, h = 0;
     PsyX_GetScreenSize(&w, &h);
     if (w <= 0 || h <= 0) return;
@@ -85,7 +85,7 @@ extern "C" void openpete_psyx_take_screenshot(void) {
         /*Rmask=*/0x00FF0000u, /*Gmask=*/0x0000FF00u,
         /*Bmask=*/0x000000FFu, /*Amask=*/0xFF000000u);
     if (surface) {
-        SDL_SaveBMP(surface, "SCREENSHOT.BMP");
+        SDL_SaveBMP(surface, path ? path : "SCREENSHOT.BMP");
         SDL_FreeSurface(surface);
     }
     std::free(pixels);

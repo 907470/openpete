@@ -23,7 +23,7 @@ void openpete_options_init(openpete_options_t* opts) {
     memset(opts, 0, sizeof(*opts));
     opts->display_name        = "OpenPete";
     opts->screenshot_on_frame = -1;
-    opts->screenshot_output   = "./shot.png";
+    opts->screenshot_output   = "./shot.bmp";
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
@@ -45,7 +45,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--screenshot-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_on_frame = atoi(v); i++;
-        } else if (strcmp(a, "--output") == 0) {
+        } else if (strcmp(a, "--screenshot-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;
         } else if (strcmp(a, "--ram-dump-on-frame") == 0) {
@@ -129,8 +129,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
-                "  --screenshot-on-frame N    save PNG of frame N to --output then continue\n"
-                "  --output PATH              screenshot path (default ./shot.png)\n"
+                "  --screenshot-on-frame N    save BMP of frame N to --screenshot-output then continue\n"
+                "  --screenshot-output PATH   screenshot path (default ./shot.bmp)\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
                 "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
                 "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"

@@ -46,7 +46,7 @@ cmake --build build/windows-mingw -j
 # 6. Run the developer-loop sanity check.
 ./build/linux-release/games/spyro-1/openpete-spyro1 \
     --headless --frame-limit 60 --screenshot-on-frame 30 \
-    --output ./shot.png --max-runtime-seconds 30 --log-format json
+    --screenshot-output ./shot.bmp --max-runtime-seconds 30 --log-format json
 ```
 
 ## Repository layout

@@ -39,7 +39,7 @@ typedef struct {
 
     /* Screenshot */
     int         screenshot_on_frame;   /* -1 = disabled */
-    const char* screenshot_output;     /* path; default ./shot.png */
+    const char* screenshot_output;     /* path; default ./shot.bmp */
 
     /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison

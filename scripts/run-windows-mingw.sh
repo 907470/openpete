@@ -5,7 +5,7 @@
 # WSL2 launches .exe files natively on Windows via interop. Linux-form
 # paths in args (e.g. `--disc /home/.../foo.cue`) are NOT understood by
 # the Windows-side .exe; this script auto-translates the `--disc`,
-# `--exe-path`, and `--output` values via `wslpath -w` if they look like
+# `--exe-path`, and `--screenshot-output` values via `wslpath -w` if they look like
 # Linux paths.
 #
 # Usage:
@@ -27,7 +27,7 @@
 #   # --frame-limit dominate, and we pass --disc/--run-recomp/--press
 #   # explicitly to neutralize them):
 #   scripts/run-windows-mingw.sh --headless --frame-limit 60 \
-#       --screenshot-on-frame 30 --output /tmp/shot.png
+#       --screenshot-on-frame 30 --screenshot-output /tmp/shot.bmp
 #
 #   # Boot Spyro with a different runtime budget; defaults fill the
 #   # rest:
@@ -83,7 +83,7 @@ fi
 
 # --- Args translation ----------------------------------------------------
 # WSL2 interop hands argv through verbatim; Linux paths in --disc /
-# --exe-path / --output / --bk2 won't resolve on the Windows side.
+# --exe-path / --screenshot-output / --bk2 won't resolve on the Windows side.
 # Translate any value that starts with '/' (treated as a Linux absolute
 # path). Relative paths fall back to abspath-then-translate so a value
 # like `openpete/games/spyro-1/bk2/tas.bk2` (relative to CWD) still
@@ -105,14 +105,14 @@ forwarded=()
 suppress_press=0  # explicit `--press ""` means "no presses"
 while (( $# )); do
     case "$1" in
-        --disc|--exe-path|--output|--bk2)
+        --disc|--exe-path|--screenshot-output|--bk2)
             forwarded+=("$1")
             if [[ $# -ge 2 ]]; then
                 forwarded+=("$(translate_if_linux "$2")")
                 shift
             fi
             ;;
-        --disc=*|--exe-path=*|--output=*|--bk2=*)
+        --disc=*|--exe-path=*|--screenshot-output=*|--bk2=*)
             key="${1%%=*}"
             val="${1#*=}"
             forwarded+=("$key=$(translate_if_linux "$val")")

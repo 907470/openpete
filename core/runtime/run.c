@@ -132,7 +132,7 @@ extern void PsyX_UpdateInput(void);
 /* Phase 1e infra-triangle (core/runtime/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
-extern void openpete_psyx_take_screenshot(void);  /* writes ./SCREENSHOT.BMP */
+extern void openpete_psyx_take_screenshot(const char* path);  /* BMP via SDL_SaveBMP */
 
 /* Top-left FPS overlay (core/runtime/fps_overlay.cpp). */
 extern void openpete_fps_overlay_emit(void);
@@ -773,10 +773,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (openpete_present_pending) {
             if (opts->screenshot_on_frame >= 0 &&
                 (int)openpete_frame == opts->screenshot_on_frame) {
-                openpete_psyx_take_screenshot();
+                const char* path = opts->screenshot_output;
+                openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",
-                           "wrote ./SCREENSHOT.BMP on frame %u (--output=%s ignored for now)",
-                           openpete_frame, opts->screenshot_output);
+                           "wrote %s on frame %u",
+                           path, openpete_frame);
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
