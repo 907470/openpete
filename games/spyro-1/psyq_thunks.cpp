@@ -129,70 +129,6 @@ void psyq_VSync(CPUState* cpu) {
         OPL_INFO_F("thunks", "VSync(%d) frame=%u (call #%u)",
                    mode, openpete_frame, calls);
     }
-    /* Cutscene tick / DeltaTime trace — see plans/loading-text-spike-triangles.md
-     * task #4. Logs g_CutsceneIdx, g_CutsceneLayout->m_CurrentTick, and
-     * g_DeltaTime once per VSync(0) in the loading-text window. Addresses are
-     * for the openpete-bundled spyro-1 build (psx.map @ 3fdc740). */
-    if (mode == 0 && openpete_frame >= 1050u && openpete_frame <= 1700u) { /* TODO remove */
-        auto safe_read32 = [](uint32_t addr) -> uint32_t {
-            if (addr < 0x80000000u || addr >= 0x80200000u) return 0xFFFFFFFFu;
-            void* p = PTR(addr);
-            return p ? *(uint32_t*)p : 0xFFFFFFFFu;
-        };
-        /* Per spyro-1/build/psx.map (3fdc740): the openpete-bundled
-         * games/spyro-1/spyro-1/build/psx.map is stale (.main shown as 0x32000;
-         * actual EXE size in the binary header is 0x65800), so ignore it and
-         * use the up-to-date addresses from the live matching-decomp tree at
-         * <spyro>/spyro-1/build/. */
-        const uint32_t kGamestateAddr   = 0x800757D8u; /* g_Gamestate */
-        const uint32_t kTSStateBase     = 0x80078D78u; /* g_TitlescreenState */
-        /* g_SonyImage @ 0x8006FCF4. Layout:
-         *   [0..0x1C00]   u_char m_Buf / DrawStateSonyBuf (union)
-         *   0x1C00..0x2000  WorldNearQueued[256]  (1024)
-         *   0x2000..0x2400  WorldFarQueued[256]   (1024)
-         *   0x2400..0x2800  ShadedMobys[256]      (1024) ← here
-         *   0x2800..        unk
-         */
-        const uint32_t kShadedMobysAddr = 0x8006FCF4u + 0x2400u; /* = 0x800720F4 */
-        int gs       = (int)safe_read32(kGamestateAddr);
-        int ts_state = (int)safe_read32(kTSStateBase + 4u);   /* m_State */
-        int ts_tick  = (int)safe_read32(kTSStateBase + 8u);   /* m_Tick */
-        OPL_INFO_F("text-dump",
-                   "f%u VSync(0) gs=%d tsState=%d tsTick=%d",
-                   openpete_frame, gs, ts_state, ts_tick);
-        if (openpete_frame == 1309u) {
-            /* Walk g_SonyImage.m_ShadedMobys[] and dump each letter moby. */
-            for (int si = 0; si < 32; si++) {
-                uint32_t pMoby = safe_read32(kShadedMobysAddr + (uint32_t)si * 4u);
-                if (pMoby == 0u) {
-                    OPL_INFO_F("text-dump", "  ShadedMoby[%d] = NULL (end)", si);
-                    break;
-                }
-                if (pMoby < 0x80000000u || pMoby >= 0x80200000u) {
-                    OPL_INFO_F("text-dump", "  ShadedMoby[%d] = 0x%08X (bad)",
-                               si, pMoby);
-                    continue;
-                }
-                int px = (int)safe_read32(pMoby + 12u);
-                int py = (int)safe_read32(pMoby + 16u);
-                int pz = (int)safe_read32(pMoby + 20u);
-                /* Per Moby struct: m_Class is a short at offset 54 (after
-                 * m_RotationMatrix 32..51 + m_CollisionRegion at 52..53). */
-                uint32_t cls_word = safe_read32(pMoby + 52u);
-                int cls = (int)((int16_t)((cls_word >> 16) & 0xFFFFu));
-                /* m_Rotation Vector3D8 (3 chars). After Pod (u_char) at some
-                 * earlier offset; for now just dump 4 bytes near the expected
-                 * region for sanity. The exact byte offset of m_Rotation can
-                 * shift due to AnimationState packing — print row near 64. */
-                uint32_t row64 = safe_read32(pMoby + 64u);
-                uint32_t row68 = safe_read32(pMoby + 68u);
-                OPL_INFO_F("text-dump",
-                           "  ShadedMoby[%d]@0x%08X cls=%d pos=(%d,%d,%d) "
-                           "row64=0x%08X row68=0x%08X",
-                           si, pMoby, cls, px, py, pz, row64, row68);
-            }
-        }
-    }
     /* Level-1 game-over probe (task #9): after the 2nd loading transition the
      * screen flashes and game-over fires within seconds. Confirmed via earlier
      * coarse trace: gs jumps 14 → 13 → 4 (Respawn) at f~2340 with Spyro
@@ -475,15 +411,6 @@ void psyq_ClearImage(CPUState* cpu) {
 
 void psyq_LoadImage(CPUState* cpu) {
     RECT16* r = (RECT16*)PTR(cpu->a0);
-    /* Log for the loading-text window so we can correlate VRAM upload
-     * timing with the fly-in animation. See plans/loading-text-spike-
-     * triangles.md. */
-    if (openpete_frame >= 1280 && openpete_frame <= 1315 && r) {
-        OPL_INFO_F("text-dump",
-                   "f%u LoadImage rect=(%d,%d %dx%d) src=0x%08X",
-                   openpete_frame, r->x, r->y, r->w, r->h,
-                   (unsigned)cpu->a1);
-    }
     cpu->v0 = (uint32_t)LoadImage(r, (u_long*)PTR(cpu->a1));
 }
 
@@ -494,25 +421,11 @@ void psyq_StoreImage(CPUState* cpu) {
 
 void psyq_MoveImage(CPUState* cpu) {
     RECT16* r = (RECT16*)PTR(cpu->a0);
-    if (openpete_frame >= 1280 && openpete_frame <= 1315 && r) {
-        OPL_INFO_F("text-dump",
-                   "f%u MoveImage rect=(%d,%d %dx%d) -> dst=(%d,%d)",
-                   openpete_frame, r->x, r->y, r->w, r->h,
-                   (int)cpu->a1, (int)cpu->a2);
-    }
     cpu->v0 = (uint32_t)MoveImage(r, (int)cpu->a1, (int)cpu->a2);
 }
 
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
-    if (openpete_frame >= 1305 && openpete_frame <= 1315 && env) {
-        OPL_INFO_F("text-dump",
-                   "f%u PutDispEnv disp=(%d,%d %dx%d) screen=(%d,%d %dx%d) isinter=%d isrgb24=%d",
-                   openpete_frame,
-                   env->disp.x, env->disp.y, env->disp.w, env->disp.h,
-                   env->screen.x, env->screen.y, env->screen.w, env->screen.h,
-                   (int)env->isinter, (int)env->isrgb24);
-    }
     PutDispEnv(env);
     /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
     PsxStackPush p[] = {
@@ -523,22 +436,6 @@ void psyq_PutDispEnv(CPUState* cpu) {
 
 void psyq_PutDrawEnv(CPUState* cpu) {
     DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
-    /* Log clip rect during the loading-text frame window. If clip-bottom
-     * < ~140 then PSX would have scissored the spike-quad tips and openpete
-     * needs to do the same. */
-    if (openpete_frame >= 1305 && openpete_frame <= 1315) {
-        OPL_INFO_F("text-dump",
-                   "f%u PutDrawEnv clip=(%d,%d %dx%d) ofs=(%d,%d) "
-                   "tw=(%d,%d %dx%d) tpage=0x%04X dfe=%d isbg=%d "
-                   "r0=%u g0=%u b0=%u",
-                   openpete_frame,
-                   env->clip.x, env->clip.y, env->clip.w, env->clip.h,
-                   env->ofs[0], env->ofs[1],
-                   env->tw.x, env->tw.y, env->tw.w, env->tw.h,
-                   (unsigned)env->tpage,
-                   (int)env->dfe, (int)env->isbg,
-                   (unsigned)env->r0, (unsigned)env->g0, (unsigned)env->b0);
-    }
     PutDrawEnv(env);
     /* Real PutDrawEnv @0x8005FDD8: sp -= 32; sw s0,16; s1,20; s2,24; ra,28. */
     PsxStackPush p[] = {
@@ -616,17 +513,8 @@ void psyq_DrawOTag(CPUState* cpu) {
     static uint32_t s_last_frame   = 0xFFFFFFFFu;
     static uint32_t s_last_dump    = 0;
 
-    /* Diagnostic: payload dump for the loading-transition fly-in text frames
-     * (~1305..1315). Captures up to 64 prims/frame as hex so we can decode
-     * vertex XY and decide whether bad geometry is GPU-side or upstream. See
-     * notes/plans/loading-text-spike-triangles.md. */
-    static const uint32_t kTextDumpFrameMin = 1305;
-    static const uint32_t kTextDumpFrameMax = 1315;
-    static int            s_text_dumped_this_frame = 0;
-
     if (openpete_frame != s_last_frame) {
         s_last_frame = openpete_frame;
-        s_text_dumped_this_frame = 0;
     }
 
     uint32_t addr = cpu->a0;
@@ -786,30 +674,6 @@ void psyq_DrawOTag(CPUState* cpu) {
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
 
-        /* Frame-windowed payload dump. Logs hex of the first up-to-12 longs
-         * after the 4-byte PSX P_TAG, so the consumer can decode vertex XY
-         * for POLY_GT3/GT4/G3/G4 (longs 1, 4, 7[, 10]). */
-        if (is_known_prim &&
-            openpete_frame >= kTextDumpFrameMin &&
-            openpete_frame <= kTextDumpFrameMax &&
-            s_text_dumped_this_frame < 6000) {
-            char hex[256];
-            size_t off = 0;
-            uint32_t n = expected_longs < 12u ? (uint32_t)expected_longs : 12u;
-            for (uint32_t i = 0; i < n; i++) {
-                uint32_t w;
-                std::memcpy(&w, host + 4u + i * 4u, 4);
-                int wrote = std::snprintf(hex + off, sizeof(hex) - off,
-                                          "%08X ", w);
-                if (wrote <= 0 || (size_t)wrote >= sizeof(hex) - off) break;
-                off += (size_t)wrote;
-            }
-            OPL_INFO_F("text-dump",
-                       "f%u slot%d psx=0x%08X code=0x%02X len=%u: %s",
-                       openpete_frame, g_ot_slot_count, addr,
-                       (unsigned)code_byte, (unsigned)expected_longs, hex);
-            s_text_dumped_this_frame++;
-        }
         if (payload_bytes != 0u) {
             std::memcpy(out + 12, host + 4, payload_bytes);
             if (is_known_prim) {
