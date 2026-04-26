@@ -396,14 +396,23 @@ void psyq_ResetGraph(CPUState* cpu) {
 
 void psyq_SetDispMask(CPUState* cpu) {
     SetDispMask((int)cpu->a0);
+    /* Real SetDispMask @0x8005F6C8: sp -= 32; sw s0,16; sw s1,20; sw ra,24. */
+    PsxStackPush p[] = {{16u, cpu->s0}, {20u, cpu->s1}};
+    psyq_mirror_stack_frame(cpu, 32u, 24u, p, 2);
 }
 
 void psyq_SetGraphDebug(CPUState* cpu) {
     cpu->v0 = (uint32_t)SetGraphDebug((int)cpu->a0);
+    /* Real SetGraphDebug @0x8005F53C: sp -= 24; sw s0,16; sw ra,20. */
+    PsxStackPush p[] = {{16u, cpu->s0}};
+    psyq_mirror_stack_frame(cpu, 24u, 20u, p, 1);
 }
 
 void psyq_DrawSync(CPUState* cpu) {
     cpu->v0 = (uint32_t)DrawSync((int)cpu->a0);
+    /* Real DrawSync @0x8005F764: sp -= 24; sw s0,16; sw ra,20. */
+    PsxStackPush p[] = {{16u, cpu->s0}};
+    psyq_mirror_stack_frame(cpu, 24u, 20u, p, 1);
 }
 
 void psyq_ClearImage(CPUState* cpu) {
@@ -411,6 +420,11 @@ void psyq_ClearImage(CPUState* cpu) {
                                    (u_char)cpu->a1,
                                    (u_char)cpu->a2,
                                    (u_char)cpu->a3);
+    /* Real ClearImage @0x8005F8F8: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
+    PsxStackPush p[] = {
+        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2}, {28u, cpu->s3},
+    };
+    psyq_mirror_stack_frame(cpu, 40u, 32u, p, 4);
 }
 
 void psyq_LoadImage(CPUState* cpu) {
@@ -454,6 +468,11 @@ void psyq_PutDispEnv(CPUState* cpu) {
                    (int)env->isinter, (int)env->isrgb24);
     }
     PutDispEnv(env);
+    /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
+    PsxStackPush p[] = {
+        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2}, {28u, cpu->s3},
+    };
+    psyq_mirror_stack_frame(cpu, 40u, 32u, p, 4);
 }
 
 void psyq_PutDrawEnv(CPUState* cpu) {
@@ -475,18 +494,31 @@ void psyq_PutDrawEnv(CPUState* cpu) {
                    (unsigned)env->r0, (unsigned)env->g0, (unsigned)env->b0);
     }
     PutDrawEnv(env);
+    /* Real PutDrawEnv @0x8005FDD8: sp -= 32; sw s0,16; s1,20; s2,24; ra,28. */
+    PsxStackPush p[] = {
+        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2},
+    };
+    psyq_mirror_stack_frame(cpu, 32u, 28u, p, 3);
 }
 
 void psyq_SetDefDispEnv(CPUState* cpu) {
     SetDefDispEnv((DISPENV*)PTR(cpu->a0),
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                   (int)cpu->read_word(cpu->sp + 0x10));
+    /* Real SetDefDispEnv @0x8005EB4C is a leaf — no stack pushes. */
 }
 
 void psyq_SetDefDrawEnv(CPUState* cpu) {
     SetDefDrawEnv((DRAWENV*)PTR(cpu->a0),
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                   (int)cpu->read_word(cpu->sp + 0x10));
+    /* Real SetDefDrawEnv @0x8005EA94: sp -= 40; sw s0,16; s1,20; s2,24;
+     * s3,28; s4,32; ra,36. */
+    PsxStackPush p[] = {
+        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2},
+        {28u, cpu->s3}, {32u, cpu->s4},
+    };
+    psyq_mirror_stack_frame(cpu, 40u, 36u, p, 5);
 }
 
 void psyq_SetDrawMode(CPUState* cpu) {
