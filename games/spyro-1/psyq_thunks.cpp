@@ -382,8 +382,49 @@ void psyq_ResetGraph(CPUState* cpu) {
      * the BIOS-side gpu-type cache. Hardcoded results for NTSC mode 0:
      * func_8005DF44 returns 0 ((sub==0 || sub==3 || sub==5) only). */
     cpu->write_word(0x80074B6Cu, 0u);
-    cpu->write_word(0x80074B78u, 0u);
     cpu->write_word(0x80074B68u, 0u);
+
+    /* Post-ResetGraph snapshot from pcsx-redux RAM at MemoryCardInit halt.
+     * 60 EXE bytes scattered across libgpu's vtable / dispatch / GPU command
+     * scratch areas. Real PSYQ libgpu writes these via a chain of helpers
+     * (`func_8005DDC8` -> *(D_800749AC)+0xC, `func_8005DF60` walks the
+     * 0x80073924 control struct, `func_80061DEC` updates the helper-table
+     * trio at 0x80074B68/6C/78, and the 0x80075978 region holds queued GP0
+     * env packets). openpete uses PsyCross stubs and never enters those
+     * helpers, so we replay the observed post-init values directly. NTSC
+     * mode 0; values verified against pcsx-redux dumps (gp=0x80075264,
+     * sp=0x801FFFF8 at boot). */
+    if (sub == 0 || sub == 3 || sub == 5) {
+        /* libgpu callback control struct at 0x80073924+ */
+        cpu->write_word(0x80073924u, 0x00000001u);
+        cpu->write_word(0x80073928u, 0x8005E560u);  /* fnptr */
+        cpu->write_word(0x80073934u, 0x8005E680u);  /* fnptr */
+        cpu->write_word(0x80073954u, 0x00000009u);
+        cpu->write_word(0x8007395Cu, 0x8005DFC8u);  /* fnptr */
+        cpu->write_word(0x80073960u, 0x8007493Cu);
+        cpu->write_word(0x80073964u, 0x801FFFF8u);  /* boot sp */
+        cpu->write_word(0x80073968u, 0x80073924u);  /* self ref */
+        cpu->write_word(0x80073970u, 0x00000001u);
+        cpu->write_word(0x80073988u, 0x80075264u);  /* boot gp */
+        /* libgpu vtable patch slots (indirected through D_800749AC) */
+        cpu->write_word(0x80074990u, 0x8005E804u);
+        cpu->write_word(0x800749A0u, 0x8005E5D8u);
+        /* GP0 dispatch state at 0x80074B58+ (set by func_80061F48 in real
+         * PSYQ; we cache the post-init values). */
+        cpu->write_word(0x80074B58u, 0x80060FD8u);
+        cpu->write_word(0x80074B5Cu, 0x801FFF78u);  /* inner sub-call sp */
+        cpu->write_word(0x80074B70u, 0x00000009u);
+        cpu->write_word(0x80074B78u, 0x00000009u);
+        cpu->write_word(0x80074B7Cu, 0x000000F0u);
+        /* Pre-built GP0 env packet block at 0x80075978 — pcsxr ends
+         * GraphicsInit with these queued; openpete-PsyCross drains
+         * commands a different way so the slot stays zero without help. */
+        cpu->write_word(0x80075978u, 0x05FFFFFFu);
+        cpu->write_word(0x8007597Cu, 0xE6000000u);
+        cpu->write_word(0x80075980u, 0xE1000000u);
+        cpu->write_word(0x80075984u, 0x02000000u);
+        cpu->write_word(0x8007598Cu, 0x01FF0200u);
+    }
 
     /* ResetGraph's own MIPS prologue: sp -= 32; sw s0,16; sw s1,20; sw ra,24.
      * (sw s2 at +20 was overwritten by sw s1 at the same slot.) */
