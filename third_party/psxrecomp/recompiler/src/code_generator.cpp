@@ -1040,9 +1040,14 @@ std::string CodeGenerator::translate_basic_block(
                         bool     found_addiu[2]= {false, false};
                         bool     found_lui     = false;
 
+                        // Back-scan up to 40 instructions. Don't stop at
+                        // cfg.function_start: forced-entry manifests can
+                        // split a JT's SLTIU bound check off into the
+                        // preceding function, and we still need to find it.
+                        // exe_.read_word() naturally bounds the scan to the
+                        // EXE/overlay extent.
                         for (int back = 1; back <= 40; back++) {
                             uint32_t sa = block.exit_instr.address - (uint32_t)(back * 4);
-                            if (sa < cfg.function_start) break;
                             auto sopt = exe_.read_word(sa);
                             if (!sopt) break;
                             uint32_t si   = *sopt;
@@ -1332,7 +1337,6 @@ GeneratedFunction CodeGenerator::generate_function(
             int16_t av[2] = {0,0}; bool fa[2] = {false,false}, fl = false;
             for (int b = 1; b <= 40; b++) {
                 uint32_t sa = blk.exit_instr.address - (uint32_t)(b*4);
-                if (sa < cfg.function_start) break;
                 auto so = exe_.read_word(sa); if (!so) break;
                 uint32_t si=*so, s_op=(si>>26)&0x3F, s_rs=(si>>21)&0x1F,
                          s_rt=(si>>16)&0x1F, s_rd=(si>>11)&0x1F, s_fn=si&0x3F;
