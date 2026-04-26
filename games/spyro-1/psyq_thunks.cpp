@@ -123,19 +123,23 @@ void psyq_VSync(CPUState* cpu) {
          * <spyro>/spyro-1/build/. */
         const uint32_t kCutsceneIdxAddr    = 0x8007566Cu;
         const uint32_t kCutsceneLayoutAddr = 0x80075680u;
-        const uint32_t kDeltaTimeAddr      = 0x800756CCu; /* g_DeltaTime */
         const uint32_t kGamestateAddr      = 0x800757D8u; /* g_Gamestate */
+        const uint32_t kTSStateBase        = 0x80078D78u; /* g_TitlescreenState */
+        int gs = (int)safe_read32(kGamestateAddr);
+        int ts_mode     = (int)safe_read32(kTSStateBase + 0u);   /* m_Mode */
+        int ts_state    = (int)safe_read32(kTSStateBase + 4u);   /* m_State */
+        int ts_tick     = (int)safe_read32(kTSStateBase + 8u);   /* m_Tick */
+        int ts_demotype = (int)safe_read32(kTSStateBase + 28u);  /* m_DemoType */
         int idx = (int)safe_read32(kCutsceneIdxAddr);
         uint32_t layout = safe_read32(kCutsceneLayoutAddr);
-        int dt = (int)safe_read32(kDeltaTimeAddr);
-        int gs = (int)safe_read32(kGamestateAddr);
         uint32_t cur_tick_raw = safe_read32(layout);
-        uint32_t mobyct_raw   = safe_read32(layout + 12u);
         uint32_t dur_raw      = safe_read32(layout + 8u);
         OPL_INFO_F("text-dump",
-                   "f%u VSync(0) gs=%d idx=%d tick=%d dur=%d mobys=%d dt=%d layout=0x%08X",
-                   openpete_frame, gs, idx, (int)cur_tick_raw, (int)dur_raw,
-                   (int)mobyct_raw, dt, layout);
+                   "f%u VSync(0) gs=%d tsMode=%d tsState=%d tsTick=%d "
+                   "tsDemo=%d idx=%d cTick=%d cDur=%d layout=0x%08X",
+                   openpete_frame, gs, ts_mode, ts_state, ts_tick,
+                   ts_demotype, idx, (int)cur_tick_raw, (int)dur_raw,
+                   layout);
     }
     if (mode == 0) {
         if (openpete_fast_boot_until_frame > 0 &&
