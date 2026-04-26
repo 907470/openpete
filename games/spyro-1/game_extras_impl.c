@@ -76,3 +76,45 @@ static const game_disc_layout_t k_disc_layout = {
 const game_disc_layout_t* game_get_disc_layout(void) {
     return &k_disc_layout;
 }
+
+/* --- task #9: physics+die hook (level-1 fall-through diagnosis) -------- */
+#include "openpete_log.h"
+#include "psx_runtime.h"
+extern uint32_t openpete_frame;
+extern void* openpete_psx_to_host_ptr(uint32_t);
+
+static int sr32_safe(uint32_t addr, uint32_t* out) {
+    if (addr < 0x80000000u || addr >= 0x80200000u) return 0;
+    void* p = openpete_psx_to_host_ptr(addr); if (!p) return 0;
+    *out = *(uint32_t*)p; return 1;
+}
+
+int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+    if (!cpu) return 0;
+    /* Bracket: only between f1500 and f2500 to avoid noise. The transition
+     * from cutscene (gs=14) to death loop (gs=4) reliably happens at f2338. */
+    if (openpete_frame < 1500u || openpete_frame > 2500u) return 0;
+    const char* tag = NULL;
+    switch (addr) {
+        case 0x8002C85Cu: tag = "die";     break;
+        case 0x8004A200u: tag = "physics"; break;
+        default: return 0;
+    }
+    uint32_t gs=0, sx=0, sy=0, sz=0, surf=0, dt=0, cpx=0, cpy=0, cpz=0;
+    sr32_safe(0x800757D8u,             &gs);
+    sr32_safe(0x80078A58u +    0u,     &sx);
+    sr32_safe(0x80078A58u +    4u,     &sy);
+    sr32_safe(0x80078A58u +    8u,     &sz);
+    sr32_safe(0x80078A58u + 0xA0u,     &surf);  /* m_surfaceBelowSpyro */
+    sr32_safe(0x800756CCu,             &dt);    /* g_DeltaTime */
+    sr32_safe(0x800778D8u +    0u,     &cpx);
+    sr32_safe(0x800778D8u +    4u,     &cpy);
+    sr32_safe(0x800778D8u +    8u,     &cpz);
+    OPL_INFO_F("hook",
+               "%s f%u gs=%d dt=%d pos=(%d,%d,%d) surfBelow=%d cp=(%d,%d,%d) "
+               "ra=0x%08X",
+               tag, openpete_frame, (int)gs, (int)dt,
+               (int)sx, (int)sy, (int)sz, (int)surf,
+               (int)cpx, (int)cpy, (int)cpz, cpu->ra);
+    return 0;
+}

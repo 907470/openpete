@@ -85,7 +85,9 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
 
 /* Per-function intercept gate emitted at the top of every generated body.
  * Phase 1b: never intercepts. Phase 1c+ wires per-game quirks here. */
+__attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
+    if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);
     (void)cpu; (void)addr;
     return 0;
 }
