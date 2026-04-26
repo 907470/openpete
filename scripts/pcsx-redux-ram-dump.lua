@@ -42,6 +42,12 @@ end
 local CFG = {
     entry_pc            = envnum('PCSXR_DUMP_PC', 0x8003385c),  -- GamestateUpdate
     frames_after_entry  = envnum('PCSXR_DUMP_VSYNCS', 0),
+    -- Hit-N pinning: when set to >0, dump on the Nth (1-indexed) hit of
+    -- entry_pc instead of the first hit + vsync count. Use this with a
+    -- per-frame game function (e.g. GamestateDraw 0x8001ED5C) to land the
+    -- dump on the same logical frame on both engines without depending on
+    -- BIOS vs PsyCross VSync timing equivalence. PCSXR_DUMP_HITS=N.
+    hit_target          = envnum('PCSXR_DUMP_HITS', 0),
     output_path         = envstr('PCSXR_DUMP_OUT', '/tmp/pcsxr_ram.bin'),
     cpu_output_path     = envstr('PCSXR_DUMP_CPU', nil),
     quit_after_dump     = true,
@@ -146,20 +152,34 @@ local function dump_ram(pc_at_dump)
     end
 end
 
+local hit_count = 0
+
 PCSX.addBreakpoint(CFG.entry_pc, 'Exec', 4, 'main-entry',
     function(addr)
-        if not main_entered then
-            main_entered = true
-            print(string.format('[ram-dump] entry hit at PC=0x%08X, '
-                                ..'will dump after %d vsync(s)',
-                                CFG.entry_pc, CFG.frames_after_entry))
-            -- frames_after_entry == 0 means "dump immediately at entry,
-            -- before any of main's instructions have executed."
-            if CFG.frames_after_entry <= 0 then
+        if dumped then return true end
+        hit_count = hit_count + 1
+
+        if CFG.hit_target > 0 then
+            -- Hit-N mode: dump on the Nth hit, ignore vsyncs.
+            if hit_count == CFG.hit_target then
+                print(string.format('[ram-dump] hit #%d at PC=0x%08X, dumping',
+                                    hit_count, CFG.entry_pc))
                 dump_ram(addr or CFG.entry_pc)
             end
+        else
+            if not main_entered then
+                main_entered = true
+                print(string.format('[ram-dump] entry hit at PC=0x%08X, '
+                                    ..'will dump after %d vsync(s)',
+                                    CFG.entry_pc, CFG.frames_after_entry))
+                -- frames_after_entry == 0 means "dump immediately at entry,
+                -- before any of main's instructions have executed."
+                if CFG.frames_after_entry <= 0 then
+                    dump_ram(addr or CFG.entry_pc)
+                end
+            end
         end
-        return true  -- keep BP armed (but main_entered guard makes re-hits no-ops)
+        return true  -- keep BP armed (guards above make re-hits no-ops)
     end,
     'ram-dump-entry')
 

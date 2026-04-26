@@ -79,6 +79,12 @@ typedef struct {
      * post-process zero "below sp" before bytewise comparison. */
     const char* halt_cpu_dump_output;
 
+    /* Halt on the Nth (1-indexed) call to halt_at_pc instead of the
+     * first. Use to land the dump at a specific frame boundary by
+     * pinning to a per-frame game function. 0 or 1 = dump on first
+     * hit; 2+ = skip preceding hits. */
+    uint32_t halt_hit_target;
+
     /* Logging */
     openpete_log_format_t log_format;
     const char* log_level_spec;        /* e.g. "cd:debug,*:info" or NULL */

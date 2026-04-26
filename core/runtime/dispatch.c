@@ -92,6 +92,8 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
  * vsync-vs-syscall phase skew you'd get otherwise. Set once before fiber
  * dispatch; never written from the fiber. */
 uint32_t    openpete_halt_at_pc          = 0u;
+uint32_t    openpete_halt_hit_target     = 1u;  /* dump on Nth call (1 = first) */
+static uint32_t openpete_halt_hit_count  = 0u;
 const char* openpete_halt_dump_path      = NULL;
 const char* openpete_halt_cpu_dump_path  = NULL;
 static int  openpete_halt_done           = 0;
@@ -185,8 +187,11 @@ __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t add
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (openpete_halt_at_pc != 0u && addr == openpete_halt_at_pc &&
         !openpete_halt_done) {
-        openpete_halt_dump_and_exit(cpu, addr);
-        /* unreachable */
+        openpete_halt_hit_count++;
+        if (openpete_halt_hit_count >= openpete_halt_hit_target) {
+            openpete_halt_dump_and_exit(cpu, addr);
+            /* unreachable */
+        }
     }
     if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);
     (void)cpu; (void)addr;

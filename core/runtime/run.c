@@ -582,14 +582,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * the very first recompiled function-entry. dispatch.c owns the slot. */
     if (opts->halt_at_pc != 0u) {
         extern uint32_t    openpete_halt_at_pc;
+        extern uint32_t    openpete_halt_hit_target;
         extern const char* openpete_halt_dump_path;
         extern const char* openpete_halt_cpu_dump_path;
         openpete_halt_at_pc         = opts->halt_at_pc;
+        openpete_halt_hit_target    = opts->halt_hit_target ? opts->halt_hit_target : 1u;
         openpete_halt_dump_path     = opts->ram_dump_output;
         openpete_halt_cpu_dump_path = opts->halt_cpu_dump_output;
         OPL_INFO_F("halt-at-pc",
-                   "armed: PC=0x%08X dump=%s%s%s",
-                   opts->halt_at_pc, opts->ram_dump_output,
+                   "armed: PC=0x%08X hit=%u dump=%s%s%s",
+                   opts->halt_at_pc, openpete_halt_hit_target,
+                   opts->ram_dump_output,
                    opts->halt_cpu_dump_output ? " cpu=" : "",
                    opts->halt_cpu_dump_output ? opts->halt_cpu_dump_output : "");
     }
