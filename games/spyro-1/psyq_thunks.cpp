@@ -1242,10 +1242,26 @@ McStubState g_mc = { -1, -1, -1 };
 }
 
 void psyq_MemCardInit(CPUState* cpu) {
-    (void)cpu;
     g_mc.cmds = -1;
     g_mc.rslt = -1;
     g_mc.status = -1;
+
+    /* Real PSYQ MemCardInit (0x8006626C) clears two state words then
+     * jumps into func_80067E70, which OpenEvent-registers a chain of
+     * BIOS events and threads handlers through PSYQ's libgpu-style
+     * control struct. The card-side struct lives at 0x800748F0+ and
+     * shadows the same ABI as libgpu's at 0x80073924. PsyCross stubs
+     * skip the entire chain, so 15 EXE bytes remain zero on our side.
+     * Replay the observed post-init values directly. */
+    cpu->write_byte(0x80074904u, 0x01u);          /* "card init done" */
+    cpu->write_word(0x8007490Cu, 0x8005E124u);    /* fnptr */
+    cpu->write_word(0x80074924u, 0x80073924u);    /* libgpu struct backref */
+    cpu->write_byte(0x8007492Cu, 0x01u);
+    cpu->write_word(0x80074938u, 0x8005DFD8u);    /* fnptr */
+    cpu->write_byte(0x800749E0u, 0x05u);          /* registered handler count */
+
+    /* MemCardInit's MIPS prologue: sp -= 0x18; sw ra,0x10(sp). */
+    psyq_mirror_stack_frame(cpu, 0x18u, 0x10u, NULL, 0);
 }
 
 void psyq_MemCardStart(CPUState* cpu) {
