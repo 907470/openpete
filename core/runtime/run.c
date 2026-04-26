@@ -597,21 +597,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
 
         /* Game yielded. Only present if the iter actually drew — see the
-         * note above the pre-loop block. */
+         * note above the pre-loop block. Screenshot fires BEFORE SwapWindow
+         * so it captures the just-rendered backbuffer (post-swap, GL_BACK
+         * holds rotated-in stale content that doesn't match the window). */
         if (openpete_present_pending) {
+            if (opts->screenshot_on_frame >= 0 &&
+                (int)openpete_frame == opts->screenshot_on_frame) {
+                openpete_psyx_take_screenshot();
+                OPL_INFO_F("screenshot",
+                           "wrote ./SCREENSHOT.BMP on frame %u (--output=%s ignored for now)",
+                           openpete_frame, opts->screenshot_output);
+            }
             PsyX_EndScene();
             openpete_present_pending = 0;
         }
 
-        if (opts->screenshot_on_frame >= 0 &&
-            (int)openpete_frame == opts->screenshot_on_frame) {
-            /* PsyCross's built-in glReadPixels → SCREENSHOT.BMP path.
-             * Phase 1e+: replace with a PNG path that honours --output. */
-            openpete_psyx_take_screenshot();
-            OPL_INFO_F("screenshot",
-                       "wrote ./SCREENSHOT.BMP on frame %u (--output=%s ignored for now)",
-                       openpete_frame, opts->screenshot_output);
-        }
 
         if (g_shutdown_requested) {
             quit = 1;
