@@ -12,6 +12,10 @@ add_library(openpete_core STATIC
     runtime/screenshot.c
     runtime/run.c
 
+    # BizHawk .bk2 movie replay (--bk2). See plans/openpete-bk2-input.md.
+    runtime/bk2_movie.c
+    ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
+
     # Phase 1b: slim PSX runtime
     runtime/cpu.c
     runtime/boot.c
@@ -53,6 +57,7 @@ target_include_directories(openpete_core
         ${CMAKE_SOURCE_DIR}/third_party/libco
     PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/stb
+        ${CMAKE_SOURCE_DIR}/third_party/miniz
 )
 
 set_target_properties(openpete_core PROPERTIES

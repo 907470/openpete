@@ -75,3 +75,10 @@ foreach(game IN LISTS OPENPETE_GAMES)
         message(WARNING "OPENPETE_GAMES requested '${game}' but games/${game}/CMakeLists.txt is missing — skipping")
     endif()
 endforeach()
+
+# Host-side unit tests (no PSX boot, just pure-function checks).
+option(OPENPETE_BUILD_TESTS "Build host-side unit tests" ON)
+if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
+    enable_testing()
+    add_subdirectory(tests/unit)
+endif()
