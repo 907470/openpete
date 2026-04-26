@@ -306,6 +306,11 @@ void psyq_VSyncCallback(CPUState* cpu) {
     OPL_INFO_F("thunks", "VSyncCallback registered: 0x%08X", cpu->a0);
     g_vsync_cb = cpu->a0;
     cpu->v0 = 0u;
+    /* Real PSYQ VSyncCallback also stashes the cb pointer in libgpu's
+     * vtable at 0x800749D0 (the slot func_8005DE58 reads on each VSync
+     * IRQ). PsyCross dispatches the cb host-side, so we mirror the write
+     * for byte-faithful diffs. */
+    cpu->write_word(0x800749D0u, cpu->a0);
 }
 
 void psyq_StopCallback(CPUState* cpu) {
@@ -939,8 +944,61 @@ void psyq_MulMatrix(CPUState* cpu) {
 /* --- libpad -------------------------------------------------------------- */
 
 void psyq_PadInitDirect(CPUState* cpu) {
-    PadInitDirect((unsigned char*)PTR(cpu->a0),
-                  (unsigned char*)PTR(cpu->a1));
+    uint32_t buf0 = cpu->a0;  /* &g_PadBuffer */
+    uint32_t buf1 = cpu->a1;  /* &g_PadBufferSecondController */
+    PadInitDirect((unsigned char*)PTR(buf0),
+                  (unsigned char*)PTR(buf1));
+
+    /* Real PSYQ PadInitDirect (0x8006A4xx region) sets up libpad's pad-state
+     * machine: a 10-entry dispatch table at 0x800751BC (one fnptr per
+     * PadStateXxx), plus per-slot bookkeeping at 0x80075C58+ and 0x80075D40+
+     * (pointers to actuator buffers, byte masks, status caches). PsyCross's
+     * libpad implementation tracks state host-side and never writes those
+     * PSX-side bytes, leaving 60+ EXE/data bytes zero on our side. Replay
+     * the observed values verbatim — function pointers are PSYQ code (not
+     * relocated), the buffer addresses come from a0/a1. */
+
+    /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs). */
+    static const struct { uint32_t off; uint32_t val; } pad_dispatch[] = {
+        {0x800751BCu, 0x8006B1D8u},
+        {0x800751C0u, 0x8006B170u},
+        {0x800751C4u, 0x8006B2DCu},
+        {0x800751C8u, 0x8006B398u},
+        {0x800751CCu, 0x8006B614u},
+        {0x800751D0u, 0x8006B64Cu},
+        {0x800751D4u, 0x8006B6D4u},
+        {0x800751D8u, 0x8006BAE8u},
+        {0x800751DCu, 0x8006B7A8u},
+        {0x800751E0u, 0x8006B2CCu},
+        {0x800751F0u, 0x80075D18u},
+        {0x800751F4u, 0x00000001u},
+    };
+    for (size_t i = 0; i < sizeof(pad_dispatch)/sizeof(pad_dispatch[0]); i++) {
+        cpu->write_word(pad_dispatch[i].off, pad_dispatch[i].val);
+    }
+
+    /* Per-pad slot tables. Buffer pointers depend on a0/a1; the rest are
+     * PSYQ data. Slot 0 ("g_PadBuffer") writes through 0x80075D40+; slot 1
+     * ("g_PadBufferSecondController") through 0x80075E38+. Inner pointers
+     * (0x80075CAB / 0x80075CF3 / 0x80075C88 / 0x80075CD0) are PSYQ
+     * scratch-buffer locations inside the same data block. */
+    cpu->write_word(0x80075C58u, 0x0000B058u);
+    cpu->write_word(0x80075C5Cu, 0x8006969Cu);
+    cpu->write_word(0x80075C60u, 0x80069634u);
+    cpu->write_word(0x80075D28u, 0x80075D18u);
+    cpu->write_word(0x80075D40u, buf0);
+    cpu->write_word(0x80075D48u, buf1);
+    cpu->write_word(0x80075D4Cu, 0x00000002u);
+    cpu->write_word(0x80075D54u, 0x80075C88u);
+    cpu->write_word(0x80075D58u, 0x80075CD0u);
+    cpu->write_word(0x80075D74u, 0xFFFFFF00u);
+    cpu->write_word(0x80075D78u, 0x00FFFFFFu);
+    cpu->write_word(0x80075E18u, 0x80075E08u);
+    cpu->write_word(0x80075E38u, buf1);
+    cpu->write_word(0x80075E44u, 0x80075CABu);
+    cpu->write_word(0x80075E48u, 0x80075CF3u);
+    cpu->write_word(0x80075E64u, 0xFFFFFF00u);
+    cpu->write_word(0x80075E68u, 0x00FFFFFFu);
 }
 
 void psyq_PadStartCom(CPUState* cpu) {
