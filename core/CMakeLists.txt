@@ -27,6 +27,11 @@ add_library(openpete_core STATIC
     # code. C++ TU because PsyCross's libgpu.h uses static_assert.
     runtime/debug_render.cpp
 
+    # Top-left FPS overlay drawn via direct OpenGL during PsyCross's
+    # post-render hook (g_psyx_postRenderOverlay). C++ TU for the GL
+    # pipeline boilerplate.
+    runtime/fps_overlay.cpp
+
     # Vendored psxrecomp pieces we keep verbatim (per notes plan §5 Phase 1b
     # "keep gte.cpp + memory helpers + iso_reader"). Compiled directly here so
     # we don't drag the rest of psxrecomp's runtime.c into the build.
