@@ -138,20 +138,34 @@ Game functions (anything with a recompiled body in `PSX.EXE_full.c`) hit
 the override gate and halt cleanly.
 
 Sweep across `Initialize()`'s game-function call chain, with
-`--seed-ram` + `--seed-cpu` from main entry. Three rows per halt: raw
-baseline, after `psyq___main` thunk fix, and after the libgpu thunk
-pass (commits `2d3e998` + `4cf43cb` + `89e67dd`):
+`--seed-ram` + `--seed-cpu` from main entry. Four columns per halt:
+raw baseline, after `psyq___main` thunk fix, after the libgpu thunk
+pass (commits `2d3e998` + `4cf43cb` + `89e67dd`), and after the
+no-memcards Lua tweak (the dump script flips
+`PCSX.settings.emulator.Mcd{1,2}Inserted = false` and
+`PCSX.hardResetEmulator()` so pcsxr boots without slot bookkeeping —
+matches openpete, which has no BIOS-side memcard state):
 
-| halt at | baseline | +__main | +libgpu |
-|---------|---------:|--------:|--------:|
-| `0x80012204` main entry              | 0       | 0       | 0       |
-| `0x800122a8` GraphicsInitialize      | 5       | 0       | 0       |
-| `0x80012460` MemoryCardInitialize    | 386     | 381     | **247** |
-| `0x800123c8` GamepadInitialize       | 778     | 773     | **642** |
-| `0x8005595c` SpuInitialize           | 910     | 905     | **780** |
-| `0x80012480` CDInitialize            | 936     | 931     | **812** |
-| `0x8001256c` MusicInitialize         | 1,155   | 1,150   | **1,041** |
-| `0x8003385c` GamestateUpdate         | 1.14 M  | (n/a)   | (n/a)   |
+| halt at | baseline | +__main | +libgpu | +no-mcd |
+|---------|---------:|--------:|--------:|--------:|
+| `0x80012204` main entry              | 0       | 0       | 0       | 0       |
+| `0x800122a8` GraphicsInitialize      | 5       | 0       | 0       | 0       |
+| `0x80012460` MemoryCardInitialize    | 386     | 381     | 247     | **247** |
+| `0x800123c8` GamepadInitialize       | 778     | 773     | 642     | **512** |
+| `0x8005595c` SpuInitialize           | 910     | 905     | 780     | **656** |
+| `0x80012480` CDInitialize            | 936     | 931     | 812     | **675** |
+| `0x8001256c` MusicInitialize         | 1,155   | 1,150   | 1,041   | **901** |
+| `0x8003385c` GamestateUpdate         | 1.14 M  | (n/a)   | (n/a)   | (n/a)   |
+
+Region breakdown of the +no-mcd column:
+
+| halt at | total | kernel | EXE | stack |
+|---------|------:|-------:|----:|------:|
+| MemoryCardInit | 247 | 69  | 60  | 118 |
+| GamepadInit    | 512 | 303 | 75  | 134 |
+| SpuInit        | 656 | 311 | 185 | 138 |
+| CDInit         | 675 | 305 | 194 | 154 |
+| MusicInit      | 901 | 385 | 288 | 197 |
 
 The libgpu pass is two pieces: (a) `psyq_ResetGraph` writes the
 128-byte env struct at `0x80074A64` plus three helper-table words at
@@ -197,13 +211,18 @@ before returning — caller's invariants stay intact.
 
 ### Big remaining offenders, in priority order
 
-1. **`libpad` / `MemCardInit` / kernel state** — BIOS pad slot state at
-   `0x800091BE..0x80009245` (~69 bytes constant from MemoryCardInit on).
-   Probably the BIOS-side kernel memory openpete has no equivalent of.
-2. **`func_80061DEC` and other PSYQ-internal sub-calls inside ResetGraph**
-   — write to ~50 bytes spread across `0x80073924..0x8007398B`,
-   `0x80074990..0x800749A3`, `0x80074B58..0x80074B7C`, `0x80075978..0x8007598F`.
-   Looks like libgpu's command-buffer dispatch table init.
+1. **libgpu kernel/EXE init residual** — 69 kernel bytes + 60 EXE bytes
+   constant from MemoryCardInit on. Driven by `ResetGraph`'s sub-calls
+   (`func_8005DDC8` -> a vtable slot, `func_80061DEC`, etc.) into
+   PSYQ's BIOS event-manager / GPU-command dispatch tables. Kernel
+   range: 0x05FC8..0x09245 (EvCB-stride 0x1C visible at 0x08F35..0x08FA5
+   confirms event-control-block init). EXE range: 0x80073924..0x8007398B,
+   0x80074990..0x800749A3, 0x80074B58..0x80074B7C, 0x80075978..0x8007598F
+   — libgpu's command-buffer dispatch / vtable init.
+2. **libpad-driven kernel growth** — kernel diff jumps from 69 (at
+   MemCardInit halt) to 303 (at GamepadInit halt). 234 bytes of
+   `PadInitDirect` / `PadStartCom` / `VSyncCallback(PadVSync)` BIOS
+   event-manager state.
 3. **Sub-call stack frames** — real `ResetGraph` calls `Memset`,
    `func_80061DEC`, etc.; each pushes its own frame *below* ResetGraph's.
    Our mirror only covers the top-level frame, leaving the

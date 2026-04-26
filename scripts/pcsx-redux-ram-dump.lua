@@ -47,6 +47,19 @@ local CFG = {
     quit_after_dump     = true,
 }
 
+-- Pre-boot settings tweaks. openpete has no BIOS-side memory-card state, so
+-- leaving pcsx-redux's memcards inserted lights up kernel-region diff bytes
+-- at every halt PC (BIOS pad/card slot bookkeeping at 0x800091BE..0x80009245).
+-- Flip cards off and hard-reset so the BIOS reboots without them; the diff
+-- loop then only sees bytes openpete *should* be matching.
+if PCSX and PCSX.settings and PCSX.settings.emulator then
+    PCSX.settings.emulator.Mcd1Inserted = false
+    PCSX.settings.emulator.Mcd2Inserted = false
+    if PCSX.hardResetEmulator then
+        PCSX.hardResetEmulator()
+    end
+end
+
 local RAM_SIZE = 2 * 1024 * 1024
 
 local ffi = require 'ffi'
