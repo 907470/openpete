@@ -157,15 +157,71 @@ matches openpete, which has no BIOS-side memcard state):
 | `0x8001256c` MusicInitialize         | 1,155   | 1,150   | 1,041   | **901** |
 | `0x8003385c` GamestateUpdate         | 1.14 M  | (n/a)   | (n/a)   | (n/a)   |
 
-Region breakdown of the +no-mcd column:
+After the libgpu/libcard/libpad replay pass (`psyq_MemCardInit` +
+`psyq_PadInitDirect` + `psyq_VSyncCallback` post-init writes — commits
+`de18c29` + `2e3c242`) and switching to **sp-masked diff** (zero
+stack-region bytes below sp on both sides; sp comes from each side's
+'CSv1' CPU dump):
 
-| halt at | total | kernel | EXE | stack |
-|---------|------:|-------:|----:|------:|
-| MemoryCardInit | 247 | 69  | 60  | 118 |
-| GamepadInit    | 512 | 303 | 75  | 134 |
-| SpuInit        | 656 | 311 | 185 | 138 |
-| CDInit         | 675 | 305 | 194 | 154 |
-| MusicInit      | 901 | 385 | 288 | 197 |
+| halt at | masked total | kernel | EXE | post-EXE |
+|---------|-------------:|-------:|----:|---------:|
+| MemoryCardInit | 69  | 69  | 0   | 0  |
+| GamepadInit    | 303 | 303 | 0   | 0  |
+| SpuInit        | 340 | 311 | 7   | 22 |
+| CDInit         | 343 | 305 | 16  | 22 |
+| MusicInit      | 529 | 385 | 113 | 31 |
+
+Stack diff is now **zero** at every halt — sp masking confirms the
+118+ bytes of stack divergence we saw earlier were all pre-call sub-
+frames and `cdrom:SYSTEM.CNF;1` BIOS scratch that lived below sp,
+not live state the game would ever read.
+
+### Frame-N pinning via game-function hit count
+
+`--ram-dump-on-frame N` and `PCSXR_DUMP_VSYNCS=N` are *not* equivalent:
+the openpete counter ticks on `VSync(0)` syscalls (PsyCross-side stub
+yield), while the pcsxr counter ticks on vblank events (PSX
+hardware vblank IRQ inside openbios). The two counters disagree on
+"frame N" because pcsxr is *inside the BIOS VSync IRQ handler* at
+vblank time while openpete is yielded inside its PsyCross stub
+— different sp / call-stack states.
+
+Use **Nth-call pinning on a per-frame game function** instead. New
+flags:
+
+  openpete:  `--halt-hit N` (default 1)
+  pcsxr:     `PCSXR_DUMP_HITS=N` (env)
+
+`GamestateDraw` (0x8001ED5C) is the canonical pin: called once per
+frame from `main()` after `GamestateUpdate()` returns. Both engines
+land in identical CPU state at hit 1:
+
+```
+pc=0x8001ED5C sp=0x801FFFD8 ra=0x80012284 gp=0x80075264
+```
+
+so cmp-masked.py's stack masking works as designed.
+
+### Frame-0 (first GamestateDraw) — open issue
+
+Masked diff at `--halt-at-pc 0x8001ED5C --halt-hit 1`:
+
+```
+sp=0x801FFFD8  total=79702  kernel=402  EXE=247  post-EXE=28  heap=79025
+```
+
+All 79,025 heap bytes are **op-only nonzero** (op writes data, oracle
+leaves zero) at clusters around 0x80168000-0x80188000 (the .level_34
+overlay load region per psx.map) and 0x80140000+. Pattern of writes
+suggests openpete is preloading or eagerly decompressing data that
+real PSYQ defers — possibly `func_80017F24`'s RGB24 image
+decompression or psxrecomp's overlay manager loading more than what
+Initialize triggers.
+
+That's the next open thread: bisect *which* call writes those bytes
+on the openpete side and figure out whether to make openpete defer
+the writes (to match real PSYQ timing) or accept them as a benign
+"openpete writes early" timing skew.
 
 The libgpu pass is two pieces: (a) `psyq_ResetGraph` writes the
 128-byte env struct at `0x80074A64` plus three helper-table words at
