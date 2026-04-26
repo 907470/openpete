@@ -182,31 +182,52 @@ void psyq_VSync(CPUState* cpu) {
              * meaningless at boot and risks committing stale presses. */
             openpete_frame++;
         } else if (openpete_host_fiber) {
-            /* Spyro 1 is a 30fps game: real-PSX game iter takes ~2 vblanks
-             * because the 33MHz MIPS CPU's update+draw work fits in 1.5
-             * vblanks, so VSync(0) waits for the next vblank → total iter
-             * = 2 vblanks = 33ms = 30Hz. On modern hosts the recompiled C
-             * runs in ~1ms, so a single yield-to-host (paced at 60Hz wall-
-             * clock) makes the game effectively run at 60fps — which is
-             * 2x real-PSX speed for any code that increments per-iter
-             * counters without going through DeltaTime (e.g.
-             * g_TitlescreenState.m_Tick++, g_GameTick++). The clamped
-             * DeltaTime path (clamp(g_UnprocessedFrames, 2, 4)) is
-             * unaffected because both PSX and openpete settle on
-             * DeltaTime=2 either way.
+            /* Spyro 1 has variable iter rate based on real-PSX work_time:
              *
-             * Fix: yield TWICE per VSync(0) so the host advances 2 frames
-             * before resuming the game, matching real-PSX 30fps cadence
-             * for Spyro 1. The PadVSync callback fires after each yield
-             * so g_UnprocessedFrames reaches 2 (= real-PSX value).
+             *   Light scenes (loading-screen flyby = 22 letters + Spyro
+             *   model; title menu) fit in <1 vblank → real PSX iter = 1
+             *   vblank = 60Hz.
              *
-             * TODO: plumb the iter-yield count into game_extras_impl.c
-             * so 60fps games can override it. Hardcoded for Spyro 1 now.
+             *   Heavy scenes (gameplay + cutscene playback) have ~1.5
+             *   vblanks of work, so VSync(0) rounds up to 2 vblanks =
+             *   30Hz.
+             *
+             * Modern CPUs do all work in <1ms regardless, so without
+             * intervention every scene runs at 60Hz iter rate (= 1 host
+             * frame per yield). For 60Hz scenes that's correct; for
+             * 30Hz scenes it doubles per-iter counters that don't go
+             * through DeltaTime (g_GameTick++, etc.).
+             *
+             * Approach: yield 2x by default to match the heavy-scene
+             * 30Hz cadence, drop to 1x for known light scenes.
+             *
+             * Light-scene detection: g_Gamestate==13 (GS_TitleScreen)
+             * AND g_TitlescreenState.m_Mode==3 (TSM_Demo) AND
+             * m_State==2 (TSS_Active) — that's the loading-screen
+             * flyby specifically. Reads the same probe addresses as
+             * the diagnostic trace below (validated against the up-to-
+             * date matching-decomp psx.map).
+             *
+             * TODO: plumb a per-game frame-rate predicate into
+             * game_extras_impl.c so this isn't hardcoded in the thunk.
              */
-            openpete_yield_to_host();
-            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-            openpete_yield_to_host();
-            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+            int yield_count = 2;
+            {
+                auto sr32 = [](uint32_t addr) -> uint32_t {
+                    if (addr < 0x80000000u || addr >= 0x80200000u) return 0u;
+                    void* p = PTR(addr); return p ? *(uint32_t*)p : 0u;
+                };
+                int gs       = (int)sr32(0x800757D8u);             /* g_Gamestate */
+                int tsm_mode = (int)sr32(0x80078D78u +  0u);       /* m_Mode */
+                int tsm_st   = (int)sr32(0x80078D78u +  4u);       /* m_State */
+                if (gs == 13 && tsm_mode == 3 && tsm_st == 2) {
+                    yield_count = 1;  /* loading-screen flyby — 60Hz */
+                }
+            }
+            for (int yi = 0; yi < yield_count; yi++) {
+                openpete_yield_to_host();
+                if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+            }
         } else {
             /* No fiber loop running (smoke-test path) — fall back to PsyCross's
              * busy wait so semantics still match. */
