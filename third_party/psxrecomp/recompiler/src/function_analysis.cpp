@@ -265,6 +265,58 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
     fmt::print("✓ Identified {} unique functions ({} call-discovered)\n\n",
                function_starts.size(), result.call_discovered_count);
 
+    // Pass 2.6: Detect multi-entry / tail-merged functions.
+    //
+    // Some PSYQ functions expose a "fast-path" public entry that's only
+    // ever reached via JAL from a different binary (e.g. a level overlay
+    // calling a main-EXE helper). Static JAL discovery scans only the
+    // current binary, so the fast-path entry is invisible: it appears as
+    // a sliver of instructions sandwiched between the preceding
+    // function's epilogue (`jr $ra; nop`) and the next discovered
+    // function's prologue (`addiu $sp, $sp, -N`). Without promotion the
+    // sliver is absorbed as a tail block of the preceding function and
+    // every overlay-side JAL stub-misses at runtime.
+    //
+    // Spyro 1's CollectItem (0x8003B9D4) is the canonical example:
+    // overlays JAL the public entry that pre-loads $v0 with
+    // g_NGemsSinceLevelEntry; the main EXE JALs the inner entry at
+    // 0x8003B9DC that assumes the preload. Without this pass every gem
+    // pickup silently no-op'd.
+    fmt::print("Scanning for multi-entry functions after epilogues...\n");
+    size_t multi_entry_added = 0;
+    auto starts_snapshot = function_starts;
+    for (uint32_t addr = exe_start; addr + 12 < exe_end; addr += 4) {
+        auto a = exe_.read_word(addr);
+        auto b = exe_.read_word(addr + 4);
+        if (!a.has_value() || !b.has_value()) continue;
+        // Match `jr $ra; nop` — the standard MIPS function epilogue.
+        if (!is_jr_ra(*a) || *b != 0u) continue;
+        uint32_t cand = addr + 8;
+        if (starts_snapshot.count(cand)) continue;  // already discovered
+        // Look ahead up to 8 instructions for a prologue. Stop early on
+        // another jr $ra (definitely not the same function) or on a
+        // non-NOP that's neither a prologue candidate nor a plausible
+        // pre-prologue setup. Cross over already-discovered function
+        // starts: that's exactly the "fast-path falls into next
+        // function's prologue" pattern we want to catch.
+        bool found_prologue = false;
+        for (int i = 0; i < 8; ++i) {
+            uint32_t va = cand + (uint32_t)(i * 4);
+            auto w = exe_.read_word(va);
+            if (!w.has_value()) break;
+            int32_t sz;
+            if (is_prologue(*w, sz)) { found_prologue = true; break; }
+            if (is_jr_ra(*w))        break;
+        }
+        if (found_prologue) {
+            if (function_starts.insert(cand).second) {
+                fmt::print("  Multi-entry 0x{:08X} promoted (fast-path before prologue)\n", cand);
+                ++multi_entry_added;
+            }
+        }
+    }
+    fmt::print("✓ Identified {} multi-entry function(s)\n\n", multi_entry_added);
+
     // Pass 2.7: Add forced entry points
     // These are function starts that do not have a standard prologue (e.g. the
     // PS1 EXE entry point, which is launched directly by the BIOS without a
