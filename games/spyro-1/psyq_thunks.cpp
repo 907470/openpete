@@ -1285,29 +1285,194 @@ void psyq_exit(CPUState* cpu) {
     exit((int)cpu->a0);
 }
 
-/* printf / sprintf are tricky because the format args are MIPS varargs
- * (a1..a3, then sp+0x10, sp+0x14, ...). We don't reconstruct the call;
- * just print the format string with no substitutions, prefixed so it's
- * obvious in the log. Phase 1c+ can teach the recompiler to lower these
- * specially if they matter. */
+/* printf / sprintf reconstruct MIPS o32 varargs: first 4 slots in
+ * a0..a3, then sp+0x10, sp+0x14, ... The first slot is the format
+ * string (or, for sprintf, dst+fmt occupy slots 0/1). Numeric args
+ * are fetched as 32-bit words; %s dereferences a PSX vaddr.
+ *
+ * Supported conversions: d, i, u, x, X, o, s, c, %. Flags '-' and '0',
+ * a decimal width, and a '.precision' are honored. Length modifiers
+ * 'l' / 'h' / 'hh' / 'll' parse but are ignored — the original PSX ABI
+ * passes everything as a 32-bit slot anyway. */
+
+namespace {
+
+struct MipsArgs {
+    CPUState* cpu;
+    int       slot;        /* next slot index (0 = a0, 4 = sp+0x10, ...) */
+
+    uint32_t fetch() {
+        uint32_t v;
+        switch (slot) {
+            case 0: v = cpu->a0; break;
+            case 1: v = cpu->a1; break;
+            case 2: v = cpu->a2; break;
+            case 3: v = cpu->a3; break;
+            default: v = cpu->read_word(cpu->sp + (uint32_t)(slot * 4));
+                     break;
+        }
+        ++slot;
+        return v;
+    }
+};
+
+/* Render an unsigned integer in the given base. */
+size_t render_uint(uint32_t v, unsigned base, bool upper, char* out) {
+    if (v == 0u) { out[0] = '0'; return 1u; }
+    char tmp[32];
+    size_t n = 0;
+    const char* digs = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    while (v) { tmp[n++] = digs[v % base]; v /= base; }
+    for (size_t i = 0; i < n; ++i) out[i] = tmp[n - 1 - i];
+    return n;
+}
+
+/* Core: format `fmt` into `dst` (capacity `cap`), pulling args from `args`.
+ * Returns total length that would have been written (snprintf semantics). */
+size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) {
+    size_t pos = 0;
+    if (cap == 0) return 0;
+    /* Reserve one byte for NUL — emit() guards against pos >= cap-1 below. */
+    size_t writable = cap - 1u;
+    auto put = [&](char c) {
+        if (pos < writable) dst[pos] = c;
+        ++pos;
+    };
+    auto put_str = [&](const char* s, size_t n,
+                       int width, bool left_align, bool zero_pad) {
+        size_t pad = (width > 0 && (size_t)width > n) ? (size_t)width - n : 0u;
+        char pc = zero_pad ? '0' : ' ';
+        if (!left_align) for (size_t i = 0; i < pad; ++i) put(pc);
+        for (size_t i = 0; i < n; ++i) put(s[i]);
+        if (left_align) for (size_t i = 0; i < pad; ++i) put(' ');
+    };
+
+    while (*fmt) {
+        char c = *fmt++;
+        if (c != '%') { put(c); continue; }
+
+        bool left_align = false, zero_pad = false;
+        for (;;) {
+            if (*fmt == '-') { left_align = true; ++fmt; }
+            else if (*fmt == '0') { zero_pad = true; ++fmt; }
+            else if (*fmt == '+' || *fmt == ' ' || *fmt == '#') { ++fmt; }
+            else break;
+        }
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt++ - '0'); }
+        int precision = -1;
+        if (*fmt == '.') {
+            ++fmt;
+            precision = 0;
+            while (*fmt >= '0' && *fmt <= '9') { precision = precision * 10 + (*fmt++ - '0'); }
+        }
+        /* Skip length modifiers: h, hh, l, ll, z, j, t. PSX ABI passes
+         * everything as a 32-bit slot, so they don't change behavior. */
+        while (*fmt == 'h' || *fmt == 'l' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') ++fmt;
+
+        char conv = *fmt ? *fmt++ : '\0';
+        char numbuf[40];
+        switch (conv) {
+            case '%': put('%'); break;
+            case 'c': {
+                char ch = (char)args.fetch();
+                put_str(&ch, 1, width, left_align, false);
+                break;
+            }
+            case 's': {
+                uint32_t addr = args.fetch();
+                const char* s = addr ? (const char*)PTR(addr) : "(null)";
+                size_t n = 0;
+                if (precision >= 0) {
+                    while (n < (size_t)precision && s[n]) ++n;
+                } else {
+                    n = strlen(s);
+                }
+                put_str(s, n, width, left_align, false);
+                break;
+            }
+            case 'd':
+            case 'i': {
+                int32_t sv = (int32_t)args.fetch();
+                bool neg = sv < 0;
+                uint32_t uv = neg ? (uint32_t)(-(int64_t)sv) : (uint32_t)sv;
+                size_t n = render_uint(uv, 10, false, numbuf);
+                if (neg) {
+                    /* Zero-pad after sign. */
+                    if (zero_pad && !left_align && width > (int)(n + 1)) {
+                        put('-');
+                        for (size_t i = 0; i < (size_t)width - n - 1; ++i) put('0');
+                        for (size_t i = 0; i < n; ++i) put(numbuf[i]);
+                    } else {
+                        char tmp[41];
+                        tmp[0] = '-';
+                        for (size_t i = 0; i < n; ++i) tmp[i + 1] = numbuf[i];
+                        put_str(tmp, n + 1, width, left_align, false);
+                    }
+                } else {
+                    put_str(numbuf, n, width, left_align, zero_pad && !left_align);
+                }
+                break;
+            }
+            case 'u': {
+                uint32_t uv = args.fetch();
+                size_t n = render_uint(uv, 10, false, numbuf);
+                put_str(numbuf, n, width, left_align, zero_pad && !left_align);
+                break;
+            }
+            case 'x':
+            case 'X': {
+                uint32_t uv = args.fetch();
+                size_t n = render_uint(uv, 16, conv == 'X', numbuf);
+                put_str(numbuf, n, width, left_align, zero_pad && !left_align);
+                break;
+            }
+            case 'o': {
+                uint32_t uv = args.fetch();
+                size_t n = render_uint(uv, 8, false, numbuf);
+                put_str(numbuf, n, width, left_align, zero_pad && !left_align);
+                break;
+            }
+            case 'p': {
+                uint32_t uv = args.fetch();
+                numbuf[0] = '0'; numbuf[1] = 'x';
+                size_t n = render_uint(uv, 16, false, numbuf + 2);
+                put_str(numbuf, n + 2, width, left_align, false);
+                break;
+            }
+            default:
+                /* Unknown — emit the '%' and the conversion char verbatim. */
+                put('%');
+                if (conv) put(conv);
+                break;
+        }
+    }
+    if (pos < cap) dst[pos] = '\0';
+    else dst[cap - 1] = '\0';
+    return pos;
+}
+
+}  /* namespace */
 
 void psyq_printf(CPUState* cpu) {
     const char* fmt = (const char*)PTR(cpu->a0);
-    OPL_INFO_F("psx-printf", "%s", fmt ? fmt : "(null)");
-    cpu->v0 = 0u;
+    if (!fmt) { cpu->v0 = 0u; return; }
+    char buf[512];
+    MipsArgs args{cpu, 1};
+    size_t n = format_from_mips(buf, sizeof(buf), fmt, args);
+    OPL_INFO_F("psx-printf", "%s", buf);
+    cpu->v0 = (uint32_t)n;
 }
 
 void psyq_sprintf(CPUState* cpu) {
     char* dst = (char*)PTR(cpu->a0);
     const char* fmt = (const char*)PTR(cpu->a1);
-    if (dst && fmt) {
-        /* Copy format verbatim; substitution would need MIPS varargs. */
-        size_t n = strlen(fmt);
-        memcpy(dst, fmt, n + 1u);
-        cpu->v0 = (uint32_t)n;
-    } else {
-        cpu->v0 = 0u;
-    }
+    if (!dst || !fmt) { cpu->v0 = 0u; return; }
+    /* No host-side bound — game allocates the buffer. Use a generous
+     * cap; sprintf has no length argument on the PSX side. */
+    MipsArgs args{cpu, 2};
+    size_t n = format_from_mips(dst, 4096u, fmt, args);
+    cpu->v0 = (uint32_t)n;
 }
 
 }  /* extern "C" */
