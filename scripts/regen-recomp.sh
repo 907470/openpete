@@ -184,7 +184,8 @@ for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
     # silently no-op via stub miss, which appears to be benign.
     if [[ "$section" == "level_12" ]]; then
         extra+=(--forced-entry=0x800857CC
-                --forced-entry=0x8007D9C8)
+                --forced-entry=0x8007D9C8
+                --forced-entry=0x8007AE40)
     fi
     if process_overlay "$section" "$ovl_path" "func_${section}_" 0x8007AA38 "${extra[@]}"; then
         register_overlay "$section" "$magic"
