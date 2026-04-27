@@ -41,6 +41,18 @@ WAD_DIR="games/spyro-1/spyro-1/build/wad"
 SYNTH="tools/synth_overlay_exe.py"
 JTBL_TOOL="tools/extract_jumptable_targets.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
+ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
+
+# Resolve the asm_dispatch_targets file for a binary, or empty string if
+# none. Overlays share vaddr 0x8007AA38 with different bytes — passing
+# main-EXE entries to an overlay regen would silently fail psxrecomp's
+# range check (good), but an overlay-A entry passed to overlay-B would
+# pass validation and force psxrecomp to translate garbage. Per-binary
+# files keep ownership unambiguous.
+asm_targets_for() {
+    local f="$ASM_TARGETS_DIR/$1.txt"
+    [[ -f "$f" ]] && echo "$f"
+}
 
 # --- Main EXE ------------------------------------------------------------
 
@@ -49,13 +61,16 @@ PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
 #                  overlay; the new multi-entry pass picks it up too,
 #                  but kept as belt-and-braces.
 echo "[regen] Recompiling PSX.EXE"
-"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
-    --output-dir="$OUT" \
-    --external-symbols="$PSYQ_MANIFEST" \
-    --external-prefix=psyq_ \
-    --extra-funcs=games/spyro-1/manifest/asm_dispatch_targets.txt \
-    --forced-entry=0x80032AB0 \
+main_exe_args=(
+    --output-dir="$OUT"
+    --external-symbols="$PSYQ_MANIFEST"
+    --external-prefix=psyq_
+    --forced-entry=0x80032AB0
     --skip-on-error
+)
+main_exe_targets=$(asm_targets_for main_exe)
+[[ -n "$main_exe_targets" ]] && main_exe_args+=(--extra-funcs="$main_exe_targets")
+"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
     "$OUT/PSX.EXE_dispatch.c"
 
@@ -76,30 +91,41 @@ process_overlay() {
         return 1
     fi
     mkdir -p "$OUT/$name"
+    local asm_targets
+    asm_targets=$(asm_targets_for "$name")
+    local base_args=(
+        --output-dir="$OUT/$name"
+        --external-symbols="$PSYQ_MANIFEST"
+        --external-prefix=psyq_
+        --func-prefix="$prefix"
+        --skip-on-error
+    )
+
     echo "[regen] $name: synth + first-pass recomp"
     python3 "$SYNTH" "$ovl_path" "$OUT/$name.bin" --load-addr="$load_addr"
-    "$PSXRECOMP" "$OUT/$name.bin" \
-        --output-dir="$OUT/$name" \
-        --external-symbols="$PSYQ_MANIFEST" \
-        --external-prefix=psyq_ \
-        --func-prefix="$prefix" \
-        --skip-on-error \
-        "${extra_args[@]}"
+    # First pass: handwritten-asm dispatch targets only (jtbl doesn't
+    # exist yet). psxrecomp accepts a single --extra-funcs= file.
+    local first_funcs="$OUT/$name/extra_funcs.first.txt"
+    : > "$first_funcs"
+    [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
+    "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+        --extra-funcs="$first_funcs" "${extra_args[@]}"
+
     local jtbl="$OUT/$name/jumptable_targets.txt"
     python3 "$JTBL_TOOL" \
         "$OUT/$name/$name.bin_full.c" \
         "$ovl_path" \
         --load-addr="$load_addr" \
         "$jtbl"
+
+    # Second pass: union of asm dispatch targets + jumptable targets.
+    local second_funcs="$OUT/$name/extra_funcs.second.txt"
+    : > "$second_funcs"
+    [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$second_funcs"
+    [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
-    "$PSXRECOMP" "$OUT/$name.bin" \
-        --output-dir="$OUT/$name" \
-        --external-symbols="$PSYQ_MANIFEST" \
-        --external-prefix=psyq_ \
-        --func-prefix="$prefix" \
-        --skip-on-error \
-        --extra-funcs="$jtbl" \
-        "${extra_args[@]}"
+    "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+        --extra-funcs="$second_funcs" "${extra_args[@]}"
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"
     return 0
