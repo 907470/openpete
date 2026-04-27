@@ -27,6 +27,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
+    opts->sfx_volume          = 0;     /* OFF by default; --sfx to opt in */
+    opts->sfx_volume_set      = true;  /* always force-write so default-off applies */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -122,6 +124,23 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--bk2-record") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_record_path = v; i++;
+        } else if (strcmp(a, "--sfx") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "off") == 0) {
+                opts->sfx_volume = 0;
+            } else if (strcmp(v, "on") == 0) {
+                opts->sfx_volume = 10;
+            } else {
+                char* end = NULL;
+                long n = strtol(v, &end, 10);
+                if (end == v || *end != '\0' || n < 0 || n > 10) {
+                    fprintf(stderr, "openpete: --sfx expects on|off|0..10, got: %s\n", v);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                opts->sfx_volume = (int)n;
+            }
+            opts->sfx_volume_set = true;
+            i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -153,7 +172,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
-                "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n",
+                "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n"
+                "  --sfx on|off|N             override Spyro's SOUND EFFECTS slider (0..10; default off)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

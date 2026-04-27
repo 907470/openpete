@@ -50,8 +50,20 @@ void game_on_overlay_init(CPUState* cpu);     /* one-time, post-WadInit */
  * preamble fixes, known-bad-instruction workarounds, etc. */
 void game_apply_runtime_quirks(CPUState* cpu);
 
-/* --- Per-frame callback (rare; e.g., DMA timing hacks) --- */
+/* --- Per-frame callbacks (rare; e.g., DMA timing hacks).
+ * `game_on_frame_pre`  fires immediately BEFORE handing control to the
+ *                      game fiber for a tick — use it to mutate state
+ *                      that the upcoming tick will read.
+ * `game_on_frame_post` fires AFTER the tick yields back, only on iters
+ *                      where the frame counter advanced. */
+void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
 void game_on_frame(CPUState* cpu, uint32_t frame_counter);
+
+/* --- CLI overrides forwarded by core ---
+ * Called once before the run loop starts. Per-game impl decides where /
+ * when to apply the value (typically from game_on_frame, since the
+ * relevant globals don't exist until the game's own init has run). */
+void game_set_sfx_volume(int value);  /* -1 = leave alone */
 
 /* --- Disc layout (each game's WAD/asset structure differs) --- */
 typedef struct {

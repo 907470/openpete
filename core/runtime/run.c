@@ -441,6 +441,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->halt_cpu_dump_output ? opts->halt_cpu_dump_output : "");
     }
 
+    /* Forward CLI overrides to the per-game impl. game_on_frame applies
+     * them when the relevant in-game globals are ready. */
+    game_set_sfx_volume(opts->sfx_volume_set ? opts->sfx_volume : -1);
+
     /* Wire optional fast-boot before any thunk runs. Read by psyq_VSync. */
     openpete_fast_boot_until_frame = opts->fast_boot_until_frame;
     if (openpete_fast_boot_until_frame > 0) {
@@ -573,8 +577,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
         /* Hand control to the game until the next VSync(0) yield. */
         unsigned frame_before_yield = openpete_frame;
+        game_on_frame_pre(&g_game.cpu, openpete_frame);
         co_switch((cothread_t)openpete_game_fiber);
         bool ticked_this_iter = (openpete_frame != frame_before_yield);
+
+        if (ticked_this_iter) {
+            game_on_frame(&g_game.cpu, openpete_frame);
+        }
 
         /* --bk2-record: one bk2 frame per openpete_frame so replay timing
          * matches recording 1:1. Sampled AFTER the yield because PsyX folds
