@@ -54,26 +54,6 @@ asm_targets_for() {
     [[ -f "$f" ]] && echo "$f"
 }
 
-# --- Main EXE ------------------------------------------------------------
-
-# Forced entries:
-#   0x80032AB0 — fast-path entry only reached from the titlescreen
-#                  overlay; the new multi-entry pass picks it up too,
-#                  but kept as belt-and-braces.
-echo "[regen] Recompiling PSX.EXE"
-main_exe_args=(
-    --output-dir="$OUT"
-    --external-symbols="$PSYQ_MANIFEST"
-    --external-prefix=psyq_
-    --forced-entry=0x80032AB0
-    --skip-on-error
-)
-main_exe_targets=$(asm_targets_for main_exe)
-[[ -n "$main_exe_targets" ]] && main_exe_args+=(--extra-funcs="$main_exe_targets")
-"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
-sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
-    "$OUT/PSX.EXE_dispatch.c"
-
 # --- Overlay regen helper -----------------------------------------------
 
 # process_overlay <name> <ovl_path> <prefix> <load_addr> [extra-args...]
@@ -125,7 +105,9 @@ process_overlay() {
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
     "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
-        --extra-funcs="$second_funcs" "${extra_args[@]}"
+        --extra-funcs="$second_funcs" \
+        --emit-external-jals="$OUT/$name/external_jals.txt" \
+        "${extra_args[@]}"
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"
     return 0
@@ -183,6 +165,48 @@ for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
         register_overlay "$section" "$magic"
     fi
 done
+
+# --- Main EXE -----------------------------------------------------------
+#
+# Done LAST so we can fold each overlay's external-JAL targets into the
+# main-EXE forced-entry set. Overlays JAL into main-EXE bytes (gem
+# accounting, level setup, audio helpers); the main-EXE static JAL pass
+# can't see those callers, so without this union the called functions
+# stub-miss at runtime as multi-entry / fall-through fast-paths.
+#
+# Forced entries:
+#   0x80032AB0 — fast-path entry only reached from the titlescreen
+#                  overlay; the new multi-entry pass picks it up too,
+#                  but kept as belt-and-braces.
+#
+# Tried and reverted: 0x8004F8C8, 0x80050060, 0x800506EC, 0x80038620,
+# 0x8005A7B0 — these show up as runtime stub-miss warnings on level_10
+# but the misses are benign; promoting them as forced entries (so
+# psxrecomp segments them as standalone functions and routes the dispatch
+# call) breaks geometry rendering on every level past the first. The
+# original code reaches these addresses through a function-pointer table
+# that is intentionally left null on early levels, and the runtime
+# stub-miss return path matches the original PSYQ "do nothing" semantics
+# closer than a translated 2-instr `jr $ra` stub does. Leave the warnings.
+echo "[regen] Recompiling PSX.EXE (with overlay-discovered cross-binary JAL targets)"
+main_exe_extra="$OUT/main_exe_extra_funcs.txt"
+: > "$main_exe_extra"
+main_exe_targets=$(asm_targets_for main_exe)
+[[ -n "$main_exe_targets" ]] && cat "$main_exe_targets" >> "$main_exe_extra"
+for f in "$OUT"/*/external_jals.txt; do
+    [[ -f "$f" ]] && cat "$f" >> "$main_exe_extra"
+done
+main_exe_args=(
+    --output-dir="$OUT"
+    --external-symbols="$PSYQ_MANIFEST"
+    --external-prefix=psyq_
+    --forced-entry=0x80032AB0
+    --extra-funcs="$main_exe_extra"
+    --skip-on-error
+)
+"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
+sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
+    "$OUT/PSX.EXE_dispatch.c"
 
 # --- Generate the dispatch table ----------------------------------------
 

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -112,6 +113,7 @@ int main(int argc, char** argv) {
         fmt::print("  --manual-prefix=<str>         Prepend <str> to every manual-impl symbol name\n");
         fmt::print("  --func-prefix=<str>           Replace 'func_' prefix on emitted func names (e.g. level_10_func_)\n");
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
+        fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         return 0;
     }
@@ -126,6 +128,7 @@ int main(int argc, char** argv) {
     std::string func_prefix = "func_"; // prefix for emitted func_<addr> names
     bool skip_on_error = false;
     std::vector<uint32_t> forced_entries;
+    std::string emit_external_jals_path;
 
     auto take_value = [](const std::string& a, const char* prefix) -> std::string {
         size_t plen = std::strlen(prefix);
@@ -146,6 +149,8 @@ int main(int argc, char** argv) {
         else if (!(v = take_value(a, "--external-prefix")).empty())   external_prefix = v;
         else if (!(v = take_value(a, "--manual-prefix")).empty())     manual_prefix = v;
         else if (!(v = take_value(a, "--func-prefix")).empty())       func_prefix = v;
+        else if (!(v = take_value(a, "--emit-external-jals")).empty()) emit_external_jals_path = v;
+        else if (a == "--emit-external-jals" && i + 1 < argc)         emit_external_jals_path = argv[++i];
         else if (a == "--skip-on-error")                              skip_on_error = true;
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
@@ -313,6 +318,48 @@ int main(int argc, char** argv) {
     }
 
     auto analysis_result = analyzer.analyze();
+
+    /* Optional: emit cross-binary JAL targets.
+     *
+     * Static JAL discovery (Pass 2.5) only follows JALs whose target lands
+     * inside the current binary. When translating an overlay, JALs into
+     * main-EXE bytes get rejected — the main EXE is a different binary
+     * processed in its own psxrecomp invocation. Without help, those
+     * call-sites stub-miss at runtime: the main-EXE pass never saw the
+     * JAL, so the callee was never promoted to a function entry.
+     *
+     * `--emit-external-jals=<file>` writes every KSEG0 (0x80000000..
+     * 0x80200000) JAL target that falls outside this binary's load range
+     * to <file>, one address per line (in extra-funcs format). The driver
+     * (regen-recomp.sh) unions these across overlays and feeds the result
+     * back as `--extra-funcs=` on the main-EXE pass, closing the loop. */
+    if (!emit_external_jals_path.empty()) {
+        std::set<uint32_t> external_targets;
+        uint32_t exe_start = exe->header.load_address;
+        uint32_t exe_end   = exe->end_address();
+        for (uint32_t a = exe_start; a + 4 <= exe_end; a += 4) {
+            auto w = exe->read_word(a);
+            if (!w.has_value()) break;
+            uint32_t instr = *w;
+            if (((instr >> 26) & 0x3F) != 3u) continue;  // not JAL
+            uint32_t target = ((instr & 0x03FFFFFFu) << 2) | 0x80000000u;
+            if ((target & 3u) != 0) continue;
+            if (target < 0x80010000u || target >= 0x80200000u) continue;
+            if (target >= exe_start && target < exe_end) continue;  // in-range
+            external_targets.insert(target);
+        }
+        std::ofstream ej(emit_external_jals_path);
+        if (ej.is_open()) {
+            ej << "# external JAL targets (KSEG0, outside this binary's range)\n";
+            ej << fmt::format("# binary range: 0x{:08X}..0x{:08X}\n", exe_start, exe_end);
+            for (uint32_t t : external_targets) ej << fmt::format("0x{:08X}\n", t);
+            fmt::print("✓ Wrote {} external JAL targets to {}\n\n",
+                       external_targets.size(), emit_external_jals_path);
+        } else {
+            fmt::print(stderr, "⚠ Cannot open --emit-external-jals path: {}\n",
+                       emit_external_jals_path);
+        }
+    }
 
     // Re-stamp function names with the configured --func-prefix. The analyzer
     // hard-codes "func_<addr>"; per-overlay outputs need a unique prefix so
