@@ -268,3 +268,97 @@ packet, compare against a reference POLY_GT3 packet from a working
 prim (e.g. r_environment/r_moby) to see what's structurally wrong —
 likely a missing field, wrong tag, or OT bucket landing in the wrong
 slot.
+
+### 2026-04-27 follow-ups
+
+**Experiment B (`OPENPETE_SKIP_S1_OVERLAY=1`, suppress `s1>0 → write_half(t8+12)`):**
+no visual change — the conditional uv0/clut overlay is not the bug.
+
+**Experiment A (`OPENPETE_REDIRECT_SMALL_TO_BIG=1`, jump `block_80024D4C → block_80024D70`):**
+crashes — `L80024D70` advances `ra` by 24 again, so subsequent moby-data
+loads read the wrong offsets and the per-frame loop walks off into
+unmapped memory. The two path setups can't be swapped.
+
+**Experiment D (`OPENPETE_GT3_AS_GT4=1`, rewrite the small-emit packet
+in-place as a degenerate POLY_GT4 — tag 0x0C, code 0x3C, `t8+40` =
+rgb2 copy, `t8+44` = SXY2 copy, `t8+48` = uv2 copy, `t8 += 52` so the
+next packet doesn't overlap the tail):** does **not** restore Spyro's
+geometry. So PsyCross handles POLY_GT3 and POLY_GT4 equivalently for
+these polygons; the bug is **not** in packet shape.
+
+**`at` distribution (`OPENPETE_LOG_AT=1`, first 200 r_pete polys):**
+188 with `bit0=0` (NCLIP-cull path), 12 with `bit0=1` (at&1 bypass).
+The polygon-control word is being read correctly — the recompilation
+of the upstream `lw $at, 4($ra)` chain is fine.
+
+**Side-by-side `[se]`/`[be]` packet dumps at frame 2500-2502** (small-emit
+and big-emit each capped at 30): both paths emit packets with valid
+SXY/UV/CLUT/TPAGE values. No corrupt field jumps out, but small and big
+hit different polygons so a direct A/B isn't possible.
+
+The bug must be in *how small-emit constructs the packet from its input
+registers*, and the input registers themselves come from a different
+table-load than big-emit's at `L80024D70`. Specifically:
+
+- **Small-emit** inherits `t2` from `block_80024D4C`'s `cpu->t2 = cpu->t5`
+  (so `t2` aliases `t5`'s vertex-data pointer)
+- **Big-emit via `L80024D70`** sets `cpu->t2 = (cpu->t2 & 0x07FC) + cpu->t9`
+  (a *different* table base, derived from `t9` = the prim-buffer-relative
+  pointer)
+
+The two paths read polygon data from different memory regions. If our
+recompilation of one of those upstream loads is producing a different
+value than real PSX, the small-emit polys end up with wrong data while
+big-emit polys are fine.
+
+### Promising next angle
+
+Inspect every load that contributes to small-emit's `t2/t3/t4/v0/v1/a0/s6/s7`
+between `block_80024D44` and the OT-bucket calc in `block_80024F3C`.
+For each, note the source offset and the value loaded; look for any
+sign-extension or alignment bug specific to the offset shape. Pay
+particular attention to `s7` (used as a shift count for OT bucket
+selection) — if `s7` is off-by-one between paths, the bucket index
+shifts by 2× and polys land in the wrong z-slots.
+
+### Re-tested FORCE_QUAD (2026-04-27, second look)
+
+Earlier "Spyro looks fixed with FORCE_QUAD" was too generous. On
+re-running with the Windows build, FORCE_QUAD recovers most of the
+missing polygons, **but Spyro's face is now visible through the back
+of his head** — a classic "backfaces not culled" symptom.
+
+So FORCE_QUAD is not a fix; it trades one bug for another. Real PSX
+uses small-emit's output for some polys (and big-emit's for others)
+and the union renders correctly. Our small-emit drops/corrupts those
+polys; replacing them with big-emit-everywhere also emits the
+back-facing variants that small-emit's path would have culled.
+
+This means **the bug isn't binary "small-emit broken vs big-emit
+working"**. It's a difference in how each path handles the polys it
+*does* output. Both paths contribute correct polys on real PSX; on
+ours, small-emit's contribution is invisible.
+
+### Different-angle reproducer to test
+
+Holding triangle to enter first-person camera causes the world to
+stop rendering past a certain distance. That looks like a far-clip /
+Z-threshold / OT-bucket-overflow issue rather than the per-polygon
+bug we've been chasing in `func_80023AC4` — different scene, no
+Spyro renderer involved (Spyro is hidden in first-person). Worth
+checking whether this shares root cause with the per-polygon
+missing-geometry symptom.
+
+## Two recommended next moves
+
+1. **pcsx-redux comparison (Option A from above).** Adapt
+   `scripts/pcsx-redux-gte-dump.lua` to break at `0x80024D4C` (small-emit
+   entry) and dump `t2/t3/t4/a2/a3/t0/t1/s0/s6/s7/v0/v1/a0/a1` plus the
+   first 9 words of the resulting prim packet. Run the same scene on
+   pcsx-redux and on our recomp; the first row that diverges names the
+   buggy register, which traces back to a specific upstream load.
+
+2. **First-person far-clip investigation.** Different reproducer; likely
+   different bug. Capture `OPENPETE_OT_DUMP_FRAMES` with the camera in
+   first-person to see whether the missing-distance polys are absent from
+   the OT chain (cull/clip) or present-but-invisible (downstream).
