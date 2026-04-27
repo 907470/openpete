@@ -77,8 +77,24 @@ const game_disc_layout_t* game_get_disc_layout(void) {
     return &k_disc_layout;
 }
 
+/* See docs/missing-geometry-bug.md — Option B (recomp self-instrumentation).
+ * On entry to func_80023AC4 (Spyro's renderer, hand-written asm), wrap
+ * cpu->write_word with a frame-gated tracer to capture the prim-buffer
+ * write stream and diff bad vs good frames. The depth flag prevents the
+ * recursive call into the function body from re-entering this branch. */
+extern void func_80023AC4(CPUState* cpu);
+extern void openpete_trace_writes_begin(CPUState* cpu);
+extern void openpete_trace_writes_end(CPUState* cpu);
+
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
-    (void)cpu;
-    (void)addr;
+    static int s_in_traced_call = 0;
+    if (addr == 0x80023AC4u && !s_in_traced_call) {
+        s_in_traced_call = 1;
+        openpete_trace_writes_begin(cpu);
+        func_80023AC4(cpu);
+        openpete_trace_writes_end(cpu);
+        s_in_traced_call = 0;
+        return 1;
+    }
     return 0;
 }

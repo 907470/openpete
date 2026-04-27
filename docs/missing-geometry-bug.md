@@ -147,3 +147,63 @@ bug is downstream and Option A becomes worth the effort.
   every prim slot in DrawOTag's chain over a frame window.
 - `bk2/missing-geometry.bk2` — the user's reproducer; camera-circle around
   Spyro in Artisans Homeworld.
+
+## Option B infra (this commit)
+
+`OPENPETE_WRITE_TRACE_FRAMES=A-B` + `OPENPETE_WRITE_TRACE_PATH=...`
+captures every `cpu->write_word` issued from inside `func_80023AC4`
+during the openpete_frame window. Implemented in `write_trace.cpp`; the
+override hook in `game_extras_impl.c` swaps `cpu->write_word` for a
+logging wrapper on entry to `0x80023AC4` and restores it on return.
+
+Repro command (the bk2 needs `--bk2-frame-offset 0` and
+`--fast-boot-until-frame 850` to land at the right openpete_frame —
+the C-side default `-first_input_frame` misaligns):
+
+```
+OPENPETE_WRITE_TRACE_FRAMES=2472-2474 \
+OPENPETE_WRITE_TRACE_PATH=/tmp/write-trace.csv \
+./build/linux-release/games/spyro-1/openpete-spyro1 \
+  --bk2 games/spyro-1/bk2/missing-geometry.bk2 --bk2-frame-offset 0 \
+  --headless --frame-limit 2480 --fast-boot-until-frame 850 \
+  --disc <spyro>/roms/SCUS-94228/SCUS-94228.cue \
+  --run-recomp 0x80012204
+```
+
+### First findings from the trace
+
+- 3237 writes on bad frame 2472, 3221 on good frame 2474. Counts close
+  but not identical.
+- Bad frame writes the prim buffer at `0x80180000`, good frame at
+  `0x801A0000`. **The renderer alternates between two buffers per
+  frame.** Worth checking whether "bad" frames consistently hit one
+  buffer vs the other — if so, a buffer-A-specific stale-state bug is
+  in play.
+- 612 vs 601 writes to the `0x80070000` region (control / OT / pointer
+  area), 32 vs 28 writes to `0x80060000`.
+- Counts of all-zero and all-FF writes are within noise (133/130 zeros,
+  8/7 FFs).
+
+### Caveat
+
+Raw write-stream diffing between bad and good frames is dominated by
+animation noise — Spyro's pose changes between frames, so per-vertex
+SXY/UV/RGB writes legitimately differ. The signal we want is a write
+that *shouldn't* differ — e.g. the same polygon emitting different
+CLUT/TPAGE bits, or one frame writing a polygon's RGB as zero. Need a
+matching strategy that pairs equivalent polygon-emit slices between
+frames before diffing.
+
+### Next probes
+
+1. Pair polygon-emit slices across frames by call-position and compare
+   only structural fields (CLUT, TPAGE, packet code byte, RGB slots).
+   Animation moves vertices but preserves these.
+2. Capture 2470 / 2476 / 2478 alongside to test the
+   buffer-alternation hypothesis (does "bad" track buffer A?).
+3. If structural fields match, the bug is downstream: PsyCross's
+   prim-list traversal or the GL backend reads valid packets but
+   renders one path of them invisibly. That demotes Option B and
+   promotes Option A (pcsx-redux ground-truth) only as a tiebreaker —
+   the more direct probe is then to instrument PsyCross's per-prim
+   dispatch.
