@@ -40,6 +40,7 @@ OUT="games/spyro-1/generated"
 WAD_DIR="games/spyro-1/spyro-1/build/wad"
 SYNTH="tools/synth_overlay_exe.py"
 JTBL_TOOL="tools/extract_jumptable_targets.py"
+FNPTR_TOOL="tools/extract_overlay_func_pointers.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
 ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
 
@@ -55,6 +56,27 @@ python3 tools/extract_asm_dispatch_targets.py \
     games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
 python3 tools/extract_handwritten_ra_returns.py \
     games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
+
+# Harvest overlay function-pointer-table targets from main EXE constants.
+# The main EXE installs per-level callbacks into fixed RAM slots via
+# `lui+addiu` immediate pairs (e.g. `0x80080000 + 22476 = 0x800857CC`)
+# that resolve to code inside whichever overlay is swapped in. Each
+# overlay then receives its in-range subset as forced-entries; psxrecomp
+# silently drops out-of-range entries so a single union list works.
+#
+# This requires PSX.EXE_full.c to already exist from a prior run (the
+# constants don't depend on overlay external_jals, so last-run's main
+# EXE output is fine). On the very first run, skip — overlay regen will
+# miss these entries until the second invocation, which is acceptable.
+FNPTR_FILE="$OUT/overlay_fn_pointers.txt"
+if [[ -f "$OUT/PSX.EXE_full.c" ]]; then
+    echo "[regen] Harvesting overlay fn-pointer constants from PSX.EXE_full.c"
+    python3 "$FNPTR_TOOL" "$OUT/PSX.EXE_full.c" "$FNPTR_FILE" \
+        --overlay-range=0x8007AA38:0x8008EA38 >/dev/null
+else
+    echo "[regen] PSX.EXE_full.c not yet generated — skipping fn-pointer harvest"
+    : > "$FNPTR_FILE"
+fi
 
 # Resolve the asm_dispatch_targets file for a binary, or empty string if
 # none. Overlays share vaddr 0x8007AA38 with different bytes — passing
@@ -96,11 +118,13 @@ process_overlay() {
 
     echo "[regen] $name: synth + first-pass recomp"
     python3 "$SYNTH" "$ovl_path" "$OUT/$name.bin" --load-addr="$load_addr"
-    # First pass: handwritten-asm dispatch targets only (jtbl doesn't
-    # exist yet). psxrecomp accepts a single --extra-funcs= file.
+    # First pass: handwritten-asm dispatch targets + fn-pointer-table
+    # constants harvested from main EXE (jtbl doesn't exist yet).
+    # psxrecomp accepts a single --extra-funcs= file.
     local first_funcs="$OUT/$name/extra_funcs.first.txt"
     : > "$first_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
+    [[ -s "$FNPTR_FILE" ]] && cat "$FNPTR_FILE" >> "$first_funcs"
     "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
         --extra-funcs="$first_funcs" "${extra_args[@]}"
 
@@ -111,11 +135,12 @@ process_overlay() {
         --load-addr="$load_addr" \
         "$jtbl"
 
-    # Second pass: union of asm dispatch targets + jumptable targets.
+    # Second pass: union of asm dispatch + jumptable + fn-pointer entries.
     local second_funcs="$OUT/$name/extra_funcs.second.txt"
     : > "$second_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$second_funcs"
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
+    [[ -s "$FNPTR_FILE" ]] && cat "$FNPTR_FILE" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
     "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
         --extra-funcs="$second_funcs" \
@@ -170,34 +195,10 @@ for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
     S=$((F % 6))
     section="level_$((H * 10 + S))"
     magic=$((F + 11))
+    # Per-level fn-pointer-table targets are picked up automatically by
+    # the FNPTR_FILE harvest above; psxrecomp filters to each overlay's
+    # in-range subset, so no per-level hardcoded forced-entries needed.
     extra=()
-    # level_10 (Artisans Homeworld) has a forced-entry at the
-    # SetOverlayPointers caller's first computed-jump target.
-    [[ "$section" == "level_10" ]] && extra+=(--forced-entry=0x8007D9C8)
-    # level_12 (Dark Hollow) — runtime jalr targets observed on entry
-    # from level_10. Each address is a function pointer loaded from
-    # RAM into v0/v1 and dispatched via jalr; the static analyzer
-    # can't follow the data flow, so they have to be forced-entered.
-    # 0x80086134 and 0x800873E0 are *past* dark_hollow's overlay end
-    # (0x80085A38) — they're stale function pointers from level_10's
-    # init that survive the overlay swap. Not added here; the calls
-    # silently no-op via stub miss, which appears to be benign.
-    if [[ "$section" == "level_12" ]]; then
-        extra+=(--forced-entry=0x800857CC
-                --forced-entry=0x8007D9C8
-                --forced-entry=0x8007AE40)
-    fi
-    # level_13 (Town Square) — same family of function-pointer-table
-    # callbacks as level_12. All four addresses fall inside this
-    # overlay's range (0x8007AA38..0x80089A38), so unlike level_12 the
-    # 0x80086134/0x800873E0 pair are real targets here, not stale
-    # pointers — observed as stub misses on Town Square entry.
-    if [[ "$section" == "level_13" ]]; then
-        extra+=(--forced-entry=0x8007D9C8
-                --forced-entry=0x800857CC
-                --forced-entry=0x80086134
-                --forced-entry=0x800873E0)
-    fi
     if process_overlay "$section" "$ovl_path" "func_${section}_" 0x8007AA38 "${extra[@]}"; then
         register_overlay "$section" "$magic"
     fi
