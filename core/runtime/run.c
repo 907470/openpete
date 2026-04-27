@@ -444,6 +444,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */
     game_set_sfx_volume(opts->sfx_volume_set ? opts->sfx_volume : -1);
+    game_set_music_volume(opts->music_volume_set ? opts->music_volume : -1);
 
     /* Wire optional fast-boot before any thunk runs. Read by psyq_VSync. */
     openpete_fast_boot_until_frame = opts->fast_boot_until_frame;

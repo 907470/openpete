@@ -29,6 +29,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->sfx_volume          = 0;     /* OFF by default; --sfx to opt in */
     opts->sfx_volume_set      = true;  /* always force-write so default-off applies */
+    opts->music_volume        = 0;     /* OFF by default; --music to opt in */
+    opts->music_volume_set    = true;
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -141,6 +143,23 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
             opts->sfx_volume_set = true;
             i++;
+        } else if (strcmp(a, "--music") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "off") == 0) {
+                opts->music_volume = 0;
+            } else if (strcmp(v, "on") == 0) {
+                opts->music_volume = 10;
+            } else {
+                char* end = NULL;
+                long n = strtol(v, &end, 10);
+                if (end == v || *end != '\0' || n < 0 || n > 10) {
+                    fprintf(stderr, "openpete: --music expects on|off|0..10, got: %s\n", v);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                opts->music_volume = (int)n;
+            }
+            opts->music_volume_set = true;
+            i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -173,7 +192,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
                 "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n"
-                "  --sfx on|off|N             override Spyro's SOUND EFFECTS slider (0..10; default off)\n",
+                "  --sfx on|off|N             override Spyro's SOUND EFFECTS slider (0..10; default off)\n"
+                "  --music on|off|N           override Spyro's MUSIC slider (0..10; default off)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

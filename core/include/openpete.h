@@ -150,6 +150,14 @@ typedef struct {
     int sfx_volume;     /* 0..10; only honored when sfx_volume_set */
     bool sfx_volume_set;
 
+    /* CD-music volume override — symmetric with --sfx. Off by default
+     * so headless / CI runs are silent unless explicitly opted-in.
+     * Honors the in-game music slider scale (0..10), where 0 mutes
+     * the title-screen intro and any music played before
+     * gamestates/init.c restores the user's setting. */
+    int  music_volume;  /* 0..10; only honored when music_volume_set */
+    bool music_volume_set;
+
     /* Record live pad input (keyboard + gamepad, merged by PsyCross) into
      * a BizHawk-format .bk2 zip at this path. Sister of --bk2 replay;
      * combinable with it (the recorded frames include the replayed ones,

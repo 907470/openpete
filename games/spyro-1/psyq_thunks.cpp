@@ -60,7 +60,6 @@ extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
 static bool s_xa_armed       = false;
 static int  s_xa_filter_file = 1;
 static int  s_xa_filter_chan = 0;
-static int  s_music_volume_override = -1;  /* -1 = leave alone */
 #include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
@@ -1236,9 +1235,6 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
         int r = attr->cd.volume.right;
         if (l < 0) l = 0; if (r < 0) r = 0;
         float g = (float)((l + r) / 2) / (float)0x3FFF;
-        if (s_music_volume_override >= 0) {
-            g *= (float)s_music_volume_override / 10.0f;
-        }
         PsyX_XA_SetVolume(g);
     }
 }
