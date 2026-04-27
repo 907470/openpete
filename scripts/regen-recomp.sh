@@ -248,6 +248,17 @@ main_exe_targets=$(asm_targets_for main_exe)
 for f in "$OUT"/*/external_jals.txt; do
     [[ -f "$f" ]] && cat "$f" >> "$main_exe_extra"
 done
+# Harvest jumptable-case targets that the previous main-EXE recomp left
+# as `case N: call_by_address(cpu, 0xADDR);` stubs (e.g. per-level setup
+# functions like Toasty's 0x8005A930). Without these, level swaps that
+# go through one of those cases never re-init their fn-pointer slots,
+# and the stale level_N pointers from the previous overlay get jalr'd
+# in level_N+1 → cascading stub misses on overlay entry.
+if [[ -f "$OUT/PSX.EXE_full.c" ]]; then
+    python3 tools/extract_dispatch_call_by_address.py \
+        "$OUT/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
+    cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
+fi
 main_exe_args=(
     --output-dir="$OUT"
     --external-symbols="$PSYQ_MANIFEST"
