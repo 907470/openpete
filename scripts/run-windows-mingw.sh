@@ -113,20 +113,51 @@ translate_if_linux() {
 }
 
 forwarded=()
-idle=0  # `--idle` suppresses the default --bk2 prefix
+idle=0  # `--idle` (or a falsey `--bk2`) suppresses the default --bk2 prefix
+
+# Falsey passthrough: `--bk2 ""`, `--bk2 0`, `--bk2 false`, `--bk2 no`,
+# `--bk2 none`, `--bk2 off` all mean "don't pass --bk2 to the .exe".
+# Lets caller short-circuit the auto-default without typing `--idle`.
+is_falsey() {
+    case "${1,,}" in ''|0|false|no|none|off) return 0 ;; esac
+    return 1
+}
+
 while (( $# )); do
     case "$1" in
-        --disc|--exe-path|--screenshot-output|--bk2|--bk2-record)
+        --disc|--exe-path|--screenshot-output|--bk2-record)
             forwarded+=("$1")
             if [[ $# -ge 2 ]]; then
                 forwarded+=("$(translate_if_linux "$2")")
                 shift
             fi
             ;;
-        --disc=*|--exe-path=*|--screenshot-output=*|--bk2=*|--bk2-record=*)
+        --bk2)
+            if [[ $# -ge 2 ]] && is_falsey "$2"; then
+                yellow "  (--bk2 '$2' is falsey; suppressing scripted input)"
+                idle=1
+                shift
+            else
+                forwarded+=("$1")
+                if [[ $# -ge 2 ]]; then
+                    forwarded+=("$(translate_if_linux "$2")")
+                    shift
+                fi
+            fi
+            ;;
+        --disc=*|--exe-path=*|--screenshot-output=*|--bk2-record=*)
             key="${1%%=*}"
             val="${1#*=}"
             forwarded+=("$key=$(translate_if_linux "$val")")
+            ;;
+        --bk2=*)
+            val="${1#*=}"
+            if is_falsey "$val"; then
+                yellow "  (--bk2='$val' is falsey; suppressing scripted input)"
+                idle=1
+            else
+                forwarded+=("--bk2=$(translate_if_linux "$val")")
+            fi
             ;;
         --record)
             # Expand to --bk2-record games/spyro-1/bk2/<name>.bk2 (path is
