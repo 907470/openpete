@@ -187,6 +187,17 @@ for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
                 --forced-entry=0x8007D9C8
                 --forced-entry=0x8007AE40)
     fi
+    # level_13 (Town Square) — same family of function-pointer-table
+    # callbacks as level_12. All four addresses fall inside this
+    # overlay's range (0x8007AA38..0x80089A38), so unlike level_12 the
+    # 0x80086134/0x800873E0 pair are real targets here, not stale
+    # pointers — observed as stub misses on Town Square entry.
+    if [[ "$section" == "level_13" ]]; then
+        extra+=(--forced-entry=0x8007D9C8
+                --forced-entry=0x800857CC
+                --forced-entry=0x80086134
+                --forced-entry=0x800873E0)
+    fi
     if process_overlay "$section" "$ovl_path" "func_${section}_" 0x8007AA38 "${extra[@]}"; then
         register_overlay "$section" "$magic"
     fi
