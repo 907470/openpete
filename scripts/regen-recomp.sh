@@ -43,6 +43,19 @@ JTBL_TOOL="tools/extract_jumptable_targets.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
 ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
 
+# Refresh the per-binary forced-entry manifests from the current asm
+# tree. extract_asm_dispatch_targets.py harvests `glabel D_<addr>`
+# jumptable slots; extract_handwritten_ra_returns.py appends return PCs
+# for callers of handwritten functions that return via `jr <reg>` (the
+# recompiler can't statically prove the target so the return PC has to
+# be a known dispatch entry). Order matters — the ra-return tool merges
+# into the file the first tool wrote.
+echo "[regen] Refreshing $ASM_TARGETS_DIR/"
+python3 tools/extract_asm_dispatch_targets.py \
+    games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
+python3 tools/extract_handwritten_ra_returns.py \
+    games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
+
 # Resolve the asm_dispatch_targets file for a binary, or empty string if
 # none. Overlays share vaddr 0x8007AA38 with different bytes — passing
 # main-EXE entries to an overlay regen would silently fail psxrecomp's
