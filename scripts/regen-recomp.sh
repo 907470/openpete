@@ -171,36 +171,42 @@ register_overlay() {
     OVERLAY_MAGIC["$1"]="$2"
 }
 
-# Titlescreen — different load pattern (no level-id namespace) and a
-# couple of static forced entries that pre-date the multi-entry pass.
-if process_overlay titlescreen "$WAD_DIR/titlescreen_code.ovl" \
-        func_titlescreen_ 0x8007AA38 \
-        --forced-entry=0x8007ABAC --forced-entry=0x8007CEE4; then
-    register_overlay titlescreen 48
-fi
-
-# Credits screen.
-if process_overlay credits "$WAD_DIR/credits.ovl" \
-        func_credits_ 0x8007AA38; then
-    register_overlay credits 47
-fi
-
-# Level overlays — derive section name + overlay-id from filename.
-for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
+# Auto-discover every overlay in the WAD dir and classify by filename:
+#   titlescreen_code.ovl  — name=titlescreen,  magic=48
+#   credits.ovl           — name=credits,      magic=47
+#   level_F_*_code.ovl    — name=level_NN,     magic=F+11,
+#                           NN = (F/6 + 1)*10 + (F%6)
+# Per-overlay fn-pointer-table targets are picked up automatically by
+# the FNPTR_FILE harvest above. The titlescreen forced-entries are
+# main-EXE→overlay direct JAL targets that aren't covered by the
+# external-JALs round-trip — kept until that mechanism becomes
+# symmetric.
+for ovl_path in "$WAD_DIR"/*.ovl; do
     [[ -f "$ovl_path" ]] || continue
     base=$(basename "$ovl_path")
-    F=$(sed -E 's/^level_([0-9]+)_.*$/\1/' <<< "$base")
-    [[ "$F" =~ ^[0-9]+$ ]] || { echo "[regen] skipping unrecognized $base"; continue; }
-    H=$((F / 6 + 1))
-    S=$((F % 6))
-    section="level_$((H * 10 + S))"
-    magic=$((F + 11))
-    # Per-level fn-pointer-table targets are picked up automatically by
-    # the FNPTR_FILE harvest above; psxrecomp filters to each overlay's
-    # in-range subset, so no per-level hardcoded forced-entries needed.
-    extra=()
-    if process_overlay "$section" "$ovl_path" "func_${section}_" 0x8007AA38 "${extra[@]}"; then
-        register_overlay "$section" "$magic"
+    name=""; magic=""; extra=()
+    case "$base" in
+        titlescreen_code.ovl)
+            name=titlescreen; magic=48
+            extra=(--forced-entry=0x8007ABAC --forced-entry=0x8007CEE4)
+            ;;
+        credits.ovl)
+            name=credits; magic=47
+            ;;
+        level_*_code.ovl)
+            F=$(sed -E 's/^level_([0-9]+)_.*$/\1/' <<< "$base")
+            [[ "$F" =~ ^[0-9]+$ ]] || { echo "[regen] skipping unrecognized $base"; continue; }
+            H=$((F / 6 + 1)); S=$((F % 6))
+            name="level_$((H * 10 + S))"
+            magic=$((F + 11))
+            ;;
+        *)
+            echo "[regen] skipping unrecognized $base"
+            continue
+            ;;
+    esac
+    if process_overlay "$name" "$ovl_path" "func_${name}_" 0x8007AA38 "${extra[@]}"; then
+        register_overlay "$name" "$magic"
     fi
 done
 
