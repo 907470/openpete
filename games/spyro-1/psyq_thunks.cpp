@@ -1149,17 +1149,7 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
 }
 
 void psyq_SpuSetKey(CPUState* cpu) {
-    /* PsyCross's PsyX_SPUAL_SetKey takes g_SpuMutex and walks the OpenAL
-     * voice array. Calling it during Spyro's LoadLevel() transition (around
-     * frame 1473 with the canonical title→level press script) faults inside
-     * pthread_mutex_unlock with addr=NULL — likely OpenAL state corruption
-     * from the alSourceStop/Play calls inside the mutex while voices are
-     * being torn down by KillSoundsAndMusic.
-     *
-     * Audio is deferred to Phase 4 anyway (see plan §Phase 4); the no-op
-     * here unblocks the level-1 render path. Remove once the audio rewrite
-     * lands and the alSource lifetime is properly synchronized. */
-    (void)cpu;
+    SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
 }
 
 void psyq_SpuGetKeyStatus(CPUState* cpu) {
