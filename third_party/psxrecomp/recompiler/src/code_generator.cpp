@@ -1052,7 +1052,76 @@ std::string CodeGenerator::translate_basic_block(
                 } else if (block.exit_instr.type == ControlFlowType::JumpRegister) {
                     // jr $rs — may be: BIOS call (jr $t2, t2=0xA0/0xB0/0xC0)
                     //                  or: jump table (jr $v0, v0 loaded from LW+ADDU+LUI)
+                    //                  or: saved-ra return (addi $X,$ra,0; ...; jr $X)
                     uint32_t jr_rs = get_rs(block.exit_instr.instruction);
+
+                    // Saved-ra pattern: handwritten asm functions sometimes save
+                    // $ra into a non-$ra register and return via `jr <reg>`
+                    // (e.g. spyro1's func_80053570 saves to $a3 because it needs
+                    // to clobber $ra with `jal rand` mid-body). Translating this
+                    // as `call_by_address(cpu->X)` dispatches into the *caller*'s
+                    // function tail as a separate C call, runs the caller's
+                    // epilogue, then returns to the caller's recompiled `goto
+                    // block_<ra>` which runs the same tail again — sp drifts up
+                    // by the caller's frame size each iteration, eventually
+                    // landing past 2 MB and silently corrupting reads/writes.
+                    //
+                    // Detect by back-scanning for `addi/addiu $jr_rs, $ra, 0`
+                    // (op=0x08/0x09, rs=31, rt=jr_rs, imm=0) without any
+                    // intervening write to jr_rs. When matched, emit `return;`
+                    // — the C call returns naturally to the caller, whose
+                    // `goto block_<ra>` then runs the tail exactly once.
+                    bool jr_is_saved_ra = false;
+                    if (jr_rs != 31u) {  // skip the trivial jr $ra
+                        // Scan up to 200 instructions back. Don't stop at
+                        // cfg.function_start: forced-entry manifests can split
+                        // the original function (e.g. func_800530C0 saves to
+                        // $t7 at 0x8005325C, but the `jr $t7` at 0x80053348 is
+                        // in a separately-split piece starting at 0x80053274).
+                        // exe_.read_word bounds the scan to the EXE extent.
+                        for (int back = 1; back <= 200; back++) {
+                            uint32_t sa = block.exit_instr.address - (uint32_t)(back * 4);
+                            auto sopt = exe_.read_word(sa);
+                            if (!sopt) break;
+                            uint32_t si   = *sopt;
+                            uint32_t s_op = (si >> 26) & 0x3F;
+                            uint32_t s_rs = (si >> 21) & 0x1F;
+                            uint32_t s_rt = (si >> 16) & 0x1F;
+                            int16_t  s_im = (int16_t)(si & 0xFFFF);
+                            // The save: addi/addiu jr_rs, $ra, 0
+                            if ((s_op == 0x08 || s_op == 0x09) &&
+                                s_rs == 31u && s_rt == jr_rs && s_im == 0) {
+                                jr_is_saved_ra = true;
+                                break;
+                            }
+                            // Any other instruction that writes to jr_rs
+                            // invalidates the pattern. Conservatively bail on
+                            // the common write-form opcodes (R-type with rd ==
+                            // jr_rs, or I-type with rt == jr_rs that isn't a
+                            // store/branch). Stores are op 0x28..0x2B/0x38;
+                            // branches are op 0x01/0x04..0x07 and don't write
+                            // GPRs.
+                            uint32_t s_rd = (si >> 11) & 0x1F;
+                            uint32_t s_fn = si & 0x3F;
+                            bool writes_jr_rs = false;
+                            if (s_op == 0x00 && s_rd == jr_rs && s_fn != 0x08 && s_fn != 0x09) {
+                                // R-type ALU/shift writing rd
+                                writes_jr_rs = true;
+                            } else if (s_op >= 0x08 && s_op <= 0x0F && s_rt == jr_rs) {
+                                // I-type ALU (addi/addiu/slti/sltiu/andi/ori/xori/lui) writing rt
+                                writes_jr_rs = true;
+                            } else if (s_op >= 0x20 && s_op <= 0x27 && s_rt == jr_rs) {
+                                // Loads write rt
+                                writes_jr_rs = true;
+                            }
+                            if (writes_jr_rs) break;
+                        }
+                    }
+                    if (jr_is_saved_ra) {
+                        ss << config_.indent
+                           << fmt::format("return;  /* jr {} ({} = saved $ra) */\n",
+                                          reg_name(jr_rs), reg_name(jr_rs));
+                    } else {
 
                     // Detect MIPS jump-table pattern by scanning backwards from jr.
                     // Handles two common patterns:
@@ -1259,6 +1328,7 @@ std::string CodeGenerator::translate_basic_block(
                                                             reg_name(jr_rs), reg_name(jr_rs));
                         ss << config_.indent << "return;\n";
                     }
+                    }  // end of !jr_is_saved_ra branch
                 } else if (block.exit_instr.type == ControlFlowType::JumpLink) {
                     // Function call (jal)
                     ss << config_.indent << "cpu->ra = " << fmt::format("0x{:08X};  /* return address */\n", addr + 8);

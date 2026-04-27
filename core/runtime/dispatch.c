@@ -181,10 +181,100 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
     _Exit(0);
 }
 
+/* Hang watchdog: psx_override_dispatch fires at every translated-function
+ * entry, so it sees roughly the full call sequence the game fiber walks
+ * each frame. Because the host/game fibers are cooperatively scheduled in
+ * one OS thread (libco), an infinite loop in the game fiber blocks the
+ * host fiber too — no host-side timer can fire. Watching openpete_frame
+ * here lets the game fiber notice it hasn't yielded in a long time and
+ * dump where it's been before we lose the trace.
+ *
+ * On trip: write a ring of the last HANG_RING entries (addr, ra, sp) to
+ * `OPENPETE_HANG_TRACE` (default ./hang-trace.bin) and `_Exit(2)`.
+ * Format: u32 magic 'HANG', u32 count, u32 head_index, then count×{u32 addr, u32 ra, u32 sp}.
+ * Disabled when `OPENPETE_HANG_THRESHOLD=0`. */
+#define HANG_RING 4096u
+struct hang_entry { uint32_t addr; uint32_t ra; uint32_t sp; };
+static struct hang_entry s_hang_ring[HANG_RING];
+static uint32_t s_hang_head = 0u;
+/* Snapshot of the ring at the last frame-boundary tick. Tight loops fill the
+ * primary ring with their own entries, hiding what was happening *before* the
+ * loop began — the snapshot preserves it. */
+static struct hang_entry s_hang_ring_prev[HANG_RING];
+static uint32_t s_hang_head_prev = 0u;
+static uint32_t s_hang_calls_since_tick = 0u;
+static uint32_t s_hang_last_frame = 0u;
+static int s_hang_threshold_inited = 0;
+static uint32_t s_hang_threshold = 50000000u;  /* env-overridable */
+static int s_hang_tripped = 0;
+
+static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
+    s_hang_tripped = 1;
+    const char* path = getenv("OPENPETE_HANG_TRACE");
+    if (!path || !*path) path = "./hang-trace.bin";
+    FILE* fp = fopen(path, "wb");
+    if (fp) {
+        uint32_t magic = 0x474E4148u;  /* 'HANG' */
+        uint32_t count = HANG_RING;
+        fwrite(&magic, 4, 1, fp);
+        fwrite(&count, 4, 1, fp);
+        fwrite(&s_hang_head, 4, 1, fp);
+        fwrite(s_hang_ring, sizeof(s_hang_ring[0]), HANG_RING, fp);
+        /* Pre-loop snapshot: ring as it stood at the last frame boundary. */
+        fwrite(&s_hang_head_prev, 4, 1, fp);
+        fwrite(s_hang_ring_prev, sizeof(s_hang_ring_prev[0]), HANG_RING, fp);
+        fclose(fp);
+    }
+    /* Also dump 2 MB RAM so post-mortem can inspect any address. */
+    const char* rampath = getenv("OPENPETE_HANG_RAM");
+    if (!rampath || !*rampath) rampath = "./hang-ram.bin";
+    FILE* rp = fopen(rampath, "wb");
+    if (rp) {
+        const size_t ram_size = 2u * 1024u * 1024u;
+        fwrite(openpete_psx_get_ram(), 1, ram_size, rp);
+        fclose(rp);
+    }
+    OPL_ERROR_F("watchdog",
+                "hang detected: %u dispatch entries since openpete_frame=%u "
+                "(trip addr=0x%08X), wrote trace=%s ram=%s — exiting",
+                s_hang_calls_since_tick, s_hang_last_frame, trip_addr,
+                path, rampath);
+    fflush(stdout); fflush(stderr);
+    _Exit(2);
+}
+
 /* Per-function intercept gate emitted at the top of every generated body.
  * Phase 1b: never intercepts. Phase 1c+ wires per-game quirks here. */
 __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
+    if (!s_hang_threshold_inited) {
+        const char* env = getenv("OPENPETE_HANG_THRESHOLD");
+        if (env && *env) s_hang_threshold = (uint32_t)strtoul(env, NULL, 0);
+        s_hang_threshold_inited = 1;
+    }
+    if (s_hang_threshold && !s_hang_tripped) {
+        if (openpete_frame != s_hang_last_frame) {
+            /* Frame boundary: snapshot the ring before the next frame's
+             * dispatches overwrite it. If a hang trips during the next
+             * frame, the snapshot still shows what got us here. */
+            memcpy(s_hang_ring_prev, s_hang_ring, sizeof(s_hang_ring));
+            s_hang_head_prev = s_hang_head;
+            s_hang_last_frame = openpete_frame;
+            s_hang_calls_since_tick = 0u;
+        } else if (++s_hang_calls_since_tick > s_hang_threshold) {
+            openpete_hang_dump_and_exit(addr);
+        }
+        /* Only fill the ring for the first HANG_RING dispatches of each
+         * frame. A tight loop produces 2-3 distinct addrs and trivially
+         * overwrites useful state; capping per-frame writes preserves the
+         * path *into* the loop. */
+        if (s_hang_calls_since_tick < HANG_RING) {
+            s_hang_ring[s_hang_head].addr = addr;
+            s_hang_ring[s_hang_head].ra   = cpu ? cpu->ra : 0u;
+            s_hang_ring[s_hang_head].sp   = cpu ? cpu->sp : 0u;
+            s_hang_head = (s_hang_head + 1u) % HANG_RING;
+        }
+    }
     if (openpete_halt_at_pc != 0u && addr == openpete_halt_at_pc &&
         !openpete_halt_done) {
         openpete_halt_hit_count++;
