@@ -45,12 +45,6 @@ mkdir -p "$OUT/titlescreen" "$OUT/level_10"
 #                  cutscene-frame-pump path; main-EXE callers use a different
 #                  entry, so the recompiler classified 0x80032AB8 as the
 #                  function start and missed 0x80032AB0.
-#   0x8003B9D4 — CollectItem. Only reached via function pointer (level
-#                  overlay's gem-moby update), so the static analyzer
-#                  absorbed it as a tail block of func_8003B854. Without
-#                  this hint, every gem pickup stub-misses and the
-#                  per-level gem count + collected bitmask never update —
-#                  gems respawn after a portal round-trip.
 # Plus a manifest of `glabel D_<addr>` and adjacent MFC2-stub entries
 # from spyro-1/asm/**/*.s — handwritten asm computed-jump targets the
 # static analyzer can't see (collision.s GTE MAC1/MAC2/MAC3 dispatch
@@ -63,7 +57,6 @@ echo "[regen] Recompiling PSX.EXE"
     --external-prefix=psyq_ \
     --extra-funcs=games/spyro-1/manifest/asm_dispatch_targets.txt \
     --forced-entry=0x80032AB0 \
-    --forced-entry=0x8003B9D4 \
     --skip-on-error
 
 # Per-overlay regen — synth a PS1-EXE wrapper from the matching-decomp's
