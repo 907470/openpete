@@ -609,8 +609,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * StoreFrameBuffer and SwapWindow, so it lands on the presented
          * backbuffer without polluting the VRAM mirror. */
         if (openpete_present_pending) {
-            if (opts->screenshot_on_frame >= 0 &&
-                (int)openpete_frame == opts->screenshot_on_frame) {
+            static int screenshotted = 0;
+            if (!screenshotted && opts->screenshot_on_frame >= 0 &&
+                (int)openpete_frame >= opts->screenshot_on_frame) {
+                screenshotted = 1;
                 const char* path = opts->screenshot_output;
                 openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",

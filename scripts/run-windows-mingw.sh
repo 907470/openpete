@@ -202,13 +202,22 @@ fi
 
 if (( idle )); then
     yellow "  (--idle: no scripted input)"
-elif ! has_flag --bk2; then
-    DEFAULT_BK2="$OPENPETE_ROOT/games/spyro-1/bk2/skip-to-artisans.bk2"
-    if [[ -f "$DEFAULT_BK2" ]]; then
-        yellow "  (no --bk2; defaulting to skip-to-artisans.bk2)"
-        prepend --bk2 "$(wslpath -w "$DEFAULT_BK2")" --bk2-frame-offset 0
-    else
-        yellow "  (skip-to-artisans.bk2 missing; running with no scripted input)"
+else
+    if ! has_flag --bk2; then
+        DEFAULT_BK2="$OPENPETE_ROOT/games/spyro-1/bk2/skip-to-artisans.bk2"
+        if [[ -f "$DEFAULT_BK2" ]]; then
+            yellow "  (no --bk2; defaulting to skip-to-artisans.bk2)"
+            prepend --bk2 "$(wslpath -w "$DEFAULT_BK2")"
+        else
+            yellow "  (skip-to-artisans.bk2 missing; running with no scripted input)"
+        fi
+    fi
+    # bk2 frame 0 → openpete_frame 0. The C-side auto-pick of
+    # -first_input_frame misaligns against --fast-boot-until-frame, so pin to
+    # 0 unless the caller overrode it.
+    if has_flag --bk2 && ! has_flag --bk2-frame-offset; then
+        yellow "  (no --bk2-frame-offset; defaulting to 0)"
+        prepend --bk2-frame-offset 0
     fi
 fi
 

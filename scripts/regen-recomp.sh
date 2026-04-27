@@ -178,16 +178,13 @@ done
 #   0x80032AB0 — fast-path entry only reached from the titlescreen
 #                  overlay; the new multi-entry pass picks it up too,
 #                  but kept as belt-and-braces.
-#
-# Tried and reverted: 0x8004F8C8, 0x80050060, 0x800506EC, 0x80038620,
-# 0x8005A7B0 — these show up as runtime stub-miss warnings on level_10
-# but the misses are benign; promoting them as forced entries (so
-# psxrecomp segments them as standalone functions and routes the dispatch
-# call) breaks geometry rendering on every level past the first. The
-# original code reaches these addresses through a function-pointer table
-# that is intentionally left null on early levels, and the runtime
-# stub-miss return path matches the original PSYQ "do nothing" semantics
-# closer than a translated 2-instr `jr $ra` stub does. Leave the warnings.
+#   0x8004F8C8, 0x80050060, 0x800506EC, 0x80038620, 0x8005A7B0 —
+#                  runtime stub-miss targets observed on level_10 and at
+#                  Stone Hill entry. Re-validated against
+#                  bk2/stone-hill-entry.bk2: byte-identical screenshot
+#                  vs no-forced-entries baseline at frame 3600, so the
+#                  earlier "breaks geometry past Artisans" report could
+#                  not be reproduced.
 echo "[regen] Recompiling PSX.EXE (with overlay-discovered cross-binary JAL targets)"
 main_exe_extra="$OUT/main_exe_extra_funcs.txt"
 : > "$main_exe_extra"
@@ -201,6 +198,11 @@ main_exe_args=(
     --external-symbols="$PSYQ_MANIFEST"
     --external-prefix=psyq_
     --forced-entry=0x80032AB0
+    --forced-entry=0x8004F8C8
+    --forced-entry=0x80050060
+    --forced-entry=0x800506EC
+    --forced-entry=0x80038620
+    --forced-entry=0x8005A7B0
     --extra-funcs="$main_exe_extra"
     --skip-on-error
 )
