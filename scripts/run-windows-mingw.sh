@@ -16,22 +16,33 @@
 #       $OPENPETE_DISC if set)
 #   --run-recomp 0x80012204                 # Spyro main()
 #   --fast-boot-until-frame 850             # skip boot intro yields
-#   --press 861:return,931:return,1037:return,1073:return,1919:return
-#       # walk past the title-screen prompts
+#   --bk2 games/spyro-1/bk2/skip-to-artisans.bk2 --bk2-frame-offset 0
+#       # canned input that walks past the title-screen prompts. Live
+#       # keyboard takes over once the movie ends (frame 1950+).
+#
+# Convenience flags (handled by this script, not forwarded as-is):
+#   --record NAME       expands to --bk2-record games/spyro-1/bk2/NAME.bk2.
+#                       Combine with the default --bk2 prefix to capture
+#                       a session that starts with skip-to-artisans and
+#                       then records whatever you do with the keyboard /
+#                       gamepad. The recorded movie includes the prefix
+#                       frames so it replays standalone.
+#   --idle              suppresses the default --bk2 prefix (no scripted
+#                       input). Useful for screenshot runs that want the
+#                       title screen idle.
 #
 # Each default is independent: pass an explicit value for any single
-# flag and only that one is overridden. `--press ""` (empty) is special:
-# it suppresses both the default press-script AND the .exe's --press
-# argument, so the title screen idles. Examples:
-#   # Just sanity smoke (overrides every default since --headless +
-#   # --frame-limit dominate, and we pass --disc/--run-recomp/--press
-#   # explicitly to neutralize them):
-#   scripts/run-windows-mingw.sh --headless --frame-limit 60 \
+# flag and only that one is overridden. Examples:
+#   # Smoke test, no scripted input:
+#   scripts/run-windows-mingw.sh --idle --headless --frame-limit 60 \
 #       --screenshot-on-frame 30 --screenshot-output /tmp/shot.bmp
 #
 #   # Boot Spyro with a different runtime budget; defaults fill the
 #   # rest:
 #   scripts/run-windows-mingw.sh --max-runtime-seconds 30
+#
+#   # Record a play session, prefixed by skip-to-artisans:
+#   scripts/run-windows-mingw.sh --record portal-attempt-1
 #
 # Disc resolution (when no `--disc` is in the args, first match wins):
 #   1. $OPENPETE_DISC (whatever location it points at, .cue or .bin)
@@ -102,39 +113,41 @@ translate_if_linux() {
 }
 
 forwarded=()
-suppress_press=0  # explicit `--press ""` means "no presses"
+idle=0  # `--idle` suppresses the default --bk2 prefix
 while (( $# )); do
     case "$1" in
-        --disc|--exe-path|--screenshot-output|--bk2)
+        --disc|--exe-path|--screenshot-output|--bk2|--bk2-record)
             forwarded+=("$1")
             if [[ $# -ge 2 ]]; then
                 forwarded+=("$(translate_if_linux "$2")")
                 shift
             fi
             ;;
-        --disc=*|--exe-path=*|--screenshot-output=*|--bk2=*)
+        --disc=*|--exe-path=*|--screenshot-output=*|--bk2=*|--bk2-record=*)
             key="${1%%=*}"
             val="${1#*=}"
             forwarded+=("$key=$(translate_if_linux "$val")")
             ;;
-        --press)
-            # `--press ""` (empty value) suppresses both the script's
-            # default press-script AND the .exe's --press option entirely.
-            # Useful when you want the title screen idle (e.g. for screen-
-            # shots before the keypress walk) but still want all the other
-            # boot-to-gameplay defaults.
-            if [[ $# -ge 2 && -z "$2" ]]; then
-                suppress_press=1
-                shift
-            elif [[ $# -ge 2 ]]; then
-                forwarded+=("$1" "$2")
+        --record)
+            # Expand to --bk2-record games/spyro-1/bk2/<name>.bk2 (path is
+            # auto-translated to a Windows form). Plain name only — pass an
+            # explicit --bk2-record if you want a path elsewhere on disk.
+            if [[ $# -ge 2 ]]; then
+                forwarded+=(--bk2-record
+                    "$(translate_if_linux "$OPENPETE_ROOT/games/spyro-1/bk2/$2.bk2")")
                 shift
             else
-                forwarded+=("$1")
+                red "  --record requires a name argument"
+                exit 2
             fi
             ;;
-        --press=)
-            suppress_press=1
+        --record=*)
+            val="${1#*=}"
+            forwarded+=(--bk2-record
+                "$(translate_if_linux "$OPENPETE_ROOT/games/spyro-1/bk2/$val.bk2")")
+            ;;
+        --idle)
+            idle=1
             ;;
         *)
             forwarded+=("$1")
@@ -187,12 +200,16 @@ if ! has_flag --fast-boot-until-frame; then
     prepend --fast-boot-until-frame 850
 fi
 
-if (( suppress_press )); then
-    yellow "  (--press '' suppressed; no keypress script)"
-elif ! has_flag --press; then
-    DEFAULT_PRESS="861:return,931:return,1037:return,1073:return,1919:return"
-    yellow "  (no --press; defaulting to title-screen walkthrough)"
-    prepend --press "$DEFAULT_PRESS"
+if (( idle )); then
+    yellow "  (--idle: no scripted input)"
+elif ! has_flag --bk2; then
+    DEFAULT_BK2="$OPENPETE_ROOT/games/spyro-1/bk2/skip-to-artisans.bk2"
+    if [[ -f "$DEFAULT_BK2" ]]; then
+        yellow "  (no --bk2; defaulting to skip-to-artisans.bk2)"
+        prepend --bk2 "$(wslpath -w "$DEFAULT_BK2")" --bk2-frame-offset 0
+    else
+        yellow "  (skip-to-artisans.bk2 missing; running with no scripted input)"
+    fi
 fi
 
 # --- Run -----------------------------------------------------------------

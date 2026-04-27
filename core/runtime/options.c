@@ -106,9 +106,6 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
-        } else if (strcmp(a, "--press") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->press_script = v; i++;
         } else if (strcmp(a, "--fast-boot-until-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fast_boot_until_frame = atoi(v); i++;
@@ -122,6 +119,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             i++;
         } else if (strcmp(a, "--bk2-stop-on-end") == 0) {
             opts->bk2_stop_on_end = true;
+        } else if (strcmp(a, "--bk2-record") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->bk2_record_path = v; i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
                 "OpenPete %s\n"
@@ -149,10 +149,10 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
                 "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
                 "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
-                "  --press SCRIPT             scripted key presses, e.g. '600:return,1200:x,1800:return'\n"
-                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 digital pad). Mutex with --press\n"
+                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 digital pad)\n"
                 "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
+                "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
                 "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
@@ -162,9 +162,5 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         }
     }
 
-    if (opts->press_script && opts->bk2_path) {
-        fprintf(stderr, "openpete: --press and --bk2 are mutually exclusive\n");
-        return OPENPETE_EXIT_SETUP_ERROR;
-    }
     return OPENPETE_EXIT_OK;
 }

@@ -12,8 +12,10 @@ add_library(openpete_core STATIC
     runtime/screenshot.c
     runtime/run.c
 
-    # BizHawk .bk2 movie replay (--bk2). See plans/openpete-bk2-input.md.
+    # BizHawk .bk2 movie replay (--bk2) + record (--bk2-record). See
+    # plans/openpete-bk2-input.md.
     runtime/bk2_movie.c
+    runtime/bk2_record.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
 
     # Phase 1b: slim PSX runtime

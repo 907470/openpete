@@ -6,31 +6,31 @@ seed up to the same PC; byte-diff the two RAMs. Any diverging byte is a
 candidate openpete recompiler / PSYQ-thunk bug.
 
 Companion to [gte-trace-vs-reference](gte-trace-vs-reference.md): GTE
-verifies math, this verifies *whole-game state* over an arbitrary span of
+verifies math, this verifies _whole-game state_ over an arbitrary span of
 execution.
 
 ## Components
 
 ### openpete flags
 
-| Flag | What |
-|------|------|
-| `--seed-ram PATH`       | Overwrite `g_ram` (2 MB) from PATH **after** EXE-load, so openpete starts from the same RAM pcsx-redux had at the seed PC. |
-| `--seed-cpu PATH`       | Overwrite the 32 GPRs + pc/hi/lo + cop0 + GTE banks from PATH (528-byte `'CSv1'` blob). Suppresses any `--test-recomp-gp` override. |
-| `--halt-at-pc HEX`      | When `psx_override_dispatch` sees the recomp call into the function at HEX, dump `g_ram` to `--ram-dump-output` and `_Exit(0)`. Hooked at function-call boundary, so the dump instant is exact. |
-| `--ram-dump-on-frame N` | Dump after frame N's game code yields. Used for "post-vsync" snapshots when you don't want to halt; pairs with PCSXR_DUMP_VSYNCS on the Lua side. |
-| `--ram-dump-output PATH`| Shared output path for both halt-at-pc and ram-dump-on-frame. |
+| Flag                     | What                                                                                                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--seed-ram PATH`        | Overwrite `g_ram` (2 MB) from PATH **after** EXE-load, so openpete starts from the same RAM pcsx-redux had at the seed PC.                                                                      |
+| `--seed-cpu PATH`        | Overwrite the 32 GPRs + pc/hi/lo + cop0 + GTE banks from PATH (528-byte `'CSv1'` blob). Suppresses any `--test-recomp-gp` override.                                                             |
+| `--halt-at-pc HEX`       | When `psx_override_dispatch` sees the recomp call into the function at HEX, dump `g_ram` to `--ram-dump-output` and `_Exit(0)`. Hooked at function-call boundary, so the dump instant is exact. |
+| `--ram-dump-on-frame N`  | Dump after frame N's game code yields. Used for "post-vsync" snapshots when you don't want to halt; pairs with PCSXR_DUMP_VSYNCS on the Lua side.                                               |
+| `--ram-dump-output PATH` | Shared output path for both halt-at-pc and ram-dump-on-frame.                                                                                                                                   |
 
 ### pcsx-redux Lua (`scripts/pcsx-redux-ram-dump.lua`)
 
 Driven by env vars (no edit-and-rerun loop):
 
-| Var | Default | What |
-|-----|---------|------|
-| `PCSXR_DUMP_PC`     | `0x8003385c` | Target PC. BP fires here. |
-| `PCSXR_DUMP_OUT`    | `/tmp/pcsxr_ram.bin` | RAM (2 MB) output path. |
-| `PCSXR_DUMP_CPU`    | *(unset)*    | Optional CPU output path (528 bytes, `'CSv1'` format). Omit to skip. |
-| `PCSXR_DUMP_VSYNCS` | `0`          | When 0, dump fires immediately on BP hit. Larger values count vblank events after BP and dump on the Nth — useful when you want a "+N vsync after PC" capture. |
+| Var                 | Default              | What                                                                                                                                                                 |
+| ------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PCSXR_DUMP_PC`     | `0x8003385c`         | Target PC. BP fires here.                                                                                                                                            |
+| `PCSXR_DUMP_OUT`    | `/tmp/pcsxr_ram.bin` | RAM (2 MB) output path.                                                                                                                                              |
+| `PCSXR_DUMP_CPU`    | _(unset)_            | Optional CPU output path (528 bytes, `'CSv1'` format). Omit to skip.                                                                                                 |
+| `PCSXR_DUMP_VSYNCS` | `0`                  | When 0, dump fires immediately on BP hit. Larger values count vblank events after BP and dump on the Nth — useful when you want a "+N vsync after PC" capture. |
 
 Requires pcsx-redux launched with `--debugger`; see the same caveat in
 `gte-trace-vs-reference.md`.
@@ -88,7 +88,7 @@ openpete/build/linux-release/games/spyro-1/openpete-spyro1 \
     --seed-ram /tmp/seed.ram \
     --seed-cpu /tmp/seed.cpu \
     --halt-at-pc $ORACLE_PC \
-    --press "" --headless \
+    --headless \
     --ram-dump-output /tmp/op.ram
 
 # 4. Diff.
@@ -146,16 +146,16 @@ no-memcards Lua tweak (the dump script flips
 `PCSX.hardResetEmulator()` so pcsxr boots without slot bookkeeping —
 matches openpete, which has no BIOS-side memcard state):
 
-| halt at | baseline | +__main | +libgpu | +no-mcd |
-|---------|---------:|--------:|--------:|--------:|
-| `0x80012204` main entry              | 0       | 0       | 0       | 0       |
-| `0x800122a8` GraphicsInitialize      | 5       | 0       | 0       | 0       |
-| `0x80012460` MemoryCardInitialize    | 386     | 381     | 247     | **247** |
-| `0x800123c8` GamepadInitialize       | 778     | 773     | 642     | **512** |
-| `0x8005595c` SpuInitialize           | 910     | 905     | 780     | **656** |
-| `0x80012480` CDInitialize            | 936     | 931     | 812     | **675** |
-| `0x8001256c` MusicInitialize         | 1,155   | 1,150   | 1,041   | **901** |
-| `0x8003385c` GamestateUpdate         | 1.14 M  | (n/a)   | (n/a)   | (n/a)   |
+| halt at                           | baseline | +\_\_main | +libgpu | +no-mcd |
+| --------------------------------- | -------: | --------: | ------: | ------: |
+| `0x80012204` main entry           |        0 |         0 |       0 |       0 |
+| `0x800122a8` GraphicsInitialize   |        5 |         0 |       0 |       0 |
+| `0x80012460` MemoryCardInitialize |      386 |       381 |     247 | **247** |
+| `0x800123c8` GamepadInitialize    |      778 |       773 |     642 | **512** |
+| `0x8005595c` SpuInitialize        |      910 |       905 |     780 | **656** |
+| `0x80012480` CDInitialize         |      936 |       931 |     812 | **675** |
+| `0x8001256c` MusicInitialize      |    1,155 |     1,150 |   1,041 | **901** |
+| `0x8003385c` GamestateUpdate      |   1.14 M |     (n/a) |   (n/a) |   (n/a) |
 
 After the libgpu/libcard/libpad replay pass (`psyq_MemCardInit` +
 `psyq_PadInitDirect` + `psyq_VSyncCallback` post-init writes — commits
@@ -163,13 +163,13 @@ After the libgpu/libcard/libpad replay pass (`psyq_MemCardInit` +
 stack-region bytes below sp on both sides; sp comes from each side's
 'CSv1' CPU dump):
 
-| halt at | masked total | kernel | EXE | post-EXE |
-|---------|-------------:|-------:|----:|---------:|
-| MemoryCardInit | 69  | 69  | 0   | 0  |
-| GamepadInit    | 303 | 303 | 0   | 0  |
-| SpuInit        | 340 | 311 | 7   | 22 |
-| CDInit         | 343 | 305 | 16  | 22 |
-| MusicInit      | 529 | 385 | 113 | 31 |
+| halt at        | masked total | kernel | EXE | post-EXE |
+| -------------- | -----------: | -----: | --: | -------: |
+| MemoryCardInit |           69 |     69 |   0 |        0 |
+| GamepadInit    |          303 |    303 |   0 |        0 |
+| SpuInit        |          340 |    311 |   7 |       22 |
+| CDInit         |          343 |    305 |  16 |       22 |
+| MusicInit      |          529 |    385 | 113 |       31 |
 
 Stack diff is now **zero** at every halt — sp masking confirms the
 118+ bytes of stack divergence we saw earlier were all pre-call sub-
@@ -178,19 +178,19 @@ not live state the game would ever read.
 
 ### Frame-N pinning via game-function hit count
 
-`--ram-dump-on-frame N` and `PCSXR_DUMP_VSYNCS=N` are *not* equivalent:
+`--ram-dump-on-frame N` and `PCSXR_DUMP_VSYNCS=N` are _not_ equivalent:
 the openpete counter ticks on `VSync(0)` syscalls (PsyCross-side stub
 yield), while the pcsxr counter ticks on vblank events (PSX
 hardware vblank IRQ inside openbios). The two counters disagree on
-"frame N" because pcsxr is *inside the BIOS VSync IRQ handler* at
+"frame N" because pcsxr is _inside the BIOS VSync IRQ handler_ at
 vblank time while openpete is yielded inside its PsyCross stub
 — different sp / call-stack states.
 
 Use **Nth-call pinning on a per-frame game function** instead. New
 flags:
 
-  openpete:  `--halt-hit N` (default 1)
-  pcsxr:     `PCSXR_DUMP_HITS=N` (env)
+openpete: `--halt-hit N` (default 1)
+pcsxr: `PCSXR_DUMP_HITS=N` (env)
 
 `GamestateDraw` (0x8001ED5C) is the canonical pin: called once per
 frame from `main()` after `GamestateUpdate()` returns. Both engines
@@ -207,12 +207,12 @@ so cmp-masked.py's stack masking works as designed.
 Masked diff at `--halt-at-pc 0x8001ED5C --halt-hit N` (Nth call to
 `GamestateDraw`):
 
-| hit N | total | kernel | EXE | post-EXE | heap |
-|------:|------:|-------:|----:|---------:|-----:|
-| 1     | 79,702 | 402  | 247 | 28       | **79,025** |
-| 5     | 79,893 | 421  | 340 | 84       | 79,048 |
-| 10    | 73,632 | 426  | 348 | 84       | 72,774 |
-| 30    |  6,722 | 434  | 348 | 84       |  **5,856** |
+| hit N |  total | kernel | EXE | post-EXE |       heap |
+| ----: | -----: | -----: | --: | -------: | ---------: |
+|     1 | 79,702 |    402 | 247 |       28 | **79,025** |
+|     5 | 79,893 |    421 | 340 |       84 |     79,048 |
+|    10 | 73,632 |    426 | 348 |       84 |     72,774 |
+|    30 |  6,722 |    434 | 348 |       84 |  **5,856** |
 
 The 79 KB heap diff at frame 0 is **op-only nonzero** at clusters from
 0x80147BB0 to 0x801C5800. Bisection: heap diff is 0 at every halt
@@ -230,7 +230,7 @@ These addresses cover the diff region exactly.
 
 **Root cause**: `psyq_CdRead`
 ([games/spyro-1/psyq_thunks.cpp:1101](../games/spyro-1/psyq_thunks.cpp))
-calls `CdReadSync(0, NULL)` *inline*, so every CdRead transfer
+calls `CdReadSync(0, NULL)` _inline_, so every CdRead transfer
 completes synchronously before the thunk returns. pcsxr's interpreter,
 running real PSX cycle counts, leaves those transfers pending across
 many frames; the bytes show up gradually as the CD subsystem ticks.
@@ -240,11 +240,11 @@ pcsxr catches up.
 **Status**: known timing skew, not an openpete recompiler bug.
 Genuine same-instant frame-0 RAM parity would require either:
 
-  - (a) deferring `CdReadSync` to fire over many host yields (mirrors
-        real PSX ~150 KB/sec single-speed throughput),
-  - (b) a "settle" wait — halt N frames after the target PC and let
-        pcsxr's pending reads complete before diffing, or
-  - (c) live with the skew, mask CD-target buffers in the differ.
+- (a) deferring `CdReadSync` to fire over many host yields (mirrors
+  real PSX ~150 KB/sec single-speed throughput),
+- (b) a "settle" wait — halt N frames after the target PC and let
+  pcsxr's pending reads complete before diffing, or
+- (c) live with the skew, mask CD-target buffers in the differ.
 
 Halting at frame 30+ already gives a clean ≪10 KB heap diff — that's
 the practical baseline for "frames 1-10 verification" work going
@@ -308,7 +308,7 @@ before returning — caller's invariants stay intact.
    `PadInitDirect` / `PadStartCom` / `VSyncCallback(PadVSync)` BIOS
    event-manager state.
 3. **Sub-call stack frames** — real `ResetGraph` calls `Memset`,
-   `func_80061DEC`, etc.; each pushes its own frame *below* ResetGraph's.
+   `func_80061DEC`, etc.; each pushes its own frame _below_ ResetGraph's.
    Our mirror only covers the top-level frame, leaving the
    `caller_sp - resetgraph_frame - sub_call_frame` regions zero (~110
    bytes residual at MemoryCardInit).
@@ -324,7 +324,7 @@ GamestateUpdate is dominated by the rest of `Initialize()`:
 `InitGeom`, `SetGeomOffset`/`Screen`, the RGB24 image-decompression loop
 (`func_80017F24`, ~360 KB Memset writes), `WadInitialize` + `CDLoadSync`
 (reads 2 KB of WAD header into `g_OverlaySpacePointer`), and lots of
-PSYQ display traffic. Bisecting *that* requires intermediate halt PCs
+PSYQ display traffic. Bisecting _that_ requires intermediate halt PCs
 inside the image loop or post-WAD; many of those would-be halt points
 are PSYQ functions that won't fire on `--halt-at-pc`. A separate diff
 loop using `--ram-dump-on-frame` may be more practical for that span.

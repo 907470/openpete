@@ -1,0 +1,37 @@
+diff --git a/include/PsyX/PsyX_public.h b/include/PsyX/PsyX_public.h
+--- a/include/PsyX/PsyX_public.h
++++ b/include/PsyX/PsyX_public.h
+@@ -84,6 +84,13 @@
+  * replay; reset to 0xFFFF when no override is active. */
+ extern unsigned short				g_PsyX_Pad_InputOverride;
+ 
++/* Read P1's last computed pad bitfield (after PsyX_Pad_InternalPadUpdates). Same
++ * "released = 1, pressed = 0" convention as g_PsyX_Pad_InputOverride. Returns
++ * 0xFFFF when no controller buffer is registered yet. Used by the host's
++ * --bk2-record path to capture the merged keyboard/gamepad/override state into
++ * a BizHawk-format input log. */
++extern unsigned short PsyX_Pad_GetLastP1Bits(void);
++
+ /* Usually called at the beginning of main function */
+ extern void PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen);
+ 
+diff --git a/src/pad/PsyX_pad.cpp b/src/pad/PsyX_pad.cpp
+--- a/src/pad/PsyX_pad.cpp
++++ b/src/pad/PsyX_pad.cpp
+@@ -31,6 +31,16 @@
+  * openpete_core can extern it via PsyX/PsyX_public.h. */
+ extern "C" unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
+ 
++/* See PsyX_public.h. Returns the last-merged P1 pad bits (0xFFFF when no
++ * pad buffer is registered yet — happens before the game calls PadInitDirect
++ * and during boot frames before the first internal-pad-update tick). */
++extern "C" unsigned short PsyX_Pad_GetLastP1Bits(void)
++{
++	if (!g_controllers[0].padData) return 0xFFFF;
++	LPPADRAW pad = (LPPADRAW)g_controllers[0].padData;
++	return *(u_short*)pad->buttons;
++}
++
+ u_short PsyX_Pad_UpdateKeyboardInput();
+ void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+ static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);

@@ -16,9 +16,6 @@ local CFG = {
     -- Will tune empirically; for first run, dump everything in a wide window.
     frame_lo  = 1300,
     frame_hi  = 1320,
-    -- Press timings matching openpete's
-    -- --press 861:return,931:return,1037:return,1073:return,1919:return
-    -- (return = Start = button 3 in PsyCross/pcsx-redux libpad mapping).
     -- pcsx-redux frames may differ from openpete's because openpete uses
     -- --fast-boot-until-frame=850 (skips host yields, but PSX CPU still
     -- runs); pcsx-redux runs the full BIOS+boot. The frame numbers

@@ -113,14 +113,6 @@ typedef struct {
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
 
-    /* Test harness: scripted key presses. Comma-separated FRAME:KEY pairs,
-     * e.g. "600:return,1200:x,1800:return". Each press is held for ~10
-     * frames (~166ms at 60Hz) — long enough for the game's PadVSync to
-     * see m_Down rise and commit the press, short enough to release before
-     * the next event. Keys (matches default kbd map): return/enter, space,
-     * x, c, z, v, up, down, left, right. NULL = no scripted input. */
-    const char* press_script;
-
     /* Test harness: fast-forward VSync(0) calls until openpete_frame >= N.
      * Bumps the frame counter without yielding to the host fiber, so the
      * game advances as fast as possible without presenting/pacing. Skips
@@ -129,10 +121,9 @@ typedef struct {
      * disabled. */
     int fast_boot_until_frame;
 
-    /* BizHawk .bk2 movie replay (alternative to --press, with full pad
-     * fidelity instead of keyboard scancodes). NULL = disabled. See
-     * notes/plans/openpete-bk2-input.md. Mutually exclusive with
-     * press_script. */
+    /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
+     * releases, gamepad, analog). NULL = disabled. See
+     * notes/plans/openpete-bk2-input.md. */
     const char* bk2_path;
 
     /* Map bk2 frame 0 to openpete_frame `bk2_frame_offset`. Negative is
@@ -146,6 +137,15 @@ typedef struct {
     /* When set, exit after the last bk2 frame instead of holding the last
      * input forever. */
     bool bk2_stop_on_end;
+
+    /* Record live pad input (keyboard + gamepad, merged by PsyCross) into
+     * a BizHawk-format .bk2 zip at this path. Sister of --bk2 replay;
+     * combinable with it (the recorded frames include the replayed ones,
+     * so a session can start with a canned .bk2 prefix and extend live
+     * from where it ends). NULL = disabled. The file is written at exit,
+     * so SIGTERM/Ctrl-C against the run still produces a usable movie as
+     * long as core/runtime/run.c reaches its cleanup block. */
+    const char* bk2_record_path;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */
