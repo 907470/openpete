@@ -174,6 +174,18 @@ for ovl_path in "$WAD_DIR"/level_*_code.ovl; do
     # level_10 (Artisans Homeworld) has a forced-entry at the
     # SetOverlayPointers caller's first computed-jump target.
     [[ "$section" == "level_10" ]] && extra+=(--forced-entry=0x8007D9C8)
+    # level_12 (Dark Hollow) — runtime jalr targets observed on entry
+    # from level_10. Each address is a function pointer loaded from
+    # RAM into v0/v1 and dispatched via jalr; the static analyzer
+    # can't follow the data flow, so they have to be forced-entered.
+    # 0x80086134 and 0x800873E0 are *past* dark_hollow's overlay end
+    # (0x80085A38) — they're stale function pointers from level_10's
+    # init that survive the overlay swap. Not added here; the calls
+    # silently no-op via stub miss, which appears to be benign.
+    if [[ "$section" == "level_12" ]]; then
+        extra+=(--forced-entry=0x800857CC
+                --forced-entry=0x8007D9C8)
+    fi
     if process_overlay "$section" "$ovl_path" "func_${section}_" 0x8007AA38 "${extra[@]}"; then
         register_overlay "$section" "$magic"
     fi
@@ -216,6 +228,7 @@ main_exe_args=(
     --forced-entry=0x800506EC
     --forced-entry=0x80038620
     --forced-entry=0x8005A7B0
+    --forced-entry=0x8005A848
     --extra-funcs="$main_exe_extra"
     --skip-on-error
 )
