@@ -795,8 +795,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 }
 #endif /* OPENPETE_HAS_PSYCROSS */
 
+static void log_frame_on_exit(void) {
+    OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
+}
+
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
+    atexit(log_frame_on_exit);
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);

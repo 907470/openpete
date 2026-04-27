@@ -16,6 +16,8 @@
  * so the recompiler-emitted dispatch table still finds them.
  */
 
+#include <cstdlib>
+
 extern "C" {
 #include "openpete_fiber.h"
 #include "openpete_log.h"
@@ -493,6 +495,48 @@ void psyq_DrawOTag(CPUState* cpu) {
     g_ot_scratch_used = 0;
     g_ot_slot_count = 0;
 
+    /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every
+     * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
+     * /tmp/ot-dump.txt). One row per slot, with frame as the leading column. */
+    static int   s_dump_lo    = -2;
+    static int   s_dump_hi    = -1;
+    static FILE* s_dump_fp    = nullptr;
+    static uint32_t s_dump_call = 0;
+    if (s_dump_lo == -2) {
+        const char* env = std::getenv("OPENPETE_OT_DUMP_FRAMES");
+        s_dump_lo = -1;
+        s_dump_hi = -1;
+        if (env) {
+            int a = -1, b = -1;
+            if (std::sscanf(env, "%d-%d", &a, &b) >= 1) {
+                s_dump_lo = a;
+                s_dump_hi = (b >= a) ? b : a;
+            }
+        }
+        if (s_dump_lo >= 0) {
+            OPL_INFO_F("thunks", "OT dump armed for frames [%d,%d]",
+                       s_dump_lo, s_dump_hi);
+        }
+    }
+    FILE* dump = nullptr;
+    if (s_dump_lo >= 0 &&
+        (int)openpete_frame >= s_dump_lo &&
+        (int)openpete_frame <= s_dump_hi) {
+        if (!s_dump_fp) {
+            const char* path = std::getenv("OPENPETE_OT_DUMP_PATH");
+            s_dump_fp = std::fopen(path ? path : "/tmp/ot-dump.txt", "w");
+            OPL_INFO_F("thunks", "OT dump opened path=%s fp=%p frame=%u",
+                       path ? path : "/tmp/ot-dump.txt",
+                       (void*)s_dump_fp, openpete_frame);
+            if (s_dump_fp) {
+                std::fprintf(s_dump_fp,
+                    "# frame,slot,call,psx_addr,plen,code,payload_words(hex)\n");
+            }
+        }
+        dump = s_dump_fp;
+    }
+    if (dump) ++s_dump_call;
+
     static uint32_t s_calls = 0;
     ++s_calls;
     if ((s_calls & 0xFFFu) == 1u) {
@@ -685,6 +729,20 @@ void psyq_DrawOTag(CPUState* cpu) {
             }
         } else {
             s_anchor_slots++;
+        }
+
+        if (dump) {
+            std::fprintf(dump, "%u,%d,%u,0x%08X,%u,0x%02X",
+                         openpete_frame, g_ot_slot_count - 1, s_dump_call,
+                         addr, (unsigned)plen, (unsigned)code_byte);
+            uint32_t nwords = (uint32_t)(payload_bytes / 4u);
+            if (nwords > 16u) nwords = 16u; /* cap; enough for poly_gt4 */
+            for (uint32_t w = 0; w < nwords; ++w) {
+                uint32_t word;
+                std::memcpy(&word, host + 4 + w * 4u, 4);
+                std::fprintf(dump, ",%08X", word);
+            }
+            std::fputc('\n', dump);
         }
 
         if (next == 0x00FFFFFFu) break;
