@@ -120,11 +120,22 @@ process_overlay() {
     python3 "$SYNTH" "$ovl_path" "$OUT/$name.bin" --load-addr="$load_addr"
     # First pass: handwritten-asm dispatch targets + fn-pointer-table
     # constants harvested from main EXE (jtbl doesn't exist yet).
+    # The fn-pointer list is filtered per-overlay to drop entries that
+    # land on delay slots in *this* overlay's bytes — forcing entry on
+    # a delay slot makes psxrecomp split the prior function such that
+    # its post-jal continuation address becomes an unreachable
+    # dispatch entry (runtime stub miss).
     # psxrecomp accepts a single --extra-funcs= file.
     local first_funcs="$OUT/$name/extra_funcs.first.txt"
+    local fnptr_filtered="$OUT/$name/fn_pointers.txt"
     : > "$first_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
-    [[ -s "$FNPTR_FILE" ]] && cat "$FNPTR_FILE" >> "$first_funcs"
+    if [[ -s "$FNPTR_FILE" ]]; then
+        python3 tools/filter_overlay_fn_pointers.py \
+            "$FNPTR_FILE" "$ovl_path" "$fnptr_filtered" \
+            --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
+        cat "$fnptr_filtered" >> "$first_funcs"
+    fi
     "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
         --extra-funcs="$first_funcs" "${extra_args[@]}"
 
@@ -140,7 +151,7 @@ process_overlay() {
     : > "$second_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$second_funcs"
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
-    [[ -s "$FNPTR_FILE" ]] && cat "$FNPTR_FILE" >> "$second_funcs"
+    [[ -f "$fnptr_filtered" ]] && cat "$fnptr_filtered" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
     "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
         --extra-funcs="$second_funcs" \
