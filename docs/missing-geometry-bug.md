@@ -207,3 +207,34 @@ frames before diffing.
    promotes Option A (pcsx-redux ground-truth) only as a tiebreaker —
    the more direct probe is then to instrument PsyCross's per-prim
    dispatch.
+
+## NCLIP-force experiment (2026-04-27)
+
+User confirmed every gameplay frame has missing-geometry artifacts (no
+clean reference frame in the bk2 — earlier comparisons of "good" 2474
+vs "bad" 2472 were both bugged, just to different degrees).
+
+Tested temporary patch in `gte_nclip` to force MAC0 = ±0x7FFFFFFF
+behind `OPENPETE_NCLIP_FORCE=+/-`. Result on the live Windows build:
+
+- **`+`**: holes at one set of polygons, no longer distance-linked.
+- **`-`**: holes at a *different* set of polygons.
+- Both produce the same *type* of artifact (missing polys, not
+  back-face leak-through).
+
+Conclusion: NCLIP MAC0 sign **selects between two polygon-emit paths**
+in the renderer chain (split-quad diagonal A vs diagonal B is the
+likely shape). Both paths emit real prims; **both paths have bugs**.
+The unmodified run hits both paths depending on real winding sign, so
+artifacts are the union; forcing one sign exposes only that path's
+bugs, but on every prim that flips into it.
+
+Translation in the recompilation: the source line is
+`int _bc_80024D3C = ((int32_t)cpu->t6 < 0);` at
+`generated/PSX.EXE_full.c:38246`. `t6` was loaded from
+`cpu->gte_data[24]` (MAC0). The two paths are
+`block_80024D60` (taken-bltz) and `block_80024D44` (fall-through).
+Instrumenting both paths' write streams should localize the bug.
+
+Patch reverted in this commit; the env-var trigger is deliberately not
+shipped. Reuse by re-applying the diff if needed.
