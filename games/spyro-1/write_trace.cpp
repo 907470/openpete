@@ -30,11 +30,17 @@ int    g_trace_lo = -2;
 int    g_trace_hi = -1;
 bool   g_trace_active = false;
 unsigned g_call_idx = 0;
+CPUState* g_trace_cpu = nullptr;
 
 void trace_write_word(uint32_t addr, uint32_t value) {
-    if (g_trace_active && g_trace_fp) {
-        std::fprintf(g_trace_fp, "%u,%u,0x%08X,0x%08X\n",
-                     openpete_frame, g_call_idx, addr, value);
+    if (g_trace_active && g_trace_fp && g_trace_cpu) {
+        /* Log addr/value plus the two destination-base registers so we can
+         * recover which source line emitted the write. Most writes in the
+         * renderer are `write_word(t9 + N, ...)` or `write_word(at + N, ...)`
+         * — diff (addr - t9) or (addr - at) against the source line list. */
+        std::fprintf(g_trace_fp, "%u,%u,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X\n",
+                     openpete_frame, g_call_idx, addr, value,
+                     g_trace_cpu->t9, g_trace_cpu->at, g_trace_cpu->t8);
     }
     if (g_orig_write_word) g_orig_write_word(addr, value);
 }
@@ -65,7 +71,7 @@ void open_file_once() {
     if (!path || !*path) path = "/tmp/write-trace.csv";
     g_trace_fp = std::fopen(path, "w");
     if (g_trace_fp) {
-        std::fprintf(g_trace_fp, "frame,call,addr,value\n");
+        std::fprintf(g_trace_fp, "frame,call,addr,value,t9,at,t8\n");
     }
 }
 
@@ -78,6 +84,7 @@ extern "C" void openpete_trace_writes_begin(CPUState* cpu) {
     if (!g_trace_fp) return;
     g_orig_write_word = cpu->write_word;
     cpu->write_word = trace_write_word;
+    g_trace_cpu = cpu;
     g_trace_active = true;
     ++g_call_idx;
 }
@@ -86,6 +93,7 @@ extern "C" void openpete_trace_writes_end(CPUState* cpu) {
     if (!g_trace_active) return;
     cpu->write_word = g_orig_write_word;
     g_orig_write_word = nullptr;
+    g_trace_cpu = nullptr;
     g_trace_active = false;
     if (g_trace_fp) std::fflush(g_trace_fp);
 }
