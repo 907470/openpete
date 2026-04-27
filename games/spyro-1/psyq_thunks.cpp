@@ -38,6 +38,29 @@ extern "C" {
 #include "psx/libspu.h"
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
+
+/* XA streaming source (lives in PsyCross/audio/PsyX_XA.cpp). */
+extern "C" {
+    void PsyX_XA_Start(int sector, int file, int chan);
+    void PsyX_XA_Stop(void);
+    int  PsyX_XA_IsActive(void);
+    void PsyX_XA_Pump(int maxSectors);
+    int  PsyX_XA_GetCurrentSector(void);
+    void PsyX_XA_SetVolume(float linear_gain);
+}
+
+/* PsyCross internals shared with the libcd thunks below. */
+extern "C" int g_CD_com;
+extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
+
+/* Spyro music streaming state. CdControlB(CdlSetmode) with RT|SF arms XA;
+ * CdControlB(CdlSetfilter) records file/chan; CdControlB(CdlReadS) starts
+ * streaming at the requested sector. CdControlB(CdlPause/Stop/CdlReadN)
+ * stops it. State is small enough to keep file-static. */
+static bool s_xa_armed       = false;
+static int  s_xa_filter_file = 1;
+static int  s_xa_filter_chan = 0;
+static int  s_music_volume_override = -1;  /* -1 = leave alone */
 #include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
@@ -968,26 +991,84 @@ void psyq_CdInit(CPUState* cpu) {
 }
 
 void psyq_CdControl(CPUState* cpu) {
+    u_char com = (u_char)cpu->a0;
+    u_char* param = (u_char*)PTR(cpu->a1);
     OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
-               (unsigned)cpu->a0, cpu->a1, cpu->a2);
-    cpu->v0 = (uint32_t)CdControl((u_char)cpu->a0,
-                                  (u_char*)PTR(cpu->a1),
-                                  (u_char*)PTR(cpu->a2));
+               (unsigned)com, cpu->a1, cpu->a2);
+
+    /* Spyro's track-loop / restart paths use the non-blocking variant. */
+    if (com == CdlSetfilter) {
+        CdlFILTER* f = (CdlFILTER*)param;
+        if (f) {
+            s_xa_filter_file = (int)f->file;
+            s_xa_filter_chan = (int)f->chan;
+        }
+    } else if (com == CdlReadS && s_xa_armed && param) {
+        CdlLOC* loc = (CdlLOC*)param;
+        PsyX_XA_Start(CdPosToInt(loc), s_xa_filter_file, s_xa_filter_chan);
+        g_CD_com = com;
+        cpu->v0 = 1u;
+        return;
+    } else if ((com == CdlPause || com == CdlStop) && PsyX_XA_IsActive()) {
+        PsyX_XA_Stop();
+    }
+
+    cpu->v0 = (uint32_t)CdControl(com, param, (u_char*)PTR(cpu->a2));
 }
 
 void psyq_CdControlB(CPUState* cpu) {
-    cpu->v0 = (uint32_t)CdControlB((u_char)cpu->a0,
-                                   (u_char*)PTR(cpu->a1),
-                                   (u_char*)PTR(cpu->a2));
+    u_char com = (u_char)cpu->a0;
+    u_char* param = (u_char*)PTR(cpu->a1);
+
+    /* XA streaming arming. Spyro's SetMusicState issues exactly:
+     *   CdControlB(CdlSetmode,   {SF|RT|Speed})
+     *   CdControlB(CdlSetfilter, {file=1, chan=track%8})
+     *   CdControlB(CdlReadS,     &startLoc)
+     * which is the canonical "start XA streaming" sequence. */
+    switch (com) {
+        case CdlSetmode: {
+            uint8_t mode = param ? param[0] : 0;
+            s_xa_armed = ((mode & CdlModeRT) && (mode & CdlModeSF));
+            break;
+        }
+        case CdlSetfilter: {
+            CdlFILTER* f = (CdlFILTER*)param;
+            if (f) {
+                s_xa_filter_file = (int)f->file;
+                s_xa_filter_chan = (int)f->chan;
+            }
+            break;
+        }
+        case CdlReadS: {
+            if (s_xa_armed && param) {
+                CdlLOC* loc = (CdlLOC*)param;
+                int sector = CdPosToInt(loc);
+                PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
+                /* Skip PsyCross's CdControlB body — it would flip readMode
+                 * to RM_DATA and seek g_imageFile, which our XA pump owns
+                 * for the duration of the stream. We still set g_CD_com so
+                 * CdLastCom() reports correctly. */
+                g_CD_com = com;
+                cpu->v0 = 1u;
+                return;
+            }
+            break;
+        }
+        case CdlPause:
+        case CdlStop:
+        case CdlReadN:
+            if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+            break;
+        default: break;
+    }
+
+    cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR(cpu->a2));
 }
 
-/* PsyCross internals we need to keep coherent across the data-read /
- * music-position split. `g_CD_com` is the "last command" int CdLastCom()
- * returns. `readMode` is the enum CdReadSync switches on (0 = RM_DATA,
- * 1 = RM_XA_AUDIO). Both are file-scope (non-static) globals in
- * third_party/PsyCross/src/psx/LIBCD.C, so we link to them by name. */
-extern "C" int g_CD_com;
-extern "C" int readMode;  /* enum ReadMode; 0=RM_DATA, 1=RM_XA_AUDIO */
+/* `g_CD_com` is the "last command" int CdLastCom() returns. `readMode`
+ * is the enum CdReadSync switches on (0=RM_DATA, 1=RM_XA_AUDIO). Both
+ * are file-scope non-static globals in PsyCross/src/psx/LIBCD.C; we
+ * link to them by name. (Forward declared at the top of this file.) */
 
 void psyq_CdControlF(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
@@ -1078,7 +1159,22 @@ void psyq_CdSync(CPUState* cpu) {
      * the writes are harmless and PsyCross still returns CdlComplete. */
     u_char  scratch[8];
     u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+
+    /* Pump XA every CdSync — this is Spyro's per-frame music tick. */
+    PsyX_XA_Pump(0);
+
     int rc = CdSync(mode, result);
+
+    /* Override PsyCross's GetlocP fake-position with the real XA
+     * playhead so Spyro's track-end detection (compares position to
+     * m_MusicTable.end) actually fires. result[5..7] = absolute MSF. */
+    if (PsyX_XA_IsActive() && g_CD_com == CdlGetlocP && mode == 1) {
+        CdlLOC abs;
+        CdIntToPos(PsyX_XA_GetCurrentSector(), &abs);
+        result[5] = abs.minute;
+        result[6] = abs.second;
+        result[7] = abs.sector;
+    }
     /* Don't log every CdSync — busy-loops would flood. Sample every 1024. */
     static uint32_t calls = 0;
     if ((++calls & 0x3FFFFFu) == 1u) {
@@ -1130,7 +1226,21 @@ void psyq_SpuInit(CPUState* cpu) {
 }
 
 void psyq_SpuSetCommonAttr(CPUState* cpu) {
-    SpuSetCommonAttr((SpuCommonAttr*)PTR(cpu->a0));
+    SpuCommonAttr* attr = (SpuCommonAttr*)PTR(cpu->a0);
+    SpuSetCommonAttr(attr);
+    /* Spyro's music fader writes mask=SPU_COMMON_CDVOLL|SPU_COMMON_CDVOLR
+     * with values in 0..0x3FFF. Route that to the XA streaming source's
+     * gain (avg the two channels for a single mono gain). */
+    if (attr && (attr->mask & (SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR))) {
+        int l = attr->cd.volume.left;
+        int r = attr->cd.volume.right;
+        if (l < 0) l = 0; if (r < 0) r = 0;
+        float g = (float)((l + r) / 2) / (float)0x3FFF;
+        if (s_music_volume_override >= 0) {
+            g *= (float)s_music_volume_override / 10.0f;
+        }
+        PsyX_XA_SetVolume(g);
+    }
 }
 
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
