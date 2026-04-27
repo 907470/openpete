@@ -954,13 +954,8 @@ void psyq_CdControlF(CPUState* cpu) {
  * vaddr write LevelHeader / VRAM bytes whose first word is never one of
  * our overlay IDs, so they leave the tracker alone — but they DO clobber
  * the overlay's bytes, so an actual fix for the data corruption still
- * needs to keep level_10's bytes coherent (separate task). */
-extern void spyro_set_active_overlay(int which);
-enum {
-    SPYRO_OVERLAY_NONE        = 0,
-    SPYRO_OVERLAY_TITLESCREEN = 1,
-    SPYRO_OVERLAY_LEVEL_10    = 2,
-};
+ * needs to keep the overlay's bytes coherent (separate task). */
+#include "spyro_overlay_table.h"
 
 void psyq_CdRead(CPUState* cpu) {
     int sectors = (int)cpu->a0;
@@ -1007,11 +1002,7 @@ void psyq_CdRead(CPUState* cpu) {
     if (cpu->a1 == 0x8007AA38u) {
         uint32_t magic = 0;
         memcpy(&magic, ram + 0x7AA38, 4);
-        if (magic == 0x0000000Bu) {
-            spyro_set_active_overlay(SPYRO_OVERLAY_LEVEL_10);
-        } else if (magic == 0x00000030u) {
-            spyro_set_active_overlay(SPYRO_OVERLAY_TITLESCREEN);
-        }
+        spyro_set_active_overlay_by_magic(magic);
     }
 }
 

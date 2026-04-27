@@ -1,66 +1,47 @@
-// games/spyro-1/dispatch_chain.c — Phase 2 overlay-aware dispatch.
+// games/spyro-1/dispatch_chain.c — overlay-aware dispatch.
 //
-// `psx_dispatch_compiled` fans out to per-overlay dispatchers, but only the
-// overlay whose bytes are actually in PSX RAM at vaddr 0x8007AA38 may match.
-// The previous "first hit wins" chain ran level_10 code from the title-screen
-// (whenever a function pointer happened to land in level_10's address range)
-// even though only the titlescreen overlay had been loaded.
+// `psx_dispatch_compiled` fans out to per-binary dispatchers. Only the
+// overlay whose bytes are actually in PSX RAM at vaddr 0x8007AA38 may
+// match — the others share the same address space, so dispatching them
+// concurrently would run code that isn't really there.
 //
-// Active-overlay tracking: psyq_CdRead reads the first word at 0x8007AA38
-// after each disc transfer; LEVEL_BALLOON's overlay-id (0x0B for level_10,
-// 0x30 for titlescreen) tells us which overlay's bytes are now in RAM.
-// Dispatch consults the active slot and skips the others.
-//
-// The OT bucket array (`m_WorldOTStart = m_SharedAnimations - 0x6000`) lands
-// inside the overlay region in our build, so live RAM at 0x8007AA38 gets
-// stomped by the world OT every frame. Jump-table dispatch used to read
-// table entries out of that RAM and stub-miss on garbage; psxrecomp now
-// bakes table targets into the C source (see plans/psxrecomp-jumptable-baking.md),
-// so the loaded value is ignored at jr and dispatch is corruption-immune.
-// No shadow buffer is needed.
+// Active-overlay tracking: psyq_CdRead reads the first word at
+// 0x8007AA38 after each disc transfer and calls
+// spyro_set_active_overlay_by_magic(id). The id-to-dispatcher mapping
+// lives in the auto-generated spyro_overlay_table.c (driven by
+// scripts/regen-recomp.sh from build/wad/*.ovl).
 
 #include "psx_runtime.h"
 #include "openpete_log.h"
+#include "spyro_overlay_table.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
-extern int psx_dispatch_main_exe   (CPUState* cpu, uint32_t addr);
-extern int psx_dispatch_titlescreen(CPUState* cpu, uint32_t addr);
-extern int psx_dispatch_level_10   (CPUState* cpu, uint32_t addr);
+extern int psx_dispatch_main_exe(CPUState* cpu, uint32_t addr);
 
-typedef enum {
-    SPYRO_OVERLAY_NONE = 0,
-    SPYRO_OVERLAY_TITLESCREEN,
-    SPYRO_OVERLAY_LEVEL_10,
-} spyro_overlay_t;
+static const spyro_overlay_entry_t* s_active = NULL;
 
-static spyro_overlay_t s_active_overlay = SPYRO_OVERLAY_NONE;
+const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic) {
+    for (size_t i = 0; i < spyro_overlay_table_count; ++i) {
+        if (spyro_overlay_table[i].magic == magic) {
+            return &spyro_overlay_table[i];
+        }
+    }
+    return NULL;
+}
 
-void spyro_set_active_overlay(int which) {
-    spyro_overlay_t now = (spyro_overlay_t)which;
-    if (now == s_active_overlay) return;
-    static const char* names[] = {
-        "none", "titlescreen", "level_10",
-    };
-    const char* prev = s_active_overlay < 3 ? names[s_active_overlay] : "?";
-    const char* curr = now             < 3 ? names[now]              : "?";
-    OPL_INFO_F("dispatch", "active overlay: %s -> %s", prev, curr);
-    s_active_overlay = now;
+void spyro_set_active_overlay_by_magic(uint32_t magic) {
+    const spyro_overlay_entry_t* e = spyro_overlay_find(magic);
+    if (!e) return;          /* unknown id — leave current active alone */
+    if (e == s_active) return;
+    OPL_INFO_F("dispatch", "active overlay: %s -> %s",
+               s_active ? s_active->name : "none", e->name);
+    s_active = e;
 }
 
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
     if (psx_dispatch_main_exe(cpu, addr)) return 1;
-
-    switch (s_active_overlay) {
-    case SPYRO_OVERLAY_TITLESCREEN:
-        if (psx_dispatch_titlescreen(cpu, addr)) return 1;
-        break;
-    case SPYRO_OVERLAY_LEVEL_10:
-        if (psx_dispatch_level_10(cpu, addr)) return 1;
-        break;
-    case SPYRO_OVERLAY_NONE:
-    default:
-        break;
-    }
+    if (s_active) return s_active->fn(cpu, addr);
     return 0;
 }

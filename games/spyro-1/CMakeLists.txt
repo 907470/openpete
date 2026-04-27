@@ -1,41 +1,48 @@
 # games/spyro-1/CMakeLists.txt — Spyro 1 binary.
 #
-# Phase 1b adds the recompiled-C source set, the dispatch table, and a
-# generated PSYQ stub layer so the link succeeds. PsyCross wiring (real
-# implementations of those PSYQ stubs) lands in Phase 1c.
+# Sources include the recompiled main EXE plus every overlay translated
+# by scripts/regen-recomp.sh. Each overlay is recompiled with a unique
+# --func-prefix and its `psx_dispatch_compiled` is sed-renamed to
+# `psx_dispatch_<name>` so they all coexist at link. dispatch_chain.c
+# fans calls out to the active overlay via the auto-generated table in
+# generated/spyro_overlay_table.c.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
+
+# Pick up every recompiled overlay automatically. CONFIGURE_DEPENDS
+# re-runs the GLOB on subsequent cmake invocations so newly-regen'd
+# overlays get picked up without a manual reconfigure.
+file(GLOB SPYRO_OVERLAY_FULL_C
+    CONFIGURE_DEPENDS
+    "${SPYRO_GENERATED}/*/*.bin_full.c")
+file(GLOB SPYRO_OVERLAY_DISPATCH_C
+    CONFIGURE_DEPENDS
+    "${SPYRO_GENERATED}/*/*.bin_dispatch.c")
 
 add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
 
-    # Recompiler outputs.
+    # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
+    # `psx_dispatch_main_exe` by regen-recomp.sh.
     ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
 
-    # Titlescreen overlay (Phase 1d.5) — synth PS1-EXE wrapper around the
-    # build/wad/titlescreen_code.ovl bytes, loaded to vaddr 0x8007AA38.
-    # Its dispatcher is renamed via -D so it doesn't clash with the main
-    # EXE's; both feed into `psx_dispatch_compiled` from dispatch_chain.c.
-    # Function-symbol prefix `func_titlescreen_` (set at recompile time)
-    # keeps its names unique versus other overlays at the same vaddr.
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_full.c
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
+    # Every translated overlay (titlescreen, credits, level_10..level_64).
+    # Function symbols use unique `func_<name>_` prefixes; dispatch fns
+    # are unique-named via sed. Both globs above feed in here.
+    ${SPYRO_OVERLAY_FULL_C}
+    ${SPYRO_OVERLAY_DISPATCH_C}
 
-    # Level 10 — Artisans Homeworld (Phase 2). Same overlay vaddr as
-    # titlescreen, different bytes at runtime. Function symbols use the
-    # `func_level_10_` prefix.
-    ${SPYRO_GENERATED}/level_10/level_10.bin_full.c
-    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
+    # Auto-generated overlay registry — id-magic -> dispatcher.
+    ${SPYRO_GENERATED}/spyro_overlay_table.c
+
     dispatch_chain.c
 
-    # Hand-written PSYQ → PsyCross ABI thunks (Phase 1c). Listed BEFORE
-    # the generated stubs because under MinGW the stubs are emitted as
-    # strong defs (PE/COFF can't resolve undefined refs to weak across
-    # TUs) and we rely on `-Wl,--allow-multiple-definition` plus link
-    # order to let thunks win. ELF builds use `__attribute__((weak))`
-    # on the stubs and the order doesn't matter.
+    # Hand-written PSYQ → PsyCross ABI thunks. Listed BEFORE the
+    # generated stubs so under MinGW link order lets the thunk's strong
+    # def win against the stub's strong def (paired with
+    # --allow-multiple-definition).
     psyq_thunks.cpp
 
     # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any
@@ -57,7 +64,9 @@ endif()
 
 # Generated C addresses psx_runtime.h via the include path provided by
 # openpete_core (which adds psxrecomp/runner/include).
-target_include_directories(openpete-spyro1 PRIVATE ${SPYRO_GENERATED})
+target_include_directories(openpete-spyro1 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${SPYRO_GENERATED})
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
@@ -81,42 +90,17 @@ set_target_properties(openpete-spyro1 PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# The generated C is large (160k lines) and the recompiler emits a few
-# patterns the compiler should not nag about (unused labels, unused
-# variables held for future use). Mute those for the generated TUs.
+# The generated C is large (now millions of lines across all overlays)
+# and the recompiler emits a few patterns the compiler should not nag
+# about (unused labels, unused variables held for future use). Mute
+# warnings on every generated TU.
 set_source_files_properties(
     ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
+    ${SPYRO_OVERLAY_FULL_C}
+    ${SPYRO_OVERLAY_DISPATCH_C}
     PROPERTIES
         COMPILE_FLAGS "-w"
-)
-
-# Rename each generated dispatcher to its overlay-specific name so they can
-# coexist. `dispatch_chain.c` provides the real psx_dispatch_compiled and
-# fans out to each in turn. This keeps the generated files pristine — no
-# post-processing needed on every regen.
-set_source_files_properties(
-    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
-    PROPERTIES
-        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_main_exe"
-)
-set_source_files_properties(
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_full.c
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
-    ${SPYRO_GENERATED}/level_10/level_10.bin_full.c
-    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
-    PROPERTIES
-        COMPILE_FLAGS "-w"
-)
-set_source_files_properties(
-    ${SPYRO_GENERATED}/titlescreen/titlescreen.bin_dispatch.c
-    PROPERTIES
-        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_titlescreen"
-)
-set_source_files_properties(
-    ${SPYRO_GENERATED}/level_10/level_10.bin_dispatch.c
-    PROPERTIES
-        COMPILE_FLAGS "-w -Dpsx_dispatch_compiled=psx_dispatch_level_10"
 )
 
 # OpenAL on Windows is always a runtime DLL load (no static .a in the
