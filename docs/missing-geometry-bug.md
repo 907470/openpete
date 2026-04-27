@@ -238,3 +238,33 @@ Instrumenting both paths' write streams should localize the bug.
 
 Patch reverted in this commit; the env-var trigger is deliberately not
 shipped. Reuse by re-applying the diff if needed.
+
+## Small-tri emit path is the bug (2026-04-27)
+
+Two more env-gated patches in `generated/PSX.EXE_full.c` localized the
+bug to one of r_pete's two polygon-emit paths:
+
+- `OPENPETE_FORCE_QUAD=1` — forces the at&1 flag-bypass branch at
+  `0x80024D04`, sending every polygon through the big-quad-emit path
+  (`block_80024D70 → D98`). **Spyro renders correctly.**
+- `OPENPETE_NCLIP_NEVER_CULL=1` — forces `bltz t6` and `blez t7`
+  branches to never trip, sending every polygon through the small-tri
+  emit path (`block_80024D4C → F3C` with `s1=16`). **Spyro looks
+  worse than baseline.**
+
+Real NCLIP routes some polygons through small (broken) and some
+through big-quad (works), giving the mixed-holes appearance.
+
+The two paths emit structurally different packets:
+
+| Field | Big (block_80024D98) | Small (block_80024F3C) |
+|-------|----------------------|------------------------|
+| Code byte at `t8+0` | `0x0C000000` (POLY_GT4-ish) | `0x09000000` (POLY_GT3-ish) |
+| Vertex slots written | `t8+16/28/40/48` (4) | `t8+16/28` (2 — no +40/+48) |
+| OT bucket formula | average of 4 vertex Z | weighted: `1.5·v0 - s6 + v1 + 0.5·v1 + a0 + sllv` |
+
+Next probe: instrument `block_80024F3C` writes to dump one full prim
+packet, compare against a reference POLY_GT3 packet from a working
+prim (e.g. r_environment/r_moby) to see what's structurally wrong —
+likely a missing field, wrong tag, or OT bucket landing in the wrong
+slot.
