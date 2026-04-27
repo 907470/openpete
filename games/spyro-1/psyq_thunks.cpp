@@ -748,6 +748,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         if (next == 0x00FFFFFFu) break;
         addr = next | 0x80000000u;
     }
+    if (dump) std::fflush(dump);
 
     /* Patch each slot's addr to point at the next slot's host pointer; last
      * slot terminates with `prim_terminator`. */

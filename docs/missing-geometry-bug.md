@@ -349,16 +349,83 @@ Spyro renderer involved (Spyro is hidden in first-person). Worth
 checking whether this shares root cause with the per-polygon
 missing-geometry symptom.
 
-## Two recommended next moves
+## Resolution (2026-04-27)
 
-1. **pcsx-redux comparison (Option A from above).** Adapt
-   `scripts/pcsx-redux-gte-dump.lua` to break at `0x80024D4C` (small-emit
-   entry) and dump `t2/t3/t4/a2/a3/t0/t1/s0/s6/s7/v0/v1/a0/a1` plus the
-   first 9 words of the resulting prim packet. Run the same scene on
-   pcsx-redux and on our recomp; the first row that diverges names the
-   buggy register, which traces back to a specific upstream load.
+**Same root cause as the first-person far-clip symptom (`missing-world.bk2`,
+hold triangle to zoom). PsyCross bug, not a recomp bug.**
 
-2. **First-person far-clip investigation.** Different reproducer; likely
-   different bug. Capture `OPENPETE_OT_DUMP_FRAMES` with the camera in
-   first-person to see whether the missing-distance polys are absent from
-   the OT chain (cull/clip) or present-but-invisible (downstream).
+The user's intuition that the per-poly missing-Spyro and the first-person
+missing-world were the same bug was correct. The first-person reproducer
+hides Spyro entirely, so `func_80023AC4` was never the offender — the bug
+lives in PsyCross's draw-env handling.
+
+### Localization
+
+OT dump on the first-person reproducer (`bk2/missing-world.bk2`) showed
+~stable prim count (≈2050) and identical per-code split across the
+good→bad transition (frame 2418 vs 2420), so prims weren't being
+upstream-culled. A counter added inside `ParsePrimitivesLinkedList`
+confirmed PsyCross walks all of them. Yet the bad frame's far geometry
+disappeared — so the prims were reaching GL but rendering invisibly.
+
+Per-slot inspection of the OT chain found the discriminator: bad frames
+have an extra `DR_TPAGE` primitive with code `0xE1000220` inserted at
+**slot 0 (deepest OT bucket, first prim drawn)**. Decoded:
+
+| bit | val | meaning |
+|-----|-----|---------|
+| 5   | 1   | semi-trans mode bit 0 |
+| 9   | 1   | dither on |
+| **10** | **0** | **drawing-to-display-area allowed = NO** |
+
+### The bug
+
+`ProcessDrawEnv` in `third_party/PsyCross/src/gpu/PsyX_GPU.cpp` was
+honouring bit 10 of inline `DR_TPAGE` prims and writing it to
+`activeDrawEnv.dfe`. PsyCross's `dfe` field is then consumed by
+`DrawEnvDimensions` / `DrawEnvOffset` to **switch screen-coord remapping
+between disp-rect and clip-rect mode**. So the moment a `DR_TPAGE` prim
+with bit 10 = 0 entered the chain, every subsequent prim in that frame
+was scaled with the wrong dimensions and offset → far geometry
+transformed to nowhere.
+
+Two unrelated concerns share the name `dfe`:
+
+- **Real PSX hardware:** GP0(E1) bit 10 gates writes to display area
+  (`0=Prohibited, 1=Allowed`).
+- **PsyCross internal:** `activeDrawEnv.dfe` selects the coord-remap
+  mode (disp dims + offset, vs. clip dims + zero offset).
+
+PsyCross was conflating them. The drawenv rect/offset config is owned
+by `PutDrawEnv` (called every frame from `gamestates/draw.c:2762`); a
+mid-chain texture-page change shouldn't touch coord-remap mode.
+
+### Fix
+
+`ProcessDrawEnv` no longer assigns `activeDrawEnv.dfe` from inline
+`DR_TPAGE` prims. `tpage` and `dtd` (dither) still update; `dfe` is
+locked to whatever `PutDrawEnv` set. The coord-remap mode is now stable
+across the frame.
+
+Verified on both `bk2/missing-world.bk2` (frame 2422 first-person zoom)
+and `bk2/missing-geometry.bk2` (frame 2472 third-person Spyro): full
+world and full Spyro render with the patch. All of the per-poly
+"missing pieces of Spyro" symptoms documented above were the same
+bug — Spyro's renderer emits `DR_TPAGE` prims like every other moby,
+and on frames where one of those prims landed early enough in the OT
+chain, the rest of the chain rendered invisibly.
+
+### Why the per-poly investigation was a wild goose chase
+
+NCLIP-FORCE produced "different holes on different polys" because
+forcing the path selector changed which polys ended up in which OT
+bucket, which changed which polys came after the rogue `DR_TPAGE` prim
+in the chain order. FORCE_QUAD "fixed" Spyro because routing all polys
+through the big-quad path put them earlier in the chain, ahead of the
+`DR_TPAGE` corruption (and exposed back-faces because the small-emit
+path's polys included intentional NCLIP-culled back-faces).
+
+GTE math being bit-identical was true and the small-emit / big-emit
+analysis was correct as far as it went, but neither was the bug. The
+real bug was downstream of every renderer, in PsyCross's drawenv
+handling.
