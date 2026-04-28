@@ -30,6 +30,7 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
     collect_redirects, rewrite_bare_globals, prologue_for,
 )
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
+from tools.rewrite.pass_casts import run as run_casts  # noqa: E402
 from tools.rewrite.pass_sizeof import (  # noqa: E402
     run as run_sizeof, render_static_asserts,
 )
@@ -107,9 +108,16 @@ def main(argv=None) -> int:
     for w in sr.address_of_warnings:
         print(f"  WARN: {w}", file=sys.stderr)
 
-    # --- Pass 2: bare-global redirects ------------------------------------
+    # --- Pass 4: pointer-to-integer cast classification -------------------
+    # Runs ahead of Pass 2 (single AST walk; logical pre-stage). Produces
+    # the offset set Pass 2 consults to pick the bare-vaddr read form for
+    # sites inside `(IntT)<global>`.
     redirects = collect_redirects(parsed.cursor)
-    bg = rewrite_bare_globals(parsed.cursor, redirects, main_path)
+    casts = run_casts(parsed.cursor, main_path, redirects)
+
+    # --- Pass 2: bare-global redirects ------------------------------------
+    bg = rewrite_bare_globals(parsed.cursor, redirects, main_path,
+                              vaddr_form_offsets=casts.vaddr_form_offsets)
     for err in bg.address_of_errors:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)
@@ -178,7 +186,8 @@ def main(argv=None) -> int:
     print(f"  rewrote {args.input.name}: "
           f"{len(redirects)} bare-globals, {len(bg.edits)} edits, "
           f"{len(sz.checks)} sizeof asserts, "
-          f"{pb.safe_calls} safe u_long* calls")
+          f"{pb.safe_calls} safe u_long* calls, "
+          f"{len(casts.redirected)} ptr→int casts")
     return 0
 
 

@@ -205,13 +205,24 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
 
 def rewrite_bare_globals(tu_cursor: ci.Cursor,
                          redirects: Dict[str, GlobalRedirect],
-                         main_file: str) -> BareGlobalsResult:
+                         main_file: str,
+                         vaddr_form_offsets: Set[int] | None = None
+                         ) -> BareGlobalsResult:
     """Generate edits for every read/write of a redirected global within
-    the main TU's source file."""
+    the main TU's source file.
+
+    ``vaddr_form_offsets`` (Pass 4 output) is the set of read DeclRefExpr
+    offsets whose replacement should be the bare ``__psx_<name>`` storage
+    instead of the host-pointer round-trip — used at sites where the
+    operand sits inside ``(IntT)<global>``, where the cast already expresses
+    the desired narrowing.
+    """
     result = BareGlobalsResult()
     result.redirects = redirects
     if not redirects:
         return result
+    if vaddr_form_offsets is None:
+        vaddr_form_offsets = set()
 
     main_file_resolved = str(main_file)
 
@@ -275,7 +286,11 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
             ))
         else:
             # Read site: substitute the identifier with a converting expression.
-            if red.is_pointer:
+            if off in vaddr_form_offsets:
+                # Pass 4: site sits inside `(IntT)<global>` — the outer cast
+                # already narrows; we just expose the PSX vaddr directly.
+                replacement = red.psx_storage_name
+            elif red.is_pointer:
                 replacement = (f"(({red.pointer_orig_type})"
                                f"openpete_psx_to_host_ptr({red.psx_storage_name}))")
             else:
