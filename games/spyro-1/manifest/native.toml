@@ -126,6 +126,14 @@ file = "src/strings.c"
 [[native_source]]
 file = "src/cheats.c"
 
+# hud.c — deferred. Pass 3's `_Static_assert(sizeof(struct Moby) == 88)`
+# fires on the host build — Pass 1's relayout coverage of Moby (only 3
+# pointer fields detected as diverging) doesn't account for the full
+# 88-byte PSX size on the host side. Real Pass 1/3 investigation needed
+# before this can land.
+#[[native_source]]
+#file = "src/hud.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq

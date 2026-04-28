@@ -171,8 +171,13 @@ def main(argv=None) -> int:
     # --- Apply edits to .c body -------------------------------------------
     rewritten = plan.apply(args.input)
     prologue = prologue_for(redirects)
+    # Pass 3's static_asserts go at the *end* of the rewritten file.
+    # Up top, struct types are still forward-declared (the includes
+    # come later in the source), so `sizeof(struct Foo)` would fail
+    # with "incomplete type". After all includes + bodies, every
+    # referenced struct is complete.
     sizeof_block = render_static_asserts(sz)
-    final = prologue + "\n" + sizeof_block + "\n" + rewritten
+    final = prologue + "\n" + rewritten + "\n" + sizeof_block
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(final)

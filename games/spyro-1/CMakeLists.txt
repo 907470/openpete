@@ -44,6 +44,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
+    # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -180,6 +181,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
+    # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
