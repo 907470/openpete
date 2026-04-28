@@ -121,6 +121,15 @@ def run(tu_cursor: ci.Cursor,
             name = c.spelling
             if name in seen_dispatch:
                 continue
+            # Skip the wrapper-shaped INCLUDE_ASM_REORDER_HACK function
+            # (`__maspsx_include_asm_hack_<NAME>`) — it's defined as a
+            # C function purely to anchor the inline-asm `.globl <NAME>`
+            # directive that publishes the real symbol. It shares its
+            # address with the wrapped function in symbols.toml, but
+            # the matching-decomp source doesn't call it directly and
+            # Pass 5c will splice it out of the rewritten source anyway.
+            if name.startswith("__maspsx_include_asm_hack_"):
+                continue
             seen_dispatch.add(name)
             addr = symbols.get(name)
             if addr is not None:

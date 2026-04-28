@@ -142,6 +142,15 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/gamepad.c"
 
+# camera.c — deferred. Builds (after the __maspsx_include_asm_hack_*
+# Pass 6 skip fix), boots, hits titlescreen and the level_11 swap, but
+# SIGSEGVs during demo gameplay (~frame 5500). Camera is a hot-path
+# update called every frame; the crash class is correctness — Pass 1
+# coverage on Camera/Spyro structs, ABI mismatch on a recomp call, or
+# similar — and not a quick bisect.
+#[[native_source]]
+#file = "src/camera.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
