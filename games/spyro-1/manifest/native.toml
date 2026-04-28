@@ -101,6 +101,14 @@ file = "src/specular_and_metal.c"
 #[[native_source]]
 #file = "src/cutscene.c"
 
+# 4BEF8.c — deferred. Same Pass 1 edit-overlap class as cutscene.c
+# but more entrenched: ubiquitous `(char *)g_Buffers.m_SharedAnimations - 0x6000`
+# style expressions where Pass 1 wraps the field access *and* the
+# surrounding cast/arithmetic. Bundle the fix with cutscene.c's
+# composition work.
+#[[native_source]]
+#file = "src/4BEF8.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
