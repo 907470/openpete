@@ -87,6 +87,9 @@ file = "src/cyclorama.c"
 [[native_source]]
 file = "src/environment.c"
 
+[[native_source]]
+file = "src/specular_and_metal.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
