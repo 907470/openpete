@@ -123,6 +123,9 @@ file = "src/save_file.c"
 [[native_source]]
 file = "src/strings.c"
 
+[[native_source]]
+file = "src/cheats.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq

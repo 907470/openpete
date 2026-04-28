@@ -43,6 +43,7 @@ add_executable(openpete-spyro1
     # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -178,6 +179,7 @@ set(SPYRO_NATIVE_SOURCES
     # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
