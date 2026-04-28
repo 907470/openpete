@@ -68,6 +68,16 @@ c_name = "RandRangeSigned"
 [[native_source]]
 file = "src/checkpoint.c"
 
+# Single empty `func_80037E98(Moby*)` — exercises the func_<ADDR> native
+# rename path (gen_renames.py class 3): the native body collides at link
+# with PSX.EXE_full.c's recompiled `func_80037E98`, so native_renames.h
+# rewrites the source to `spyro_native_func_80037E98` and Pass 6's
+# auto-discovered [[dispatch]] entry routes the PSX addr to the renamed
+# body. End-to-end test of a path that's been plumbed since Phase 2 but
+# never had a real native func_* body to validate against.
+[[native_source]]
+file = "src/moby_interpolation_check.c"
+
 # initialization.c + completion.c — re-enable gated on:
 #   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
 #     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)

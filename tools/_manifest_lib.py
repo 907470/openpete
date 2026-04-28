@@ -58,10 +58,17 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
             if n in hand_dispatch or n in seen_dispatch:
                 continue
             seen_dispatch.add(n)
+            # `func_<addr>` native bodies collide at link with PSX.EXE_full.c's
+            # recompiled body of the same name; gen_renames.py class 3 rewrites
+            # the native source to `spyro_native_<name>`, so the dispatch
+            # generator needs to call the renamed symbol — otherwise the
+            # generated `extern void func_<addr>(...)` resolves to the recomp
+            # body (with `(CPUState*)` shape) and the call crashes.
+            c_name = f"spyro_native_{n}" if n.startswith("func_") else n
             entry = {
                 "name": n,
                 "addr": e["addr"],
-                "c_name": n,
+                "c_name": c_name,
             }
             if "args" in e:
                 entry["args"] = e["args"]
