@@ -29,6 +29,7 @@ add_executable(openpete-spyro1
     spyro-1/src/main.c
     spyro-1/src/cd.c
     spyro-1/src/initialization.c
+    spyro-1/src/completion.c
 
     # Generated from manifest/native.toml by tools/gen_dispatch.py +
     # tools/gen_thunks.py. native_dispatch.c is the inbound override
@@ -152,6 +153,7 @@ set(SPYRO_NATIVE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/initialization.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/completion.c
 )
 set_source_files_properties(
     ${SPYRO_NATIVE_SOURCES}

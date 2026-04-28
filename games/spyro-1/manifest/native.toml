@@ -37,6 +37,9 @@ extra_flags = """\
 file = "src/initialization.c"
 extra_flags = "-DCdControl=openpete_CdControl"
 
+[[native_source]]
+file = "src/completion.c"
+
 # Entry points where psx_dispatch_compiled should jump into a native C
 # function instead of running the recompiled MIPS body. The generator
 # emits one `case 0xADDR ...` per entry into the override switch.
@@ -74,6 +77,11 @@ c_name = "CDLoadSync"
 [[dispatch]]
 name = "CDLoadAsync"
 c_name = "CDLoadAsync"
+
+[[dispatch]]
+name = "CalculateCompletion"
+c_name = "CalculateCompletion"
+args = []  # no header decl — defined inline in src/completion.c
 
 # Outbound — native code calling into still-recompiled MIPS. Used when a
 # native TU references a function whose body hasn't been migrated yet
