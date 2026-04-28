@@ -38,20 +38,21 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    # cutscene.rewritten.c, 4BEF8.rewritten.c — deferred (Pass 1 edit overlap).
+    # cutscene.rewritten.c — deferred (g_Models array-of-pointer global needs Pass 2 array support).
+    # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
+    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
     # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # gamepad.rewritten.c — deferred (post-increment on redirected ptr global).
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
-    # spu.rewritten.c — deferred (Pass 1 overlap composition).
-    # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
+    # spu.rewritten.c — deferred (compound-assign += on relaid field).
+    # overlay_pointers.rewritten.c — deferred (correctness audit needed).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — deferred (Pass 1+2 composition).
+    # loaders.rewritten.c — deferred (macro-arg nested member-ref).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -182,20 +183,21 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    # cutscene.rewritten.c, 4BEF8.rewritten.c — deferred (Pass 1 edit overlap).
+    # cutscene.rewritten.c — deferred (g_Models array-of-pointer global needs Pass 2 array support).
+    # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
+    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
     # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # gamepad.rewritten.c — deferred (post-increment on redirected ptr global).
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
-    # spu.rewritten.c — deferred (Pass 1 overlap composition).
-    # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
+    # spu.rewritten.c — deferred (compound-assign += on relaid field).
+    # overlay_pointers.rewritten.c — deferred (correctness audit needed).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — deferred (Pass 1+2 composition).
+    # loaders.rewritten.c — deferred (macro-arg nested member-ref).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

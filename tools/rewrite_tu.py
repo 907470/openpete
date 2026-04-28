@@ -100,11 +100,31 @@ def main(argv=None) -> int:
             sym_data = tomli.load(fh)
         symbols = {f["name"]: f["addr"] for f in sym_data.get("function", [])}
 
+    # --- Pass 4: pointer-to-integer cast classification -------------------
+    # Runs ahead of Pass 1 because Pass 1's access-text rendering folds
+    # the redirected-global form inline; both Passes 1 and 2 consult
+    # `redirects` so each ref is rewritten exactly once.
+    redirects = collect_redirects(parsed.cursor)
+    casts = run_casts(parsed.cursor, main_path, redirects)
+
+    # --- Precompute Pass 2 write extents ----------------------------------
+    # Pass 1 needs to know which spans Pass 2 will rewrite as writes so
+    # it can suppress its own reads inside them (Pass 2's RHS rendering
+    # folds the relaid field reads inline).
+    from tools.rewrite.pass_bare_globals import _find_assignment_writes
+    pre_writes = _find_assignment_writes(parsed.cursor, redirects)
+    pass2_write_ranges = [(binop.extent.start.offset, binop.extent.end.offset)
+                          for (binop, _l, _r) in pre_writes.values()]
+
     # --- Pass 1: struct relayout ------------------------------------------
     # Header field rewrites + .c-body access conversions. Header edits
     # accumulate per-header in `plan`; we splice each touched header into
-    # the shadow include tree below.
-    sr = run_struct_relayout(parsed.cursor, main_path, symbols)
+    # the shadow include tree below. Pass 1 receives the redirects map +
+    # Pass 2's write extents so it can fold redirected-global references
+    # inline and skip nested refs inside Pass 2 writes.
+    sr = run_struct_relayout(parsed.cursor, main_path, symbols,
+                             redirects=redirects,
+                             pass2_write_ranges=pass2_write_ranges)
     plan.add_many(sr.field_edits)
     plan.add_many(sr.access_edits)
     for w in sr.fnptr_warnings:
@@ -112,16 +132,17 @@ def main(argv=None) -> int:
     for w in sr.address_of_warnings:
         print(f"  WARN: {w}", file=sys.stderr)
 
-    # --- Pass 4: pointer-to-integer cast classification -------------------
-    # Runs ahead of Pass 2 (single AST walk; logical pre-stage). Produces
-    # the offset set Pass 2 consults to pick the bare-vaddr read form for
-    # sites inside `(IntT)<global>`.
-    redirects = collect_redirects(parsed.cursor)
-    casts = run_casts(parsed.cursor, main_path, redirects)
-
     # --- Pass 2: bare-global redirects ------------------------------------
+    # Pass 2 receives Pass 1's access edits as covered ranges and Pass 1's
+    # `rewrites` map so its write rhs renders any nested relaid field
+    # accesses inline. With both passes folded the splicer never sees an
+    # overlap on this composition pattern.
+    pass1_ranges = [(e.start, e.end) for e in sr.access_edits
+                    if e.file == main_path]
     bg = rewrite_bare_globals(parsed.cursor, redirects, main_path,
-                              vaddr_form_offsets=casts.vaddr_form_offsets)
+                              vaddr_form_offsets=casts.vaddr_form_offsets,
+                              pass1_covered_ranges=pass1_ranges,
+                              pass1_rewrites=sr.rewrites)
     for err in bg.address_of_errors:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)

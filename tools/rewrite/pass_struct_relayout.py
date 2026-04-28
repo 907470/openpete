@@ -103,6 +103,8 @@ class FieldRewrite:
     is_long_signed: bool     # True for long/signed-long; False for u_long/unsigned long
     pointer_orig_type: str   # original type spelling for cast diagnostics
     is_function_ptr: bool
+    is_array: bool = False           # field type is `T arr[N]` (array)
+    elem_orig_type: str = ""         # element type for array fields (e.g. "AnimationHeader *")
 
 
 @dataclass
@@ -189,6 +191,15 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
                     is_long_signed = False
                 else:
                     is_long_signed = True
+            is_array = canon.kind == ci.TypeKind.CONSTANTARRAY
+            elem_orig_type = ""
+            if is_array and is_ptr and not is_fnptr:
+                # Element type spelling — for `T *m_F[N]` we want `T *`
+                # so element-access rewrites cast each PSX vaddr back to
+                # the original element pointer type.
+                elem_orig_type = ft.element_type.spelling \
+                    if ft.kind == ci.TypeKind.CONSTANTARRAY \
+                    else canon.element_type.spelling
             rewrites[FieldKey(usr, fld.spelling)] = FieldRewrite(
                 record_usr=usr,
                 record_name=rec_name,
@@ -200,6 +211,8 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
                 is_long_signed=is_long_signed,
                 pointer_orig_type=ft.spelling if is_ptr and not is_fnptr else "",
                 is_function_ptr=is_fnptr,
+                is_array=is_array,
+                elem_orig_type=elem_orig_type,
             )
     return rewrites
 
@@ -288,16 +301,225 @@ def _bytes_slice(file_path: str, start: int, end: int) -> str:
         return fh.read(end - start).decode("utf-8", "replace")
 
 
+def _render_with_redirects(cursor: ci.Cursor,
+                           main_resolved: str,
+                           redirects,
+                           rewrites: Optional[Dict[FieldKey, "FieldRewrite"]] = None
+                           ) -> str:
+    """Read cursor's source slice, substituting Pass 2's redirected-global
+    read form for any DeclRefExpr inside the slice and Pass 1's read form
+    for any nested member-ref to a relaid field.
+
+    Without nested substitution Pass 1's outer write/read edits carry raw
+    inner expressions, and Pass 1 then separately emits an inner read edit
+    that overlaps. Folding both inline keeps a single edit per outermost
+    site.
+    """
+    start = cursor.extent.start.offset
+    end = cursor.extent.end.offset
+    text = _bytes_slice(main_resolved, start, end)
+    if not redirects and not rewrites:
+        return text
+    subs: List[Tuple[int, int, str]] = []
+    seen: Set[int] = set()
+    cursor_self_extent = (cursor.extent.start.offset, cursor.extent.end.offset)
+    for k in cursor.walk_preorder():
+        if k.location.file is None:
+            continue
+        if str(Path(k.location.file.name).resolve()) != main_resolved:
+            continue
+        # Skip the cursor itself — substituting it produces self-recursion.
+        if (k.extent.start.offset, k.extent.end.offset) == cursor_self_extent \
+                and k.kind == cursor.kind:
+            continue
+        if k.kind == ci.CursorKind.DECL_REF_EXPR and redirects:
+            rd = k.referenced
+            if rd is None:
+                continue
+            red = redirects.get(rd.spelling)
+            if red is None:
+                continue
+            ks = k.extent.start.offset
+            ke = k.extent.end.offset
+            if ke == ks or ks < start or ke > end:
+                continue
+            if ks in seen:
+                continue
+            seen.add(ks)
+            if red.is_pointer:
+                repl = (f"(({red.pointer_orig_type})"
+                        f"openpete_psx_to_host_ptr({red.psx_storage_name}))")
+            else:
+                repl = f"((int32_t){red.psx_storage_name})"
+            subs.append((ks - start, ke - start, repl))
+        elif k.kind == ci.CursorKind.MEMBER_REF_EXPR and rewrites:
+            rd = k.referenced
+            if rd is None or rd.kind != ci.CursorKind.FIELD_DECL:
+                continue
+            parent = rd.semantic_parent
+            if parent is None:
+                continue
+            fr = rewrites.get(FieldKey(parent.get_usr(), rd.spelling))
+            if fr is None or fr.is_function_ptr:
+                continue
+            # Skip array-of-pointer fields here — those are handled at
+            # the subscript level by the caller, not at the member ref.
+            if fr.is_array and fr.is_pointer:
+                continue
+            ks = k.extent.start.offset
+            ke = k.extent.end.offset
+            if ke == ks or ks < start or ke > end:
+                continue
+            if ks in seen:
+                continue
+            seen.add(ks)
+            inner = _bytes_slice(main_resolved, ks, ke)
+            if redirects:
+                for name, red in redirects.items():
+                    if name in inner:
+                        if red.is_pointer:
+                            r2 = (f"(({red.pointer_orig_type})"
+                                  f"openpete_psx_to_host_ptr"
+                                  f"({red.psx_storage_name}))")
+                        else:
+                            r2 = f"((int32_t){red.psx_storage_name})"
+                        inner = inner.replace(name, r2)
+            if fr.is_pointer:
+                repl = (f"(({fr.pointer_orig_type})"
+                        f"openpete_psx_to_host_ptr({inner}))")
+            else:
+                cast = "int32_t" if fr.is_long_signed else "uint32_t"
+                repl = f"(({cast})({inner}))"
+            subs.append((ks - start, ke - start, repl))
+    if not subs:
+        return text
+    subs.sort()
+    # Drop inner subs whose range falls inside a wider sub (outermost wins).
+    pruned: List[Tuple[int, int, str]] = []
+    for s, e, r in subs:
+        if pruned and s >= pruned[-1][0] and e <= pruned[-1][1]:
+            continue
+        pruned.append((s, e, r))
+    out = text
+    for rs, re_, repl in reversed(pruned):
+        out = out[:rs] + repl + out[re_:]
+    return out
+
+
+def _array_subscript_field_ref(sub: ci.Cursor,
+                               rewrites: Dict[FieldKey, FieldRewrite]
+                               ) -> Optional[Tuple[ci.Cursor, "FieldRewrite"]]:
+    """If `sub` is `member.field[idx]` or `obj->field[idx]` where `field`
+    is an array-of-pointer relaid field, return (member_ref_cursor, fr).
+    Otherwise return None."""
+    if sub.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+        return None
+    children = list(sub.get_children())
+    if not children:
+        return None
+    base = children[0]
+    # Strip a single layer of UNEXPOSED_EXPR (array-to-pointer decay).
+    while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+        kids = list(base.get_children())
+        if not kids:
+            break
+        base = kids[0]
+    if base.kind != ci.CursorKind.MEMBER_REF_EXPR:
+        return None
+    rd = base.referenced
+    if rd is None or rd.kind != ci.CursorKind.FIELD_DECL:
+        return None
+    parent = rd.semantic_parent
+    if parent is None:
+        return None
+    fr = rewrites.get(FieldKey(parent.get_usr(), rd.spelling))
+    if fr is None or not fr.is_array or not fr.is_pointer or fr.is_function_ptr:
+        return None
+    return base, fr
+
+
 def emit_access_edits(tu_cursor: ci.Cursor,
                       rewrites: Dict[FieldKey, FieldRewrite],
                       main_file: str,
                       result: StructRelayoutResult,
-                      symbols: Optional[Dict[str, int]] = None) -> None:
+                      symbols: Optional[Dict[str, int]] = None,
+                      redirects=None,
+                      pass2_write_ranges: Optional[List[Tuple[int, int]]] = None
+                      ) -> None:
     if not rewrites:
         return
     main_resolved = str(Path(main_file).resolve())
+    p2_writes = sorted(pass2_write_ranges or [])
+
+    def _inside_pass2_write(s: int, e: int) -> bool:
+        for ws, we in p2_writes:
+            if s >= ws and e <= we:
+                return True
+            if ws > s:
+                break
+        return False
 
     writes = _find_member_writes(tu_cursor, rewrites)
+
+    # Array-of-pointer fields: rewrite at `obj.arr[i]` rather than at
+    # `obj.arr` so each PSX-vaddr element is converted to a host pointer
+    # individually. Casting `(T *[N])` is invalid C; per-element casts
+    # `(T*)psx_to_host_ptr(obj.arr[i])` work uniformly.
+    array_subscript_edits: Dict[int, Edit] = {}
+    skip_member_ref_offsets: Set[int] = set()
+    for sub in tu_cursor.walk_preorder():
+        match = _array_subscript_field_ref(sub, rewrites)
+        if match is None:
+            continue
+        member, fr = match
+        if sub.location.file is None:
+            continue
+        if str(Path(sub.location.file.name).resolve()) != main_resolved:
+            continue
+        s = sub.extent.start.offset
+        e = sub.extent.end.offset
+        if e == s:
+            try:
+                toks = list(sub.translation_unit.get_tokens(extent=sub.extent))
+            except Exception:
+                toks = []
+            if not toks:
+                continue
+            s = toks[0].location.offset
+            e = toks[-1].location.offset + len(toks[-1].spelling)
+        if s in array_subscript_edits:
+            continue
+        sub_text = _bytes_slice(main_resolved, s, e)
+        if redirects:
+            for name, red in redirects.items():
+                if name in sub_text:
+                    if red.is_pointer:
+                        rep = (f"(({red.pointer_orig_type})"
+                               f"openpete_psx_to_host_ptr"
+                               f"({red.psx_storage_name}))")
+                    else:
+                        rep = f"((int32_t){red.psx_storage_name})"
+                    sub_text = sub_text.replace(name, rep)
+        cast = fr.elem_orig_type or "void *"
+        replacement = (f"(({cast})openpete_psx_to_host_ptr({sub_text}))")
+        array_subscript_edits[s] = Edit(
+            start=s, end=e, replacement=replacement,
+            file=main_resolved,
+            note=f"read[] {fr.record_name}.{fr.field_name}",
+        )
+        # Suppress the inner member-ref rewrite that would otherwise
+        # collide.
+        skip_member_ref_offsets.add(member.extent.start.offset)
+        # Also suppress for synthetic-extent (macro-arg) member refs
+        # whose computed start would land at the same token.
+        try:
+            mtoks = list(member.translation_unit.get_tokens(extent=member.extent))
+        except Exception:
+            mtoks = []
+        if mtoks:
+            skip_member_ref_offsets.add(mtoks[0].location.offset)
+    for ed in array_subscript_edits.values():
+        result.access_edits.append(ed)
 
     # Address-of guards.
     addr_of_offsets: Set[int] = set()
@@ -330,7 +552,74 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             f"{member.location.file}:{member.location.line} "
             f"— address-of a relayout'd field has no original-type address")
 
-    seen_member_offsets: Set[int] = set()
+    # Pre-collect write extents so nested member-refs inside them are
+    # suppressed (the write's RHS rendering folds them inline).
+    write_ranges: List[Tuple[int, int]] = []
+    for off, (binop, _lhs, _fr) in writes.items():
+        write_ranges.append((binop.extent.start.offset, binop.extent.end.offset))
+    write_ranges.sort()
+
+    def _inside_write(s: int, e: int) -> Optional[Tuple[int, int]]:
+        for ws, we in write_ranges:
+            if s >= ws and e <= we and not (s == ws and e == we):
+                return (ws, we)
+            if ws > s:
+                break
+        return None
+
+    # Also: when two relaid member-refs are nested (e.g. obj.outer[i].inner
+    # where both `outer` and `inner` are diverging fields), the outer
+    # access edit covers both. Pre-walk to find the outermost extent at
+    # each location and suppress inner emits.
+    outer_ranges: List[Tuple[int, int]] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.MEMBER_REF_EXPR:
+            continue
+        if c.location.file is None:
+            continue
+        if str(Path(c.location.file.name).resolve()) != main_resolved:
+            continue
+        rd = c.referenced
+        if rd is None or rd.kind != ci.CursorKind.FIELD_DECL:
+            continue
+        parent = rd.semantic_parent
+        if parent is None:
+            continue
+        if rewrites.get(FieldKey(parent.get_usr(), rd.spelling)) is None:
+            continue
+        s = c.extent.start.offset
+        e = c.extent.end.offset
+        if e == s:
+            try:
+                toks = list(c.translation_unit.get_tokens(extent=c.extent))
+            except Exception:
+                toks = []
+            if not toks:
+                continue
+            s = toks[0].location.offset
+            e = toks[-1].location.offset + len(toks[-1].spelling)
+            if e <= s:
+                continue
+        outer_ranges.append((s, e))
+    outer_ranges.sort()
+    # Filter to outermost only — drop any range fully inside another.
+    pruned_outer: List[Tuple[int, int]] = []
+    for s, e in sorted(outer_ranges, key=lambda r: (r[0], -r[1])):
+        if pruned_outer and s >= pruned_outer[-1][0] and e <= pruned_outer[-1][1]:
+            continue
+        pruned_outer.append((s, e))
+
+    def _strictly_inside_outer(s: int, e: int) -> bool:
+        for os_, oe in pruned_outer:
+            if os_ < s and e <= oe:
+                return True
+            if os_ > s:
+                break
+            if os_ <= s and e < oe:
+                return True
+        return False
+
+    seen_member_offsets: Set[Tuple[int, int]] = set()
     for c in tu_cursor.walk_preorder():
         if c.kind != ci.CursorKind.MEMBER_REF_EXPR:
             continue
@@ -348,29 +637,66 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         fr = rewrites.get(key)
         if fr is None or fr.is_function_ptr:
             continue
-        off = c.extent.start.offset
+        # Macro-arg expansion: a MEMBER_REF_EXPR appearing inside a macro
+        # arg used N times in the body shows up as N AST nodes, all with
+        # zero-length source extents. Synthesize an extent from the
+        # cursor's tokens so the rewrite still lands at the textual arg
+        # location. Dedupe by synthetic extent so the N copies become one.
+        ext_start = c.extent.start.offset
+        ext_end = c.extent.end.offset
+        if ext_end == ext_start:
+            try:
+                toks = list(c.translation_unit.get_tokens(extent=c.extent))
+            except Exception:
+                toks = []
+            if not toks:
+                continue
+            ext_start = toks[0].location.offset
+            ext_end = toks[-1].location.offset + len(toks[-1].spelling)
+            if ext_end <= ext_start:
+                continue
+        off = ext_start
         if off in addr_of_offsets:
             continue
-        # Macro-expansion artifacts: a MEMBER_REF_EXPR from a macro arg
-        # used N times in the body shows up as N AST nodes, often with
-        # zero-length source extents (start == end). Slicing an empty
-        # range yields an empty access_text and the rewrite emits broken
-        # `psx_to_host_ptr()` calls. Skip them — the parent macro
-        # invocation gets handled separately.
-        if c.extent.end.offset == c.extent.start.offset:
+        if off in skip_member_ref_offsets:
+            # Array-of-pointer field handled at subscript level above.
             continue
-        if off in seen_member_offsets:
+        if (ext_start, ext_end) in seen_member_offsets:
             continue
-        seen_member_offsets.add(off)
-
+        seen_member_offsets.add((ext_start, ext_end))
+        # writes is keyed on lhs.extent.start; only the actual outermost
+        # LHS qualifies — nested member-refs sharing the start are reads.
+        is_write_lhs = False
         if off in writes:
+            _binop, _lhs, _fr = writes[off]
+            if _lhs.extent.end.offset == ext_end:
+                is_write_lhs = True
+        # If this ref sits inside a Pass 1 write extent (and isn't the
+        # write's own LHS), suppress — the write rendering folds it.
+        if not is_write_lhs and _inside_write(ext_start, ext_end):
+            continue
+        # If this ref is strictly nested inside another relaid member-ref,
+        # the outer's render folds it inline.
+        if not is_write_lhs and _strictly_inside_outer(ext_start, ext_end):
+            continue
+        # If this ref sits inside a Pass 2 write extent, Pass 2 will fold
+        # it into its rhs rendering. Suppress here to avoid overlap.
+        if not is_write_lhs and _inside_pass2_write(ext_start, ext_end):
+            continue
+
+        if is_write_lhs:
             binop, lhs, _ = writes[off]
             rhs_children = list(binop.get_children())
             rhs = rhs_children[1]
+            # `lhs_text` is left as raw source — it's `g_X.field = ...`
+            # which is the storage-write target. Its inner field is the
+            # very field we're rewriting; nested redirects in the LHS
+            # shape are vanishingly rare and would corrupt the assign.
             lhs_text = _bytes_slice(main_resolved,
-                                    lhs.extent.start.offset, lhs.extent.end.offset)
-            rhs_text = _bytes_slice(main_resolved,
-                                    rhs.extent.start.offset, rhs.extent.end.offset)
+                                    lhs.extent.start.offset,
+                                    lhs.extent.end.offset)
+            rhs_text = _render_with_redirects(rhs, main_resolved,
+                                              redirects, rewrites)
             if fr.is_pointer:
                 # If the RHS is a function reference with a known PSX
                 # vaddr, substitute the literal — the host fn-ptr lives
@@ -394,8 +720,24 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 note=f"write {fr.record_name}.{fr.field_name}",
             ))
         else:
-            access_text = _bytes_slice(main_resolved,
-                                       c.extent.start.offset, c.extent.end.offset)
+            if c.extent.end.offset == c.extent.start.offset:
+                # Macro-arg synthetic extent: read text directly from
+                # the file at the synthesized range and apply redirect
+                # substitutions textually (no AST inside macro args).
+                access_text = _bytes_slice(main_resolved, ext_start, ext_end)
+                if redirects:
+                    for name, red in redirects.items():
+                        if name in access_text:
+                            if red.is_pointer:
+                                sub = (f"(({red.pointer_orig_type})"
+                                       f"openpete_psx_to_host_ptr"
+                                       f"({red.psx_storage_name}))")
+                            else:
+                                sub = f"((int32_t){red.psx_storage_name})"
+                            access_text = access_text.replace(name, sub)
+            else:
+                access_text = _render_with_redirects(c, main_resolved,
+                                                     redirects, rewrites)
             if fr.is_pointer:
                 replacement = (f"(({fr.pointer_orig_type})"
                                f"openpete_psx_to_host_ptr({access_text}))")
@@ -403,8 +745,8 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 cast = "int32_t" if fr.is_long_signed else "uint32_t"
                 replacement = f"(({cast})({access_text}))"
             result.access_edits.append(Edit(
-                start=c.extent.start.offset,
-                end=c.extent.end.offset,
+                start=ext_start,
+                end=ext_end,
                 replacement=replacement,
                 file=main_resolved,
                 note=f"read {fr.record_name}.{fr.field_name}",
@@ -416,10 +758,15 @@ def emit_access_edits(tu_cursor: ci.Cursor,
 # ---------------------------------------------------------------------------
 
 def run(tu_cursor: ci.Cursor, main_file: str,
-        symbols: Optional[Dict[str, int]] = None) -> StructRelayoutResult:
+        symbols: Optional[Dict[str, int]] = None,
+        redirects=None,
+        pass2_write_ranges: Optional[List[Tuple[int, int]]] = None
+        ) -> StructRelayoutResult:
     result = StructRelayoutResult()
     rewrites = collect_field_rewrites(tu_cursor)
     result.rewrites = rewrites
     emit_header_edits(rewrites, result)
-    emit_access_edits(tu_cursor, rewrites, main_file, result, symbols)
+    emit_access_edits(tu_cursor, rewrites, main_file, result, symbols,
+                      redirects=redirects,
+                      pass2_write_ranges=pass2_write_ranges)
     return result

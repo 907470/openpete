@@ -181,13 +181,29 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
     """Walk the TU and return all qualifying bare-global redirects, keyed by
     original name. Only includes globals that are actually *referenced* in
     the main TU's source file (avoids redirecting every header decl in
-    libpsyq we never use)."""
+    libpsyq we never use), and that have at least one non-address-of
+    reference (linker-defined boundary symbols like `main_BSS_END` are
+    declared as pointer-typed but only ever address-of'd to obtain the
+    symbol's link-time address — they have no PSX storage to alias)."""
     decls: Dict[str, GlobalRedirect] = {}
     referenced: Set[str] = set()
+    addr_of_only: Dict[str, int] = {}  # name -> outstanding non-addr-of count
     main_path = None
+    # First pass: collect decls and identify address-of contexts.
+    addr_of_offsets: Set[int] = set()
     for c in tu_cursor.walk_preorder():
         if main_path is None and c.kind == ci.CursorKind.TRANSLATION_UNIT:
             main_path = str(c.translation_unit.spelling)
+        if c.kind == ci.CursorKind.UNARY_OPERATOR:
+            try:
+                toks = list(c.translation_unit.get_tokens(extent=c.extent))
+            except Exception:
+                toks = []
+            if toks and toks[0].spelling == "&":
+                kids = list(c.get_children())
+                if len(kids) == 1 and kids[0].kind == ci.CursorKind.DECL_REF_EXPR:
+                    addr_of_offsets.add(kids[0].extent.start.offset)
+    for c in tu_cursor.walk_preorder():
         if c.kind == ci.CursorKind.VAR_DECL:
             red = _classify_global(c)
             if red is not None and red.name not in decls:
@@ -198,15 +214,21 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
             if main_path and str(c.location.file.name) != main_path:
                 continue
             ref = c.referenced
-            if ref is not None:
-                referenced.add(ref.spelling)
-    return {n: r for n, r in decls.items() if n in referenced}
+            if ref is None:
+                continue
+            referenced.add(ref.spelling)
+            if c.extent.start.offset not in addr_of_offsets:
+                addr_of_only[ref.spelling] = addr_of_only.get(ref.spelling, 0) + 1
+    return {n: r for n, r in decls.items()
+            if n in referenced and addr_of_only.get(n, 0) > 0}
 
 
 def rewrite_bare_globals(tu_cursor: ci.Cursor,
                          redirects: Dict[str, GlobalRedirect],
                          main_file: str,
-                         vaddr_form_offsets: Set[int] | None = None
+                         vaddr_form_offsets: Set[int] | None = None,
+                         pass1_covered_ranges: List[Tuple[int, int]] | None = None,
+                         pass1_rewrites=None
                          ) -> BareGlobalsResult:
     """Generate edits for every read/write of a redirected global within
     the main TU's source file.
@@ -223,11 +245,40 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         return result
     if vaddr_form_offsets is None:
         vaddr_form_offsets = set()
+    pass1_ranges = sorted(pass1_covered_ranges or [])
+
+    def _inside_pass1(s: int, e: int) -> bool:
+        # Pass 1 already rendered the redirect form inline for any ref
+        # falling inside its access edit range. Skip here to avoid the
+        # overlapping-edit assertion in the splicer.
+        for rs, re_ in pass1_ranges:
+            if s >= rs and e <= re_:
+                return True
+            if rs > s:
+                break
+        return False
 
     main_file_resolved = str(main_file)
 
     # Pre-find write sites so we can skip emitting a read-conversion at the LHS.
     writes = _find_assignment_writes(tu_cursor, redirects)
+    # Pass-2-internal: write rewrites cover the whole BinaryOperator
+    # extent and re-emit the RHS textually. Any redirected ref appearing
+    # inside that RHS would otherwise generate its own read edit which
+    # overlaps with the write. Track the write extents to suppress.
+    pass2_write_ranges: List[Tuple[int, int]] = []
+    for off, (binop, _lhs, _r) in writes.items():
+        pass2_write_ranges.append(
+            (binop.extent.start.offset, binop.extent.end.offset))
+    pass2_write_ranges.sort()
+
+    def _inside_pass2_write(s: int, e: int, lhs_off: int) -> bool:
+        for ws, we in pass2_write_ranges:
+            if s >= ws and e <= we and s != lhs_off:
+                return True
+            if ws > s:
+                break
+        return False
 
     # Detect address-of contexts: walk UnaryOperator parents.
     addr_of_offsets: Set[int] = set()
@@ -274,13 +325,26 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         if off in seen_read_offsets and off not in writes:
             continue
         seen_read_offsets.add(off)
+        # If Pass 1 already covers this ref (the ref is inside a relaid
+        # field-access expression), Pass 1 has rendered the redirect form
+        # inline — emitting our own edit here would overlap.
+        if off not in writes and _inside_pass1(off, c.extent.end.offset):
+            continue
+        # Likewise for Pass 2's own write rewrites — a ref inside the
+        # write's RHS gets folded into the write's replacement text.
+        if off not in writes and _inside_pass2_write(off, c.extent.end.offset, -1):
+            continue
 
         if off in writes:
             # Write site: rewrite `name = ...` → `__psx_name = host_to_psx(...)`
             binop, lhs, _r = writes[off]
             rhs_children = list(binop.get_children())
             rhs = rhs_children[1]
-            rhs_text = bytes_slice(rhs)
+            if pass1_rewrites is not None:
+                from .pass_struct_relayout import _render_with_redirects as _r1
+                rhs_text = _r1(rhs, str(main_file), redirects, pass1_rewrites)
+            else:
+                rhs_text = bytes_slice(rhs)
             if red.is_pointer:
                 replacement = (f"{red.psx_storage_name} = "
                                f"openpete_host_to_psx({rhs_text})")
