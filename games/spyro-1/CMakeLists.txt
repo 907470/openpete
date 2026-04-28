@@ -23,6 +23,14 @@ add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
 
+    # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
+    # DIRECTLY from the matching-decomp tree (no shim layer). Each TU is
+    # added with custom flags below; outbound thunks live in decomp/.
+    spyro-1/src/main.c
+    spyro-1/src/cd.c
+    decomp/native_thunks.c
+    decomp/openpete_cd_thunks.cpp
+
     # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
     # `psx_dispatch_main_exe` by regen-recomp.sh.
     ${SPYRO_GENERATED}/PSX.EXE_full.c
@@ -60,7 +68,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         # Override SDL2main's -mwindows so the .exe is a console-subsystem
         # binary; otherwise stdout/stderr aren't attached to the parent
         # terminal when launched via WSL2 interop.
-        -mconsole)
+        -mconsole
+        # Disable ASLR. The Phase 3/4 native-decomp globals are link-aliased
+        # into g_ram via -Wl,--defsym=name=g_ram+offset. On ELF this produces
+        # a PIE-aware relocation; on PE/COFF the MinGW linker can't represent
+        # the absolute symbol ("stripping non-representable symbol …"), so
+        # the absolute address gets baked into call sites with no entry in
+        # .reloc. ASLR then moves g_ram at load time, the baked addresses
+        # rot, and the first decomp global access faults. Pinning the image
+        # base sidesteps this until we move to a real PE-friendly aliasing
+        # mechanism (see plan §8: linker script vs def-file vs macro indirection).
+        -Wl,--disable-dynamicbase
+        -Wl,--disable-high-entropy-va)
 endif()
 
 # Generated C addresses psx_runtime.h via the include path provided by
@@ -102,6 +121,86 @@ set_source_files_properties(
     ${SPYRO_OVERLAY_DISPATCH_C}
     PROPERTIES
         COMPILE_FLAGS "-w"
+)
+
+# Common compile flags for any spyro-1/src/*.c TU compiled natively.
+# Each per-source block reuses these and adds TU-specific bits.
+#
+#   -std=gnu11 + -include assert.h: PsyCross's libgpu.h uses C11 static_assert
+#   -fcommon: tentative file-scope defs become COMMON so --defsym aliases win
+#   -include psyq_compat.h: bridges PSYQ-renamed types (RECT vs RECT16)
+#   -w: mutes matching-decomp warnings (unused decls from gameplay headers)
+set(SPYRO_DECOMP_INCLUDES
+    "${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx")
+set(SPYRO_DECOMP_BASE_FLAGS
+    "-std=gnu11 -fcommon -include assert.h -include ${CMAKE_CURRENT_SOURCE_DIR}/decomp/psyq_compat.h -w")
+
+# Phase 3 — compile spyro-1/src/main.c directly.
+#
+# - `-fcommon` makes the four file-scope globals (g_PadMutex, g_DeltaTime,
+#   g_UnprocessedFrames, g_StateSwitch) tentative/common defs so the linker
+#   resolves them against the strong --defsym aliases below instead of
+#   allocating host BSS.
+# - `-Dmain=spyro_native_main` keeps the source's `void main(void)` from
+#   colliding with the host C runtime entry point.
+# - `-w` mutes the matching-decomp source's warnings (mostly unused
+#   declarations from heavily-included gameplay headers).
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/main.c
+    PROPERTIES
+        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} -Dmain=spyro_native_main"
+        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
+)
+
+# Phase 4 — compile spyro-1/src/cd.c directly. Routes its PSYQ Cd*
+# calls through outbound thunks (decomp/openpete_cd_thunks.cpp) so the
+# Spyro-specific enhancements in psyq_thunks.cpp (XA streaming arm,
+# CdSync XA pump, …) stay in the path. Spyro-internal callees
+# (SoundsUpdate, CDMusicUpdate) get small wrapper bodies in the same
+# thunks file that bounce back into psx_dispatch_compiled.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
+    PROPERTIES
+        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} \
+-DCdControl=openpete_CdControl \
+-DCdRead=openpete_CdRead \
+-DCdSync=openpete_CdSync \
+-DCdIntToPos=openpete_CdIntToPos"
+        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
+)
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/decomp/openpete_cd_thunks.cpp
+    PROPERTIES
+        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
+)
+
+# Link-time aliasing of the four globals into PSX RAM (g_ram + offset).
+# Addresses derived from the recompiled main's gp-relative reads with
+# gp = 0x80075264:
+#   gp + 0x0468  → g_DeltaTime          @ 0x800756CC  (0x756CC offset)
+#   gp + 0x04FC  → g_UnprocessedFrames  @ 0x80075760  (0x75760)
+#   gp + 0x0538  → g_StateSwitch        @ 0x8007579C  (0x7579C)
+#   gp + 0x0604  → g_PadMutex           @ 0x80075868  (0x75868)
+# g_ram is the public symbol exposed by core/runtime/cpu.c.
+target_link_options(openpete-spyro1 PRIVATE
+    # main.c globals
+    "-Wl,--defsym=g_PadMutex=g_ram+0x75868"
+    "-Wl,--defsym=g_DeltaTime=g_ram+0x756CC"
+    "-Wl,--defsym=g_UnprocessedFrames=g_ram+0x75760"
+    "-Wl,--defsym=g_StateSwitch=g_ram+0x7579C"
+    # cd.c globals — addresses harvested from the recompiled CDLoadTime /
+    # CDReadDone bodies (gp+22240 / gp+22668 / gp.ram-base + 0x6BB8 etc.):
+    #   g_CDMaxReadTime  @ 0x800756E0
+    #   g_CDReadTime     @ 0x8007588C
+    #   g_CdState (base) @ 0x80076B90  (m_IsReading at +0x28 = 0x80076BB8)
+    "-Wl,--defsym=g_CDMaxReadTime=g_ram+0x756E0"
+    "-Wl,--defsym=g_CDReadTime=g_ram+0x7588C"
+    "-Wl,--defsym=g_CdState=g_ram+0x76B90"
+    # g_CdMusic — base derived from CDLoadTime's writes:
+    #   m_Flags  (offset +4)   @ 0x800774B4
+    #   m_PostCD (offset +0x214) @ 0x800776C4
+    #   m_Flags2 (offset +0x218) @ 0x800776C8
+    "-Wl,--defsym=g_CdMusic=g_ram+0x774B0"
 )
 
 # OpenAL on Windows is always a runtime DLL load (no static .a in the

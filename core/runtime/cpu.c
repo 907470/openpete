@@ -15,7 +15,11 @@
 #define RAM_SIZE      (2u * 1024u * 1024u)
 #define SCRATCH_SIZE  (1024u)
 
-static uint8_t g_ram[RAM_SIZE];
+/* g_ram is non-static so per-game decomp builds can use linker
+ * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
+ * fixed PSX RAM addresses (plan §8 strategy A). Outside that link-time
+ * trick, all access still flows through `openpete_psx_get_ram()`. */
+uint8_t g_ram[RAM_SIZE];
 static uint8_t g_scratch[SCRATCH_SIZE];
 
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }

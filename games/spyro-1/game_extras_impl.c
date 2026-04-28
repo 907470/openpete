@@ -189,7 +189,75 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * side per-frame hook gets a chance to run). */
 extern void func_8005595C(CPUState* cpu);  /* SpuInitialize */
 
+/* Phase 3 — first decomp function.
+ * `void main(void)` from spyro-1/src/main.c is compiled directly into
+ * this binary (renamed via -Dmain=spyro_native_main; the four file-scope
+ * globals it defines are link-aliased into PSX RAM via --defsym so
+ * recompiled MIPS sees the same bytes — see games/spyro-1/CMakeLists.txt).
+ * The outbound thunks Initialize/GamestateUpdate/GamestateDraw and the
+ * cpu-stash live in decomp/native_thunks.c. */
+extern void spyro_native_main(void);
+extern void spyro_native_set_cpu(CPUState* cpu);
+extern void spyro_native_run_psyq_main(void);
+
+/* Phase 4 — cd.c. spyro-1/src/cd.c is compiled directly; its four
+ * functions take over their PSX vaddrs via dispatch overrides. */
+extern void CDLoadTime(void);
+extern void CDReadDone(uint8_t intr, uint8_t* result);
+extern void CDLoadSync(int sector, void* buf, int size, int offset, int maxTime);
+extern void CDLoadAsync(int sector, void* buf, int size, int offset, int maxTime);
+
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+    /* Phase 3: native main replaces recompiled func_80012204. The native
+     * body calls the still-recompiled Initialize / GamestateUpdate /
+     * GamestateDraw via their func_<addr> symbols (no recursion — those
+     * addresses aren't intercepted here). */
+    if (addr == 0x80012204u) {
+        /* Stash cpu so the C-style outbound thunks (Initialize, etc.)
+         * can feed it into the recompiled callees. */
+        spyro_native_set_cpu(cpu);
+        /* GCC-emitted libgcc startup happens at the top of `main` on the
+         * PSYQ target; the host build skips it, so call it ourselves to
+         * preserve the pcsx-redux RAM-diff invariant. */
+        spyro_native_run_psyq_main();
+        spyro_native_main();
+        return 1;  /* unreachable — main loops forever */
+    }
+
+    /* Phase 4 — cd.c. Native bodies stand in for the recompiled func_<addr>
+     * versions. spyro_native_set_cpu so the outbound CD thunks (psyq_*)
+     * and the SoundsUpdate / CDMusicUpdate dispatch wrappers can find the
+     * active CPUState*. cd.c is reentrant via CDLoadTime → CDLoadSync's
+     * busy-loop, but the stashed cpu is the same fiber's, so re-stashing
+     * the same value is a no-op. */
+    if (addr == 0x800163E4u) {  /* CDLoadTime */
+        spyro_native_set_cpu(cpu);
+        CDLoadTime();
+        return 1;
+    }
+    if (addr == 0x80016490u) {  /* CDReadDone — CD-IRQ callback */
+        spyro_native_set_cpu(cpu);
+        uint8_t intr   = (uint8_t)(cpu->a0 & 0xFFu);
+        uint8_t* result = (uint8_t*)openpete_psx_to_host_ptr(cpu->a1);
+        CDReadDone(intr, result);
+        return 1;
+    }
+    if (addr == 0x80016500u) {  /* CDLoadSync */
+        spyro_native_set_cpu(cpu);
+        CDLoadSync((int)cpu->a0,
+                   openpete_psx_to_host_ptr(cpu->a1),
+                   (int)cpu->a2, (int)cpu->a3,
+                   (int)cpu->read_word(cpu->sp + 16));
+        return 1;
+    }
+    if (addr == 0x80016698u) {  /* CDLoadAsync */
+        spyro_native_set_cpu(cpu);
+        CDLoadAsync((int)cpu->a0,
+                    openpete_psx_to_host_ptr(cpu->a1),
+                    (int)cpu->a2, (int)cpu->a3,
+                    (int)cpu->read_word(cpu->sp + 16));
+        return 1;
+    }
     static int s_in_traced_call = 0;
     if (addr == 0x80023AC4u && !s_in_traced_call) {
         s_in_traced_call = 1;
