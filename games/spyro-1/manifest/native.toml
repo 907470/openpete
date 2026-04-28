@@ -60,6 +60,14 @@ c_name = "RandRange"
 name = "RandRangeSigned"
 c_name = "RandRangeSigned"
 
+# Stresses Pass 1 (Moby has many void* fields — relayout exercises the
+# header rewriter on a wide struct) + Pass 6 outbound discovery (VecCopy /
+# Memcpy fall out as recomp callees). No hand `[[dispatch]]` entry —
+# Pass 6 auto-discovers `CheckpointSave` from the source file with the
+# right args via libclang param introspection.
+[[native_source]]
+file = "src/checkpoint.c"
+
 # initialization.c + completion.c — re-enable gated on:
 #   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
 #     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
