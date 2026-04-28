@@ -159,44 +159,6 @@ void psyq_VSync(CPUState* cpu) {
         OPL_INFO_F("thunks", "VSync(%d) frame=%u (call #%u)",
                    mode, openpete_frame, calls);
     }
-    /* Level-1 game-over probe (task #9): after the 2nd loading transition the
-     * screen flashes and game-over fires within seconds. Confirmed via earlier
-     * coarse trace: gs jumps 14 → 13 → 4 (Respawn) at f~2340 with Spyro
-     * teleported to (84992,23542,-113244). Now zoom in on the transition. */
-    if (mode == 0 && openpete_frame >= 1500u) {
-        auto sr32 = [](uint32_t addr) -> uint32_t {
-            if (addr < 0x80000000u || addr >= 0x80200000u) return 0xFFFFFFFFu;
-            void* p = PTR(addr); return p ? *(uint32_t*)p : 0xFFFFFFFFu;
-        };
-        int gs        = (int)sr32(0x800757D8u);            /* g_Gamestate */
-        int level     = (int)sr32(0x8007596Cu);            /* g_LevelId */
-        int lives     = (int)sr32(0x8007582Cu);            /* g_SpyroLifeCount */
-        int sx        = (int)sr32(0x80078A58u +  0u);      /* m_Position.x */
-        int sy        = (int)sr32(0x80078A58u +  4u);      /* m_Position.y */
-        int sz        = (int)sr32(0x80078A58u +  8u);      /* m_Position.z */
-        int health    = (int)sr32(0x80078A58u + 0x164u);   /* m_health */
-
-        /* Log transitions (gs change OR lives change) at full resolution. */
-        static int s_prev_gs    = -1;
-        static int s_prev_lives = -1;
-        if (gs != s_prev_gs || lives != s_prev_lives) {
-            OPL_INFO_F("lvl1-fall",
-                       "TRANSITION f%u gs=%d->%d lvl=%d hp=%d lives=%d->%d "
-                       "pos=(%d,%d,%d)",
-                       openpete_frame,
-                       s_prev_gs, gs, level, health,
-                       s_prev_lives, lives, sx, sy, sz);
-            s_prev_gs    = gs;
-            s_prev_lives = lives;
-        }
-
-        /* Periodic snapshot every 30 frames as before. */
-        if ((openpete_frame % 30u) == 0u) {
-            OPL_INFO_F("lvl1-fall",
-                       "f%u gs=%d lvl=%d hp=%d lives=%d pos=(%d,%d,%d)",
-                       openpete_frame, gs, level, health, lives, sx, sy, sz);
-        }
-    }
     if (mode == 0) {
         if (openpete_fast_boot_until_frame > 0 &&
             (int)openpete_frame < openpete_fast_boot_until_frame) {
