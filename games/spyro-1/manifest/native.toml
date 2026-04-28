@@ -47,9 +47,10 @@ extra_flags = """\
 #   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
 #     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
 #   - struct-by-value semantics across the bridge (Pass 5)
-# Pass 1 fn-ptr substitution + the openpete_CdReadCallback bridge are in;
-# the remaining gap is a parameter-level convention for "this void* is
-# really a PSX vaddr" that the rewriter can't yet infer.
+# Speculative re-enable on top of Phase 3 plumbing builds + links cleanly
+# but boots into a hang during Initialize (after CDInitialize completes).
+# Actual root cause is downstream of Pass 1/2's coverage; revisit when
+# Pass 4/5 land.
 #[[native_source]]
 #file = "src/initialization.c"
 #extra_flags = "-DCdControl=openpete_CdControl"

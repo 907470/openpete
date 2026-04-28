@@ -37,6 +37,13 @@ python3 tools/build_manifest.py "$PSX_MAP" "$MANIFEST_DIR"
 # <stem>.redirects.txt (Pass 2 bare-global slots — gen_defsyms.py merges
 # them into the linker --defsym block below).
 mkdir -p "$REWRITTEN_DIR"
+# Wipe per-TU artifacts (discovered.toml / redirects.txt / rewritten.c)
+# so a TU dropped from native_source doesn't leak stale entries into
+# the merge step. Per-TU shadow include trees get wiped inside the
+# loop below.
+rm -f "$REWRITTEN_DIR"/*.discovered.toml \
+      "$REWRITTEN_DIR"/*.redirects.txt \
+      "$REWRITTEN_DIR"/*.rewritten.c
 NATIVE_SOURCES=$(python3 -c "
 import sys, tomli
 with open('$MANIFEST_DIR/native.toml','rb') as f:
@@ -90,4 +97,5 @@ python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch
                                  "$INCLUDE_DIR" "$REWRITTEN_DIR"
 python3 tools/gen_thunks.py      "$MANIFEST_DIR" "$GENERATED_DIR/native_thunks.cpp" \
                                  "$INCLUDE_DIR" "$PSYQ_INCLUDE_DIR" "$REWRITTEN_DIR"
-python3 tools/gen_renames.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_renames.h"
+python3 tools/gen_renames.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_renames.h" \
+                                 "$REWRITTEN_DIR"

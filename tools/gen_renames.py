@@ -33,7 +33,12 @@ Three classes of rename:
 in src/main.c, not a header).
 
 Usage:
-    gen_renames.py <manifest_dir> <out_h_path>
+    gen_renames.py <manifest_dir> <out_h_path> [<rewritten_dir>]
+
+If ``rewritten_dir`` is given, per-TU ``*.discovered.toml`` files are
+merged into the manifest before rendering (Pass 6 auto-manifest), so
+auto-discovered outbound_recomp entries with ``func_`` names get the
+``#define func_<ADDR> openpete_func_<ADDR>`` redirect.
 """
 from __future__ import annotations
 
@@ -45,13 +50,15 @@ from _manifest_lib import load_manifest, fail
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: gen_renames.py <manifest_dir> <out_h>", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print("usage: gen_renames.py <manifest_dir> <out_h> [<rewritten_dir>]",
+              file=sys.stderr)
         return 2
     manifest_dir = Path(argv[1])
     out_path = Path(argv[2])
+    rewritten_dir = Path(argv[3]) if len(argv) == 4 else None
 
-    native, sym_idx, _ = load_manifest(manifest_dir)
+    native, sym_idx, _ = load_manifest(manifest_dir, rewritten_dir)
     native_sources = {ns["file"] for ns in native.get("native_source", [])}
 
     lines = [

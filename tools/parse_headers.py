@@ -104,10 +104,19 @@ def type_to_marshal_token(c_type: str) -> str:
     return "u32"
 
 
+# `extern "C" {` and `extern "C++" {` linkage blocks aren't terminated
+# by `;`, so the `;`-split in parse_file leaves the opening fragment
+# glued to the next prototype. Strip them early.
+_LINKAGE_BLOCK_RE = re.compile(r'extern\s*"[^"]*"\s*\{')
+_LINKAGE_CLOSE_RE = re.compile(r'^\s*\}\s*$', re.MULTILINE)
+
+
 def _strip_comments_and_preproc(src: str) -> str:
     src = _BLOCK_COMMENT_RE.sub("", src)
     src = _LINE_COMMENT_RE.sub("", src)
     src = _PREPROC_RE.sub("", src)
+    src = _LINKAGE_BLOCK_RE.sub("", src)
+    src = _LINKAGE_CLOSE_RE.sub("", src)
     return src
 
 

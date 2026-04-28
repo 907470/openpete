@@ -58,26 +58,37 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
             if n in hand_dispatch or n in seen_dispatch:
                 continue
             seen_dispatch.add(n)
-            native.setdefault("dispatch", []).append({
+            entry = {
                 "name": n,
                 "addr": e["addr"],
                 "c_name": n,
-            })
+            }
+            if "args" in e:
+                entry["args"] = e["args"]
+            native.setdefault("dispatch", []).append(entry)
         for e in d.get("discovered_outbound_recomp", []):
             n = e["name"]
             if n in hand_recomp or n in seen_recomp or n in skip_recomp:
                 continue
             seen_recomp.add(n)
-            native.setdefault("outbound_recomp", []).append({"name": n})
-        for e in d.get("discovered_outbound_psyq", []):
-            n = e["psyq_name"]
-            if n in hand_psyq or n in seen_psyq or n in skip_psyq:
-                continue
-            seen_psyq.add(n)
-            native.setdefault("outbound_psyq", []).append({
-                "psyq_name": n,
-                "c_name": f"openpete_{n}",
-            })
+            entry = {"name": n}
+            # `func_<addr>` recomp callees collide at link with the
+            # recompiled MIPS body of the same name; route the host
+            # thunk through an `openpete_` prefix so source-level
+            # callers (post Pass 0 rename) hit the thunk and the
+            # recomp body still owns its symbol.
+            if n.startswith("func_"):
+                entry["c_name"] = f"openpete_{n}"
+            native.setdefault("outbound_recomp", []).append(entry)
+        # Auto-emitting PSYQ thunks is a no-op until Pass 0 (source-level
+        # renames driven by tweaks.toml) lands. Source-level `LoadImage(...)`
+        # link-resolves to PsyCross's host symbol directly today; an
+        # `openpete_LoadImage` thunk would be dead code. Keep the hand list
+        # authoritative for outbound_psyq for now — discovery still
+        # populates the `*.discovered.toml` so the diagnostic diff surfaces
+        # mismatches, but the merge step doesn't fold psyq into the
+        # generators' input.
+        _ = d.get("discovered_outbound_psyq", [])
 
 
 def load_manifest(manifest_dir: Path,

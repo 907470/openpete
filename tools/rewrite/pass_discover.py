@@ -33,6 +33,34 @@ from typing import Dict, List, Optional, Set
 import clang.cindex as ci
 
 
+def _arg_token(ty: ci.Type, idx: int) -> str:
+    """libclang Type → dispatch marshalling token (u32 / u8 / ptr / stack_u32)."""
+    canon = ty.get_canonical()
+    kind = canon.kind
+    if kind in (ci.TypeKind.POINTER, ci.TypeKind.INCOMPLETEARRAY,
+                ci.TypeKind.CONSTANTARRAY, ci.TypeKind.VARIABLEARRAY):
+        tok = "ptr"
+    elif kind in (ci.TypeKind.UCHAR, ci.TypeKind.SCHAR, ci.TypeKind.CHAR_S,
+                  ci.TypeKind.CHAR_U):
+        tok = "u8"
+    else:
+        tok = "u32"
+    if idx < 4:
+        return tok
+    offset = 16 + (idx - 4) * 4
+    return f"stack_u32:{offset}"
+
+
+def _derive_dispatch_args(fn_decl: ci.Cursor) -> list[str]:
+    """Pull the parameter list from a function-definition cursor and
+    convert each to a dispatch marshalling token. Empty list for a
+    `void`-arg function."""
+    args: list[str] = []
+    for idx, p in enumerate(fn_decl.get_arguments()):
+        args.append(_arg_token(p.type, idx))
+    return args
+
+
 def _is_psyq_header(path: str) -> bool:
     """Header declares a PSYQ-surface API.
 
@@ -56,7 +84,8 @@ def _is_game_source(path: str, native_files: Set[str]) -> bool:
 
 @dataclass
 class DiscoverResult:
-    # Functions defined in this TU's main source file. (name, psx_addr)
+    # Functions defined in this TU's main source file.
+    # (name, psx_addr, args_tokens)
     dispatch: List[tuple] = dc_field(default_factory=list)
     # Function names called from this TU and resolved to symbols.toml.
     outbound_recomp: List[str] = dc_field(default_factory=list)
@@ -95,7 +124,8 @@ def run(tu_cursor: ci.Cursor,
             seen_dispatch.add(name)
             addr = symbols.get(name)
             if addr is not None:
-                result.dispatch.append((name, addr))
+                args = _derive_dispatch_args(c)
+                result.dispatch.append((name, addr, args))
 
         # --- Call sites → outbound classification -------------------------
         if c.kind == ci.CursorKind.CALL_EXPR:
@@ -160,10 +190,12 @@ def render_toml(stem: str, result: DiscoverResult) -> str:
         "# Hand entries in native.toml override these on conflict.",
         "",
     ]
-    for name, addr in result.dispatch:
+    for name, addr, args in result.dispatch:
         out.append("[[discovered_dispatch]]")
         out.append(f'name = "{name}"')
         out.append(f"addr = 0x{addr:08X}")
+        rendered_args = ", ".join(f'"{a}"' for a in args)
+        out.append(f"args = [{rendered_args}]")
         out.append("")
     for name in result.outbound_recomp:
         out.append("[[discovered_outbound_recomp]]")
