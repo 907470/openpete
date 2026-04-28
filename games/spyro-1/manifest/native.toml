@@ -151,6 +151,12 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/camera.c"
 
+# spu.c — deferred. Pass 1 overlap on
+# `g_Spu.m_SoundDefinitions[pSoundId].m_Addr`. Same composition class
+# as cutscene/4BEF8/special_surfaces.
+#[[native_source]]
+#file = "src/spu.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
