@@ -18,6 +18,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PSX_MAP="${PSX_MAP:-../spyro-1/build/psx.map}"
+INCLUDE_DIR="${INCLUDE_DIR:-../spyro-1/include}"
+PSYQ_INCLUDE_DIR="${PSYQ_INCLUDE_DIR:-third_party/PsyCross/include/psx}"
 MANIFEST_DIR="games/spyro-1/manifest"
 GENERATED_DIR="games/spyro-1/generated"
 
@@ -28,4 +30,6 @@ fi
 
 python3 tools/build_manifest.py "$PSX_MAP" "$MANIFEST_DIR"
 python3 tools/gen_defsyms.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_aliases.cmake"
-python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch.c"
+python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch.c" "$INCLUDE_DIR"
+python3 tools/gen_thunks.py      "$MANIFEST_DIR" "$GENERATED_DIR/native_thunks.cpp" \
+                                 "$INCLUDE_DIR" "$PSYQ_INCLUDE_DIR"

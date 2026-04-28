@@ -25,14 +25,16 @@ add_executable(openpete-spyro1
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # DIRECTLY from the matching-decomp tree (no shim layer). Each TU is
-    # added with custom flags below; outbound thunks live in decomp/.
+    # added with custom flags below; outbound thunks are generated.
     spyro-1/src/main.c
     spyro-1/src/cd.c
-    decomp/native_thunks.c
-    decomp/openpete_cd_thunks.cpp
 
-    # Generated from manifest/native.toml by tools/gen_dispatch.py.
+    # Generated from manifest/native.toml by tools/gen_dispatch.py +
+    # tools/gen_thunks.py. native_dispatch.c is the inbound override
+    # switch (recomp → native); native_thunks.cpp is the outbound side
+    # (native → recomp / native → PSYQ).
     ${SPYRO_GENERATED}/native_dispatch.c
+    ${SPYRO_GENERATED}/native_thunks.cpp
 
     # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
     # `psx_dispatch_main_exe` by regen-recomp.sh.
@@ -156,11 +158,11 @@ set_source_files_properties(
 )
 
 # Phase 4 — compile spyro-1/src/cd.c directly. Routes its PSYQ Cd*
-# calls through outbound thunks (decomp/openpete_cd_thunks.cpp) so the
-# Spyro-specific enhancements in psyq_thunks.cpp (XA streaming arm,
+# calls through the generated outbound thunks (native_thunks.cpp) so
+# the Spyro-specific enhancements in psyq_thunks.cpp (XA streaming arm,
 # CdSync XA pump, …) stay in the path. Spyro-internal callees
-# (SoundsUpdate, CDMusicUpdate) get small wrapper bodies in the same
-# thunks file that bounce back into psx_dispatch_compiled.
+# (SoundsUpdate, CDMusicUpdate) likewise route through the generated
+# thunks file back into psx_dispatch_compiled.
 set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
     PROPERTIES
@@ -172,7 +174,7 @@ set_source_files_properties(
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )
 set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/decomp/openpete_cd_thunks.cpp
+    ${SPYRO_GENERATED}/native_thunks.cpp
     PROPERTIES
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )

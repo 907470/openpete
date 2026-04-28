@@ -42,15 +42,16 @@ extra_flags = """\
 
 # Entry points where psx_dispatch_compiled should jump into a native C
 # function instead of running the recompiled MIPS body. The generator
-# emits one `if (addr == X) ...` per entry into the override hook.
+# emits one `case 0xADDR ...` per entry into the override switch.
 #
-# `args` describes how to unpack a0..a3 (and stack slots beyond) into
-# the C signature — kept declarative so the generator stays simple.
-# Supported shapes:
-#   "u32"        — pass cpu->aN directly
-#   "u8"         — pass (uint8_t)(cpu->aN & 0xFF)
-#   "ptr"        — openpete_psx_to_host_ptr(cpu->aN)
-#   "stack_u32"  — cpu->read_word(cpu->sp + offset)
+# Argument marshalling is auto-derived from the C signature in
+# spyro-1/include/<name>.h. To override (or to handle functions whose
+# header isn't visible — main()'s decl lives inside src/main.c), set
+# `args = [...]` explicitly. Supported tokens:
+#   "u32"           — pass cpu->aN directly
+#   "u8"            — pass (uint8_t)(cpu->aN & 0xFF)
+#   "ptr"           — openpete_psx_to_host_ptr(cpu->aN)
+#   "stack_u32:OFF" — cpu->read_word(cpu->sp + OFF)
 #
 # `psyq_main = true` runs psyq___main(cpu) before the body — needed for
 # main() so the C runtime crt0 fires.
@@ -59,28 +60,71 @@ addr = 0x80012204
 name = "main"
 c_name = "spyro_native_main"
 psyq_main = true
-args = []
+args = []  # main() isn't in include/, so spec it here
 
 [[dispatch]]
 addr = 0x800163E4
 name = "CDLoadTime"
 c_name = "CDLoadTime"
-args = []
 
 [[dispatch]]
 addr = 0x80016490
 name = "CDReadDone"
 c_name = "CDReadDone"
-args = ["u8", "ptr"]
 
 [[dispatch]]
 addr = 0x80016500
 name = "CDLoadSync"
 c_name = "CDLoadSync"
-args = ["u32", "ptr", "u32", "u32", "stack_u32:16"]
 
 [[dispatch]]
 addr = 0x80016698
 name = "CDLoadAsync"
 c_name = "CDLoadAsync"
-args = ["u32", "ptr", "u32", "u32", "stack_u32:16"]
+
+# Outbound — native code calling into still-recompiled MIPS. Used when a
+# native TU references a function whose body hasn't been migrated yet
+# (e.g. main() calls Initialize/GamestateUpdate, cd.c calls SoundsUpdate
+# / CDMusicUpdate). The thunk packs args from host-ABI into cpu->aN and
+# invokes psx_dispatch_compiled(cpu, addr). Signatures from
+# spyro-1/include/.
+[[outbound_recomp]]
+addr = 0x800127C0
+name = "Initialize"
+
+[[outbound_recomp]]
+addr = 0x8003385C
+name = "GamestateUpdate"
+
+[[outbound_recomp]]
+addr = 0x8001ED5C
+name = "GamestateDraw"
+
+[[outbound_recomp]]
+addr = 0x8005637C
+name = "SoundsUpdate"
+
+[[outbound_recomp]]
+addr = 0x8002BBE0
+name = "CDMusicUpdate"
+
+# Outbound — native code calling PSYQ-compatible wrappers. Used when
+# cd.c calls Cd*; we route through psyq_<NAME>(cpu) (psyq_thunks.cpp)
+# rather than PsyCross's raw entry, because the psyq_* layer carries
+# Spyro-specific enhancements (XA streaming arm in psyq_CdControl,
+# XA pump in psyq_CdSync, etc.). Signatures from PsyCross libcd.h.
+[[outbound_psyq]]
+psyq_name = "CdControl"
+c_name = "openpete_CdControl"
+
+[[outbound_psyq]]
+psyq_name = "CdRead"
+c_name = "openpete_CdRead"
+
+[[outbound_psyq]]
+psyq_name = "CdSync"
+c_name = "openpete_CdSync"
+
+[[outbound_psyq]]
+psyq_name = "CdIntToPos"
+c_name = "openpete_CdIntToPos"

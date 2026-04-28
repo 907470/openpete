@@ -16,8 +16,15 @@ slots) into the C call. Supported tokens:
 `psyq_main = true` runs psyq___main(cpu) before the body so a global
 ctor / crt0 fires (used for main()).
 
+If a [[dispatch]] entry omits `args`, the generator pulls the C
+signature from spyro-1/include/ (via parse_headers.py) and derives
+the marshalling tokens automatically. Override by listing `args =
+[...]` explicitly — needed when the header isn't visible (e.g. main()
+is declared inside src/main.c, not in include/) or when the heuristic
+type-mapping is wrong.
+
 Usage:
-    gen_dispatch.py <manifest_dir> <out_c_path>
+    gen_dispatch.py <manifest_dir> <out_c_path> [<include_dir>]
 """
 from __future__ import annotations
 
@@ -26,9 +33,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _manifest_lib import load_manifest, fail
+from parse_headers import load_signatures, Signature
 
 
 REG_FOR_INDEX = ["a0", "a1", "a2", "a3"]
+
+
+def _render_extern(sig: Signature, c_name: str) -> str:
+    """Render `RetType c_name(params)` from a parsed Signature.
+
+    The matching-decomp tree often uses PSYQ types we don't pull in
+    here (u_char, CdlLOC, …). We rewrite a small set to portable
+    stand-ins so the forward decl compiles against just <stdint.h>;
+    the actual definition compiled inside spyro-1/src/*.c uses the
+    real types via -include psyq_compat.h."""
+    type_aliases = {
+        "u_char": "uint8_t", "u_short": "uint16_t",
+        "u_int": "uint32_t", "u_long": "uint32_t",
+    }
+    def rewrite(t: str) -> str:
+        for k, v in type_aliases.items():
+            t = t.replace(k, v)
+        # Pointer to a non-portable type → void* (signature-compatible
+        # at the ABI level — host pointers, all 8 bytes wide).
+        if "*" in t and any(c.isalpha() for c in t.replace("*", "").strip()):
+            kept = t.split("*")[0].strip()
+            if kept and kept not in {"void", "char", "uint8_t", "uint16_t", "uint32_t",
+                                      "int", "long", "short", "unsigned", "signed",
+                                      "float", "double"}:
+                return "void*"
+        return t
+
+    ret = rewrite(sig.return_type)
+    if not sig.params:
+        return f"{ret} {c_name}(void)"
+    rendered = ", ".join(rewrite(ty) + (f" {n}" if n else "")
+                         for ty, n in sig.params)
+    return f"{ret} {c_name}({rendered})"
 
 
 def render_arg(idx: int, token: str) -> tuple[str, str | None]:
@@ -80,18 +121,25 @@ def emit_case(d: dict) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: gen_dispatch.py <manifest_dir> <out_c>", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print("usage: gen_dispatch.py <manifest_dir> <out_c> [<include_dir>]",
+              file=sys.stderr)
         return 2
     manifest_dir = Path(argv[1])
     out_path = Path(argv[2])
+    include_dir = Path(argv[3]) if len(argv) == 4 else None
 
     native, sym_idx, _glob = load_manifest(manifest_dir)
     dispatch = native.get("dispatch", [])
     if not dispatch:
         fail("native.toml has no [[dispatch]] entries")
 
-    # Sanity-check addresses against the parsed symbols manifest.
+    sigs: dict[str, Signature] = {}
+    if include_dir is not None:
+        sigs = load_signatures(include_dir)
+
+    # Sanity-check addresses against the parsed symbols manifest, and
+    # auto-fill `args` from the parsed header signature if missing.
     by_addr = sym_idx["by_addr"]
     for d in dispatch:
         sym = by_addr.get(d["addr"])
@@ -100,14 +148,33 @@ def main(argv: list[str]) -> int:
         if sym["name"] != d["name"]:
             fail(f"[[dispatch]] addr 0x{d['addr']:08X} maps to {sym['name']!r}, "
                  f"not {d['name']!r}")
+        if "args" not in d:
+            sig = sigs.get(d["name"])
+            if sig is None:
+                fail(f"[[dispatch]] {d['name']}: no `args` and no header sig "
+                     f"(declare in spyro-1/include/ or set args = [...] in native.toml)")
+            d["args"] = sig.args_tokens()
 
-    # Collect unique extern decls — c_name signatures aren't expressed
-    # here (we'd need a header parser), so we forward-declare with the
-    # exact arg types the marshalling produces. For now emit `extern`
-    # forward decls only for the no-arg / well-known cases; everything
-    # else relies on the existing decl in game_extras_impl.c or its headers.
-    # Simpler: don't emit any forward decls — let the caller include the
-    # right header. This generator only writes the override hook body.
+    # Forward decls for each dispatch target, derived from headers
+    # where possible. Spyro's headers aren't on this TU's include path
+    # (the matching-decomp tree pulls in PSYQ/libgte/etc which collide
+    # with PsyCross), so we rebuild a minimal extern signature here.
+    fwd_lines = [
+        "/* Glue from games/spyro-1/decomp/native_thunks.c. */",
+        "extern void spyro_native_set_cpu(CPUState* cpu);",
+        "extern void spyro_native_run_psyq_main(void);",
+        "",
+        "/* Forward decls — auto-derived from spyro-1/include/, except where",
+        " * the manifest carries an explicit `args = [...]` override. */",
+    ]
+    for d in dispatch:
+        sig = sigs.get(d["name"])
+        if sig is not None:
+            fwd_lines.append(f"extern {_render_extern(sig, d['c_name'])};")
+        else:
+            # No header: emit a void-no-arg fallback. Works for main()
+            # and other manifest-only entries.
+            fwd_lines.append(f"extern void {d['c_name']}(void);")
 
     header = (
         "/* Auto-generated by tools/gen_dispatch.py — do not edit. */\n"
@@ -117,18 +184,7 @@ def main(argv: list[str]) -> int:
         "\n"
         "#include <stdint.h>\n"
         "\n"
-        "/* Glue from games/spyro-1/decomp/native_thunks.c. */\n"
-        "extern void spyro_native_set_cpu(CPUState* cpu);\n"
-        "extern void spyro_native_run_psyq_main(void);\n"
-        "extern void spyro_native_main(void);\n"
-        "\n"
-        "/* Forward decls for the rest of the dispatch targets — declared in\n"
-        " * matching-decomp headers, but those aren't on the include path here.\n"
-        " * Listed manually until a header parser lands. */\n"
-        "extern void CDLoadTime(void);\n"
-        "extern void CDReadDone(uint8_t intr, void* result);\n"
-        "extern void CDLoadSync(int sector, void* buf, int size, int offset, int maxTime);\n"
-        "extern void CDLoadAsync(int sector, void* buf, int size, int offset, int maxTime);\n"
+        + "\n".join(fwd_lines) + "\n"
         "\n"
         "int spyro_native_dispatch(CPUState* cpu, uint32_t addr) {\n"
         "    switch (addr) {\n"
