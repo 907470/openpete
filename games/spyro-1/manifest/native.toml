@@ -25,7 +25,13 @@ alias_globals_skip = []
 #                    PsyCross's CdInit; no rename is in flight, so the
 #                    auto thunk would just be dead code.
 outbound_psyq_skip = ["CdReadCallback", "CdInit"]
-outbound_recomp_skip = []
+# `rand` — Pass 6 discovers calls to rand() in src/rand.c and would emit
+# an outbound_recomp thunk with bare c_name "rand", which then shadows
+# libc's rand at link time (under --allow-multiple-definition). Any
+# libc-using code that called rand() — including the host runtime —
+# would land in the recomp dispatcher and crash. Suppress the auto entry
+# so the native call resolves directly to libc rand.
+outbound_recomp_skip = ["rand"]
 
 # Decomp C TUs to compile and link natively (relative to spyro-1/).
 # Each entry can carry per-TU compile-flag fragments the generator pastes
@@ -42,6 +48,23 @@ extra_flags = """\
 -DCdSync=openpete_CdSync \
 -DCdIntToPos=openpete_CdIntToPos\
 """
+
+# Tiny, self-contained — two helpers around libc rand(). Stresses Pass 6
+# discovery (RandRange / RandRangeSigned both end up as [[dispatch]]
+# entries) and confirms the no-globals / no-GTE migration path. The
+# source-level rand() resolves to libc rand at link time — see the
+# `rand` entry in `outbound_recomp_skip` above for why the auto-thunk
+# is suppressed.
+[[native_source]]
+file = "src/rand.c"
+
+[[dispatch]]
+name = "RandRange"
+c_name = "RandRange"
+
+[[dispatch]]
+name = "RandRangeSigned"
+c_name = "RandRangeSigned"
 
 # initialization.c + completion.c — re-enable gated on:
 #   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
