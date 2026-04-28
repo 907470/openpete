@@ -113,6 +113,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--fast-boot-until-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fast_boot_until_frame = atoi(v); i++;
+        } else if (strcmp(a, "--skip-to-level") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->skip_to_level = atoi(v); i++;
         } else if (strcmp(a, "--bk2") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_path = v; i++;
@@ -192,6 +195,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
                 "  --fast-boot-until-frame N  bypass host-yield in VSync(0) until frame N (skips boot intro)\n"
+                "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
                 "  --sfx on|off|N             override Spyro's SOUND EFFECTS slider (0..10; default off)\n"
                 "  --music on|off|N           override Spyro's MUSIC slider (0..10; default off)\n",
                 opts->display_name, argv[0]);

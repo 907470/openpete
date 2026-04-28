@@ -166,6 +166,17 @@ typedef struct {
      * so SIGTERM/Ctrl-C against the run still produces a usable movie as
      * long as core/runtime/run.c reaches its cleanup block. */
     const char* bk2_record_path;
+
+    /* Skip the title screen / save-file picker and load directly into a
+     * specific level. The game's natural post-intro path puts the title
+     * screen in TSM_Demo + TSD_Level mode, which loads whatever
+     * g_LevelId is set to. We hook that exact moment in the per-game
+     * impl, override g_LevelId/g_NextLevelId, and let the state machine
+     * do its normal flyby + load — no state corruption. 0 = disabled.
+     * Spyro 1 level IDs: 10/20/30/40/50/60 are homeworlds, +1..3 are
+     * regular levels, +4 is the flight/speedway level, 63 is Gnasty's
+     * lair. Pair with --fast-boot-until-frame to skip the splashes. */
+    int skip_to_level;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

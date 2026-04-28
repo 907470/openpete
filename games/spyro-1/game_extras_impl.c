@@ -86,6 +86,37 @@ void game_set_sfx_volume(int value) {
     s_sfx_applied = 0;
 }
 
+/* --skip-to-level: load directly into a specific level instead of the
+ * normal title-screen + Press-Start + save-file-picker flow.
+ *
+ * Strategy: don't fight the state machine — induce the same transition
+ * the title's 990-tick demo timeout takes (overlays/titlescreen.c:190),
+ * but seeded so it loads our target. The natural flow is:
+ *   TSM_Init SubState 5 (timeout) -> m_Mode=TSM_Demo, m_State=TSS_Setup,
+ *                                    m_DemoType=TSD_DemoLevel
+ * TSS_Setup with TSD_DemoLevel (gamestates/update.c:636) then runs:
+ *   func_8001277C();                     // Reset progress/lives/dragons
+ *   levelId = g_DemoLevelIds[g_DemoIndex];
+ *   g_LevelId = levelId; g_NextLevelId = levelId;
+ * Followed by TSS_Loading -> LoadLevel(1) loop and TSS_Active flyby.
+ *
+ * So we just need to (a) overwrite g_DemoLevelIds[g_DemoIndex] with our
+ * target, (b) force the same TSM_Init->TSM_Demo transition the timeout
+ * path takes. The state machine handles state reset, level load, and
+ * flyby intro for us — exactly what a real "Start the demo" path does.
+ *
+ * Hook point: TSM_Init SubState 3 (Press-Start wait, after the title's
+ * own load + intro animation finish). Triggering earlier risks racing
+ * the CD-load of titlescreen data; later (SubState 4/5) means the user
+ * already pressed Start or the timeout already fired. */
+static int s_skip_to_level    = 0;
+static int s_skip_applied     = 0;
+
+void game_set_skip_to_level(int level_id) {
+    s_skip_to_level = level_id;
+    s_skip_applied  = 0;
+}
+
 void game_set_music_volume(int value) {
     s_music_volume_override = value;
     s_music_applied = 0;
@@ -114,6 +145,71 @@ void game_set_music_volume(int value) {
  * menu — that path also rewrites m_SoundVolume, which we don't fight. */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* --skip-to-level: induce the title's demo-timeout transition early,
+     * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp
+     * g_DemoMode = DEMO_MODE_NONE so the user controls Spyro instead of
+     * the AI. (TSD_DemoLevel sets g_DemoMode = PLAY at tick 384 of the
+     * flyby; that's the *only* thing that distinguishes "watch demo"
+     * from "actually play" — the same TSM_Demo + LoadLevel + flyby
+     * sequence runs when a real player picks "New Game".) Using
+     * TSD_DemoLevel (vs TSD_Level) gets us func_8001277C's free
+     * progress/lives/health reset, which a freshly-booted TSD_Level
+     * skip would otherwise miss.
+     *
+     * Addresses (spyro-1/manifest/globals.toml):
+     *   g_Gamestate         = 0x800757D8  (GS_TitleScreen = 13,
+     *                                      GS_Playing = 0)
+     *   g_DemoMode          = 0x80075714  (clamp to 0 each frame)
+     *   g_DemoLevelIds      = 0x8006EE7C  (int[] in .data)
+     *   g_DemoIndex         = 0x800757B8
+     *   g_TitlescreenState  = 0x80078D78
+     *     +0x00 m_Mode      (TSM_Init=0, TSM_Demo=3)
+     *     +0x04 m_State     (TSS_Setup=0)
+     *     +0x10 m_SubState  (TSM_Init's =3 means "Press Start" wait)
+     *     +0x1C m_DemoType  (TSD_DemoLevel=2)
+     */
+    if (s_skip_to_level > 0) {
+        if (!s_skip_applied) {
+            uint32_t gs       = cpu->read_word(0x800757D8u);
+            uint32_t tsm_mode = cpu->read_word(0x80078D78u + 0x00u);
+            uint32_t tsm_sub  = cpu->read_word(0x80078D78u + 0x10u);
+            if (gs == 13u && tsm_mode == 0u /*TSM_Init*/ && tsm_sub == 3u) {
+                uint32_t demo_idx = cpu->read_word(0x800757B8u);
+                uint32_t slot     = 0x8006EE7Cu + (demo_idx * 4u);
+                cpu->write_word(slot, (uint32_t)s_skip_to_level);
+                cpu->write_word(0x80078D78u + 0x00u, 3u); /* m_Mode = TSM_Demo */
+                cpu->write_word(0x80078D78u + 0x04u, 0u); /* m_State = TSS_Setup */
+                cpu->write_word(0x80078D78u + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
+                s_skip_applied = 1;
+                fprintf(stderr,
+                        "[skip-to-level] induced demo-transition: level=%d "
+                        "(slot=%u) at frame=%u\n",
+                        s_skip_to_level, (unsigned)demo_idx,
+                        (unsigned)frame_counter);
+            }
+        } else {
+            /* After TSS_Setup runs, downgrade m_DemoType from TSD_DemoLevel
+             * to TSD_Level. TSS_Setup uses TSD_DemoLevel to call
+             * func_8001277C() (free progress/lives reset), but the
+             * tick-384 hand-off code (gamestates/update.c:770) gates
+             * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel — leaving it
+             * set means LoadLevel's stage-13 pass runs the demo-input
+             * playback path (loaders.c:672). Switching DemoType to
+             * TSD_Level once Setup is done sidesteps both. Belt-and-
+             * suspenders: also clamp g_DemoMode=0 while we're still on
+             * the title-screen overlay, in case any path we missed
+             * sneaks PLAY through. */
+            uint32_t gs     = cpu->read_word(0x800757D8u);
+            uint32_t tsm_st = cpu->read_word(0x80078D78u + 0x04u);
+            if (gs == 13u /*GS_TitleScreen*/) {
+                if (tsm_st != 0u /* past TSS_Setup */) {
+                    cpu->write_word(0x80078D78u + 0x1Cu, 1u); /* TSD_Level */
+                }
+                cpu->write_word(0x80075714u, 0u); /* DEMO_MODE_NONE */
+            }
+        }
+    }
 
     /* SFX is one-shot: nothing in the rest of the game's normal flow
      * rewrites m_SoundVolume, so the SpuInitialize stamp holds. */
