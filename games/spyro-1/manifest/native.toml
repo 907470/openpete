@@ -109,6 +109,9 @@ file = "src/specular_and_metal.c"
 #[[native_source]]
 #file = "src/4BEF8.c"
 
+[[native_source]]
+file = "src/music.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
@@ -201,8 +204,10 @@ name = "GamestateDraw"
 [[outbound_recomp]]
 name = "SoundsUpdate"
 
-[[outbound_recomp]]
-name = "CDMusicUpdate"
+# CDMusicUpdate now has a native body in src/music.c — Pass 6 picks it
+# up as a [[dispatch]] entry. Direct callers from other native TUs link
+# to the native body; the recomp body remains as a fallback if dispatch
+# misses.
 
 # init.c-only outbound entries — gated with init.c's re-enable.
 #[[outbound_recomp]]
