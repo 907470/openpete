@@ -112,9 +112,15 @@ if(NOT CMAKE_HOST_WIN32)
     # (Win32 SEH unhandled-exception filter, behind `#ifdef _WIN32`). The
     # rest of core/ must remain game-agnostic AND platform-agnostic, so
     # keep the grep-guard but exclude the crash file.
+    # The address regex matches Spyro-specific addresses like 0x80012204
+    # AND generic PSX bus constants like 0x80000000 (KSEG0 base). We only
+    # care about the former, so allow `#define`d named constants through —
+    # OPENPETE_PSX_KSEG0_BASE etc. live in openpete_psx.h precisely so
+    # core/ doesn't carry bare hex literals for them. grep-pipe-grep keeps
+    # the check under POSIX bash without needing PCRE lookarounds.
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
-        COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp'"
+        COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
         COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)

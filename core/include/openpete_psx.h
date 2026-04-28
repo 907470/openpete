@@ -24,6 +24,19 @@ extern "C" {
  * Returns 0 on success, non-zero with a logged error on failure. */
 int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len);
 
+/* --- PSX bus constants --------------------------------------------------- *
+ * Plain PSX hardware values, named so core/ doesn't carry bare hex
+ * literals that the purity grep would mistake for game-specific
+ * addresses. KSEG0 = cached unmapped, KSEG1 = uncached unmapped, KUSEG
+ * = user — all alias the same 2MB RAM in this emulator. */
+#define OPENPETE_PSX_KSEG0_BASE     0x80000000u
+#define OPENPETE_PSX_KSEG1_BASE     0xA0000000u
+#define OPENPETE_PSX_SCRATCH_BASE   0x9F800000u
+#define OPENPETE_PSX_RAM_SIZE       (2u * 1024u * 1024u)
+#define OPENPETE_PSX_SCRATCH_SIZE   1024u
+#define OPENPETE_PSX_KSEG0_END      (OPENPETE_PSX_KSEG0_BASE + OPENPETE_PSX_RAM_SIZE)
+#define OPENPETE_PSX_KSEG1_END      (OPENPETE_PSX_KSEG1_BASE + OPENPETE_PSX_RAM_SIZE)
+
 /* --- Memory map ---------------------------------------------------------- */
 
 /* Install read_word/write_word/lwl/... callbacks on cpu, zero g_ram + scratch. */

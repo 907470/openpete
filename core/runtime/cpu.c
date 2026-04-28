@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RAM_SIZE      (2u * 1024u * 1024u)
-#define SCRATCH_SIZE  (1024u)
+#define RAM_SIZE      OPENPETE_PSX_RAM_SIZE
+#define SCRATCH_SIZE  OPENPETE_PSX_SCRATCH_SIZE
 
 /* g_ram is non-static so per-game decomp builds can use linker
  * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
@@ -45,10 +45,10 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
     if (host_ptr == NULL) return 0u;
     const uint8_t* p = (const uint8_t*)host_ptr;
     if (p >= g_ram && p < g_ram + RAM_SIZE) {
-        return 0x80000000u | (uint32_t)(p - g_ram);
+        return OPENPETE_PSX_KSEG0_BASE | (uint32_t)(p - g_ram);
     }
     if (p >= g_scratch && p < g_scratch + SCRATCH_SIZE) {
-        return 0x9F800000u | (uint32_t)(p - g_scratch);
+        return OPENPETE_PSX_SCRATCH_BASE | (uint32_t)(p - g_scratch);
     }
     /* Integer-cast-to-pointer fallback: matching-decomp source occasionally
      * computes a "pointer" by arithmetic on a vaddr literal — e.g.
@@ -60,9 +60,9 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
     uintptr_t raw = (uintptr_t)host_ptr;
     uint32_t lo = (uint32_t)raw;
     uint32_t phys = lo & 0x1FFFFFFFu;
-    if ((lo >= 0x80000000u && lo < 0x80200000u) ||
-        (lo >= 0xA0000000u && lo < 0xA0200000u) ||
-        (lo < 0x00200000u && phys < RAM_SIZE)) {
+    if ((lo >= OPENPETE_PSX_KSEG0_BASE && lo < OPENPETE_PSX_KSEG0_END) ||
+        (lo >= OPENPETE_PSX_KSEG1_BASE && lo < OPENPETE_PSX_KSEG1_END) ||
+        (lo < RAM_SIZE && phys < RAM_SIZE)) {
         return lo;
     }
     return 0u;
