@@ -14,6 +14,19 @@
 # headers into that table — keep this above the array-of-tables blocks.
 alias_globals_skip = []
 
+# Names whose host-side thunk is already hand-written, or whose source-
+# level call resolves directly to a PsyCross symbol (no thunk needed).
+# Suppressed from gen_thunks's auto-emitted output:
+#
+#   CdReadCallback — psyq_thunks.cpp's hand-written bridge registers a
+#                    host-side native callback (not a recomp dispatch
+#                    back into PSX). Auto-thunk shape is wrong.
+#   CdInit         — cd.c's `CdInit()` link-resolves directly to
+#                    PsyCross's CdInit; no rename is in flight, so the
+#                    auto thunk would just be dead code.
+outbound_psyq_skip = ["CdReadCallback", "CdInit"]
+outbound_recomp_skip = []
+
 # Decomp C TUs to compile and link natively (relative to spyro-1/).
 # Each entry can carry per-TU compile-flag fragments the generator pastes
 # into the CMakeLists fragment alongside the SPYRO_DECOMP_BASE_FLAGS.

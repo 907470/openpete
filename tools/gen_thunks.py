@@ -21,6 +21,11 @@ recomp callees and PsyCross/include/psx/ for the PSYQ wrappers.
 
 Usage:
     gen_thunks.py <manifest_dir> <out_cpp> <spyro_include> <psyq_include>
+                  [<rewritten_dir>]
+
+If ``rewritten_dir`` is given, per-TU ``*.discovered.toml`` files under it
+are merged into the outbound_{recomp,psyq} sets; hand entries in
+native.toml override auto-discovered ones with the same name.
 """
 from __future__ import annotations
 
@@ -194,16 +199,18 @@ def build_psyq_externs(psyq_entries: list[dict]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 5:
+    if len(argv) not in (5, 6):
         print("usage: gen_thunks.py <manifest_dir> <out_cpp> "
-              "<spyro_include> <psyq_include>", file=sys.stderr)
+              "<spyro_include> <psyq_include> [<rewritten_dir>]",
+              file=sys.stderr)
         return 2
     manifest_dir = Path(argv[1])
     out_path = Path(argv[2])
     spyro_inc = Path(argv[3])
     psyq_inc = Path(argv[4])
+    rewritten_dir = Path(argv[5]) if len(argv) == 6 else None
 
-    native, sym_idx, _ = load_manifest(manifest_dir)
+    native, sym_idx, _ = load_manifest(manifest_dir, rewritten_dir)
     recomp = native.get("outbound_recomp", [])
     psyq = native.get("outbound_psyq", [])
     if not recomp and not psyq:

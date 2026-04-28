@@ -86,7 +86,8 @@ python3 tools/diff_discovered_manifest.py "$MANIFEST_DIR" "$REWRITTEN_DIR" \
 
 python3 tools/gen_defsyms.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_aliases.cmake" \
                                  "$REWRITTEN_DIR"
-python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch.c" "$INCLUDE_DIR"
+python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch.c" \
+                                 "$INCLUDE_DIR" "$REWRITTEN_DIR"
 python3 tools/gen_thunks.py      "$MANIFEST_DIR" "$GENERATED_DIR/native_thunks.cpp" \
-                                 "$INCLUDE_DIR" "$PSYQ_INCLUDE_DIR"
+                                 "$INCLUDE_DIR" "$PSYQ_INCLUDE_DIR" "$REWRITTEN_DIR"
 python3 tools/gen_renames.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_renames.h"

@@ -24,7 +24,11 @@ is declared inside src/main.c, not in include/) or when the heuristic
 type-mapping is wrong.
 
 Usage:
-    gen_dispatch.py <manifest_dir> <out_c_path> [<include_dir>]
+    gen_dispatch.py <manifest_dir> <out_c_path> [<include_dir> [<rewritten_dir>]]
+
+If ``rewritten_dir`` is given, per-TU ``*.discovered.toml`` files under it
+are merged into the [[dispatch]] set; hand entries in native.toml override
+auto-discovered ones with the same name.
 """
 from __future__ import annotations
 
@@ -121,15 +125,16 @@ def emit_case(d: dict) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) not in (3, 4):
-        print("usage: gen_dispatch.py <manifest_dir> <out_c> [<include_dir>]",
-              file=sys.stderr)
+    if len(argv) not in (3, 4, 5):
+        print("usage: gen_dispatch.py <manifest_dir> <out_c> "
+              "[<include_dir> [<rewritten_dir>]]", file=sys.stderr)
         return 2
     manifest_dir = Path(argv[1])
     out_path = Path(argv[2])
-    include_dir = Path(argv[3]) if len(argv) == 4 else None
+    include_dir = Path(argv[3]) if len(argv) >= 4 else None
+    rewritten_dir = Path(argv[4]) if len(argv) == 5 else None
 
-    native, sym_idx, _glob = load_manifest(manifest_dir)
+    native, sym_idx, _glob = load_manifest(manifest_dir, rewritten_dir)
     dispatch = native.get("dispatch", [])
     if not dispatch:
         fail("native.toml has no [[dispatch]] entries")

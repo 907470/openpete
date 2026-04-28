@@ -47,6 +47,12 @@ def main(argv: list[str]) -> int:
     hand_recomp = _names(native.get("outbound_recomp", []), "name")
     hand_psyq = _names(native.get("outbound_psyq", []), "psyq_name")
 
+    # Names listed in the *_skip lists are intentionally hand-suppressed
+    # (collisions with hand-written thunks, or names that link straight
+    # to PsyCross). Treat them as "covered" so the diff stays clean.
+    hand_psyq |= set(native.get("outbound_psyq_skip", []))
+    hand_recomp |= set(native.get("outbound_recomp_skip", []))
+
     auto_dispatch: set[str] = set()
     auto_recomp: set[str] = set()
     auto_psyq: set[str] = set()

@@ -3,6 +3,12 @@
 build_manifest.py emits symbols.toml + globals.toml from psx.map.
 The generators (gen_defsyms, gen_dispatch, …) load those plus the
 hand-curated native.toml to decide what code/links to emit.
+
+When the rewriter has run (Phase 3+), per-TU ``*.discovered.toml``
+files under the rewritten dir carry auto-discovered entries that the
+generators merge in on top of native.toml. Hand entries override auto
+on name collision (a hand entry's `c_name`, `args`, `psyq_main`, etc.
+are preserved verbatim; auto only contributes new names).
 """
 from __future__ import annotations
 
@@ -16,11 +22,76 @@ def load_toml(path: Path) -> dict:
         return tomli.load(f)
 
 
-def load_manifest(manifest_dir: Path) -> tuple[dict, dict, dict]:
-    """Returns (native_config, symbols_index, globals_index)."""
+def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
+    """Fold every ``*.discovered.toml`` under ``rewritten_dir`` into
+    ``native`` in-place. Hand entries win — auto entries with the same
+    name (or psyq_name) are skipped. New auto entries get appended with
+    a sensible default c_name (``openpete_<name>`` for PSYQ wrappers;
+    same name for outbound_recomp; same name for dispatch)."""
+    if rewritten_dir is None:
+        return
+    rewritten_dir = Path(rewritten_dir)
+    if not rewritten_dir.exists():
+        return
+
+    hand_dispatch = {e["name"] for e in native.get("dispatch", [])}
+    hand_recomp = {e["name"] for e in native.get("outbound_recomp", [])}
+    hand_psyq = {e["psyq_name"] for e in native.get("outbound_psyq", [])}
+
+    # `outbound_psyq_skip` / `outbound_recomp_skip` name PSYQ entry points
+    # whose host-side thunk is already hand-written (e.g.
+    # openpete_CdReadCallback in psyq_thunks.cpp bridges native → host cb,
+    # not native → recomp). Auto-discovery sees the call site and would
+    # emit a colliding thunk; the skip list suppresses that.
+    skip_psyq = set(native.get("outbound_psyq_skip", []))
+    skip_recomp = set(native.get("outbound_recomp_skip", []))
+
+    seen_dispatch: set[str] = set()
+    seen_recomp: set[str] = set()
+    seen_psyq: set[str] = set()
+
+    for path in sorted(rewritten_dir.glob("*.discovered.toml")):
+        with open(path, "rb") as fh:
+            d = tomli.load(fh)
+        for e in d.get("discovered_dispatch", []):
+            n = e["name"]
+            if n in hand_dispatch or n in seen_dispatch:
+                continue
+            seen_dispatch.add(n)
+            native.setdefault("dispatch", []).append({
+                "name": n,
+                "addr": e["addr"],
+                "c_name": n,
+            })
+        for e in d.get("discovered_outbound_recomp", []):
+            n = e["name"]
+            if n in hand_recomp or n in seen_recomp or n in skip_recomp:
+                continue
+            seen_recomp.add(n)
+            native.setdefault("outbound_recomp", []).append({"name": n})
+        for e in d.get("discovered_outbound_psyq", []):
+            n = e["psyq_name"]
+            if n in hand_psyq or n in seen_psyq or n in skip_psyq:
+                continue
+            seen_psyq.add(n)
+            native.setdefault("outbound_psyq", []).append({
+                "psyq_name": n,
+                "c_name": f"openpete_{n}",
+            })
+
+
+def load_manifest(manifest_dir: Path,
+                  rewritten_dir: Path | None = None
+                  ) -> tuple[dict, dict, dict]:
+    """Returns (native_config, symbols_index, globals_index).
+
+    If ``rewritten_dir`` is provided, every ``*.discovered.toml`` under it
+    is merged into the returned native_config (hand entries override).
+    """
     native = load_toml(manifest_dir / "native.toml")
     syms = load_toml(manifest_dir / "symbols.toml")
     globs = load_toml(manifest_dir / "globals.toml")
+    merge_discovered(native, rewritten_dir)
     sym_by_name = {f["name"]: f for f in syms.get("function", [])}
     sym_by_addr = {f["addr"]: f for f in syms.get("function", [])}
     glob_by_name = {g["name"]: g for g in globs.get("global", [])}
