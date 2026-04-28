@@ -78,6 +78,12 @@ file = "src/checkpoint.c"
 [[native_source]]
 file = "src/moby_interpolation_check.c"
 
+# Single INCLUDE_ASM(func_80050BD0). Pass 5c splices it out; the body
+# stays in PSX.EXE_full.c. End-to-end stress test of Pass 5c on a
+# non-overlay TU.
+[[native_source]]
+file = "src/cyclorama.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq

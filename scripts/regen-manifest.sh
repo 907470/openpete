@@ -43,7 +43,8 @@ mkdir -p "$REWRITTEN_DIR"
 # loop below.
 rm -f "$REWRITTEN_DIR"/*.discovered.toml \
       "$REWRITTEN_DIR"/*.redirects.txt \
-      "$REWRITTEN_DIR"/*.rewritten.c
+      "$REWRITTEN_DIR"/*.rewritten.c \
+      "$REWRITTEN_DIR"/*.spliced.txt
 NATIVE_SOURCES=$(python3 -c "
 import sys, tomli
 with open('$MANIFEST_DIR/native.toml','rb') as f:

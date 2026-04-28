@@ -153,6 +153,14 @@ def main(argv=None) -> int:
     ia = run_include_asm(args.input)
     plan.add_many(ia.edits)
 
+    # Surface spliced names to gen_renames.py so it can exclude them from
+    # the native func_* rename set — those functions have no native body
+    # (we just spliced the only definition), so a rename to spyro_native_*
+    # would dangle if anything calls them post-migration.
+    if ia.splices:
+        spliced_path = args.output.parent / f"{args.input.stem}.spliced.txt"
+        spliced_path.write_text("\n".join(s.name for s in ia.splices) + "\n")
+
     # --- Pass 3: sizeof verification --------------------------------------
     # Compile-time guard: for every sizeof() of a relaid struct in this TU,
     # static_assert that the host size still matches the PSX size after

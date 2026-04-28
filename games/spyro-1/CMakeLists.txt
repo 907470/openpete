@@ -35,6 +35,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/rand.rewritten.c
     ${SPYRO_GENERATED}/rewritten/checkpoint.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_interpolation_check.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -162,6 +163,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/rand.rewritten.c
     ${SPYRO_GENERATED}/rewritten/checkpoint.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_interpolation_check.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
