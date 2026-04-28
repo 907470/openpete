@@ -90,6 +90,17 @@ file = "src/environment.c"
 [[native_source]]
 file = "src/specular_and_metal.c"
 
+# cutscene.c — deferred. Pass 1 (struct relayout on m_CameraData) and
+# Pass 2 (bare-global redirect on g_CutsceneLayout) emit overlapping
+# edits at sites like `g_CutsceneLayout->m_CameraData` where the base
+# is itself a redirected pointer global. Composition needs Pass 1 to
+# render the redirected base in its access conversion (or Pass 2 to
+# suppress refs inside Pass 1's edit range and Pass 1 to handle the
+# inner redirect). Real work; defer until other migrations don't
+# surface comparably-tractable bugs.
+#[[native_source]]
+#file = "src/cutscene.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq

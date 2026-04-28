@@ -250,6 +250,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                 f"— bare-globals pass cannot redirect address-of (storage "
                 f"is uint32_t*, not original type)")
 
+    seen_read_offsets: Set[int] = set()
     for c in tu_cursor.walk_preorder():
         if c.kind != ci.CursorKind.DECL_REF_EXPR:
             continue
@@ -264,6 +265,15 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         off = c.extent.start.offset
         if off in addr_of_offsets:
             continue  # emitted as error; leave site untouched
+        # Skip macro-expansion artifacts: a DeclRefExpr from a macro arg
+        # used N times in the expansion shows up as N AST nodes all
+        # pointing at the same source extent (often zero-length). Apply
+        # the rewrite once at that offset and dedupe the rest.
+        if c.extent.end.offset == c.extent.start.offset:
+            continue
+        if off in seen_read_offsets and off not in writes:
+            continue
+        seen_read_offsets.add(off)
 
         if off in writes:
             # Write site: rewrite `name = ...` → `__psx_name = host_to_psx(...)`

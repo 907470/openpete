@@ -38,6 +38,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
+    # cutscene.rewritten.c — deferred (Pass 1 + Pass 2 composition).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -168,6 +169,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
+    # cutscene.rewritten.c — deferred (Pass 1 + Pass 2 composition).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
