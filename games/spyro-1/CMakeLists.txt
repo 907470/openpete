@@ -40,6 +40,8 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
     # cutscene.rewritten.c, 4BEF8.rewritten.c — deferred (Pass 1 edit overlap).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
+    # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
+    ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -172,6 +174,8 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
     # cutscene.rewritten.c, 4BEF8.rewritten.c — deferred (Pass 1 edit overlap).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
+    # special_surfaces.rewritten.c — deferred (Pass 1+2 composition).
+    ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

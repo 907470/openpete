@@ -112,6 +112,14 @@ file = "src/specular_and_metal.c"
 [[native_source]]
 file = "src/music.c"
 
+# special_surfaces.c — deferred. Same Pass 1 + Pass 2 composition issue
+# as cutscene.c / 4BEF8.c (`g_LevelMobys[i].m_Props`).
+#[[native_source]]
+#file = "src/special_surfaces.c"
+
+[[native_source]]
+file = "src/save_file.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
