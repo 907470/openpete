@@ -28,8 +28,10 @@ add_executable(openpete-spyro1
     # added with custom flags below; outbound thunks are generated.
     spyro-1/src/main.c
     spyro-1/src/cd.c
-    spyro-1/src/initialization.c
-    spyro-1/src/completion.c
+    # spyro-1/src/initialization.c — disabled (LP64/ILP32 ABI mismatch
+    # surfaced under --disc + --run-recomp). Re-enable once the source
+    # rewriter (notes/plans/openpete-source-rewriter.md) is in place.
+    # spyro-1/src/completion.c — disabled with initialization.c.
 
     # Generated from manifest/native.toml by tools/gen_dispatch.py +
     # tools/gen_thunks.py. native_dispatch.c is the inbound override
@@ -152,8 +154,7 @@ set(SPYRO_DECOMP_BASE_FLAGS
 set(SPYRO_NATIVE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/initialization.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/completion.c
+    # initialization.c + completion.c disabled — see add_executable above.
 )
 set_source_files_properties(
     ${SPYRO_NATIVE_SOURCES}

@@ -30,15 +30,17 @@ extra_flags = """\
 -DCdIntToPos=openpete_CdIntToPos\
 """
 
-# initialization.c. Same -DCdControl rename as cd.c so its lone
-# CdControl(CdlSetmode, ...) call funnels through psyq_CdControl too —
-# keeps every Cd* call routed through the Spyro-enhanced thunk layer.
-[[native_source]]
-file = "src/initialization.c"
-extra_flags = "-DCdControl=openpete_CdControl"
-
-[[native_source]]
-file = "src/completion.c"
+# NOTE: src/initialization.c and src/completion.c temporarily disabled.
+# They surfaced the LP64-vs-ILP32 ABI mismatch (e.g. void *g_OverlaySpacePointer
+# read as 8 bytes from a 4-byte slot under --disc + --run-recomp).
+# Tracked by notes/plans/openpete-source-rewriter.md — re-enable once
+# the AST rewriter is in place.
+#[[native_source]]
+#file = "src/initialization.c"
+#extra_flags = "-DCdControl=openpete_CdControl"
+#
+#[[native_source]]
+#file = "src/completion.c"
 
 # Entry points where psx_dispatch_compiled should jump into a native C
 # function instead of running the recompiled MIPS body. The generator
@@ -78,10 +80,11 @@ c_name = "CDLoadSync"
 name = "CDLoadAsync"
 c_name = "CDLoadAsync"
 
-[[dispatch]]
-name = "CalculateCompletion"
-c_name = "CalculateCompletion"
-args = []  # no header decl — defined inline in src/completion.c
+# CalculateCompletion dispatch disabled with src/completion.c.
+#[[dispatch]]
+#name = "CalculateCompletion"
+#c_name = "CalculateCompletion"
+#args = []
 
 # Outbound — native code calling into still-recompiled MIPS. Used when a
 # native TU references a function whose body hasn't been migrated yet
@@ -89,6 +92,9 @@ args = []  # no header decl — defined inline in src/completion.c
 # / CDMusicUpdate). The thunk packs args from host-ABI into cpu->aN and
 # invokes psx_dispatch_compiled(cpu, addr). Address + signature both
 # auto-resolved by name.
+[[outbound_recomp]]
+name = "Initialize"
+
 [[outbound_recomp]]
 name = "GamestateUpdate"
 
@@ -101,50 +107,34 @@ name = "SoundsUpdate"
 [[outbound_recomp]]
 name = "CDMusicUpdate"
 
-# Reached from initialization.c. SpuInitialize is decomp-but-not-yet-
-# native; LoadCutscene + StartCutscenePlayback are recomp; func_*
-# are handwritten asm; Memset/Memcpy are handwritten asm.
-[[outbound_recomp]]
-name = "SpuInitialize"
-
-[[outbound_recomp]]
-name = "LoadCutscene"
-
-[[outbound_recomp]]
-name = "StartCutscenePlayback"
-
-# func_<ADDR> outbound thunks need a c_name rename to avoid colliding
-# with the recompiled body of the same name in PSX.EXE_full.c. Native
-# call sites pick up the rename via -Dfunc_<ADDR>=openpete_func_<ADDR>
-# in the per-TU compile flags.
-[[outbound_recomp]]
-name = "func_80017F24"
-c_name = "openpete_func_80017F24"
-
-[[outbound_recomp]]
-name = "func_8002D170"
-c_name = "openpete_func_8002D170"
-
-[[outbound_recomp]]
-name = "func_8005B7D8"
-c_name = "openpete_func_8005B7D8"
-
-[[outbound_recomp]]
-name = "Memset"
-
-[[outbound_recomp]]
-name = "Memcpy"
-
-# Spyro-internal handwritten asm called from initialization.c
-# (declared in spyro-1/include/gamepad.h, defined in asm/).
-[[outbound_recomp]]
-name = "PadCaliReset"
-
-[[outbound_recomp]]
-name = "PadCaliInit"
-
-[[outbound_recomp]]
-name = "PadVSync"
+# init.c-only outbound entries — disabled while initialization.c is
+# back on the recomp side. Re-enable once the source rewriter unblocks
+# native init.c.
+#[[outbound_recomp]]
+#name = "SpuInitialize"
+#[[outbound_recomp]]
+#name = "LoadCutscene"
+#[[outbound_recomp]]
+#name = "StartCutscenePlayback"
+#[[outbound_recomp]]
+#name = "func_80017F24"
+#c_name = "openpete_func_80017F24"
+#[[outbound_recomp]]
+#name = "func_8002D170"
+#c_name = "openpete_func_8002D170"
+#[[outbound_recomp]]
+#name = "func_8005B7D8"
+#c_name = "openpete_func_8005B7D8"
+#[[outbound_recomp]]
+#name = "Memset"
+#[[outbound_recomp]]
+#name = "Memcpy"
+#[[outbound_recomp]]
+#name = "PadCaliReset"
+#[[outbound_recomp]]
+#name = "PadCaliInit"
+#[[outbound_recomp]]
+#name = "PadVSync"
 
 # Outbound — native code calling PSYQ-compatible wrappers. Used when
 # cd.c calls Cd*; we route through psyq_<NAME>(cpu) (psyq_thunks.cpp)
@@ -167,8 +157,7 @@ c_name = "openpete_CdSync"
 psyq_name = "CdIntToPos"
 c_name = "openpete_CdIntToPos"
 
-# CdMix — PsyCross declares it in libcd.h but never defines a body.
-# Spyro's psyq_thunks.cpp has a manual psyq_CdMix; route through that.
-[[outbound_psyq]]
-psyq_name = "CdMix"
-c_name = "openpete_CdMix"
+# CdMix — only init.c calls it; disabled with initialization.c.
+#[[outbound_psyq]]
+#psyq_name = "CdMix"
+#c_name = "openpete_CdMix"
