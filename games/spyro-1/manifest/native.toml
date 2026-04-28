@@ -157,6 +157,12 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/spu.c"
 
+# overlay_pointers.c — deferred. Same Pass 1 overlap class
+# (`g_Buffers.m_CopyBuf` and similar). Also flagged in the plan as
+# overlay-infra; might benefit from cross-domain machinery from Phase 5.
+#[[native_source]]
+#file = "src/overlay_pointers.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
