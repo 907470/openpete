@@ -172,6 +172,10 @@ def parse_file(path: Path) -> list[Signature]:
         if name in {"if", "while", "for", "switch", "return", "sizeof"}:
             continue
         ret = m.group("ret").strip()
+        # Strip storage-class specifiers from the return type — `extern`,
+        # `static`, etc. — they're not part of the function's host C++
+        # signature when we render `T name(args)` later.
+        ret = re.sub(r"\b(extern|static|inline)\b\s*", "", ret).strip()
         if not ret:
             continue
         sigs.append(Signature(

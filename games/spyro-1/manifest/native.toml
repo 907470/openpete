@@ -51,6 +51,20 @@ extra_flags = """\
 # but boots into a hang during Initialize (after CDInitialize completes).
 # Actual root cause is downstream of Pass 1/2's coverage; revisit when
 # Pass 4/5 land.
+# initialization.c + completion.c — re-enable gated on:
+#   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
+#     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
+#   - struct-by-value semantics across the bridge (Pass 5)
+#
+# Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
+# routing reaches further into Initialize than before — boots through
+# the 5 CDLoadSync calls (titlescreen → universal logo) and ~210
+# frames of VSync wait, then hangs silently somewhere in the
+# Memset → for-loop → LoadCutscene path. No watchdog fires (we're in
+# native code, not recomp), no crash. Suspect: PsyCross's LoadImage
+# / DrawSync / PutDispEnv direct calls are missing Spyro-side wrappers
+# (cf. CdMix), or a struct-by-value boundary in func_80017F24's
+# &g_SonyImage / &frameRect arguments. Revisit when Pass 5 lands.
 #[[native_source]]
 #file = "src/initialization.c"
 #extra_flags = "-DCdControl=openpete_CdControl"
@@ -171,7 +185,17 @@ c_name = "openpete_CdSync"
 psyq_name = "CdIntToPos"
 c_name = "openpete_CdIntToPos"
 
-# CdMix — only init.c calls it; gated with init.c.
+# CdMix + VSync — gated with init.c re-enable.
+# CdMix: PsyCross declares but doesn't define; psyq_thunks.cpp's
+#        psyq_CdMix is the load-bearing wrapper.
+# VSync: PsyCross's host VSync(0) calls PsyX_WaitForTimestep(1) which
+#        blocks the libco game fiber (and the host fiber it's
+#        cooperatively scheduled with). Route through psyq_VSync's
+#        host-fiber yield path instead.
 #[[outbound_psyq]]
 #psyq_name = "CdMix"
 #c_name = "openpete_CdMix"
+#
+#[[outbound_psyq]]
+#psyq_name = "VSync"
+#c_name = "openpete_VSync"

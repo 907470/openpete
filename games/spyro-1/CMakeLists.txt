@@ -156,7 +156,8 @@ set(SPYRO_DECOMP_BASE_FLAGS
 set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/main.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
-    # init.c / completion.c gated — see comment in add_executable above.
+    # initialization.c / completion.c re-enable gated on Pass 4/5
+    # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
 
 # Per-TU shadow include trees (Pass 1 struct relayout). Each native TU
