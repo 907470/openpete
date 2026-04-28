@@ -11,6 +11,7 @@ games/*/generated/
 games/*/manifest/symbols.toml
 games/*/manifest/globals.toml
 tools/__pycache__/
+tools/rewrite/__pycache__/
 third_party/psxrecomp/build/
 
 # Run artefacts (PsyX log, screenshot dump path).
