@@ -50,6 +50,8 @@ add_executable(openpete-spyro1
     # spu.rewritten.c — deferred (Pass 1 overlap composition).
     # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
+    # pete.rewritten.c — deferred (Pass 5c splice corruption).
+    # loaders.rewritten.c — deferred (Pass 1+2 composition).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -192,6 +194,8 @@ set(SPYRO_NATIVE_SOURCES
     # spu.rewritten.c — deferred (Pass 1 overlap composition).
     # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
+    # pete.rewritten.c — deferred (Pass 5c splice corruption).
+    # loaders.rewritten.c — deferred (Pass 1+2 composition).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

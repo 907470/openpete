@@ -173,6 +173,20 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/moby_helpers.c"
 
+# pete.c — deferred. Pass 5c's INCLUDE_ASM splice deletion comes out
+# corrupted in the rewritten file (`m_RotY += t.y;E4);` — last 4 chars of
+# the spliced func_8003DAE4 macro call survive). Only one edit in that
+# range per the diagnostic, so a write-detection pass is generating an
+# edit with a wrong extent that overwrites Pass 5c's deletion. Real
+# Pass 1 / write-detection investigation needed.
+#[[native_source]]
+#file = "src/pete.c"
+
+# loaders.c — deferred. Pass 1 + Pass 2 composition (g_LevelMobys),
+# same class as cutscene/4BEF8/special_surfaces/spu/overlay_pointers.
+#[[native_source]]
+#file = "src/loaders.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
