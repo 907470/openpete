@@ -39,6 +39,12 @@ uint8_t* openpete_psx_get_scratch(void);
  * pointers PsyCross can dereference. */
 void* openpete_psx_to_host_ptr(uint32_t addr);
 
+/* Inverse: maps a host pointer back to its PSX KSEG0 vaddr. Returns 0
+ * for NULL or any pointer outside g_ram/scratch (treated as PSX NULL).
+ * Used by the source rewriter when native code stores a host pointer
+ * into a PSX-aliased slot. */
+uint32_t openpete_host_to_psx(const void* host_ptr);
+
 /* Copy `size` bytes into g_ram at virtual address `addr`. */
 void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
 

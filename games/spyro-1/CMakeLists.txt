@@ -24,14 +24,18 @@ add_executable(openpete-spyro1
     game_extras_impl.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
-    # DIRECTLY from the matching-decomp tree (no shim layer). Each TU is
-    # added with custom flags below; outbound thunks are generated.
-    spyro-1/src/main.c
-    spyro-1/src/cd.c
-    # spyro-1/src/initialization.c — disabled (LP64/ILP32 ABI mismatch
-    # surfaced under --disc + --run-recomp). Re-enable once the source
-    # rewriter (notes/plans/openpete-source-rewriter.md) is in place.
-    # spyro-1/src/completion.c — disabled with initialization.c.
+    # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
+    # rewritten by scripts/regen-manifest.sh into
+    # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
+    # diverging bare globals through __psx_<name> uint32 storage that
+    # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
+    # source, never the original.
+    ${SPYRO_GENERATED}/rewritten/main.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
+    # initialization.c / completion.c — gated on Pass 1 (struct relayout)
+    # landing; Pass 2 alone fixes the bare g_OverlaySpacePointer crash but
+    # leaves the latent g_CdState.m_IsReading offset divergence. Re-enable
+    # once Pass 1 is in.
 
     # Generated from manifest/native.toml by tools/gen_dispatch.py +
     # tools/gen_thunks.py. native_dispatch.c is the inbound override
@@ -152,9 +156,9 @@ set(SPYRO_DECOMP_BASE_FLAGS
 # native_renames.h. Add a TU by appending to native.toml's
 # [[native_source]] and re-running scripts/regen-manifest.sh.
 set(SPYRO_NATIVE_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/main.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
-    # initialization.c + completion.c disabled — see add_executable above.
+    ${SPYRO_GENERATED}/rewritten/main.rewritten.c
+    ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
+    # initialization.c / completion.c gated on Pass 1 — see add_executable above.
 )
 set_source_files_properties(
     ${SPYRO_NATIVE_SOURCES}

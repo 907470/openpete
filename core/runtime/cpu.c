@@ -35,6 +35,24 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
     return NULL;
 }
 
+/* Inverse of openpete_psx_to_host_ptr: maps a host pointer that lives
+ * inside g_ram (or scratch) back to its PSX KSEG0 vaddr. NULL → 0;
+ * any host pointer outside the recognized regions also → 0 (callers
+ * treat that as PSX NULL, which matches PSX-side semantics for "not a
+ * valid game-RAM address"). Used by the Phase 3/4 source rewriter when
+ * native code assigns a host pointer to a PSX-aliased storage slot. */
+uint32_t openpete_host_to_psx(const void* host_ptr) {
+    if (host_ptr == NULL) return 0u;
+    const uint8_t* p = (const uint8_t*)host_ptr;
+    if (p >= g_ram && p < g_ram + RAM_SIZE) {
+        return 0x80000000u | (uint32_t)(p - g_ram);
+    }
+    if (p >= g_scratch && p < g_scratch + SCRATCH_SIZE) {
+        return 0x9F800000u | (uint32_t)(p - g_scratch);
+    }
+    return 0u;
+}
+
 /* Map a PSX virtual address to a host pointer; NULL if unmapped. */
 static uint8_t* mem_ptr(uint32_t addr) {
     /* Strip KSEG0/KSEG1/KUSEG segment bits. PSX uses unmapped segments
