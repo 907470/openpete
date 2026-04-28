@@ -78,28 +78,29 @@ file = "src/checkpoint.c"
 [[native_source]]
 file = "src/moby_interpolation_check.c"
 
-# initialization.c + completion.c — re-enable gated on:
-#   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
-#     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
-#   - struct-by-value semantics across the bridge (Pass 5)
-# Speculative re-enable on top of Phase 3 plumbing builds + links cleanly
-# but boots into a hang during Initialize (after CDInitialize completes).
-# Actual root cause is downstream of Pass 1/2's coverage; revisit when
-# Pass 4/5 land.
-# initialization.c + completion.c — re-enable gated on:
-#   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
-#     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
-#   - struct-by-value semantics across the bridge (Pass 5)
+# initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
 # routing reaches further into Initialize than before — boots through
 # the 5 CDLoadSync calls (titlescreen → universal logo) and ~210
 # frames of VSync wait, then hangs silently somewhere in the
 # Memset → for-loop → LoadCutscene path. No watchdog fires (we're in
-# native code, not recomp), no crash. Suspect: PsyCross's LoadImage
-# / DrawSync / PutDispEnv direct calls are missing Spyro-side wrappers
-# (cf. CdMix), or a struct-by-value boundary in func_80017F24's
-# &g_SonyImage / &frameRect arguments. Revisit when Pass 5 lands.
+# native code, not recomp), no crash.
+#
+# A whole-tree libclang scan (Pass 5 guard) confirms there are *zero*
+# struct-by-value call sites or returns across spyro-1/src/, so the
+# original Pass 5 gating was a misdiagnosis. Pass 4 (pointer-to-int)
+# also lands cleanly. Real suspects:
+#   - PsyCross direct calls (LoadImage / DrawSync / PutDispEnv) need
+#     Spyro-side wrappers (cf. CdMix's psyq_CdMix bridge); without
+#     them the calls execute on PsyCross's host renderer state and
+#     desynchronize from the recomp-side game state.
+#   - func_80017F24(&g_SonyImage, ...) reads g_SonyImage's bytes
+#     through the recomp body's gp+offset path — Pass 1 should make
+#     the host bytes match PSX layout, but the relayout coverage on
+#     SonyImage hasn't been verified.
+# Revisit by re-attempting the speculative re-enable + bisecting the
+# hang with the env-gated OPENPETE_PSYQ_CDSYNC_LIMIT diagnostic.
 #[[native_source]]
 #file = "src/initialization.c"
 #extra_flags = "-DCdControl=openpete_CdControl"

@@ -38,6 +38,9 @@ from tools.rewrite.pass_psyq_boundary import (  # noqa: E402
     run as run_psyq_boundary, format_violations,
 )
 from tools.rewrite.pass_include_asm import run as run_include_asm  # noqa: E402
+from tools.rewrite.pass_struct_by_value import (  # noqa: E402
+    run as run_struct_by_value, format_violations as format_sbv_violations,
+)
 from tools.rewrite.pass_discover import (  # noqa: E402
     run as run_discover, render_toml as render_discovered_toml,
 )
@@ -122,6 +125,16 @@ def main(argv=None) -> int:
     for err in bg.address_of_errors:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)
+
+    # --- Pass 5: struct-by-value boundary guard ---------------------------
+    # Hard-error if the TU passes (or returns) a struct by value at a call
+    # site — the host LP64/LLP64 calling convention can't marshal those
+    # bytes through cpu->aN today. No rewrite path implemented; trips are
+    # zero across spyro-1/src/. See plan §2.3 Pass 5.
+    sbv = run_struct_by_value(parsed.cursor, main_path)
+    if sbv.violations:
+        print(format_sbv_violations(sbv), file=sys.stderr)
+        return 4
 
     # --- Pass 5b: PsyCross u_long* boundary guard -------------------------
     # Hard-error on any call to a non-audited u_long*-taking PsyCross API.
