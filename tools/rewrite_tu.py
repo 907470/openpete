@@ -30,6 +30,12 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
     collect_redirects, rewrite_bare_globals, prologue_for,
 )
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
+from tools.rewrite.pass_sizeof import (  # noqa: E402
+    run as run_sizeof, render_static_asserts,
+)
+from tools.rewrite.pass_psyq_boundary import (  # noqa: E402
+    run as run_psyq_boundary, format_violations,
+)
 from tools.rewrite.pass_discover import (  # noqa: E402
     run as run_discover, render_toml as render_discovered_toml,
 )
@@ -108,10 +114,27 @@ def main(argv=None) -> int:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)
 
+    # --- Pass 5b: PsyCross u_long* boundary guard -------------------------
+    # Hard-error on any call to a non-audited u_long*-taking PsyCross API.
+    # Per docs/psycross-boundary.md the current TU set is no-op (CdRead /
+    # LoadImage internally byte-walk); the guard catches future migrations.
+    pb = run_psyq_boundary(parsed.cursor, main_path)
+    if pb.violations:
+        print(format_violations(pb), file=sys.stderr)
+        return 3
+
+    # --- Pass 3: sizeof verification --------------------------------------
+    # Compile-time guard: for every sizeof() of a relaid struct in this TU,
+    # static_assert that the host size still matches the PSX size after
+    # Pass 1's relayout. No-op today (Pass 1 makes this true); catches
+    # future drift instantly.
+    sz = run_sizeof(parsed.cursor, main_path)
+
     # --- Apply edits to .c body -------------------------------------------
     rewritten = plan.apply(args.input)
     prologue = prologue_for(redirects)
-    final = prologue + "\n" + rewritten
+    sizeof_block = render_static_asserts(sz)
+    final = prologue + "\n" + sizeof_block + "\n" + rewritten
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(final)
@@ -153,7 +176,9 @@ def main(argv=None) -> int:
         args.redirects_out.write_text("\n".join(lines) + ("\n" if lines else ""))
 
     print(f"  rewrote {args.input.name}: "
-          f"{len(redirects)} bare-globals, {len(bg.edits)} edits")
+          f"{len(redirects)} bare-globals, {len(bg.edits)} edits, "
+          f"{len(sz.checks)} sizeof asserts, "
+          f"{pb.safe_calls} safe u_long* calls")
     return 0
 
 
