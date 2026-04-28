@@ -1,0 +1,86 @@
+# Hand-curated config: which decomp sources compile natively, which
+# globals/functions need link-time aliasing or dispatch interception.
+#
+# The generators (gen_defsyms.py, gen_dispatch.py) consume this plus the
+# auto-generated symbols.toml/globals.toml from build_manifest.py.
+
+# Globals the native TUs touch. The generator looks each name up in
+# globals.toml and emits `--defsym=NAME=g_ram+OFFSET`. Listing here
+# (rather than auto-deriving from C source) keeps the surface explicit
+# until a header parser lands; misses surface as link errors.
+#
+# Top-of-file because TOML scopes top-level keys after `[[table]]`
+# headers into that table — keep this above the array-of-tables blocks.
+alias_globals = [
+    # main.c
+    "g_PadMutex",
+    "g_DeltaTime",
+    "g_UnprocessedFrames",
+    "g_StateSwitch",
+    # cd.c
+    "g_CDMaxReadTime",
+    "g_CDReadTime",
+    "g_CdState",
+    "g_CdMusic",
+]
+
+# Decomp C TUs to compile and link natively (relative to spyro-1/).
+# Each entry can carry per-TU compile-flag fragments the generator pastes
+# into the CMakeLists fragment alongside the SPYRO_DECOMP_BASE_FLAGS.
+[[native_source]]
+file = "src/main.c"
+extra_flags = "-Dmain=spyro_native_main"
+
+[[native_source]]
+file = "src/cd.c"
+extra_flags = """\
+-DCdControl=openpete_CdControl \
+-DCdRead=openpete_CdRead \
+-DCdSync=openpete_CdSync \
+-DCdIntToPos=openpete_CdIntToPos\
+"""
+
+# Entry points where psx_dispatch_compiled should jump into a native C
+# function instead of running the recompiled MIPS body. The generator
+# emits one `if (addr == X) ...` per entry into the override hook.
+#
+# `args` describes how to unpack a0..a3 (and stack slots beyond) into
+# the C signature — kept declarative so the generator stays simple.
+# Supported shapes:
+#   "u32"        — pass cpu->aN directly
+#   "u8"         — pass (uint8_t)(cpu->aN & 0xFF)
+#   "ptr"        — openpete_psx_to_host_ptr(cpu->aN)
+#   "stack_u32"  — cpu->read_word(cpu->sp + offset)
+#
+# `psyq_main = true` runs psyq___main(cpu) before the body — needed for
+# main() so the C runtime crt0 fires.
+[[dispatch]]
+addr = 0x80012204
+name = "main"
+c_name = "spyro_native_main"
+psyq_main = true
+args = []
+
+[[dispatch]]
+addr = 0x800163E4
+name = "CDLoadTime"
+c_name = "CDLoadTime"
+args = []
+
+[[dispatch]]
+addr = 0x80016490
+name = "CDReadDone"
+c_name = "CDReadDone"
+args = ["u8", "ptr"]
+
+[[dispatch]]
+addr = 0x80016500
+name = "CDLoadSync"
+c_name = "CDLoadSync"
+args = ["u32", "ptr", "u32", "u32", "stack_u32:16"]
+
+[[dispatch]]
+addr = 0x80016698
+name = "CDLoadAsync"
+c_name = "CDLoadAsync"
+args = ["u32", "ptr", "u32", "u32", "stack_u32:16"]

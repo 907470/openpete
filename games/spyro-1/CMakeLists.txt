@@ -31,6 +31,9 @@ add_executable(openpete-spyro1
     decomp/native_thunks.c
     decomp/openpete_cd_thunks.cpp
 
+    # Generated from manifest/native.toml by tools/gen_dispatch.py.
+    ${SPYRO_GENERATED}/native_dispatch.c
+
     # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
     # `psx_dispatch_main_exe` by regen-recomp.sh.
     ${SPYRO_GENERATED}/PSX.EXE_full.c
@@ -174,34 +177,13 @@ set_source_files_properties(
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )
 
-# Link-time aliasing of the four globals into PSX RAM (g_ram + offset).
-# Addresses derived from the recompiled main's gp-relative reads with
-# gp = 0x80075264:
-#   gp + 0x0468  → g_DeltaTime          @ 0x800756CC  (0x756CC offset)
-#   gp + 0x04FC  → g_UnprocessedFrames  @ 0x80075760  (0x75760)
-#   gp + 0x0538  → g_StateSwitch        @ 0x8007579C  (0x7579C)
-#   gp + 0x0604  → g_PadMutex           @ 0x80075868  (0x75868)
-# g_ram is the public symbol exposed by core/runtime/cpu.c.
-target_link_options(openpete-spyro1 PRIVATE
-    # main.c globals
-    "-Wl,--defsym=g_PadMutex=g_ram+0x75868"
-    "-Wl,--defsym=g_DeltaTime=g_ram+0x756CC"
-    "-Wl,--defsym=g_UnprocessedFrames=g_ram+0x75760"
-    "-Wl,--defsym=g_StateSwitch=g_ram+0x7579C"
-    # cd.c globals — addresses harvested from the recompiled CDLoadTime /
-    # CDReadDone bodies (gp+22240 / gp+22668 / gp.ram-base + 0x6BB8 etc.):
-    #   g_CDMaxReadTime  @ 0x800756E0
-    #   g_CDReadTime     @ 0x8007588C
-    #   g_CdState (base) @ 0x80076B90  (m_IsReading at +0x28 = 0x80076BB8)
-    "-Wl,--defsym=g_CDMaxReadTime=g_ram+0x756E0"
-    "-Wl,--defsym=g_CDReadTime=g_ram+0x7588C"
-    "-Wl,--defsym=g_CdState=g_ram+0x76B90"
-    # g_CdMusic — base derived from CDLoadTime's writes:
-    #   m_Flags  (offset +4)   @ 0x800774B4
-    #   m_PostCD (offset +0x214) @ 0x800776C4
-    #   m_Flags2 (offset +0x218) @ 0x800776C8
-    "-Wl,--defsym=g_CdMusic=g_ram+0x774B0"
-)
+# Link-time aliasing of native-decomp globals into PSX RAM (g_ram + offset).
+# The defsym list is generated from manifest/native.toml + the parsed
+# psx.map (manifest/globals.toml) by tools/gen_defsyms.py — see
+# scripts/regen-manifest.sh. g_ram is the public symbol exposed by
+# core/runtime/cpu.c.
+include(${SPYRO_GENERATED}/native_aliases.cmake)
+target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
 
 # OpenAL on Windows is always a runtime DLL load (no static .a in the
 # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the .exe

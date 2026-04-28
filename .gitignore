@@ -6,6 +6,11 @@ compile_commands.json
 *.swp
 .DS_Store
 games/*/generated/
+# Auto-generated from spyro-1/build/psx.map by tools/build_manifest.py;
+# native.toml is hand-curated and is checked in.
+games/*/manifest/symbols.toml
+games/*/manifest/globals.toml
+tools/__pycache__/
 third_party/psxrecomp/build/
 
 # Run artefacts (PsyX log, screenshot dump path).
