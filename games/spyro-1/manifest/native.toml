@@ -134,6 +134,14 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/hud.c"
 
+# gamepad.c — deferred. Source contains `((int*)g_DemoDataPtr)++ = ...` —
+# post-increment of a redirected pointer global. Pass 2 substitutes the
+# read with `((int*)psx_to_host_ptr(__psx_<name>))` (an rvalue), so the
+# post-increment doesn't compile. A correct rewrite needs a transactional
+# read-modify-write through the redirect storage.
+#[[native_source]]
+#file = "src/gamepad.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
