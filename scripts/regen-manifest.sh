@@ -33,3 +33,4 @@ python3 tools/gen_defsyms.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_aliases.
 python3 tools/gen_dispatch.py    "$MANIFEST_DIR" "$GENERATED_DIR/native_dispatch.c" "$INCLUDE_DIR"
 python3 tools/gen_thunks.py      "$MANIFEST_DIR" "$GENERATED_DIR/native_thunks.cpp" \
                                  "$INCLUDE_DIR" "$PSYQ_INCLUDE_DIR"
+python3 tools/gen_renames.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_renames.h"

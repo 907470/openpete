@@ -130,72 +130,38 @@ set_source_files_properties(
 )
 
 # Common compile flags for any spyro-1/src/*.c TU compiled natively.
-# Each per-source block reuses these and adds TU-specific bits.
 #
 #   -std=gnu11 + -include assert.h: PsyCross's libgpu.h uses C11 static_assert
 #   -fcommon: tentative file-scope defs become COMMON so --defsym aliases win
 #   -include psyq_compat.h: bridges PSYQ-renamed types (RECT vs RECT16)
+#   -include native_renames.h: auto-generated symbol redirects (manifest →
+#     openpete_/spyro_native_ prefixes) — see tools/gen_renames.py
 #   -w: mutes matching-decomp warnings (unused decls from gameplay headers)
 set(SPYRO_DECOMP_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx")
 set(SPYRO_DECOMP_BASE_FLAGS
-    "-std=gnu11 -fcommon -include assert.h -include ${CMAKE_CURRENT_SOURCE_DIR}/decomp/psyq_compat.h -w")
+    "-std=gnu11 -fcommon -include assert.h \
+-include ${CMAKE_CURRENT_SOURCE_DIR}/decomp/psyq_compat.h \
+-include ${SPYRO_GENERATED}/native_renames.h -w")
 
-# Phase 3 — compile spyro-1/src/main.c directly.
-#
-# - `-fcommon` makes the four file-scope globals (g_PadMutex, g_DeltaTime,
-#   g_UnprocessedFrames, g_StateSwitch) tentative/common defs so the linker
-#   resolves them against the strong --defsym aliases below instead of
-#   allocating host BSS.
-# - `-Dmain=spyro_native_main` keeps the source's `void main(void)` from
-#   colliding with the host C runtime entry point.
-# - `-w` mutes the matching-decomp source's warnings (mostly unused
-#   declarations from heavily-included gameplay headers).
-set_source_files_properties(
+# All natively-compiled spyro-1/src/*.c TUs share the same flags now —
+# the per-TU rename hand-list is gone, picked up automatically from
+# native_renames.h. Add a TU by appending to native.toml's
+# [[native_source]] and re-running scripts/regen-manifest.sh.
+set(SPYRO_NATIVE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/main.c
-    PROPERTIES
-        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} -Dmain=spyro_native_main"
-        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
-)
-
-# Phase 4 — compile spyro-1/src/cd.c directly. Routes its PSYQ Cd*
-# calls through the generated outbound thunks (native_thunks.cpp) so
-# the Spyro-specific enhancements in psyq_thunks.cpp (XA streaming arm,
-# CdSync XA pump, …) stay in the path. Spyro-internal callees
-# (SoundsUpdate, CDMusicUpdate) likewise route through the generated
-# thunks file back into psx_dispatch_compiled.
-set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/cd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/initialization.c
+)
+set_source_files_properties(
+    ${SPYRO_NATIVE_SOURCES}
     PROPERTIES
-        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} \
--DCdControl=openpete_CdControl \
--DCdRead=openpete_CdRead \
--DCdSync=openpete_CdSync \
--DCdIntToPos=openpete_CdIntToPos"
+        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )
 set_source_files_properties(
     ${SPYRO_GENERATED}/native_thunks.cpp
     PROPERTIES
-        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
-)
-
-# initialization.c. The rename block redirects calls to outbound thunks
-# whose host symbol differs from the matching-decomp source's name, so
-# the call sites resolve to the bridge instead of clashing with the
-# recompiled body in PSX.EXE_full.c. Future plan: have gen_thunks emit
-# a `native_renames.h` and force-include it instead of -D listing.
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/initialization.c
-    PROPERTIES
-        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} \
--DCdControl=openpete_CdControl \
--DCdMix=openpete_CdMix \
--Dfunc_80012604=spyro_native_func_80012604 \
--Dfunc_8001277C=spyro_native_func_8001277C \
--Dfunc_80017F24=openpete_func_80017F24 \
--Dfunc_8002D170=openpete_func_8002D170 \
--Dfunc_8005B7D8=openpete_func_8005B7D8"
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )
 
