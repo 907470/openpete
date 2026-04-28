@@ -37,6 +37,7 @@ from tools.rewrite.pass_sizeof import (  # noqa: E402
 from tools.rewrite.pass_psyq_boundary import (  # noqa: E402
     run as run_psyq_boundary, format_violations,
 )
+from tools.rewrite.pass_include_asm import run as run_include_asm  # noqa: E402
 from tools.rewrite.pass_discover import (  # noqa: E402
     run as run_discover, render_toml as render_discovered_toml,
 )
@@ -131,6 +132,14 @@ def main(argv=None) -> int:
         print(format_violations(pb), file=sys.stderr)
         return 3
 
+    # --- Pass 5c: INCLUDE_ASM splice removal ------------------------------
+    # Textual scan over the original source — INCLUDE_ASM expands to inline
+    # asm that won't link on host; the recompiled body in PSX.EXE_full.c /
+    # <overlay>.bin_full.c provides the actual implementation, and Pass 6
+    # discovery + outbound thunks route any in-TU call sites correctly.
+    ia = run_include_asm(args.input)
+    plan.add_many(ia.edits)
+
     # --- Pass 3: sizeof verification --------------------------------------
     # Compile-time guard: for every sizeof() of a relaid struct in this TU,
     # static_assert that the host size still matches the PSX size after
@@ -187,7 +196,8 @@ def main(argv=None) -> int:
           f"{len(redirects)} bare-globals, {len(bg.edits)} edits, "
           f"{len(sz.checks)} sizeof asserts, "
           f"{pb.safe_calls} safe u_long* calls, "
-          f"{len(casts.redirected)} ptr→int casts")
+          f"{len(casts.redirected)} ptr→int casts, "
+          f"{len(ia.splices)} INCLUDE_ASM splices")
     return 0
 
 
