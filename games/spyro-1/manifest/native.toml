@@ -25,13 +25,7 @@ alias_globals_skip = []
 #                    PsyCross's CdInit; no rename is in flight, so the
 #                    auto thunk would just be dead code.
 outbound_psyq_skip = ["CdReadCallback", "CdInit"]
-# `rand` — Pass 6 discovers calls to rand() in src/rand.c and would emit
-# an outbound_recomp thunk with bare c_name "rand", which then shadows
-# libc's rand at link time (under --allow-multiple-definition). Any
-# libc-using code that called rand() — including the host runtime —
-# would land in the recomp dispatcher and crash. Suppress the auto entry
-# so the native call resolves directly to libc rand.
-outbound_recomp_skip = ["rand"]
+outbound_recomp_skip = []
 
 # Decomp C TUs to compile and link natively (relative to spyro-1/).
 # Each entry can carry per-TU compile-flag fragments the generator pastes

@@ -71,14 +71,22 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
             if n in hand_recomp or n in seen_recomp or n in skip_recomp:
                 continue
             seen_recomp.add(n)
-            entry = {"name": n}
-            # `func_<addr>` recomp callees collide at link with the
-            # recompiled MIPS body of the same name; route the host
-            # thunk through an `openpete_` prefix so source-level
-            # callers (post Pass 0 rename) hit the thunk and the
-            # recomp body still owns its symbol.
-            if n.startswith("func_"):
-                entry["c_name"] = f"openpete_{n}"
+            # Every auto-discovered recomp callee gets routed through an
+            # `openpete_<name>` thunk and a `#define <name> openpete_<name>`
+            # redirect in native_renames.h. Two collision classes this
+            # avoids:
+            #   1. `func_<addr>` names clashing with PSX.EXE_full.c's
+            #      recompiled body of the same name.
+            #   2. names that overlap host symbols (libc / PsyCross /
+            #      runtime) — e.g. `rand`, `memcpy`, `strcpy`. Without
+            #      the prefix, the auto-thunk shadows the host symbol
+            #      under --allow-multiple-definition and *every* host
+            #      caller of that name routes into the recomp dispatcher
+            #      (rand crash at frame 1793, fixed by this default).
+            # Hand-curated entries are unaffected — the `n in hand_recomp`
+            # guard above means a hand entry without `c_name` keeps its
+            # bare-name binding (today's PascalCase Initialize / etc.).
+            entry = {"name": n, "c_name": f"openpete_{n}"}
             native.setdefault("outbound_recomp", []).append(entry)
         # Auto-emitting PSYQ thunks is a no-op until Pass 0 (source-level
         # renames driven by tweaks.toml) lands. Source-level `LoadImage(...)`
