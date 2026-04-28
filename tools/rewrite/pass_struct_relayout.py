@@ -330,6 +330,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             f"{member.location.file}:{member.location.line} "
             f"— address-of a relayout'd field has no original-type address")
 
+    seen_member_offsets: Set[int] = set()
     for c in tu_cursor.walk_preorder():
         if c.kind != ci.CursorKind.MEMBER_REF_EXPR:
             continue
@@ -350,6 +351,17 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         off = c.extent.start.offset
         if off in addr_of_offsets:
             continue
+        # Macro-expansion artifacts: a MEMBER_REF_EXPR from a macro arg
+        # used N times in the body shows up as N AST nodes, often with
+        # zero-length source extents (start == end). Slicing an empty
+        # range yields an empty access_text and the rewrite emits broken
+        # `psx_to_host_ptr()` calls. Skip them — the parent macro
+        # invocation gets handled separately.
+        if c.extent.end.offset == c.extent.start.offset:
+            continue
+        if off in seen_member_offsets:
+            continue
+        seen_member_offsets.add(off)
 
         if off in writes:
             binop, lhs, _ = writes[off]

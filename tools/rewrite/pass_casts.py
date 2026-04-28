@@ -59,14 +59,29 @@ class CastResult:
     redirected: list = dc_field(default_factory=list)  # (target_type, name, location)
 
 
+# Wrappers Pass 4 walks through to find the cast's bare-identifier operand.
+# Anything substructural (ARRAY_SUBSCRIPT_EXPR, MEMBER_REF_EXPR, BINARY_OPERATOR,
+# etc.) means the cast targets a *result* of operating on the global, not
+# the global itself — Pass 4 must NOT mark the inner DeclRefExpr as
+# vaddr-form, otherwise Pass 2 emits the bare uint32_t storage where a
+# typed pointer is needed (e.g. `(u_char)g_LevelMobys[i].m_State` →
+# `(u_char)__psx_g_LevelMobys[i].m_State` — subscript on a uint32_t).
+_WALKABLE_WRAPPERS = frozenset({
+    ci.CursorKind.PAREN_EXPR,
+    ci.CursorKind.UNEXPOSED_EXPR,
+})
+
+
 def _unwrap_to_decl_ref(c: ci.Cursor) -> ci.Cursor | None:
-    """Walk through PAREN_EXPR / UNEXPOSED_EXPR / IMPLICIT_CAST wrappers and
-    return the inner DeclRefExpr, or None if the operand isn't a bare
-    identifier reference."""
+    """Walk through PAREN_EXPR / UNEXPOSED_EXPR wrappers and return the
+    inner DeclRefExpr, or None if the operand isn't a bare identifier
+    reference."""
     cur = c
     for _ in range(6):
         if cur.kind == ci.CursorKind.DECL_REF_EXPR:
             return cur
+        if cur.kind not in _WALKABLE_WRAPPERS:
+            return None
         kids = list(cur.get_children())
         if not kids:
             return None

@@ -163,6 +163,16 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/overlay_pointers.c"
 
+# moby_helpers.c — deferred. Multiple Pass 1/2/4 issues surfaced; the
+# macro-heavy `setMobyLetterProps((MobyLetterProps*)char_moby->m_Props, ...)`
+# call site writes to fields through a relaid pointer macro arg N times,
+# producing rewrite issues even after dedupe + zero-length skips. The
+# `(IntT)g_LevelMobys[i].m_State` Pass 4 false-positive is now fixed
+# in pass_casts.py (only walk PAREN/UNEXPOSED wrappers), benefiting
+# every other TU with a similar pattern.
+#[[native_source]]
+#file = "src/moby_helpers.c"
+
 # initialization.c + completion.c — re-enable currently held.
 #
 # Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq

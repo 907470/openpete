@@ -49,6 +49,7 @@ add_executable(openpete-spyro1
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     # spu.rewritten.c — deferred (Pass 1 overlap composition).
     # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
+    # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -190,6 +191,7 @@ set(SPYRO_NATIVE_SOURCES
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     # spu.rewritten.c — deferred (Pass 1 overlap composition).
     # overlay_pointers.rewritten.c — deferred (Pass 1 overlap + overlay infra).
+    # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
