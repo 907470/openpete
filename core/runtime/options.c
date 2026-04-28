@@ -206,5 +206,29 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         }
     }
 
+    /* Required-flag validation. Without a dispatch path the runtime falls
+     * through to an SDL spin loop that never enters game code, which is
+     * silently confusing — surface the missing flag explicitly.
+     *
+     * Test/diagnostic modes that legitimately don't need --run-recomp
+     * (--test-segv stays at the crash-handler smoke stage; --test-recomp-call
+     * dispatches its own fn and exits) are exempt. Both still require an
+     * EXE source (--disc or --exe-path) — except --test-segv which just
+     * raises a signal and never touches the EXE. */
+    bool is_segv_test = opts->test_recomp_segv;
+    bool is_call_test = opts->test_recomp_call_addr != 0;
+
+    if (!is_segv_test && !opts->disc_path && !opts->exe_path) {
+        fprintf(stderr, "openpete: --disc PATH or --exe-path PATH is "
+                        "required (no PSX EXE source given)\n");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+
+    if (!is_segv_test && !is_call_test && opts->run_recomp_addr == 0) {
+        fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
+                        "point given; pass the PSX vaddr of the game's main)\n");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+
     return OPENPETE_EXIT_OK;
 }
