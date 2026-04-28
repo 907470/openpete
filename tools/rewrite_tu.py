@@ -30,6 +30,9 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
     collect_redirects, rewrite_bare_globals, prologue_for,
 )
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
+from tools.rewrite.pass_discover import (  # noqa: E402
+    run as run_discover, render_toml as render_discovered_toml,
+)
 from tools.rewrite.rewriter import EditPlan  # noqa: E402
 
 
@@ -52,6 +55,17 @@ def main(argv=None) -> int:
                          "spyro-1/include/<file>.h copies here so the host "
                          "compiler sees PSX-laid struct definitions. Compile "
                          "invocation must prepend this directory to its -I list.")
+    ap.add_argument("--discovered-toml-out", type=Path, default=None,
+                    help="Write Pass 6's auto-discovered manifest entries "
+                         "([[discovered_dispatch]] / [[discovered_outbound_recomp]] "
+                         "/ [[discovered_outbound_psyq]]) for this TU. The merge "
+                         "step in regen-manifest.sh combines these with hand-"
+                         "curated native.toml entries.")
+    ap.add_argument("--native-fn-names", type=Path, default=None,
+                    help="File listing function names defined by *other* native "
+                         "TUs in this domain (one per line). Pass 6 uses this "
+                         "to suppress same-domain native→native calls from the "
+                         "outbound_recomp set.")
     args = ap.parse_args(argv)
 
     parsed = parse_tu(args.input)
@@ -115,6 +129,20 @@ def main(argv=None) -> int:
             dst = args.shadow_include_dir / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(plan.apply(header_resolved))
+
+    # --- Pass 6: auto-manifest discovery ----------------------------------
+    if args.discovered_toml_out is not None:
+        native_fn_names: set[str] = set()
+        if args.native_fn_names is not None and args.native_fn_names.exists():
+            for line in args.native_fn_names.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    native_fn_names.add(line)
+        sym_map = symbols or {}
+        disc = run_discover(parsed.cursor, main_path, sym_map, native_fn_names)
+        stem = args.input.stem
+        args.discovered_toml_out.parent.mkdir(parents=True, exist_ok=True)
+        args.discovered_toml_out.write_text(render_discovered_toml(stem, disc))
 
     if args.redirects_out is not None:
         # One `<__psx_name> <orig_name>` per line. gen_defsyms.py joins

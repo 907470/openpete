@@ -44,6 +44,22 @@ with open('$MANIFEST_DIR/native.toml','rb') as f:
 for ns in cfg.get('native_source', []):
     print(ns['file'])
 ")
+
+# Pass 6 (auto-manifest discovery) needs the union of function names
+# defined by *other* native TUs in this domain, so it can suppress
+# same-domain native→native calls from the outbound_recomp set. Build
+# that list per-TU by parsing each TU's exported FUNCTION_DECLs once;
+# we approximate cheaply with a grep over `^<retty> name(` patterns.
+NATIVE_FN_NAMES_FILE="$REWRITTEN_DIR/.native_fn_names.txt"
+: > "$NATIVE_FN_NAMES_FILE"
+for rel in $NATIVE_SOURCES; do
+    grep -oE "^[A-Za-z_][A-Za-z_0-9 *]+ \**[A-Za-z_][A-Za-z_0-9]+\(" \
+        "$SPYRO_SRC_DIR/$(basename "$rel")" 2>/dev/null \
+        | sed -E 's/.*[ \*]([A-Za-z_][A-Za-z_0-9]+)\(.*/\1/' \
+        >> "$NATIVE_FN_NAMES_FILE" || true
+done
+sort -u -o "$NATIVE_FN_NAMES_FILE" "$NATIVE_FN_NAMES_FILE"
+
 for rel in $NATIVE_SOURCES; do
     stem=$(basename "$rel" .c)
     # Wipe per-TU shadow tree before each run so removed rewrites don't
@@ -55,8 +71,18 @@ for rel in $NATIVE_SOURCES; do
         --domain=main_exe \
         --symbols-toml="$MANIFEST_DIR/symbols.toml" \
         --shadow-include-dir="$REWRITTEN_DIR/$stem/include" \
-        --redirects-out="$REWRITTEN_DIR/$stem.redirects.txt"
+        --redirects-out="$REWRITTEN_DIR/$stem.redirects.txt" \
+        --discovered-toml-out="$REWRITTEN_DIR/$stem.discovered.toml" \
+        --native-fn-names="$NATIVE_FN_NAMES_FILE"
 done
+
+# Phase 3 (auto-manifest): cross-check the discovered entries against the
+# hand-curated [[outbound_recomp]] / [[outbound_psyq]] / [[dispatch]] in
+# native.toml. Diagnostic-only — discrepancies don't fail the build, but
+# make it visible when the rewriter has caught up to (or surpassed) the
+# hand-list.
+python3 tools/diff_discovered_manifest.py "$MANIFEST_DIR" "$REWRITTEN_DIR" \
+    || true
 
 python3 tools/gen_defsyms.py     "$MANIFEST_DIR" "$GENERATED_DIR/native_aliases.cmake" \
                                  "$REWRITTEN_DIR"
