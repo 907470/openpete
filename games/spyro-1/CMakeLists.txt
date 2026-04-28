@@ -28,6 +28,7 @@ add_executable(openpete-spyro1
     # added with custom flags below; outbound thunks are generated.
     spyro-1/src/main.c
     spyro-1/src/cd.c
+    spyro-1/src/initialization.c
 
     # Generated from manifest/native.toml by tools/gen_dispatch.py +
     # tools/gen_thunks.py. native_dispatch.c is the inbound override
@@ -176,6 +177,25 @@ set_source_files_properties(
 set_source_files_properties(
     ${SPYRO_GENERATED}/native_thunks.cpp
     PROPERTIES
+        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
+)
+
+# initialization.c. The rename block redirects calls to outbound thunks
+# whose host symbol differs from the matching-decomp source's name, so
+# the call sites resolve to the bridge instead of clashing with the
+# recompiled body in PSX.EXE_full.c. Future plan: have gen_thunks emit
+# a `native_renames.h` and force-include it instead of -D listing.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/src/initialization.c
+    PROPERTIES
+        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS} \
+-DCdControl=openpete_CdControl \
+-DCdMix=openpete_CdMix \
+-Dfunc_80012604=spyro_native_func_80012604 \
+-Dfunc_8001277C=spyro_native_func_8001277C \
+-Dfunc_80017F24=openpete_func_80017F24 \
+-Dfunc_8002D170=openpete_func_8002D170 \
+-Dfunc_8005B7D8=openpete_func_8005B7D8"
         INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
 )
 

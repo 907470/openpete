@@ -4,25 +4,15 @@
 # The generators (gen_defsyms.py, gen_dispatch.py) consume this plus the
 # auto-generated symbols.toml/globals.toml from build_manifest.py.
 
-# Globals the native TUs touch. The generator looks each name up in
-# globals.toml and emits `--defsym=NAME=g_ram+OFFSET`. Listing here
-# (rather than auto-deriving from C source) keeps the surface explicit
-# until a header parser lands; misses surface as link errors.
+# Optional escape hatch for global aliasing: gen_defsyms.py defaults to
+# emitting --defsym for every kind=recomp global in globals.toml (i.e.
+# everything the matching-decomp build defines under build/asm/data/).
+# List names here that collide with host-defined symbols (PsyCross
+# internals, libc/CRT names, etc.).
 #
 # Top-of-file because TOML scopes top-level keys after `[[table]]`
 # headers into that table — keep this above the array-of-tables blocks.
-alias_globals = [
-    # main.c
-    "g_PadMutex",
-    "g_DeltaTime",
-    "g_UnprocessedFrames",
-    "g_StateSwitch",
-    # cd.c
-    "g_CDMaxReadTime",
-    "g_CDReadTime",
-    "g_CdState",
-    "g_CdMusic",
-]
+alias_globals_skip = []
 
 # Decomp C TUs to compile and link natively (relative to spyro-1/).
 # Each entry can carry per-TU compile-flag fragments the generator pastes
@@ -40,13 +30,20 @@ extra_flags = """\
 -DCdIntToPos=openpete_CdIntToPos\
 """
 
+# initialization.c. Same -DCdControl rename as cd.c so its lone
+# CdControl(CdlSetmode, ...) call funnels through psyq_CdControl too —
+# keeps every Cd* call routed through the Spyro-enhanced thunk layer.
+[[native_source]]
+file = "src/initialization.c"
+extra_flags = "-DCdControl=openpete_CdControl"
+
 # Entry points where psx_dispatch_compiled should jump into a native C
 # function instead of running the recompiled MIPS body. The generator
 # emits one `case 0xADDR ...` per entry into the override switch.
 #
-# Argument marshalling is auto-derived from the C signature in
-# spyro-1/include/<name>.h. To override (or to handle functions whose
-# header isn't visible — main()'s decl lives inside src/main.c), set
+# Argument marshalling and the address are auto-derived: address
+# comes from manifest/symbols.toml (parsed psx.map), args come from
+# the C signature in spyro-1/include/<name>.h. To override, set
 # `args = [...]` explicitly. Supported tokens:
 #   "u32"           — pass cpu->aN directly
 #   "u8"            — pass (uint8_t)(cpu->aN & 0xFF)
@@ -56,29 +53,25 @@ extra_flags = """\
 # `psyq_main = true` runs psyq___main(cpu) before the body — needed for
 # main() so the C runtime crt0 fires.
 [[dispatch]]
-addr = 0x80012204
 name = "main"
 c_name = "spyro_native_main"
 psyq_main = true
 args = []  # main() isn't in include/, so spec it here
+addr = 0x80012204  # main is `void main(void)`, decl lives in src/main.c
 
 [[dispatch]]
-addr = 0x800163E4
 name = "CDLoadTime"
 c_name = "CDLoadTime"
 
 [[dispatch]]
-addr = 0x80016490
 name = "CDReadDone"
 c_name = "CDReadDone"
 
 [[dispatch]]
-addr = 0x80016500
 name = "CDLoadSync"
 c_name = "CDLoadSync"
 
 [[dispatch]]
-addr = 0x80016698
 name = "CDLoadAsync"
 c_name = "CDLoadAsync"
 
@@ -86,27 +79,64 @@ c_name = "CDLoadAsync"
 # native TU references a function whose body hasn't been migrated yet
 # (e.g. main() calls Initialize/GamestateUpdate, cd.c calls SoundsUpdate
 # / CDMusicUpdate). The thunk packs args from host-ABI into cpu->aN and
-# invokes psx_dispatch_compiled(cpu, addr). Signatures from
-# spyro-1/include/.
+# invokes psx_dispatch_compiled(cpu, addr). Address + signature both
+# auto-resolved by name.
 [[outbound_recomp]]
-addr = 0x800127C0
-name = "Initialize"
-
-[[outbound_recomp]]
-addr = 0x8003385C
 name = "GamestateUpdate"
 
 [[outbound_recomp]]
-addr = 0x8001ED5C
 name = "GamestateDraw"
 
 [[outbound_recomp]]
-addr = 0x8005637C
 name = "SoundsUpdate"
 
 [[outbound_recomp]]
-addr = 0x8002BBE0
 name = "CDMusicUpdate"
+
+# Reached from initialization.c. SpuInitialize is decomp-but-not-yet-
+# native; LoadCutscene + StartCutscenePlayback are recomp; func_*
+# are handwritten asm; Memset/Memcpy are handwritten asm.
+[[outbound_recomp]]
+name = "SpuInitialize"
+
+[[outbound_recomp]]
+name = "LoadCutscene"
+
+[[outbound_recomp]]
+name = "StartCutscenePlayback"
+
+# func_<ADDR> outbound thunks need a c_name rename to avoid colliding
+# with the recompiled body of the same name in PSX.EXE_full.c. Native
+# call sites pick up the rename via -Dfunc_<ADDR>=openpete_func_<ADDR>
+# in the per-TU compile flags.
+[[outbound_recomp]]
+name = "func_80017F24"
+c_name = "openpete_func_80017F24"
+
+[[outbound_recomp]]
+name = "func_8002D170"
+c_name = "openpete_func_8002D170"
+
+[[outbound_recomp]]
+name = "func_8005B7D8"
+c_name = "openpete_func_8005B7D8"
+
+[[outbound_recomp]]
+name = "Memset"
+
+[[outbound_recomp]]
+name = "Memcpy"
+
+# Spyro-internal handwritten asm called from initialization.c
+# (declared in spyro-1/include/gamepad.h, defined in asm/).
+[[outbound_recomp]]
+name = "PadCaliReset"
+
+[[outbound_recomp]]
+name = "PadCaliInit"
+
+[[outbound_recomp]]
+name = "PadVSync"
 
 # Outbound — native code calling PSYQ-compatible wrappers. Used when
 # cd.c calls Cd*; we route through psyq_<NAME>(cpu) (psyq_thunks.cpp)
@@ -128,3 +158,9 @@ c_name = "openpete_CdSync"
 [[outbound_psyq]]
 psyq_name = "CdIntToPos"
 c_name = "openpete_CdIntToPos"
+
+# CdMix — PsyCross declares it in libcd.h but never defines a body.
+# Spyro's psyq_thunks.cpp has a manual psyq_CdMix; route through that.
+[[outbound_psyq]]
+psyq_name = "CdMix"
+c_name = "openpete_CdMix"

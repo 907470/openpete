@@ -138,16 +138,23 @@ def main(argv: list[str]) -> int:
     if include_dir is not None:
         sigs = load_signatures(include_dir)
 
-    # Sanity-check addresses against the parsed symbols manifest, and
-    # auto-fill `args` from the parsed header signature if missing.
+    # Resolve addresses from symbols.toml when missing, validate
+    # otherwise. Auto-fill `args` from the parsed header signature.
     by_addr = sym_idx["by_addr"]
+    by_name = sym_idx["by_name"]
     for d in dispatch:
-        sym = by_addr.get(d["addr"])
-        if sym is None:
-            fail(f"[[dispatch]] {d['name']} @ 0x{d['addr']:08X} not in symbols.toml")
-        if sym["name"] != d["name"]:
-            fail(f"[[dispatch]] addr 0x{d['addr']:08X} maps to {sym['name']!r}, "
-                 f"not {d['name']!r}")
+        if "addr" not in d:
+            sym = by_name.get(d["name"])
+            if sym is None:
+                fail(f"[[dispatch]] {d['name']}: not in symbols.toml")
+            d["addr"] = sym["addr"]
+        else:
+            sym = by_addr.get(d["addr"])
+            if sym is None:
+                fail(f"[[dispatch]] {d['name']} @ 0x{d['addr']:08X} not in symbols.toml")
+            if sym["name"] != d["name"]:
+                fail(f"[[dispatch]] addr 0x{d['addr']:08X} maps to {sym['name']!r}, "
+                     f"not {d['name']!r}")
         if "args" not in d:
             sig = sigs.get(d["name"])
             if sig is None:
