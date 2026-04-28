@@ -50,6 +50,21 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
     if (p >= g_scratch && p < g_scratch + SCRATCH_SIZE) {
         return 0x9F800000u | (uint32_t)(p - g_scratch);
     }
+    /* Integer-cast-to-pointer fallback: matching-decomp source occasionally
+     * computes a "pointer" by arithmetic on a vaddr literal — e.g.
+     *   levelVram = (char *)0x80200000 - _stacksize - 0x40000;
+     * On the host this evaluates to a uintptr whose low 32 bits hold the
+     * intended PSX vaddr but whose value lies outside g_ram. If those low
+     * bits already look like a KSEG0/KSEG1/KUSEG vaddr, propagate them
+     * through; the rewriter's cleaner Pass-4 cast handling is not yet in. */
+    uintptr_t raw = (uintptr_t)host_ptr;
+    uint32_t lo = (uint32_t)raw;
+    uint32_t phys = lo & 0x1FFFFFFFu;
+    if ((lo >= 0x80000000u && lo < 0x80200000u) ||
+        (lo >= 0xA0000000u && lo < 0xA0200000u) ||
+        (lo < 0x00200000u && phys < RAM_SIZE)) {
+        return lo;
+    }
     return 0u;
 }
 

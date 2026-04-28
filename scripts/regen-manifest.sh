@@ -46,10 +46,15 @@ for ns in cfg.get('native_source', []):
 ")
 for rel in $NATIVE_SOURCES; do
     stem=$(basename "$rel" .c)
+    # Wipe per-TU shadow tree before each run so removed rewrites don't
+    # linger; rewrite_tu.py only writes headers it touches.
+    rm -rf "$REWRITTEN_DIR/$stem/include"
     python3 tools/rewrite_tu.py \
         "$SPYRO_SRC_DIR/$(basename "$rel")" \
         "$REWRITTEN_DIR/$stem.rewritten.c" \
         --domain=main_exe \
+        --symbols-toml="$MANIFEST_DIR/symbols.toml" \
+        --shadow-include-dir="$REWRITTEN_DIR/$stem/include" \
         --redirects-out="$REWRITTEN_DIR/$stem.redirects.txt"
 done
 

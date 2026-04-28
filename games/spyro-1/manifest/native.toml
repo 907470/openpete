@@ -30,11 +30,13 @@ extra_flags = """\
 -DCdIntToPos=openpete_CdIntToPos\
 """
 
-# NOTE: src/initialization.c and src/completion.c temporarily disabled.
-# They surfaced the LP64-vs-ILP32 ABI mismatch (e.g. void *g_OverlaySpacePointer
-# read as 8 bytes from a 4-byte slot under --disc + --run-recomp).
-# Tracked by notes/plans/openpete-source-rewriter.md — re-enable once
-# the AST rewriter is in place.
+# initialization.c + completion.c — re-enable gated on:
+#   - Pass 4/5 boundary handling for `(char*)<vaddr> - X` integer-cast
+#     pointer arithmetic (init.c: `levelVram = (char*)0x80200000 - ...`)
+#   - struct-by-value semantics across the bridge (Pass 5)
+# Pass 1 fn-ptr substitution + the openpete_CdReadCallback bridge are in;
+# the remaining gap is a parameter-level convention for "this void* is
+# really a PSX vaddr" that the rewriter can't yet infer.
 #[[native_source]]
 #file = "src/initialization.c"
 #extra_flags = "-DCdControl=openpete_CdControl"
@@ -80,7 +82,7 @@ c_name = "CDLoadSync"
 name = "CDLoadAsync"
 c_name = "CDLoadAsync"
 
-# CalculateCompletion dispatch disabled with src/completion.c.
+# CalculateCompletion dispatch gated with src/completion.c.
 #[[dispatch]]
 #name = "CalculateCompletion"
 #c_name = "CalculateCompletion"
@@ -107,9 +109,7 @@ name = "SoundsUpdate"
 [[outbound_recomp]]
 name = "CDMusicUpdate"
 
-# init.c-only outbound entries — disabled while initialization.c is
-# back on the recomp side. Re-enable once the source rewriter unblocks
-# native init.c.
+# init.c-only outbound entries — gated with init.c's re-enable.
 #[[outbound_recomp]]
 #name = "SpuInitialize"
 #[[outbound_recomp]]
@@ -157,7 +157,7 @@ c_name = "openpete_CdSync"
 psyq_name = "CdIntToPos"
 c_name = "openpete_CdIntToPos"
 
-# CdMix — only init.c calls it; disabled with initialization.c.
+# CdMix — only init.c calls it; gated with init.c.
 #[[outbound_psyq]]
 #psyq_name = "CdMix"
 #c_name = "openpete_CdMix"

@@ -21,8 +21,20 @@
 
 #include <libgte.h>
 #include <libgpu.h>
+#include <libcd.h>
 
 /* PsyCross renamed PSYQ's RECT to RECT16 to dodge the Win32 RECT clash. */
 #define RECT RECT16
+
+/* Native cd.c (post-rewriter) registers its read-completion callback
+ * (CDReadDone) via the PSYQ name CdReadCallback. We route reads through
+ * psyq_CdRead in psyq_thunks.cpp (XA pump, overlay-magic detection), so
+ * native-side registration must land in psyq_thunks.cpp's host-cb slot
+ * — not PsyCross's internal register, which our flow doesn't consult.
+ * openpete_CdReadCallback (psyq_thunks.cpp) does that bridge. */
+typedef void (*openpete_native_cd_read_cb_t)(unsigned char intr,
+                                             unsigned char* result);
+void openpete_CdReadCallback(openpete_native_cd_read_cb_t cb);
+#define CdReadCallback openpete_CdReadCallback
 
 #endif

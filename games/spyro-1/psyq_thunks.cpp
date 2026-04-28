@@ -89,6 +89,12 @@ extern "C" {
 extern "C" int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
 
 static uint32_t g_cd_read_cb     = 0;
+/* Native cd.c (post-rewriter) registers a host-side callback via
+ * openpete_CdReadCallback. psyq_CdRead checks both this and g_cd_read_cb;
+ * one-or-the-other is set depending on whether the registrar was native
+ * or recompiled code. */
+typedef void (*native_cd_read_cb_t)(unsigned char intr, unsigned char* result);
+static native_cd_read_cb_t g_native_cd_read_cb = nullptr;
 static uint32_t g_vsync_cb       = 0;
 
 static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
@@ -1124,13 +1130,19 @@ void psyq_CdRead(CPUState* cpu) {
     uint8_t* ram = openpete_psx_get_ram();
     uint32_t before = 0;
     memcpy(&before, ram + 0x76BB8, 4);
-    invoke_psx_callback(cpu, g_cd_read_cb, /*intr=CdlComplete=*/2u, 0u);
+    if (g_native_cd_read_cb != nullptr) {
+        /* Native registrar (post-rewriter init.c). Fire the host cb
+         * directly — no cpu dispatch round-trip needed. */
+        g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
+    } else {
+        invoke_psx_callback(cpu, g_cd_read_cb, /*intr=CdlComplete=*/2u, 0u);
+    }
     uint32_t after = 0;
     memcpy(&after, ram + 0x76BB8, 4);
     if (after != 0u) {
         OPL_WARN_F("thunks",
-                   "CdRead: m_IsReading still set after callback (before=%u after=%u cb=0x%08X)",
-                   before, after, g_cd_read_cb);
+                   "CdRead: m_IsReading still set after callback (before=%u after=%u cb=0x%08X native_cb=%p)",
+                   before, after, g_cd_read_cb, (void*)g_native_cd_read_cb);
     }
 
     /* After the bytes have actually settled in RAM, peek the overlay-id
@@ -1197,6 +1209,16 @@ void psyq_CdMix(CPUState* cpu) {
      * yet, treat as success. Phase 1d: wire to PsyCross's CD-XA path. */
     (void)cpu;
     cpu->v0 = 1u;
+}
+
+/* Native-side bridge: post-rewriter cd.c calls CdReadCallback() expecting
+ * to register a host C function. We store it for psyq_CdRead to fire
+ * (instead of dispatching into recomp territory). Renamed from
+ * CdReadCallback in psyq_compat.h. */
+extern "C" void openpete_CdReadCallback(native_cd_read_cb_t cb) {
+    OPL_INFO_F("thunks", "openpete_CdReadCallback registered host cb=%p",
+               (void*)cb);
+    g_native_cd_read_cb = cb;
 }
 
 void psyq_CdReadCallback(CPUState* cpu) {

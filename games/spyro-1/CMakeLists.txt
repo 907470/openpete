@@ -32,10 +32,8 @@ add_executable(openpete-spyro1
     # source, never the original.
     ${SPYRO_GENERATED}/rewritten/main.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
-    # initialization.c / completion.c — gated on Pass 1 (struct relayout)
-    # landing; Pass 2 alone fixes the bare g_OverlaySpacePointer crash but
-    # leaves the latent g_CdState.m_IsReading offset divergence. Re-enable
-    # once Pass 1 is in.
+    # initialization.c / completion.c re-enable gated on Pass 4/5
+    # (integer-cast pointer arithmetic + struct-by-value boundary).
 
     # Generated from manifest/native.toml by tools/gen_dispatch.py +
     # tools/gen_thunks.py. native_dispatch.c is the inbound override
@@ -158,14 +156,24 @@ set(SPYRO_DECOMP_BASE_FLAGS
 set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/main.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
-    # initialization.c / completion.c gated on Pass 1 — see add_executable above.
+    # init.c / completion.c gated — see comment in add_executable above.
 )
-set_source_files_properties(
-    ${SPYRO_NATIVE_SOURCES}
-    PROPERTIES
-        COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
-        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
-)
+
+# Per-TU shadow include trees (Pass 1 struct relayout). Each native TU
+# gets ${SPYRO_GENERATED}/rewritten/<stem>/include/ prepended to its -I
+# list so PSX-laid struct definitions win over the originals in
+# spyro-1/include. The shadow trees are populated by tools/rewrite_tu.py
+# during scripts/regen-manifest.sh.
+foreach(SRC ${SPYRO_NATIVE_SOURCES})
+    get_filename_component(_stem "${SRC}" NAME_WE)  # main, cd, ...
+    set(_shadow "${SPYRO_GENERATED}/rewritten/${_stem}/include")
+    set_source_files_properties(
+        ${SRC}
+        PROPERTIES
+            COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
+            INCLUDE_DIRECTORIES "${_shadow};${SPYRO_DECOMP_INCLUDES}"
+    )
+endforeach()
 set_source_files_properties(
     ${SPYRO_GENERATED}/native_thunks.cpp
     PROPERTIES
