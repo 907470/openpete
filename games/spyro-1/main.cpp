@@ -22,6 +22,10 @@ int main(int argc, char** argv) {
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();
+    /* Hint for the parser's "missing --run-recomp" diagnostic. main()
+     * lives at 0x80012204 in spyro-1/build/psx.map; that's what the user
+     * almost always wants to dispatch. */
+    opts.run_recomp_hint_addr = 0x80012204u;
 
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;

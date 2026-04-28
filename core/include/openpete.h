@@ -32,6 +32,13 @@ typedef struct {
     /* Identity (filled by per-game main; rest from CLI) */
     const char* display_name;     /* window title etc. */
 
+    /* Per-game hint surfaced in the "missing --run-recomp" diagnostic.
+     * Set to the game's `main` PSX vaddr (or whatever entry the user is
+     * expected to dispatch) so the parse error names a concrete value to
+     * pass. core/ stays game-agnostic by reading this field; per-game
+     * main.cpp populates it. 0 = no hint, message stays generic. */
+    uint32_t run_recomp_hint_addr;
+
     /* Run-loop control */
     int frame_limit;              /* 0 = unlimited */
     int max_runtime_seconds;      /* 0 = unlimited */

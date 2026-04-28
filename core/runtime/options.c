@@ -225,8 +225,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     }
 
     if (!is_segv_test && !is_call_test && opts->run_recomp_addr == 0) {
-        fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
-                        "point given; pass the PSX vaddr of the game's main)\n");
+        if (opts->run_recomp_hint_addr != 0) {
+            fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
+                            "point given; e.g. --run-recomp 0x%08X for %s)\n",
+                    opts->run_recomp_hint_addr,
+                    opts->display_name ? opts->display_name : "this game");
+        } else {
+            fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
+                            "point given; pass the PSX vaddr of the game's main)\n");
+        }
         return OPENPETE_EXIT_SETUP_ERROR;
     }
 
