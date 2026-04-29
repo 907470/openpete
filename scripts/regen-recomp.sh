@@ -157,6 +157,25 @@ process_overlay() {
         --extra-funcs="$second_funcs" \
         --emit-external-jals="$OUT/$name/external_jals.txt" \
         "${extra_args[@]}"
+
+    # Third pass: extract jal-cont split targets from the second-pass
+    # output and re-run with them as forced entries. External JALs whose
+    # target isn't a known external/manual/in-range symbol get split into
+    # `call_by_address(cpu, jal+8); /* jal cont: split */`; without an
+    # entry at jal+8 the cont stub-misses at runtime (e.g. level_55's
+    # 0x8007E024 fall-through after the GTE helper jal).
+    local cont_funcs="$OUT/$name/extra_funcs.third.txt"
+    python3 tools/extract_jal_cont_targets.py \
+        "$OUT/$name/$name.bin_full.c" "$cont_funcs"
+    if [[ -s "$cont_funcs" ]] && grep -q '^0x' "$cont_funcs"; then
+        local third_funcs="$OUT/$name/extra_funcs.combined.txt"
+        cat "$second_funcs" "$cont_funcs" > "$third_funcs"
+        echo "[regen] $name: third-pass recomp with jal-cont entries"
+        "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+            --extra-funcs="$third_funcs" \
+            --emit-external-jals="$OUT/$name/external_jals.txt" \
+            "${extra_args[@]}"
+    fi
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"
     return 0
@@ -274,6 +293,13 @@ main_exe_args=(
     --skip-on-error
 )
 "$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
+# NOTE: main-EXE jal-cont third-pass deliberately disabled. Adding a
+# single forced entry (0x800661D0) reproducibly broke the level_24 demo
+# entry path with stub misses at 0x8005AC40 + 0x8008772C — adding any
+# forced entry to main-EXE evidently shifts function-boundary detection
+# in a way that loses pre-existing dispatch entries. The overlay path
+# is safe (per-overlay third-pass green); main-EXE remains a deferred
+# investigation.
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
     "$OUT/PSX.EXE_dispatch.c"
 
