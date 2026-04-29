@@ -98,12 +98,10 @@ file = "src/specular_and_metal.c"
 [[native_source]]
 file = "src/cutscene.c"
 
-# 4BEF8.c — deferred (post-composition-fix). Pass 1+2 composition fix
-# now lets it compile, but runtime fails during early init: SIGSEGV
-# inside CdReadSync — one of the buffer-pointer field writes in this
-# TU (`g_Buffers.m_X = (char *)g_Buffers.m_SharedAnimations - K`) ends
-# up storing a PSX-vaddr that doesn't round-trip back to a real CD
-# read buffer. Real Pass 1 / arithmetic-correctness investigation.
+# 4BEF8.c — gated. Pass 1 + Pass 4b convert peteData to a host pointer
+# correctly, but the resulting CDLoadSync wait-loop still hangs on the
+# PETE.WAD read at 0x8018B800 (callback fires and clears m_IsReading per
+# psyq_thunks log, no warnings) — root cause not yet found. Re-deferred.
 #[[native_source]]
 #file = "src/4BEF8.c"
 

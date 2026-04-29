@@ -122,10 +122,13 @@ def main(argv=None) -> int:
     # Pass 1 needs to know which spans Pass 2 will rewrite as writes so
     # it can suppress its own reads inside them (Pass 2's RHS rendering
     # folds the relaid field reads inline).
-    from tools.rewrite.pass_bare_globals import _find_assignment_writes
+    from tools.rewrite.pass_bare_globals import (
+        _find_assignment_writes, find_array_write_extents)
     pre_writes = _find_assignment_writes(parsed.cursor, redirects)
     pass2_write_ranges = [(binop.extent.start.offset, binop.extent.end.offset)
                           for (binop, _l, _r) in pre_writes.values()]
+    pass2_write_ranges.extend(
+        find_array_write_extents(parsed.cursor, redirects))
 
     # --- Pass 1: struct relayout ------------------------------------------
     # Header field rewrites + .c-body access conversions. Header edits
@@ -157,6 +160,24 @@ def main(argv=None) -> int:
     for err in bg.address_of_errors:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)
+
+    # --- Pass 4b: int-to-ptr cast wrap (literal PSX vaddr → host pointer) ---
+    # Skip casts that fall inside a Pass 1 or Pass 2 write extent — those
+    # rewrites already consume the cast specially.
+    suppress_ranges = sorted(pass1_ranges + pass2_write_ranges)
+    def _inside_any(s: int, e: int) -> bool:
+        for rs, re_ in suppress_ranges:
+            if s >= rs and e <= re_:
+                return True
+            if rs > s:
+                break
+        return False
+    for ed in casts.edits:
+        if ed.file != main_path:
+            continue
+        if _inside_any(ed.start, ed.end):
+            continue
+        plan.add(ed)
 
     # --- Pass 5: struct-by-value boundary guard ---------------------------
     # Hard-error if the TU passes (or returns) a struct by value at a call

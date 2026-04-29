@@ -70,6 +70,35 @@ def _resolve_function_psx_vaddr(rhs: ci.Cursor, symbols: Dict[str, int]) -> Opti
 # Where structs come from — game vs PSYQ vs system
 # ---------------------------------------------------------------------------
 
+def _is_int_to_ptr_cast(cursor: ci.Cursor) -> bool:
+    """True if `cursor` is `(PtrT)(int_expr)` — a C-style cast whose target
+    is a pointer type and whose operand has integer kind. Used by Pass 1's
+    pointer-field write rendering to skip host_to_psx on literal PSX-vaddr
+    integer expressions like `(void*)(0x80200000 - X)`."""
+    c = cursor
+    while c.kind == ci.CursorKind.UNEXPOSED_EXPR:
+        kids = list(c.get_children())
+        if not kids:
+            return False
+        c = kids[0]
+    if c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
+        return False
+    target = c.type.get_canonical()
+    if not _is_pointer_kind(target):
+        return False
+    kids = list(c.get_children())
+    operand = kids[-1] if kids else None
+    if operand is None:
+        return False
+    op_canon = operand.type.get_canonical()
+    return op_canon.kind in (
+        ci.TypeKind.INT, ci.TypeKind.UINT, ci.TypeKind.LONG,
+        ci.TypeKind.ULONG, ci.TypeKind.LONGLONG, ci.TypeKind.ULONGLONG,
+        ci.TypeKind.SHORT, ci.TypeKind.USHORT, ci.TypeKind.CHAR_S,
+        ci.TypeKind.CHAR_U, ci.TypeKind.SCHAR, ci.TypeKind.UCHAR,
+    )
+
+
 def _is_game_header(path: str) -> bool:
     """Returns True for files under spyro-1/include/."""
     p = str(path)
@@ -857,6 +886,17 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                            if symbols else None)
                 if fn_addr is not None:
                     replacement = f"{lhs_text} = 0x{fn_addr:08X}u"
+                elif _is_int_to_ptr_cast(rhs):
+                    # `field = (PtrT)(int_expr)` — the source intends a
+                    # literal PSX vaddr (e.g. `0x80200000 - X`). Storing
+                    # via host_to_psx would treat the integer as a host
+                    # pointer and yield 0. Skip the round-trip; store the
+                    # integer value directly into the uint32_t storage.
+                    inner = list(rhs.get_children())[0] \
+                        if list(rhs.get_children()) else rhs
+                    inner_text = _render_with_redirects(
+                        inner, main_resolved, redirects, rewrites)
+                    replacement = f"{lhs_text} = (uint32_t)({inner_text})"
                 else:
                     replacement = (f"{lhs_text} = "
                                    f"openpete_host_to_psx({rhs_text})")

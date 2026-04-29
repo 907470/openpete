@@ -192,6 +192,56 @@ def _find_assignment_writes(tu_cursor: ci.Cursor,
     return writes
 
 
+def find_array_write_extents(tu_cursor: ci.Cursor,
+                             redirects: Dict[str, GlobalRedirect]
+                             ) -> List[Tuple[int, int]]:
+    """Return BinaryOperator extents for `arr[i] = rhs` writes through a
+    redirected array global. Pass 1 consults these so its read edits don't
+    overlap Pass 2's whole-binop array-write replacement."""
+    extents: List[Tuple[int, int]] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.BINARY_OPERATOR:
+            continue
+        children = list(c.get_children())
+        if len(children) != 2:
+            continue
+        lhs, rhs = children
+        if lhs.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            continue
+        lhs_kids = list(lhs.get_children())
+        if not lhs_kids:
+            continue
+        base = lhs_kids[0]
+        while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            kids = list(base.get_children())
+            if not kids:
+                break
+            base = kids[0]
+        if base.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = base.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_array:
+            continue
+        try:
+            tokens = list(c.translation_unit.get_tokens(extent=c.extent))
+        except Exception:
+            continue
+        op_tok = None
+        for tok in tokens:
+            if tok.location.offset >= lhs.extent.end.offset and \
+               tok.location.offset < rhs.extent.start.offset and \
+               tok.kind == ci.TokenKind.PUNCTUATION:
+                op_tok = tok
+                break
+        if op_tok is None or op_tok.spelling != "=":
+            continue
+        extents.append((c.extent.start.offset, c.extent.end.offset))
+    return extents
+
+
 def _is_address_of(ref: ci.Cursor, parent: ci.Cursor) -> bool:
     """True if `ref` appears under a `&ref` UnaryOperator."""
     # We don't have lexical parent; the caller passes the candidate UnaryOp.
@@ -531,8 +581,14 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         if op_tok is None or op_tok.spelling != "=":
             continue
         idx = lhs_kids[1] if len(lhs_kids) > 1 else None
-        idx_text = bytes_slice(idx) if idx is not None else ""
-        rhs_text = bytes_slice(rhs)
+        if pass1_rewrites is not None:
+            from .pass_struct_relayout import _render_with_redirects as _r1
+            idx_text = (_r1(idx, str(main_file), redirects, pass1_rewrites)
+                        if idx is not None else "")
+            rhs_text = _r1(rhs, str(main_file), redirects, pass1_rewrites)
+        else:
+            idx_text = bytes_slice(idx) if idx is not None else ""
+            rhs_text = bytes_slice(rhs)
         if red.is_pointer:
             replacement = (f"{red.psx_storage_name}[{idx_text}] = "
                            f"openpete_host_to_psx({rhs_text})")
