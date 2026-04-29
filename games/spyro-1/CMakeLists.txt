@@ -41,8 +41,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
     # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    # special_surfaces.rewritten.c — deferred (level_55 gameplay SIGSEGV
-    # in ApplySpecialSurfaceEffects; uint32_t-as-host-pointer mishandling).
+    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
@@ -187,8 +186,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
     # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    # special_surfaces.rewritten.c — deferred (level_55 gameplay SIGSEGV
-    # in ApplySpecialSurfaceEffects; uint32_t-as-host-pointer mishandling).
+    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c

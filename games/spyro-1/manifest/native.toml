@@ -110,25 +110,8 @@ file = "src/cutscene.c"
 [[native_source]]
 file = "src/music.c"
 
-# special_surfaces.c — deferred (post-composition-fix gameplay-correctness).
-# Migrates clean against the 20s smoke gate (which only exercises
-# titlescreen + level_11/Artisans demo). A 2-minute run cycles
-# titlescreen → level_11 → titlescreen → level_24 → titlescreen →
-# level_55, then SIGSEGVs at 42.55s inside ApplySpecialSurfaceEffects+0x45
-# during the level_55 (Magic Crafters area) demo.
-#
-# Fault `addr=0x800d9d44 code=SEGV_MAPERR` — a PSX KSEG0 vaddr treated
-# as a host address. Diagnosis: somewhere in ApplySpecialSurfaceEffects
-# a relaid field's uint32_t value (PSX vaddr) is being dereferenced as
-# a host pointer without going through openpete_psx_to_host_ptr. The
-# rewriter missed a conversion site that's only exercised by the
-# level_55 path; level_11 doesn't hit it.
-#
-# Smoke gate doesn't catch this; needs a longer-cycle smoke or a
-# manual bisect of `ApplySpecialSurfaceEffects` rewritten output vs
-# source. Bounded but not 5-minute work.
-#[[native_source]]
-#file = "src/special_surfaces.c"
+[[native_source]]
+file = "src/special_surfaces.c"
 
 [[native_source]]
 file = "src/save_file.c"

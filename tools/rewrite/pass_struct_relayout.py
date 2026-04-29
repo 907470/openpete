@@ -105,6 +105,7 @@ class FieldRewrite:
     is_function_ptr: bool
     is_array: bool = False           # field type is `T arr[N]` (array)
     elem_orig_type: str = ""         # element type for array fields (e.g. "AnimationHeader *")
+    is_ptr_to_ptr: bool = False      # field type is `T **f` — points to a PSX-laid-out array of vaddrs
 
 
 @dataclass
@@ -193,6 +194,7 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
                     is_long_signed = True
             is_array = canon.kind == ci.TypeKind.CONSTANTARRAY
             elem_orig_type = ""
+            is_ptr_to_ptr = False
             if is_array and is_ptr and not is_fnptr:
                 # Element type spelling — for `T *m_F[N]` we want `T *`
                 # so element-access rewrites cast each PSX vaddr back to
@@ -200,6 +202,20 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
                 elem_orig_type = ft.element_type.spelling \
                     if ft.kind == ci.TypeKind.CONSTANTARRAY \
                     else canon.element_type.spelling
+            elif is_ptr and not is_array and not is_fnptr:
+                # `T **f` (or `u_long *f`-equivalent) — the field holds a
+                # PSX vaddr to an array of PSX vaddrs. Subscripting must
+                # convert each element through psx_to_host_ptr separately.
+                pointee = elem.get_pointee()
+                if pointee.kind != ci.TypeKind.INVALID and \
+                        _is_pointer_kind(pointee.get_canonical()) and \
+                        not _is_function_ptr(pointee.get_canonical()):
+                    is_ptr_to_ptr = True
+                    # elem_orig_type holds the inner pointer type, e.g.
+                    # "SpecialSurface *" for `SpecialSurface **`.
+                    elem_orig_type = ft.get_pointee().spelling \
+                        if ft.kind != ci.TypeKind.CONSTANTARRAY \
+                        else canon.get_pointee().spelling
             rewrites[FieldKey(usr, fld.spelling)] = FieldRewrite(
                 record_usr=usr,
                 record_name=rec_name,
@@ -213,6 +229,7 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
                 is_function_ptr=is_fnptr,
                 is_array=is_array,
                 elem_orig_type=elem_orig_type,
+                is_ptr_to_ptr=is_ptr_to_ptr,
             )
     return rewrites
 
@@ -525,7 +542,10 @@ def _array_subscript_field_ref(sub: ci.Cursor,
     if parent is None:
         return None
     fr = rewrites.get(FieldKey(parent.get_usr(), rd.spelling))
-    if fr is None or not fr.is_array or not fr.is_pointer or fr.is_function_ptr:
+    if fr is None or fr.is_function_ptr:
+        return None
+    is_array_of_ptr = fr.is_array and fr.is_pointer
+    if not (is_array_of_ptr or fr.is_ptr_to_ptr):
         return None
     return base, fr
 
@@ -581,13 +601,33 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             e = toks[-1].location.offset + len(toks[-1].spelling)
         if s in array_subscript_edits:
             continue
-        # Use the AST-aware renderer so array-redirect bases are
-        # substituted at subscript level (`((T*)psx_to_host(__psx_arr[i]))`)
-        # rather than the scalar-pointer form which is wrong for arrays.
-        sub_text = _render_with_redirects(sub, main_resolved, redirects,
-                                          rewrites)
         cast = fr.elem_orig_type or "void *"
-        replacement = (f"(({cast})openpete_psx_to_host_ptr({sub_text}))")
+        if fr.is_ptr_to_ptr:
+            # `T **field` — the field holds a vaddr to an array of vaddrs.
+            # Read `obj.field` as a uint32_t (no cast to T**), then
+            # convert to a host `uint32_t*` so subscripting reads PSX-
+            # sized elements; convert each element separately.
+            sub_kids = list(sub.get_children())
+            idx = sub_kids[1] if len(sub_kids) > 1 else None
+            if idx is not None:
+                idx_text = _render_with_redirects(
+                    idx, main_resolved, redirects, rewrites)
+            else:
+                idx_text = ""
+            field_text = _bytes_slice(
+                main_resolved,
+                member.extent.start.offset, member.extent.end.offset)
+            replacement = (
+                f"(({cast})openpete_psx_to_host_ptr("
+                f"((uint32_t *)openpete_psx_to_host_ptr({field_text}))"
+                f"[{idx_text}]))")
+        else:
+            # Use the AST-aware renderer so array-redirect bases are
+            # substituted at subscript level (`((T*)psx_to_host(__psx_arr[i]))`)
+            # rather than the scalar-pointer form which is wrong for arrays.
+            sub_text = _render_with_redirects(sub, main_resolved, redirects,
+                                              rewrites)
+            replacement = (f"(({cast})openpete_psx_to_host_ptr({sub_text}))")
         array_subscript_edits[s] = Edit(
             start=s, end=e, replacement=replacement,
             file=main_resolved,
