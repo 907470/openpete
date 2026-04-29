@@ -13,6 +13,7 @@
 #include "game_extras.h"
 #include "bk2_movie.h"
 #include "bk2_record.h"
+#include "openpete_state.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -540,6 +541,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * Tab isn't held so input feels normal during play. */
     Uint32 last_input_pump_ms = 0;
 
+    /* Save-state hotkey state. Edge-triggered against the previous host-loop
+     * iteration so a held key fires once per press. Number-row 1=save,
+     * 2=load, 3=cycle active slot through 0..9. (The plan's original F2/F4
+     * choices collide with PsyCross's debug bindings — F4 in particular
+     * cycles g_activeKeyboardControllers, which silently kicks the keyboard
+     * off pad 1 and looks identical to a save-state regression.) */
+    bool prev_save = false, prev_load = false, prev_cycle = false;
+    unsigned active_slot = 0;
+
     while (!quit) {
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
@@ -583,6 +593,48 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
         const Uint8* kbd_pre = SDL_GetKeyboardState(NULL);
         bool tab_held = (kbd_pre && kbd_pre[SDL_SCANCODE_TAB]);
+
+        /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
+         * Edge-triggered (one action per keypress). The game fiber is
+         * yielded right now, so g_game.cpu and g_ram are quiescent — we can
+         * snapshot or restore without racing the recompiled code.
+         *
+         * Run BEFORE PsyX_UpdateInput so a load that overwrites the pad
+         * buffer (which lives in restored g_ram) is immediately followed by
+         * a fresh write of current input — otherwise the game fiber reads
+         * stale buttons from the saved RAM and feels like input has stopped
+         * registering until the next iter. */
+        {
+            bool save_k  = kbd_pre && kbd_pre[SDL_SCANCODE_1];
+            bool load_k  = kbd_pre && kbd_pre[SDL_SCANCODE_2];
+            bool cycle_k = kbd_pre && kbd_pre[SDL_SCANCODE_3];
+            if (save_k && !prev_save) {
+                (void)openpete_state_save(active_slot, &g_game.cpu,
+                                          openpete_frame);
+            }
+            if (load_k && !prev_load) {
+                unsigned loaded_frame = openpete_frame;
+                if (openpete_state_load(active_slot, &g_game.cpu,
+                                        &loaded_frame) == 0) {
+                    /* Re-anchor the host frame counter so one-shot
+                     * triggers (screenshot-on-frame, ram-dump-on-frame,
+                     * frame-limit) reason about wall-time-from-load
+                     * the same way they would on a fresh run. */
+                    openpete_frame = loaded_frame;
+                }
+            }
+            if (cycle_k && !prev_cycle) {
+                active_slot = (active_slot + 1u) % OPENPETE_STATE_NUM_SLOTS;
+                OPL_INFO_F("savestate", "active slot -> %u%s",
+                           active_slot,
+                           openpete_state_slot_present(active_slot)
+                               ? " (occupied)" : " (empty)");
+            }
+            prev_save  = save_k;
+            prev_load  = load_k;
+            prev_cycle = cycle_k;
+        }
+
         Uint32 now_for_input = SDL_GetTicks();
         if (!tab_held || (now_for_input - last_input_pump_ms) >= 8) {
             PsyX_UpdateInput();

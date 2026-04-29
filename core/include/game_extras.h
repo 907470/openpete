@@ -59,6 +59,16 @@ void game_apply_runtime_quirks(CPUState* cpu);
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
 void game_on_frame(CPUState* cpu, uint32_t frame_counter);
 
+/* --- Save-state resync hook ---
+ * Called from core's save-state loader AFTER cpu/RAM/scratch have been
+ * restored, BEFORE the game fiber resumes. Per-game impl resyncs any
+ * host-side state that mirrors RAM-resident game state — for Spyro that
+ * means re-pointing the active-overlay dispatcher at whichever overlay
+ * id is currently in RAM at the well-known marker word. Without this
+ * the dispatcher keeps routing into the previous level's overlay and
+ * the game hangs on the next overlay-resident call. */
+void game_on_state_loaded(CPUState* cpu);
+
 /* --- CLI overrides forwarded by core ---
  * Called once before the run loop starts. Per-game impl decides where /
  * when to apply the value (typically from game_on_frame, since the

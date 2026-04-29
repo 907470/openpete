@@ -167,6 +167,20 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     /* TODO — only needed if a per-frame DMA timing hack surfaces. */
 }
 
+/* Each Spyro overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON
+ * burns LONG(id) at +0x00). After a save-state load, the previously-active
+ * overlay tracker (host-side state in dispatch_chain.c) still points at
+ * whichever overlay was live BEFORE the load — re-read the marker word
+ * from restored RAM and re-sync the dispatcher. Without this, calls into
+ * overlay-resident vaddrs route to the wrong dispatcher and the game
+ * hangs spinning on missing functions. */
+extern void spyro_set_active_overlay_by_magic(uint32_t magic);
+
+void game_on_state_loaded(CPUState* cpu) {
+    uint32_t magic = cpu->read_word(0x8007AA38u);
+    spyro_set_active_overlay_by_magic(magic);
+}
+
 /* --- Disc layout --- */
 
 static const game_disc_layout_t k_disc_layout = {

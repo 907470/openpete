@@ -18,6 +18,10 @@ add_library(openpete_core STATIC
     runtime/bk2_record.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
 
+    # Save states (F2/F4 quick save/load). See
+    # plans/openpete-savestate-frame-step-rewind.md.
+    runtime/savestate.c
+
     # Phase 1b: slim PSX runtime
     runtime/cpu.c
     runtime/boot.c
