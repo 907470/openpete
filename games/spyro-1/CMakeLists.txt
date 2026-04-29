@@ -48,7 +48,7 @@ add_executable(openpete-spyro1
     # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # gamepad.rewritten.c — deferred (post-increment on redirected ptr global).
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
-    # spu.rewritten.c — deferred (compound-assign += on relaid field).
+    ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
     # overlay_pointers.rewritten.c — deferred (correctness audit needed).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
@@ -193,7 +193,7 @@ set(SPYRO_NATIVE_SOURCES
     # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
     # gamepad.rewritten.c — deferred (post-increment on redirected ptr global).
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
-    # spu.rewritten.c — deferred (compound-assign += on relaid field).
+    ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
     # overlay_pointers.rewritten.c — deferred (correctness audit needed).
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).

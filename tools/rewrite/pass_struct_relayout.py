@@ -253,14 +253,25 @@ def emit_header_edits(rewrites: Dict[FieldKey, FieldRewrite],
 # .c-body field-access rewrites
 # ---------------------------------------------------------------------------
 
+# Compound-assignment operators we recognize as writes. A compound
+# assign rewrites as `lhs = (cast)((lhs_read_form) BINOP rhs)` so the
+# relaid storage is updated through one assignment expression.
+_COMPOUND_ASSIGN_OPS = frozenset({
+    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+})
+
+
 def _find_member_writes(tu_cursor: ci.Cursor,
                         rewrites: Dict[FieldKey, FieldRewrite]
-                        ) -> Dict[int, Tuple[ci.Cursor, ci.Cursor, FieldRewrite]]:
-    """Return {member_ref_start_offset: (binop, member_ref, rewrite)} for
-    every `obj.field = rhs` site where `field` is a rewritten field."""
-    writes: Dict[int, Tuple[ci.Cursor, ci.Cursor, FieldRewrite]] = {}
+                        ) -> Dict[int, Tuple[ci.Cursor, ci.Cursor, FieldRewrite, str]]:
+    """Return {member_ref_start_offset: (binop, member_ref, rewrite, op_spelling)}
+    for every `obj.field = rhs` or `obj.field <op>= rhs` site where
+    `field` is a rewritten field. `op_spelling` is "=" for plain
+    assignment or a compound op like "+=", "&=", etc."""
+    writes: Dict[int, Tuple[ci.Cursor, ci.Cursor, FieldRewrite, str]] = {}
     for c in tu_cursor.walk_preorder():
-        if c.kind != ci.CursorKind.BINARY_OPERATOR:
+        if c.kind not in (ci.CursorKind.BINARY_OPERATOR,
+                          ci.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR):
             continue
         children = list(c.get_children())
         if len(children) != 2:
@@ -282,16 +293,20 @@ def _find_member_writes(tu_cursor: ci.Cursor,
             tokens = list(c.translation_unit.get_tokens(extent=c.extent))
         except Exception:
             continue
-        op_tok = None
+        # Find the assignment operator token between lhs and rhs. For
+        # multi-character ops (`+=`, `<<=`), libclang's tokenizer emits
+        # them as a single PUNCTUATION token.
+        op_str = None
         for tok in tokens:
             if tok.location.offset >= lhs.extent.end.offset and \
                tok.location.offset < rhs.extent.start.offset and \
                tok.kind == ci.TokenKind.PUNCTUATION:
-                op_tok = tok
-                break
-        if op_tok is None or op_tok.spelling != "=":
+                if tok.spelling == "=" or tok.spelling in _COMPOUND_ASSIGN_OPS:
+                    op_str = tok.spelling
+                    break
+        if op_str is None:
             continue
-        writes[lhs.extent.start.offset] = (c, lhs, fr)
+        writes[lhs.extent.start.offset] = (c, lhs, fr, op_str)
     return writes
 
 
@@ -304,7 +319,8 @@ def _bytes_slice(file_path: str, start: int, end: int) -> str:
 def _render_with_redirects(cursor: ci.Cursor,
                            main_resolved: str,
                            redirects,
-                           rewrites: Optional[Dict[FieldKey, "FieldRewrite"]] = None
+                           rewrites: Optional[Dict[FieldKey, "FieldRewrite"]] = None,
+                           include_self: bool = False
                            ) -> str:
     """Read cursor's source slice, substituting Pass 2's redirected-global
     read form for any DeclRefExpr inside the slice and Pass 1's read form
@@ -328,8 +344,11 @@ def _render_with_redirects(cursor: ci.Cursor,
             continue
         if str(Path(k.location.file.name).resolve()) != main_resolved:
             continue
-        # Skip the cursor itself — substituting it produces self-recursion.
-        if (k.extent.start.offset, k.extent.end.offset) == cursor_self_extent \
+        # Skip the cursor itself unless include_self is set (compound-
+        # assign LHS rendering needs the read form OF the top-level
+        # member-ref, not just its inner refs).
+        if not include_self and \
+                (k.extent.start.offset, k.extent.end.offset) == cursor_self_extent \
                 and k.kind == cursor.kind:
             continue
         if k.kind == ci.CursorKind.DECL_REF_EXPR and redirects:
@@ -555,7 +574,8 @@ def emit_access_edits(tu_cursor: ci.Cursor,
     # Pre-collect write extents so nested member-refs inside them are
     # suppressed (the write's RHS rendering folds them inline).
     write_ranges: List[Tuple[int, int]] = []
-    for off, (binop, _lhs, _fr) in writes.items():
+    for off, w in writes.items():
+        binop = w[0]
         write_ranges.append((binop.extent.start.offset, binop.extent.end.offset))
     write_ranges.sort()
 
@@ -668,7 +688,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         # LHS qualifies — nested member-refs sharing the start are reads.
         is_write_lhs = False
         if off in writes:
-            _binop, _lhs, _fr = writes[off]
+            _binop, _lhs, _fr, _op = writes[off]
             if _lhs.extent.end.offset == ext_end:
                 is_write_lhs = True
         # If this ref sits inside a Pass 1 write extent (and isn't the
@@ -685,19 +705,43 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             continue
 
         if is_write_lhs:
-            binop, lhs, _ = writes[off]
+            binop, lhs, _, op_str = writes[off]
             rhs_children = list(binop.get_children())
             rhs = rhs_children[1]
-            # `lhs_text` is left as raw source — it's `g_X.field = ...`
-            # which is the storage-write target. Its inner field is the
-            # very field we're rewriting; nested redirects in the LHS
-            # shape are vanishingly rare and would corrupt the assign.
-            lhs_text = _bytes_slice(main_resolved,
-                                    lhs.extent.start.offset,
-                                    lhs.extent.end.offset)
+            # `lhs_text` is the storage-write target. Render its nested
+            # refs (e.g. `obj.m_RelaidPtr[i].m_RelaidLong = ...` needs
+            # the inner m_RelaidPtr substituted with its host-ptr read
+            # form before subscripting). The outer ref (the field we're
+            # writing to) stays bare via include_self=False.
+            lhs_text = _render_with_redirects(lhs, main_resolved,
+                                              redirects, rewrites)
             rhs_text = _render_with_redirects(rhs, main_resolved,
                                               redirects, rewrites)
-            if fr.is_pointer:
+            if op_str != "=":
+                # Compound assign: `obj.field <op>= rhs` rewrites as
+                # `obj.field = (cast)((lhs_read_form) <op> (rhs))`. The
+                # binop here is the C-level operator with the trailing
+                # `=` stripped. Long-family fields stay in uint32 space
+                # (per plan §1.6.5 — field-to-field arithmetic on relaid
+                # storage). Pointer compound-assigns (`+=`, `-=` for
+                # pointer arithmetic) hard-error today; deferred until
+                # we hit a real one in the wild.
+                if fr.is_pointer:
+                    raise RuntimeError(
+                        f"compound-assign on relaid pointer field "
+                        f"{fr.record_name}.{fr.field_name} at "
+                        f"{lhs.location.file}:{lhs.location.line} — "
+                        f"pointer arithmetic compound-assign not yet "
+                        f"supported (Pass 1)")
+                bare_op = op_str[:-1]  # "+=" -> "+", "<<=" -> "<<"
+                cast = "int32_t" if fr.is_long_signed else "uint32_t"
+                # Build the lhs read form: first render with nested
+                # refs substituted (this is `lhs_text` already), then
+                # wrap that in the relaid-field cast for the read.
+                lhs_read = f"(({cast})({lhs_text}))"
+                replacement = (f"{lhs_text} = ({cast})("
+                               f"{lhs_read} {bare_op} ({rhs_text}))")
+            elif fr.is_pointer:
                 # If the RHS is a function reference with a known PSX
                 # vaddr, substitute the literal — the host fn-ptr lives
                 # outside g_ram, so host_to_psx() would yield 0 and
@@ -717,7 +761,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 end=binop.extent.end.offset,
                 replacement=replacement,
                 file=main_resolved,
-                note=f"write {fr.record_name}.{fr.field_name}",
+                note=f"write {fr.record_name}.{fr.field_name} ({op_str})",
             ))
         else:
             if c.extent.end.offset == c.extent.start.offset:

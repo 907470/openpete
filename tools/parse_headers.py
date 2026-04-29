@@ -120,6 +120,12 @@ def _strip_comments_and_preproc(src: str) -> str:
     return src
 
 
+_TYPE_KEYWORDS = frozenset({
+    "void", "char", "short", "int", "long", "float", "double",
+    "signed", "unsigned",
+})
+
+
 def _parse_params(raw: str) -> list[tuple[str, str]]:
     """`int sector, void *buf, int size` → [('int','sector'),('void *','buf'),...].
 
@@ -143,6 +149,12 @@ def _parse_params(raw: str) -> list[tuple[str, str]]:
         # If the only identifier is the type (`int`, `void`), there's no name.
         if not ty_left.strip() and "*" not in stars:
             out.append((last_ident, ""))
+        elif last_ident in _TYPE_KEYWORDS and "*" not in stars:
+            # Unnamed multi-word type like `unsigned int` or `long long`:
+            # `last_ident` is itself a C type keyword and there's no `*`,
+            # so the whole chunk is the type with no param name.
+            ty = (ty_left + stars + last_ident).strip()
+            out.append((ty, ""))
         else:
             ty = (ty_left + stars).strip()
             out.append((ty, last_ident))

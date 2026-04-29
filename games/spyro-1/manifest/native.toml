@@ -151,15 +151,8 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/camera.c"
 
-# spu.c — deferred (post-composition-fix). Compiles past the original
-# Pass 1 overlap class, but hits compound-assign on a relaid field:
-# `g_Spu.m_SoundDefinitions[i].m_Addr += 0x1010` — Pass 1 emits the read
-# form `((uint32_t)(...))` for m_Addr, which is an rvalue, so `+=` fails
-# (lvalue required). _find_member_writes only matches `=`, not compound
-# operators. Real fix: extend Pass 1 to recognize +=/-=/*=/etc. and emit
-# a transactional read-modify-write through the relaid storage.
-#[[native_source]]
-#file = "src/spu.c"
+[[native_source]]
+file = "src/spu.c"
 
 # overlay_pointers.c — deferred (post-composition-fix). Now rewrites
 # cleanly via Pass 1+2 with the address-of-only filter for main_BSS_END,
@@ -188,15 +181,11 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — deferred (post-composition-fix). Pass 1+2 composition
-# doesn't fire any more, but two new sub-classes surface:
-#   - macro-arg nested member-refs through PATCH_POINTER(g_Env.m_X->m_Y, ...)
-#     — synthetic-extent textual rendering doesn't fold the inner
-#     m_TerrainCollision relayout. Need richer in-macro-arg renderer.
-#   - implicit Pass 1 read forms appearing under `&g_LevelMobys[i]`
-#     where `&` should fall through but the bare-vaddr path isn't
-#     consulted at the subscript-of-redirect level.
-# Real Pass 1 surgery; defer.
+# loaders.c — deferred (post-compound-assign-fix). The compound-assign
+# RMW path now lands cleanly. Remaining blocker is the macro-arg nested
+# member-ref renderer: PATCH_POINTER(g_Env.m_X->m_Y, ...) — synthetic-
+# extent textual rendering doesn't fold the inner m_TerrainCollision
+# relayout. Renderer needs a per-arg-token chain walker.
 #[[native_source]]
 #file = "src/loaders.c"
 
@@ -289,8 +278,8 @@ name = "GamestateUpdate"
 [[outbound_recomp]]
 name = "GamestateDraw"
 
-[[outbound_recomp]]
-name = "SoundsUpdate"
+# SoundsUpdate now has a native body in src/spu.c — Pass 6 picks it
+# up as a [[dispatch]] entry. Same situation as CDMusicUpdate below.
 
 # CDMusicUpdate now has a native body in src/music.c — Pass 6 picks it
 # up as a [[dispatch]] entry. Direct callers from other native TUs link
