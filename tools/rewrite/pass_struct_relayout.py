@@ -135,6 +135,10 @@ class FieldRewrite:
     is_array: bool = False           # field type is `T arr[N]` (array)
     elem_orig_type: str = ""         # element type for array fields (e.g. "AnimationHeader *")
     is_ptr_to_ptr: bool = False      # field type is `T **f` — points to a PSX-laid-out array of vaddrs
+    is_opaque_pad: bool = False      # nested non-game record diverges (e.g. PsyCross DRAWENV)
+    opaque_pad_size: int = 0         # PSX size to pad to when is_opaque_pad
+    opaque_pad_orig_type: str = ""   # original type spelling for diagnostics
+    field_extent_end: int = 0        # FIELD_DECL.extent.end.offset (used for opaque pad rewrite)
 
 
 @dataclass
@@ -174,6 +178,41 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
     rewrites: Dict[FieldKey, FieldRewrite] = {}
     seen_usrs: Set[str] = set()
 
+    # Field-set: keys of game-struct fields whose subfields are accessed
+    # anywhere in this TU (`obj.field.subfield` or `(&obj.field)->...`).
+    # We skip the opaque-pad rewrite for those, leaving the host's native
+    # layout — same as before this pass landed. Pad only fields with
+    # zero subfield access in the TU.
+    accessed_subfield_keys: Set[Tuple[str, str]] = set()
+    for k in tu_cursor.walk_preorder():
+        if k.kind != ci.CursorKind.MEMBER_REF_EXPR:
+            continue
+        kids = list(k.get_children())
+        if not kids:
+            continue
+        base = kids[0]
+        # Outer member-ref; if its base is itself a MEMBER_REF_EXPR (or an
+        # ARRAY_SUBSCRIPT_EXPR / paren etc. wrapping one), the inner
+        # member-ref names the field whose subfield we're touching.
+        inner = base
+        while inner.kind in (ci.CursorKind.UNEXPOSED_EXPR,
+                             ci.CursorKind.PAREN_EXPR,
+                             ci.CursorKind.ARRAY_SUBSCRIPT_EXPR,
+                             ci.CursorKind.UNARY_OPERATOR):
+            ikids = list(inner.get_children())
+            if not ikids:
+                break
+            inner = ikids[0]
+        if inner.kind != ci.CursorKind.MEMBER_REF_EXPR:
+            continue
+        rd = inner.referenced
+        if rd is None or rd.kind != ci.CursorKind.FIELD_DECL:
+            continue
+        parent = rd.semantic_parent
+        if parent is None:
+            continue
+        accessed_subfield_keys.add((parent.get_usr(), rd.spelling))
+
     for c in tu_cursor.walk_preorder():
         if c.kind not in (ci.CursorKind.STRUCT_DECL, ci.CursorKind.UNION_DECL):
             continue
@@ -208,6 +247,47 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
             is_long = _is_long_family(canon if elem is canon else canon.element_type)
             is_fnptr = is_ptr and _is_function_ptr(elem)
             if not (is_ptr or is_long):
+                # Nested-record case: a field whose type is a struct/union
+                # (or array thereof) defined OUTSIDE spyro-1/include/ — i.e.
+                # PsyCross / PSYQ — and whose host vs PSX size diverges
+                # because the foreign struct embeds host pointers (e.g.
+                # DRAWENV's DR_ENV → uintptr_t addr). Replace with a
+                # PSX-sized byte-array pad in the per-TU shadow header so
+                # parent-struct layouts match PSX. Subfield access through
+                # the pad is forbidden and surfaces as a hard error below.
+                rec_t = elem if elem.kind == ci.TypeKind.RECORD else canon
+                if rec_t.kind == ci.TypeKind.RECORD:
+                    inner_decl = rec_t.get_declaration()
+                    inner_file = (str(inner_decl.location.file.name)
+                                  if inner_decl.location and inner_decl.location.file
+                                  else "")
+                    if inner_file and not _is_game_header(inner_file):
+                        from .types import type_diverges as _td
+                        if _td(ft) and (usr, fld.spelling) not in accessed_subfield_keys:
+                            ident_off = _identifier_token_offset(fld)
+                            if ident_off is None:
+                                continue
+                            file_ = str(fld.location.file.name) if fld.location.file else ""
+                            psx_field_size = ft.get_size()
+                            rewrites[FieldKey(usr, fld.spelling)] = FieldRewrite(
+                                record_usr=usr,
+                                record_name=rec_name,
+                                field_name=fld.spelling,
+                                field_decl_offset=fld.extent.start.offset,
+                                type_prefix_end=ident_off,
+                                file=file_,
+                                is_pointer=False,
+                                is_long_signed=False,
+                                pointer_orig_type="",
+                                is_function_ptr=False,
+                                is_array=False,
+                                elem_orig_type="",
+                                is_ptr_to_ptr=False,
+                                is_opaque_pad=True,
+                                opaque_pad_size=psx_field_size,
+                                opaque_pad_orig_type=ft.spelling,
+                                field_extent_end=fld.extent.end.offset,
+                            )
                 continue
             ident_off = _identifier_token_offset(fld)
             if ident_off is None:
@@ -276,6 +356,24 @@ def emit_header_edits(rewrites: Dict[FieldKey, FieldRewrite],
                 f"function-pointer field {fr.record_name}.{fr.field_name} "
                 f"at {fr.file}: not rewritten (Phase 4)")
             continue
+        if fr.is_opaque_pad:
+            # Replace the entire FIELD_DECL with a byte-array pad sized to
+            # match PSX. The foreign nested struct (e.g. PsyCross DRAWENV)
+            # has a bigger host layout — opaque storage on the native side,
+            # written by the recompiled-PSX side which sees PSX layout.
+            replacement = (
+                f"char {fr.field_name}[{fr.opaque_pad_size}]"
+                f" /* opaque PSX-layout pad for {fr.opaque_pad_orig_type} */"
+            )
+            result.field_edits.append(Edit(
+                start=fr.field_decl_offset,
+                end=fr.field_extent_end,
+                replacement=replacement,
+                file=fr.file,
+                note=f"opaque-pad {fr.record_name}.{fr.field_name}",
+            ))
+            result.rewritten_headers.add(fr.file)
+            continue
         if fr.is_pointer:
             new_type = "uint32_t "
         elif fr.is_long_signed:
@@ -333,7 +431,7 @@ def _find_member_writes(tu_cursor: ci.Cursor,
             continue
         key = FieldKey(parent.get_usr(), ref_decl.spelling)
         fr = rewrites.get(key)
-        if fr is None or fr.is_function_ptr:
+        if fr is None or fr.is_function_ptr or fr.is_opaque_pad:
             continue
         try:
             tokens = list(c.translation_unit.get_tokens(extent=c.extent))
@@ -498,7 +596,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             if parent is None:
                 continue
             fr = rewrites.get(FieldKey(parent.get_usr(), rd.spelling))
-            if fr is None or fr.is_function_ptr:
+            if fr is None or fr.is_function_ptr or fr.is_opaque_pad:
                 continue
             # Skip array-of-pointer fields here — those are handled at
             # the subscript level by the caller, not at the member ref.
@@ -791,7 +889,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             continue
         key = FieldKey(parent.get_usr(), ref_decl.spelling)
         fr = rewrites.get(key)
-        if fr is None or fr.is_function_ptr:
+        if fr is None or fr.is_function_ptr or fr.is_opaque_pad:
             continue
         # Macro-arg expansion: a MEMBER_REF_EXPR appearing inside a macro
         # arg used N times in the body shows up as N AST nodes, all with

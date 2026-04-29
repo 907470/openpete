@@ -39,7 +39,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
-    # 4BEF8.rewritten.c — re-deferred (sizeof(DB) host-vs-PSX 8-byte drift).
+    ${SPYRO_GENERATED}/rewritten/4BEF8.rewritten.c
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
     ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
@@ -184,7 +184,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
-    # 4BEF8.rewritten.c — re-deferred (sizeof(DB) host-vs-PSX 8-byte drift).
+    ${SPYRO_GENERATED}/rewritten/4BEF8.rewritten.c
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
     ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
