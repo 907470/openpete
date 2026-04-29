@@ -24,6 +24,14 @@ extern "C" {
  * use this to choose between condvar-pacing and synchronous-increment. */
 extern int openpete_ticker_drives_vbl;
 
+/* Non-zero while the host loop is in "unlock" mode (Tab held, --headless,
+ * or any future fast-forward path). When set, psyq_VSync(0) advances the
+ * vbl counter synchronously instead of waiting for the ticker — the
+ * ticker keeps running, but the game no longer paces off it, so the loop
+ * runs as fast as the GL/CPU pipeline allows. Set per-iteration by the
+ * host loop in run.c. */
+extern int openpete_unlock_fps;
+
 /* Host-loop wake primitive. The ticker signals this on every tick;
  * the host loop waits on it between game-fiber slices to gate the
  * next slice on a wall-clock vblank. */

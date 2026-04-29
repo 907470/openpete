@@ -648,6 +648,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             last_input_pump_ms = now_for_input;
         }
 
+        /* Tell the game-fiber psyq_VSync path whether to wait on the
+         * ticker (paced) or advance synchronously (fast-forward). Sample
+         * Tab here so the flag matches the slice the game is about to
+         * run. PsyCross's swap-interval bypass is a host-loop concern;
+         * keep that flag co-located below so both effects toggle as one. */
+        openpete_unlock_fps = opts->headless || tab_held;
+
         /* Hand control to the game until the next VSync(0) yield. */
         unsigned frame_before_yield = openpete_frame;
         game_on_frame_pre(&g_game.cpu, openpete_frame);
@@ -828,6 +835,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * GL present (SDL_GL_SwapWindow with swap interval 1) would still
          * lock us to the monitor refresh, so the host loop wouldn't actually
          * spin faster than ~165 Hz on a 165 Hz display. */
+        /* Re-sample Tab here so the host-side bypass tracks the player
+         * releasing it mid-iteration. `openpete_unlock_fps` (set above
+         * pre-yield) governs the game fiber; this local flag governs the
+         * host loop's own pacing + the GL swap-interval bypass. */
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
         bool unlock_fps = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
         g_skipSwapInterval = unlock_fps ? 1 : 0;

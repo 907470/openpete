@@ -15,8 +15,9 @@
 #include <stddef.h>
 
 int          openpete_ticker_drives_vbl = 0;
-SDL_cond*    openpete_ticker_wake_cond  = NULL;
-SDL_mutex*   openpete_ticker_wake_mutex = NULL;
+int          openpete_unlock_fps         = 0;
+SDL_cond*    openpete_ticker_wake_cond   = NULL;
+SDL_mutex*   openpete_ticker_wake_mutex  = NULL;
 
 static SDL_TimerID s_ticker_id = 0;
 

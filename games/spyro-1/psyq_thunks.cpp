@@ -195,10 +195,11 @@ void psyq_VSync(CPUState* cpu) {
 
         int wait = (mode == 0) ? 1 : mode;
         int target = observed + wait;
-        if (!openpete_ticker_drives_vbl) {
-            /* Headless / no-ticker: nobody else will advance the counter,
-             * so do it ourselves. Yield exactly once so the host loop still
-             * sees the frame boundary (frame_limit, screenshots, bk2). */
+        if (!openpete_ticker_drives_vbl || openpete_unlock_fps) {
+            /* Headless / no-ticker, OR Tab-held fast-forward: don't wait
+             * for the ticker — advance the counter synchronously and yield
+             * once so the host loop still sees the frame boundary
+             * (frame_limit, screenshots, bk2 alignment). */
             SDL_AtomicAdd(&openpete_vbl, wait);
             openpete_yield_to_host();
             if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
