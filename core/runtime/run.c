@@ -447,12 +447,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     game_set_music_volume(opts->music_volume_set ? opts->music_volume : -1);
     game_set_skip_to_level(opts->skip_to_level);
 
-    /* Wire optional fast-boot before any thunk runs. Read by psyq_VSync. */
-    openpete_fast_boot_until_frame = opts->fast_boot_until_frame;
-    if (openpete_fast_boot_until_frame > 0) {
-        OPL_INFO_F("boot", "fast-boot: skipping host yields until frame=%d",
-                   openpete_fast_boot_until_frame);
-    }
+    /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it
+     * the first time real draw commands hit, so host yields engage exactly
+     * when the game starts rendering — no CLI knob needed. */
+    OPL_INFO_F("boot", "fast-boot: skipping host yields until first DrawOTag");
 
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
@@ -592,8 +590,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * keyboard/gamepad/--bk2 override into pad->buttons inside the
          * game's PadVSync handler — pre-yield the value would still be
          * stale from the previous frame. Also skip iterations where the
-         * frame counter didn't advance (fast-boot host loops, gated event
-         * pumps), which would otherwise inflate the movie length. */
+         * frame counter didn't advance (gated event pumps, no-tick yields
+         * from dispatch stubs), which would otherwise inflate the movie
+         * length. */
         if (bk2_recording && ticked_this_iter) {
             unsigned ticks = openpete_frame - frame_before_yield;
             uint16_t bits = PsyX_Pad_GetLastP1Bits();
@@ -634,10 +633,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_present_pending = 0;
         }
 
-        /* RAM dump runs outside the present_pending gate so it still fires
-         * during fast-boot frames (which don't yield for present). Use >=
-         * with a one-shot guard because fast-boot can jump openpete_frame
-         * past the target between host iterations — equality would miss it. */
+        /* RAM dump runs outside the present_pending gate so a request for
+         * the very first rendered frame (ram-dump-on-frame=0) still fires
+         * even on iters where DrawOTag hasn't queued anything yet. Use >=
+         * with a one-shot guard so the trigger is forgiving of skipped
+         * frame numbers. */
         static int ram_dumped = 0;
         if (!ram_dumped && opts->ram_dump_on_frame >= 0 &&
             (int)openpete_frame >= opts->ram_dump_on_frame) {

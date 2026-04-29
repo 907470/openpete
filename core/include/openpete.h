@@ -120,14 +120,6 @@ typedef struct {
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
 
-    /* Test harness: fast-forward VSync(0) calls until openpete_frame >= N.
-     * Bumps the frame counter without yielding to the host fiber, so the
-     * game advances as fast as possible without presenting/pacing. Skips
-     * Spyro's two 3.5s VSync busy-waits in Initialize() (Sony+Universal
-     * splash windows) — saves ~7s of black-screen boot per iteration. 0 =
-     * disabled. */
-    int fast_boot_until_frame;
-
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */
@@ -137,7 +129,8 @@ typedef struct {
      * legal — a positive value here means "skip the first N bk2 frames".
      * INT_MIN = "unset"; the host loop then auto-picks
      * -bk2.first_input_frame so the first pressed bk2 frame lands at
-     * openpete_frame=0 (use --fast-boot-until-frame to skip splashes). */
+     * openpete_frame=0 (which is itself anchored to the first DrawOTag,
+     * so splash frames are naturally excluded from the bk2 timeline). */
     int  bk2_frame_offset;
     bool bk2_frame_offset_set;
 
@@ -182,7 +175,8 @@ typedef struct {
      * do its normal flyby + load — no state corruption. 0 = disabled.
      * Spyro 1 level IDs: 10/20/30/40/50/60 are homeworlds, +1..3 are
      * regular levels, +4 is the flight/speedway level, 63 is Gnasty's
-     * lair. Pair with --fast-boot-until-frame to skip the splashes. */
+     * lair. Splash sequence is auto-skipped (host-yield is bypassed until
+     * the first DrawOTag), so this loads as fast as the EXE allows. */
     int skip_to_level;
 } openpete_options_t;
 

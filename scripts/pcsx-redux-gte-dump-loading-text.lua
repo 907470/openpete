@@ -16,10 +16,10 @@ local CFG = {
     -- Will tune empirically; for first run, dump everything in a wide window.
     frame_lo  = 1300,
     frame_hi  = 1320,
-    -- pcsx-redux frames may differ from openpete's because openpete uses
-    -- --fast-boot-until-frame=850 (skips host yields, but PSX CPU still
-    -- runs); pcsx-redux runs the full BIOS+boot. The frame numbers
-    -- below should match openpete since both count VSyncs from boot.
+    -- pcsx-redux frame numbers count VSyncs from full BIOS+boot. Openpete's
+    -- `openpete_frame` is now anchored at the first DrawOTag (post-splash),
+    -- but `openpete_vbl` still counts every VSync from boot — match the
+    -- pcsx-redux numbers below against `openpete_vbl`, not `openpete_frame`.
     -- If the loading-text never appears in the capture, sweep these
     -- forward by 100..400 frames empirically.
     presses   = {

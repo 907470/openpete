@@ -15,10 +15,10 @@
 #   --disc <repo>/games/spyro-1/spyro-1/build/SCUS-94228.cue (or
 #       $OPENPETE_DISC if set)
 #   --run-recomp 0x80012204                 # Spyro main()
-#   --fast-boot-until-frame 850             # skip boot intro yields
-#   --bk2 games/spyro-1/bk2/skip-to-artisans.bk2 --bk2-frame-offset 0
+#   --bk2 games/spyro-1/bk2/skip-to-artisans.bk2
 #       # canned input that walks past the title-screen prompts. Live
-#       # keyboard takes over once the movie ends (frame 1950+).
+#       # keyboard takes over once the movie ends. The runtime auto-aligns
+#       # bk2 frame 0 with the first rendered frame (no offset needed).
 #
 # Convenience flags (handled by this script, not forwarded as-is):
 #   --record NAME       expands to --bk2-record games/spyro-1/bk2/NAME.bk2.
@@ -226,11 +226,6 @@ if ! has_flag --run-recomp; then
     prepend --run-recomp 0x80012204
 fi
 
-if ! has_flag --fast-boot-until-frame; then
-    yellow "  (no --fast-boot-until-frame; defaulting to 850 — past boot intro)"
-    prepend --fast-boot-until-frame 850
-fi
-
 if (( idle )); then
     yellow "  (--idle: no scripted input)"
 else
@@ -243,13 +238,10 @@ else
             yellow "  (skip-to-artisans.bk2 missing; running with no scripted input)"
         fi
     fi
-    # bk2 frame 0 → openpete_frame 0. The C-side auto-pick of
-    # -first_input_frame misaligns against --fast-boot-until-frame, so pin to
-    # 0 unless the caller overrode it.
-    if has_flag --bk2 && ! has_flag --bk2-frame-offset; then
-        yellow "  (no --bk2-frame-offset; defaulting to 0)"
-        prepend --bk2-frame-offset 0
-    fi
+    # No --bk2-frame-offset default: openpete_frame is now anchored at the
+    # first rendered frame (auto-detected via DrawOTag), so the C-side
+    # auto-pick of -bk2.first_input_frame correctly puts the first pressed
+    # bk2 frame at openpete_frame=0.
 fi
 
 # --- Run -----------------------------------------------------------------

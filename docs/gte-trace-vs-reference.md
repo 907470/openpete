@@ -21,14 +21,16 @@ All three engines are already linked into `openpete-spyro1`, so this needs
 no setup beyond an env var.
 
 ```sh
+# openpete_frame is now anchored at the first DrawOTag, so splash frames
+# don't count toward the trace window. Frame numbers below are in the new
+# numbering (subtract ~850 from the old fast-boot-relative numbering).
 rm -f /tmp/openpete-gte.csv
 OPENPETE_GTE_TRACE=/tmp/openpete-gte.csv \
-OPENPETE_GTE_TRACE_LO=1100 OPENPETE_GTE_TRACE_HI=1111 \
+OPENPETE_GTE_TRACE_LO=250 OPENPETE_GTE_TRACE_HI=261 \
 OPENPETE_GTE_TRACE_OPS='01,06,30,2D,2E' \
 ./build/linux-release/games/spyro-1/openpete-spyro1 --headless \
     --disc <spyro>/spyro-1/build/SCUS-94228.cue \
-    --run-recomp 0x80012204 --frame-limit 1115 \
-    --fast-boot-until-frame 800
+    --run-recomp 0x80012204 --frame-limit 265
 ```
 
 Output is three rows per logged op, in the order `rec`, `psy`, `pcsx`.

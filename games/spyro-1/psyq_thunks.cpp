@@ -151,25 +151,28 @@ void psyq_VSync(CPUState* cpu) {
      *   mode  > 0 : wait that many vblanks (Spyro doesn't seem to use this)
      *
      * Phase 1d: instead of busy-waiting in PsyCross's VSync, we yield to the
-     * host fiber, which presents the current scene + advances openpete_frame
-     * and resumes us. `openpete_frame` is the frame counter the game sees. */
+     * host fiber, which presents the current scene + advances the counters
+     * and resumes us. We return `openpete_vbl` (PSX-facing, monotonic from
+     * boot) — that's what libetc's vbl-counter contract gives the game. */
     int mode = (int)cpu->a0;
     static uint32_t calls = 0u;
     if ((++calls & 0x3FFu) == 1u) {
-        OPL_INFO_F("thunks", "VSync(%d) frame=%u (call #%u)",
-                   mode, openpete_frame, calls);
+        OPL_INFO_F("thunks", "VSync(%d) vbl=%u frame=%u (call #%u)",
+                   mode, openpete_vbl, openpete_frame, calls);
     }
     if (mode == 0) {
-        if (openpete_fast_boot_until_frame > 0 &&
-            (int)openpete_frame < openpete_fast_boot_until_frame) {
-            /* Fast-boot: bump the counter without yielding so the game's
-             * Initialize() busy-waits run as fast as possible. Nothing is
-             * being rendered during these waits anyway (Sony+Universal
-             * splash windows are intentional VSync(-1) spins).
-             * Skip the VSync callback during fast-boot too: PadVSync would
-             * be writing to g_PadBuffer based on pre-input state, which is
-             * meaningless at boot and risks committing stale presses. */
-            openpete_frame++;
+        if (openpete_fast_boot_active) {
+            /* Fast-boot: bump the PSX-visible vbl counter without yielding so
+             * the game's Initialize() busy-waits run as fast as possible.
+             * Nothing is being rendered during these waits (Sony+Universal
+             * splash windows are intentional VSync(-1) spins). The host-facing
+             * `openpete_frame` stays at 0 — psyq_DrawOTag flips this gate off
+             * the moment real draw commands start, so frame 0 in dumps and
+             * traces always means "first rendered frame." Skip the VSync
+             * callback during fast-boot too: PadVSync would be writing to
+             * g_PadBuffer based on pre-input state, which is meaningless at
+             * boot and risks committing stale presses. */
+            openpete_vbl++;
         } else if (openpete_host_fiber) {
             /* Spyro 1 has variable iter rate based on real-PSX work_time:
              *
@@ -224,7 +227,7 @@ void psyq_VSync(CPUState* cpu) {
             if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         }
     }
-    cpu->v0 = (uint32_t)openpete_frame;
+    cpu->v0 = (uint32_t)openpete_vbl;
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
@@ -482,6 +485,16 @@ static uint8_t* g_ot_slot_host[16384];
 static int      g_ot_slot_count = 0;
 
 void psyq_DrawOTag(CPUState* cpu) {
+    /* First DrawOTag is the natural transition from "boot init" to "game is
+     * rendering." Anchor `openpete_frame` here: from now on, every VSync(0)
+     * yields to the host and ticks the host-facing counter. */
+    if (openpete_fast_boot_active) {
+        openpete_fast_boot_active = 0;
+        OPL_INFO_F("boot",
+                   "fast-boot ended at vbl=%u (first DrawOTag); openpete_frame "
+                   "anchored to 0", openpete_vbl);
+    }
+
     g_ot_scratch_used = 0;
     g_ot_slot_count = 0;
 

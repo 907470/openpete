@@ -17,18 +17,36 @@ extern "C" {
 
 extern void*    openpete_host_fiber;     /* set in openpete_run before fiber spawn */
 extern void*    openpete_game_fiber;
-extern unsigned openpete_frame;          /* incremented on each VSync(0) yield */
+
+/* PSX-facing vblank counter. Monotonic from boot, including fast-boot
+ * iterations where the host fiber is never resumed. This is the value
+ * `psyq_VSync` returns to the game (libetc's "vbl counter" contract).
+ * The game's busy-waits like `int s = VSync(-1); while (VSync(-1) - s < N) VSync(0);`
+ * key off this. */
+extern unsigned openpete_vbl;
+
+/* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
+ * (i.e. until the game actually starts rendering), then increments on each
+ * VSync(0) yield. Every host-side consumer — frame-limit, screenshot/RAM-dump
+ * gates, hang detector, dump windows in dump tools, traces — uses this so
+ * "frame N" means the same thing across runs regardless of disc-seek timing
+ * during the splash sequence. */
+extern unsigned openpete_frame;
+
 extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
 extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 
-/* Fast-boot: while openpete_frame < this value, VSync(0) thunks bump the
- * frame counter without yielding to the host. Lets the boot-intro busy
- * waits run as fast as possible (no rendering happens during them anyway).
- * 0 = disabled. Set by openpete_run from --fast-boot-until-frame. */
-extern int      openpete_fast_boot_until_frame;
+/* Fast-boot gate. While set, psyq_VSync(0) bumps `openpete_vbl` without
+ * yielding to the host fiber, so the game's Initialize() busy-waits run as
+ * fast as the CPU allows (nothing is rendered during them anyway — the
+ * Sony+Universal splashes are intentional VSync(-1) spins). Cleared on the
+ * first call to psyq_DrawOTag, which is the natural signal that the game
+ * has progressed from boot init to issuing real draw commands. */
+extern int      openpete_fast_boot_active;
 
-/* Game fiber → host fiber. Bumps `openpete_frame` on the way through; this is
- * the "VBlank yield" used by the VSync(0) thunk. */
+/* Game fiber → host fiber. Bumps both `openpete_vbl` and `openpete_frame` on
+ * the way through; this is the "VBlank yield" used by the VSync(0) thunk
+ * outside fast-boot. */
 void openpete_yield_to_host(void);
 
 /* Game fiber → host fiber WITHOUT advancing the frame counter. Used by stub

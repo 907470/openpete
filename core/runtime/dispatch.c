@@ -185,9 +185,11 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * entry, so it sees roughly the full call sequence the game fiber walks
  * each frame. Because the host/game fibers are cooperatively scheduled in
  * one OS thread (libco), an infinite loop in the game fiber blocks the
- * host fiber too — no host-side timer can fire. Watching openpete_frame
- * here lets the game fiber notice it hasn't yielded in a long time and
- * dump where it's been before we lose the trace.
+ * host fiber too — no host-side timer can fire. Watching `openpete_vbl`
+ * here lets the game fiber notice it hasn't called VSync(0) in a long time
+ * and dump where it's been before we lose the trace. (We key off vbl rather
+ * than `openpete_frame` so fast-boot iterations — which advance vbl but not
+ * frame — don't look like hangs.)
  *
  * On trip: write a ring of the last HANG_RING entries (addr, ra, sp) to
  * `OPENPETE_HANG_TRACE` (default ./hang-trace.bin) and `_Exit(2)`.
@@ -203,7 +205,7 @@ static uint32_t s_hang_head = 0u;
 static struct hang_entry s_hang_ring_prev[HANG_RING];
 static uint32_t s_hang_head_prev = 0u;
 static uint32_t s_hang_calls_since_tick = 0u;
-static uint32_t s_hang_last_frame = 0u;
+static uint32_t s_hang_last_vbl = 0u;
 static int s_hang_threshold_inited = 0;
 static uint32_t s_hang_threshold = 50000000u;  /* env-overridable */
 static int s_hang_tripped = 0;
@@ -235,9 +237,9 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
         fclose(rp);
     }
     OPL_ERROR_F("watchdog",
-                "hang detected: %u dispatch entries since openpete_frame=%u "
+                "hang detected: %u dispatch entries since openpete_vbl=%u "
                 "(trip addr=0x%08X), wrote trace=%s ram=%s — exiting",
-                s_hang_calls_since_tick, s_hang_last_frame, trip_addr,
+                s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
                 path, rampath);
     fflush(stdout); fflush(stderr);
     _Exit(2);
@@ -253,13 +255,13 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_threshold_inited = 1;
     }
     if (s_hang_threshold && !s_hang_tripped) {
-        if (openpete_frame != s_hang_last_frame) {
-            /* Frame boundary: snapshot the ring before the next frame's
+        if (openpete_vbl != s_hang_last_vbl) {
+            /* Vbl boundary: snapshot the ring before the next vbl interval's
              * dispatches overwrite it. If a hang trips during the next
-             * frame, the snapshot still shows what got us here. */
+             * interval, the snapshot still shows what got us here. */
             memcpy(s_hang_ring_prev, s_hang_ring, sizeof(s_hang_ring));
             s_hang_head_prev = s_hang_head;
-            s_hang_last_frame = openpete_frame;
+            s_hang_last_vbl = openpete_vbl;
             s_hang_calls_since_tick = 0u;
         } else if (++s_hang_calls_since_tick > s_hang_threshold) {
             openpete_hang_dump_and_exit(addr);

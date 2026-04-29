@@ -156,16 +156,19 @@ during the openpete_frame window. Implemented in `write_trace.cpp`; the
 override hook in `game_extras_impl.c` swaps `cpu->write_word` for a
 logging wrapper on entry to `0x80023AC4` and restores it on return.
 
-Repro command (the bk2 needs `--bk2-frame-offset 0` and
-`--fast-boot-until-frame 850` to land at the right openpete_frame —
-the C-side default `-first_input_frame` misaligns):
+Repro command. `openpete_frame` is now anchored at the first DrawOTag,
+so the splash sequence is excluded from the timeline automatically — the
+old `--fast-boot-until-frame 850 --bk2-frame-offset 0` pair has been
+retired, and frame numbers in this doc are quoted in the new
+post-anchor numbering (subtract ~850 from anything sourced from the
+old logs):
 
 ```
-OPENPETE_WRITE_TRACE_FRAMES=2472-2474 \
+OPENPETE_WRITE_TRACE_FRAMES=1622-1624 \
 OPENPETE_WRITE_TRACE_PATH=/tmp/write-trace.csv \
 ./build/linux-release/games/spyro-1/openpete-spyro1 \
-  --bk2 games/spyro-1/bk2/missing-geometry.bk2 --bk2-frame-offset 0 \
-  --headless --frame-limit 2480 --fast-boot-until-frame 850 \
+  --bk2 games/spyro-1/bk2/missing-geometry.bk2 \
+  --headless --frame-limit 1630 \
   --disc <spyro>/roms/SCUS-94228/SCUS-94228.cue \
   --run-recomp 0x80012204
 ```
