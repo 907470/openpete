@@ -126,12 +126,20 @@ def main(argv=None) -> int:
     # it can suppress its own reads inside them (Pass 2's RHS rendering
     # folds the relaid field reads inline).
     from tools.rewrite.pass_bare_globals import (
-        _find_assignment_writes, find_array_write_extents)
+        _find_assignment_writes, find_array_write_extents,
+        find_array_read_extents)
     pre_writes = _find_assignment_writes(parsed.cursor, redirects)
     pass2_write_ranges = [(binop.extent.start.offset, binop.extent.end.offset)
                           for (binop, _l, _r) in pre_writes.values()]
     pass2_write_ranges.extend(
         find_array_write_extents(parsed.cursor, redirects))
+    # Pass 2 array-sub READ replacements (`arr[i]` for redirected
+    # array globals) cover their full extent and fold inner Pass 1
+    # member-ref reads inline via _render_with_redirects. Pass 1 must
+    # therefore suppress its own member-ref edits whose ranges sit
+    # inside one of these — otherwise the two collide on apply().
+    pass2_write_ranges.extend(
+        find_array_read_extents(parsed.cursor, redirects))
 
     # --- Pass 1: struct relayout ------------------------------------------
     # Header field rewrites + .c-body access conversions. Header edits

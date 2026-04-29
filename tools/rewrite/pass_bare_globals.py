@@ -249,6 +249,42 @@ def find_array_write_extents(tu_cursor: ci.Cursor,
     return extents
 
 
+def find_array_read_extents(tu_cursor: ci.Cursor,
+                            redirects: Dict[str, GlobalRedirect]
+                            ) -> List[Tuple[int, int]]:
+    """Return ARRAY_SUBSCRIPT_EXPR extents for `arr[i]` reads through a
+    redirected array global, when the array sub isn't itself the LHS of
+    an assignment. Pass 1 consults these so its inner read edits don't
+    overlap Pass 2's array-sub read replacement (which already folds
+    Pass 1 substitutions inline via _render_with_redirects)."""
+    extents: List[Tuple[int, int]] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            continue
+        kids = list(c.get_children())
+        if not kids:
+            continue
+        base = kids[0]
+        while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            bkids = list(base.get_children())
+            if not bkids:
+                break
+            base = bkids[0]
+        if base.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = base.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_array:
+            continue
+        s, e = c.extent.start.offset, c.extent.end.offset
+        if e <= s:
+            continue
+        extents.append((s, e))
+    return extents
+
+
 def _is_address_of(ref: ci.Cursor, parent: ci.Cursor) -> bool:
     """True if `ref` appears under a `&ref` UnaryOperator."""
     # We don't have lexical parent; the caller passes the candidate UnaryOp.
