@@ -90,17 +90,8 @@ file = "src/environment.c"
 [[native_source]]
 file = "src/specular_and_metal.c"
 
-# cutscene.c — deferred (post-composition-fix). Pass 1+2 composition fix
-# now lets cutscene compile cleanly and accept the rewritten reads /
-# subscript-level conversions, but cutscene's body references
-# `extern Model *g_Models[MODEL_COUNT]` — an array-of-pointer bare global
-# Pass 2 doesn't yet redirect (it handles scalar pointers only). Reads
-# of g_Models[i] get host-laid 8-byte pointer values where PSX storage
-# holds 4-byte vaddrs, so deref through them SIGSEGVs almost immediately.
-# Real fix: extend Pass 2 to redirect pointer/long arrays into
-# uint32_t[N] storage with per-index PTR conversions.
-#[[native_source]]
-#file = "src/cutscene.c"
+[[native_source]]
+file = "src/cutscene.c"
 
 # 4BEF8.c — deferred (post-composition-fix). Pass 1+2 composition fix
 # now lets it compile, but runtime fails during early init: SIGSEGV

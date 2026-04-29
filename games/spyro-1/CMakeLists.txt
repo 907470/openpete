@@ -38,7 +38,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    # cutscene.rewritten.c — deferred (g_Models array-of-pointer global needs Pass 2 array support).
+    ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
     # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
     ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
@@ -183,7 +183,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
     ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
     ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    # cutscene.rewritten.c — deferred (g_Models array-of-pointer global needs Pass 2 array support).
+    ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
     # 4BEF8.rewritten.c — deferred (Pass 1 arithmetic correctness on buffer-pointer chain).
     ${SPYRO_GENERATED}/rewritten/music.rewritten.c
     ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c

@@ -38,7 +38,7 @@ from typing import Dict, List, Set, Tuple
 import clang.cindex as ci
 
 from .rewriter import Edit, edit_from_range
-from .types import _is_long_family, _is_pointer_kind
+from .types import _is_long_family, _is_pointer_kind, _is_function_ptr
 
 
 @dataclass
@@ -48,6 +48,9 @@ class GlobalRedirect:
     is_pointer: bool
     is_long: bool
     pointer_orig_type: str = ""  # original type spelling for the pointer cast
+    is_array: bool = False        # True for `T *name[N]` / `u_long name[N]`
+    array_count: int = 0          # N (only valid when is_array)
+    elem_orig_type: str = ""      # element type for array redirects (e.g. "Model *")
 
 
 @dataclass
@@ -85,11 +88,38 @@ def _classify_global(decl: ci.Cursor) -> GlobalRedirect | None:
     if decl.storage_class == ci.StorageClass.STATIC:
         return None  # internal linkage; --defsym can't reach it
     t = decl.type
+    name = decl.spelling
+    canon = t.get_canonical()
+    # Array case: `T *name[N]` / `u_long name[N]`. Element type drives
+    # the divergence test (host pointer is 8 bytes; PSX vaddr is 4).
+    if canon.kind == ci.TypeKind.CONSTANTARRAY:
+        elem = canon.element_type.get_canonical()
+        elem_is_ptr = _is_pointer_kind(elem)
+        elem_is_long = _is_long_family(canon.element_type)
+        if not (elem_is_ptr or elem_is_long):
+            return None
+        if elem_is_ptr and _is_function_ptr(elem):
+            # Array of function pointers — same Phase-4 deferral as
+            # function-pointer struct fields. Skip; warn upstream.
+            return None
+        return GlobalRedirect(
+            name=name,
+            psx_storage_name=f"__psx_{name}",
+            is_pointer=elem_is_ptr,
+            is_long=elem_is_long,
+            pointer_orig_type=(t.element_type.spelling
+                               if t.kind == ci.TypeKind.CONSTANTARRAY
+                               else canon.element_type.spelling),
+            is_array=True,
+            array_count=canon.element_count,
+            elem_orig_type=(t.element_type.spelling
+                            if t.kind == ci.TypeKind.CONSTANTARRAY
+                            else canon.element_type.spelling),
+        )
     is_ptr = _is_scalar_pointer_global(t)
     is_long = _is_scalar_long_global(t)
     if not (is_ptr or is_long):
         return None
-    name = decl.spelling
     return GlobalRedirect(
         name=name,
         psx_storage_name=f"__psx_{name}",
@@ -301,6 +331,145 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                 f"— bare-globals pass cannot redirect address-of (storage "
                 f"is uint32_t*, not original type)")
 
+    # Array-redirect subscript pass. For `T *arr[N]` → `uint32_t arr[N]`
+    # storage, an access `arr[i]` reads the i'th vaddr and we must
+    # convert it to a host pointer before any further dereferencing.
+    # Symmetric to Pass 1's array-of-pointer-field handling at the
+    # subscript level (cannot cast to `T *[N]` — that's invalid C).
+    array_sub_skip_offsets: Set[int] = set()
+    array_sub_edits: Dict[Tuple[int, int], Edit] = {}
+    for sub in tu_cursor.walk_preorder():
+        if sub.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            continue
+        if sub.location.file is None:
+            continue
+        if str(sub.location.file.name) != main_file_resolved:
+            continue
+        children = list(sub.get_children())
+        if not children:
+            continue
+        base = children[0]
+        while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            kids = list(base.get_children())
+            if not kids:
+                break
+            base = kids[0]
+        if base.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = base.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_array:
+            continue
+        s = sub.extent.start.offset
+        e = sub.extent.end.offset
+        if e == s:
+            continue
+        if _inside_pass1(s, e):
+            # Pass 1's render handles the array-subscript form inline.
+            array_sub_skip_offsets.add(base.extent.start.offset)
+            continue
+        # Determine if this subscript is the LHS of a plain assignment.
+        # `_find_assignment_writes` keys on lhs.start which for an
+        # ARRAY_SUBSCRIPT lhs is the bare-array DeclRefExpr offset
+        # (== `s`). Promote those to array-write rewrites here, and
+        # mark the binop range so the DeclRefExpr loop later skips it.
+        sub_text = bytes_slice(sub)
+        # Index expression text — substitute redirected globals nested
+        # inside the index (e.g. `arr[__psx_other]` after another
+        # redirect) by deferring to bytes_slice on the index child.
+        idx = children[1] if len(children) > 1 else None
+        if idx is not None:
+            idx_text = bytes_slice(idx)
+        else:
+            idx_text = ""
+        # Build the per-element read form. base text becomes __psx_arr.
+        elem_access = f"{red.psx_storage_name}[{idx_text}]"
+        if red.is_pointer:
+            replacement = (f"(({red.elem_orig_type})"
+                           f"openpete_psx_to_host_ptr({elem_access}))")
+        else:
+            replacement = f"((int32_t){elem_access})"
+        array_sub_edits[(s, e)] = Edit(
+            start=s, end=e, replacement=replacement,
+            file=main_file_resolved,
+            note=f"read[] {red.name}")
+        # Suppress the inner DeclRefExpr to the array's bare name.
+        array_sub_skip_offsets.add(base.extent.start.offset)
+
+    # Detect writes through an array subscript: `arr[i] = expr`. The
+    # binop's LHS is the ARRAY_SUBSCRIPT_EXPR; we replace the whole
+    # binop with `__psx_arr[i] = host_to_psx(expr)`.
+    array_write_offsets: Set[int] = set()
+    array_write_replacements: List[Edit] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.BINARY_OPERATOR:
+            continue
+        children = list(c.get_children())
+        if len(children) != 2:
+            continue
+        lhs, rhs = children
+        if lhs.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            continue
+        lhs_kids = list(lhs.get_children())
+        if not lhs_kids:
+            continue
+        base = lhs_kids[0]
+        while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            kids = list(base.get_children())
+            if not kids:
+                break
+            base = kids[0]
+        if base.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = base.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_array:
+            continue
+        # Confirm op is `=` (compound-assign on array elem isn't handled
+        # yet; leave it to the read+RMW path or a future extension).
+        try:
+            tokens = list(c.translation_unit.get_tokens(extent=c.extent))
+        except Exception:
+            continue
+        op_tok = None
+        for tok in tokens:
+            if tok.location.offset >= lhs.extent.end.offset and \
+               tok.location.offset < rhs.extent.start.offset and \
+               tok.kind == ci.TokenKind.PUNCTUATION:
+                op_tok = tok
+                break
+        if op_tok is None or op_tok.spelling != "=":
+            continue
+        idx = lhs_kids[1] if len(lhs_kids) > 1 else None
+        idx_text = bytes_slice(idx) if idx is not None else ""
+        rhs_text = bytes_slice(rhs)
+        if red.is_pointer:
+            replacement = (f"{red.psx_storage_name}[{idx_text}] = "
+                           f"openpete_host_to_psx({rhs_text})")
+        else:
+            replacement = (f"{red.psx_storage_name}[{idx_text}] = "
+                           f"(int32_t)({rhs_text})")
+        array_write_replacements.append(Edit(
+            start=c.extent.start.offset,
+            end=c.extent.end.offset,
+            replacement=replacement,
+            file=main_file_resolved,
+            note=f"write[] {red.name}"))
+        # Suppress the read-form for the same subscript range.
+        array_sub_edits.pop(
+            (lhs.extent.start.offset, lhs.extent.end.offset), None)
+        array_sub_skip_offsets.add(base.extent.start.offset)
+        array_write_offsets.add(c.extent.start.offset)
+
+    for ed in array_sub_edits.values():
+        result.edits.append(ed)
+    for ed in array_write_replacements:
+        result.edits.append(ed)
+
     seen_read_offsets: Set[int] = set()
     for c in tu_cursor.walk_preorder():
         if c.kind != ci.CursorKind.DECL_REF_EXPR:
@@ -316,6 +485,10 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         off = c.extent.start.offset
         if off in addr_of_offsets:
             continue  # emitted as error; leave site untouched
+        if off in array_sub_skip_offsets:
+            # Bare-array DeclRefExpr inside an ARRAY_SUBSCRIPT_EXPR we
+            # already rewrote at the subscript level.
+            continue
         # Skip macro-expansion artifacts: a DeclRefExpr from a macro arg
         # used N times in the expansion shows up as N AST nodes all
         # pointing at the same source extent (often zero-length). Apply
@@ -414,7 +587,11 @@ def prologue_for(redirects: Dict[str, GlobalRedirect]) -> str:
         "extern uint32_t openpete_host_to_psx(const void*);",
     ]
     for r in sorted(redirects.values(), key=lambda x: x.name):
-        lines.append(f"extern uint32_t {r.psx_storage_name};")
+        if r.is_array:
+            lines.append(
+                f"extern uint32_t {r.psx_storage_name}[{r.array_count}];")
+        else:
+            lines.append(f"extern uint32_t {r.psx_storage_name};")
         lines.append(f"#define {r.name} __opete_unused_{r.name}")
     lines.append("")
     return "\n".join(lines)

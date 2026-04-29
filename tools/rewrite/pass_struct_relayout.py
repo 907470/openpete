@@ -333,12 +333,66 @@ def _render_with_redirects(cursor: ci.Cursor,
     """
     start = cursor.extent.start.offset
     end = cursor.extent.end.offset
+    if end == start:
+        # Macro-arg cursor with zero-length extent. Use the cursor's
+        # tokens (which still report textual positions) to synthesize
+        # the source range.
+        try:
+            toks = list(cursor.translation_unit.get_tokens(extent=cursor.extent))
+        except Exception:
+            toks = []
+        if toks:
+            start = toks[0].location.offset
+            end = toks[-1].location.offset + len(toks[-1].spelling)
     text = _bytes_slice(main_resolved, start, end)
     if not redirects and not rewrites:
         return text
     subs: List[Tuple[int, int, str]] = []
     seen: Set[int] = set()
     cursor_self_extent = (cursor.extent.start.offset, cursor.extent.end.offset)
+    # First pass: detect ARRAY_SUBSCRIPT_EXPR sites whose base is an
+    # array-redirect DeclRefExpr; emit the per-element host-pointer
+    # form there and mark the inner DeclRefExpr to skip below.
+    array_sub_inner_skips: Set[int] = set()
+    for k in cursor.walk_preorder():
+        if k.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR or not redirects:
+            continue
+        kids = list(k.get_children())
+        if not kids:
+            continue
+        base = kids[0]
+        while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            bkids = list(base.get_children())
+            if not bkids:
+                break
+            base = bkids[0]
+        if base.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = base.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_array:
+            continue
+        ks = k.extent.start.offset
+        ke = k.extent.end.offset
+        if ke == ks or ks < start or ke > end:
+            continue
+        if ks in seen:
+            continue
+        seen.add(ks)
+        idx = kids[1] if len(kids) > 1 else None
+        idx_text = (_bytes_slice(main_resolved,
+                                 idx.extent.start.offset, idx.extent.end.offset)
+                    if idx is not None else "")
+        elem_access = f"{red.psx_storage_name}[{idx_text}]"
+        if red.is_pointer:
+            repl = (f"(({red.elem_orig_type})"
+                    f"openpete_psx_to_host_ptr({elem_access}))")
+        else:
+            repl = f"((int32_t){elem_access})"
+        subs.append((ks - start, ke - start, repl))
+        array_sub_inner_skips.add(base.extent.start.offset)
     for k in cursor.walk_preorder():
         if k.location.file is None:
             continue
@@ -360,12 +414,31 @@ def _render_with_redirects(cursor: ci.Cursor,
                 continue
             ks = k.extent.start.offset
             ke = k.extent.end.offset
-            if ke == ks or ks < start or ke > end:
+            if ke == ks:
+                # Macro-arg synthetic extent — recover from tokens.
+                try:
+                    ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
+                except Exception:
+                    ktoks = []
+                if not ktoks:
+                    continue
+                ks = ktoks[0].location.offset
+                ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
+            if ke <= ks or ks < start or ke > end:
                 continue
-            if ks in seen:
+            if ks in seen or ks in array_sub_inner_skips:
                 continue
             seen.add(ks)
-            if red.is_pointer:
+            # Array redirect referenced bare (no subscript) — rare;
+            # decay to pointer-to-elem.
+            if red.is_array:
+                if red.is_pointer:
+                    repl = (f"(({red.elem_orig_type} *)"
+                            f"openpete_psx_to_host_ptr"
+                            f"((uint32_t)(uintptr_t){red.psx_storage_name}))")
+                else:
+                    repl = f"({red.psx_storage_name})"
+            elif red.is_pointer:
                 repl = (f"(({red.pointer_orig_type})"
                         f"openpete_psx_to_host_ptr({red.psx_storage_name}))")
             else:
@@ -508,17 +581,11 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             e = toks[-1].location.offset + len(toks[-1].spelling)
         if s in array_subscript_edits:
             continue
-        sub_text = _bytes_slice(main_resolved, s, e)
-        if redirects:
-            for name, red in redirects.items():
-                if name in sub_text:
-                    if red.is_pointer:
-                        rep = (f"(({red.pointer_orig_type})"
-                               f"openpete_psx_to_host_ptr"
-                               f"({red.psx_storage_name}))")
-                    else:
-                        rep = f"((int32_t){red.psx_storage_name})"
-                    sub_text = sub_text.replace(name, rep)
+        # Use the AST-aware renderer so array-redirect bases are
+        # substituted at subscript level (`((T*)psx_to_host(__psx_arr[i]))`)
+        # rather than the scalar-pointer form which is wrong for arrays.
+        sub_text = _render_with_redirects(sub, main_resolved, redirects,
+                                          rewrites)
         cast = fr.elem_orig_type or "void *"
         replacement = (f"(({cast})openpete_psx_to_host_ptr({sub_text}))")
         array_subscript_edits[s] = Edit(
