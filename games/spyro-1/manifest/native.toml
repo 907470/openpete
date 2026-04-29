@@ -24,7 +24,13 @@ alias_globals_skip = []
 #   CdInit         — cd.c's `CdInit()` link-resolves directly to
 #                    PsyCross's CdInit; no rename is in flight, so the
 #                    auto thunk would just be dead code.
-outbound_psyq_skip = ["CdReadCallback", "CdInit"]
+#   CdIntToPos     — native callers (music.c / spu.c) pass a stack-local
+#                    CdlLOC*; the auto thunk's `host_to_psx(p)` returns 0
+#                    for stack pointers and the host call dereferences
+#                    NULL. PsyCross's CdIntToPos signature matches the
+#                    native call exactly — no PSX-vaddr round-trip needed
+#                    — so the native source link-resolves directly.
+outbound_psyq_skip = ["CdReadCallback", "CdInit", "CdIntToPos"]
 outbound_recomp_skip = []
 
 # Decomp C TUs to compile and link natively (relative to spyro-1/).
@@ -39,8 +45,7 @@ file = "src/cd.c"
 extra_flags = """\
 -DCdControl=openpete_CdControl \
 -DCdRead=openpete_CdRead \
--DCdSync=openpete_CdSync \
--DCdIntToPos=openpete_CdIntToPos\
+-DCdSync=openpete_CdSync\
 """
 
 # Tiny, self-contained — two helpers around libc rand(). Stresses Pass 6
@@ -321,9 +326,11 @@ c_name = "openpete_CdRead"
 psyq_name = "CdSync"
 c_name = "openpete_CdSync"
 
-[[outbound_psyq]]
-psyq_name = "CdIntToPos"
-c_name = "openpete_CdIntToPos"
+# CdIntToPos — see outbound_psyq_skip above. Native callers
+# (music.c / spu.c) pass a stack-local CdlLOC*; the auto thunk's
+# host_to_psx returns 0 for stack pointers and the host call
+# dereferences NULL. Native source link-resolves directly to
+# PsyCross's CdIntToPos.
 
 # CdMix + VSync — gated with init.c re-enable.
 # CdMix: PsyCross declares but doesn't define; psyq_thunks.cpp's
