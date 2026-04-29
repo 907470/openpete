@@ -900,6 +900,60 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             if te > ts:
                 macro_write_lhs_extents.add((ts, te))
 
+    # Parent-cast-to-integer detection. The sentinel idiom
+    # `if ((int)m->m_Animations[i] == -1)` casts a relaid array-of-
+    # pointer field to int to compare against 0xFFFFFFFF. Wrapping the
+    # array-sub with `(T*)psx_to_host_ptr(...)` first turns the int-
+    # cast into an int→host-ptr→int round trip that loses the sentinel.
+    # When the array-sub's parent context (skipping paren/unexposed) is
+    # a `(int)`-style cast, suppress the wrap and let the bare uint32_t
+    # lvalue source survive — the int cast then operates on the raw
+    # PSX vaddr, preserving the sentinel.
+    int_cast_arraysub_offsets: Set[int] = set()
+    int_cast_memberref_offsets: Set[int] = set()
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
+            continue
+        # Only suppress when casting *from* a relaid chain *to* a
+        # non-pointer integer type. Pointer casts (`(T*)expr`) are
+        # the entry point for the host-ptr wrap and must keep firing.
+        target = c.type.get_canonical()
+        if target.kind == ci.TypeKind.POINTER:
+            continue
+        if target.kind not in (
+                ci.TypeKind.INT, ci.TypeKind.UINT,
+                ci.TypeKind.LONG, ci.TypeKind.ULONG,
+                ci.TypeKind.LONGLONG, ci.TypeKind.ULONGLONG,
+                ci.TypeKind.SHORT, ci.TypeKind.USHORT,
+                ci.TypeKind.SCHAR, ci.TypeKind.UCHAR, ci.TypeKind.CHAR_S,
+                ci.TypeKind.CHAR_U):
+            continue
+        operand = None
+        for ck in c.get_children():
+            operand = ck
+            break
+        if operand is None:
+            continue
+        # Unwrap paren / unexposed wrappers.
+        while operand.kind in (ci.CursorKind.PAREN_EXPR,
+                               ci.CursorKind.UNEXPOSED_EXPR):
+            kids = list(operand.get_children())
+            if not kids:
+                break
+            operand = kids[0]
+        if operand.kind == ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            if _array_subscript_field_ref(operand, rewrites) is not None:
+                int_cast_arraysub_offsets.add(operand.extent.start.offset)
+        elif operand.kind == ci.CursorKind.MEMBER_REF_EXPR:
+            rd = operand.referenced
+            if rd is not None and rd.kind == ci.CursorKind.FIELD_DECL:
+                parent = rd.semantic_parent
+                if parent is not None:
+                    fk = FieldKey(parent.get_usr(), rd.spelling)
+                    if fk in rewrites:
+                        int_cast_memberref_offsets.add(
+                            operand.extent.start.offset)
+
     # Array-of-pointer fields: rewrite at `obj.arr[i]` rather than at
     # `obj.arr` so each PSX-vaddr element is converted to a host pointer
     # individually. Casting `(T *[N])` is invalid C; per-element casts
@@ -928,6 +982,11 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             s = toks[0].location.offset
             e = toks[-1].location.offset + len(toks[-1].spelling)
         if s in array_subscript_edits:
+            continue
+        # `(int)m->arr[i]` sentinel-style cast: skip the host-ptr wrap
+        # so the int cast operates on the raw uint32_t vaddr.
+        if sub.extent.start.offset in int_cast_arraysub_offsets:
+            skip_member_ref_offsets.add(member.extent.start.offset)
             continue
         cast = fr.elem_orig_type or "void *"
         if is_macro_arg and (s, e) in macro_write_lhs_extents:
@@ -1305,7 +1364,12 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             # (`g_Env.m_TC->m_BlockTree`) get composed read forms.
             access_text = _render_with_redirects(c, main_resolved,
                                                  redirects, rewrites)
-            if fr.is_pointer:
+            if c.extent.start.offset in int_cast_memberref_offsets:
+                # `(int)obj.relaid_field` — sentinel-style cast. Drop
+                # the host-ptr round-trip; the int cast operates on
+                # the raw uint32_t lvalue.
+                replacement = access_text
+            elif fr.is_pointer:
                 replacement = (f"(({fr.pointer_orig_type})"
                                f"openpete_psx_to_host_ptr({access_text}))")
             else:

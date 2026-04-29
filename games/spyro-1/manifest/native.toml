@@ -163,17 +163,14 @@ file = "src/moby_helpers.c"
 # inside macro args — substitutes the scalar read-wrap form, with
 # `(?<![A-Za-z0-9_])` for word boundary so `__psx_<name>` matches
 # don't recurse.
-# Re-deferred. Compiles cleanly via textual-fallback passes
-# (apply_textual_chain_wrap_fallback / apply_textual_bare_ref_fallback)
-# but PatchMobyModelPointers SIGSEGVs ~frame 449. Root cause: the
-# sentinel idiom `if ((int)m->m_Animations[i] == -1) continue;`
-# (loaders.c:329) gets Pass 1-wrapped to `(int)(AnimationHeader*)
-# psx_to_host_ptr(m->m_Animations[i])`, losing the 0xFFFFFFFF
-# sentinel through the int→host-ptr→int round trip. The continue
-# branch never fires for empty-animation slots and downstream
-# PATCH_POINTER derefs the corrupted vaddr. Needs Pass 1/4 to
-# detect `(int)<relaid-ptr-chain>` parent-cast context and skip
-# the host-pointer wrap (let it stay as the raw uint32_t lvalue).
+# Re-deferred again. Pass 1/4 sentinel-cast suppression cleared the
+# PatchMobyModelPointers crash, but a downstream regression surfaces:
+# SoundsUpdate SIGSEGVs ~frame 1217 of demo-mode (tas.bk2) deref'ing
+# `g_Spu.m_ActiveSounds[i].m_SoundRefPtr` through psx_to_host_ptr —
+# loaders.c is corrupting some relaid-pointer-storing field. Likely
+# culprit: a write site where the rewriter is storing a host pointer
+# into uint32_t storage (or PSX vaddr where host pointer expected)
+# that the existing TUs avoid. Needs targeted investigation.
 #[[native_source]]
 #file = "src/loaders.c"
 

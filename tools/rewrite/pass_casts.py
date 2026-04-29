@@ -171,7 +171,8 @@ def _operand_has_pointer_term(operand: ci.Cursor,
 def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
                            main_path: str,
                            redirects: Dict[str, GlobalRedirect],
-                           result: CastResult) -> None:
+                           result: CastResult,
+                           pass1_rewrites=None) -> None:
     """Walk every CSTYLE_CAST_EXPR `(IntT)pointer_expr`. The source intends
     the PSX vaddr (a 32-bit value), but the operand is now a host pointer
     (often 64-bit). Cast `(int)host_ptr` truncates and breaks subsequent
@@ -226,6 +227,34 @@ def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
         if operand.extent.start.offset == c.extent.start.offset and \
                 operand.extent.end.offset == c.extent.end.offset:
             continue
+        # Skip when the operand reduces to a relaid struct-field access
+        # (member-ref or array-sub of a relaid field). Pass 1 leaves
+        # the source `obj.field` / `obj.arr[i]` text raw (the field is
+        # uint32_t post-relayout) when the parent cast is `(int)`, so
+        # the int cast operates on the bare PSX vaddr — preserving
+        # sentinel idioms like `(int)m->m_Animations[i] == -1`. Pass 4
+        # wrapping with `host_to_psx` here would re-introduce the
+        # round-trip.
+        if pass1_rewrites is not None:
+            inner = operand
+            while inner.kind in (ci.CursorKind.PAREN_EXPR,
+                                 ci.CursorKind.UNEXPOSED_EXPR):
+                ikids = list(inner.get_children())
+                if not ikids:
+                    break
+                inner = ikids[0]
+            if inner.kind == ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+                from .pass_struct_relayout import _array_subscript_field_ref
+                if _array_subscript_field_ref(inner, pass1_rewrites) is not None:
+                    continue
+            elif inner.kind == ci.CursorKind.MEMBER_REF_EXPR:
+                from .pass_struct_relayout import FieldKey as _FK
+                rd = inner.referenced
+                if rd is not None and rd.kind == ci.CursorKind.FIELD_DECL:
+                    parent = rd.semantic_parent
+                    if parent is not None and \
+                            _FK(parent.get_usr(), rd.spelling) in pass1_rewrites:
+                        continue
         # Read operand text and replace just the operand range with
         # the host_to_psx-wrapped form. Keep the outer (IntT) cast
         # unchanged.
@@ -470,4 +499,5 @@ def apply_cast_wraps(tu_cursor: ci.Cursor,
     `_render_with_inner_ptr_to_int_wraps` folds Pass 1's relaid-field
     reads inline."""
     _wrap_int_to_ptr_casts(tu_cursor, main_path, redirects, result, pass1_rewrites)
-    _wrap_ptr_to_int_casts(tu_cursor, main_path, redirects, result)
+    _wrap_ptr_to_int_casts(tu_cursor, main_path, redirects, result,
+                           pass1_rewrites)
