@@ -121,6 +121,13 @@ def _classify_global(decl: ci.Cursor) -> GlobalRedirect | None:
     is_long = _is_scalar_long_global(t)
     if not (is_ptr or is_long):
         return None
+    if is_ptr and _is_function_ptr(canon):
+        # Scalar function-pointer global (e.g. `void (*D_xxx)(int, ...)`).
+        # Same Phase-4 deferral as function-pointer struct fields and
+        # arrays: a naive `psx_to_host_ptr(__psx_name)` wrap yields a
+        # pointer to the recomp's RAM image, not a callable host
+        # function. The caller would jump into data and SIGSEGV.
+        return None
     pointee_spelling = ""
     if is_ptr:
         try:

@@ -282,18 +282,24 @@ def main(argv=None) -> int:
     args.output.write_text(final)
 
     # --- Apply edits to touched headers; write into the shadow tree -------
-    if args.shadow_include_dir is not None and sr.rewritten_headers:
+    # Mirror every spyro-1/include header into the shadow tree, applying
+    # edits to the rewritten ones and copying un-rewritten ones verbatim.
+    # GCC's quote-include "same directory of including file" rule wins
+    # over -I — so an un-shadowed header (e.g. hud.h) including a shadowed
+    # one (moby.h) would otherwise resolve back to spyro-1/include/moby.h
+    # and miss Pass 1's relayout. Mirroring keeps every transitive include
+    # inside the shadow tree.
+    if args.shadow_include_dir is not None:
         spyro_include = (SPYRO_REPO / "include").resolve()
-        for header_path in sr.rewritten_headers:
-            header_resolved = Path(header_path).resolve()
-            try:
-                rel = header_resolved.relative_to(spyro_include)
-            except ValueError:
-                # Outside spyro-1/include — skip (PSYQ headers etc.)
-                continue
+        rewritten_resolved = {Path(p).resolve() for p in sr.rewritten_headers}
+        for src in spyro_include.rglob("*.h"):
+            rel = src.relative_to(spyro_include)
             dst = args.shadow_include_dir / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(plan.apply(header_resolved))
+            if src in rewritten_resolved:
+                dst.write_text(plan.apply(src))
+            else:
+                dst.write_bytes(src.read_bytes())
 
     # --- Pass 6: auto-manifest discovery ----------------------------------
     if args.discovered_toml_out is not None:

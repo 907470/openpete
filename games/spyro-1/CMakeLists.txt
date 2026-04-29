@@ -45,7 +45,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
-    # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
+    # hud.rewritten.c — re-deferred (function-pointer-global call dispatch).
     ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
@@ -190,7 +190,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
     ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
-    # hud.rewritten.c — deferred (Pass 3 sizeof(Moby) static_assert fires).
+    # hud.rewritten.c — re-deferred (function-pointer-global call dispatch).
     ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c

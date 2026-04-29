@@ -116,11 +116,15 @@ file = "src/strings.c"
 [[native_source]]
 file = "src/cheats.c"
 
-# hud.c — deferred. Pass 3's `_Static_assert(sizeof(struct Moby) == 88)`
-# fires on the host build — Pass 1's relayout coverage of Moby (only 3
-# pointer fields detected as diverging) doesn't account for the full
-# 88-byte PSX size on the host side. Real Pass 1/3 investigation needed
-# before this can land.
+# hud.c — re-deferred. Pass 3 sizeof(Moby) static_assert no longer fires
+# (after rewrite_tu mirrors all spyro-1/include/ headers into the per-TU
+# shadow tree, transitive includes resolve through the shadow). New
+# blocker: hud.c calls function-pointer globals (`(*D_800758E4)(...)`,
+# `(*g_SpawnMoby)(...)`). The matching-decomp storage holds a PSX vaddr,
+# but the host C call expects a callable host function pointer. Either
+# rewrite needs a dispatch trampoline (`psx_call(vaddr, args...)`) or
+# the global needs a host-side stub binding. Pass 4 work; bounded but
+# not 5-minute.
 #[[native_source]]
 #file = "src/hud.c"
 
