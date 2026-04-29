@@ -303,6 +303,19 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
             red = _classify_global(c)
             if red is not None and red.name not in decls:
                 decls[red.name] = red
+            # A file-scope DEFINITION of the global in the main TU also
+            # counts as a "reference" — Pass 2 needs to elide that def
+            # (otherwise its initializer pulls in linker-only symbols
+            # like `&main_BSS_END` and the host link fails). The defsym
+            # emitter sees the redirect and aliases the symbol to g_ram.
+            if c.location.file is not None and \
+                    main_path and str(c.location.file.name) == main_path and \
+                    c.semantic_parent is not None and \
+                    c.semantic_parent.kind == ci.CursorKind.TRANSLATION_UNIT and \
+                    c.storage_class != ci.StorageClass.EXTERN and \
+                    red is not None:
+                referenced.add(red.name)
+                addr_of_only[red.name] = addr_of_only.get(red.name, 0) + 1
         elif c.kind == ci.CursorKind.DECL_REF_EXPR:
             if c.location.file is None:
                 continue
@@ -395,6 +408,61 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                 f"&{rd.spelling} at {ref.location.file}:{ref.location.line} "
                 f"— bare-globals pass cannot redirect address-of (storage "
                 f"is uint32_t*, not original type)")
+
+    # File-scope definitions of redirected globals — `void *g_X = &init;`
+    # or `int g_X = 5;`. The defsym alias provides the linker symbol, and
+    # the storage lives in g_ram populated by the EXE-load step. The C
+    # initializer is dead code on host (the `#define name __opete_unused_*`
+    # in the prologue lets the def compile, but the actual byte slot lives
+    # elsewhere). Worse, the initializer can reference linker symbols the
+    # host doesn't have (e.g. `&main_BSS_END`), causing link errors. Strip
+    # the entire file-scope decl so neither host storage nor unresolved
+    # initializer references survive.
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.VAR_DECL:
+            continue
+        if c.location.file is None:
+            continue
+        if str(c.location.file.name) != main_file_resolved:
+            continue
+        if c.semantic_parent is None or \
+                c.semantic_parent.kind != ci.CursorKind.TRANSLATION_UNIT:
+            continue
+        if c.spelling not in redirects:
+            continue
+        # Only strip true definitions (have an initializer or no `extern`
+        # storage class). Bare `extern T name;` decls stay — they don't
+        # produce host storage and don't have initializers.
+        if c.storage_class == ci.StorageClass.EXTERN and \
+                not list(c.get_children()):
+            # Forward `extern T name;` — leave it.
+            continue
+        # Find the trailing semicolon to extend the cut to the end of the
+        # statement. Tokens up to and including the first `;` after the
+        # decl extent.
+        end = c.extent.end.offset
+        try:
+            for tok in c.translation_unit.get_tokens(
+                    extent=ci.SourceRange.from_locations(
+                        c.extent.end, c.extent.end)):
+                pass
+        except Exception:
+            pass
+        # Simpler: scan forward from extent.end via raw bytes for `;`.
+        with open(main_file_resolved, "rb") as fh:
+            fh.seek(end)
+            tail = fh.read(64)
+        semi = tail.find(b";")
+        if semi >= 0:
+            end = end + semi + 1
+        result.edits.append(Edit(
+            start=c.extent.start.offset,
+            end=end,
+            replacement=(f"/* file-scope def of redirected global "
+                         f"{c.spelling} elided — storage in g_ram */"),
+            file=main_file_resolved,
+            note=f"elide file-scope def of {c.spelling}",
+        ))
 
     # Pointer-global post/pre-inc/dec. `g_Ptr++` on a redirected scalar
     # pointer global produces an rvalue from the read form, so a plain

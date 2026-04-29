@@ -41,12 +41,19 @@ it as `uint32_t` lifts out the PSX vaddr.
 
 from __future__ import annotations
 
-from typing import List, Optional
+import re
+from typing import Dict, List, Optional
 
 import clang.cindex as ci
 
 from .rewriter import Edit
 from .types import _is_pointer_kind, _is_function_ptr
+
+
+# Trailing 8-hex-digit suffix on a function name encodes its PSX vaddr.
+# Used as a fallback when the function isn't in symbols.toml — every
+# overlay-defined `func_level_<lvl>_<HEX>` follows this convention.
+_HEX_SUFFIX_RE = re.compile(r"_([0-9A-Fa-f]{8})$")
 
 
 def _unwrap_callee(callee: ci.Cursor) -> Optional[ci.Cursor]:
@@ -85,6 +92,38 @@ def _is_fnptr_global(decl: ci.Cursor) -> bool:
     if canon.kind == ci.TypeKind.CONSTANTARRAY:
         canon = canon.element_type.get_canonical()
     return _is_pointer_kind(canon) and _is_function_ptr(canon)
+
+
+def _resolve_fn_psx_vaddr(rhs: ci.Cursor,
+                          symbols: Dict[str, int]) -> Optional[int]:
+    """If `rhs` is a function reference whose PSX vaddr is known (either
+    via `symbols.toml` or via the trailing-hex naming convention),
+    return the vaddr. Mirrors `_resolve_function_psx_vaddr` in
+    pass_struct_relayout for fn-ptr struct fields, but adds the
+    name-suffix fallback for overlay funcs that aren't in symbols.toml
+    by index — those still encode their vaddr in the name (e.g.
+    `func_level_0_80080548`)."""
+    cur = rhs
+    for _ in range(6):
+        if cur.kind == ci.CursorKind.DECL_REF_EXPR:
+            ref = cur.referenced
+            if ref is None or ref.kind != ci.CursorKind.FUNCTION_DECL:
+                return None
+            name = ref.spelling
+            if name in symbols:
+                return symbols[name]
+            m = _HEX_SUFFIX_RE.search(name)
+            if m:
+                try:
+                    return int(m.group(1), 16)
+                except ValueError:
+                    return None
+            return None
+        kids = list(cur.get_children())
+        if not kids:
+            return None
+        cur = kids[0]
+    return None
 
 
 def _bytes_slice(file_path: str, start: int, end: int) -> str:
@@ -174,4 +213,64 @@ def rewrite_fnptr_global_calls(tu_cursor: ci.Cursor,
         # Diagnostic only — the upstream caller decides what to do.
         for msg in skipped_too_many_args:
             print(f"[pass_fnptr_calls] skipped: {msg}")
+    return edits
+
+
+def rewrite_fnptr_global_writes(tu_cursor: ci.Cursor,
+                                main_path: str,
+                                symbols: Dict[str, int]) -> List[Edit]:
+    """Walk the TU. For every `GLOBAL = function_name;` assignment whose
+    LHS is a fn-ptr scalar global (skipped by Pass 2) and whose RHS is a
+    function reference with a known PSX vaddr, rewrite the assignment to:
+
+        *(uint32_t*)(uintptr_t)&GLOBAL = <vaddr>u
+
+    Without this, the host C code references the function by name, but
+    overlay-defined functions have no host symbol — link fails. Storing
+    the literal vaddr matches what the original PSX EXE has at the
+    storage slot.
+    """
+    edits: List[Edit] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.BINARY_OPERATOR:
+            continue
+        if c.location.file is None or str(c.location.file.name) != main_path:
+            continue
+        kids = list(c.get_children())
+        if len(kids) != 2:
+            continue
+        lhs, rhs = kids
+        # Op token between lhs and rhs must be plain `=`.
+        op_tok = None
+        try:
+            tokens = list(c.translation_unit.get_tokens(extent=c.extent))
+        except Exception:
+            tokens = []
+        for tok in tokens:
+            if (tok.location.offset >= lhs.extent.end.offset
+                    and tok.location.offset < rhs.extent.start.offset
+                    and tok.kind == ci.TokenKind.PUNCTUATION):
+                op_tok = tok.spelling
+                break
+        if op_tok != "=":
+            continue
+        # LHS must resolve to a fn-ptr scalar global DeclRef.
+        lhs_ref = _unwrap_callee(lhs)  # same wrappers
+        if lhs_ref is None:
+            continue
+        lhs_decl = lhs_ref.referenced
+        if not _is_fnptr_global(lhs_decl):
+            continue
+        vaddr = _resolve_fn_psx_vaddr(rhs, symbols)
+        if vaddr is None:
+            continue
+        replacement = (f"*(uint32_t*)(uintptr_t)&{lhs_decl.spelling} = "
+                       f"0x{vaddr:08X}u")
+        edits.append(Edit(
+            start=c.extent.start.offset,
+            end=c.extent.end.offset,
+            replacement=replacement,
+            file=main_path,
+            note=f"fnptr-global write: {lhs_decl.spelling}",
+        ))
     return edits

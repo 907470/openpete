@@ -32,7 +32,7 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
 from tools.rewrite.pass_casts import run as run_casts  # noqa: E402
 from tools.rewrite.pass_fnptr_calls import (  # noqa: E402
-    rewrite_fnptr_global_calls,
+    rewrite_fnptr_global_calls, rewrite_fnptr_global_writes,
 )
 from tools.rewrite.pass_sizeof import (  # noqa: E402
     run as run_sizeof, render_static_asserts,
@@ -197,6 +197,12 @@ def main(argv=None) -> int:
     # raw 4-byte vaddr storage as if it were a host function pointer.
     fnptr_edits = rewrite_fnptr_global_calls(parsed.cursor, main_path)
     for ed in fnptr_edits:
+        if _inside(ed.start, ed.end, suppress_ranges):
+            continue
+        plan.add(ed)
+    fnptr_write_edits = rewrite_fnptr_global_writes(
+        parsed.cursor, main_path, symbols or {})
+    for ed in fnptr_write_edits:
         if _inside(ed.start, ed.end, suppress_ranges):
             continue
         plan.add(ed)

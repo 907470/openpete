@@ -137,13 +137,8 @@ file = "src/gamepad.c"
 [[native_source]]
 file = "src/spu.c"
 
-# overlay_pointers.c — deferred (post-composition-fix). Now rewrites
-# cleanly via Pass 1+2 with the address-of-only filter for main_BSS_END,
-# but the body's complex pointer arithmetic on rewritten globals (this
-# TU sets up the g_Buffers cascade end-to-end) needs an end-to-end
-# audit similar to 4BEF8.c. Real correctness investigation required.
-#[[native_source]]
-#file = "src/overlay_pointers.c"
+[[native_source]]
+file = "src/overlay_pointers.c"
 
 # moby_helpers.c — deferred. Multiple Pass 1/2/4 issues surfaced; the
 # macro-heavy `setMobyLetterProps((MobyLetterProps*)char_moby->m_Props, ...)`

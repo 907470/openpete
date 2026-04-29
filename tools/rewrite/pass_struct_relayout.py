@@ -42,9 +42,15 @@ from .types import (
 )
 
 
+import re as _re
+_FN_HEX_SUFFIX_RE = _re.compile(r"_([0-9A-Fa-f]{8})$")
+
+
 def _resolve_function_psx_vaddr(rhs: ci.Cursor, symbols: Dict[str, int]) -> Optional[int]:
-    """If `rhs` evaluates to a function reference whose PSX vaddr is in
-    `symbols`, return the vaddr; else None.
+    """If `rhs` evaluates to a function reference whose PSX vaddr is
+    known (either from `symbols.toml` or from the trailing-hex naming
+    convention used by overlay-defined `func_level_<lvl>_<HEX>` decls
+    that aren't catalogued by index), return the vaddr; else None.
 
     Handles direct DeclRefExpr to a FUNCTION_DECL, plus a single layer of
     UNEXPOSED_EXPR / CSTYLE_CAST_EXPR / PAREN_EXPR wrapping (the
@@ -58,6 +64,12 @@ def _resolve_function_psx_vaddr(rhs: ci.Cursor, symbols: Dict[str, int]) -> Opti
                 name = ref.spelling
                 if name in symbols:
                     return symbols[name]
+                m = _FN_HEX_SUFFIX_RE.search(name)
+                if m:
+                    try:
+                        return int(m.group(1), 16)
+                    except ValueError:
+                        return None
             return None
         kids = list(cur.get_children())
         if not kids:

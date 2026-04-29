@@ -49,7 +49,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
-    # overlay_pointers.rewritten.c — deferred (correctness audit needed).
+    ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — deferred (macro-arg nested member-ref).
@@ -194,7 +194,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
-    # overlay_pointers.rewritten.c — deferred (correctness audit needed).
+    ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — deferred (macro-arg nested member-ref).
