@@ -511,20 +511,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     /* --bk2: load BizHawk movie once, picked up per-frame in the loop. */
     bk2_movie_t bk2 = {0};
-    int bk2_offset = 0;
+    int  bk2_offset = 0;
     bool bk2_active = (opts->bk2_path && *opts->bk2_path);
     if (bk2_active) {
         if (bk2_movie_load(opts->bk2_path, &bk2) != 0) {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
-        bk2_offset = opts->bk2_frame_offset_set
-            ? opts->bk2_frame_offset
-            : -bk2.first_input_frame;
+        /* Default offset is 0: openpete_frame is anchored at the first
+         * DrawOTag (post fast-boot) on both record and replay, so the
+         * frame numbers line up 1:1 and replay sees the same game state
+         * the player saw when they pressed the button. Auto-skipping to
+         * first_input_frame would collapse the player's idle wait and
+         * fire input before the game is ready. Use --bk2-frame-offset
+         * to opt into a manual skip. */
+        bk2_offset = opts->bk2_frame_offset_set ? opts->bk2_frame_offset : 0;
         OPL_INFO_F("bk2",
                    "loaded %d frames from %s, first input at bk2-frame=%d, "
-                   "openpete_frame=%d → bk2-frame=openpete_frame-(%d)",
+                   "openpete_frame=%d → bk2-frame=openpete_frame-(%d)%s",
                    bk2.frame_count, opts->bk2_path, bk2.first_input_frame,
-                   bk2_offset, bk2_offset);
+                   bk2_offset, bk2_offset,
+                   opts->bk2_frame_offset_set ? " (explicit)" : "");
     }
 
     /* Tab-held detection used for both the wall-clock pacer AND throttling
@@ -551,12 +557,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 break;
             }
             /* Log every input transition so the user can audit the
-             * playback timeline. */
+             * playback timeline. Mirrors the press/release format used
+             * on the record path. */
             static unsigned short last_bits = 0xFFFF;
             if (bits != last_bits) {
+                char p_buf[17], r_buf[17];
+                bk2_format_button_diff(last_bits, bits, p_buf, r_buf);
                 OPL_INFO_F("bk2",
-                           "openpete_frame=%u bk2_frame=%d bits=0x%04X",
-                           openpete_frame, bk2_frame, bits);
+                           "openpete_frame=%u bk2_frame=%d press=[%s] release=[%s] bits=0x%04X",
+                           openpete_frame, bk2_frame, p_buf, r_buf, bits);
                 last_bits = bits;
             }
             g_PsyX_Pad_InputOverride = bits;

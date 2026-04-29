@@ -42,6 +42,7 @@ static struct {
     int       count;
     int       capacity;
     int       active;
+    uint16_t  prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
 
 int bk2_record_begin(const char* path) {
@@ -60,12 +61,37 @@ int bk2_record_begin(const char* path) {
     }
     s_rec.count = 0;
     s_rec.active = 1;
+    s_rec.prev_bits = 0xFFFF;  /* all released */
     OPL_INFO_F("bk2-record", "recording to %s", path);
     return 0;
 }
 
+void bk2_format_button_diff(uint16_t prev, uint16_t cur,
+                            char press_out[17], char release_out[17]) {
+    /* PSX convention: 1=released, 0=pressed. A press is prev=1 -> cur=0. */
+    uint16_t pressed  = (uint16_t)(prev & ~cur);
+    uint16_t released = (uint16_t)(~prev & cur);
+    int pn = 0, rn = 0;
+    for (int i = 0; i < 16; i++) {
+        if (pressed  & kButtonChars[i].mask) press_out[pn++]   = kButtonChars[i].letter;
+        if (released & kButtonChars[i].mask) release_out[rn++] = kButtonChars[i].letter;
+    }
+    press_out[pn] = '\0';
+    release_out[rn] = '\0';
+}
+
 void bk2_record_append(uint16_t bits) {
     if (!s_rec.active) return;
+    /* Diff against the previous frame and log press/release transitions
+     * so a debug-level run shows the same input timeline that lands in
+     * the .bk2. */
+    if (bits != s_rec.prev_bits) {
+        char p_buf[17], r_buf[17];
+        bk2_format_button_diff(s_rec.prev_bits, bits, p_buf, r_buf);
+        OPL_INFO_F("bk2-record", "frame %d: press=[%s] release=[%s] bits=0x%04x",
+                    s_rec.count, p_buf, r_buf, bits);
+    }
+    s_rec.prev_bits = bits;
     if (s_rec.count == s_rec.capacity) {
         int new_cap = s_rec.capacity * 2;
         uint16_t* g = (uint16_t*)realloc(s_rec.frames, (size_t)new_cap * sizeof(uint16_t));

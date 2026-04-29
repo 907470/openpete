@@ -34,6 +34,13 @@ void bk2_record_append(uint16_t bits);
  * to call from an exit path. */
 int  bk2_record_finalize(void);
 
+/* Format the press/release diff between `prev` and `cur` PSX pad bitfields
+ * (1=released, 0=pressed) into two NUL-terminated strings of BizHawk
+ * button letters. Each output buffer must hold at least 17 bytes. Useful
+ * for debug logging on both the record and replay paths. */
+void bk2_format_button_diff(uint16_t prev, uint16_t cur,
+                            char press_out[17], char release_out[17]);
+
 #ifdef __cplusplus
 }
 #endif
