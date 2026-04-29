@@ -52,7 +52,10 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (PATCH_POINTER macro semantics).
+    # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
+    # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;
+    # SPYRO_MODEL macro expansion mishandled in array-sub rendering;
+    # `*(int*)pData` PATCH_POINTER args still produce non-lvalue exprs).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -197,7 +200,10 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (PATCH_POINTER macro semantics).
+    # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
+    # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;
+    # SPYRO_MODEL macro expansion mishandled in array-sub rendering;
+    # `*(int*)pData` PATCH_POINTER args still produce non-lvalue exprs).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

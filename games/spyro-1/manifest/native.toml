@@ -159,16 +159,19 @@ file = "src/overlay_pointers.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — re-deferred. Rewriter now folds nested relaid pointer
-# chains (`g_Env.m_TC->m_BlockTree` → fully wrapped) thanks to
-# `_render_with_redirects` recursion + first-occurrence saw_self check.
-# Remaining blocker: PATCH_POINTER macro semantics — it expands to
-# `dest = (void*)((u_int)(base) + (u_int)(dest))`, which on host (a)
-# wraps the LHS via a read-form making it not-an-lvalue, and (b)
-# truncates host pointers via `(u_int)(base)` even if the LHS were
-# left bare. Needs a macro redefinition that uses host_to_psx for
-# base AND a write-LHS detection for macro-arg member-refs that
-# emits a bare-chain replacement instead of a read wrap.
+# loaders.c — re-deferred. Pass 1 macro-arg bare-chain + common.h
+# PATCH_POINTER redefinition land the simple cases (`g_Env.m_TC->
+# m_BlockTree`); deeper blockers remain:
+#   - Nested array-sub-then-arrow chains (`m_Animations[i]->m_Faces`)
+#     don't get wrapped by bare-chain — `_render_with_redirects` has
+#     no rule to wrap an ARRAY_SUBSCRIPT whose MEMBER_REF base is an
+#     array-of-pointer relaid field.
+#   - `SPYRO_MODEL = (g_Models[0])` macro expansion: array-sub render
+#     reads source bytes at the macro invocation site (`SPYRO_MODEL`
+#     token), not the expansion (`g_Models[0]`), so the index goes
+#     out wrong (`__psx_g_Models[SPYRO_MODEL]`).
+#   - `*(int*)pData` PATCH_POINTER args expand to a non-lvalue when
+#     the macro redef requires a uint32_t lvalue dest.
 #[[native_source]]
 #file = "src/loaders.c"
 

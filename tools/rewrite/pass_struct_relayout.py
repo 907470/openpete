@@ -504,7 +504,15 @@ def _render_with_redirects(cursor: ci.Cursor,
     if not redirects and not rewrites:
         return text
     subs: List[Tuple[int, int, str]] = []
-    seen: Set[int] = set()
+    # Per-branch dedupe sets so that subs with the same start offset
+    # but different kinds (e.g. ARRAY_SUBSCRIPT and an outer MEMBER_REF
+    # whose chain begins with that subscript) both get collected. The
+    # post-sort pruning drops the inner one — relying on a shared
+    # `seen` set would silently swallow the outer wrap and leave the
+    # rendered text without the relaid-field cast.
+    seen_array: Set[int] = set()
+    seen_decl: Set[int] = set()
+    seen_member: Set[int] = set()
     cursor_self_extent = (cursor.extent.start.offset, cursor.extent.end.offset)
     # First pass: detect ARRAY_SUBSCRIPT_EXPR sites whose base is an
     # array-redirect DeclRefExpr; emit the per-element host-pointer
@@ -534,9 +542,9 @@ def _render_with_redirects(cursor: ci.Cursor,
         ke = k.extent.end.offset
         if ke == ks or ks < start or ke > end:
             continue
-        if ks in seen:
+        if ks in seen_array:
             continue
-        seen.add(ks)
+        seen_array.add(ks)
         idx = kids[1] if len(kids) > 1 else None
         idx_text = (_bytes_slice(main_resolved,
                                  idx.extent.start.offset, idx.extent.end.offset)
@@ -588,9 +596,9 @@ def _render_with_redirects(cursor: ci.Cursor,
                 ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
             if ke <= ks or ks < start or ke > end:
                 continue
-            if ks in seen or ks in array_sub_inner_skips:
+            if ks in seen_decl or ks in array_sub_inner_skips:
                 continue
-            seen.add(ks)
+            seen_decl.add(ks)
             # Array redirect referenced bare (no subscript) — rare;
             # decay to pointer-to-elem.
             if red.is_array:
@@ -634,9 +642,9 @@ def _render_with_redirects(cursor: ci.Cursor,
                 ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
             if ke <= ks or ks < start or ke > end:
                 continue
-            if ks in seen:
+            if ks in seen_member:
                 continue
-            seen.add(ks)
+            seen_member.add(ks)
             # Render the member-ref body recursively so any nested
             # relaid pointer-field bases (`obj.field_ptr->next`) get
             # folded into their host-pointer form first — otherwise
@@ -652,8 +660,13 @@ def _render_with_redirects(cursor: ci.Cursor,
             subs.append((ks - start, ke - start, repl))
     if not subs:
         return text
-    subs.sort()
-    # Drop inner subs whose range falls inside a wider sub (outermost wins).
+    # Sort by start asc, then end DESC so that for same-start subs the
+    # widest (outermost) lands first. Pruning drops inner subs whose
+    # range is contained in the last pruned — outermost wins. This is
+    # important because a MEMBER_REF substitution's recursive render
+    # already folds inner DECL_REF / ARRAY_SUBSCRIPT subs inline, so
+    # applying both subs would corrupt the wrap text.
+    subs.sort(key=lambda t: (t[0], -t[1]))
     pruned: List[Tuple[int, int, str]] = []
     for s, e, r in subs:
         if pruned and s >= pruned[-1][0] and e <= pruned[-1][1]:
@@ -723,6 +736,55 @@ def emit_access_edits(tu_cursor: ci.Cursor,
 
     writes = _find_member_writes(tu_cursor, rewrites)
 
+    # Macro-arg write contexts. A macro like `PATCH_POINTER(dest, base)`
+    # expands `dest` as both the LHS of an assignment and as `(u_int)(dest)`
+    # reads. The same source text serves both roles, so we can't emit
+    # both a write replacement and a read wrap. Detect any assignment
+    # whose lhs (or its strict subexpression) sits inside a macro
+    # expansion (raw extent zero-length) and record the lhs's token-
+    # recovered range. Pass 1 then emits bare-chain replacements at
+    # those locations; the macro is redefined to operate on bare
+    # uint32_t storage. Read-only macro args fall through to the
+    # normal read-wrap path.
+    macro_write_lhs_extents: Set[Tuple[int, int]] = set()
+    for c in tu_cursor.walk_preorder():
+        if c.kind not in (ci.CursorKind.BINARY_OPERATOR,
+                          ci.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR):
+            continue
+        kids = list(c.get_children())
+        if len(kids) != 2:
+            continue
+        lhs = kids[0]
+        if lhs.location.file is None:
+            continue
+        if str(Path(lhs.location.file.name).resolve()) != main_resolved:
+            continue
+        ls = lhs.extent.start.offset
+        le = lhs.extent.end.offset
+        if ls != le:
+            continue
+        # Confirm the binop is itself macro-synthetic (zero-length)
+        # — otherwise this is a plain `(int)(x) = ...` style which
+        # shouldn't be in real source anyway.
+        if c.extent.start.offset != c.extent.end.offset:
+            continue
+        # Walk into the lhs subtree finding any expression — MEMBER_REF
+        # or ARRAY_SUBSCRIPT — that the assignment targets. Record
+        # token-recovered extents for both the lhs itself and any
+        # immediate child ARRAY_SUBSCRIPT_EXPR (e.g. `m->arr[i] = ...`
+        # where lhs is the ARRAY_SUBSCRIPT_EXPR).
+        for k in (lhs, *list(lhs.get_children())):
+            try:
+                toks = list(k.translation_unit.get_tokens(extent=k.extent))
+            except Exception:
+                toks = []
+            if not toks:
+                continue
+            ts = toks[0].location.offset
+            te = toks[-1].location.offset + len(toks[-1].spelling)
+            if te > ts:
+                macro_write_lhs_extents.add((ts, te))
+
     # Array-of-pointer fields: rewrite at `obj.arr[i]` rather than at
     # `obj.arr` so each PSX-vaddr element is converted to a host pointer
     # individually. Casting `(T *[N])` is invalid C; per-element casts
@@ -740,7 +802,8 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             continue
         s = sub.extent.start.offset
         e = sub.extent.end.offset
-        if e == s:
+        is_macro_arg = (e == s)
+        if is_macro_arg:
             try:
                 toks = list(sub.translation_unit.get_tokens(extent=sub.extent))
             except Exception:
@@ -752,6 +815,33 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         if s in array_subscript_edits:
             continue
         cast = fr.elem_orig_type or "void *"
+        if is_macro_arg and (s, e) in macro_write_lhs_extents:
+            # Macro-arg in write context (e.g. PATCH_POINTER's `dest`).
+            # Emit bare-chain form so the arg works as both lvalue and
+            # rvalue. Common.h's PATCH_POINTER is redefined to operate
+            # on bare uint32_t storage. Ptr-to-ptr arrays have no clean
+            # bare form — fall through to the wrap (will likely fail
+            # to compile if the macro really demands an lvalue, at
+            # which point we add ptr-to-ptr bare-chain support).
+            if not fr.is_ptr_to_ptr:
+                bare = _render_with_redirects(
+                    sub, main_resolved, redirects, rewrites,
+                    include_self=False)
+                array_subscript_edits[s] = Edit(
+                    start=s, end=e, replacement=bare,
+                    file=main_resolved,
+                    note=(f"macro-arg bare[] "
+                          f"{fr.record_name}.{fr.field_name}"),
+                )
+                skip_member_ref_offsets.add(member.extent.start.offset)
+                try:
+                    mtoks = list(member.translation_unit.get_tokens(
+                        extent=member.extent))
+                except Exception:
+                    mtoks = []
+                if mtoks:
+                    skip_member_ref_offsets.add(mtoks[0].location.offset)
+                continue
         if fr.is_ptr_to_ptr:
             # `T **field` — the field holds a vaddr to an array of vaddrs.
             # Read `obj.field` as a uint32_t (no cast to T**), then
@@ -921,7 +1011,8 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         # location. Dedupe by synthetic extent so the N copies become one.
         ext_start = c.extent.start.offset
         ext_end = c.extent.end.offset
-        if ext_end == ext_start:
+        is_macro_arg = (ext_end == ext_start)
+        if is_macro_arg:
             try:
                 toks = list(c.translation_unit.get_tokens(extent=c.extent))
             except Exception:
@@ -941,6 +1032,33 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         if (ext_start, ext_end) in seen_member_offsets:
             continue
         seen_member_offsets.add((ext_start, ext_end))
+        # Macro-arg context in WRITE position (e.g. PATCH_POINTER's
+        # `dest`). The same source text serves as both lvalue and
+        # rvalue inside the macro body, so we emit a bare-chain
+        # replacement (inner relaid refs wrapped, outer field stays a
+        # bare uint32_t lvalue). Common.h's PATCH_POINTER is redefined
+        # to operate on bare uint32_t storage. Read-only macro args
+        # fall through to the regular read-wrap path below.
+        if is_macro_arg and (ext_start, ext_end) in macro_write_lhs_extents:
+            # Suppress inner refs strictly inside an outer relaid
+            # member-ref — the outer's bare-chain render folds them
+            # inline. (`is_write_lhs` can't be used for this gating
+            # because in macro expansions every nested ref shares the
+            # binop's zero-length raw offset, so the lhs.extent.end
+            # == raw_off check matches spuriously.)
+            if _strictly_inside_outer(ext_start, ext_end):
+                continue
+            bare = _render_with_redirects(c, main_resolved, redirects,
+                                          rewrites, include_self=False)
+            result.access_edits.append(Edit(
+                start=ext_start,
+                end=ext_end,
+                replacement=bare,
+                file=main_resolved,
+                note=(f"macro-arg bare-chain "
+                      f"{fr.record_name}.{fr.field_name}"),
+            ))
+            continue
         # writes is keyed on lhs.extent.start; only the actual outermost
         # LHS qualifies — nested member-refs sharing the start are reads.
         # Also try the pre-token-recovery offset (c.extent.start.offset)
@@ -1067,6 +1185,81 @@ def emit_access_edits(tu_cursor: ci.Cursor,
 # Public entry
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Macro redefinitions for known lvalue-arg macros
+# ---------------------------------------------------------------------------
+#
+# `PATCH_POINTER(dest, base)` and friends expand to `dest = ... + dest`
+# where the same macro arg is used as both an lvalue and rvalue. Pass 1
+# emits a bare-chain replacement for the arg (so it stays a uint32_t
+# lvalue); we override the macro definition in the shadow common.h so
+# the redefined body works on bare uint32_t storage and converts host-
+# pointer `base` through openpete_host_to_psx.
+
+_MACRO_REDEF_NEW_BODY = """\
+/* OPENPETE: bare-chain lvalue form. dest is a uint32_t storage slot
+ * (relaid pointer field as bare-chain), base is a host pointer or a
+ * u_int that is already a PSX vaddr. host_to_psx returns 0 for non-
+ * g_ram pointers, so for already-vaddr ints the original numeric
+ * value falls through via the ternary. */
+#define PATCH_POINTER(dest, base)                                              \\
+  ((dest) = (uint32_t)((openpete_host_to_psx((const void *)(uintptr_t)(base))) \\
+                       ? (openpete_host_to_psx(                                \\
+                             (const void *)(uintptr_t)(base)))                 \\
+                       : (uint32_t)(uintptr_t)(base)) +                        \\
+            (uint32_t)(dest))
+
+#define PATCH_POINTER2(dest, base)                                             \\
+  ((dest) = (uint32_t)(dest) +                                                 \\
+            (uint32_t)((openpete_host_to_psx(                                  \\
+                           (const void *)(uintptr_t)(base)))                   \\
+                       ? (openpete_host_to_psx(                                \\
+                             (const void *)(uintptr_t)(base)))                 \\
+                       : (uint32_t)(uintptr_t)(base)))
+"""
+
+
+def emit_macro_redefs(result: StructRelayoutResult) -> None:
+    """Emit a header edit on spyro-1/include/common.h that replaces the
+    original PATCH_POINTER / PATCH_POINTER2 macro definitions with
+    openpete-aware forms operating on bare uint32_t storage.
+
+    Pass 1's macro-arg detection emits bare-chain replacements at the
+    macro arg locations; the redefined macro body then performs the
+    PSX-vaddr arithmetic correctly.
+    """
+    from .parser import SPYRO_REPO
+    common_h = (SPYRO_REPO / "include" / "common.h").resolve()
+    if not common_h.exists():
+        return
+    text = common_h.read_text()
+    # Locate the original block. The two macros sit consecutively in
+    # common.h; PATCH_POINTER is one line, PATCH_POINTER2 spans two
+    # (continuation backslash). Match from `#define PATCH_POINTER(`
+    # to the end of the PATCH_POINTER2 body.
+    import re as _re_local
+    m = _re_local.search(
+        r"#define\s+PATCH_POINTER\(.*?\n"
+        r"\s*\n"
+        r"#define\s+PATCH_POINTER2\(.*?\n.*?\n",
+        text, flags=_re_local.DOTALL)
+    if m is None:
+        return
+    start = m.start()
+    end = m.end()
+    # Strip a trailing newline so we don't add an extra blank line after.
+    while end > 0 and text[end - 1] == "\n":
+        end -= 1
+    result.field_edits.append(Edit(
+        start=start,
+        end=end,
+        replacement=_MACRO_REDEF_NEW_BODY.rstrip("\n"),
+        file=str(common_h),
+        note="macro redef PATCH_POINTER/PATCH_POINTER2",
+    ))
+    result.rewritten_headers.add(str(common_h))
+
+
 def run(tu_cursor: ci.Cursor, main_file: str,
         symbols: Optional[Dict[str, int]] = None,
         redirects=None,
@@ -1076,6 +1269,7 @@ def run(tu_cursor: ci.Cursor, main_file: str,
     rewrites = collect_field_rewrites(tu_cursor)
     result.rewrites = rewrites
     emit_header_edits(rewrites, result)
+    emit_macro_redefs(result)
     emit_access_edits(tu_cursor, rewrites, main_file, result, symbols,
                       redirects=redirects,
                       pass2_write_ranges=pass2_write_ranges)
