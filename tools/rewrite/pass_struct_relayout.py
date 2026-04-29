@@ -1467,6 +1467,59 @@ def emit_main_file_macro_redefs(main_file: str,
     ))
 
 
+def apply_textual_chain_wrap_fallback(
+        rewritten: str,
+        rewrites: Dict[FieldKey, FieldRewrite]) -> str:
+    """Textual post-pass for `<chain>->FIELD[idx]->IDENT` chains the AST
+    renderer couldn't reach (cursor token recovery returns empty inside
+    nested macro expansions). For each relaid array-of-pointer field
+    (`is_array && is_pointer && !is_ptr_to_ptr && !is_function_ptr`),
+    wrap the array element with `((<elem_type>)openpete_psx_to_host_ptr
+    (...))` so the trailing `->IDENT` dereference compiles.
+
+    Wrapped forms produced by the AST renderer contain `]))->`; this
+    pass only matches the bare `]->` form, so it's idempotent.
+    """
+    import re as _re_local
+    fields_by_name: Dict[str, FieldRewrite] = {}
+    for fr in rewrites.values():
+        if not (fr.is_array and fr.is_pointer
+                and not fr.is_ptr_to_ptr and not fr.is_function_ptr):
+            continue
+        if not fr.elem_orig_type:
+            continue
+        # Last writer wins if two structs share a field name; the
+        # element type would be the same shape (relaid pointer), so
+        # any cast spelling produces a valid pointer chain.
+        fields_by_name[fr.field_name] = fr
+    if not fields_by_name:
+        return rewritten
+
+    field_alt = "|".join(_re_local.escape(n) for n in fields_by_name)
+    # `<chain>` = identifier optionally followed by `->ident` / `.ident`
+    # / `[simple-idx]`. Index in the target subscript is captured as a
+    # bracket-balanced run of non-bracket chars (loaders.c uses simple
+    # idents `i`, `animation_index`, `j`).
+    pattern = _re_local.compile(
+        r"(?P<chain>[A-Za-z_]\w*(?:(?:->|\.)\w+)*)"
+        r"->(?P<field>" + field_alt + r")"
+        r"\[(?P<idx>[^\[\]]+)\]"
+        r"->(?P<member>[A-Za-z_]\w*)"
+    )
+
+    def _sub(m: "_re_local.Match[str]") -> str:
+        chain = m.group("chain")
+        field = m.group("field")
+        idx = m.group("idx")
+        member = m.group("member")
+        fr = fields_by_name[field]
+        cast = fr.elem_orig_type
+        return (f"(({cast})openpete_psx_to_host_ptr("
+                f"{chain}->{field}[{idx}]))->{member}")
+
+    return pattern.sub(_sub, rewritten)
+
+
 def run(tu_cursor: ci.Cursor, main_file: str,
         symbols: Optional[Dict[str, int]] = None,
         redirects=None,

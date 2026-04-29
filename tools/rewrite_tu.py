@@ -330,6 +330,31 @@ def main(argv=None) -> int:
 
     # --- Apply edits to .c body -------------------------------------------
     rewritten = plan.apply(args.input)
+
+    # --- Pass 1f: textual fallback for nested-macro chain wraps -----------
+    # libclang's `get_tokens` returns 0 tokens for MEMBER_REF cursors inside
+    # *nested* macro expansions (e.g. `PATCH_POINTER(SPYRO_MODEL->
+    # m_Animations[i]->m_Faces, ..)` — outer PATCH_POINTER + inner
+    # SPYRO_MODEL macro). Pass 1's AST renderer can't recover an extent for
+    # those cursors, so the array-of-pointer chain wrap never fires. Scan
+    # the post-AST output for unwrapped `<chain>->FIELD[idx]->IDENT`
+    # patterns where FIELD is a relaid array-of-pointer field; wrapped
+    # forms contain `]))->` and won't match the `]->` regex.
+    from tools.rewrite.pass_struct_relayout import (
+        apply_textual_chain_wrap_fallback)
+    rewritten = apply_textual_chain_wrap_fallback(rewritten, sr.rewrites)
+
+    # --- Pass 2c: textual fallback for bare-global refs inside nested
+    # macro args. Pass 2's AST traversal also can't recover extents for
+    # DECL_REF cursors inside nested macro expansions; the
+    # `#define <name> __opete_unused_<name>` link-time guard catches
+    # any miss. Scan the post-AST output for `<bare>` names not yet
+    # rewritten and produce a read wrap. Wrapped forms contain
+    # `__psx_<bare>` so a negative lookbehind makes this idempotent.
+    from tools.rewrite.pass_bare_globals import (
+        apply_textual_bare_ref_fallback)
+    rewritten = apply_textual_bare_ref_fallback(rewritten, redirects)
+
     prologue = prologue_for(redirects)
     # Pass 3's static_asserts go at the *end* of the rewritten file.
     # Up top, struct types are still forward-declared (the includes

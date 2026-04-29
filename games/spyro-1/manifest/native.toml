@@ -152,24 +152,19 @@ file = "src/moby_helpers.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — re-deferred. 23/26 compile errors fixed by today's
-# rewriter passes (full-extent macro DECL_REF detection, macro-arg
-# ARRAY_SUBSCRIPT skip when extent text doesn't contain `[`,
-# SPYRO_MODEL shadow-header redef, ARRAY_SUBSCRIPT-of-relaid-array-
-# of-pointer chain wrap in `_render_with_redirects`, ARRAY_SUBSCRIPT
-# LHS write detection). 3 remain: PATCH_POINTER calls of form
-# `SPYRO_MODEL->m_Animations[i]->m_X` (lines 271, 273, 282) where
-# the m_Faces / m_Colors / m_AnimationVertices MEMBER_REF cursor's
-# token recovery returns 0 tokens (libclang appears to omit tokens
-# for MEMBER_REF cursors with zero-length extent inside *nested*
-# macro expansions — PATCH_POINTER outer + SPYRO_MODEL inner).
-# Without recoverable tokens, the bare-chain rewrite at the outer
-# member-ref's source position can't fire. Workarounds tried:
-# get_tokens on the binop extent — also returns 0. Likely fix:
-# textual fallback (scan source for `SPYRO_MODEL->m_Animations[...]
-# ->m_X` patterns inside PATCH_POINTER calls and rewrite directly).
-#[[native_source]]
-#file = "src/loaders.c"
+# loaders.c — migrated via textual fallback passes for nested-macro
+# argument cursors that libclang's token recovery can't reach.
+# rewrite_tu.py runs two textual post-passes after the AST stages:
+# (1) chain-wrap fallback in pass_struct_relayout for unwrapped
+# `<chain>->FIELD[idx]->IDENT` (where FIELD is a relaid array-of-
+# pointer field) — wrapped forms produced by the AST renderer
+# contain `]))->`, so a `]->` regex is idempotent; (2) bare-ref
+# fallback in pass_bare_globals for unrewritten redirected names
+# inside macro args — substitutes the scalar read-wrap form, with
+# `(?<![A-Za-z0-9_])` for word boundary so `__psx_<name>` matches
+# don't recurse.
+[[native_source]]
+file = "src/loaders.c"
 
 # initialization.c + completion.c — re-enable currently held.
 #

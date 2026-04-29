@@ -52,9 +52,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (3 nested-macro lines remain
-    # where libclang token recovery returns empty for MEMBER_REF
-    # cursors inside nested macro expansions).
+    ${SPYRO_GENERATED}/rewritten/loaders.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -199,9 +197,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (3 nested-macro lines remain
-    # where libclang token recovery returns empty for MEMBER_REF
-    # cursors inside nested macro expansions).
+    ${SPYRO_GENERATED}/rewritten/loaders.rewritten.c
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

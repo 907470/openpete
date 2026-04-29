@@ -870,6 +870,56 @@ def bytes_slice(cursor: ci.Cursor) -> str:
         return fh.read(ext.end.offset - ext.start.offset).decode("utf-8", "replace")
 
 
+def apply_textual_bare_ref_fallback(
+        rewritten: str,
+        redirects: Dict[str, GlobalRedirect]) -> str:
+    """Textual post-pass for bare-global references the AST renderer
+    couldn't reach (DECL_REF cursors inside *nested* macro expansions
+    return zero tokens via libclang token recovery). Substitutes a
+    read-wrap form for each unrewritten `<name>` occurrence; wrapped
+    forms contain `__psx_<name>` so a negative lookbehind makes the
+    pass idempotent.
+
+    Scalar pointer:  `name`     → `((TYPE)openpete_psx_to_host_ptr(__psx_name))`
+    Scalar long:     `name`     → `(int32_t)__psx_name` / `(uint32_t)__psx_name`
+    Array pointer:   `name`     → element-position scalar form is unsafe
+                                  without subscript; only the per-element
+                                  Pass 2 emitter handles arrays. Skip.
+    """
+    import re as _re_local
+    if not redirects:
+        return rewritten
+    # Build a single alternation of names that have a sensible scalar-
+    # context substitution. Pass 2 already emits arrays via the AST
+    # path; a textual fallback for an array `name` (no subscript in
+    # the same regex) would lose typing.
+    candidates = []
+    for r in redirects.values():
+        if r.is_array:
+            continue
+        if r.is_pointer or r.is_long:
+            candidates.append(r)
+    if not candidates:
+        return rewritten
+
+    name_alt = "|".join(_re_local.escape(r.name) for r in candidates)
+    by_name = {r.name: r for r in candidates}
+    # Exclude matches preceded by an identifier char (covers __psx_ /
+    # __opete_unused_ prefixes and any arbitrary identifier glue).
+    pat = _re_local.compile(
+        r"(?<![A-Za-z0-9_])(?P<name>" + name_alt + r")(?![A-Za-z0-9_])")
+
+    def _sub(m: "_re_local.Match[str]") -> str:
+        r = by_name[m.group("name")]
+        if r.is_pointer:
+            ty = r.pointer_orig_type or "void *"
+            return f"(({ty})openpete_psx_to_host_ptr({r.psx_storage_name}))"
+        ity = "int32_t" if r.is_long else "uint32_t"
+        return f"({ity}){r.psx_storage_name}"
+
+    return pat.sub(_sub, rewritten)
+
+
 def prologue_for(redirects: Dict[str, GlobalRedirect]) -> str:
     """Generate the prologue that the rewritten TU prepends.
 
