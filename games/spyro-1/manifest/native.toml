@@ -147,13 +147,11 @@ file = "src/cheats.c"
 #[[native_source]]
 #file = "src/hud.c"
 
-# gamepad.c — deferred. Source contains `((int*)g_DemoDataPtr)++ = ...` —
-# post-increment of a redirected pointer global. Pass 2 substitutes the
-# read with `((int*)psx_to_host_ptr(__psx_<name>))` (an rvalue), so the
-# post-increment doesn't compile. A correct rewrite needs a transactional
-# read-modify-write through the redirect storage.
-#[[native_source]]
-#file = "src/gamepad.c"
+# gamepad.c — Pass 2 now rewrites `g_DemoDataPtr++` / `++g_DemoDataPtr` at
+# the UnaryOperator level into a comma-expression that advances the PSX
+# storage slot transactionally and yields the appropriate vaddr.
+[[native_source]]
+file = "src/gamepad.c"
 
 # camera.c — deferred. Builds (after the __maspsx_include_asm_hack_*
 # Pass 6 skip fix), boots, hits titlescreen and the level_11 swap, but

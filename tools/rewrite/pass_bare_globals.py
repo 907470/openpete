@@ -48,6 +48,7 @@ class GlobalRedirect:
     is_pointer: bool
     is_long: bool
     pointer_orig_type: str = ""  # original type spelling for the pointer cast
+    pointee_type: str = ""       # element type for scalar pointer redirects (for sizeof)
     is_array: bool = False        # True for `T *name[N]` / `u_long name[N]`
     array_count: int = 0          # N (only valid when is_array)
     elem_orig_type: str = ""      # element type for array redirects (e.g. "Model *")
@@ -120,12 +121,19 @@ def _classify_global(decl: ci.Cursor) -> GlobalRedirect | None:
     is_long = _is_scalar_long_global(t)
     if not (is_ptr or is_long):
         return None
+    pointee_spelling = ""
+    if is_ptr:
+        try:
+            pointee_spelling = t.get_pointee().spelling or canon.get_pointee().spelling
+        except Exception:
+            pointee_spelling = ""
     return GlobalRedirect(
         name=name,
         psx_storage_name=f"__psx_{name}",
         is_pointer=is_ptr,
         is_long=is_long,
         pointer_orig_type=t.spelling if is_ptr else "",
+        pointee_type=pointee_spelling,
     )
 
 
@@ -331,6 +339,84 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                 f"— bare-globals pass cannot redirect address-of (storage "
                 f"is uint32_t*, not original type)")
 
+    # Pointer-global post/pre-inc/dec. `g_Ptr++` on a redirected scalar
+    # pointer global produces an rvalue from the read form, so a plain
+    # read-substitution at the DeclRefExpr breaks the source. Detect the
+    # enclosing UnaryOperator (`++`/`--`, pre or post) and rewrite the
+    # whole expression to advance the PSX storage slot transactionally
+    # and yield the appropriate vaddr converted to a host pointer.
+    incdec_skip_offsets: Set[int] = set()
+    incdec_replaced_ranges: List[Tuple[int, int]] = []
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.UNARY_OPERATOR:
+            continue
+        if c.location.file is None:
+            continue
+        if str(c.location.file.name) != main_file_resolved:
+            continue
+        children = list(c.get_children())
+        if len(children) != 1:
+            continue
+        inner = children[0]
+        deref = inner
+        while deref.kind == ci.CursorKind.UNEXPOSED_EXPR:
+            kids = list(deref.get_children())
+            if not kids:
+                break
+            deref = kids[0]
+        if deref.kind != ci.CursorKind.DECL_REF_EXPR:
+            continue
+        rd = deref.referenced
+        if rd is None:
+            continue
+        red = redirects.get(rd.spelling)
+        if red is None or not red.is_pointer or red.is_array:
+            continue
+        try:
+            toks = list(c.translation_unit.get_tokens(extent=c.extent))
+        except Exception:
+            continue
+        if not toks:
+            continue
+        op_kind = None  # ("pre"|"post", "++"|"--")
+        if toks[0].spelling in ("++", "--"):
+            op_kind = ("pre", toks[0].spelling)
+        elif toks[-1].spelling in ("++", "--"):
+            op_kind = ("post", toks[-1].spelling)
+        else:
+            continue
+        pos, opsym = op_kind
+        sign = "+=" if opsym == "++" else "-="
+        inv = "-" if opsym == "++" else "+"
+        pointee = red.pointee_type or "char"
+        if pos == "pre":
+            replacement = (
+                f"(({red.pointer_orig_type})openpete_psx_to_host_ptr("
+                f"{red.psx_storage_name} {sign} sizeof({pointee})))")
+        else:
+            replacement = (
+                f"(({red.pointer_orig_type})openpete_psx_to_host_ptr("
+                f"({red.psx_storage_name} {sign} sizeof({pointee})) "
+                f"{inv} sizeof({pointee})))")
+        result.edits.append(Edit(
+            start=c.extent.start.offset,
+            end=c.extent.end.offset,
+            replacement=replacement,
+            file=main_file_resolved,
+            note=f"{pos}{opsym} {red.name}"))
+        incdec_skip_offsets.add(deref.extent.start.offset)
+        incdec_replaced_ranges.append(
+            (c.extent.start.offset, c.extent.end.offset))
+    incdec_replaced_ranges.sort()
+
+    def _inside_incdec(s: int, e: int) -> bool:
+        for rs, re_ in incdec_replaced_ranges:
+            if s >= rs and e <= re_:
+                return True
+            if rs > s:
+                break
+        return False
+
     # Array-redirect subscript pass. For `T *arr[N]` → `uint32_t arr[N]`
     # storage, an access `arr[i]` reads the i'th vaddr and we must
     # convert it to a host pointer before any further dereferencing.
@@ -488,6 +574,10 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         if off in array_sub_skip_offsets:
             # Bare-array DeclRefExpr inside an ARRAY_SUBSCRIPT_EXPR we
             # already rewrote at the subscript level.
+            continue
+        if off in incdec_skip_offsets:
+            # DeclRefExpr inside `g_Ptr++`/`++g_Ptr` already rewritten at
+            # the UnaryOperator level.
             continue
         # Skip macro-expansion artifacts: a DeclRefExpr from a macro arg
         # used N times in the expansion shows up as N AST nodes all
