@@ -161,12 +161,18 @@ def main(argv=None) -> int:
         print(f"  WARN: {err}", file=sys.stderr)
     plan.add_many(bg.edits)
 
-    # --- Pass 4b: int-to-ptr cast wrap (literal PSX vaddr → host pointer) ---
+    # --- Pass 4b/4c: cast wraps (literal PSX vaddr conversions) -----------
     # Skip casts that fall inside a Pass 1 or Pass 2 write extent — those
-    # rewrites already consume the cast specially.
+    # rewrites already consume the cast specially. Also skip Pass 4c
+    # `ptr->int cast wrap` edits whose site is inside a Pass 4b
+    # `int->ptr cast wrap` edit — Pass 4b folds the host_to_psx
+    # substitution into its replacement text inline.
     suppress_ranges = sorted(pass1_ranges + pass2_write_ranges)
-    def _inside_any(s: int, e: int) -> bool:
-        for rs, re_ in suppress_ranges:
+    pass4b_ranges = sorted([(ed.start, ed.end) for ed in casts.edits
+                            if ed.note == "int->ptr cast wrap"
+                            and ed.file == main_path])
+    def _inside(s: int, e: int, ranges) -> bool:
+        for rs, re_ in ranges:
             if s >= rs and e <= re_:
                 return True
             if rs > s:
@@ -175,7 +181,10 @@ def main(argv=None) -> int:
     for ed in casts.edits:
         if ed.file != main_path:
             continue
-        if _inside_any(ed.start, ed.end):
+        if _inside(ed.start, ed.end, suppress_ranges):
+            continue
+        if ed.note == "ptr->int cast wrap" and \
+                _inside(ed.start, ed.end, pass4b_ranges):
             continue
         plan.add(ed)
 

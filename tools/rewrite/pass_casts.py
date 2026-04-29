@@ -94,37 +94,53 @@ def _unwrap_to_decl_ref(c: ci.Cursor) -> ci.Cursor | None:
     return None
 
 
+def _is_host_to_psx_call(c: ci.Cursor) -> bool:
+    """True if `c` is a CallExpr whose callee resolves to
+    `openpete_host_to_psx`. Such a call already converts a host pointer
+    to a PSX vaddr; its result is integer-arithmetic-safe."""
+    if c.kind != ci.CursorKind.CALL_EXPR:
+        return False
+    ref = c.referenced
+    if ref is not None and ref.spelling == "openpete_host_to_psx":
+        return True
+    # Some libclang versions report the spelling on the cursor itself.
+    if c.spelling == "openpete_host_to_psx":
+        return True
+    return False
+
+
 def _operand_has_pointer_term(operand: ci.Cursor,
                               redirects: Dict[str, GlobalRedirect]) -> bool:
     """True if `operand`'s subtree contains any pointer-typed DeclRefExpr,
     MemberRefExpr, or pointer-to-int CSTYLE_CAST_EXPR — signs that the
     integer value is host-pointer-derived (host arithmetic), not a literal
-    PSX vaddr expression."""
-    for k in operand.walk_preorder():
-        if k.kind == ci.CursorKind.DECL_REF_EXPR:
+    PSX vaddr expression. Pruned at `openpete_host_to_psx(...)` boundaries:
+    the call has already converted a host pointer to a PSX vaddr, so its
+    result counts as integer-safe regardless of what's inside."""
+
+    def _walk(node: ci.Cursor) -> bool:
+        if _is_host_to_psx_call(node):
+            return False  # subtree pruned
+        if node.kind == ci.CursorKind.DECL_REF_EXPR:
             try:
-                kt = k.type.get_canonical()
+                kt = node.type.get_canonical()
             except Exception:
-                continue
-            if _is_pointer_kind(kt):
+                kt = None
+            if kt is not None and _is_pointer_kind(kt):
                 return True
-            ref = k.referenced
+            ref = node.referenced
             if ref is not None and ref.spelling in redirects:
-                # A redirected pointer global appearing in the int_expr is
-                # treated as host-pointer-derived (the rewriter inserts
-                # the host-ptr conversion at the DeclRefExpr level).
                 if redirects[ref.spelling].is_pointer:
                     return True
-        elif k.kind == ci.CursorKind.MEMBER_REF_EXPR:
+        elif node.kind == ci.CursorKind.MEMBER_REF_EXPR:
             try:
-                kt = k.type.get_canonical()
+                kt = node.type.get_canonical()
             except Exception:
-                continue
-            if _is_pointer_kind(kt):
+                kt = None
+            if kt is not None and _is_pointer_kind(kt):
                 return True
-        elif k.kind == ci.CursorKind.CSTYLE_CAST_EXPR:
-            # `(int)host_ptr` — host arithmetic on a host pointer.
-            kids = list(k.get_children())
+        elif node.kind == ci.CursorKind.CSTYLE_CAST_EXPR:
+            kids = list(node.get_children())
             inner = next((kk for kk in kids
                           if kk.kind != ci.CursorKind.TYPE_REF), None)
             if inner is not None:
@@ -133,10 +149,135 @@ def _operand_has_pointer_term(operand: ci.Cursor,
                 except Exception:
                     it = None
                 if it is not None and _is_pointer_kind(it):
-                    tt = k.type.get_canonical()
+                    tt = node.type.get_canonical()
                     if tt.kind in _INTEGER_CAST_KINDS:
-                        return True
-    return False
+                        # Pass 4c will wrap this `(IntT)host_ptr` site
+                        # with `host_to_psx`, so the resulting expression
+                        # is integer-arithmetic-safe. Prune the subtree.
+                        return False
+        for child in node.get_children():
+            if _walk(child):
+                return True
+        return False
+
+    return _walk(operand)
+
+
+def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
+                           main_path: str,
+                           redirects: Dict[str, GlobalRedirect],
+                           result: CastResult) -> None:
+    """Walk every CSTYLE_CAST_EXPR `(IntT)pointer_expr`. The source intends
+    the PSX vaddr (a 32-bit value), but the operand is now a host pointer
+    (often 64-bit). Cast `(int)host_ptr` truncates and breaks subsequent
+    arithmetic. Wrap the operand with `host_to_psx` so the (IntT) cast
+    receives a uint32_t PSX vaddr.
+
+    Skip:
+    - Redirected-pointer global DeclRefExpr — Pass 4 marks those for the
+      bare `__psx_<name>` storage form (no round-trip needed).
+    - Operands whose canonical type is already integer (paranoia — the
+      cast is a no-op or pointer-to-int between numeric types).
+    """
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
+            continue
+        if c.location.file is None or str(c.location.file.name) != main_path:
+            continue
+        target_canon = c.type.get_canonical()
+        if target_canon.kind not in _INTEGER_CAST_KINDS:
+            continue
+        kids = list(c.get_children())
+        operand = next((k for k in kids
+                        if k.kind != ci.CursorKind.TYPE_REF), None)
+        if operand is None:
+            continue
+        op_canon = operand.type.get_canonical()
+        if not _is_pointer_kind(op_canon):
+            continue
+        # Skip when the operand reduces to a redirected-pointer-global
+        # DeclRefExpr — Pass 4 already routes that to the __psx_<name>
+        # bare storage form, which is the PSX vaddr directly.
+        ref = _unwrap_to_decl_ref(operand)
+        if ref is not None:
+            ref_decl = ref.referenced
+            if ref_decl is not None and ref_decl.spelling in redirects:
+                if redirects[ref_decl.spelling].is_pointer:
+                    continue
+        # Read operand text and replace just the operand range with
+        # the host_to_psx-wrapped form. Keep the outer (IntT) cast
+        # unchanged.
+        ext = operand.extent
+        if ext.start.file is None:
+            continue
+        with open(str(ext.start.file.name), "rb") as fh:
+            fh.seek(ext.start.offset)
+            operand_text = fh.read(
+                ext.end.offset - ext.start.offset).decode("utf-8", "replace")
+        result.edits.append(Edit(
+            start=ext.start.offset,
+            end=ext.end.offset,
+            replacement=f"openpete_host_to_psx({operand_text})",
+            file=str(c.location.file.name),
+            note=f"ptr->int cast wrap",
+        ))
+
+
+def _render_with_inner_ptr_to_int_wraps(operand: ci.Cursor,
+                                        file_path: str,
+                                        redirects: Dict[str, GlobalRedirect]) -> str:
+    """Read the operand source text and substitute `(IntT)pointer_expr`
+    sub-casts with `(IntT)openpete_host_to_psx(pointer_expr)` inline. This
+    folds Pass 4c's effect into Pass 4b's wrap text so the two don't emit
+    overlapping edits."""
+    start = operand.extent.start.offset
+    end = operand.extent.end.offset
+    with open(file_path, "rb") as fh:
+        fh.seek(start)
+        text = fh.read(end - start).decode("utf-8", "replace")
+    if end <= start:
+        return text
+    subs: List[Tuple[int, int, str]] = []
+    for k in operand.walk_preorder():
+        if k.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
+            continue
+        if k.location.file is None or str(k.location.file.name) != file_path:
+            continue
+        tt = k.type.get_canonical()
+        if tt.kind not in _INTEGER_CAST_KINDS:
+            continue
+        kids = list(k.get_children())
+        inner = next((kk for kk in kids
+                      if kk.kind != ci.CursorKind.TYPE_REF), None)
+        if inner is None:
+            continue
+        it = inner.type.get_canonical()
+        if not _is_pointer_kind(it):
+            continue
+        # Skip when the inner pointer expression is a redirected-pointer
+        # global (Pass 4 marks those for the bare __psx_<name> form).
+        ref = _unwrap_to_decl_ref(inner)
+        if ref is not None:
+            ref_decl = ref.referenced
+            if ref_decl is not None and ref_decl.spelling in redirects:
+                if redirects[ref_decl.spelling].is_pointer:
+                    continue
+        ks = inner.extent.start.offset
+        ke = inner.extent.end.offset
+        if ke <= ks or ks < start or ke > end:
+            continue
+        with open(file_path, "rb") as fh:
+            fh.seek(ks)
+            inner_text = fh.read(ke - ks).decode("utf-8", "replace")
+        subs.append((ks - start, ke - start,
+                     f"openpete_host_to_psx({inner_text})"))
+    if not subs:
+        return text
+    subs.sort()
+    out = text
+    for rs, re_, repl in reversed(subs):
+        out = out[:rs] + repl + out[re_:]
+    return out
 
 
 def _wrap_int_to_ptr_casts(tu_cursor: ci.Cursor,
@@ -169,28 +310,32 @@ def _wrap_int_to_ptr_casts(tu_cursor: ci.Cursor,
         op_canon = operand.type.get_canonical()
         if op_canon.kind not in _INTEGER_CAST_KINDS:
             continue
+        cast_start = c.extent.start.offset
+        cast_end = c.extent.end.offset
+        # libclang sometimes emits a phantom CSTYLE_CAST_EXPR whose
+        # extent equals its operand's extent (no `(Type)` prefix in
+        # the source range) and whose location is wholly unrelated.
+        # Dedupe by skipping when extent == operand extent.
+        if (cast_start == operand.extent.start.offset
+                and cast_end == operand.extent.end.offset):
+            continue
         if _operand_has_pointer_term(operand, redirects):
             continue
-        # Read the operand source text and wrap. We splice over the whole
-        # cast extent so other passes' inner edits to the operand still
-        # apply textually (the splicer handles overlap correctly when one
-        # edit is fully contained in another via the wider-wins rule).
-        ext = c.extent
-        if ext.start.file is None:
+        if c.extent.start.file is None:
             continue
-        with open(str(ext.start.file.name), "rb") as fh:
-            fh.seek(operand.extent.start.offset)
-            operand_text = fh.read(
-                operand.extent.end.offset
-                - operand.extent.start.offset).decode("utf-8", "replace")
+        # Read the operand source text and inline any Pass-4c-style
+        # `(IntT)pointer_expr` substitutions so they don't emit their own
+        # overlapping edits.
+        operand_text = _render_with_inner_ptr_to_int_wraps(
+            operand, str(c.location.file.name), redirects)
         # Cast target spelling — keep the source's pointer type for the
         # outer cast (so the host pointer flows with the right type).
         target_spelling = c.type.spelling
         replacement = (f"(({target_spelling})openpete_psx_to_host_ptr("
                        f"{operand_text}))")
         result.edits.append(Edit(
-            start=c.extent.start.offset,
-            end=c.extent.end.offset,
+            start=cast_start,
+            end=cast_end,
             replacement=replacement,
             file=str(c.location.file.name),
             note=f"int->ptr cast wrap",
@@ -248,4 +393,5 @@ def run(tu_cursor: ci.Cursor,
         )
 
     _wrap_int_to_ptr_casts(tu_cursor, main_path, redirects, result)
+    _wrap_ptr_to_int_casts(tu_cursor, main_path, redirects, result)
     return result

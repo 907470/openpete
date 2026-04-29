@@ -98,10 +98,16 @@ file = "src/specular_and_metal.c"
 [[native_source]]
 file = "src/cutscene.c"
 
-# 4BEF8.c — gated. Pass 1 + Pass 4b convert peteData to a host pointer
-# correctly, but the resulting CDLoadSync wait-loop still hangs on the
-# PETE.WAD read at 0x8018B800 (callback fires and clears m_IsReading per
-# psyq_thunks log, no warnings) — root cause not yet found. Re-deferred.
+# 4BEF8.c — re-deferred. Pass 4b/4c (int-to-ptr cast wrap + ptr-to-int
+# cast wrap) make `peteData` and the `(int)peteData + 0x800` arithmetic
+# correct, so `func_8005B7D8` runs through PETE.WAD load + 54 model
+# patches cleanly. But `AllocateBuffers` writes to `g_DB[0]` and `g_DB[1]`
+# — host sizeof(DB) is 140 vs PSX 0x84 (132). The 8-byte stride mismatch
+# scribbles g_DB[1]'s field writes past their PSX storage and corrupts
+# adjacent globals; titlescreen renders but the demo state never advances
+# (frame ~1100 stuck). Same Pass 3 class as hud.c (Moby sizeof drift) —
+# host PsyCross DRAWENV layout diverges from PSX. Real Pass 1/3
+# investigation needed; bounded but not 5-minute work.
 #[[native_source]]
 #file = "src/4BEF8.c"
 
