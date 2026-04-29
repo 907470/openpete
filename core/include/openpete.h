@@ -138,25 +138,11 @@ typedef struct {
      * input forever. */
     bool bk2_stop_on_end;
 
-    /* Override the in-game SFX volume slider at boot. Spyro's options menu
-     * exposes "SOUND EFFECTS" as 0 (OFF) .. 10 (max), backed by D_80075754
-     * which feeds g_Spu.m_SoundVolume. We write the value once after the
-     * game's own init has set its default; the user can still change it
-     * later from the options menu without us fighting it.
-     *   --sfx off        → 0
-     *   --sfx on         → 10
-     *   --sfx N (0..10)  → N
-     * Default (no flag): 0 (OFF). */
-    int sfx_volume;     /* 0..10; only honored when sfx_volume_set */
-    bool sfx_volume_set;
-
-    /* CD-music volume override — symmetric with --sfx. Off by default
-     * so headless / CI runs are silent unless explicitly opted-in.
-     * Honors the in-game music slider scale (0..10), where 0 mutes
-     * the title-screen intro and any music played before
-     * gamestates/init.c restores the user's setting. */
-    int  music_volume;  /* 0..10; only honored when music_volume_set */
-    bool music_volume_set;
+    /* Force-mute all audio (SPU SFX + XA CD music) at the OpenAL layer
+     * via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain. Engine-level, so no
+     * game-specific globals or per-frame stamping is needed. Defaults
+     * to true so headless / CI runs are silent unless --mute off. */
+    bool mute;
 
     /* Record live pad input (keyboard + gamepad, merged by PsyCross) into
      * a BizHawk-format .bk2 zip at this path. Sister of --bk2 replay;

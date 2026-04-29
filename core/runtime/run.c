@@ -441,10 +441,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->halt_cpu_dump_output ? opts->halt_cpu_dump_output : "");
     }
 
+    /* Engine-level mute: clamp the SPU AL sources and the XA stream's AL
+     * gain. Bypasses the game's volume sliders entirely. */
+    extern int  PsyX_SPUAL_SetMute(int on_off);
+    extern void PsyX_XA_ForceGain(float linear_gain);
+    PsyX_SPUAL_SetMute(opts->mute ? 1 : 0);
+    PsyX_XA_ForceGain(opts->mute ? 0.0f : -1.0f);
+
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */
-    game_set_sfx_volume(opts->sfx_volume_set ? opts->sfx_volume : -1);
-    game_set_music_volume(opts->music_volume_set ? opts->music_volume : -1);
     game_set_skip_to_level(opts->skip_to_level);
 
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it

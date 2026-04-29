@@ -27,10 +27,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
-    opts->sfx_volume          = 0;     /* OFF by default; --sfx to opt in */
-    opts->sfx_volume_set      = true;  /* always force-write so default-off applies */
-    opts->music_volume        = 0;     /* OFF by default; --music to opt in */
-    opts->music_volume_set    = true;
+    opts->mute                = true;  /* silent by default; --mute off to enable audio */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -126,39 +123,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--bk2-record") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_record_path = v; i++;
-        } else if (strcmp(a, "--sfx") == 0) {
+        } else if (strcmp(a, "--mute") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "off") == 0) {
-                opts->sfx_volume = 0;
-            } else if (strcmp(v, "on") == 0) {
-                opts->sfx_volume = 10;
-            } else {
-                char* end = NULL;
-                long n = strtol(v, &end, 10);
-                if (end == v || *end != '\0' || n < 0 || n > 10) {
-                    fprintf(stderr, "openpete: --sfx expects on|off|0..10, got: %s\n", v);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                opts->sfx_volume = (int)n;
+            if      (strcmp(v, "on")  == 0) opts->mute = true;
+            else if (strcmp(v, "off") == 0) opts->mute = false;
+            else {
+                fprintf(stderr, "openpete: --mute expects on|off, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
             }
-            opts->sfx_volume_set = true;
-            i++;
-        } else if (strcmp(a, "--music") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "off") == 0) {
-                opts->music_volume = 0;
-            } else if (strcmp(v, "on") == 0) {
-                opts->music_volume = 10;
-            } else {
-                char* end = NULL;
-                long n = strtol(v, &end, 10);
-                if (end == v || *end != '\0' || n < 0 || n > 10) {
-                    fprintf(stderr, "openpete: --music expects on|off|0..10, got: %s\n", v);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                opts->music_volume = (int)n;
-            }
-            opts->music_volume_set = true;
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             fprintf(stderr,
@@ -192,8 +164,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
                 "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
-                "  --sfx on|off|N             override Spyro's SOUND EFFECTS slider (0..10; default off)\n"
-                "  --music on|off|N           override Spyro's MUSIC slider (0..10; default off)\n",
+                "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {

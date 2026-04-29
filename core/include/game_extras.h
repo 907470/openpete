@@ -63,8 +63,6 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter);
  * Called once before the run loop starts. Per-game impl decides where /
  * when to apply the value (typically from game_on_frame, since the
  * relevant globals don't exist until the game's own init has run). */
-void game_set_sfx_volume(int value);    /* -1 = leave alone */
-void game_set_music_volume(int value);  /* -1 = leave alone */
 void game_set_skip_to_level(int level_id); /* 0 = disabled */
 
 /* --- Disc layout (each game's WAD/asset structure differs) --- */
