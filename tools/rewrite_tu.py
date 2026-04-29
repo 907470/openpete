@@ -44,6 +44,9 @@ from tools.rewrite.pass_struct_by_value import (  # noqa: E402
 from tools.rewrite.pass_discover import (  # noqa: E402
     run as run_discover, render_toml as render_discovered_toml,
 )
+from tools.rewrite.pass_outbound_lint import (  # noqa: E402
+    run as run_outbound_lint, format_warnings as format_outbound_lint,
+)
 from tools.rewrite.rewriter import EditPlan  # noqa: E402
 
 
@@ -77,6 +80,14 @@ def main(argv=None) -> int:
                          "TUs in this domain (one per line). Pass 6 uses this "
                          "to suppress same-domain native→native calls from the "
                          "outbound_recomp set.")
+    ap.add_argument("--native-toml", type=Path, default=None,
+                    help="manifest/native.toml — used by Pass 5e (host-pointer-"
+                         "to-thunk lint) to enumerate the set of outbound thunks "
+                         "to inspect call sites of.")
+    ap.add_argument("--globals-toml", type=Path, default=None,
+                    help="manifest/globals.toml — used by Pass 5e to recognize "
+                         "address-of game globals as safe (--defsym-aliased into "
+                         "g_ram).")
     args = ap.parse_args(argv)
 
     parsed = parse_tu(args.input)
@@ -165,6 +176,38 @@ def main(argv=None) -> int:
     if pb.violations:
         print(format_violations(pb), file=sys.stderr)
         return 3
+
+    # --- Pass 5e: host-pointer-to-thunk lint ------------------------------
+    # Warn on call sites where a native function passes a host-allocated
+    # pointer (stack-local / host-global / host-heap) through an outbound
+    # thunk. host_to_psx returns 0 for those and the callee dereferences
+    # NULL — silent on platforms whose smoke gate doesn't reach the call,
+    # loud on platforms where it does. Plan §"Pass 5e".
+    thunked_fns: set[str] = set()
+    game_global_names: set[str] = set()
+    if args.native_toml is not None and args.native_toml.exists():
+        import tomli
+        with open(args.native_toml, "rb") as fh:
+            nt = tomli.load(fh)
+        for e in nt.get("outbound_recomp", []):
+            thunked_fns.add(e["name"])
+        for e in nt.get("outbound_psyq", []):
+            thunked_fns.add(e["psyq_name"])
+        # Skipped names link directly to host symbols — not thunked.
+        for n in nt.get("outbound_psyq_skip", []):
+            thunked_fns.discard(n)
+        for n in nt.get("outbound_recomp_skip", []):
+            thunked_fns.discard(n)
+    if args.globals_toml is not None and args.globals_toml.exists():
+        import tomli
+        with open(args.globals_toml, "rb") as fh:
+            gt = tomli.load(fh)
+        for g in gt.get("global", []):
+            game_global_names.add(g["name"])
+    ol = run_outbound_lint(parsed.cursor, main_path, thunked_fns,
+                           game_global_names)
+    if ol.warnings:
+        print(format_outbound_lint(ol), file=sys.stderr)
 
     # --- Pass 5c: INCLUDE_ASM splice removal ------------------------------
     # Textual scan over the original source — INCLUDE_ASM expands to inline

@@ -81,7 +81,9 @@ for rel in $NATIVE_SOURCES; do
         --shadow-include-dir="$REWRITTEN_DIR/$stem/include" \
         --redirects-out="$REWRITTEN_DIR/$stem.redirects.txt" \
         --discovered-toml-out="$REWRITTEN_DIR/$stem.discovered.toml" \
-        --native-fn-names="$NATIVE_FN_NAMES_FILE"
+        --native-fn-names="$NATIVE_FN_NAMES_FILE" \
+        --native-toml="$MANIFEST_DIR/native.toml" \
+        --globals-toml="$MANIFEST_DIR/globals.toml"
 done
 
 # Phase 3 (auto-manifest): cross-check the discovered entries against the
