@@ -11,6 +11,8 @@
 #ifndef OPENPETE_FIBER_H
 #define OPENPETE_FIBER_H
 
+#include <SDL_atomic.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,8 +24,9 @@ extern void*    openpete_game_fiber;
  * iterations where the host fiber is never resumed. This is the value
  * `psyq_VSync` returns to the game (libetc's "vbl counter" contract).
  * The game's busy-waits like `int s = VSync(-1); while (VSync(-1) - s < N) VSync(0);`
- * key off this. */
-extern unsigned openpete_vbl;
+ * key off this. Atomic because the 60 Hz ticker thread (see
+ * openpete_ticker.h) advances it free-running, racing PSX-fiber readers. */
+extern SDL_atomic_t openpete_vbl;
 
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
  * (i.e. until the game actually starts rendering), then increments on each
@@ -44,9 +47,10 @@ extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed b
  * has progressed from boot init to issuing real draw commands. */
 extern int      openpete_fast_boot_active;
 
-/* Game fiber → host fiber. Bumps both `openpete_vbl` and `openpete_frame` on
- * the way through; this is the "VBlank yield" used by the VSync(0) thunk
- * outside fast-boot. */
+/* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
+ * `openpete_vbl` is *not* touched here — the ticker (openpete_ticker.h)
+ * is the sole writer once running. Used by the VSync(0) thunk outside
+ * fast-boot. */
 void openpete_yield_to_host(void);
 
 /* Game fiber → host fiber WITHOUT advancing the frame counter. Used by stub

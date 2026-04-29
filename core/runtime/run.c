@@ -9,6 +9,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
+#include "openpete_ticker.h"
 #include "screenshot.h"
 #include "game_extras.h"
 #include "bk2_movie.h"
@@ -458,6 +459,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * when the game starts rendering — no CLI knob needed. */
     OPL_INFO_F("boot", "fast-boot: skipping host yields until first DrawOTag");
 
+    /* Start the free-running 60 Hz vblank ticker. Skipped under --headless
+     * to keep that path deterministic — psyq_VSync advances `openpete_vbl`
+     * synchronously when no ticker is running. See
+     * plans/openpete-free-running-vblank-counter.md. */
+    if (!opts->headless) {
+        openpete_ticker_start();
+    }
+
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
@@ -490,15 +499,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
-    /* Wall-clock pacing: PSX vblank is 60 Hz NTSC. Each VSync(0) yield must
-     * advance >=1/60s of real time, otherwise the game fiber races ahead and
-     * the cutscene plays at >2x speed. PsyCross's swap-interval path only
-     * gates the GL present, and we present every other yield (Spyro is 30fps,
-     * see the DrawOTag note above), so vsync alone wouldn't pace the empty
-     * iterations. We pace every iteration here with a fractional accumulator
-     * to avoid the integer-ms drift you'd get from SDL_Delay(16). */
-    const double frame_period_ms = 1000.0 / 60.0;  /* 16.6667 */
-    double next_yield_ms = (double)start;
+    /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
+     * blocks on the ticker's condvar until the atomic vbl counter advances,
+     * naturally pacing the host loop at ~60 Hz. The previous fractional
+     * SDL_Delay accumulator is gone — pacing is implicit in "wait for
+     * tick", which means a single VSync(0) call (loading-screen flyby)
+     * resumes after one tick = 60 fps and a wait-loop body (gameplay)
+     * resumes after two ticks = 30 fps without per-game predicates. */
 
     /* --bk2-record: prepare the in-memory frame buffer. The file isn't
      * touched until exit, so a SIGTERM/Ctrl-C against the run still
@@ -824,22 +831,22 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
         bool unlock_fps = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
         g_skipSwapInterval = unlock_fps ? 1 : 0;
-        if (unlock_fps) {
-            next_yield_ms = (double)SDL_GetTicks();
-        } else if (ticked_this_iter) {
-            /* Only pace VSync(0)-driven yields. dispatch.c's stub-and-yield for
-             * untranslated overlay funcs uses the no-tick variant; pacing those
-             * would multiply 16.67 ms by however many missing-symbol calls the
-             * game makes per logical frame (Sparx-heavy gameplay was 9+ stubs
-             * per frame → 5 fps). The frame counter advances only on real
-             * VSync(0), so gating on its delta is the safe signal. */
-            next_yield_ms += frame_period_ms;
-            Uint32 now_ms = SDL_GetTicks();
-            if ((double)now_ms < next_yield_ms) {
-                SDL_Delay((Uint32)(next_yield_ms - (double)now_ms));
-            } else if ((double)now_ms > next_yield_ms + 100.0) {
-                next_yield_ms = (double)now_ms;
+
+        /* Block until the ticker advances `openpete_vbl`, gating game-fiber
+         * resume on a wall-clock vblank. dispatch.c's no-tick stub yields
+         * (where `ticked_this_iter` is false) skip the wait so a frame full
+         * of overlay stubs doesn't multiply 16.67 ms by N stubs. Tab-held /
+         * --headless skip the wait too — they want to spin as fast as the
+         * pipeline allows. */
+        if (!unlock_fps && ticked_this_iter && openpete_ticker_drives_vbl) {
+            int vbl_before = SDL_AtomicGet(&openpete_vbl);
+            SDL_LockMutex(openpete_ticker_wake_mutex);
+            while (SDL_AtomicGet(&openpete_vbl) == vbl_before &&
+                   !g_shutdown_requested) {
+                SDL_CondWaitTimeout(openpete_ticker_wake_cond,
+                                    openpete_ticker_wake_mutex, 100);
             }
+            SDL_UnlockMutex(openpete_ticker_wake_mutex);
         }
     }
 
@@ -855,6 +862,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     OPL_INFO_F("exit",
                "reason=%s frames=%u elapsed_ms=%u dispatch_ok=%d",
                exit_reason, openpete_frame, elapsed, g_game.dispatch_ok);
+
+    openpete_ticker_stop();
 
     /* Best-effort fiber teardown. Our game fiber is parked in its forever-
      * yield loop, so co_delete is safe. */

@@ -9,21 +9,19 @@
 #include <libco.h>
 #include <stddef.h>
 
-void*    openpete_host_fiber       = NULL;
-void*    openpete_game_fiber       = NULL;
-unsigned openpete_vbl               = 0u;
-unsigned openpete_frame             = 0u;
-unsigned openpete_primitives_drawn  = 0u;
-int      openpete_present_pending   = 0;
-int      openpete_fast_boot_active  = 1;
+void*        openpete_host_fiber       = NULL;
+void*        openpete_game_fiber       = NULL;
+SDL_atomic_t openpete_vbl              = {0};
+unsigned     openpete_frame            = 0u;
+unsigned     openpete_primitives_drawn = 0u;
+int          openpete_present_pending  = 0;
+int          openpete_fast_boot_active = 1;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */
-    /* Each yield is one vblank AND one rendered host frame. Bump both before
-     * switching so callers that read the counters on resume see the new
-     * values. (Fast-boot bypasses this path entirely — psyq_VSync bumps only
-     * `openpete_vbl` and skips the co_switch until DrawOTag clears the gate.) */
-    openpete_vbl++;
+    /* `openpete_vbl` is the ticker's job now (free-running 60 Hz, see
+     * openpete_ticker.h). Yields only bump the host-side render counter so
+     * frame-limit / screenshot / bk2 alignment stay yield-driven. */
     openpete_frame++;
     co_switch((cothread_t)openpete_host_fiber);
 }

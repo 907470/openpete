@@ -255,13 +255,14 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_threshold_inited = 1;
     }
     if (s_hang_threshold && !s_hang_tripped) {
-        if (openpete_vbl != s_hang_last_vbl) {
+        uint32_t vbl_now = (uint32_t)SDL_AtomicGet(&openpete_vbl);
+        if (vbl_now != s_hang_last_vbl) {
             /* Vbl boundary: snapshot the ring before the next vbl interval's
              * dispatches overwrite it. If a hang trips during the next
              * interval, the snapshot still shows what got us here. */
             memcpy(s_hang_ring_prev, s_hang_ring, sizeof(s_hang_ring));
             s_hang_head_prev = s_hang_head;
-            s_hang_last_vbl = openpete_vbl;
+            s_hang_last_vbl = vbl_now;
             s_hang_calls_since_tick = 0u;
         } else if (++s_hang_calls_since_tick > s_hang_threshold) {
             openpete_hang_dump_and_exit(addr);

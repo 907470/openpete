@@ -32,6 +32,10 @@ add_library(openpete_core STATIC
     # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
     runtime/fiber.c
 
+    # Free-running 60 Hz vblank ticker (drives openpete_vbl + paces the host
+    # loop). See plans/openpete-free-running-vblank-counter.md.
+    runtime/ticker.c
+
     # Phase 1e infra-triangle: hardcoded POLY_F3 emit to validate the full
     # PsyCross render pipeline without depending on overlay-resident Spyro
     # code. C++ TU because PsyCross's libgpu.h uses static_assert.
