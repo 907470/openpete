@@ -140,20 +140,8 @@ file = "src/spu.c"
 [[native_source]]
 file = "src/overlay_pointers.c"
 
-# moby_helpers.c — re-deferred. Today's macro write-LHS bare-chain
-# (zero-length raw extent → token recovery) doesn't apply here:
-# `setMobyLetterProps((MobyLetterProps*)char_moby->m_Props, ..)`'s
-# expanded m_Parent / m_Len / m_Index member-refs have FULL macro-
-# call extent (41976..42080 covers the entire `setMobyLetterProps(..)`
-# expression), not zero-length. Pass 1 then emits a read-wrap that
-# engulfs the whole macro call, producing `((Moby*)psx_to_host_ptr(
-# setMobyLetterProps(...)))`. Detection signal: cursor.spelling not
-# present in the source bytes covered by cursor.extent. Fix likely
-# needs editing the macro definition itself (each line wraps props
-# via psx_to_host_ptr + host_to_psx the rhs for relaid fields) AND
-# suppressing the Pass 1 access edit at the call site.
-#[[native_source]]
-#file = "src/moby_helpers.c"
+[[native_source]]
+file = "src/moby_helpers.c"
 
 # pete.c — deferred. Pass 5c's INCLUDE_ASM splice deletion comes out
 # corrupted in the rewritten file (`m_RotY += t.y;E4);` — last 4 chars of

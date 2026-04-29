@@ -50,8 +50,7 @@ add_executable(openpete-spyro1
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
-    # moby_helpers.rewritten.c — re-deferred (full-extent macro args
-    # not handled by today's zero-length macro-arg detection).
+    ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
     # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;
@@ -199,8 +198,7 @@ set(SPYRO_NATIVE_SOURCES
     # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
-    # moby_helpers.rewritten.c — re-deferred (full-extent macro args
-    # not handled by today's zero-length macro-arg detection).
+    ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
     # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;

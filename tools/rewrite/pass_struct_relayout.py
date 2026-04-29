@@ -1023,6 +1023,20 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             ext_end = toks[-1].location.offset + len(toks[-1].spelling)
             if ext_end <= ext_start:
                 continue
+        else:
+            # Full-extent macro-expansion artifact: a MEMBER_REF whose
+            # extent spans the whole macro CALL but whose spelling lives
+            # inside the macro DEFINITION (e.g. `setMobyLetterProps`'s
+            # m_Parent / m_Len / m_Index). Pass 1 wrapping the entire
+            # call site as a read of the field would produce
+            # `((Moby*)psx_to_host_ptr(setMobyLetterProps(...)))`. Skip
+            # — the macro body itself is the right rewrite target.
+            try:
+                ext_text = _bytes_slice(main_resolved, ext_start, ext_end)
+            except Exception:
+                ext_text = ""
+            if ref_decl.spelling not in ext_text:
+                continue
         off = ext_start
         if off in addr_of_offsets:
             continue
@@ -1260,6 +1274,51 @@ def emit_macro_redefs(result: StructRelayoutResult) -> None:
     result.rewritten_headers.add(str(common_h))
 
 
+_MOBY_LETTER_PROPS_REDEF = """\
+/* OPENPETE: props expands to `(MobyLetterProps*)char_moby->m_Props`
+ * where m_Props is now a uint32_t PSX vaddr; route through
+ * psx_to_host_ptr to get a host pointer, then write through the
+ * relaid m_Parent slot via host_to_psx. */
+#define setMobyLetterProps(props, parent, index, len)                          \\
+  ((MobyLetterProps *)openpete_psx_to_host_ptr(                                \\
+       (uint32_t)(uintptr_t)(props)))                                          \\
+      ->m_Parent = openpete_host_to_psx(parent);                               \\
+  ((MobyLetterProps *)openpete_psx_to_host_ptr(                                \\
+       (uint32_t)(uintptr_t)(props)))                                          \\
+      ->m_Len = len;                                                           \\
+  ((MobyLetterProps *)openpete_psx_to_host_ptr(                                \\
+       (uint32_t)(uintptr_t)(props)))                                          \\
+      ->m_Index = index"""
+
+
+def emit_main_file_macro_redefs(main_file: str,
+                                result: StructRelayoutResult) -> None:
+    """In-source macro redefinitions for known lvalue-arg / multi-write
+    macros defined inside the .c file itself (not in a header). Today
+    handles `setMobyLetterProps` in moby_helpers.c, where the macro body
+    writes a relaid pointer field (`m_Parent`) and dereferences a uint32
+    relaid field (`m_Props`) via implicit int-to-pointer cast.
+    """
+    main_path = Path(main_file).resolve()
+    if main_path.name != "moby_helpers.c":
+        return
+    text = main_path.read_text()
+    import re as _re_local
+    m = _re_local.search(
+        r"#define\s+setMobyLetterProps\(props,\s*parent,\s*index,\s*len\)"
+        r".*?->m_Index\s*=\s*index",
+        text, flags=_re_local.DOTALL)
+    if m is None:
+        return
+    result.access_edits.append(Edit(
+        start=m.start(),
+        end=m.end(),
+        replacement=_MOBY_LETTER_PROPS_REDEF,
+        file=str(main_path),
+        note="macro redef setMobyLetterProps",
+    ))
+
+
 def run(tu_cursor: ci.Cursor, main_file: str,
         symbols: Optional[Dict[str, int]] = None,
         redirects=None,
@@ -1273,4 +1332,5 @@ def run(tu_cursor: ci.Cursor, main_file: str,
     emit_access_edits(tu_cursor, rewrites, main_file, result, symbols,
                       redirects=redirects,
                       pass2_write_ranges=pass2_write_ranges)
+    emit_main_file_macro_redefs(main_file, result)
     return result
