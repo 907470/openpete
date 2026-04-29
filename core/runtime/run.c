@@ -70,6 +70,22 @@ static void openpete_on_sigint(int sig) {
     g_shutdown_requested = 1;
 }
 
+static int unlock_frame_in_ranges(const openpete_options_t* opts, unsigned frame) {
+    int f = (int)frame;
+    for (int i = 0; i < opts->unlock_ranges_count; i++) {
+        if (f >= opts->unlock_ranges[i].lo && f <= opts->unlock_ranges[i].hi) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
+    int32_t x = 0, y = 0, z = 0;
+    if (game_get_player_position(&x, &y, &z) != 0) return;
+    fprintf(fp, "%u,%d,%d,%d,%d\n", frame, vbl, x, y, z);
+}
+
 /* Implemented in core/runtime/exe_loader.cpp. */
 extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                 const char* exe_filename,
@@ -507,6 +523,22 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * resumes after one tick = 60 fps and a wait-loop body (gameplay)
      * resumes after two ticks = 30 fps without per-game predicates. */
 
+    /* --position-log: open the CSV. Header is one line so multiple runs
+     * can be diff'd without sed magic. fflush after each frame so a
+     * killed run still leaves its progress on disk. */
+    FILE* position_log_fp = NULL;
+    if (opts->position_log_path && *opts->position_log_path) {
+        position_log_fp = fopen(opts->position_log_path, "wb");
+        if (!position_log_fp) {
+            OPL_ERROR_F("position-log", "fopen %s failed: %s",
+                        opts->position_log_path, strerror(errno));
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        fputs("frame,vbl,x,y,z\n", position_log_fp);
+        OPL_INFO_F("position-log", "writing g_Spyro.m_Position each yield to %s",
+                   opts->position_log_path);
+    }
+
     /* --bk2-record: prepare the in-memory frame buffer. The file isn't
      * touched until exit, so a SIGTERM/Ctrl-C against the run still
      * produces a usable movie. */
@@ -648,13 +680,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             last_input_pump_ms = now_for_input;
         }
 
-        /* Tell the game-fiber psyq_VSync path whether to wait on the
-         * ticker (paced) or advance synchronously (fast-forward). Sample
-         * Tab here so the flag matches the slice the game is about to
-         * run. PsyCross's swap-interval bypass is a host-loop concern;
-         * keep that flag co-located below so both effects toggle as one. */
-        openpete_unlock_fps = opts->headless || tab_held;
-
         /* Hand control to the game until the next VSync(0) yield. */
         unsigned frame_before_yield = openpete_frame;
         game_on_frame_pre(&g_game.cpu, openpete_frame);
@@ -663,6 +688,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
         if (ticked_this_iter) {
             game_on_frame(&g_game.cpu, openpete_frame);
+        }
+
+        /* Position log fires after each yield (post-fast-boot — address
+         * holds garbage before BSS init). Frame counter is openpete_frame,
+         * vbl is the synchronous yield-driven counter; both are
+         * deterministic across runs by construction. */
+        if (position_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
+            position_log_emit(position_log_fp, openpete_frame,
+                              SDL_AtomicGet(&openpete_vbl));
         }
 
         /* --bk2-record: one bk2 frame per openpete_frame so replay timing
@@ -835,12 +869,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * GL present (SDL_GL_SwapWindow with swap interval 1) would still
          * lock us to the monitor refresh, so the host loop wouldn't actually
          * spin faster than ~165 Hz on a 165 Hz display. */
-        /* Re-sample Tab here so the host-side bypass tracks the player
-         * releasing it mid-iteration. `openpete_unlock_fps` (set above
-         * pre-yield) governs the game fiber; this local flag governs the
-         * host loop's own pacing + the GL swap-interval bypass. */
+        /* Sample Tab for the host loop's own pacing + GL swap-interval
+         * bypass. vbl is yield-driven so this only affects wall-clock
+         * speed, not game state — fast-forward is invisible to BK2
+         * replay determinism. Scheduled --unlock-frames windows (test
+         * harness) OR into the same flag. */
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
-        bool unlock_fps = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
+        bool tab_unlock = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
+        bool sched_unlock = opts->unlock_ranges_count > 0 &&
+                            unlock_frame_in_ranges(opts, openpete_frame);
+        bool unlock_fps = tab_unlock || sched_unlock;
+        openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
 
         /* Block until the ticker advances `openpete_vbl`, gating game-fiber
@@ -849,10 +888,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * of overlay stubs doesn't multiply 16.67 ms by N stubs. Tab-held /
          * --headless skip the wait too — they want to spin as fast as the
          * pipeline allows. */
-        if (!unlock_fps && ticked_this_iter && openpete_ticker_drives_vbl) {
-            int vbl_before = SDL_AtomicGet(&openpete_vbl);
+        if (!unlock_fps && ticked_this_iter && openpete_ticker_active) {
+            int seq_before = SDL_AtomicGet(&openpete_ticker_seq);
             SDL_LockMutex(openpete_ticker_wake_mutex);
-            while (SDL_AtomicGet(&openpete_vbl) == vbl_before &&
+            while (SDL_AtomicGet(&openpete_ticker_seq) == seq_before &&
                    !g_shutdown_requested) {
                 SDL_CondWaitTimeout(openpete_ticker_wake_cond,
                                     openpete_ticker_wake_mutex, 100);
@@ -867,6 +906,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
     if (bk2_recording) {
         bk2_record_finalize();
+    }
+    if (position_log_fp) {
+        fclose(position_log_fp);
+        position_log_fp = NULL;
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

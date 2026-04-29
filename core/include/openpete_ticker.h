@@ -1,14 +1,14 @@
-// core/include/openpete_ticker.h — free-running 60 Hz vblank ticker.
+// core/include/openpete_ticker.h — 60 Hz wall-clock pacer for the host loop.
 //
-// The ticker runs on its own SDL_AddTimer thread and is the *only* writer
-// to `openpete_vbl` once started. It also signals a condvar each tick so
-// the host fiber loop can pace itself off the wall clock instead of off
-// the game's yield count. See plans/openpete-free-running-vblank-counter.md.
+// The ticker runs on its own SDL_AddTimer thread and signals a condvar
+// every ~17 ms. The host loop in run.c blocks on that condvar between
+// game-fiber slices, which paces wall-clock at ~58.8 Hz without polling.
 //
-// When the ticker is not running (smoke-test path, headless determinism
-// branch, fast-boot before first DrawOTag) the vbl counter is advanced
-// synchronously inside psyq_VSync(0). `openpete_ticker_drives_vbl` is the
-// flag callers test to decide which path to take.
+// IMPORTANT: the ticker no longer drives `openpete_vbl`. vbl is advanced
+// synchronously by psyq_VSync(0) — exactly one increment per yield —
+// because BK2 input replay relies on yields-per-logical-frame being
+// deterministic regardless of pacing. The ticker only affects how fast
+// host-loop iterations happen in wall time.
 
 #ifndef OPENPETE_TICKER_H
 #define OPENPETE_TICKER_H
@@ -20,23 +20,25 @@
 extern "C" {
 #endif
 
-/* Non-zero while the ticker is running. Readers (psyq_VSync, host loop)
- * use this to choose between condvar-pacing and synchronous-increment. */
-extern int openpete_ticker_drives_vbl;
+/* Non-zero while the ticker is running. The host loop tests this to
+ * decide whether to block on the condvar (yes — paced) or skip the wait
+ * (no — headless / smoke-test). */
+extern int openpete_ticker_active;
 
-/* Non-zero while the host loop is in "unlock" mode (Tab held, --headless,
- * or any future fast-forward path). When set, psyq_VSync(0) advances the
- * vbl counter synchronously instead of waiting for the ticker — the
- * ticker keeps running, but the game no longer paces off it, so the loop
- * runs as fast as the GL/CPU pipeline allows. Set per-iteration by the
- * host loop in run.c. */
+/* Non-zero when the host loop should not pace itself (Tab held,
+ * --headless, scheduled fast-forward window). Read by run.c only;
+ * psyq_VSync ignores this — vbl is yield-driven and deterministic
+ * regardless of fast-forward state. */
 extern int openpete_unlock_fps;
 
 /* Host-loop wake primitive. The ticker signals this on every tick;
  * the host loop waits on it between game-fiber slices to gate the
- * next slice on a wall-clock vblank. */
-extern SDL_cond*  openpete_ticker_wake_cond;
-extern SDL_mutex* openpete_ticker_wake_mutex;
+ * next slice on a wall-clock vblank. `_seq` increments on every fire so
+ * the host wait can detect "tick happened" without racing on a side
+ * counter (vbl is yield-driven now and useless for this). */
+extern SDL_cond*    openpete_ticker_wake_cond;
+extern SDL_mutex*   openpete_ticker_wake_mutex;
+extern SDL_atomic_t openpete_ticker_seq;
 
 /* Start the ticker at ~60 Hz (17 ms SDL timer — close enough; integer-ms
  * jitter is dominated by display vsync downstream). Allocates the cond +

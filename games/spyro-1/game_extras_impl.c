@@ -12,6 +12,7 @@
 #include "openpete_psx.h"
 
 #include <stdio.h>
+#include <string.h>
 
 /* --- Identity --- */
 
@@ -179,6 +180,27 @@ extern void spyro_set_active_overlay_by_magic(uint32_t magic);
 void game_on_state_loaded(CPUState* cpu) {
     uint32_t magic = cpu->read_word(0x8007AA38u);
     spyro_set_active_overlay_by_magic(magic);
+}
+
+/* g_Spyro: 0x80078A58, first field is m_Position (Vector3D x/y/z, 3×i32).
+ * The fixed addr is fine because all Spyro 1 versions share the linker
+ * map; if we ever support a second exe revision this'll need a per-rev
+ * lookup. Returns non-zero before the EXE's BSS init has populated the
+ * struct (host-side check uses fast-boot gate, but we sanity-check the
+ * address range here too in case fast-boot misfires). */
+extern uint8_t* openpete_psx_get_ram(void);
+int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z) {
+    uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) return -1;
+    const uint32_t base = 0x80078A58u - 0x80000000u;
+    int32_t x, y, z;
+    memcpy(&x, ram + base + 0, 4);
+    memcpy(&y, ram + base + 4, 4);
+    memcpy(&z, ram + base + 8, 4);
+    *out_x = x;
+    *out_y = y;
+    *out_z = z;
+    return 0;
 }
 
 /* --- Disc layout --- */

@@ -151,13 +151,19 @@ void psyq_VSync(CPUState* cpu) {
      *   mode == 0 : wait for next vblank, return updated counter
      *   mode  > 0 : wait that many vblanks (Spyro doesn't seem to use this)
      *
-     * Free-running model: `openpete_vbl` is advanced by the 60 Hz ticker
-     * thread (openpete_ticker.h). A `mode == 0` call yields once and waits
-     * for the atomic to advance past `pre`; the host loop blocks on the
-     * ticker's condvar between game slices, so resume happens on the next
-     * tick. Wait-loop pacing (`while (VSync(-1) - s < 2) VSync(0)`) and
-     * single-VSync(0) flyby pacing both fall out of this — see
-     * plans/openpete-free-running-vblank-counter.md. */
+     * vbl is yield-driven: each VSync(0) bumps the counter by exactly the
+     * wait count and yields once. That keeps Spyro's wait-loop pattern
+     * (`while VSync(-1)-s < 2 VSync(0)`) deterministic — the loop always
+     * exits after exactly 2 yields per logical frame regardless of wall-
+     * clock pacing, which is the invariant BK2 replay relies on.
+     *
+     * Wall-clock pacing lives elsewhere: the host loop (run.c) blocks on
+     * the openpete_ticker condvar between game slices, so 1 yield ≈
+     * 16.67 ms. Single-VSync(0) flyby → 1 yield/logical frame = 60 fps;
+     * wait-loop gameplay → 2 yields/logical frame = 30 fps. No per-game
+     * predicate needed. Tab / --headless skip the host-loop wait, which
+     * fast-forwards wall clock without changing yield-per-frame counts —
+     * so BK2 state at any frame is identical regardless of pacing. */
     int mode = (int)cpu->a0;
     static uint32_t calls = 0u;
     int observed = SDL_AtomicGet(&openpete_vbl);
@@ -171,48 +177,22 @@ void psyq_VSync(CPUState* cpu) {
         return;
     }
 
-    if (mode == 0) {
-        if (openpete_fast_boot_active) {
-            /* Fast-boot: bump the PSX-visible vbl counter without yielding so
-             * the game's Initialize() busy-waits run as fast as possible.
-             * The Sony+Universal splash windows are intentional VSync(-1)
-             * spins — nothing is rendered. `openpete_frame` stays at 0 until
-             * psyq_DrawOTag clears the gate. Skip the VSync callback too:
-             * PadVSync would be writing to g_PadBuffer based on pre-input
-             * state. */
-            SDL_AtomicAdd(&openpete_vbl, 1);
-            cpu->v0 = (uint32_t)SDL_AtomicGet(&openpete_vbl);
-            return;
-        }
-        if (!openpete_host_fiber) {
-            /* No fiber loop running (smoke-test path) — fall back to
-             * PsyCross's busy wait so semantics still match. */
-            (void)VSync(0);
-            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-            cpu->v0 = (uint32_t)SDL_AtomicGet(&openpete_vbl);
-            return;
-        }
+    int wait = (mode == 0) ? 1 : mode;
+    SDL_AtomicAdd(&openpete_vbl, wait);
 
-        int wait = (mode == 0) ? 1 : mode;
-        int target = observed + wait;
-        if (!openpete_ticker_drives_vbl || openpete_unlock_fps) {
-            /* Headless / no-ticker, OR Tab-held fast-forward: don't wait
-             * for the ticker — advance the counter synchronously and yield
-             * once so the host loop still sees the frame boundary
-             * (frame_limit, screenshots, bk2 alignment). */
-            SDL_AtomicAdd(&openpete_vbl, wait);
-            openpete_yield_to_host();
-            if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-        } else {
-            /* Yield until the ticker advances past `target`. Each yield
-             * crosses one host-loop iteration; the host blocks on the
-             * ticker's condvar between iterations, so this loop wakes
-             * roughly once per 16.67 ms wall-clock vblank. */
-            do {
-                openpete_yield_to_host();
-                if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-            } while (SDL_AtomicGet(&openpete_vbl) < target);
-        }
+    if (openpete_fast_boot_active) {
+        /* Fast-boot: don't yield. Initialize()'s splash spins consume vbl
+         * with no work, and we want them at full CPU speed. PadVSync would
+         * be writing g_PadBuffer based on pre-input state, so skip the
+         * VSync callback too. */
+    } else if (openpete_host_fiber) {
+        openpete_yield_to_host();
+        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+    } else {
+        /* No fiber loop (smoke-test path) — fall back to PsyCross's busy
+         * wait so audio/timer semantics still match. */
+        if (mode == 0) (void)VSync(0);
+        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
     }
 
     cpu->v0 = (uint32_t)SDL_AtomicGet(&openpete_vbl);

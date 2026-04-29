@@ -153,6 +153,25 @@ typedef struct {
      * long as core/runtime/run.c reaches its cleanup block. */
     const char* bk2_record_path;
 
+    /* Scheduled fast-forward windows: forces openpete_unlock_fps = 1
+     * while openpete_frame is inside any [lo,hi] range. Used by the
+     * BK2 determinism harness to inject pacing variation without
+     * requiring a human to hold Tab. NULL = disabled. Format:
+     *   "100-200,500-600"
+     * Inclusive on both ends. Frame numbers are openpete_frame (yield-
+     * driven), the same anchor BK2 uses. */
+    const char* unlock_frames_spec;
+#define OPENPETE_UNLOCK_RANGES_MAX 32
+    struct { int lo, hi; } unlock_ranges[OPENPETE_UNLOCK_RANGES_MAX];
+    int  unlock_ranges_count;
+
+    /* Position log: every yield where the game is past fast-boot, append
+     * one CSV line `frame,vbl,x,y,z` with g_Spyro.m_Position to this
+     * path. Used for cross-run determinism diffs. NULL = disabled. The
+     * Spyro address is hardcoded in run.c (game-specific) — when we add
+     * a second game we'll route this through game_extras. */
+    const char* position_log_path;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

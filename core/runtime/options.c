@@ -123,6 +123,36 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--bk2-record") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_record_path = v; i++;
+        } else if (strcmp(a, "--unlock-frames") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->unlock_frames_spec = v;
+            /* Parse "A-B,C-D,..." into ranges. Permissive: skip empty
+             * tokens. Cap at OPENPETE_UNLOCK_RANGES_MAX. */
+            opts->unlock_ranges_count = 0;
+            const char* p = v;
+            while (*p && opts->unlock_ranges_count < OPENPETE_UNLOCK_RANGES_MAX) {
+                while (*p == ',' || *p == ' ') p++;
+                if (!*p) break;
+                char* end = NULL;
+                long lo = strtol(p, &end, 10);
+                if (end == p) break;
+                p = end;
+                long hi = lo;
+                if (*p == '-') {
+                    p++;
+                    hi = strtol(p, &end, 10);
+                    if (end == p) break;
+                    p = end;
+                }
+                if (hi < lo) { long t = lo; lo = hi; hi = t; }
+                opts->unlock_ranges[opts->unlock_ranges_count].lo = (int)lo;
+                opts->unlock_ranges[opts->unlock_ranges_count].hi = (int)hi;
+                opts->unlock_ranges_count++;
+            }
+            i++;
+        } else if (strcmp(a, "--position-log") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->position_log_path = v; i++;
         } else if (strcmp(a, "--mute") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "on")  == 0) opts->mute = true;
@@ -164,6 +194,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
                 "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
+                "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
+                "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
                 "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */

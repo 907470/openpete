@@ -69,6 +69,14 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter);
  * the game hangs on the next overlay-resident call. */
 void game_on_state_loaded(CPUState* cpu);
 
+/* --- Position probe (for the BK2 determinism harness) ---
+ * Returns 0 and writes the player's world position into [out_x, out_y,
+ * out_z] (engine units, signed) when game state is meaningful. Returns
+ * non-zero to signal "not yet ready" (e.g. before BSS init runs over the
+ * struct's RAM). The host loop calls this each yield post-fast-boot
+ * when --position-log is on. */
+int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
+
 /* --- CLI overrides forwarded by core ---
  * Called once before the run loop starts. Per-game impl decides where /
  * when to apply the value (typically from game_on_frame, since the
