@@ -9,6 +9,17 @@
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 
+# Build switch: drop the native-decomp TUs entirely and route every PSX
+# vaddr through the recompiler. Useful for bisecting decomp-introduced
+# regressions and for confirming the recomp path is self-sufficient.
+# When ON we omit the rewritten/*.c TUs, native_thunks.cpp, the
+# generated native_dispatch.c, and the link-time --defsym aliases; a
+# tiny stub provides spyro_native_dispatch() returning 0 so
+# psx_override_dispatch_game falls straight through to recomp.
+option(OPENPETE_SKIP_DECOMP
+       "Skip native-decomp TUs and run the full recomp path"
+       OFF)
+
 # Pick up every recompiled overlay automatically. CONFIGURE_DEPENDS
 # re-runs the GLOB on subsequent cmake invocations so newly-regen'd
 # overlays get picked up without a manual reconfigure.
@@ -19,17 +30,10 @@ file(GLOB SPYRO_OVERLAY_DISPATCH_C
     CONFIGURE_DEPENDS
     "${SPYRO_GENERATED}/*/*.bin_dispatch.c")
 
-add_executable(openpete-spyro1
-    main.cpp
-    game_extras_impl.c
-
-    # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
-    # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
-    # rewritten by scripts/regen-manifest.sh into
-    # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
-    # diverging bare globals through __psx_<name> uint32 storage that
-    # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
-    # source, never the original.
+# Native-decomp TU list. Centralized so OPENPETE_SKIP_DECOMP can drop
+# them in one place — both from add_executable() and from the per-source
+# flag/include loop further down.
+set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/main.rewritten.c
     ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
     ${SPYRO_GENERATED}/rewritten/rand.rewritten.c
@@ -61,13 +65,35 @@ add_executable(openpete-spyro1
     # debugging beyond this session.
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
+)
 
-    # Generated from manifest/native.toml by tools/gen_dispatch.py +
-    # tools/gen_thunks.py. native_dispatch.c is the inbound override
-    # switch (recomp → native); native_thunks.cpp is the outbound side
-    # (native → recomp / native → PSYQ).
-    ${SPYRO_GENERATED}/native_dispatch.c
-    ${SPYRO_GENERATED}/native_thunks.cpp
+if(OPENPETE_SKIP_DECOMP)
+    # native_dispatch_stub.c provides spyro_native_dispatch returning 0,
+    # so psx_override_dispatch_game falls straight through to recomp.
+    set(SPYRO_DECOMP_TUS native_dispatch_stub.c)
+else()
+    set(SPYRO_DECOMP_TUS
+        ${SPYRO_NATIVE_SOURCES}
+        # Generated from manifest/native.toml by tools/gen_dispatch.py +
+        # tools/gen_thunks.py. native_dispatch.c is the inbound override
+        # switch (recomp → native); native_thunks.cpp is the outbound side
+        # (native → recomp / native → PSYQ).
+        ${SPYRO_GENERATED}/native_dispatch.c
+        ${SPYRO_GENERATED}/native_thunks.cpp)
+endif()
+
+add_executable(openpete-spyro1
+    main.cpp
+    game_extras_impl.c
+
+    # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
+    # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
+    # rewritten by scripts/regen-manifest.sh into
+    # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
+    # diverging bare globals through __psx_<name> uint32 storage that
+    # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
+    # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
+    ${SPYRO_DECOMP_TUS}
 
     # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
     # `psx_dispatch_main_exe` by regen-recomp.sh.
@@ -176,72 +202,40 @@ set(SPYRO_DECOMP_BASE_FLAGS
 -include ${CMAKE_CURRENT_SOURCE_DIR}/decomp/psyq_compat.h \
 -include ${SPYRO_GENERATED}/native_renames.h -w")
 
-# All natively-compiled spyro-1/src/*.c TUs share the same flags now —
-# the per-TU rename hand-list is gone, picked up automatically from
-# native_renames.h. Add a TU by appending to native.toml's
-# [[native_source]] and re-running scripts/regen-manifest.sh.
-set(SPYRO_NATIVE_SOURCES
-    ${SPYRO_GENERATED}/rewritten/main.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/rand.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/checkpoint.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/moby_interpolation_check.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/4BEF8.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/hud.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
-    # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
-    ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
-    # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred. Pass 1/4 sentinel-cast fix
-    # cleared the early PatchMobyModelPointers crash but exposed
-    # non-deterministic downstream crashes (SoundsUpdate at slot
-    # 11 with m_Moby=0x0e11e96d junk vaddr → psx_to_host_ptr=NULL
-    # → SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
-    # from a still-unidentified loaders.c write site; needs deeper
-    # debugging beyond this session.
-    # initialization.c / completion.c re-enable gated on Pass 4/5
-    # (integer-cast pointer arithmetic + struct-by-value boundary).
-)
-
-# Per-TU shadow include trees (Pass 1 struct relayout). Each native TU
-# gets ${SPYRO_GENERATED}/rewritten/<stem>/include/ prepended to its -I
-# list so PSX-laid struct definitions win over the originals in
-# spyro-1/include. The shadow trees are populated by tools/rewrite_tu.py
-# during scripts/regen-manifest.sh.
-foreach(SRC ${SPYRO_NATIVE_SOURCES})
-    get_filename_component(_stem "${SRC}" NAME_WE)  # main, cd, ...
-    set(_shadow "${SPYRO_GENERATED}/rewritten/${_stem}/include")
+# Per-TU compile flags / shadow include trees (Pass 1 struct relayout).
+# Each native TU gets ${SPYRO_GENERATED}/rewritten/<stem>/include/
+# prepended to its -I list so PSX-laid struct definitions win over the
+# originals in spyro-1/include. The shadow trees are populated by
+# tools/rewrite_tu.py during scripts/regen-manifest.sh.
+#
+# Skipped under OPENPETE_SKIP_DECOMP — none of the rewritten TUs are
+# in the build, native_thunks.cpp is gone, and the --defsym aliases
+# would dangle (the rewritten symbols they alias don't exist).
+if(NOT OPENPETE_SKIP_DECOMP)
+    foreach(SRC ${SPYRO_NATIVE_SOURCES})
+        get_filename_component(_stem "${SRC}" NAME_WE)  # main, cd, ...
+        set(_shadow "${SPYRO_GENERATED}/rewritten/${_stem}/include")
+        set_source_files_properties(
+            ${SRC}
+            PROPERTIES
+                COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
+                INCLUDE_DIRECTORIES "${_shadow};${SPYRO_DECOMP_INCLUDES}"
+        )
+    endforeach()
     set_source_files_properties(
-        ${SRC}
+        ${SPYRO_GENERATED}/native_thunks.cpp
         PROPERTIES
-            COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
-            INCLUDE_DIRECTORIES "${_shadow};${SPYRO_DECOMP_INCLUDES}"
+            INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
     )
-endforeach()
-set_source_files_properties(
-    ${SPYRO_GENERATED}/native_thunks.cpp
-    PROPERTIES
-        INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
-)
 
-# Link-time aliasing of native-decomp globals into PSX RAM (g_ram + offset).
-# The defsym list is generated from manifest/native.toml + the parsed
-# psx.map (manifest/globals.toml) by tools/gen_defsyms.py — see
-# scripts/regen-manifest.sh. g_ram is the public symbol exposed by
-# core/runtime/cpu.c.
-include(${SPYRO_GENERATED}/native_aliases.cmake)
-target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
+    # Link-time aliasing of native-decomp globals into PSX RAM (g_ram + offset).
+    # The defsym list is generated from manifest/native.toml + the parsed
+    # psx.map (manifest/globals.toml) by tools/gen_defsyms.py — see
+    # scripts/regen-manifest.sh. g_ram is the public symbol exposed by
+    # core/runtime/cpu.c.
+    include(${SPYRO_GENERATED}/native_aliases.cmake)
+    target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
+endif()
 
 # OpenAL on Windows is always a runtime DLL load (no static .a in the
 # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the .exe
