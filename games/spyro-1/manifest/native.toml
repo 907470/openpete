@@ -116,17 +116,8 @@ file = "src/strings.c"
 [[native_source]]
 file = "src/cheats.c"
 
-# hud.c — re-deferred. Pass 3 sizeof(Moby) static_assert no longer fires
-# (after rewrite_tu mirrors all spyro-1/include/ headers into the per-TU
-# shadow tree, transitive includes resolve through the shadow). New
-# blocker: hud.c calls function-pointer globals (`(*D_800758E4)(...)`,
-# `(*g_SpawnMoby)(...)`). The matching-decomp storage holds a PSX vaddr,
-# but the host C call expects a callable host function pointer. Either
-# rewrite needs a dispatch trampoline (`psx_call(vaddr, args...)`) or
-# the global needs a host-side stub binding. Pass 4 work; bounded but
-# not 5-minute.
-#[[native_source]]
-#file = "src/hud.c"
+[[native_source]]
+file = "src/hud.c"
 
 # gamepad.c — Pass 2 now rewrites `g_DemoDataPtr++` / `++g_DemoDataPtr` at
 # the UnaryOperator level into a comma-expression that advances the PSX

@@ -67,6 +67,19 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
  * registered for `addr`. Returns 1 if dispatched, 0 otherwise. */
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
 
+/* Call a PSX function by vaddr from native C/C++ code. Used by the source
+ * rewriter for `(*FN_PTR_GLOBAL)(args...)` call sites in matching-decomp,
+ * where FN_PTR_GLOBAL stores a PSX vaddr. Routes through call_by_address
+ * — tries the native dispatch table first, falls back to compiled, then
+ * to MIPS interpretation for overlay code. Saves/restores the caller's
+ * cpu scratch slots. Pointer args must already be converted to PSX
+ * vaddrs (use openpete_host_to_psx); int args pass through as uint32_t.
+ * Up to 4 register args (a0..a3); 5+ args not yet supported. Returns
+ * cpu->v0 — caller casts to int / pointer / etc. as appropriate. */
+uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
+                                 uint32_t a0, uint32_t a1,
+                                 uint32_t a2, uint32_t a3);
+
 /* --- Crash handler ------------------------------------------------------- */
 
 void openpete_psx_install_crash_handler(void);

@@ -31,6 +31,9 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
 )
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
 from tools.rewrite.pass_casts import run as run_casts  # noqa: E402
+from tools.rewrite.pass_fnptr_calls import (  # noqa: E402
+    rewrite_fnptr_global_calls,
+)
 from tools.rewrite.pass_sizeof import (  # noqa: E402
     run as run_sizeof, render_static_asserts,
 )
@@ -185,6 +188,16 @@ def main(argv=None) -> int:
             continue
         if ed.note == "ptr->int cast wrap" and \
                 _inside(ed.start, ed.end, pass4b_ranges):
+            continue
+        plan.add(ed)
+
+    # --- Pass 4d: fn-ptr global call dispatch -----------------------------
+    # `(*FN_PTR_GLOBAL)(args...)` rewrites through openpete_psx_call_fnptr
+    # so the call routes via the recompiler instead of jumping into the
+    # raw 4-byte vaddr storage as if it were a host function pointer.
+    fnptr_edits = rewrite_fnptr_global_calls(parsed.cursor, main_path)
+    for ed in fnptr_edits:
+        if _inside(ed.start, ed.end, suppress_ranges):
             continue
         plan.add(ed)
 

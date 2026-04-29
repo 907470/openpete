@@ -738,6 +738,8 @@ def prologue_for(redirects: Dict[str, GlobalRedirect]) -> str:
         "#include <stdint.h>",
         "extern void* openpete_psx_to_host_ptr(uint32_t);",
         "extern uint32_t openpete_host_to_psx(const void*);",
+        ("extern uint32_t openpete_psx_call_fnptr(uint32_t,"
+         " uint32_t, uint32_t, uint32_t, uint32_t);"),
     ]
     for r in sorted(redirects.values(), key=lambda x: x.name):
         if r.is_array:

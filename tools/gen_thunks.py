@@ -188,6 +188,27 @@ static void cpu_restore(CPUState* cpu, const cpu_scratch_t* s) {
     cpu->v0 = s->v0; cpu->v1 = s->v1; cpu->ra = s->ra;
 }
 
+/* Generic outbound call via PSX vaddr. The rewriter emits this for
+ * `(*FN_PTR_GLOBAL)(args...)` sites — matching-decomp stores a PSX
+ * function vaddr in the global; we route the call through the
+ * recompiler's dispatch (tries native, then compiled, then interp). */
+extern "C" {
+    void call_by_address(CPUState* cpu, uint32_t addr);
+}
+
+extern "C" uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
+                                            uint32_t a0, uint32_t a1,
+                                            uint32_t a2, uint32_t a3) {
+    CPUState* cpu = s_active_cpu;
+    cpu_scratch_t s; cpu_save(cpu, &s);
+    cpu->a0 = a0; cpu->a1 = a1; cpu->a2 = a2; cpu->a3 = a3;
+    cpu->ra = 0xDEADBEEFu;
+    call_by_address(cpu, vaddr);
+    uint32_t v0 = cpu->v0;
+    cpu_restore(cpu, &s);
+    return v0;
+}
+
 """
 
 
