@@ -163,8 +163,19 @@ file = "src/moby_helpers.c"
 # inside macro args — substitutes the scalar read-wrap form, with
 # `(?<![A-Za-z0-9_])` for word boundary so `__psx_<name>` matches
 # don't recurse.
-[[native_source]]
-file = "src/loaders.c"
+# Re-deferred. Compiles cleanly via textual-fallback passes
+# (apply_textual_chain_wrap_fallback / apply_textual_bare_ref_fallback)
+# but PatchMobyModelPointers SIGSEGVs ~frame 449. Root cause: the
+# sentinel idiom `if ((int)m->m_Animations[i] == -1) continue;`
+# (loaders.c:329) gets Pass 1-wrapped to `(int)(AnimationHeader*)
+# psx_to_host_ptr(m->m_Animations[i])`, losing the 0xFFFFFFFF
+# sentinel through the int→host-ptr→int round trip. The continue
+# branch never fires for empty-animation slots and downstream
+# PATCH_POINTER derefs the corrupted vaddr. Needs Pass 1/4 to
+# detect `(int)<relaid-ptr-chain>` parent-cast context and skip
+# the host-pointer wrap (let it stay as the raw uint32_t lvalue).
+#[[native_source]]
+#file = "src/loaders.c"
 
 # initialization.c + completion.c — re-enable currently held.
 #

@@ -52,7 +52,13 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    ${SPYRO_GENERATED}/rewritten/loaders.rewritten.c
+    # loaders.rewritten.c — re-deferred. Compiles via textual-fallback
+    # passes, but PatchMobyModelPointers SIGSEGVs ~frame 449: the
+    # sentinel check `if ((int)m->m_Animations[i] == -1) continue;`
+    # gets wrapped to `(int)(AnimationHeader*)psx_to_host_ptr(...)`,
+    # losing the 0xFFFFFFFF sentinel through the int→ptr→int round
+    # trip. Needs Pass 1 cast-wrap suppression when the parent
+    # context is an `(int)` cast on a relaid array-of-pointer chain.
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -197,7 +203,13 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    ${SPYRO_GENERATED}/rewritten/loaders.rewritten.c
+    # loaders.rewritten.c — re-deferred. Compiles via textual-fallback
+    # passes, but PatchMobyModelPointers SIGSEGVs ~frame 449: the
+    # sentinel check `if ((int)m->m_Animations[i] == -1) continue;`
+    # gets wrapped to `(int)(AnimationHeader*)psx_to_host_ptr(...)`,
+    # losing the 0xFFFFFFFF sentinel through the int→ptr→int round
+    # trip. Needs Pass 1 cast-wrap suppression when the parent
+    # context is an `(int)` cast on a relaid array-of-pointer chain.
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
