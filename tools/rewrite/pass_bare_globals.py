@@ -335,6 +335,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                          redirects: Dict[str, GlobalRedirect],
                          main_file: str,
                          vaddr_form_offsets: Set[int] | None = None,
+                         vaddr_form_array_sub_extents: Set[Tuple[int, int]] | None = None,
                          pass1_covered_ranges: List[Tuple[int, int]] | None = None,
                          pass1_rewrites=None
                          ) -> BareGlobalsResult:
@@ -353,6 +354,8 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         return result
     if vaddr_form_offsets is None:
         vaddr_form_offsets = set()
+    if vaddr_form_array_sub_extents is None:
+        vaddr_form_array_sub_extents = set()
     pass1_ranges = sorted(pass1_covered_ranges or [])
 
     def _inside_pass1(s: int, e: int) -> bool:
@@ -587,17 +590,26 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         # (== `s`). Promote those to array-write rewrites here, and
         # mark the binop range so the DeclRefExpr loop later skips it.
         sub_text = bytes_slice(sub)
-        # Index expression text — substitute redirected globals nested
-        # inside the index (e.g. `arr[__psx_other]` after another
-        # redirect) by deferring to bytes_slice on the index child.
+        # Index expression text — substitute redirected globals AND
+        # Pass 1's relaid field-accesses nested inside the index inline,
+        # so `g_Models[g_LevelMobys[i].m_Class]` renders both the outer
+        # array-redirect and the inner relayed `m_Class` field correctly.
         idx = children[1] if len(children) > 1 else None
         if idx is not None:
-            idx_text = bytes_slice(idx)
+            if pass1_rewrites is not None:
+                from .pass_struct_relayout import _render_with_redirects as _r1
+                idx_text = _r1(idx, main_file_resolved, redirects, pass1_rewrites)
+            else:
+                idx_text = bytes_slice(idx)
         else:
             idx_text = ""
         # Build the per-element read form. base text becomes __psx_arr.
         elem_access = f"{red.psx_storage_name}[{idx_text}]"
-        if red.is_pointer:
+        if (s, e) in vaddr_form_array_sub_extents:
+            # Pass 4: subscript site sits inside `(IntT)arr[i]` — the outer
+            # cast already narrows; expose the PSX vaddr directly.
+            replacement = elem_access
+        elif red.is_pointer:
             replacement = (f"(({red.elem_orig_type})"
                            f"openpete_psx_to_host_ptr({elem_access}))")
         else:
@@ -705,6 +717,19 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         if off in array_sub_skip_offsets:
             # Bare-array DeclRefExpr inside an ARRAY_SUBSCRIPT_EXPR we
             # already rewrote at the subscript level.
+            continue
+        # Skip DeclRefExpr inside any array-subscript-rewrite range —
+        # the array-sub edit's replacement text uses raw bytes_slice on
+        # the index expression, but the original index text already has
+        # the source-level identifier; emitting our own edit here would
+        # overlap.
+        in_array_sub_edit = False
+        for (ase_s, ase_e) in array_sub_edits.keys():
+            if off >= ase_s and c.extent.end.offset <= ase_e \
+                    and off != ase_s:
+                in_array_sub_edit = True
+                break
+        if in_array_sub_edit:
             continue
         if off in incdec_skip_offsets:
             # DeclRefExpr inside `g_Ptr++`/`++g_Ptr` already rewritten at

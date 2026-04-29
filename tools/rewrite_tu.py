@@ -30,7 +30,7 @@ from tools.rewrite.pass_bare_globals import (  # noqa: E402
     collect_redirects, rewrite_bare_globals, prologue_for,
 )
 from tools.rewrite.pass_struct_relayout import run as run_struct_relayout  # noqa: E402
-from tools.rewrite.pass_casts import run as run_casts  # noqa: E402
+from tools.rewrite.pass_casts import run as run_casts, apply_cast_wraps  # noqa: E402
 from tools.rewrite.pass_fnptr_calls import (  # noqa: E402
     rewrite_fnptr_global_calls, rewrite_fnptr_global_writes,
 )
@@ -142,8 +142,27 @@ def main(argv=None) -> int:
     sr = run_struct_relayout(parsed.cursor, main_path, symbols,
                              redirects=redirects,
                              pass2_write_ranges=pass2_write_ranges)
+    # Now that Pass 1's rewrites map exists, run the cast-wrap stage of
+    # Pass 4 so its renderer can fold relaid-field reads inline.
+    apply_cast_wraps(parsed.cursor, main_path, redirects, casts, sr.rewrites)
     plan.add_many(sr.field_edits)
-    plan.add_many(sr.access_edits)
+    # Pass 4b folds Pass 1 reads inline within its wrap text; suppress
+    # Pass 1 access edits whose range sits strictly inside a Pass 4b
+    # range to avoid overlapping the wrap.
+    pass4b_ranges_for_pass1 = sorted(
+        [(ed.start, ed.end) for ed in casts.edits
+         if ed.note == "int->ptr cast wrap" and ed.file == main_path])
+    def _inside_p4b(s: int, e: int) -> bool:
+        for rs, re_ in pass4b_ranges_for_pass1:
+            if s >= rs and e <= re_ and (s > rs or e < re_):
+                return True
+            if rs > s:
+                break
+        return False
+    for ed in sr.access_edits:
+        if ed.file == main_path and _inside_p4b(ed.start, ed.end):
+            continue
+        plan.add(ed)
     for w in sr.fnptr_warnings:
         print(f"  WARN: {w}", file=sys.stderr)
     for w in sr.address_of_warnings:
@@ -158,6 +177,7 @@ def main(argv=None) -> int:
                     if e.file == main_path]
     bg = rewrite_bare_globals(parsed.cursor, redirects, main_path,
                               vaddr_form_offsets=casts.vaddr_form_offsets,
+                              vaddr_form_array_sub_extents=casts.vaddr_form_array_sub_extents,
                               pass1_covered_ranges=pass1_ranges,
                               pass1_rewrites=sr.rewrites)
     for err in bg.address_of_errors:
@@ -170,7 +190,13 @@ def main(argv=None) -> int:
     # `ptr->int cast wrap` edits whose site is inside a Pass 4b
     # `int->ptr cast wrap` edit — Pass 4b folds the host_to_psx
     # substitution into its replacement text inline.
-    suppress_ranges = sorted(pass1_ranges + pass2_write_ranges)
+    # Pass 2 array-of-pointer subscripts and redirected-global reads also
+    # cover their full extent; Pass 4c casts wrapping such an operand
+    # would overlap Pass 2's edit.
+    pass2_edit_ranges = [(e.start, e.end) for e in bg.edits
+                         if e.file == main_path]
+    suppress_ranges = sorted(pass1_ranges + pass2_write_ranges
+                             + pass2_edit_ranges)
     pass4b_ranges = sorted([(ed.start, ed.end) for ed in casts.edits
                             if ed.note == "int->ptr cast wrap"
                             and ed.file == main_path])
@@ -181,10 +207,19 @@ def main(argv=None) -> int:
             if rs > s:
                 break
         return False
+    # Pass 4d fn-ptr call rewrites cover the whole call extent, including
+    # arg subtrees that Pass 4b/4c may want to wrap; Pass 4d's _coerce_arg
+    # already handles host_to_psx for pointer args, so skip cast wraps
+    # inside fn-ptr-call ranges. Compute these now so the cast-edit filter
+    # can consult them.
+    fnptr_edits_precompute = rewrite_fnptr_global_calls(parsed.cursor, main_path)
+    fnptr_call_pre = sorted([(e.start, e.end) for e in fnptr_edits_precompute])
     for ed in casts.edits:
         if ed.file != main_path:
             continue
         if _inside(ed.start, ed.end, suppress_ranges):
+            continue
+        if _inside(ed.start, ed.end, fnptr_call_pre):
             continue
         if ed.note == "ptr->int cast wrap" and \
                 _inside(ed.start, ed.end, pass4b_ranges):
@@ -195,8 +230,7 @@ def main(argv=None) -> int:
     # `(*FN_PTR_GLOBAL)(args...)` rewrites through openpete_psx_call_fnptr
     # so the call routes via the recompiler instead of jumping into the
     # raw 4-byte vaddr storage as if it were a host function pointer.
-    fnptr_edits = rewrite_fnptr_global_calls(parsed.cursor, main_path)
-    for ed in fnptr_edits:
+    for ed in fnptr_edits_precompute:
         if _inside(ed.start, ed.end, suppress_ranges):
             continue
         plan.add(ed)

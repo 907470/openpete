@@ -159,11 +159,17 @@ file = "src/overlay_pointers.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — deferred (post-compound-assign-fix). The compound-assign
-# RMW path now lands cleanly. Remaining blocker is the macro-arg nested
-# member-ref renderer: PATCH_POINTER(g_Env.m_X->m_Y, ...) — synthetic-
-# extent textual rendering doesn't fold the inner m_TerrainCollision
-# relayout. Renderer needs a per-arg-token chain walker.
+# loaders.c — re-deferred. Several rewriter improvements landed during
+# this attempt (Pass 4b now folds Pass 1 reads inline; Pass 4c dedupes
+# duplicate macro-expansion cursors; vaddr-form for array-subscript on
+# array-of-pointer globals; array-sub index renderer composes Pass 1).
+# But PATCH_POINTER-style macros expand a relaid member-ref chain
+# `g_Env.m_TC->m_BlockTree` multiple times; Pass 1's outer read wrap
+# emits `((u_short*)psx_to_host_ptr(...->m_BlockTree))` without folding
+# the inner `m_TerrainCollision` into its host-pointer form first
+# (uint32_t can't be dereferenced via `->`). The synthetic-extent
+# textual renderer needs nested member-ref chain handling — bounded
+# but not 5-minute work.
 #[[native_source]]
 #file = "src/loaders.c"
 

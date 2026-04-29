@@ -57,6 +57,11 @@ class CastResult:
     # should be `__psx_<name>` (bare storage) instead of the host-pointer
     # round-trip.
     vaddr_form_offsets: Set[int] = dc_field(default_factory=set)
+    # ARRAY_SUBSCRIPT_EXPR extent (start, end) for each subscript site
+    # whose Pass 2 array-redirect read should emit the bare `__psx_arr[i]`
+    # form instead of the host-pointer round-trip — operand of a (IntT)
+    # cast that intends the PSX vaddr.
+    vaddr_form_array_sub_extents: Set[Tuple[int, int]] = dc_field(default_factory=set)
     # Diagnostic — `(<target>)<global>` sites we redirected.
     redirected: list = dc_field(default_factory=list)  # (target_type, name, location)
     # Pass 4b — int-to-ptr cast wrap edits (psx_to_host_ptr around literal-vaddr
@@ -179,6 +184,7 @@ def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
     - Operands whose canonical type is already integer (paranoia — the
       cast is a no-op or pointer-to-int between numeric types).
     """
+    seen_ranges: Set[Tuple[int, int]] = set()
     for c in tu_cursor.walk_preorder():
         if c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
             continue
@@ -195,6 +201,12 @@ def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
         op_canon = operand.type.get_canonical()
         if not _is_pointer_kind(op_canon):
             continue
+        # Dedupe — a cast site with multiple visits or repeated macro
+        # expansions should only emit once.
+        key = (operand.extent.start.offset, operand.extent.end.offset)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
         # Skip when the operand reduces to a redirected-pointer-global
         # DeclRefExpr — Pass 4 already routes that to the __psx_<name>
         # bare storage form, which is the PSX vaddr directly.
@@ -204,6 +216,16 @@ def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
             if ref_decl is not None and ref_decl.spelling in redirects:
                 if redirects[ref_decl.spelling].is_pointer:
                     continue
+        # Skip macro-expanded casts where libclang reports the cast and
+        # its operand with identical extents (both pointing at the macro
+        # invocation site). Those are phantom expansions: PATCH_POINTER's
+        # `(u_int)(dest)` shows up three times per call, all with the
+        # same outer extent — emitting three edits over the same range
+        # collides on commit. Pass 1's write rewrite at the macro's
+        # outermost binop already takes the whole site.
+        if operand.extent.start.offset == c.extent.start.offset and \
+                operand.extent.end.offset == c.extent.end.offset:
+            continue
         # Read operand text and replace just the operand range with
         # the host_to_psx-wrapped form. Keep the outer (IntT) cast
         # unchanged.
@@ -225,11 +247,14 @@ def _wrap_ptr_to_int_casts(tu_cursor: ci.Cursor,
 
 def _render_with_inner_ptr_to_int_wraps(operand: ci.Cursor,
                                         file_path: str,
-                                        redirects: Dict[str, GlobalRedirect]) -> str:
-    """Read the operand source text and substitute `(IntT)pointer_expr`
-    sub-casts with `(IntT)openpete_host_to_psx(pointer_expr)` inline. This
-    folds Pass 4c's effect into Pass 4b's wrap text so the two don't emit
-    overlapping edits."""
+                                        redirects: Dict[str, GlobalRedirect],
+                                        pass1_rewrites=None) -> str:
+    """Read the operand source text and substitute:
+      - `(IntT)pointer_expr` sub-casts → `(IntT)openpete_host_to_psx(<inner>)`
+        (Pass 4c's effect, folded into Pass 4b's wrap text).
+      - Pass 1's relaid struct-field reads inline (when `pass1_rewrites` is
+        provided). Without this, Pass 1's own read edit lands inside Pass
+        4b's wrap range and the splicer flags an overlap."""
     start = operand.extent.start.offset
     end = operand.extent.end.offset
     with open(file_path, "rb") as fh:
@@ -266,9 +291,15 @@ def _render_with_inner_ptr_to_int_wraps(operand: ci.Cursor,
         ke = inner.extent.end.offset
         if ke <= ks or ks < start or ke > end:
             continue
-        with open(file_path, "rb") as fh:
-            fh.seek(ks)
-            inner_text = fh.read(ke - ks).decode("utf-8", "replace")
+        # Inner text — render with Pass 1+2 substitutions so any relaid
+        # field-reads or redirected-global reads get folded inline.
+        if pass1_rewrites is not None:
+            from .pass_struct_relayout import _render_with_redirects as _r1
+            inner_text = _r1(inner, file_path, redirects, pass1_rewrites)
+        else:
+            with open(file_path, "rb") as fh:
+                fh.seek(ks)
+                inner_text = fh.read(ke - ks).decode("utf-8", "replace")
         subs.append((ks - start, ke - start,
                      f"openpete_host_to_psx({inner_text})"))
     if not subs:
@@ -283,7 +314,8 @@ def _render_with_inner_ptr_to_int_wraps(operand: ci.Cursor,
 def _wrap_int_to_ptr_casts(tu_cursor: ci.Cursor,
                            main_path: str,
                            redirects: Dict[str, GlobalRedirect],
-                           result: CastResult) -> None:
+                           result: CastResult,
+                           pass1_rewrites=None) -> None:
     """Walk every CSTYLE_CAST_EXPR `(PtrT)(int_expr)` whose int_expr is a
     pure-integer expression (no host-pointer-derived term). The integer
     value is intended as a literal PSX vaddr — wrap with psx_to_host_ptr
@@ -327,7 +359,7 @@ def _wrap_int_to_ptr_casts(tu_cursor: ci.Cursor,
         # `(IntT)pointer_expr` substitutions so they don't emit their own
         # overlapping edits.
         operand_text = _render_with_inner_ptr_to_int_wraps(
-            operand, str(c.location.file.name), redirects)
+            operand, str(c.location.file.name), redirects, pass1_rewrites)
         # Cast target spelling — keep the source's pointer type for the
         # outer cast (so the host pointer flows with the right type).
         target_spelling = c.type.spelling
@@ -344,7 +376,8 @@ def _wrap_int_to_ptr_casts(tu_cursor: ci.Cursor,
 
 def run(tu_cursor: ci.Cursor,
         main_path: str,
-        redirects: Dict[str, GlobalRedirect]) -> CastResult:
+        redirects: Dict[str, GlobalRedirect],
+        pass1_rewrites=None) -> CastResult:
     """Walk the TU. For every ``(IntT)redirected_pointer_global`` cast in the
     main file, mark the inner DeclRefExpr's offset so Pass 2 emits the
     ``__psx_<name>`` form."""
@@ -376,6 +409,38 @@ def run(tu_cursor: ci.Cursor,
         if operand is None:
             continue
 
+        # Two operand shapes get the bare-vaddr form treatment:
+        # (1) bare DeclRef to a redirected scalar pointer global, and
+        # (2) ARRAY_SUBSCRIPT_EXPR `arr[i]` whose base is a redirected
+        #     array-of-pointer global. Both flatten to a `uint32_t` PSX
+        #     vaddr that the outer (IntT) cast can narrow directly.
+        op = operand
+        while op.kind in _WALKABLE_WRAPPERS:
+            ks = list(op.get_children())
+            if not ks:
+                break
+            op = ks[0]
+        if op.kind == ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            ks = list(op.get_children())
+            if ks:
+                base = ks[0]
+                while base.kind == ci.CursorKind.UNEXPOSED_EXPR:
+                    bks = list(base.get_children())
+                    if not bks:
+                        break
+                    base = bks[0]
+                if base.kind == ci.CursorKind.DECL_REF_EXPR:
+                    bd = base.referenced
+                    if bd is not None:
+                        bred = redirects.get(bd.spelling)
+                        if bred is not None and bred.is_array and bred.is_pointer:
+                            result.vaddr_form_array_sub_extents.add(
+                                (op.extent.start.offset, op.extent.end.offset))
+                            result.redirected.append(
+                                (target_canon.spelling, bred.name,
+                                 f"{c.location.file.name}:{c.location.line}"))
+                            continue
+
         ref = _unwrap_to_decl_ref(operand)
         if ref is None:
             continue
@@ -392,6 +457,17 @@ def run(tu_cursor: ci.Cursor,
              f"{c.location.file.name}:{c.location.line}")
         )
 
-    _wrap_int_to_ptr_casts(tu_cursor, main_path, redirects, result)
-    _wrap_ptr_to_int_casts(tu_cursor, main_path, redirects, result)
     return result
+
+
+def apply_cast_wraps(tu_cursor: ci.Cursor,
+                     main_path: str,
+                     redirects: Dict[str, GlobalRedirect],
+                     result: CastResult,
+                     pass1_rewrites=None) -> None:
+    """Run Pass 4b/4c cast wraps. Split out from `run` so the caller can
+    invoke it after Pass 1 has produced its rewrites map — Pass 4b's
+    `_render_with_inner_ptr_to_int_wraps` folds Pass 1's relaid-field
+    reads inline."""
+    _wrap_int_to_ptr_casts(tu_cursor, main_path, redirects, result, pass1_rewrites)
+    _wrap_ptr_to_int_casts(tu_cursor, main_path, redirects, result)

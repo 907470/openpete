@@ -52,7 +52,7 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — deferred (macro-arg nested member-ref).
+    # loaders.rewritten.c — re-deferred (macro-arg nested member-ref chain).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -197,7 +197,7 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     # moby_helpers.rewritten.c — deferred (macro-write rewrite issues).
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — deferred (macro-arg nested member-ref).
+    # loaders.rewritten.c — re-deferred (macro-arg nested member-ref chain).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )
