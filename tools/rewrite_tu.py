@@ -198,6 +198,11 @@ def main(argv=None) -> int:
             thunked_fns.discard(n)
         for n in nt.get("outbound_recomp_skip", []):
             thunked_fns.discard(n)
+        # Hand-written openpete_<NAME> thunks accept host pointers
+        # directly (no host_to_psx round-trip), so they're safe — not
+        # subject to the lint.
+        for e in nt.get("outbound_psyq_hand", []):
+            thunked_fns.discard(e["psyq_name"])
     if args.globals_toml is not None and args.globals_toml.exists():
         import tomli
         with open(args.globals_toml, "rb") as fh:

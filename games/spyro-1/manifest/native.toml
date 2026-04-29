@@ -314,7 +314,18 @@ name = "GamestateDraw"
 # rather than PsyCross's raw entry, because the psyq_* layer carries
 # Spyro-specific enhancements (XA streaming arm in psyq_CdControl,
 # XA pump in psyq_CdSync, etc.). Signatures from PsyCross libcd.h.
-[[outbound_psyq]]
+
+# `outbound_psyq_hand` — entries whose openpete_<NAME> thunk is
+# hand-written in psyq_thunks.cpp. gen_renames still emits the
+# `#define <NAME> openpete_<NAME>` redirect; gen_thunks does NOT
+# emit a body (the hand-written one wins at link). Used when the
+# auto thunk's host_to_psx round-trip would lose information that
+# matters — e.g. CdControl's `param`/`result` are often stack-local
+# u_char buffers, host_to_psx returns 0, and the recomp pumped
+# psyq_CdControl gets NULL. The hand thunk takes host pointers
+# directly and runs the same Spyro-specific bookkeeping
+# (XA streaming arm, filter capture) inline.
+[[outbound_psyq_hand]]
 psyq_name = "CdControl"
 c_name = "openpete_CdControl"
 

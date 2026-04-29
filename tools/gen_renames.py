@@ -90,9 +90,12 @@ def main(argv: list[str]) -> int:
 
     # --- Class 1: PSYQ wrappers ---------------------------------------------
     psyq = native.get("outbound_psyq", [])
-    if psyq:
-        lines.append("/* [[outbound_psyq]] — route to psyq_<NAME>(cpu) wrappers. */")
-        for p in sorted(psyq, key=lambda x: x["psyq_name"]):
+    psyq_hand = native.get("outbound_psyq_hand", [])
+    if psyq or psyq_hand:
+        lines.append("/* [[outbound_psyq]] / [[outbound_psyq_hand]] — route to "
+                     "openpete_<NAME>. */")
+        for p in sorted(list(psyq) + list(psyq_hand),
+                         key=lambda x: x["psyq_name"]):
             lines.append(f"#define {p['psyq_name']} {p['c_name']}")
         lines.append("")
 

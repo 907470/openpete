@@ -957,13 +957,12 @@ void psyq_CdInit(CPUState* cpu) {
     cpu->v0 = (uint32_t)rc;
 }
 
-void psyq_CdControl(CPUState* cpu) {
-    u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR(cpu->a1);
-    OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
-               (unsigned)com, cpu->a1, cpu->a2);
-
-    /* Spyro's track-loop / restart paths use the non-blocking variant. */
+/* Shared body — used by both psyq_CdControl (recomp path, args from
+ * cpu->aN as PSX vaddrs) and openpete_CdControl (native path, args are
+ * already host pointers). Avoids the host_to_psx round-trip that breaks
+ * when native callers pass a stack-local u_char/CdlLOC buffer (see plan
+ * §"Pass 5e" — this is the canonical example). */
+static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
     if (com == CdlSetfilter) {
         CdlFILTER* f = (CdlFILTER*)param;
         if (f) {
@@ -974,13 +973,29 @@ void psyq_CdControl(CPUState* cpu) {
         CdlLOC* loc = (CdlLOC*)param;
         PsyX_XA_Start(CdPosToInt(loc), s_xa_filter_file, s_xa_filter_chan);
         g_CD_com = com;
-        cpu->v0 = 1u;
-        return;
+        return 1;
     } else if ((com == CdlPause || com == CdlStop) && PsyX_XA_IsActive()) {
         PsyX_XA_Stop();
     }
+    return CdControl(com, param, result);
+}
 
-    cpu->v0 = (uint32_t)CdControl(com, param, (u_char*)PTR(cpu->a2));
+void psyq_CdControl(CPUState* cpu) {
+    u_char com = (u_char)cpu->a0;
+    u_char* param = (u_char*)PTR(cpu->a1);
+    u_char* result = (u_char*)PTR(cpu->a2);
+    OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
+               (unsigned)com, cpu->a1, cpu->a2);
+    cpu->v0 = (uint32_t)cdcontrol_host(com, param, result);
+}
+
+/* Hand-written native-side thunk (matches outbound_psyq_hand entry).
+ * Bypasses the cpu->aN packing so callers can pass stack-local buffers
+ * that wouldn't survive host_to_psx → 0 → NULL deref. */
+extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
+    OPL_INFO_F("thunks", "CdControl com=0x%02X param=%p result=%p (native)",
+               (unsigned)com, (void*)param, (void*)result);
+    return cdcontrol_host(com, param, result);
 }
 
 void psyq_CdControlB(CPUState* cpu) {
