@@ -549,6 +549,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             repl = f"((int32_t){elem_access})"
         subs.append((ks - start, ke - start, repl))
         array_sub_inner_skips.add(base.extent.start.offset)
+    saw_self = False
     for k in cursor.walk_preorder():
         if k.location.file is None:
             continue
@@ -556,10 +557,15 @@ def _render_with_redirects(cursor: ci.Cursor,
             continue
         # Skip the cursor itself unless include_self is set (compound-
         # assign LHS rendering needs the read form OF the top-level
-        # member-ref, not just its inner refs).
-        if not include_self and \
-                (k.extent.start.offset, k.extent.end.offset) == cursor_self_extent \
+        # member-ref, not just its inner refs). Walk-preorder yields
+        # the cursor itself first; for macro-expanded subtrees, multiple
+        # distinct cursors share the cursor's synthetic extent + kind,
+        # so we use first-occurrence as the self check rather than
+        # extent equality (which would skip legitimate inner refs).
+        if not include_self and not saw_self \
+                and (k.extent.start.offset, k.extent.end.offset) == cursor_self_extent \
                 and k.kind == cursor.kind:
+            saw_self = True
             continue
         if k.kind == ci.CursorKind.DECL_REF_EXPR and redirects:
             rd = k.referenced
@@ -616,22 +622,27 @@ def _render_with_redirects(cursor: ci.Cursor,
                 continue
             ks = k.extent.start.offset
             ke = k.extent.end.offset
-            if ke == ks or ks < start or ke > end:
+            if ke == ks:
+                # Macro-arg synthetic extent — recover from tokens.
+                try:
+                    ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
+                except Exception:
+                    ktoks = []
+                if not ktoks:
+                    continue
+                ks = ktoks[0].location.offset
+                ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
+            if ke <= ks or ks < start or ke > end:
                 continue
             if ks in seen:
                 continue
             seen.add(ks)
-            inner = _bytes_slice(main_resolved, ks, ke)
-            if redirects:
-                for name, red in redirects.items():
-                    if name in inner:
-                        if red.is_pointer:
-                            r2 = (f"(({red.pointer_orig_type})"
-                                  f"openpete_psx_to_host_ptr"
-                                  f"({red.psx_storage_name}))")
-                        else:
-                            r2 = f"((int32_t){red.psx_storage_name})"
-                        inner = inner.replace(name, r2)
+            # Render the member-ref body recursively so any nested
+            # relaid pointer-field bases (`obj.field_ptr->next`) get
+            # folded into their host-pointer form first — otherwise
+            # the outer `->` dereferences a uint32_t.
+            inner = _render_with_redirects(k, main_resolved, redirects,
+                                           rewrites, include_self=False)
             if fr.is_pointer:
                 repl = (f"(({fr.pointer_orig_type})"
                         f"openpete_psx_to_host_ptr({inner}))")
@@ -932,10 +943,20 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         seen_member_offsets.add((ext_start, ext_end))
         # writes is keyed on lhs.extent.start; only the actual outermost
         # LHS qualifies — nested member-refs sharing the start are reads.
+        # Also try the pre-token-recovery offset (c.extent.start.offset)
+        # because `_find_member_writes` uses raw cursor extents that for
+        # macro-expanded LHSes are the synthetic zero-length offset, not
+        # the token-recovered one.
         is_write_lhs = False
-        if off in writes:
-            _binop, _lhs, _fr, _op = writes[off]
-            if _lhs.extent.end.offset == ext_end:
+        raw_off = c.extent.start.offset
+        write_key = off if off in writes else (raw_off if raw_off in writes else None)
+        if write_key is not None:
+            _binop, _lhs, _fr, _op = writes[write_key]
+            # For macro-expanded writes the lhs end is also synthetic;
+            # accept the match if either the recovered or raw extents
+            # align.
+            if _lhs.extent.end.offset == ext_end \
+                    or _lhs.extent.end.offset == raw_off:
                 is_write_lhs = True
         # If this ref sits inside a Pass 1 write extent (and isn't the
         # write's own LHS), suppress — the write rendering folds it.
@@ -951,7 +972,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             continue
 
         if is_write_lhs:
-            binop, lhs, _, op_str = writes[off]
+            binop, lhs, _, op_str = writes[write_key]
             rhs_children = list(binop.get_children())
             rhs = rhs_children[1]
             # `lhs_text` is the storage-write target. Render its nested
@@ -1021,24 +1042,12 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 note=f"write {fr.record_name}.{fr.field_name} ({op_str})",
             ))
         else:
-            if c.extent.end.offset == c.extent.start.offset:
-                # Macro-arg synthetic extent: read text directly from
-                # the file at the synthesized range and apply redirect
-                # substitutions textually (no AST inside macro args).
-                access_text = _bytes_slice(main_resolved, ext_start, ext_end)
-                if redirects:
-                    for name, red in redirects.items():
-                        if name in access_text:
-                            if red.is_pointer:
-                                sub = (f"(({red.pointer_orig_type})"
-                                       f"openpete_psx_to_host_ptr"
-                                       f"({red.psx_storage_name}))")
-                            else:
-                                sub = f"((int32_t){red.psx_storage_name})"
-                            access_text = access_text.replace(name, sub)
-            else:
-                access_text = _render_with_redirects(c, main_resolved,
-                                                     redirects, rewrites)
+            # `_render_with_redirects` recovers macro-arg synthetic
+            # extents via tokens internally and walks nested member-refs
+            # so multi-level relaid pointer chains
+            # (`g_Env.m_TC->m_BlockTree`) get composed read forms.
+            access_text = _render_with_redirects(c, main_resolved,
+                                                 redirects, rewrites)
             if fr.is_pointer:
                 replacement = (f"(({fr.pointer_orig_type})"
                                f"openpete_psx_to_host_ptr({access_text}))")
