@@ -616,6 +616,16 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         e = sub.extent.end.offset
         if e == s:
             continue
+        # Macro-expansion artifact: an ARRAY_SUBSCRIPT_EXPR whose source
+        # extent doesn't contain `[` (e.g. `SPYRO_MODEL` expanding to
+        # `(g_Models[0])` — the cursor extent is at the SPYRO_MODEL
+        # token in source, not the literal subscript). Skip — the
+        # macro definition itself is the right rewrite target (handled
+        # via shadow-header redef).
+        sub_extent_text = bytes_slice(sub)
+        if "[" not in sub_extent_text:
+            array_sub_skip_offsets.add(base.extent.start.offset)
+            continue
         if _inside_pass1(s, e):
             # Pass 1's render handles the array-subscript form inline.
             array_sub_skip_offsets.add(base.extent.start.offset)
@@ -776,6 +786,12 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         # pointing at the same source extent (often zero-length). Apply
         # the rewrite once at that offset and dedupe the rest.
         if c.extent.end.offset == c.extent.start.offset:
+            continue
+        # Macro-expansion artifact #2: cursor extent points at a macro
+        # use in source whose text doesn't contain the symbol's
+        # spelling (e.g. `SPYRO_MODEL` expanding to `(g_Models[0])`).
+        # Skip — shadow-header redef is the right rewrite target.
+        if ref_decl.spelling not in bytes_slice(c):
             continue
         if off in seen_read_offsets and off not in writes:
             continue

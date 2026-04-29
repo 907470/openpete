@@ -52,10 +52,9 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
-    # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;
-    # SPYRO_MODEL macro expansion mishandled in array-sub rendering;
-    # `*(int*)pData` PATCH_POINTER args still produce non-lvalue exprs).
+    # loaders.rewritten.c — re-deferred (3 nested-macro lines remain
+    # where libclang token recovery returns empty for MEMBER_REF
+    # cursors inside nested macro expansions).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -200,10 +199,9 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred (nested array-sub-then-arrow chains
-    # like `m_Animations[i]->m_Faces` not yet wrapped by bare-chain;
-    # SPYRO_MODEL macro expansion mishandled in array-sub rendering;
-    # `*(int*)pData` PATCH_POINTER args still produce non-lvalue exprs).
+    # loaders.rewritten.c — re-deferred (3 nested-macro lines remain
+    # where libclang token recovery returns empty for MEMBER_REF
+    # cursors inside nested macro expansions).
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

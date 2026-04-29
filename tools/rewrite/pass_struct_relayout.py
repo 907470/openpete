@@ -518,6 +518,64 @@ def _render_with_redirects(cursor: ci.Cursor,
     # array-redirect DeclRefExpr; emit the per-element host-pointer
     # form there and mark the inner DeclRefExpr to skip below.
     array_sub_inner_skips: Set[int] = set()
+    # First sub-pass: ARRAY_SUBSCRIPT_EXPR whose base is a MEMBER_REF
+    # to an array-of-pointer relaid field (e.g. `m->m_Animations[i]`
+    # where m_Animations is uint32_t[N] post-relayout). Emit a per-
+    # element wrap so subsequent `->` deref works.
+    if rewrites:
+        saw_self_array = False
+        for k in cursor.walk_preorder():
+            if k.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+                continue
+            # Skip the outer cursor itself (caller wants its content
+            # rendered without re-wrapping the cursor — that's what
+            # include_self=False means at the call site, and it also
+            # prevents infinite recursion via the recursive call below).
+            if not saw_self_array \
+                    and (k.extent.start.offset, k.extent.end.offset) \
+                    == cursor_self_extent \
+                    and k.kind == cursor.kind:
+                saw_self_array = True
+                continue
+            match = _array_subscript_field_ref(k, rewrites)
+            if match is None:
+                continue
+            member, fr = match
+            if fr.is_ptr_to_ptr or not fr.is_pointer:
+                continue
+            ks = k.extent.start.offset
+            ke = k.extent.end.offset
+            if ke == ks:
+                # Macro-arg synthetic extent — recover from tokens.
+                try:
+                    ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
+                except Exception:
+                    ktoks = []
+                if not ktoks:
+                    continue
+                ks = ktoks[0].location.offset
+                ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
+            if ke <= ks or ks < start or ke > end:
+                continue
+            try:
+                sub_extent_text = _bytes_slice(main_resolved, ks, ke)
+            except Exception:
+                sub_extent_text = ""
+            if "[" not in sub_extent_text:
+                continue
+            if ks in seen_array:
+                continue
+            seen_array.add(ks)
+            cast = fr.elem_orig_type or "void *"
+            # Render the sub itself (without wrap) so any nested redirected
+            # globals within the index get substituted.
+            inner = _render_with_redirects(k, main_resolved, redirects,
+                                           rewrites, include_self=False)
+            repl = f"(({cast})openpete_psx_to_host_ptr({inner}))"
+            subs.append((ks - start, ke - start, repl))
+            # Suppress the inner member-ref so the next loop doesn't
+            # re-emit on `m->m_Animations`.
+            array_sub_inner_skips.add(member.extent.start.offset)
     for k in cursor.walk_preorder():
         if k.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR or not redirects:
             continue
@@ -541,6 +599,17 @@ def _render_with_redirects(cursor: ci.Cursor,
         ks = k.extent.start.offset
         ke = k.extent.end.offset
         if ke == ks or ks < start or ke > end:
+            continue
+        # Macro-expansion artifact (e.g. SPYRO_MODEL expanding to
+        # `(g_Models[0])`): cursor extent points at the macro use in
+        # source, which doesn't contain `[` so we can't reconstruct
+        # the subscript. Skip — shadow-header macro redef handles the
+        # site.
+        try:
+            sub_text = _bytes_slice(main_resolved, ks, ke)
+        except Exception:
+            sub_text = ""
+        if "[" not in sub_text:
             continue
         if ks in seen_array:
             continue
@@ -595,6 +664,18 @@ def _render_with_redirects(cursor: ci.Cursor,
                 ks = ktoks[0].location.offset
                 ke = ktoks[-1].location.offset + len(ktoks[-1].spelling)
             if ke <= ks or ks < start or ke > end:
+                continue
+            # Macro-expansion DECL_REF: if the source bytes at the
+            # cursor extent don't contain the symbol's spelling (e.g.
+            # `SPYRO_MODEL` expanding to `(g_Models[0])` — extent
+            # spans the macro use, which has no `g_Models` text),
+            # skip. The macro definition itself is the right rewrite
+            # target (handled via shadow-header redef).
+            try:
+                kref_text = _bytes_slice(main_resolved, ks, ke)
+            except Exception:
+                kref_text = ""
+            if rd.spelling not in kref_text:
                 continue
             if ks in seen_decl or ks in array_sub_inner_skips:
                 continue
@@ -736,6 +817,41 @@ def emit_access_edits(tu_cursor: ci.Cursor,
 
     writes = _find_member_writes(tu_cursor, rewrites)
 
+    # Array-sub writes: `obj.arr[i] = rhs` where arr is an array-of-
+    # pointer relaid field. _find_member_writes only catches MEMBER_REF
+    # LHS; we collect ARRAY_SUBSCRIPT_EXPR LHS sites separately so the
+    # array_subscript loop below can emit a write form (bare lvalue +
+    # host_to_psx-wrapped rhs) instead of a non-lvalue read wrap.
+    array_sub_writes: Dict[int, Tuple[ci.Cursor, ci.Cursor, ci.Cursor]] = {}
+    for c in tu_cursor.walk_preorder():
+        if c.kind != ci.CursorKind.BINARY_OPERATOR:
+            continue
+        if c.location.file is None:
+            continue
+        if str(Path(c.location.file.name).resolve()) != main_resolved:
+            continue
+        kids = list(c.get_children())
+        if len(kids) != 2:
+            continue
+        lhs, rhs = kids
+        if lhs.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            continue
+        match = _array_subscript_field_ref(lhs, rewrites)
+        if match is None:
+            continue
+        # Confirm op is `=` by reading source bytes between lhs and rhs
+        # (token-based scan unreliably empty for some macro-touched
+        # binops). Match the first non-whitespace `=` (not `==` etc.).
+        try:
+            between = _bytes_slice(main_resolved, lhs.extent.end.offset,
+                                   rhs.extent.start.offset)
+        except Exception:
+            continue
+        stripped = between.strip()
+        if stripped != "=":
+            continue
+        array_sub_writes[lhs.extent.start.offset] = (c, lhs, rhs)
+
     # Macro-arg write contexts. A macro like `PATCH_POINTER(dest, base)`
     # expands `dest` as both the LHS of an assignment and as `(u_int)(dest)`
     # reads. The same source text serves both roles, so we can't emit
@@ -763,11 +879,10 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         le = lhs.extent.end.offset
         if ls != le:
             continue
-        # Confirm the binop is itself macro-synthetic (zero-length)
-        # — otherwise this is a plain `(int)(x) = ...` style which
-        # shouldn't be in real source anyway.
-        if c.extent.start.offset != c.extent.end.offset:
-            continue
+        # Note: the binop's own extent may be zero-length (object-like
+        # macros) OR cover the whole macro CALL (function-like macros
+        # like PATCH_POINTER). Both are valid macro-expansion contexts;
+        # the lhs being zero-length is the reliable signal.
         # Walk into the lhs subtree finding any expression — MEMBER_REF
         # or ARRAY_SUBSCRIPT — that the assignment targets. Record
         # token-recovered extents for both the lhs itself and any
@@ -817,31 +932,41 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         cast = fr.elem_orig_type or "void *"
         if is_macro_arg and (s, e) in macro_write_lhs_extents:
             # Macro-arg in write context (e.g. PATCH_POINTER's `dest`).
-            # Emit bare-chain form so the arg works as both lvalue and
-            # rvalue. Common.h's PATCH_POINTER is redefined to operate
-            # on bare uint32_t storage. Ptr-to-ptr arrays have no clean
-            # bare form — fall through to the wrap (will likely fail
-            # to compile if the macro really demands an lvalue, at
-            # which point we add ptr-to-ptr bare-chain support).
-            if not fr.is_ptr_to_ptr:
-                bare = _render_with_redirects(
-                    sub, main_resolved, redirects, rewrites,
-                    include_self=False)
-                array_subscript_edits[s] = Edit(
-                    start=s, end=e, replacement=bare,
-                    file=main_resolved,
-                    note=(f"macro-arg bare[] "
-                          f"{fr.record_name}.{fr.field_name}"),
-                )
-                skip_member_ref_offsets.add(member.extent.start.offset)
-                try:
-                    mtoks = list(member.translation_unit.get_tokens(
-                        extent=member.extent))
-                except Exception:
-                    mtoks = []
-                if mtoks:
-                    skip_member_ref_offsets.add(mtoks[0].location.offset)
-                continue
+            # The bare uint32_t lvalue form of `m->m_Animations[i]` is
+            # already what the source bytes produce (m_Animations is
+            # uint32_t[N] post-relayout, so `[i]` yields a uint32_t
+            # lvalue) — no edit needed at the array-sub itself. If
+            # there's an outer relaid MEMBER_REF wrapping this sub
+            # (`m->m_Animations[i]->m_Faces`), the main MEMBER_REF
+            # loop emits a bare-chain at the whole chain and folds
+            # the array-sub's host-pointer wrap inline. Just suppress
+            # the inner DECL_REF/MEMBER_REF.
+            skip_member_ref_offsets.add(member.extent.start.offset)
+            continue
+        # Plain `obj.arr[i] = rhs` write (non-macro): emit the bare-
+        # uint32_t-lvalue write form instead of a read wrap.
+        sub_raw_off = sub.extent.start.offset
+        if sub_raw_off in array_sub_writes and not is_macro_arg:
+            binop, lhs_sub, rhs_sub = array_sub_writes[sub_raw_off]
+            rhs_text = _render_with_redirects(
+                rhs_sub, main_resolved, redirects, rewrites)
+            sub_bare = _render_with_redirects(
+                sub, main_resolved, redirects, rewrites,
+                include_self=False)
+            if fr.is_pointer:
+                replacement = (f"{sub_bare} = "
+                               f"openpete_host_to_psx({rhs_text})")
+            else:
+                replacement = (f"{sub_bare} = (uint32_t)({rhs_text})")
+            array_subscript_edits[binop.extent.start.offset] = Edit(
+                start=binop.extent.start.offset,
+                end=binop.extent.end.offset,
+                replacement=replacement,
+                file=main_resolved,
+                note=(f"write[] {fr.record_name}.{fr.field_name}"),
+            )
+            skip_member_ref_offsets.add(member.extent.start.offset)
+            continue
         if fr.is_ptr_to_ptr:
             # `T **field` — the field holds a vaddr to an array of vaddrs.
             # Read `obj.field` as a uint32_t (no cast to T**), then
@@ -1233,16 +1358,39 @@ _MACRO_REDEF_NEW_BODY = """\
 """
 
 
-def emit_macro_redefs(result: StructRelayoutResult) -> None:
-    """Emit a header edit on spyro-1/include/common.h that replaces the
-    original PATCH_POINTER / PATCH_POINTER2 macro definitions with
-    openpete-aware forms operating on bare uint32_t storage.
+_SPYRO_MODEL_REDEF = (
+    "#define SPYRO_MODEL "
+    "((Model *)openpete_psx_to_host_ptr(__psx_g_Models[0]))"
+)
 
-    Pass 1's macro-arg detection emits bare-chain replacements at the
-    macro arg locations; the redefined macro body then performs the
-    PSX-vaddr arithmetic correctly.
+
+def emit_macro_redefs(result: StructRelayoutResult) -> None:
+    """Emit header edits on spyro-1/include/{common.h,moby.h} that
+    replace original macro definitions with openpete-aware forms.
+
+      - common.h:  PATCH_POINTER / PATCH_POINTER2 — bare uint32_t form,
+                   host_to_psx-converted base.
+      - moby.h:    SPYRO_MODEL — expand to a properly-converted host
+                   pointer using `__psx_g_Models[0]` (the rewriter can't
+                   reconstruct the subscript at the macro-use site since
+                   the cursor extent points at the SPYRO_MODEL token).
     """
     from .parser import SPYRO_REPO
+    moby_h = (SPYRO_REPO / "include" / "moby.h").resolve()
+    if moby_h.exists():
+        text = moby_h.read_text()
+        import re as _re_local
+        m = _re_local.search(
+            r"#define\s+SPYRO_MODEL\s+\(g_Models\[0\]\)", text)
+        if m is not None:
+            result.field_edits.append(Edit(
+                start=m.start(),
+                end=m.end(),
+                replacement=_SPYRO_MODEL_REDEF,
+                file=str(moby_h),
+                note="macro redef SPYRO_MODEL",
+            ))
+            result.rewritten_headers.add(str(moby_h))
     common_h = (SPYRO_REPO / "include" / "common.h").resolve()
     if not common_h.exists():
         return

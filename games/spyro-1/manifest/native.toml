@@ -152,19 +152,22 @@ file = "src/moby_helpers.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — re-deferred. Pass 1 macro-arg bare-chain + common.h
-# PATCH_POINTER redefinition land the simple cases (`g_Env.m_TC->
-# m_BlockTree`); deeper blockers remain:
-#   - Nested array-sub-then-arrow chains (`m_Animations[i]->m_Faces`)
-#     don't get wrapped by bare-chain — `_render_with_redirects` has
-#     no rule to wrap an ARRAY_SUBSCRIPT whose MEMBER_REF base is an
-#     array-of-pointer relaid field.
-#   - `SPYRO_MODEL = (g_Models[0])` macro expansion: array-sub render
-#     reads source bytes at the macro invocation site (`SPYRO_MODEL`
-#     token), not the expansion (`g_Models[0]`), so the index goes
-#     out wrong (`__psx_g_Models[SPYRO_MODEL]`).
-#   - `*(int*)pData` PATCH_POINTER args expand to a non-lvalue when
-#     the macro redef requires a uint32_t lvalue dest.
+# loaders.c — re-deferred. 23/26 compile errors fixed by today's
+# rewriter passes (full-extent macro DECL_REF detection, macro-arg
+# ARRAY_SUBSCRIPT skip when extent text doesn't contain `[`,
+# SPYRO_MODEL shadow-header redef, ARRAY_SUBSCRIPT-of-relaid-array-
+# of-pointer chain wrap in `_render_with_redirects`, ARRAY_SUBSCRIPT
+# LHS write detection). 3 remain: PATCH_POINTER calls of form
+# `SPYRO_MODEL->m_Animations[i]->m_X` (lines 271, 273, 282) where
+# the m_Faces / m_Colors / m_AnimationVertices MEMBER_REF cursor's
+# token recovery returns 0 tokens (libclang appears to omit tokens
+# for MEMBER_REF cursors with zero-length extent inside *nested*
+# macro expansions — PATCH_POINTER outer + SPYRO_MODEL inner).
+# Without recoverable tokens, the bare-chain rewrite at the outer
+# member-ref's source position can't fire. Workarounds tried:
+# get_tokens on the binop extent — also returns 0. Likely fix:
+# textual fallback (scan source for `SPYRO_MODEL->m_Animations[...]
+# ->m_X` patterns inside PATCH_POINTER calls and rewrite directly).
 #[[native_source]]
 #file = "src/loaders.c"
 
