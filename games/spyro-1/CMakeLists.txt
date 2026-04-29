@@ -53,12 +53,12 @@ add_executable(openpete-spyro1
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — re-deferred. Pass 1/4 sentinel-cast fix
-    # (this commit) cleared the PatchMobyModelPointers crash but
-    # exposed a downstream issue: SoundsUpdate SIGSEGVs ~frame 1217
-    # of demo-mode dereferencing m_SoundRefPtr through
-    # psx_to_host_ptr — likely a separate relaid-pointer-write site
-    # in loaders.c that's storing a host pointer where a PSX vaddr
-    # was expected (or vice versa). Needs targeted investigation.
+    # cleared the early PatchMobyModelPointers crash but exposed
+    # non-deterministic downstream crashes (SoundsUpdate at slot
+    # 11 with m_Moby=0x0e11e96d junk vaddr → psx_to_host_ptr=NULL
+    # → SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
+    # from a still-unidentified loaders.c write site; needs deeper
+    # debugging beyond this session.
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 
@@ -204,12 +204,12 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
     # pete.rewritten.c — deferred (Pass 5c splice corruption).
     # loaders.rewritten.c — re-deferred. Pass 1/4 sentinel-cast fix
-    # (this commit) cleared the PatchMobyModelPointers crash but
-    # exposed a downstream issue: SoundsUpdate SIGSEGVs ~frame 1217
-    # of demo-mode dereferencing m_SoundRefPtr through
-    # psx_to_host_ptr — likely a separate relaid-pointer-write site
-    # in loaders.c that's storing a host pointer where a PSX vaddr
-    # was expected (or vice versa). Needs targeted investigation.
+    # cleared the early PatchMobyModelPointers crash but exposed
+    # non-deterministic downstream crashes (SoundsUpdate at slot
+    # 11 with m_Moby=0x0e11e96d junk vaddr → psx_to_host_ptr=NULL
+    # → SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
+    # from a still-unidentified loaders.c write site; needs deeper
+    # debugging beyond this session.
     # initialization.c / completion.c re-enable gated on Pass 4/5
     # (integer-cast pointer arithmetic + struct-by-value boundary).
 )

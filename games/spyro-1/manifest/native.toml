@@ -163,14 +163,13 @@ file = "src/moby_helpers.c"
 # inside macro args — substitutes the scalar read-wrap form, with
 # `(?<![A-Za-z0-9_])` for word boundary so `__psx_<name>` matches
 # don't recurse.
-# Re-deferred again. Pass 1/4 sentinel-cast suppression cleared the
-# PatchMobyModelPointers crash, but a downstream regression surfaces:
-# SoundsUpdate SIGSEGVs ~frame 1217 of demo-mode (tas.bk2) deref'ing
-# `g_Spu.m_ActiveSounds[i].m_SoundRefPtr` through psx_to_host_ptr —
-# loaders.c is corrupting some relaid-pointer-storing field. Likely
-# culprit: a write site where the rewriter is storing a host pointer
-# into uint32_t storage (or PSX vaddr where host pointer expected)
-# that the existing TUs avoid. Needs targeted investigation.
+# Re-deferred. Pass 1/4 sentinel-cast suppression cleared the
+# PatchMobyModelPointers crash, but downstream demo runs surface
+# non-deterministic crashes (different RIP each run — SoundsUpdate
+# slot 11 with m_Moby=0x0e11e96d junk vaddr; PutDrawEnv(NULL); ...)
+# indicating memory corruption from a write site somewhere in the
+# rewritten output that's not localized to a single Pass. Needs a
+# more systematic comparison vs the recompiled-side baseline.
 #[[native_source]]
 #file = "src/loaders.c"
 
