@@ -573,12 +573,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->bk2_frame_offset_set ? " (explicit)" : "");
     }
 
-    /* Tab-held detection used for both the wall-clock pacer AND throttling
-     * the SDL event pump: at 1000+ Hz, the per-iteration cost of SDL_PollEvent
-     * + PsyX_Pad_InternalPadUpdates dominates. Polling at 120 Hz wall-clock
-     * is plenty for catching Tab-release. We re-pump on every frame whenever
-     * Tab isn't held so input feels normal during play. */
-    Uint32 last_input_pump_ms = 0;
+    /* Input pump rate. We used to throttle to 120 Hz when Tab was held
+     * to keep per-iter cost down at 1000+ Hz, but that broke BK2 replay
+     * determinism: g_PsyX_Pad_InputOverride is set per host iter, and
+     * PsyX_UpdateInput is what propagates it into the pad buffer the
+     * game polls — skipping pumps means the game reads a stale override.
+     * Pump every iter; the cost is tolerable. */
 
     /* Save-state hotkey state. Edge-triggered against the previous host-loop
      * iteration so a held key fires once per press. Number-row 1=save,
@@ -631,7 +631,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * cost drops at unlocked frame rate. We still pump *some* events so
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
         const Uint8* kbd_pre = SDL_GetKeyboardState(NULL);
-        bool tab_held = (kbd_pre && kbd_pre[SDL_SCANCODE_TAB]);
 
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
@@ -674,11 +673,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_cycle = cycle_k;
         }
 
-        Uint32 now_for_input = SDL_GetTicks();
-        if (!tab_held || (now_for_input - last_input_pump_ms) >= 8) {
-            PsyX_UpdateInput();
-            last_input_pump_ms = now_for_input;
-        }
+        PsyX_UpdateInput();
 
         /* Hand control to the game until the next VSync(0) yield. */
         unsigned frame_before_yield = openpete_frame;
