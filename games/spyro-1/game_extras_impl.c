@@ -241,6 +241,8 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * the cull-only path or shrink m_CullingDistance. */
 extern void func_800258F0(CPUState* cpu);
 extern void func_8004EBA8(CPUState* cpu);
+extern void func_8001F158(CPUState* cpu);
+extern void func_800208FC(CPUState* cpu);
 extern float openpete_disp_w_factor;
 extern unsigned openpete_frame;
 
@@ -435,6 +437,55 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
                             (uint16_t)saved_row0[i]);
         }
         s_in_cyclorama = 0;
+        return 1;
+    }
+
+    /* --aspect: moby cone-cull widening. r_moby.s has per-moby cone tests
+     * in two cull-init functions (func_8001F158 / func_800208FC). Each
+     * loads g_Camera.m_ProjectionMatrix (offset 0, NOT m_ViewMatrix at
+     * +0x14) into the GTE rotation matrix at function entry, then runs
+     * MVMVA per moby to derive view-space x/y/z and tests the 4:3 cone
+     * (slope 0.75). Mobys whose centers fall just past that cone get
+     * rejected even though their meshes extend into the widened frame.
+     *
+     * Scale m_ProjectionMatrix row 0 by 1/disp_w_factor for the call
+     * only. The function reads matrix row 0 into locals s5/s6 once at
+     * entry and never re-reads from RAM, so save/restore around the
+     * call leaves no leak. The candidate list it builds at D_8006FCF4
+     * stores only moby_data ptr + side flag (no projected SX), so
+     * downstream render funcs (func_8001F798 / F34 / 2A2C) re-project
+     * each moby with the unscaled matrix. */
+    static int s_in_moby_cull = 0;
+    if ((addr == 0x8001F158u || addr == 0x800208FCu)
+        && openpete_disp_w_factor > 1.0f
+        && !s_in_moby_cull
+        && !getenv("OPENPETE_NO_MOBY_HOOK")) {
+        s_in_moby_cull = 1;
+        const uint32_t pm_base = 0x80076DD0u + 0x0u;  /* g_Camera.m_ProjectionMatrix row 0 */
+        /* Cap divisor at 2.0. Beyond that the per-moby MVMVA results
+         * overflow GTE saturation paths and stall the renderer on 32:9.
+         * OPENPETE_MOBY_DIV env var lets testers override for diagnosis. */
+        float divisor = openpete_disp_w_factor;
+        if (divisor > 2.0f) divisor = 2.0f;
+        const char* dv = getenv("OPENPETE_MOBY_DIV");
+        if (dv) divisor = (float)atof(dv);
+        int16_t saved_row0[3];
+        for (int i = 0; i < 3; i++) {
+            uint16_t h = cpu->read_half(pm_base + (uint32_t)(i * 2));
+            saved_row0[i] = (int16_t)h;
+            float scaled = (float)saved_row0[i] / divisor;
+            if (scaled >  32767.0f) scaled =  32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            cpu->write_half(pm_base + (uint32_t)(i * 2),
+                            (uint16_t)(int16_t)scaled);
+        }
+        if (addr == 0x8001F158u) func_8001F158(cpu);
+        else                     func_800208FC(cpu);
+        for (int i = 0; i < 3; i++) {
+            cpu->write_half(pm_base + (uint32_t)(i * 2),
+                            (uint16_t)saved_row0[i]);
+        }
+        s_in_moby_cull = 0;
         return 1;
     }
 
