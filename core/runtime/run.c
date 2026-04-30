@@ -170,6 +170,11 @@ extern int g_skipSwapInterval;
 typedef void (*PsyXPostRenderOverlayFunc)(void);
 extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
 
+/* PsyCross runtime Hor+ aspect factor — see PsyX_public.h. We set it
+ * once after PsyX_Initialise so the GL ortho widens to match the host's
+ * disp_w_factor without touching VRAM-facing widths. */
+extern float g_psyx_render_aspect_factor;
+
 /* PsyCross's GL window — created by PsyX_Initialise. We need it so --headless
  * can hide the window post-init (we keep a real GL driver for the context;
  * SDL's offscreen driver gives back a context with NULL function pointers
@@ -395,11 +400,54 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
     int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;
+    /* If --aspect is set but the user didn't pin --window, scale the
+     * default 480-tall window horizontally to match — otherwise GL
+     * stretches the wider DISPENV into a 4:3 window and the geometry
+     * looks squished. User-provided --window always wins. */
+    if (opts->aspect_w_over_h > 0.0f &&
+        opts->window_w <= 0 && opts->window_h <= 0) {
+        win_w = (int)((float)WIN_H * opts->aspect_w_over_h + 0.5f);
+        win_h = WIN_H;
+        OPL_INFO_F("aspect", "auto window size %dx%d to match --aspect=%.4f",
+                   win_w, win_h, (double)opts->aspect_w_over_h);
+    }
 
-    /* --fov: precompute the GTE H register value that produces the
-     * requested horizontal FOV at the PSX's 320-wide projection plane.
-     * H = (320/2) / tan(fov/2). 0 = no override (psyq_SetGeomScreen
-     * forwards the game's argument verbatim). */
+    /* --aspect: widen the framebuffer + GTE offset so the GTE projects
+     * vertices across a wider screen (Hor+ widescreen). The factor
+     * stays as a float global; thunks multiply at every Set*Env / offset
+     * call. 0.0f sentinel keeps the multiplier inactive when no
+     * override is requested. */
+    if (opts->aspect_w_over_h > 0.0f) {
+        openpete_disp_w_factor = opts->aspect_w_over_h / (4.0f / 3.0f);
+        OPL_INFO_F("aspect", "Hor+ widescreen: aspect=%.4f -> "
+                   "disp_w_factor=%.4f (GTE offset 256 -> ~%d, GL ortho "
+                   "widens via PsyCross g_psyx_render_aspect_factor; VRAM "
+                   "DISPENV/DRAWENV stay at native 512 to preserve "
+                   "texture pages)",
+                   (double)opts->aspect_w_over_h, (double)openpete_disp_w_factor,
+                   (int)(256.0f * openpete_disp_w_factor + 0.5f));
+    }
+
+    /* --fov / --aspect Hor+ FOV resolution.
+     *
+     * Spyro's native horizontal FOV at 4:3 is 2*atan(160/341) ≈ 50.4°
+     * (PSX visible half-width 160 / GTE H 341). For true Hor+ widescreen
+     * we keep vertical FOV constant and widen the horizontal cone
+     * proportional to aspect_w_over_h / (4/3). Implemented as
+     * H_target = native_H / disp_w_factor: scaling H down widens the
+     * visible cone the GTE projects.
+     *
+     * Resolution:
+     *   - If --fov is given: H = 160 / tan(fov/2). User's explicit
+     *     horizontal FOV at the PSX 320-wide visible plane (composes
+     *     with --aspect because OFX widening below shifts the projection
+     *     centre, so the wider cone lands centred in the wider window).
+     *   - Else if --aspect is given: H = 341 / disp_w_factor. True Hor+
+     *     (vertical FOV preserved, horizontal FOV widens to match the
+     *     window aspect).
+     *   - Else: no override (game's H stays).
+     *
+     * 0 = no override sentinel for openpete_fov_h_override. */
     if (opts->fov_deg > 0.0f) {
         double half = (double)opts->fov_deg * 0.5 * (M_PI / 180.0);
         double h = 160.0 / tan(half);
@@ -407,8 +455,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (h > 65535.0) h = 65535.0;
         openpete_fov_h_override = (int)(h + 0.5);
         OPL_INFO_F("fov", "override active: --fov=%.2f° -> GTE H=%d "
-                   "(native ~50.4° at H=341)",
+                   "(native h_fov ~50.4° at H=341)",
                    (double)opts->fov_deg, openpete_fov_h_override);
+    } else if (openpete_disp_w_factor > 0.0f) {
+        double h = 341.0 / (double)openpete_disp_w_factor;
+        if (h < 1.0) h = 1.0;
+        openpete_fov_h_override = (int)(h + 0.5);
+        double new_h_fov_deg = 2.0 * atan(160.0 / h) * (180.0 / M_PI);
+        OPL_INFO_F("fov", "Hor+ auto-FOV from --aspect: GTE H=%d "
+                   "(h_fov=%.1f°, vertical FOV preserved at ~38.7°)",
+                   openpete_fov_h_override, new_h_fov_deg);
     }
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
@@ -418,6 +474,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
      * pure-console CI needs Xvfb. */
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0);
+
+    /* Push the host's Hor+ widening factor into PsyCross's GL ortho.
+     * Must happen after PsyX_Initialise (the symbol exists at link
+     * time but the GL backend's per-scene state lives behind the
+     * initialiser). 0.0f openpete sentinel = no override → leave the
+     * PsyCross default 1.0f untouched. */
+    if (openpete_disp_w_factor > 0.0f) {
+        g_psyx_render_aspect_factor = openpete_disp_w_factor;
+    }
+
     if (opts->headless && g_window) {
         SDL_HideWindow(g_window);
         OPL_INFO_F("boot", "headless: hid PsyCross window (driver=%s)",

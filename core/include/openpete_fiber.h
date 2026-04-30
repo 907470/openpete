@@ -65,6 +65,14 @@ void openpete_yield_to_host_no_tick(void);
  * notes/plans/openpete-widescreen-fov.md "FOV slider". */
 extern int openpete_fov_h_override;
 
+/* DISPENV/DRAWENV horizontal widening factor for Hor+ widescreen.
+ * 1.0f (or 0.0f as a "not set" sentinel) = native 4:3, no widening.
+ * Computed at boot from --aspect as `aspect_w_over_h / (4.0/3.0)`. The
+ * SetDefDispEnv / SetDefDrawEnv / SetGeomOffset thunks multiply their
+ * width / x-offset arguments by this factor so PsyCross's GR_Ortho2D
+ * projects the GTE-emitted vertices across the wider framebuffer. */
+extern float openpete_disp_w_factor;
+
 #ifdef __cplusplus
 }
 #endif

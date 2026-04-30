@@ -407,6 +407,21 @@ void psyq_PutDrawEnv(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, 32u, 28u, p, 3);
 }
 
+/* Hor+ widescreen (--aspect) is implemented at the GTE-instruction
+ * layer in psxrecomp's gte_ctc2 (third_party/psxrecomp/runner/src/gte.cpp)
+ * so EVERY write to OFX picks up the widening — including Spyro's
+ * renderer's inline CTC2 stores (which would bypass this thunk). The
+ * libgte SetGeomOffset call eventually reaches gte_ctc2 too, so a
+ * single widening point handles both routes without double-applying.
+ *
+ * The DISPENV / DRAWENV stay at their native PSX VRAM widths (typically
+ * 512). Widening the VRAM-facing widths would make GR_StoreFrameBuffer
+ * blit the GL render back into the right half of VRAM (x>=512), which
+ * is where Spyro's texture pages live, causing texture corruption. The
+ * GL ortho widening happens inside PsyCross via
+ * g_psyx_render_aspect_factor so geometry projected to the wider
+ * screen-X range is mapped across the full SDL window. */
+
 void psyq_SetDefDispEnv(CPUState* cpu) {
     SetDefDispEnv((DISPENV*)PTR(cpu->a0),
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
@@ -807,21 +822,19 @@ void psyq_SetGeomOffset(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
     SetGeomOffset((int)cpu->a0, (int)cpu->a1);
     gte_sync_psyx_to_cpu(cpu);
+    /* Hor+ widening / FOV override are applied inside
+     * gte_rtps_internal (third_party/psxrecomp/runner/src/gte.cpp) at
+     * projection time, so EVERY RTPS picks up the override regardless
+     * of whether OFX/H were set via this thunk or via the renderer's
+     * inline CTC2 stores. The thunk itself just forwards the args. */
 }
 
 void psyq_SetGeomScreen(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
-    /* --fov: replace the H argument with a runtime override so the user's
-     * requested horizontal FOV is applied at every SetGeomScreen call (the
-     * game calls this twice during Initialize, and a few overlays may set
-     * their own H). 0 = no override; pass through unmodified. The
-     * arithmetic for H lives in run.c so the thunk stays a leaf. */
-    int h = (int)cpu->a0;
-    if (openpete_fov_h_override != 0) {
-        h = openpete_fov_h_override;
-    }
-    SetGeomScreen(h);
+    SetGeomScreen((int)cpu->a0);
     gte_sync_psyx_to_cpu(cpu);
+    /* --fov override applied inside gte_rtps_internal; see
+     * psyq_SetGeomOffset for the rationale. */
 }
 
 void psyq_SetTransMatrix(CPUState* cpu) {

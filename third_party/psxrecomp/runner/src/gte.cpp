@@ -11,6 +11,16 @@
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
+    extern uint32_t g_ps1_frame;    /* core/runtime/dispatch.c */
+    /* Hor+ widescreen widening factor applied to GTE OFX on every CTC2
+     * write to reg 24 (and to H on reg 26). 0.0f sentinel = no override.
+     * Set at boot from --aspect (core/runtime/run.c). The libgte
+     * SetGeomOffset thunk in psyq_thunks.cpp can NOT be the only widening
+     * point because Spyro's renderer writes OFX directly via inline CTC2
+     * instructions (92, 108, 132, 148, 256, …) — those bypass the thunk
+     * and need to be widened here at the GTE-instruction layer. */
+    extern float openpete_disp_w_factor;
+    extern int   openpete_fov_h_override;
 }
 
 namespace PSXRecomp {
@@ -228,11 +238,27 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     // Step 2: Push SZ FIFO
     gte->push_sz(gte->MAC3);
 
+    /* --fov / --aspect Hor+ widescreen: substitute the GTE-state H with
+     * the openpete override and scale OFX by disp_w_factor at projection
+     * time. We do NOT mutate gte->H or gte->OFX themselves — those mirror
+     * cpu->gte_ctrl, and writing back widened values would double-apply
+     * the next time gte_execute reloads. Spyro's renderer writes OFX
+     * directly via inline CTC2 (values 92, 108, 132, 148, 256, …); each
+     * of those values gets the same multiplicative shift here at
+     * projection time, so all SX-emitting paths line up.
+     * 0 sentinels = no override, formula reduces to native PSX GTE. */
+    int32_t eff_H = (openpete_fov_h_override != 0)
+                    ? openpete_fov_h_override
+                    : (int32_t)gte->H;
+    int64_t eff_OFX = (openpete_disp_w_factor > 0.0f)
+                     ? (int64_t)((double)gte->OFX * (double)openpete_disp_w_factor)
+                     : (int64_t)gte->OFX;
+
     // Step 3: Perspective division
-    int32_t h_div_sz = gte_divide(gte->H, gte->SZ[3], gte->FLAG);
+    int32_t h_div_sz = gte_divide((uint16_t)eff_H, gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates
-    int64_t sx = (gte->OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
+    int64_t sx = (eff_OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
     int64_t sy = (gte->OFY + (int64_t)gte->IR2 * h_div_sz) >> 16;
     gte->push_sxy(sx, sy);
 
@@ -792,8 +818,8 @@ void gte_ctc2(GTEState* gte, uint8_t reg, uint32_t value) {
         case 22: gte->FC[1] = value; break;
         case 23: gte->FC[2] = value; break;
         case 24: gte->OFX = value; break;
-        case 25: gte->OFY = value; break;
         case 26: gte->H = value & 0xFFFF; break;
+        case 25: gte->OFY = value; break;
         case 27: gte->DQA = static_cast<int16_t>(value & 0xFFFF); break;
         case 28: gte->DQB = value; break;
         case 29: gte->ZSF3 = static_cast<int16_t>(value & 0xFFFF); break;

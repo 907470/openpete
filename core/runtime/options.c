@@ -60,6 +60,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->window_w = w;
             opts->window_h = h;
             i++;
+        } else if (strcmp(a, "--aspect") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            int aw = 0, ah = 0;
+            if (sscanf(v, "%d:%d", &aw, &ah) != 2 || aw <= 0 || ah <= 0) {
+                fprintf(stderr, "openpete: --aspect expects W:H (e.g. 16:9), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->aspect_w_over_h = (float)aw / (float)ah;
+            i++;
         } else if (strcmp(a, "--fov") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fov_deg = (float)atof(v); i++;
@@ -197,6 +206,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --headless                 no on-screen window (offscreen video driver)\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
+                "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
                 "  --screenshot-on-frame N    save BMP of frame N to --screenshot-output then continue\n"
                 "  --screenshot-output PATH   screenshot path (default ./shot.bmp)\n"
