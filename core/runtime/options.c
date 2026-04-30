@@ -43,6 +43,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->max_runtime_seconds = atoi(v); i++;
         } else if (strcmp(a, "--headless") == 0) {
             opts->headless = true;
+        } else if (strcmp(a, "--render-fps") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->render_fps = atoi(v); i++;
+            if (opts->render_fps < 0) {
+                fprintf(stderr, "openpete: --render-fps expects a non-negative integer\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
         } else if (strcmp(a, "--screenshot-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_on_frame = atoi(v); i++;
@@ -169,6 +176,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
+                "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
                 "  --screenshot-on-frame N    save BMP of frame N to --screenshot-output then continue\n"
                 "  --screenshot-output PATH   screenshot path (default ./shot.bmp)\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"

@@ -44,6 +44,13 @@ typedef struct {
     int max_runtime_seconds;      /* 0 = unlimited */
     bool headless;                /* no on-screen window (offscreen video driver) */
 
+    /* Render-cadence target. 0 = match sim (condvar-paced ticker, the
+     * historical behavior). >0 = wall-clock dual-pacer: sim still yields at
+     * the native PSX 60 Hz vblank, input pump runs at this Hz, and present
+     * fires when the game produced new draw commands. See
+     * notes/plans/openpete-fps-unlock.md "Phase 1". */
+    int render_fps;
+
     /* Screenshot */
     int         screenshot_on_frame;   /* -1 = disabled */
     const char* screenshot_output;     /* path; default ./shot.bmp */

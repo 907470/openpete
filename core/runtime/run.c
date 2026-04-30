@@ -515,6 +515,27 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
+    /* Dual-pacer state for --render-fps N (0 = legacy condvar pacer).
+     * sim_period_ms tracks PSX VBlank (60 Hz, two yields per logical 30 fps
+     * frame); render_period_ms is the host loop's outer cadence.
+     *
+     * Invariant (locked in by openpete-fps-unlock.md "vbl-counter loops"):
+     * the inner sim block yields the game fiber at most once per outer
+     * iteration. Multi-vbl catch-up would race-complete the
+     * `pre - post < 2` GPU-pacing loops in draw.c and the 210-vbl Sony /
+     * Universal logo waits in initialization.c. The slip-clamp below resets
+     * the deadline forward without firing extra yields. */
+    const double sim_period_ms    = 1000.0 / 60.0;
+    const double render_period_ms = (opts->render_fps > 0)
+        ? 1000.0 / (double)opts->render_fps
+        : sim_period_ms;
+    double next_sim_ms    = (double)start;
+    double next_render_ms = (double)start;
+    if (opts->render_fps > 0) {
+        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.2f ms render=%.2f ms (--render-fps=%d)",
+                   sim_period_ms, render_period_ms, opts->render_fps);
+    }
+
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
      * naturally pacing the host loop at ~60 Hz. The previous fractional
@@ -590,12 +611,39 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     unsigned active_slot = 0;
 
     while (!quit) {
+        /* Top-of-loop unlock peek used *only* to gate sim_due under
+         * --render-fps>0. The authoritative `unlock_fps` write
+         * (openpete_unlock_fps + g_skipSwapInterval) still happens at the
+         * bottom of the loop, AFTER PsyX_UpdateInput has refreshed SDL's
+         * keyboard cache and AFTER the present has consumed the previous
+         * iter's swap-interval flag — preserving the original semantics
+         * the GL present path was tested under. */
+        const Uint8* kbd_top = SDL_GetKeyboardState(NULL);
+        bool unlock_now = opts->headless ||
+                          (kbd_top && kbd_top[SDL_SCANCODE_TAB]) ||
+                          (opts->unlock_ranges_count > 0 &&
+                           unlock_frame_in_ranges(opts, openpete_frame));
+
+        /* sim_due gates the once-per-yield block that does bk2 override
+         * stamping, the co_switch into the game fiber, post-yield
+         * accounting (position log, bk2 record, present, ram dump, exit
+         * checks). With --render-fps=0 the gate is always true and the loop
+         * reduces to the historical "one yield per outer iter" shape; the
+         * condvar pacer below preserves byte-identical behavior. With
+         * --render-fps>0 the wall-clock pacer drives the outer loop at
+         * render cadence, and sim_due fires when the sim deadline has
+         * elapsed — or unconditionally under unlock_now so fast-forward
+         * actually fast-forwards. */
+        Uint32 iter_now_ms = SDL_GetTicks();
+        bool   sim_due = (opts->render_fps == 0) || unlock_now ||
+                         ((double)iter_now_ms >= next_sim_ms);
+
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
          * Out-of-range frames (before the offset, or past the movie's end)
          * fall back to 0xFFFF — i.e. no override — so live keyboard /
          * gamepad input takes over once the movie ends. */
-        if (bk2_active) {
+        if (sim_due && bk2_active) {
             int bk2_frame = (int)openpete_frame - bk2_offset;
             unsigned short bits = 0xFFFF;
             if (bk2_frame >= 0 && bk2_frame < bk2.frame_count) {
@@ -675,14 +723,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
         PsyX_UpdateInput();
 
-        /* Hand control to the game until the next VSync(0) yield. */
+        /* Hand control to the game until the next VSync(0) yield. Gated so
+         * --render-fps>0 outer iterations that don't have a sim tick due
+         * skip the yield entirely (input is still pumped above; pacer below
+         * sleeps to the next deadline). */
         unsigned frame_before_yield = openpete_frame;
-        game_on_frame_pre(&g_game.cpu, openpete_frame);
-        co_switch((cothread_t)openpete_game_fiber);
-        bool ticked_this_iter = (openpete_frame != frame_before_yield);
+        bool ticked_this_iter = false;
+        if (sim_due) {
+            game_on_frame_pre(&g_game.cpu, openpete_frame);
+            co_switch((cothread_t)openpete_game_fiber);
+            ticked_this_iter = (openpete_frame != frame_before_yield);
 
-        if (ticked_this_iter) {
-            game_on_frame(&g_game.cpu, openpete_frame);
+            if (ticked_this_iter) {
+                game_on_frame(&g_game.cpu, openpete_frame);
+            }
         }
 
         /* Position log fires after each yield (post-fast-boot — address
@@ -710,11 +764,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
         }
 
-        if (opts->debug_triangle) {
+        if (sim_due && opts->debug_triangle) {
             /* Re-issue the static triangle so it's drawn over whatever the
              * game queued — guarantees a non-black on-screen pixel for the
              * Phase 1e milestone even when the title-screen overlay is a
-             * stub. */
+             * stub. Gated on sim_due so render-only iterations under
+             * --render-fps>0 don't pollute the next tick's OT. */
             openpete_debug_triangle_emit();
         }
 
@@ -836,34 +891,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             exit_reason = "max-runtime-seconds";
         }
 
-        /* Sample log so the user can see the loop is alive. */
-        if ((openpete_frame & 0x3F) == 1u) {
-            OPL_INFO_F("loop",
-                       "frame=%u prims_last=%u elapsed_ms=%u",
-                       openpete_frame, openpete_primitives_drawn,
-                       (unsigned)(SDL_GetTicks() - start));
+        /* Sample log so the user can see the loop is alive. Gated on
+         * sim_due so a render-only iter under --render-fps>0 doesn't
+         * re-log the same frame number. Same gate clears
+         * openpete_primitives_drawn after a tick consumed/presented its
+         * draws, not on render-only iterations that didn't add any. */
+        if (sim_due) {
+            if ((openpete_frame & 0x3F) == 1u) {
+                OPL_INFO_F("loop",
+                           "frame=%u prims_last=%u elapsed_ms=%u",
+                           openpete_frame, openpete_primitives_drawn,
+                           (unsigned)(SDL_GetTicks() - start));
+            }
+            openpete_primitives_drawn = 0u;
         }
-        openpete_primitives_drawn = 0u;
 
         /* No PsyX_BeginScene here — DrawOTag starts the scene on demand. */
 
-        /* Pace this vblank to ~16.667 ms wall time (see frame_period_ms note
-         * above the loop). If we're already past the deadline (slow GL frame,
-         * heavy game work, debugger pause), don't try to catch up by skipping
-         * the wait — but if we fell behind by >100 ms (e.g. window drag), drop
-         * the accumulator forward so we don't busy-burn the next 6 frames.
-         *
-         * Hold Tab to disable the limiter and run as fast as the GL/CPU
-         * pipeline allows. Useful for chewing through cutscenes / loading
-         * screens while iterating on a downstream gap. We re-anchor
-         * next_yield_ms to "now" while Tab is held so that releasing it
-         * resumes 60 Hz pacing without trying to catch up on dropped
-         * frames.
-         *
-         * Tab also flips PsyCross's g_skipSwapInterval — without that the
-         * GL present (SDL_GL_SwapWindow with swap interval 1) would still
-         * lock us to the monitor refresh, so the host loop wouldn't actually
-         * spin faster than ~165 Hz on a 165 Hz display. */
         /* Sample Tab for the host loop's own pacing + GL swap-interval
          * bypass. vbl is yield-driven so this only affects wall-clock
          * speed, not game state — fast-forward is invisible to BK2
@@ -877,21 +921,60 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
 
-        /* Block until the ticker advances `openpete_vbl`, gating game-fiber
-         * resume on a wall-clock vblank. dispatch.c's no-tick stub yields
-         * (where `ticked_this_iter` is false) skip the wait so a frame full
-         * of overlay stubs doesn't multiply 16.67 ms by N stubs. Tab-held /
-         * --headless skip the wait too — they want to spin as fast as the
-         * pipeline allows. */
-        if (!unlock_fps && ticked_this_iter && openpete_ticker_active) {
-            int seq_before = SDL_AtomicGet(&openpete_ticker_seq);
-            SDL_LockMutex(openpete_ticker_wake_mutex);
-            while (SDL_AtomicGet(&openpete_ticker_seq) == seq_before &&
-                   !g_shutdown_requested) {
-                SDL_CondWaitTimeout(openpete_ticker_wake_cond,
-                                    openpete_ticker_wake_mutex, 100);
+        if (opts->render_fps == 0) {
+            /* Legacy condvar pacer. Block until the ticker advances
+             * `openpete_ticker_seq`, gating game-fiber resume on a
+             * wall-clock vblank. dispatch.c's no-tick stub yields (where
+             * `ticked_this_iter` is false) skip the wait so a frame full of
+             * overlay stubs doesn't multiply 16.67 ms by N stubs. Tab-held /
+             * --headless skip the wait too — they want to spin as fast as
+             * the pipeline allows. */
+            if (!unlock_fps && ticked_this_iter && openpete_ticker_active) {
+                int seq_before = SDL_AtomicGet(&openpete_ticker_seq);
+                SDL_LockMutex(openpete_ticker_wake_mutex);
+                while (SDL_AtomicGet(&openpete_ticker_seq) == seq_before &&
+                       !g_shutdown_requested) {
+                    SDL_CondWaitTimeout(openpete_ticker_wake_cond,
+                                        openpete_ticker_wake_mutex, 100);
+                }
+                SDL_UnlockMutex(openpete_ticker_wake_mutex);
             }
-            SDL_UnlockMutex(openpete_ticker_wake_mutex);
+        } else {
+            /* Wall-clock dual-pacer. sim deadline advances once per
+             * sim-due iteration (slip-clamp resets it forward without
+             * firing extra yields). render deadline advances once per
+             * outer iteration. Sleep until the sooner of the two unless
+             * unlock_fps is held.
+             *
+             * Re-anchor both deadlines to now while unlocked. Without this,
+             * a long Tab-hold would let next_sim_ms / next_render_ms race
+             * thousands of iterations ahead of wall-clock; on Tab release
+             * the pacer would then stall for seconds waiting for wall-
+             * clock to catch up to the bogus deadlines. */
+            Uint32 now2 = SDL_GetTicks();
+            if (unlock_fps) {
+                next_sim_ms = (double)now2;
+                next_render_ms = (double)now2;
+            } else {
+                if (sim_due) {
+                    next_sim_ms += sim_period_ms;
+                    if ((double)now2 > next_sim_ms + 100.0) next_sim_ms = (double)now2;
+                }
+                next_render_ms += render_period_ms;
+                if ((double)now2 > next_render_ms + 100.0) next_render_ms = (double)now2;
+            }
+
+            if (!unlock_fps) {
+                double next = (next_sim_ms < next_render_ms)
+                              ? next_sim_ms : next_render_ms;
+                double delta = next - (double)SDL_GetTicks();
+                if (delta > 0.0) {
+                    /* Cap the per-iter sleep so a Tab-release after a long
+                     * idle window can't park us for seconds. */
+                    if (delta > 100.0) delta = 100.0;
+                    SDL_Delay((Uint32)delta);
+                }
+            }
         }
     }
 
