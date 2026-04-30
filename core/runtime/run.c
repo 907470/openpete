@@ -482,6 +482,36 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * PsyCross default 1.0f untouched. */
     if (openpete_disp_w_factor > 0.0f) {
         g_psyx_render_aspect_factor = openpete_disp_w_factor;
+
+        /* Widen psxrecomp's per-vertex clip mask so the env renderer's
+         * `andi SXY2, 0xFE00` cull (r_environment.s:714, 1145, 1255)
+         * doesn't drop widescreen-extra primitives whose SX legitimately
+         * exceeds 512. 0xF800 admits SX in [-2048, 2047], plenty for
+         * 21:9 (max ~853). Off-screen primitives still get GPU-clipped
+         * to drawenv [0,512]; this just keeps them out of the early-out
+         * AND-fold. See third_party/psxrecomp/runner/include/psx_runtime.h. */
+        extern uint32_t psx_runtime_clip_x_mask;
+        extern uint32_t psx_runtime_clip_x_threshold;
+        psx_runtime_clip_x_mask      = 0xF800u;
+        /* Edge = 512 * factor (visible right edge in PSX coords). Capped at
+         * 1.5: above that, the original Spyro poly buffer (0x1c000 bytes
+         * per slot in src/4BEF8.c) overflows when env emits the extra
+         * off-axis primitives, corrupting the trailing OT and crashing
+         * downstream. The PsyCross host-side vertex/OT buffers were bumped
+         * to remove their crash modes (DrawSplit strlen, DrawOTag scratch);
+         * the remaining ceiling is the PSX-side poly buffer, which would
+         * need invasive realloc to lift further. 1.5 covers full 16:9 and
+         * gets ~3% improvement at 21:9/32:9. */
+        float thresh_factor = openpete_disp_w_factor;
+        if (thresh_factor > 1.5f) thresh_factor = 1.5f;
+        uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
+        psx_runtime_clip_x_threshold = edge << 16;
+        OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "
+                   "0xFE00 -> 0xF800 (env SX-overflow), clip_x_threshold "
+                   "0x02000000 -> %u<<16 (env+cyclorama+moby+particles "
+                   "right-edge cull, factor=%.3f)",
+                   (unsigned)edge,
+                   (double)(thresh_factor));
     }
 
     if (opts->headless && g_window) {

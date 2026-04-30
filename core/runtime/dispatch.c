@@ -22,6 +22,17 @@ extern int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
  * Phase 1b, but the symbol must exist for link. */
 uint32_t g_ps1_frame = 0;
 
+/* Per-vertex screen-space clip mask used by recompiled `andi reg, 0xFE00`
+ * cull patterns (Spyro's r_environment.s SXY2 clip). Default 0xFE00 ==
+ * native PSX behavior; openpete widens to 0xF800 when --aspect is set so
+ * widescreen-extra primitives (SX > 512) survive the cull. Declared in
+ * third_party/psxrecomp/runner/include/psx_runtime.h. */
+uint32_t psx_runtime_clip_x_mask = 0xFE00u;
+
+/* Cyclorama right-edge clip threshold; default 512<<16 (native). See
+ * psx_runtime.h. */
+uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
+
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
  * translated yet, stub-and-continue rather than abort. The Phase 2 manifest
  * + per-overlay translation is the proper fix; for now we want the main loop

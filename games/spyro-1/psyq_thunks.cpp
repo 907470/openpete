@@ -462,7 +462,11 @@ void psyq_SetDrawMode(CPUState* cpu) {
  * Each frame we rebuild the chain in host scratch memory: one PsyCross-style
  * P_TAG slot per PSX entry, payload memcpy'd verbatim, addr fields chained to
  * the next host slot, last slot pointed at PsyCross's `prim_terminator`. */
-static uint8_t  g_ot_scratch[2u * 1024u * 1024u];
+/* OT-walk scratch. Native 4:3 fits in ~2 MB, but ultrawide aspects with
+ * env-cull widening multiply prim count enough to hit this — overflow
+ * silently drops trailing OT entries (the cyclorama ends up partly empty).
+ * Bumping to 16 MB; cheap on host RAM, plenty of headroom for 32:9. */
+static uint8_t  g_ot_scratch[16u * 1024u * 1024u];
 static size_t   g_ot_scratch_used = 0;
 static uint8_t* g_ot_slot_host[16384];
 static int      g_ot_slot_count = 0;

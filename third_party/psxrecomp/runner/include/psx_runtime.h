@@ -73,6 +73,25 @@ uint8_t* psx_get_scratch(void);
 /* Frame-gated GP1 display command tracker (called from gpu_write_gp1). */
 void diag_track_gp1(uint32_t cmd);
 
+/* Per-vertex screen-space clip mask used by handwritten asm cull
+ * patterns (e.g. r_environment.s `andi $a1, $v0, 0xFE00`). The
+ * mask tests bits 9..15 of SX from C2_SXY2, rejecting strips whose
+ * vertices all lie outside [0, 512). For widescreen rendering
+ * where SX legitimately exceeds 512, openpete widens this at boot
+ * to e.g. 0xF800 (covers [-2048, 2047]). Default 0xFE00 preserves
+ * native PSX behavior. Generated code with `andi imm=0xFE00`
+ * substitutes this variable for the literal so the bound is
+ * runtime-tunable without re-recompiling. */
+extern uint32_t psx_runtime_clip_x_mask;
+
+/* Cyclorama (r_cyclorama.s) right-edge clip threshold. Used at the
+ * `sub $a, ($SX << 16), $reg` cull site to test SX < 512. Default
+ * 0x02000000u (512 << 16) = native behavior; openpete widens to
+ * 0x08000000u (2048 << 16) when --aspect is set. Substituted at
+ * specific addresses by code_generator translate_lui — see comment
+ * there. */
+extern uint32_t psx_runtime_clip_x_threshold;
+
 #ifdef __cplusplus
 }
 #endif

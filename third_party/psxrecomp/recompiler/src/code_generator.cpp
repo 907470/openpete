@@ -405,6 +405,18 @@ std::string CodeGenerator::translate_andi(uint32_t instr) {
         return "/* nop: write to $zero */";
     }
 
+    /* Spyro's handwritten env renderer (r_environment.s) builds a
+     * per-vertex screen-bounds clip mask via `andi $reg, SXY2, 0xFE00`
+     * — bits 9..15 of SX, rejecting SX outside [0, 512). For widescreen
+     * SX legitimately exceeds 512; substitute the literal with a
+     * runtime-tunable mask so openpete can widen it without altering
+     * native PSX behavior (default 0xFE00 == identity). See
+     * psx_runtime.h `psx_runtime_clip_x_mask`. */
+    if (imm == 0xFE00u) {
+        return fmt::format("{} = {} & psx_runtime_clip_x_mask;",
+                           reg_name(rt), reg_name(rs));
+    }
+
     return fmt::format("{} = {} & 0x{:04X};", reg_name(rt), reg_name(rs), imm);
 }
 
@@ -731,7 +743,62 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x0C: code = translate_andi(instr); break;   // andi
             case 0x0D: code = translate_ori(instr); break;    // ori
             case 0x0E: code = translate_xori(instr); break;   // xori
-            case 0x0F: code = translate_lui(instr); break;    // lui
+            case 0x0F:                                         // lui
+                {
+                    /* Spyro's cyclorama renderer (r_cyclorama.s) builds a
+                     * per-vertex left/right clip via:
+                     *   sll $a1, SXY2_packed, 16  (a1 = SX << 16)
+                     *   sub $a1, $a1, $tN          (tN preloaded = 0x2000000)
+                     *   bltz $a1, ok               (SX < 512: pass)
+                     * The threshold 0x2000000 == 512<<16 is hardcoded via
+                     * `lui $tN, 0x200`. For widescreen, SX legitimately
+                     * exceeds 512; substitute the constant with a runtime-
+                     * tunable threshold so openpete can widen to e.g.
+                     * 2048<<16 = 0x8000000 without re-recompiling. Default
+                     * == identity. Addresses enumerated explicitly because
+                     * `lui $X, 0x200` appears in unrelated contexts (color
+                     * packets, pointer math) and a blanket substitution
+                     * would corrupt those. See psx_runtime.h
+                     * `psx_runtime_clip_x_threshold`. */
+                    uint32_t rt = get_rt(instr);
+                    uint16_t imm = get_imm16_u(instr);
+                    if (imm == 0x0200u && (
+                        addr == 0x8004ED8Cu ||  // r_cyclorama.s lui $t7
+                        addr == 0x8004F1A8u ||  // r_cyclorama.s lui $t7 (2nd)
+                        addr == 0x8001F9F4u ||  // r_moby.s lui $t9 (1st)
+                        addr == 0x80021190u ||  // r_moby.s lui $t9 (2nd)
+                        addr == 0x80022FF8u ||  // r_moby.s lui $s0 (3rd)
+                        addr == 0x800574BCu ||  // r_particles.s lui $s6
+                        /* r_environment.s — second per-vertex SX cull paths
+                         * (signed 11-bit right-edge threshold = 512). One
+                         * threshold per cell-render LOD path. */
+                        addr == 0x8002626Cu ||
+                        addr == 0x8002652Cu ||
+                        addr == 0x800266E0u ||
+                        addr == 0x8002684Cu ||
+                        addr == 0x80027924u ||
+                        addr == 0x80027A60u ||
+                        addr == 0x80028074u ||
+                        addr == 0x8002817Cu ||
+                        addr == 0x80028A40u ||
+                        addr == 0x80028C50u ||
+                        addr == 0x8002982Cu ||
+                        addr == 0x800299ACu ||
+                        addr == 0x8002A2F4u ||
+                        addr == 0x8002A4C0u))
+                    {
+                        if (config_.optimize_zero_reg && rt == 0) {
+                            code = "/* nop: write to $zero */";
+                        } else {
+                            code = fmt::format(
+                                "{} = psx_runtime_clip_x_threshold;",
+                                reg_name(rt));
+                        }
+                    } else {
+                        code = translate_lui(instr);
+                    }
+                }
+                break;
             case 0x10:                                         // COP0
                 {
                     uint32_t cop_op = (instr >> 21) & 0x1F;

@@ -12,6 +12,7 @@
 #include "openpete_psx.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* --- Identity --- */
@@ -223,6 +224,61 @@ extern void func_80023AC4(CPUState* cpu);
 extern void openpete_trace_writes_begin(CPUState* cpu);
 extern void openpete_trace_writes_end(CPUState* cpu);
 
+/* --aspect: bypass the level's per-occlusion-group visibility list at
+ * widescreen and walk every sector in g_Environment.m_SectorPointer[]
+ * instead. The list was authored for 4:3, so off-axis cells aren't
+ * candidates regardless of cull-bound widening. The renderer already
+ * supports this — passing pOcclusionGroup=-1 skips the list and walks
+ * all sectors (see r_environment.s:80-93 / src/environment.c:34-42).
+ * Native callers use that path only when the camera is *outside* any
+ * known group, with a shorter m_CullingDistance (0x14000) to compensate
+ * for the lost filter. We restore the in-group distance (0x28000) so
+ * far cells aren't dropped, then call the renderer body.
+ *
+ * Risk: prim-buffer overflow. The OT pool at D_8006FCF4 is sized for
+ * 4:3 candidate counts; walking 2-3× more cells could exceed it. So
+ * far Artisans renders fine; if a denser level breaks, fall back to
+ * the cull-only path or shrink m_CullingDistance. */
+extern void func_800258F0(CPUState* cpu);
+extern void func_8004EBA8(CPUState* cpu);
+extern float openpete_disp_w_factor;
+extern unsigned openpete_frame;
+
+/* env-renderer instrumentation. Counts writes done by func_800258F0 to
+ * help diagnose 16:9 residual: are wider-FOV cells producing more prim
+ * traffic, or is the renderer doing the same work as 4:3? */
+static struct {
+    void (*orig_w)(uint32_t, uint32_t);
+    void (*orig_h)(uint32_t, uint16_t);
+    void (*orig_b)(uint32_t, uint8_t);
+    CPUState* cpu;
+    uint32_t writes_total;
+    uint32_t writes_ram_low;     /* < 0x80020000 (scratch + early data) */
+    uint32_t writes_sbss;        /* 0x80075000..0x800A0000 (g_WorldOT etc) */
+    uint32_t writes_overlay;     /* >= 0x80100000 (level data) */
+    uint32_t writes_dma;         /* GPU/DMA control regs (>= 0x1F000000) */
+    uint32_t worldot_ptr_before;
+    uint32_t worldot_ptr_after;
+    int active;
+} g_env_trace = {0};
+
+static void env_trace_classify(uint32_t addr) {
+    g_env_trace.writes_total++;
+    if (addr >= 0x1F000000u && addr < 0x80000000u) g_env_trace.writes_dma++;
+    else if (addr >= 0x80100000u)                  g_env_trace.writes_overlay++;
+    else if (addr >= 0x80075000u)                  g_env_trace.writes_sbss++;
+    else if (addr >= 0x80000000u)                  g_env_trace.writes_ram_low++;
+}
+static void env_trace_w(uint32_t a, uint32_t v) {
+    env_trace_classify(a); g_env_trace.orig_w(a, v);
+}
+static void env_trace_h(uint32_t a, uint16_t v) {
+    env_trace_classify(a); g_env_trace.orig_h(a, v);
+}
+static void env_trace_b(uint32_t a, uint8_t v) {
+    env_trace_classify(a); g_env_trace.orig_b(a, v);
+}
+
 /* Phase 3/4 — native-decomp dispatch table. Generated from
  * manifest/native.toml by tools/gen_dispatch.py; see
  * generated/native_dispatch.c. Each [[dispatch]] entry there names a
@@ -237,6 +293,151 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
+    static int s_in_env_renderer = 0;
+    if (addr == 0x800258F0u && openpete_disp_w_factor > 0.0f
+        && !s_in_env_renderer) {
+        s_in_env_renderer = 1;
+        cpu->a0 = (uint32_t)-1;        /* walk all sectors */
+
+        /* Boost m_CullingDistance to the in-group value (0x28000) — the
+         * caller (env.c func_8002B9CC) sets a shorter 0x14000 / 0x1c000
+         * when going through the all-walk path because the original
+         * design only used all-walk as a fallback. With wide aspects,
+         * far-off-axis cells are needed; restore the full distance. */
+        const uint32_t cd_addr = 0x800785A8u + 0x28u;
+        uint32_t saved_cd = cpu->read_word(cd_addr);
+        if (saved_cd > 0u && saved_cd < 0x28000u) {
+            cpu->write_word(cd_addr, 0x28000u);
+        }
+
+        /* Cone-cull widening. r_environment.s loads g_Camera.m_ViewMatrix
+         * (offset 0x14, 5 i32s) into CP2C[R11..R33] and runs MVMVA against
+         * each cell's IR-vec to derive |IR1|/IR3 for the cone test
+         * (slope 0.75 ≈ atan(256/341) = native 4:3). Scaling row 0
+         * (`m_ViewMatrix.m[0][0..2]`) by 1/disp_w_factor shrinks IR1 by
+         * the same factor so the cone admits cells in a wider horizontal
+         * arc. Saved + restored around the call so other consumers of
+         * m_ViewMatrix (collision, AI) aren't affected. */
+        const uint32_t mvm_addr = 0x80078A58u - 0x80000000u;  /* TODO from manifest */
+        (void)mvm_addr;  /* m_ViewMatrix lives at g_Camera + 0x14 */
+        const uint32_t vm_base = 0x80076DD0u + 0x14u;
+        int16_t saved_row0[3];
+        int16_t row0[3];
+        for (int i = 0; i < 3; i++) {
+            uint16_t h = cpu->read_half(vm_base + (uint32_t)(i * 2));
+            saved_row0[i] = (int16_t)h;
+            float scaled = (float)saved_row0[i] / openpete_disp_w_factor;
+            if (scaled >  32767.0f) scaled =  32767.0f;
+            if (scaled < -32768.0f) scaled = -32768.0f;
+            row0[i] = (int16_t)scaled;
+            cpu->write_half(vm_base + (uint32_t)(i * 2), (uint16_t)row0[i]);
+        }
+
+        /* Instrumentation: wrap write fns to count what env emits. */
+        int env_trace_on = (getenv("OPENPETE_ENV_TRACE") != NULL);
+        if (env_trace_on) {
+            g_env_trace.orig_w = cpu->write_word;
+            g_env_trace.orig_h = cpu->write_half;
+            g_env_trace.orig_b = cpu->write_byte;
+            g_env_trace.cpu    = cpu;
+            g_env_trace.writes_total = 0;
+            g_env_trace.writes_ram_low = 0;
+            g_env_trace.writes_sbss = 0;
+            g_env_trace.writes_overlay = 0;
+            g_env_trace.writes_dma = 0;
+            g_env_trace.worldot_ptr_before = cpu->read_word(0x80075820u);
+            cpu->write_word = env_trace_w;
+            cpu->write_half = env_trace_h;
+            cpu->write_byte = env_trace_b;
+            g_env_trace.active = 1;
+        }
+
+        func_800258F0(cpu);
+
+        if (env_trace_on) {
+            cpu->write_word = g_env_trace.orig_w;
+            cpu->write_half = g_env_trace.orig_h;
+            cpu->write_byte = g_env_trace.orig_b;
+            g_env_trace.active = 0;
+            g_env_trace.worldot_ptr_after = cpu->read_word(0x80075820u);
+            if ((openpete_frame % 60u) == 0u) {
+                fprintf(stderr,
+                        "[env-trace f=%u factor=%.3f] writes total=%u "
+                        "low=%u sbss=%u ovl=%u dma=%u  WorldOT %08X->%08X\n",
+                        openpete_frame, openpete_disp_w_factor,
+                        g_env_trace.writes_total,
+                        g_env_trace.writes_ram_low,
+                        g_env_trace.writes_sbss,
+                        g_env_trace.writes_overlay,
+                        g_env_trace.writes_dma,
+                        g_env_trace.worldot_ptr_before,
+                        g_env_trace.worldot_ptr_after);
+            }
+        }
+
+        /* Restore so non-renderer consumers see native matrix. */
+        for (int i = 0; i < 3; i++) {
+            cpu->write_half(vm_base + (uint32_t)(i * 2),
+                            (uint16_t)saved_row0[i]);
+        }
+        cpu->write_word(cd_addr, saved_cd);
+        s_in_env_renderer = 0;
+        return 1;
+    }
+
+    /* --aspect: stretch the cyclorama mesh's horizontal projection so
+     * its native triangles cover the full widescreen framebuffer width.
+     *
+     * The recompiler's OFX widening (eff_OFX = 256 * disp_w_factor)
+     * shifts every projected vertex right by (eff_OFX - 256). The
+     * cyclorama mesh's *angular* extent is unchanged, so its triangles
+     * span [shift, shift + 512] in PSX-X — leaving framebuffer edges
+     * uncovered, where DrawEnv `isbg=1` paints g_Cyclorama.m_BackgroundColor.
+     *
+     * Fix: pre-scale the cyclorama's projection-matrix row 0 (the X
+     * row) by disp_w_factor before calling the renderer body, so post-
+     * MVMVA IR1 is `factor * native_IR1` and projects across the full
+     * widened framebuffer. The widened bit-3 cull threshold
+     * (psx_runtime_clip_x_threshold) keeps the larger SX values from
+     * being cull-rejected.
+     *
+     * The matrix at *a2 belongs to the caller (typically
+     * &g_Camera.m_ProjectionMatrix), so we save and restore around the
+     * call. Capped at factor 2.0 — beyond that (e.g. 32:9 = 2.667) the
+     * scaled IR1 produces SX values that overflow PsyCross's primitive
+     * split path and crash DrawSplit. */
+    static int s_in_cyclorama = 0;
+    if (addr == 0x8004EBA8u && openpete_disp_w_factor > 0.0f
+        && openpete_disp_w_factor <= 2.0f
+        && !s_in_cyclorama) {
+        s_in_cyclorama = 1;
+        uint32_t mat_addr = cpu->a2;
+        int16_t saved_row0[3];
+        float max_abs = 1.0f;
+        for (int i = 0; i < 3; i++) {
+            uint16_t h = cpu->read_half(mat_addr + (uint32_t)(i * 2));
+            saved_row0[i] = (int16_t)h;
+            float a = (float)((saved_row0[i] < 0) ? -saved_row0[i]
+                                                   :  saved_row0[i]);
+            if (a > max_abs) max_abs = a;
+        }
+        float scale = openpete_disp_w_factor;
+        float headroom = 32700.0f / max_abs;
+        if (scale > headroom) scale = headroom;
+        for (int i = 0; i < 3; i++) {
+            float scaled = (float)saved_row0[i] * scale;
+            cpu->write_half(mat_addr + (uint32_t)(i * 2),
+                            (uint16_t)(int16_t)scaled);
+        }
+        func_8004EBA8(cpu);
+        for (int i = 0; i < 3; i++) {
+            cpu->write_half(mat_addr + (uint32_t)(i * 2),
+                            (uint16_t)saved_row0[i]);
+        }
+        s_in_cyclorama = 0;
+        return 1;
+    }
+
     static int s_in_traced_call = 0;
     if (addr == 0x80023AC4u && !s_in_traced_call) {
         s_in_traced_call = 1;
@@ -246,5 +447,6 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         s_in_traced_call = 0;
         return 1;
     }
+
     return 0;
 }
