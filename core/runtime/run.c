@@ -610,6 +610,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_save = false, prev_load = false, prev_cycle = false;
     unsigned active_slot = 0;
 
+    /* Frame-step state. F7 toggles pause; F8 advances exactly one game
+     * tick (hold to repeat at host-loop rate). While paused the host loop
+     * pumps SDL events, sleeps the deadline, and skips the co_switch into
+     * the game fiber — so g_ram / CPUState stay frozen and PsyCross keeps
+     * presenting the last completed frame. SPU is muted on enter to avoid
+     * the held-voice drone (Cubeb runs on its own callback thread; without
+     * new SPU register writes voices loop their current sample). */
+    bool g_paused = false;
+    bool g_step_one = false;
+    bool prev_pause_key = false;
+
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
          * --render-fps>0. The authoritative `unlock_fps` write
@@ -719,6 +730,25 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_save  = save_k;
             prev_load  = load_k;
             prev_cycle = cycle_k;
+
+            /* Frame-step hotkeys. F7 edge-triggered toggle; F8 sets
+             * g_step_one whenever held while paused, so the natural
+             * key-repeat behavior is "step every host iter while held"
+             * without needing an OS-level repeat-rate dependency. */
+            bool pause_k = kbd_pre && kbd_pre[SDL_SCANCODE_F7];
+            bool step_k  = kbd_pre && kbd_pre[SDL_SCANCODE_F8];
+            if (pause_k && !prev_pause_key) {
+                g_paused = !g_paused;
+                /* Enter: mute. Exit: restore the user's --mute baseline
+                 * (true by default; --mute off re-enables audio). */
+                PsyX_SPUAL_SetMute(g_paused ? 1 : (opts->mute ? 1 : 0));
+                OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
+                           g_paused ? "paused" : "resumed", openpete_frame);
+            }
+            if (g_paused && step_k) {
+                g_step_one = true;
+            }
+            prev_pause_key = pause_k;
         }
 
         PsyX_UpdateInput();
@@ -726,10 +756,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         /* Hand control to the game until the next VSync(0) yield. Gated so
          * --render-fps>0 outer iterations that don't have a sim tick due
          * skip the yield entirely (input is still pumped above; pacer below
-         * sleeps to the next deadline). */
+         * sleeps to the next deadline). Frame-step adds a second gate:
+         * while g_paused the yield only fires when g_step_one was set by
+         * F8 — one tick per held-iter. */
         unsigned frame_before_yield = openpete_frame;
         bool ticked_this_iter = false;
-        if (sim_due) {
+        bool yield_now = sim_due && (!g_paused || g_step_one);
+        if (yield_now) {
+            g_step_one = false;
             game_on_frame_pre(&g_game.cpu, openpete_frame);
             co_switch((cothread_t)openpete_game_fiber);
             ticked_this_iter = (openpete_frame != frame_before_yield);
@@ -920,6 +954,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         bool unlock_fps = tab_unlock || sched_unlock;
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
+
+        /* Paused without a step pending: sleep so we don't spin the CPU.
+         * The condvar pacer below only waits when ticked_this_iter, and
+         * the wall-clock pacer's render deadline does sleep but only at
+         * its own cadence — explicit sleep here keeps the paused idle
+         * cost near-zero regardless of render_fps. */
+        if (g_paused && !ticked_this_iter && !unlock_fps) {
+            SDL_Delay(16);
+        }
 
         if (opts->render_fps == 0) {
             /* Legacy condvar pacer. Block until the ticker advances
