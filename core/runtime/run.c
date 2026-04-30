@@ -21,6 +21,7 @@
 #include <SDL.h>
 #include <libco.h>
 #include <errno.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -392,14 +393,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->seed_ram_path, ram_size);
     }
 
+    int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
+    int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;
+
+    /* --fov: precompute the GTE H register value that produces the
+     * requested horizontal FOV at the PSX's 320-wide projection plane.
+     * H = (320/2) / tan(fov/2). 0 = no override (psyq_SetGeomScreen
+     * forwards the game's argument verbatim). */
+    if (opts->fov_deg > 0.0f) {
+        double half = (double)opts->fov_deg * 0.5 * (M_PI / 180.0);
+        double h = 160.0 / tan(half);
+        if (h < 1.0) h = 1.0;
+        if (h > 65535.0) h = 65535.0;
+        openpete_fov_h_override = (int)(h + 0.5);
+        OPL_INFO_F("fov", "override active: --fov=%.2f° -> GTE H=%d "
+                   "(native ~50.4° at H=341)",
+                   (double)opts->fov_deg, openpete_fov_h_override);
+    }
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
-               WIN_W, WIN_H, (int)opts->headless);
+               win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
      * hands back a context with NULL gl* function pointers, so the first call
      * from GR_InitialisePSX segfaults. We hide the window post-init below. A
      * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
      * pure-console CI needs Xvfb. */
-    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0);
+    PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0);
     if (opts->headless && g_window) {
         SDL_HideWindow(g_window);
         OPL_INFO_F("boot", "headless: hid PsyCross window (driver=%s)",

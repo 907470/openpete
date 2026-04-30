@@ -51,6 +51,21 @@ typedef struct {
      * notes/plans/openpete-fps-unlock.md "Phase 1". */
     int render_fps;
 
+    /* SDL window size override. 0/0 = use the per-game default (640x480
+     * for Spyro). PsyCross still renders the PSX framebuffer at 512x240
+     * internal; this only controls the on-screen window dimensions GL
+     * stretches to. */
+    int window_w;
+    int window_h;
+
+    /* Horizontal FOV override in degrees (0 = no override; game's native
+     * SetGeomScreen value is used). Implemented by intercepting
+     * psyq_SetGeomScreen and replacing the GTE H register with
+     * 160 / tan(fov/2) — i.e. the H that produces the requested
+     * horizontal FOV at the PSX's 320-wide projection plane. See
+     * notes/plans/openpete-widescreen-fov.md "FOV slider". */
+    float fov_deg;
+
     /* Screenshot */
     int         screenshot_on_frame;   /* -1 = disabled */
     const char* screenshot_output;     /* path; default ./shot.bmp */

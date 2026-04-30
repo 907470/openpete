@@ -50,6 +50,25 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 fprintf(stderr, "openpete: --render-fps expects a non-negative integer\n");
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
+        } else if (strcmp(a, "--window") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            int w = 0, h = 0;
+            if (sscanf(v, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+                fprintf(stderr, "openpete: --window expects WxH (e.g. 1280x720), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->window_w = w;
+            opts->window_h = h;
+            i++;
+        } else if (strcmp(a, "--fov") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->fov_deg = (float)atof(v); i++;
+            if (opts->fov_deg < 30.0f || opts->fov_deg > 140.0f) {
+                fprintf(stderr, "openpete: --fov clamped to [30,140]; got %.2f\n",
+                        opts->fov_deg);
+                if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
+                if (opts->fov_deg > 140.0f) opts->fov_deg = 140.0f;
+            }
         } else if (strcmp(a, "--screenshot-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_on_frame = atoi(v); i++;
@@ -177,6 +196,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
+                "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
+                "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
                 "  --screenshot-on-frame N    save BMP of frame N to --screenshot-output then continue\n"
                 "  --screenshot-output PATH   screenshot path (default ./shot.bmp)\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"

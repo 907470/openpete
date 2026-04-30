@@ -811,7 +811,16 @@ void psyq_SetGeomOffset(CPUState* cpu) {
 
 void psyq_SetGeomScreen(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
-    SetGeomScreen((int)cpu->a0);
+    /* --fov: replace the H argument with a runtime override so the user's
+     * requested horizontal FOV is applied at every SetGeomScreen call (the
+     * game calls this twice during Initialize, and a few overlays may set
+     * their own H). 0 = no override; pass through unmodified. The
+     * arithmetic for H lives in run.c so the thunk stays a leaf. */
+    int h = (int)cpu->a0;
+    if (openpete_fov_h_override != 0) {
+        h = openpete_fov_h_override;
+    }
+    SetGeomScreen(h);
     gte_sync_psyx_to_cpu(cpu);
 }
 

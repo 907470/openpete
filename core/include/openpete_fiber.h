@@ -58,6 +58,13 @@ void openpete_yield_to_host(void);
  * still drive frame_limit/max-runtime exits. Phase 2 retires this. */
 void openpete_yield_to_host_no_tick(void);
 
+/* Horizontal-FOV override expressed as a target GTE H register value.
+ * 0 = no override (the game's SetGeomScreen argument is forwarded
+ * verbatim). Set once at boot from --fov; psyq_SetGeomScreen replaces
+ * the H argument with this when non-zero. See
+ * notes/plans/openpete-widescreen-fov.md "FOV slider". */
+extern int openpete_fov_h_override;
+
 #ifdef __cplusplus
 }
 #endif
