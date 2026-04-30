@@ -241,8 +241,6 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * the cull-only path or shrink m_CullingDistance. */
 extern void func_800258F0(CPUState* cpu);
 extern void func_8004EBA8(CPUState* cpu);
-extern void func_8001F158(CPUState* cpu);
-extern void func_800208FC(CPUState* cpu);
 extern float openpete_disp_w_factor;
 extern unsigned openpete_frame;
 
@@ -437,54 +435,6 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
                             (uint16_t)saved_row0[i]);
         }
         s_in_cyclorama = 0;
-        return 1;
-    }
-
-    /* Moby cone-cull widening. r_moby.s has per-moby cone tests in two
-     * "cull-init" functions (func_8001F158 and func_800208FC) that load
-     * g_Camera.m_ProjectionMatrix (offset 0, NOT m_ViewMatrix at 0x14)
-     * into the GTE rotation matrix and MVMVA each moby's bbox vector to
-     * derive IR1/IR3 for the same 4:3-cone test the env renderer uses
-     * (slope 0.75). At widescreen aspects mobys whose centers fall just
-     * past the 4:3 cone get rejected even though their meshes extend
-     * into the visible widened frame.
-     *
-     * Scale m_ProjectionMatrix row 0 by 1/disp_w_factor for the
-     * cull-init call only — the *render* functions (func_8001F798 /
-     * func_80020F34 / func_80022A2C) reload the matrix from native RAM
-     * at their own entry, so vertex projection stays unscaled and mobys
-     * land at correct screen positions. Save/restore around the call so
-     * other users of m_ProjectionMatrix don't see scaled values. */
-    static int s_in_moby_cull = 0;
-    if ((addr == 0x8001F158u || addr == 0x800208FCu)
-        && openpete_disp_w_factor > 0.0f
-        && !s_in_moby_cull
-        && !getenv("OPENPETE_NO_MOBY_HOOK")) {
-        s_in_moby_cull = 1;
-        const uint32_t vm_base = 0x80076DD0u + 0x0u;   /* g_Camera.m_ProjectionMatrix row 0 */
-        /* Cap divisor at 2.0 — beyond that, the per-moby MVMVA produces
-         * results that overflow GTE saturation paths and the renderer
-         * stalls (32:9 hangs). 2.0 admits everything in 16:9 / 21:9 /
-         * mid-32:9 and avoids the overflow regime. */
-        float divisor = openpete_disp_w_factor;
-        if (divisor > 2.0f) divisor = 2.0f;
-        int16_t saved_row0[3];
-        for (int i = 0; i < 3; i++) {
-            uint16_t h = cpu->read_half(vm_base + (uint32_t)(i * 2));
-            saved_row0[i] = (int16_t)h;
-            float scaled = (float)saved_row0[i] / divisor;
-            if (scaled >  32767.0f) scaled =  32767.0f;
-            if (scaled < -32768.0f) scaled = -32768.0f;
-            cpu->write_half(vm_base + (uint32_t)(i * 2),
-                            (uint16_t)(int16_t)scaled);
-        }
-        if (addr == 0x8001F158u) func_8001F158(cpu);
-        else                      func_800208FC(cpu);
-        for (int i = 0; i < 3; i++) {
-            cpu->write_half(vm_base + (uint32_t)(i * 2),
-                            (uint16_t)saved_row0[i]);
-        }
-        s_in_moby_cull = 0;
         return 1;
     }
 
