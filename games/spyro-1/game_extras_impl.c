@@ -241,6 +241,7 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * the cull-only path or shrink m_CullingDistance. */
 extern void func_800258F0(CPUState* cpu);
 extern void func_8004EBA8(CPUState* cpu);
+extern void func_80022A2C(CPUState* cpu);
 extern float openpete_disp_w_factor;
 extern unsigned openpete_frame;
 
@@ -436,6 +437,67 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         }
         s_in_cyclorama = 0;
         return 1;
+    }
+
+    /* Diagnostic: trace bucket-2 (gems) cull. Walks D_8006FCF4+0x2400 list,
+     * computes per-moby cube + MVMVA cone test the same way the inline
+     * func_80022A2C cull does, prints which gems pass / fail. Used only
+     * with OPENPETE_GEM_TRACE=1 to debug widescreen gem visibility. */
+    static int s_in_a2c = 0;
+    if (addr == 0x80022A2Cu && !s_in_a2c
+        && getenv("OPENPETE_GEM_TRACE")
+        && (openpete_frame == 3000u || openpete_frame == 2999u)) {
+        s_in_a2c = 1;
+        const uint32_t D = 0x8006FCF4u;
+        const uint32_t pm = 0x80076DD0u;
+        int32_t cam_x = (int32_t)cpu->read_word(pm + 0x28u);
+        int32_t cam_y = (int32_t)cpu->read_word(pm + 0x2Cu);
+        int32_t cam_z = (int32_t)cpu->read_word(pm + 0x30u);
+        int16_t R11 = (int16_t)cpu->read_half(pm + 0x0u);
+        int16_t R12 = (int16_t)cpu->read_half(pm + 0x2u);
+        int16_t R13 = (int16_t)cpu->read_half(pm + 0x4u);
+        int16_t R31 = (int16_t)cpu->read_half(pm + 0xCu);
+        int16_t R32 = (int16_t)cpu->read_half(pm + 0xEu);
+        int16_t R33 = (int16_t)cpu->read_half(pm + 0x10u);
+        fprintf(stderr, "[gem-trace f=%u cam=(%d,%d,%d) R0=(%d,%d,%d) R2=(%d,%d,%d)]\n",
+                openpete_frame, cam_x, cam_y, cam_z, R11, R12, R13, R31, R32, R33);
+        for (int i = 0; i < 96; i++) {
+            uint32_t mp = cpu->read_word(D + 0x2400u + (uint32_t)(i * 4));
+            if (mp == 0) break;
+            uint16_t cls = cpu->read_half(mp + 0x36u);
+            if (cls < 83 || cls > 87) continue;
+            int32_t mx = (int32_t)cpu->read_word(mp + 0xCu);
+            int32_t my = (int32_t)cpu->read_word(mp + 0x10u);
+            int32_t mz = (int32_t)cpu->read_word(mp + 0x14u);
+            int32_t dx = mx - cam_x;
+            int32_t dy = my - cam_y;
+            int32_t dz = mz - cam_z;
+            /* Match asm: at = dx/4, v0 = -dy/4, v1 = -dz/4 */
+            int32_t a_t = dx >> 2;
+            int32_t v0 = -dy >> 2;  // arithmetic shift of negation
+            int32_t v1 = -dz >> 2;
+            /* Render distance from byte 0x50 */
+            uint8_t flag_lo = (uint8_t)cpu->read_byte(mp + 0x50u);
+            int32_t a0 = (int32_t)((int8_t)flag_lo) << 8;
+            /* Cube test */
+            int cube_pass = 1;
+            if (a_t + a0 <= 0 || a_t - a0 >= 0) cube_pass = 0;
+            if (v0 + a0 <= 0 || v0 - a0 >= 0) cube_pass = 0;
+            if (v1 + a0 <= 0 || v1 - a0 >= 0) cube_pass = 0;
+            /* MVMVA cone test inputs: IR1=v0, IR2=v1, IR3=at */
+            int64_t MAC1 = (int64_t)R11 * v0 + (int64_t)R12 * v1 + (int64_t)R13 * a_t;
+            int64_t MAC3 = (int64_t)R31 * v0 + (int64_t)R32 * v1 + (int64_t)R33 * a_t;
+            int64_t abs_x = MAC1 < 0 ? -MAC1 : MAC1;
+            int64_t cone_x = 4 * (abs_x - 102) - 3 * (MAC3 + 77);
+            fprintf(stderr,
+                    "  moby 0x%08X cls=%u dxyz=(%d,%d,%d) cube=%s "
+                    "MAC1=%lld MAC3=%lld coneX_a1=%lld %s\n",
+                    mp, cls, dx, dy, dz, cube_pass ? "PASS" : "CULL",
+                    (long long)MAC1, (long long)MAC3, (long long)cone_x,
+                    cone_x >= 0 ? "CULL" : "PASS");
+        }
+        s_in_a2c = 0;
+        /* fall through to call original */
     }
 
     static int s_in_traced_call = 0;
