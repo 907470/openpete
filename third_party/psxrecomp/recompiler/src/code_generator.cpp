@@ -721,7 +721,38 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x1B: code = translate_divu(instr); break;    // divu
             case 0x20: code = translate_add(instr); break;     // add
             case 0x21: code = translate_addu(instr); break;    // addu
-            case 0x22: code = translate_sub(instr); break;     // sub
+            case 0x22:                                          // sub
+                {
+                    /* Spyro r_moby.s func_8001F158 / func_800208FC inline
+                     * cone-X cull at 0x8001F30C / 0x80020AB8:
+                     *   sub t2, t2, a2    # t2 = |MAC1| - a2 (per-moby x-radius)
+                     * is the start of the same shape as func_80022A2C's
+                     * cone test, just with per-moby radius instead of
+                     * fixed 102/77. The full chain:
+                     *   sub t2, t2, a2; sll t2, 2; sub t2, t2, t3;
+                     *   sll t3, 1; sub t2, t2, t3; bgez t2 → cull
+                     *   (where t3 = MAC3 + a3)
+                     * encodes slope 0.75 (= 4:3 horiz half-FOV). Substitute
+                     * to also subtract extra*(MAC3+a3)/4 from t2 — after
+                     * the subsequent sll/sub chain the final test becomes
+                     *   bgez (4*(|x|-a2) - (3+extra)*(t3))
+                     * with slope (3+extra)/4. Default extra=0 ⇒ slope 0.75
+                     * unchanged. Address-explicit so unrelated `sub r,r,r`
+                     * stay untouched. */
+                    if (addr == 0x8001F30Cu || addr == 0x80020AB8u) {
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        uint32_t rd = get_rd(instr);
+                        code = fmt::format(
+                            "{} = (int32_t){} - (int32_t){} "
+                            "- (int32_t)(((int64_t)((int32_t)cpu->v1 + (int32_t)cpu->a3) "
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14);",
+                            reg_name(rd), reg_name(rs), reg_name(rt));
+                    } else {
+                        code = translate_sub(instr);
+                    }
+                }
+                break;
             case 0x23: code = translate_subu(instr); break;    // subu
             case 0x24: code = translate_and(instr); break;     // and
             case 0x25: code = translate_or(instr); break;      // or
