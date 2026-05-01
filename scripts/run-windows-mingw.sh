@@ -21,12 +21,6 @@
 #       # bk2 frame 0 with the first rendered frame (no offset needed).
 #
 # Convenience flags (handled by this script, not forwarded as-is):
-#   --record NAME       expands to --bk2-record games/spyro-1/bk2/NAME.bk2.
-#                       Combine with the default --bk2 prefix to capture
-#                       a session that starts with skip-to-artisans and
-#                       then records whatever you do with the keyboard /
-#                       gamepad. The recorded movie includes the prefix
-#                       frames so it replays standalone.
 #   --idle              suppresses the default --bk2 prefix (no scripted
 #                       input). Useful for screenshot runs that want the
 #                       title screen idle.
@@ -40,9 +34,6 @@
 #   # Boot Spyro with a different runtime budget; defaults fill the
 #   # rest:
 #   scripts/run-windows-mingw.sh --max-runtime-seconds 30
-#
-#   # Record a play session, prefixed by skip-to-artisans:
-#   scripts/run-windows-mingw.sh --record portal-attempt-1
 #
 # Disc resolution (when no `--disc` is in the args, first match wins):
 #   1. $OPENPETE_DISC (whatever location it points at, .cue or .bin)
@@ -158,24 +149,6 @@ while (( $# )); do
             else
                 forwarded+=("--bk2=$(translate_if_linux "$val")")
             fi
-            ;;
-        --record)
-            # Expand to --bk2-record games/spyro-1/bk2/<name>.bk2 (path is
-            # auto-translated to a Windows form). Plain name only — pass an
-            # explicit --bk2-record if you want a path elsewhere on disk.
-            if [[ $# -ge 2 ]]; then
-                forwarded+=(--bk2-record
-                    "$(translate_if_linux "$OPENPETE_ROOT/games/spyro-1/bk2/$2.bk2")")
-                shift
-            else
-                red "  --record requires a name argument"
-                exit 2
-            fi
-            ;;
-        --record=*)
-            val="${1#*=}"
-            forwarded+=(--bk2-record
-                "$(translate_if_linux "$OPENPETE_ROOT/games/spyro-1/bk2/$val.bk2")")
             ;;
         --idle)
             idle=1
