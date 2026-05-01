@@ -736,7 +736,35 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     // Immediate and load/store instructions
     else {
         switch (opcode) {
-            case 0x08: code = translate_addiu(instr); break;  // addi (same as addiu)
+            case 0x08:                                         // addi
+                {
+                    /* Spyro r_moby.s func_80022A2C inline cone-X cull at
+                     * 0x80022C0C: `addi a1, a1, -0x66` (a1 = |MAC1| - 102)
+                     * is part of the test
+                     *   bgez (4*(|MAC1|-102) - 3*(MAC3+77)) → cull
+                     * with slope 3/4 = 4:3 horizontal half-FOV. Substitute
+                     * to also subtract `extra*(MAC3+77)` from a1 so the
+                     * after-shifts test becomes
+                     *   bgez (4*|MAC1| - 408 - (3 + 4*extra)*(MAC3+77))
+                     * which has slope (3+4*extra)/4. Default 0 = native;
+                     * widescreen sets psx_runtime_moby_cone_extra_q12 > 0.
+                     * MAC3 = cpu->gte_data[27]. Address-explicit because
+                     * `addi $r, $r, -0x66` appears in many unrelated
+                     * contexts. */
+                    uint32_t rs = get_rs(instr);
+                    uint32_t rt = get_rt(instr);
+                    int16_t imm = (int16_t)get_imm16_u(instr);
+                    if (addr == 0x80022C0Cu && imm == -0x66) {
+                        code = fmt::format(
+                            "{} = (int32_t){} + ({}) "
+                            "- (int32_t)(((int64_t)((int32_t)cpu->gte_data[27] + 77) "
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12);",
+                            reg_name(rt), reg_name(rs), (int)imm);
+                    } else {
+                        code = translate_addiu(instr);
+                    }
+                }
+                break;
             case 0x09: code = translate_addiu(instr); break;  // addiu
             case 0x0A: code = translate_slti(instr); break;   // slti
             case 0x0B: code = translate_sltiu(instr); break;  // sltiu

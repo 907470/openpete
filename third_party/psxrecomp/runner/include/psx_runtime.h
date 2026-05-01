@@ -92,6 +92,19 @@ extern uint32_t psx_runtime_clip_x_mask;
  * there. */
 extern uint32_t psx_runtime_clip_x_threshold;
 
+/* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
+ *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
+ * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For
+ * widescreen the demanded horizontal cone is wider, so subtract an
+ * additional `extra * (MAC3+77)` from a1 inside the addi at
+ * 0x80022C0C — effectively raises z-multiplier from 3 to (3 + 4*extra),
+ * widening the admit slope to 4 / (3 + 4*extra).
+ *
+ * Q12 fixed-point. Default 0 (slope unchanged, 4:3 native). For 16:9
+ * (factor 1.333), set to 4096*(factor-1) = ~1366 → slope 4/4.33 ≈ 0.92,
+ * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
+extern int32_t psx_runtime_moby_cone_extra_q12;
+
 #ifdef __cplusplus
 }
 #endif

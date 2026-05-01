@@ -33,6 +33,10 @@ uint32_t psx_runtime_clip_x_mask = 0xFE00u;
  * psx_runtime.h. */
 uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
 
+/* r_moby.s func_80022A2C inline cone-X cull widening. Default 0
+ * preserves native 4:3 cone (slope 0.75). See psx_runtime.h. */
+int32_t psx_runtime_moby_cone_extra_q12 = 0;
+
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
  * translated yet, stub-and-continue rather than abort. The Phase 2 manifest
  * + per-overlay translation is the proper fix; for now we want the main loop

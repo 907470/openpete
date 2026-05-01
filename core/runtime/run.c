@@ -512,6 +512,42 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "right-edge cull, factor=%.3f)",
                    (unsigned)edge,
                    (double)(thresh_factor));
+
+        /* r_moby.s func_80022A2C inline X-cone cull widening. The hardcoded
+         * 0.75 slope (= 4:3 horizontal half-FOV) culls gems whose
+         * world-space angle from camera-forward exceeds ~37°. At
+         * widescreen the visible cone is wider, so widen the cone-test
+         * slope by injecting an extra `extra * (MAC3+77)` subtraction at
+         * the recompiler's addi substitution site inside func_80022A2C.
+         * slope = 4 / (3 + 4*extra). Setting extra =
+         * (factor - 1) gives slope = 4 / (4*factor - 1):
+         *   1.0 (4:3):    slope 4/3 = 1.33 — wait — extra=0 here gives slope 4/3 = 1.33?
+         * Recompute: original a1 = 4*(|x|-102) - 3*(z+77). To match user
+         * mental model: cull when |x| > slope*z. slope = 3/4 = 0.75. With
+         * extra added at addi: a1 = (|x|-102-extra*(z+77)). After the
+         * shifts: 4*|x| - 408 - 4*extra*(z+77) - 3*(z+77). New slope:
+         * (3 + 4*extra) / 4. extra=0 → 0.75. extra=0.25 → slope 1.0.
+         * So extra = (factor² - 1)/4 maps factor → slope (factor² × 0.75).
+         * For 16:9 (1.333): extra = 0.194, slope ≈ 0.94 (~43° admit).
+         *   Doesn't quite reach the 46° gem; bump to (factor - 1) which
+         *   gives extra=0.333, slope=1.08 (~47°), enough for the f3000
+         *   right-side gems.
+         * Q12: extra_q12 = round((factor - 1) * 4096). */
+        extern int32_t psx_runtime_moby_cone_extra_q12;
+        float extra_f = openpete_disp_w_factor - 1.0f;
+        if (getenv("OPENPETE_MOBY_CONE_EXTRA")) {
+            extra_f = (float)atof(getenv("OPENPETE_MOBY_CONE_EXTRA"));
+        }
+        if (extra_f < 0.0f) extra_f = 0.0f;
+        psx_runtime_moby_cone_extra_q12 = (int32_t)(extra_f * 4096.0f);
+        OPL_INFO_F("aspect", "moby cone-X widening: extra_q12=%d "
+                   "(slope %.3f -> %.3f, admit half-FOV ~%.1f° -> ~%.1f°)",
+                   (int)psx_runtime_moby_cone_extra_q12,
+                   0.75,
+                   (double)((3.0f + 4.0f * extra_f) / 4.0f),
+                   36.87,
+                   (double)(57.2958f * atan2f((3.0f + 4.0f * extra_f) / 4.0f,
+                                              1.0f)));
     }
 
     if (opts->headless && g_window) {
