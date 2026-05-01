@@ -541,6 +541,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (extra_f < 0.0f) extra_f = 0.0f;
         }
         psx_runtime_moby_cone_extra_q12 = (int32_t)(extra_f * 4096.0f);
+
+        /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp.
+         * Native code clamps the per-portal clip rect's right edge to
+         * sx=512 (4:3 framebuffer width), so the cyclorama dome drawn
+         * inside a level-entry portal gets cut off on the right at any
+         * widening. Widen the clamp to 512*thresh_factor so the rect
+         * matches the OFX-widened framebuffer; uses thresh_factor (cap
+         * 1.5) so all right-edge cull surfaces line up. Default 512/513
+         * preserves byte-identical 4:3. */
+        extern uint32_t psx_runtime_portal_clip_x_max;
+        extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
+        uint32_t portal_x_max = (uint32_t)(512.0f * thresh_factor);
+        psx_runtime_portal_clip_x_max         = portal_x_max;
+        psx_runtime_portal_clip_x_max_plus_1  = portal_x_max + 1u;
+        OPL_INFO_F("aspect", "portal clip-rect X-clamp: 512 -> %u "
+                   "(thresh_factor=%.3f)",
+                   (unsigned)portal_x_max, (double)thresh_factor);
         OPL_INFO_F("aspect", "moby cone-X widening: extra_q12=%d "
                    "(slope %.3f -> %.3f, admit half-FOV ~%.1f° -> ~%.1f°)",
                    (int)psx_runtime_moby_cone_extra_q12,

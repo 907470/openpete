@@ -796,8 +796,44 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     }
                 }
                 break;
-            case 0x09: code = translate_addiu(instr); break;  // addiu
-            case 0x0A: code = translate_slti(instr); break;   // slti
+            case 0x09:                                         // addiu
+                {
+                    /* Spyro r_cyclorama.s func_80050BD0 portal clip-rect
+                     * X-upper clamp at 0x80051804 / 0x80051E98:
+                     *   addiu $s4, $zero, 0x200
+                     * Substitute with psx_runtime_portal_clip_x_max so
+                     * widescreen widens the per-portal clip rect's
+                     * right edge. Default 512 = byte-identical 4:3. */
+                    uint32_t rs = get_rs(instr);
+                    uint32_t rt = get_rt(instr);
+                    uint16_t imm = get_imm16_u(instr);
+                    if ((addr == 0x80051804u || addr == 0x80051E98u)
+                        && rs == 0 && imm == 0x200) {
+                        code = fmt::format(
+                            "{} = (int32_t)psx_runtime_portal_clip_x_max;",
+                            reg_name(rt));
+                    } else {
+                        code = translate_addiu(instr);
+                    }
+                }
+                break;
+            case 0x0A:                                         // slti
+                {
+                    /* Same func_80050BD0 portal clip-rect site, test
+                     * branch at 0x800517F4 / 0x80051E88. */
+                    uint32_t rs = get_rs(instr);
+                    uint32_t rt = get_rt(instr);
+                    int16_t imm = (int16_t)get_imm16_u(instr);
+                    if ((addr == 0x800517F4u || addr == 0x80051E88u)
+                        && imm == 0x201) {
+                        code = fmt::format(
+                            "{} = (int32_t){} < (int32_t)psx_runtime_portal_clip_x_max_plus_1;",
+                            reg_name(rt), reg_name(rs));
+                    } else {
+                        code = translate_slti(instr);
+                    }
+                }
+                break;
             case 0x0B: code = translate_sltiu(instr); break;  // sltiu
             case 0x0C: code = translate_andi(instr); break;   // andi
             case 0x0D: code = translate_ori(instr); break;    // ori

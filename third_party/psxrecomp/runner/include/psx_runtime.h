@@ -105,6 +105,24 @@ extern uint32_t psx_runtime_clip_x_threshold;
  * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
 extern int32_t psx_runtime_moby_cone_extra_q12;
 
+/* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
+ * clamp. The dispatcher computes a per-portal screen-space clip rect
+ * (D_8007AA00..0C) then clamps the upper-X corner with
+ *   slti  $v0, $s4, 0x201   ; (s4 >= 513?)
+ *   addiu $s4, $zero, 0x200 ; clamp to native 4:3 width 512
+ * at two sites (0x800517F4 / 0x80051804 and 0x80051E88 / 0x80051E98).
+ * With OFX widened, portals span past sx=512 but the clip rect can't,
+ * so the cyclorama dome inside the portal opening is cut off on the
+ * right and the portal shows BG color where the dome should fill.
+ *
+ * `_max` substitutes for the addiu imm (clamp ceiling); `_max_plus_1`
+ * substitutes for the slti imm (test threshold = max + 1). Defaults
+ * 512 / 513 preserve native 4:3 behavior. openpete widens these to
+ * 512*thresh_factor / +1 when --aspect is set, capped to match the
+ * env right-edge threshold so all clip surfaces line up. */
+extern uint32_t psx_runtime_portal_clip_x_max;
+extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
+
 #ifdef __cplusplus
 }
 #endif

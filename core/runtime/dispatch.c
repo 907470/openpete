@@ -37,6 +37,11 @@ uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
  * preserves native 4:3 cone (slope 0.75). See psx_runtime.h. */
 int32_t psx_runtime_moby_cone_extra_q12 = 0;
 
+/* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
+ * 512 / 513 preserve native 4:3 behavior. See psx_runtime.h. */
+uint32_t psx_runtime_portal_clip_x_max = 0x200u;
+uint32_t psx_runtime_portal_clip_x_max_plus_1 = 0x201u;
+
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
  * translated yet, stub-and-continue rather than abort. The Phase 2 manifest
  * + per-overlay translation is the proper fix; for now we want the main loop
