@@ -14,6 +14,8 @@
 #include "psx/libgpu.h"
 #include "PsyX/common/glad.h"
 #include "PsyX/PsyX_public.h"
+#include "screenshot.h"
+#include "stb_image_write.h"
 #include <SDL.h>
 
 #include <cstdlib>
@@ -65,7 +67,11 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
     unsigned char* pixels = (unsigned char*)std::malloc(pitch * (size_t)h);
     if (!pixels) return;
 
-    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+    const int is_png = openpete_screenshot_path_is_png(path);
+    /* PNG wants RGBA byte order; BMP path keeps the BGRA mask layout it
+     * already used. Read in the format the destination needs to skip a
+     * channel-swap. */
+    glReadPixels(0, 0, w, h, is_png ? GL_RGBA : GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 
     /* In-place row flip: swap row i with row h-1-i. */
     unsigned char* tmp = (unsigned char*)std::malloc(pitch);
@@ -80,13 +86,18 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
         std::free(tmp);
     }
 
-    SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
-        pixels, w, h, /*depth=*/32, /*pitch=*/(int)pitch,
-        /*Rmask=*/0x00FF0000u, /*Gmask=*/0x0000FF00u,
-        /*Bmask=*/0x000000FFu, /*Amask=*/0xFF000000u);
-    if (surface) {
-        SDL_SaveBMP(surface, path ? path : "SCREENSHOT.BMP");
-        SDL_FreeSurface(surface);
+    const char* out_path = path ? path : "SCREENSHOT.BMP";
+    if (is_png) {
+        stbi_write_png(out_path, w, h, 4, pixels, (int)pitch);
+    } else {
+        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
+            pixels, w, h, /*depth=*/32, /*pitch=*/(int)pitch,
+            /*Rmask=*/0x00FF0000u, /*Gmask=*/0x0000FF00u,
+            /*Bmask=*/0x000000FFu, /*Amask=*/0xFF000000u);
+        if (surface) {
+            SDL_SaveBMP(surface, out_path);
+            SDL_FreeSurface(surface);
+        }
     }
     std::free(pixels);
 }

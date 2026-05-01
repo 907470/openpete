@@ -77,9 +77,14 @@ typedef struct {
      * 512-wide pixel coords — Phase 2 re-anchors per-element. */
     float aspect_w_over_h;
 
-    /* Screenshot */
-    int         screenshot_on_frame;   /* -1 = disabled */
-    const char* screenshot_output;     /* path; default ./shot.bmp */
+    /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
+     * listed frame; the path template can contain `{n}` to substitute the
+     * frame number per shot. Output extension `.png` writes PNG via
+     * stb_image_write; any other extension writes BMP via SDL_SaveBMP. */
+#define OPENPETE_MAX_SCREENSHOT_FRAMES 64
+    int         screenshot_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    int         screenshot_frame_count;   /* 0 = disabled */
+    const char* screenshot_output;        /* path template; default ./screenshot.png */
 
     /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison

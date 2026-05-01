@@ -985,15 +985,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * StoreFrameBuffer and SwapWindow, so it lands on the presented
          * backbuffer without polluting the VRAM mirror. */
         if (openpete_present_pending) {
-            static int screenshotted = 0;
-            if (!screenshotted && opts->screenshot_on_frame >= 0 &&
-                (int)openpete_frame >= opts->screenshot_on_frame) {
-                screenshotted = 1;
-                const char* path = opts->screenshot_output;
+            static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
+            for (int si = 0; si < opts->screenshot_frame_count; ++si) {
+                if (s_shot_fired[si]) continue;
+                if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
+                s_shot_fired[si] = true;
+                char path[1024];
+                openpete_screenshot_format_path(opts->screenshot_output,
+                                                opts->screenshot_frames[si],
+                                                path, sizeof(path));
                 openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u",
-                           path, openpete_frame);
+                           "wrote %s on frame %u (target=%d)",
+                           path, openpete_frame, opts->screenshot_frames[si]);
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
@@ -1327,13 +1331,19 @@ int openpete_run(const openpete_options_t* opts) {
         SDL_RenderClear(renderer);
         SDL_RenderPresent(renderer);
 
-        if (opts->screenshot_on_frame >= 0 && frame == opts->screenshot_on_frame) {
-            int rc = openpete_screenshot_save_png(renderer, opts->screenshot_output);
+        for (int si = 0; si < opts->screenshot_frame_count; ++si) {
+            if (frame != opts->screenshot_frames[si]) continue;
+            char path[1024];
+            openpete_screenshot_format_path(opts->screenshot_output,
+                                            opts->screenshot_frames[si],
+                                            path, sizeof(path));
+            int rc = openpete_screenshot_save_png(renderer, path);
             if (rc != 0) {
                 screenshot_status = 1;
                 exit_code = OPENPETE_EXIT_PANIC;
                 exit_reason = "screenshot-failed";
                 quit = true;
+                break;
             }
         }
 

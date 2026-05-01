@@ -22,8 +22,8 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
 void openpete_options_init(openpete_options_t* opts) {
     memset(opts, 0, sizeof(*opts));
     opts->display_name        = "OpenPete";
-    opts->screenshot_on_frame = -1;
-    opts->screenshot_output   = "./shot.bmp";
+    opts->screenshot_frame_count = 0;
+    opts->screenshot_output      = "./screenshot.png";
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
@@ -80,7 +80,26 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--screenshot-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->screenshot_on_frame = atoi(v); i++;
+            opts->screenshot_frame_count = 0;
+            const char* p = v;
+            while (*p) {
+                while (*p == ',' || *p == ' ') p++;
+                if (!*p) break;
+                if (opts->screenshot_frame_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
+                    fprintf(stderr, "openpete: --screenshot-on-frame supports up to %d frames\n",
+                            OPENPETE_MAX_SCREENSHOT_FRAMES);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                char* end = NULL;
+                long n = strtol(p, &end, 10);
+                if (end == p || n < 0) {
+                    fprintf(stderr, "openpete: --screenshot-on-frame expects N[,N2,...], got: %s\n", v);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                opts->screenshot_frames[opts->screenshot_frame_count++] = (int)n;
+                p = end;
+            }
+            i++;
         } else if (strcmp(a, "--screenshot-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;
@@ -208,8 +227,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
-                "  --screenshot-on-frame N    save BMP of frame N to --screenshot-output then continue\n"
-                "  --screenshot-output PATH   screenshot path (default ./shot.bmp)\n"
+                "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list\n"
+                "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for frame number; .png ext writes PNG, otherwise BMP\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
                 "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
                 "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
