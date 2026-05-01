@@ -428,24 +428,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (int)(256.0f * openpete_disp_w_factor + 0.5f));
     }
 
-    /* --fov / --aspect Hor+ FOV resolution.
+    /* --fov / --aspect FOV resolution.
      *
      * Spyro's native horizontal FOV at 4:3 is 2*atan(160/341) ≈ 50.4°
-     * (PSX visible half-width 160 / GTE H 341). For true Hor+ widescreen
-     * we keep vertical FOV constant and widen the horizontal cone
-     * proportional to aspect_w_over_h / (4/3). Implemented as
-     * H_target = native_H / disp_w_factor: scaling H down widens the
-     * visible cone the GTE projects.
+     * (PSX visible half-width 160 / GTE H 341).
      *
-     * Resolution:
-     *   - If --fov is given: H = 160 / tan(fov/2). User's explicit
-     *     horizontal FOV at the PSX 320-wide visible plane (composes
-     *     with --aspect because OFX widening below shifts the projection
-     *     centre, so the wider cone lands centred in the wider window).
-     *   - Else if --aspect is given: H = 341 / disp_w_factor. True Hor+
-     *     (vertical FOV preserved, horizontal FOV widens to match the
-     *     window aspect).
-     *   - Else: no override (game's H stays).
+     * For true Hor+ widescreen via --aspect alone we leave GTE H at the
+     * game's native value: widening OFX (256 -> 256*factor) plus the GL
+     * ortho widening already place the projection centre at the centre
+     * of the wider framebuffer, and the wider framebuffer admits more
+     * horizontal angular range at unchanged H. Vertical FOV is preserved
+     * because half_screen_h / H is unchanged. (Earlier versions also
+     * scaled H down by disp_w_factor; that double-applied widening on
+     * top of OFX, zooming both axes out by 1/factor — the 4:3 view ended
+     * up uniformly compressed inside the 16:9 frame instead of being its
+     * centered crop.)
+     *
+     * --fov still overrides H to the user's explicit horizontal FOV at
+     * the PSX 320-wide visible plane. It composes with --aspect (the
+     * user-chosen cone lands centred in the widened window via OFX
+     * widening) but no longer auto-derives from the aspect factor.
      *
      * 0 = no override sentinel for openpete_fov_h_override. */
     if (opts->fov_deg > 0.0f) {
@@ -458,13 +460,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "(native h_fov ~50.4° at H=341)",
                    (double)opts->fov_deg, openpete_fov_h_override);
     } else if (openpete_disp_w_factor > 0.0f) {
-        double h = 341.0 / (double)openpete_disp_w_factor;
-        if (h < 1.0) h = 1.0;
-        openpete_fov_h_override = (int)(h + 0.5);
-        double new_h_fov_deg = 2.0 * atan(160.0 / h) * (180.0 / M_PI);
-        OPL_INFO_F("fov", "Hor+ auto-FOV from --aspect: GTE H=%d "
-                   "(h_fov=%.1f°, vertical FOV preserved at ~38.7°)",
-                   openpete_fov_h_override, new_h_fov_deg);
+        /* --aspect only: keep native H. Hor+ widening is achieved by
+         * OFX scaling + GL ortho widening alone. */
+        double tan_h_native = 256.0 / 341.0;
+        double tan_h_widened = tan_h_native * (double)openpete_disp_w_factor;
+        double new_h_fov_deg = 2.0 * atan(tan_h_widened) * (180.0 / M_PI);
+        OPL_INFO_F("fov", "Hor+ from --aspect (H unchanged at native): "
+                   "h_fov ~%.1f° (4:3 native ~50.4°), vertical FOV "
+                   "preserved at ~38.7°",
+                   new_h_fov_deg);
     }
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
@@ -514,31 +518,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (double)(thresh_factor));
 
         /* r_moby.s func_80022A2C inline X-cone cull widening. The hardcoded
-         * 0.75 slope (= 4:3 horizontal half-FOV) culls gems whose
-         * world-space angle from camera-forward exceeds ~37°. At
-         * widescreen the visible cone is wider, so widen the cone-test
-         * slope by injecting an extra `extra * (MAC3+77)` subtraction at
-         * the recompiler's addi substitution site inside func_80022A2C.
-         * slope = 4 / (3 + 4*extra). Setting extra =
-         * (factor - 1) gives slope = 4 / (4*factor - 1):
-         *   1.0 (4:3):    slope 4/3 = 1.33 — wait — extra=0 here gives slope 4/3 = 1.33?
-         * Recompute: original a1 = 4*(|x|-102) - 3*(z+77). To match user
-         * mental model: cull when |x| > slope*z. slope = 3/4 = 0.75. With
-         * extra added at addi: a1 = (|x|-102-extra*(z+77)). After the
-         * shifts: 4*|x| - 408 - 4*extra*(z+77) - 3*(z+77). New slope:
-         * (3 + 4*extra) / 4. extra=0 → 0.75. extra=0.25 → slope 1.0.
-         * So extra = (factor² - 1)/4 maps factor → slope (factor² × 0.75).
-         * For 16:9 (1.333): extra = 0.194, slope ≈ 0.94 (~43° admit).
-         *   Doesn't quite reach the 46° gem; bump to (factor - 1) which
-         *   gives extra=0.333, slope=1.08 (~47°), enough for the f3000
-         *   right-side gems.
-         * Q12: extra_q12 = round((factor - 1) * 4096). */
+         * 0.75 slope (= 4:3 horizontal half-FOV, tan(36.87°)) culls
+         * mobys whose world-space angle from camera-forward exceeds ~37°.
+         * With H unchanged at native 341 and OFX widened to 256*factor,
+         * the framebuffer right edge sx = 512*factor admits IR1/SZ up to
+         * (512*factor - 256*factor)/341 = 256*factor/341 = 0.7507*factor.
+         * But the env right-edge cull (clip_x_threshold above) caps the
+         * effective right edge at 512*thresh_factor, so we use the same
+         * thresh_factor here to keep the cone matched to the actually-
+         * rendered right side at 21:9+ (where the cap kicks in).
+         *
+         * Substitution at addi-(-102) injects `-extra*(MAC3+77)`, so after
+         * the chain the test becomes 4|x| - 408 - (3 + 4*extra)*(MAC3+77)
+         * >= 0; new slope = (3 + 4*extra)/4. To match the visible cone:
+         * extra = 0.7507*thresh_factor - 0.75.
+         * Q12: extra_q12 = round(extra * 4096). */
         extern int32_t psx_runtime_moby_cone_extra_q12;
-        float extra_f = openpete_disp_w_factor - 1.0f;
+        float extra_f = (256.0f / 341.0f) * thresh_factor - 0.75f;
+        if (extra_f < 0.0f) extra_f = 0.0f;
         if (getenv("OPENPETE_MOBY_CONE_EXTRA")) {
             extra_f = (float)atof(getenv("OPENPETE_MOBY_CONE_EXTRA"));
+            if (extra_f < 0.0f) extra_f = 0.0f;
         }
-        if (extra_f < 0.0f) extra_f = 0.0f;
         psx_runtime_moby_cone_extra_q12 = (int32_t)(extra_f * 4096.0f);
         OPL_INFO_F("aspect", "moby cone-X widening: extra_q12=%d "
                    "(slope %.3f -> %.3f, admit half-FOV ~%.1f° -> ~%.1f°)",
