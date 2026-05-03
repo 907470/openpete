@@ -35,6 +35,11 @@ struct CodeGenConfig {
     bool emit_line_numbers;       // Include original address as comments
     bool optimize_zero_reg;       // Optimize away $zero assignments
     bool use_switch_for_blocks;   // Use switch instead of goto labels
+    bool emit_pc_tracking;        // Emit `cpu->pc = X;` before each insn
+                                  // (debug builds only — adds one store
+                                  // per emitted instruction). When set,
+                                  // write-watchers and the state-diff
+                                  // harness can pinpoint the writer.
     std::string indent;           // Indentation string (default: "    ")
     std::string func_prefix;      // Prepended to every emitted func_<addr> name
                                   // (default "func_"). Used to namespace per-overlay
@@ -45,6 +50,7 @@ struct CodeGenConfig {
         , emit_line_numbers(true)
         , optimize_zero_reg(true)
         , use_switch_for_blocks(false)
+        , emit_pc_tracking(false)
         , indent("    ")
         , func_prefix("func_") {}
 };

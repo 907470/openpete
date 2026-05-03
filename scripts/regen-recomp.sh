@@ -36,6 +36,16 @@ if [[ ! -x "$PSXRECOMP" ]]; then
     exit 1
 fi
 
+# Optional debug build mode: emits `cpu->pc = X;` before each MIPS insn
+# so write-watchers / state-diff harness can attribute every memory
+# write to a specific instruction. Adds one store per emitted insn —
+# slows runtime ~5-10% and bloats the generated C, so off by default.
+PCTRACK_FLAG=""
+if [[ "${OPENPETE_REGEN_PC_TRACKING:-0}" != "0" ]]; then
+    PCTRACK_FLAG="--emit-pc-tracking"
+    echo "[regen] PC tracking ENABLED (OPENPETE_REGEN_PC_TRACKING set)"
+fi
+
 OUT="games/spyro-1/generated"
 WAD_DIR="games/spyro-1/spyro-1/build/wad"
 SYNTH="tools/synth_overlay_exe.py"
@@ -114,6 +124,7 @@ process_overlay() {
         --external-prefix=psyq_
         --func-prefix="$prefix"
         --skip-on-error
+        ${PCTRACK_FLAG:+$PCTRACK_FLAG}
     )
 
     echo "[regen] $name: synth + first-pass recomp"
@@ -291,6 +302,7 @@ main_exe_args=(
     --forced-entry=0x8005A848
     --extra-funcs="$main_exe_extra"
     --skip-on-error
+    ${PCTRACK_FLAG:+$PCTRACK_FLAG}
 )
 "$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
 # NOTE: main-EXE jal-cont third-pass deliberately disabled. Adding a

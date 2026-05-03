@@ -112,6 +112,7 @@ int main(int argc, char** argv) {
         fmt::print("  --manual-impl=<file>          Manual-implementation manifest\n");
         fmt::print("  --manual-prefix=<str>         Prepend <str> to every manual-impl symbol name\n");
         fmt::print("  --func-prefix=<str>           Replace 'func_' prefix on emitted func names (e.g. level_10_func_)\n");
+        fmt::print("  --emit-pc-tracking            Emit `cpu->pc = X;` before each insn (debug — for write-watchers)\n");
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
         fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
@@ -129,6 +130,7 @@ int main(int argc, char** argv) {
     bool skip_on_error = false;
     std::vector<uint32_t> forced_entries;
     std::string emit_external_jals_path;
+    bool emit_pc_tracking = false;
 
     auto take_value = [](const std::string& a, const char* prefix) -> std::string {
         size_t plen = std::strlen(prefix);
@@ -152,6 +154,7 @@ int main(int argc, char** argv) {
         else if (!(v = take_value(a, "--emit-external-jals")).empty()) emit_external_jals_path = v;
         else if (a == "--emit-external-jals" && i + 1 < argc)         emit_external_jals_path = argv[++i];
         else if (a == "--skip-on-error")                              skip_on_error = true;
+        else if (a == "--emit-pc-tracking")                           emit_pc_tracking = true;
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
         else if (a == "--external-symbols" && i + 1 < argc)           external_syms_path = argv[++i];
@@ -493,6 +496,7 @@ int main(int argc, char** argv) {
     codegen_config.emit_comments = true;
     codegen_config.emit_line_numbers = true;
     codegen_config.func_prefix = func_prefix;
+    codegen_config.emit_pc_tracking = emit_pc_tracking;
 
     // Load per-game annotations: <output_dir>/../manifest/<stem>_annotations.csv,
     // falling back to ./annotations/<stem>_annotations.csv for compat.

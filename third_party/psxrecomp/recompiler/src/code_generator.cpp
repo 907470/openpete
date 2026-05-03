@@ -1074,7 +1074,15 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
         }
     }
 
-    return config_.indent + code + comment;
+    /* Per-instruction PC tracking. When enabled, prepend `cpu->pc = X;`
+     * so write-watchers and the state-diff harness can attribute every
+     * memory write to the exact MIPS instruction that produced it. Costs
+     * one store per emitted instruction; off by default. */
+    std::string pc_emit;
+    if (config_.emit_pc_tracking) {
+        pc_emit = fmt::format("cpu->pc = 0x{:08X}; ", addr);
+    }
+    return config_.indent + pc_emit + code + comment;
 }
 
 std::string CodeGenerator::translate_basic_block(
