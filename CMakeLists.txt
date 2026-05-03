@@ -81,4 +81,18 @@ option(OPENPETE_BUILD_TESTS "Build host-side unit tests" ON)
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     enable_testing()
     add_subdirectory(tests/unit)
+
+    # Integration test: gameplay-state-vs-presentation determinism.
+    # Asserts that running the headless demo at multiple aspect ratios
+    # produces bit-identical gameplay state. Slow (boots two PSX
+    # sessions); labeled `slow` so plain `ctest` skips it. Run with
+    # `ctest -L slow` or directly via the script.
+    add_test(NAME aspect_determinism
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_aspect_determinism.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --frames=8000)
+    set_tests_properties(aspect_determinism PROPERTIES
+        LABELS "slow;determinism"
+        TIMEOUT 600
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

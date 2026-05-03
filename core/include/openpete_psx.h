@@ -46,6 +46,22 @@ void openpete_psx_runtime_init(CPUState* cpu);
 uint8_t* openpete_psx_get_ram(void);
 uint8_t* openpete_psx_get_scratch(void);
 
+/* Gameplay-state regions for the determinism harness. The runtime's
+ * --gameplay-hash-log path hashes the union of these regions per
+ * yield. Per-game TUs (games/<game>/...) define the actual table; if
+ * a game doesn't supply one, openpete_state_region_count == 0 and the
+ * hash log is just the FNV1a-64 offset basis (effectively a no-op
+ * sentinel). See manifest/gameplay_state_regions.toml +
+ * tools/gen_state_regions.py for the canonical generation path, and
+ * notes/plans/openpete-determinism-enforcement.md Phase 1. */
+typedef struct {
+    uint32_t    start;       /* PSX virtual address (KSEG0) */
+    uint32_t    length;      /* bytes */
+    const char* name;        /* for diagnostics */
+} OpenpeteStateRegion;
+extern const OpenpeteStateRegion* openpete_state_regions;
+extern size_t                     openpete_state_region_count;
+
 /* Map a PSX virtual address to a host pointer. Returns NULL if `addr` is
  * unmapped, OR if `addr == 0` (treated as PSX NULL). PSYQ thunks use this
  * to translate pointer arguments (held in cpu->aN as PSX vaddrs) to host

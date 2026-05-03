@@ -150,7 +150,30 @@ endif()
 # openpete_core (which adds psxrecomp/runner/include).
 target_include_directories(openpete-spyro1 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${SPYRO_GENERATED})
+    ${SPYRO_GENERATED}
+    ${CMAKE_CURRENT_BINARY_DIR}/gen)
+
+# Gameplay-state-regions table: generate from manifest, wrap in a TU
+# that registers the table with openpete_core's extern hooks. See
+# manifest/gameplay_state_regions.toml +
+# notes/plans/openpete-determinism-enforcement.md Phase 1.
+set(_spyro_state_regions_manifest
+    ${CMAKE_SOURCE_DIR}/manifest/gameplay_state_regions.toml)
+set(_spyro_state_regions_header
+    ${CMAKE_CURRENT_BINARY_DIR}/gen/gameplay_state_regions.gen.h)
+add_custom_command(
+    OUTPUT  ${_spyro_state_regions_header}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
+            --manifest ${_spyro_state_regions_manifest}
+            --out      ${_spyro_state_regions_header}
+    DEPENDS ${_spyro_state_regions_manifest}
+            ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
+    COMMENT "Generating Spyro gameplay_state_regions.gen.h")
+target_sources(openpete-spyro1 PRIVATE
+    ${_spyro_state_regions_header}
+    spyro_state_regions.c)
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 

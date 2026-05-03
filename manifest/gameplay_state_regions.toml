@@ -1,0 +1,159 @@
+# gameplay_state_regions.toml — addresses whose divergence between
+# presentation modes is a determinism failure.
+#
+# This manifest is the contract underpinning the "1:1 with PSX
+# hardware" North Star. The aspect_determinism CTest gate hashes
+# these regions per-frame and asserts byte-identity across
+# presentation settings. Anything OUTSIDE these regions is
+# presentation scratch (OT, prim buffers, render-side caches) and is
+# excluded from the gate.
+#
+# Address sources:
+#   - games/spyro-1/spyro-1/build/psx.map   (linker-resolved globals)
+#   - games/spyro-1/spyro-1/include/*.h      (struct sizes)
+#   - bisect findings (notes/plans/openpete-presentation-decoupling.md)
+#
+# Editing rules:
+#   - PRs that touch presentation surface and add a new region MUST
+#     justify why it's gameplay-state and not presentation scratch.
+#   - PRs that REMOVE or SHRINK a region must demonstrate (via the
+#     harness) that no real coupling lives in the removed bytes.
+#   - When the decomp progresses and a struct's exact size becomes
+#     known, tighten the corresponding `length` field.
+
+# ─── Singletons in the main EXE's .bss/.sbss ──────────────────────────
+# Verified addresses from psx.map / nm output 2026-05-03.
+
+[[region]]
+name        = "g_HudMobys"
+start       = 0x80075710
+length      = 0x4
+description = "Pointer to HUD-moby pool (gem counters, life icons, etc.)"
+
+[[region]]
+name        = "g_GameTick"
+start       = 0x8007572C
+length      = 0x4
+description = "Master frame counter incremented in GamestateUpdate"
+
+[[region]]
+name        = "g_MobyAllocPtr"
+start       = 0x8007573C
+length      = 0x4
+description = "Bump allocator cursor for dynamic moby spawns"
+
+[[region]]
+name        = "g_KeyMoby"
+start       = 0x80075758
+length      = 0x4
+description = "Pointer to current key moby (gates inventory)"
+
+[[region]]
+name        = "g_UnprocessedFrames"
+start       = 0x80075760
+length      = 0x4
+description = "Frame-pacing accumulator read by main loop"
+
+[[region]]
+name        = "g_MobyPods"
+start       = 0x800757F8
+length      = 0x4
+description = "Pointer to moby pod chain (linked iteration in update list)"
+
+[[region]]
+name        = "g_Particles"
+start       = 0x80075824
+length      = 0x4
+description = "Particle pool head pointer"
+
+[[region]]
+name        = "g_LevelMobys"
+start       = 0x80075828
+length      = 0x4
+description = "Level-static moby array head pointer"
+
+[[region]]
+name        = "g_DynMobys"
+start       = 0x80075890
+length      = 0x4
+description = "Dynamic moby pool head pointer"
+
+[[region]]
+name        = "g_Sparx"
+start       = 0x80075898
+length      = 0x4
+description = "Pointer to Sparx moby (companion dragonfly state)"
+
+[[region]]
+name        = "psyq_rand_seed"
+start       = 0x80075AC0
+length      = 0x4
+description = "PSYQ libc rand() state. Critical: any divergent advance of this seed drifts every subsequent random gameplay event."
+
+# ─── g_Camera ─────────────────────────────────────────────────────────
+# include/camera.h Camera struct. SHORTMATRIX = 20 bytes; struct ends
+# at the SphericalCoordsOffset chain + a few state fields. 0x200 is
+# generous; trim once the struct's full size is decoded.
+
+[[region]]
+name        = "g_Camera"
+start       = 0x80076DD0
+length      = 0x200
+description = "Camera struct: ProjectionMatrix, ViewMatrix, m_Position, m_Rotation, simulation/sphere coords, focus, state flags."
+
+# ─── g_Spyro ──────────────────────────────────────────────────────────
+# Moby (0x58) + Spyro-specific tail (animation rig, breath state,
+# health, inventory counts, etc.). The decomp hasn't pinned the exact
+# tail size; 0x500 covers everything observed in bisects without
+# bleeding into adjacent globals.
+
+[[region]]
+name        = "g_Spyro"
+start       = 0x80078A58
+length      = 0x500
+description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
+
+# ─── Sbss render-side scratch with known leak channels ───────────────
+# These are *small* tables in main-exe sbss that the renderer writes
+# during draw and gameplay reads next frame. Documented leak channels.
+# Status of each is tracked separately in render_channels.toml (Phase 4).
+
+[[region]]
+name        = "render_channel:sector_visibility_flags"
+start       = 0x80070000
+length      = 0x1000
+description = "env-renderer per-cell visibility byte table (range covers 0x80070C00-0x80070FFF observed leaks; broad until trimmed). Status: OPEN channel — see render_channels.toml."
+
+[[region]]
+name        = "render_channel:moby_render_queue"
+start       = 0x80071000
+length      = 0x1000
+description = "Moby render queue / pointer table. Bisect identified 0x80071800-0x80071F00 specifically; broad coverage until tightened. Status: OPEN channel."
+
+[[region]]
+name        = "render_channel:dedup_flag_table"
+start       = 0x80077868
+length      = 0x20
+description = "func_80051FEC's per-class dedup flag table (32 bytes). Read by update list builder; written by render-side too."
+
+[[region]]
+name        = "render_channel:class_skip_flags"
+start       = 0x800771C8
+length      = 0x40
+description = "func_800521C0's per-class skip-render flag table."
+
+# ─── Moby pools — DEFERRED to indirect-region manifest format ──────────
+# g_LevelMobys / g_DynMobys are pointers; moby data lives in dynamic
+# level-overlay RAM. A naive start..start+length region here would
+# cover megabytes of overlay code/data that legitimately differs
+# between aspects (textures, models, OT scratch loaded at variable
+# times during the title-screen-to-level transition) and would drown
+# the gate in noise.
+#
+# To hash the actual moby state, we need an "indirect" region kind:
+#   { kind = "indirect_array", base_ptr_addr = 0x80075828,
+#     element_size = 0x58, max_elements = 256 }
+# i.e. dereference base_ptr_addr, then hash N elements of size S
+# starting at the dereffed pointer. Punt to Phase 1.5 — the
+# singletons + render-channel regions below are sufficient to detect
+# every channel we currently know about.

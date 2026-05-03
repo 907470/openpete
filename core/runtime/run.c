@@ -87,6 +87,44 @@ static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
     fprintf(fp, "%u,%d,%d,%d,%d\n", frame, vbl, x, y, z);
 }
 
+/* Default-empty fallback for the gameplay-state regions table. Per-game
+ * TUs override this by defining their own non-weak symbols (see
+ * games/spyro-1/spyro_state_regions.c). Without an override the hash
+ * log is the FNV1a-64 offset basis on every frame — useless but
+ * link-safe, so a smoke build of core/ alone still works. */
+__attribute__((weak)) const OpenpeteStateRegion* openpete_state_regions = NULL;
+__attribute__((weak)) size_t openpete_state_region_count = 0;
+
+/* FNV1a-64 hash over every gameplay-readable region the per-game TU
+ * registered. The harness consumes this log as the primary
+ * determinism gate — anything that perturbs gameplay state shows up
+ * as a hash divergence at the first frame the perturbation reaches
+ * one of the registered regions. See
+ * notes/plans/openpete-determinism-enforcement.md Phase 1. */
+static uint64_t gameplay_hash_compute(void) {
+    const uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
+    const uint64_t FNV_PRIME  = 0x00000100000001B3ULL;
+    uint64_t h = FNV_OFFSET;
+    const uint8_t* ram = openpete_psx_get_ram();
+    for (size_t r = 0; r < openpete_state_region_count; r++) {
+        const OpenpeteStateRegion* reg = &openpete_state_regions[r];
+        /* PSX vaddr → raw RAM offset; mask to the low 21 bits (2 MB). */
+        uint32_t off = reg->start & 0x1FFFFFu;
+        uint32_t end = off + reg->length;
+        if (end > 2u * 1024u * 1024u) end = 2u * 1024u * 1024u;
+        for (uint32_t i = off; i < end; i++) {
+            h ^= ram[i];
+            h *= FNV_PRIME;
+        }
+    }
+    return h;
+}
+
+static void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
+    uint64_t h = gameplay_hash_compute();
+    fprintf(fp, "%u,%d,%016llx\n", frame, vbl, (unsigned long long)h);
+}
+
 /* Implemented in core/runtime/exe_loader.cpp. */
 extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                 const char* exe_filename,
@@ -734,6 +772,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->position_log_path);
     }
 
+    /* Primary determinism gate. See gameplay_hash_log_emit + the
+     * Phase 1 doc. */
+    FILE* gameplay_hash_log_fp = NULL;
+    if (opts->gameplay_hash_log_path && *opts->gameplay_hash_log_path) {
+        gameplay_hash_log_fp = fopen(opts->gameplay_hash_log_path, "wb");
+        if (!gameplay_hash_log_fp) {
+            OPL_ERROR_F("gameplay-hash-log", "fopen %s failed: %s",
+                        opts->gameplay_hash_log_path, strerror(errno));
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        fputs("frame,vbl,fnv1a64\n", gameplay_hash_log_fp);
+        OPL_INFO_F("gameplay-hash-log",
+                   "FNV1a-64 over %zu state regions to %s",
+                   openpete_state_region_count,
+                   opts->gameplay_hash_log_path);
+    }
+
     /* --bk2-record: prepare the in-memory frame buffer. The file isn't
      * touched until exit, so a SIGTERM/Ctrl-C against the run still
      * produces a usable movie. */
@@ -954,6 +1009,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (position_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
             position_log_emit(position_log_fp, openpete_frame,
                               SDL_AtomicGet(&openpete_vbl));
+        }
+        if (gameplay_hash_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
+            gameplay_hash_log_emit(gameplay_hash_log_fp, openpete_frame,
+                                   SDL_AtomicGet(&openpete_vbl));
         }
 
         /* --bk2-record: one bk2 frame per openpete_frame so replay timing
@@ -1209,6 +1268,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (position_log_fp) {
         fclose(position_log_fp);
         position_log_fp = NULL;
+    }
+    if (gameplay_hash_log_fp) {
+        fclose(gameplay_hash_log_fp);
+        gameplay_hash_log_fp = NULL;
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

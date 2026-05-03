@@ -210,6 +210,16 @@ typedef struct {
      * a second game we'll route this through game_extras. */
     const char* position_log_path;
 
+    /* --gameplay-hash-log PATH (default NULL): per-yield, hash the
+     * gameplay-readable region defined by manifest/gameplay_state_regions.toml
+     * with FNV1a-64 and append `frame,vbl,hex_hash` to PATH. The
+     * regions are loaded statically (compiled-in copy of the manifest)
+     * so the runtime has zero runtime-config requirement. Used by
+     * scripts/check_aspect_determinism.sh as the primary determinism
+     * gate — the per-position log is a coarse proxy that misses leaks
+     * not yet propagated to Spyro's m_Position. NULL = disabled. */
+    const char* gameplay_hash_log_path;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever
