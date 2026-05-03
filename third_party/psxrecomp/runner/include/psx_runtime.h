@@ -105,6 +105,16 @@ extern uint32_t psx_runtime_clip_x_threshold;
  * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
 extern int32_t psx_runtime_moby_cone_extra_q12;
 
+/* Per-iteration scratch flag set inside each render-bucket walker's
+ * cone test (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1
+ * iff the moby would have passed the *native 4:3* cone test, regardless
+ * of the actual cone width used for emit. The substituted
+ * `sb $a0, 0x51($fp)` sites (0x8001F4CC / 0x80020C7C / 0x80022D98) read
+ * this flag and only set m_WasDrawn=1 when it's set. Effect: the
+ * render→gameplay channel (m_WasDrawn) stays 4:3-equivalent while
+ * widescreen rendering still admits + emits edge mobys. */
+extern uint8_t psx_runtime_native_cone_pass;
+
 /* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
  * clamp. The dispatcher computes a per-portal screen-space clip rect
  * (D_8007AA00..0C) then clamps the upper-X corner with

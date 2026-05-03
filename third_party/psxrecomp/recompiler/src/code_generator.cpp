@@ -358,10 +358,42 @@ std::string CodeGenerator::translate_swr(uint32_t instr) {
     }
 }
 
-std::string CodeGenerator::translate_sb(uint32_t instr) {
+std::string CodeGenerator::translate_sb(uint32_t instr, uint32_t addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
+
+    /* m_WasDrawn iter-start clear sites in the per-bucket render walkers
+     * (0x8001F1FC regular, 0x800209A8 specular, 0x80022B28 shaded). Set
+     * `psx_runtime_native_cone_pass = 1` here so billboard / extended-
+     * radius mobys that bypass the cone-test substitution still get
+     * their m_WasDrawn=1 write through; the cone-test substitution
+     * (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) overrides to
+     * 0 when it culls at native cone. */
+    if (addr == 0x8001F1FCu || addr == 0x800209A8u || addr == 0x80022B28u) {
+        if (offset == 0) {
+            return fmt::format(
+                "psx_runtime_native_cone_pass = 1; cpu->write_byte({}, (uint8_t){});",
+                reg_name(rs), reg_name(rt));
+        } else {
+            return fmt::format(
+                "psx_runtime_native_cone_pass = 1; cpu->write_byte({} + {}, (uint8_t){});",
+                reg_name(rs), offset, reg_name(rt));
+        }
+    }
+
+    /* m_WasDrawn=1 cull-pass write sites: gate on native cone pass. */
+    if (addr == 0x8001F4CCu || addr == 0x80020C7Cu || addr == 0x80022D98u) {
+        if (offset == 0) {
+            return fmt::format(
+                "if (psx_runtime_native_cone_pass) cpu->write_byte({}, (uint8_t){});",
+                reg_name(rs), reg_name(rt));
+        } else {
+            return fmt::format(
+                "if (psx_runtime_native_cone_pass) cpu->write_byte({} + {}, (uint8_t){});",
+                reg_name(rs), offset, reg_name(rt));
+        }
+    }
 
     if (offset == 0) {
         return fmt::format("cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
@@ -740,13 +772,27 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * unchanged. Address-explicit so unrelated `sub r,r,r`
                      * stay untouched. */
                     if (addr == 0x8001F30Cu || addr == 0x80020AB8u) {
+                        /* Compute the *native* (4:3) cone-test verdict
+                         * alongside the widened substitution. The full
+                         * native chain after this sub + the sll/sub/sll/sub
+                         * tail is `4*(|MAC1|-a2) - 3*(MAC3+a3)`. We have
+                         * |MAC1|=$rs, a2=$rt, MAC3=cpu->v1, a3=cpu->a3
+                         * here, so the test result can be evaluated in one
+                         * expression. Stash to a host-side flag; the
+                         * substituted m_WasDrawn=1 write at 0x8001F4CC /
+                         * 0x80020C7C reads it. See psx_runtime.h
+                         * `psx_runtime_native_cone_pass`. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         uint32_t rd = get_rd(instr);
                         code = fmt::format(
+                            "psx_runtime_native_cone_pass = "
+                            "(uint8_t)((4 * ((int32_t){} - (int32_t){}) "
+                            "- 3 * ((int32_t)cpu->v1 + (int32_t)cpu->a3)) < 0); "
                             "{} = (int32_t){} - (int32_t){} "
                             "- (int32_t)(((int64_t)((int32_t)cpu->v1 + (int32_t)cpu->a3) "
                             "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14);",
+                            reg_name(rs), reg_name(rt),
                             reg_name(rd), reg_name(rs), reg_name(rt));
                     } else {
                         code = translate_sub(instr);
@@ -786,10 +832,19 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     uint32_t rt = get_rt(instr);
                     int16_t imm = (int16_t)get_imm16_u(instr);
                     if (addr == 0x80022C0Cu && imm == -0x66) {
+                        /* Native (4:3) cone-test verdict for the m_WasDrawn
+                         * gating at 0x80022D98. Native chain after this
+                         * addi is `4*(|MAC1|-102) - 3*(MAC3+77)`; here
+                         * |MAC1|=$rs, MAC3=cpu->gte_data[27]. See
+                         * psx_runtime.h `psx_runtime_native_cone_pass`. */
                         code = fmt::format(
+                            "psx_runtime_native_cone_pass = "
+                            "(uint8_t)((4 * ((int32_t){} - 102) "
+                            "- 3 * ((int32_t)cpu->gte_data[27] + 77)) < 0); "
                             "{} = (int32_t){} + ({}) "
                             "- (int32_t)(((int64_t)((int32_t)cpu->gte_data[27] + 77) "
                             "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12);",
+                            reg_name(rs),
                             reg_name(rt), reg_name(rs), (int)imm);
                     } else {
                         code = translate_addiu(instr);
@@ -962,7 +1017,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25: code = translate_lhu(instr); break;    // lhu
             case 0x26: code = translate_lwr(instr); break;    // lwr
-            case 0x28: code = translate_sb(instr); break;     // sb
+            case 0x28: code = translate_sb(instr, addr); break;     // sb
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B: code = translate_sw(instr); break;     // sw

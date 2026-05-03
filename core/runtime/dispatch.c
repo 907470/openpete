@@ -37,6 +37,19 @@ uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
  * preserves native 4:3 cone (slope 0.75). See psx_runtime.h. */
 int32_t psx_runtime_moby_cone_extra_q12 = 0;
 
+/* Per-iteration "moby would have passed the native 4:3 cone test" flag
+ * computed alongside the widened cone test in each per-bucket render
+ * walker. Consumed by the substituted m_WasDrawn=1 write sites so
+ * gameplay's m_WasDrawn reads see the 4:3 verdict regardless of the
+ * actual rendered cone width. Address tags live in the recompiler
+ * substitution (third_party/psxrecomp/recompiler/src/code_generator.cpp)
+ * and the doc at notes/plans/spyro-moby-update-vs-render.md; not
+ * repeated here so the core/ purity check stays clean. Reset per-moby;
+ * no thread or recursion concerns since render is single-threaded and
+ * the read site is downstream of the cone test within the same
+ * iteration. */
+uint8_t psx_runtime_native_cone_pass = 0;
+
 /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
  * 512 / 513 preserve native 4:3 behavior. See psx_runtime.h. */
 uint32_t psx_runtime_portal_clip_x_max = 0x200u;

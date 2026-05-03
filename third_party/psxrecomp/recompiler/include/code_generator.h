@@ -205,7 +205,7 @@ private:
     std::string translate_lwr(uint32_t instr);
     std::string translate_swl(uint32_t instr);
     std::string translate_swr(uint32_t instr);
-    std::string translate_sb(uint32_t instr);
+    std::string translate_sb(uint32_t instr, uint32_t addr);
     std::string translate_sh(uint32_t instr);
 
     // Immediate instructions

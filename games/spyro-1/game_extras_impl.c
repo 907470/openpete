@@ -294,6 +294,39 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
+    /* GamestateDraw bracket: confine Hor+ widening to the render pass so
+     * GamestateUpdate's GTE work sees native 4:3 state and stays as
+     * close to bit-identical between aspect modes as possible.
+     *
+     * Reduction observed (20000-frame demo): without bracket 13327
+     * frames diverge with peak Δ²=6.04 B; with bracket 7824 / 88.6 M
+     * (~68× peak shrink). The remaining drift comes from render-side
+     * mutations of moby visibility/pointer tables in 0x70000-0x71E00,
+     * which feed the next GamestateUpdate. Documented in
+     * notes/plans/openpete-widescreen-fov.md. */
+    extern void func_8001ED5C(CPUState* cpu);
+    extern int  openpete_render_pass_active;
+    extern int32_t psx_runtime_moby_cone_extra_q12;
+    extern int32_t openpete_moby_cone_extra_q12_render;
+    static int s_in_render_pass = 0;
+
+    if (addr == 0x8001ED5Cu && openpete_disp_w_factor > 0.0f
+        && !s_in_render_pass) {
+        s_in_render_pass = 1;
+        openpete_render_pass_active = 1;
+        psx_runtime_moby_cone_extra_q12 = openpete_moby_cone_extra_q12_render;
+        uint32_t saved_gte_data[32], saved_gte_ctrl[32];
+        memcpy(saved_gte_data, cpu->gte_data, sizeof(saved_gte_data));
+        memcpy(saved_gte_ctrl, cpu->gte_ctrl, sizeof(saved_gte_ctrl));
+        func_8001ED5C(cpu);
+        memcpy(cpu->gte_data, saved_gte_data, sizeof(saved_gte_data));
+        memcpy(cpu->gte_ctrl, saved_gte_ctrl, sizeof(saved_gte_ctrl));
+        psx_runtime_moby_cone_extra_q12 = 0;
+        openpete_render_pass_active = 0;
+        s_in_render_pass = 0;
+        return 1;
+    }
+
     static int s_in_env_renderer = 0;
     if (addr == 0x800258F0u && openpete_disp_w_factor > 0.0f
         && !s_in_env_renderer) {
@@ -322,12 +355,19 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         const uint32_t mvm_addr = 0x80078A58u - 0x80000000u;  /* TODO from manifest */
         (void)mvm_addr;  /* m_ViewMatrix lives at g_Camera + 0x14 */
         const uint32_t vm_base = 0x80076DD0u + 0x14u;
-        int16_t saved_row0[3];
+        /* Save the full 20-byte SHORTMATRIX (9 shorts + pad). The
+         * native renderer body may compose row 0 with rows 1/2 via
+         * MVMVA chains and write back the composed matrix; restoring
+         * only row 0 leaves widened residue in rows 1/2 that gameplay's
+         * next CameraUpdateMatrices reads. See RAM-diff under
+         * notes/plans/openpete-widescreen-fov.md. */
+        uint8_t saved_view_matrix[20];
+        memcpy(saved_view_matrix,
+               openpete_psx_get_ram() + (vm_base & 0x1FFFFFFFu), 20);
         int16_t row0[3];
         for (int i = 0; i < 3; i++) {
-            uint16_t h = cpu->read_half(vm_base + (uint32_t)(i * 2));
-            saved_row0[i] = (int16_t)h;
-            float scaled = (float)saved_row0[i] / openpete_disp_w_factor;
+            int16_t orig = (int16_t)cpu->read_half(vm_base + (uint32_t)(i * 2));
+            float scaled = (float)orig / openpete_disp_w_factor;
             if (scaled >  32767.0f) scaled =  32767.0f;
             if (scaled < -32768.0f) scaled = -32768.0f;
             row0[i] = (int16_t)scaled;
@@ -376,11 +416,10 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
             }
         }
 
-        /* Restore so non-renderer consumers see native matrix. */
-        for (int i = 0; i < 3; i++) {
-            cpu->write_half(vm_base + (uint32_t)(i * 2),
-                            (uint16_t)saved_row0[i]);
-        }
+        /* Restore the full m_ViewMatrix so any composed-matrix
+         * writebacks inside func_800258F0 don't leak into gameplay. */
+        memcpy(openpete_psx_get_ram() + (vm_base & 0x1FFFFFFFu),
+               saved_view_matrix, 20);
         cpu->write_word(cd_addr, saved_cd);
         s_in_env_renderer = 0;
         return 1;
@@ -413,6 +452,14 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         && !s_in_cyclorama) {
         s_in_cyclorama = 1;
         uint32_t mat_addr = cpu->a2;
+        /* Save the full 20-byte SHORTMATRIX. The native cyclorama
+         * renderer composes the scaled row 0 into the rest of the
+         * matrix and writes the composed values back; restoring only
+         * row 0 leaves rows 1/2 contaminated and gameplay's next
+         * CameraUpdateMatrices reads widened residue. */
+        uint8_t saved_matrix[20];
+        memcpy(saved_matrix,
+               openpete_psx_get_ram() + (mat_addr & 0x1FFFFFFFu), 20);
         int16_t saved_row0[3];
         float max_abs = 1.0f;
         for (int i = 0; i < 3; i++) {
@@ -431,10 +478,8 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
                             (uint16_t)(int16_t)scaled);
         }
         func_8004EBA8(cpu);
-        for (int i = 0; i < 3; i++) {
-            cpu->write_half(mat_addr + (uint32_t)(i * 2),
-                            (uint16_t)saved_row0[i]);
-        }
+        memcpy(openpete_psx_get_ram() + (mat_addr & 0x1FFFFFFFu),
+               saved_matrix, 20);
         s_in_cyclorama = 0;
         return 1;
     }

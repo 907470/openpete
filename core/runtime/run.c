@@ -533,14 +533,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * >= 0; new slope = (3 + 4*extra)/4. To match the visible cone:
          * extra = 0.7507*thresh_factor - 0.75.
          * Q12: extra_q12 = round(extra * 4096). */
+        /* Stage the widened cone value into a host-side global; the
+         * GamestateDraw dispatch hook swaps it into psx_runtime_moby_cone_extra_q12
+         * for the render pass and zeroes it on exit, so func_80022A2C's
+         * gameplay-side callers (moby ticking) keep seeing the native cone. */
         extern int32_t psx_runtime_moby_cone_extra_q12;
+        extern int32_t openpete_moby_cone_extra_q12_render;
         float extra_f = (256.0f / 341.0f) * thresh_factor - 0.75f;
         if (extra_f < 0.0f) extra_f = 0.0f;
         if (getenv("OPENPETE_MOBY_CONE_EXTRA")) {
             extra_f = (float)atof(getenv("OPENPETE_MOBY_CONE_EXTRA"));
             if (extra_f < 0.0f) extra_f = 0.0f;
         }
-        psx_runtime_moby_cone_extra_q12 = (int32_t)(extra_f * 4096.0f);
+        openpete_moby_cone_extra_q12_render = (int32_t)(extra_f * 4096.0f);
+        psx_runtime_moby_cone_extra_q12 = 0;  /* native cone outside render pass */
 
         /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp.
          * Native code clamps the per-portal clip rect's right edge to

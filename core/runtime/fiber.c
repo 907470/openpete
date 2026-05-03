@@ -18,6 +18,13 @@ int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;
 int          openpete_fov_h_override    = 0;
 float        openpete_disp_w_factor     = 0.0f;
+/* Set while GamestateDraw is on the call stack. Hor+ widening (GTE OFX,
+ * moby-cone substitution) must only apply to render-pass GTE work; if it
+ * leaks into GamestateUpdate, gameplay state diverges between aspects. */
+int          openpete_render_pass_active = 0;
+/* Render-pass cone-widening value, staged at startup by run.c and swapped
+ * into psx_runtime_moby_cone_extra_q12 around the GamestateDraw call. */
+int32_t      openpete_moby_cone_extra_q12_render = 0;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */

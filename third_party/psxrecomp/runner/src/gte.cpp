@@ -21,6 +21,7 @@ extern "C" {
      * and need to be widened here at the GTE-instruction layer. */
     extern float openpete_disp_w_factor;
     extern int   openpete_fov_h_override;
+    extern int   openpete_render_pass_active;
 }
 
 namespace PSXRecomp {
@@ -250,7 +251,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     int32_t eff_H = (openpete_fov_h_override != 0)
                     ? openpete_fov_h_override
                     : (int32_t)gte->H;
-    int64_t eff_OFX = (openpete_disp_w_factor > 0.0f)
+    int64_t eff_OFX = (openpete_disp_w_factor > 0.0f && ::openpete_render_pass_active)
                      ? (int64_t)((double)gte->OFX * (double)openpete_disp_w_factor)
                      : (int64_t)gte->OFX;
 
