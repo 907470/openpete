@@ -697,6 +697,30 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                               1.0f)));
     }
 
+    /* App icon decoded at build time from the PSX save-file header
+     * (the red gem from the BIOS memory-card screen). The Win32 .rc
+     * resource handles taskbar / .exe shortcut / alt-tab on Windows;
+     * SDL_SetWindowIcon covers the live window on every platform.
+     * Weakly referenced so a build that opts out of the icon
+     * generator step still links. */
+    if (g_window) {
+        extern const uint8_t openpete_spyro1_icon_rgba[]
+            __attribute__((weak));
+        extern const int openpete_spyro1_icon_w __attribute__((weak));
+        extern const int openpete_spyro1_icon_h __attribute__((weak));
+        if (&openpete_spyro1_icon_w && openpete_spyro1_icon_w > 0) {
+            SDL_Surface* icon = SDL_CreateRGBSurfaceFrom(
+                (void*)openpete_spyro1_icon_rgba,
+                openpete_spyro1_icon_w, openpete_spyro1_icon_h,
+                32, openpete_spyro1_icon_w * 4,
+                0x000000FFu, 0x0000FF00u, 0x00FF0000u, 0xFF000000u);
+            if (icon) {
+                SDL_SetWindowIcon(g_window, icon);
+                SDL_FreeSurface(icon);
+            }
+        }
+    }
+
     if (opts->headless && g_window) {
         SDL_HideWindow(g_window);
         OPL_INFO_F("boot", "headless: hid PsyCross window (driver=%s)",

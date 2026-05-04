@@ -177,6 +177,39 @@ target_sources(openpete-spyro1 PRIVATE
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
+# App icon decoded from the PSX save-file header's CLUT+icon data
+# (see spyro-1/include/save_file.h:39). The same generator emits a
+# .ico for the Win32 resource compiler and a C source for
+# SDL_SetWindowIcon at runtime; the runtime path covers Linux/macOS
+# and is also a fallback on Windows for the live window.
+set(_spyro_icon_src
+    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
+set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
+set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
+add_custom_command(
+    OUTPUT  ${_spyro_icon_c}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+            --c ${_spyro_icon_c}
+    DEPENDS ${_spyro_icon_src} ${_spyro_icon_tool}
+    COMMENT "Decoding PSX memcard icon → openpete_spyro1_icon.c")
+target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_c})
+
+if(WIN32)
+    set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
+    set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
+    add_custom_command(
+        OUTPUT  ${_spyro_icon_ico}
+        COMMAND python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+                --ico ${_spyro_icon_ico}
+        DEPENDS ${_spyro_icon_src} ${_spyro_icon_tool}
+        COMMENT "Decoding PSX memcard icon → openpete-spyro1.ico")
+    file(GENERATE OUTPUT ${_spyro_icon_rc}
+         CONTENT "1 ICON \"${_spyro_icon_ico}\"\n")
+    target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
+endif()
+
 # Backtrace symbols: pass -rdynamic so non-static functions resolve to names
 # in the crash handler's backtrace_symbols_fd output. Cheap (~bigger symtab)
 # and only relevant on the Linux/glibc build path.

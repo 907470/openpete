@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Decode a PSX memcard save header's icon (frame 0) and emit a Windows
+.ico and/or a C source containing the icon as RGBA8888 for SDL_SetWindowIcon.
+
+The input is a 512-byte PSX save-file header following SaveFileHeader from
+spyro-1/include/save_file.h:39. Layout:
+  off  0x00  char    m_Magic[2]            ("SC")
+  off  0x02  u_char  m_IconDisplayFlag
+  off  0x03  u_char  m_BlockNum
+  off  0x04  u_char  m_Title[0x40]
+  off  0x44  char    reserved[0x1C]
+  off  0x60  u_short m_Clut[0x10]          (16x BGR555, little-endian)
+  off  0x80  u_char  m_Icon[0x80][3]       (3x 16x16 4bpp animation frames)
+
+Only frame 0 of m_Icon is used; the BIOS-screen anim is trivia.
+
+CLUT entry 0 is the conventional "transparent" slot — mapped to alpha 0
+so the icon's background is see-through against the host window manager.
+"""
+
+import argparse
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+ICON_W = 16
+ICON_H = 16
+ICON_BYTES = ICON_W * ICON_H // 2  # 4bpp packed = 128 bytes per frame
+HEADER_SIZE = 512
+CLUT_OFF = 0x60
+ICON_FRAME0_OFF = 0x80
+
+
+def decode_frame0(data: bytes) -> list[tuple[int, int, int, int]]:
+    """Return ICON_W*ICON_H RGBA tuples in row-major order, top-to-bottom."""
+    if len(data) < HEADER_SIZE:
+        sys.exit(f"input shorter than 512 bytes ({len(data)} bytes)")
+    if data[:2] != b"SC":
+        sys.exit(f"bad magic {data[:2]!r}, expected b'SC'")
+
+    clut = []
+    for i in range(16):
+        c = struct.unpack_from("<H", data, CLUT_OFF + 2 * i)[0]
+        # PSX BGR555: bits 0..4 = R, 5..9 = G, 10..14 = B, 15 = mask flag.
+        r5 = c & 0x1F
+        g5 = (c >> 5) & 0x1F
+        b5 = (c >> 10) & 0x1F
+        # 5-bit -> 8-bit by replicating the high 3 bits into the low ones.
+        r8 = (r5 << 3) | (r5 >> 2)
+        g8 = (g5 << 3) | (g5 >> 2)
+        b8 = (b5 << 3) | (b5 >> 2)
+        # CLUT entry 0 is the conventional transparent slot.
+        a8 = 0 if i == 0 else 255
+        clut.append((r8, g8, b8, a8))
+
+    pixels = []
+    for y in range(ICON_H):
+        for x in range(0, ICON_W, 2):
+            byte = data[ICON_FRAME0_OFF + y * (ICON_W // 2) + (x // 2)]
+            # PSX 4bpp packs the lower nibble as the leftmost pixel.
+            pixels.append(clut[byte & 0x0F])
+            pixels.append(clut[(byte >> 4) & 0x0F])
+    return pixels
+
+
+def upscale_nn(
+    pixels: list[tuple[int, int, int, int]], src_w: int, src_h: int, dst: int
+) -> list[tuple[int, int, int, int]]:
+    """Nearest-neighbour upscale from src_w*src_h to dst*dst."""
+    out = []
+    for y in range(dst):
+        sy = y * src_h // dst
+        for x in range(dst):
+            sx = x * src_w // dst
+            out.append(pixels[sy * src_w + sx])
+    return out
+
+
+def write_png(pixels: list[tuple[int, int, int, int]], w: int, h: int) -> bytes:
+    """Minimal RGBA PNG using stdlib zlib. Returns the PNG bytes."""
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)  # filter: None
+        for x in range(w):
+            r, g, b, a = pixels[y * w + x]
+            raw += bytes((r, g, b, a))
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # 8bpc RGBA
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
+
+
+def write_ico(
+    base: list[tuple[int, int, int, int]], out_path: Path, sizes=(16, 32, 48, 64, 128, 256)
+) -> None:
+    """Multi-size .ico with PNG-encoded entries (Vista+).
+
+    Embedding PNGs keeps each entry tiny and avoids the BMP-in-ICO
+    AND-mask quirks. Modern Windows handles PNG-in-ICO fine."""
+    entries = []
+    for s in sizes:
+        scaled = upscale_nn(base, ICON_W, ICON_H, s)
+        entries.append((s, write_png(scaled, s, s)))
+
+    # ICONDIR: idReserved=0, idType=1 (icon), idCount=N.
+    out = bytearray(struct.pack("<HHH", 0, 1, len(entries)))
+    # Each ICONDIRENTRY is 16 bytes; data follows after all entries.
+    data_off = 6 + 16 * len(entries)
+    for size, png in entries:
+        # Width/height encoded as 0 if 256, else as the size byte.
+        wb = 0 if size == 256 else size
+        hb = 0 if size == 256 else size
+        out += struct.pack(
+            "<BBBBHHII",
+            wb, hb,
+            0,           # color count (0 for >=8bpp)
+            0,           # reserved
+            1,           # planes
+            32,          # bit count
+            len(png),    # image size
+            data_off,
+        )
+        data_off += len(png)
+    for _, png in entries:
+        out += png
+    out_path.write_bytes(bytes(out))
+
+
+def write_c(pixels: list[tuple[int, int, int, int]], out_path: Path) -> None:
+    """C source exposing the icon as a static RGBA8888 array."""
+    lines = [
+        "/* Auto-generated by tools/mcs_icon_to_ico.py — do not edit. */",
+        "#include <stdint.h>",
+        "",
+        f"const int openpete_spyro1_icon_w = {ICON_W};",
+        f"const int openpete_spyro1_icon_h = {ICON_H};",
+        f"const uint8_t openpete_spyro1_icon_rgba[{ICON_W * ICON_H * 4}] = {{",
+    ]
+    for y in range(ICON_H):
+        row = []
+        for x in range(ICON_W):
+            r, g, b, a = pixels[y * ICON_W + x]
+            row.append(f"{r},{g},{b},{a}")
+        lines.append("    " + ",".join(row) + ",")
+    lines.append("};")
+    out_path.write_text("\n".join(lines) + "\n")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("input", type=Path, help="path to save_header.databin.bin")
+    ap.add_argument("--ico", type=Path, help="output .ico path (Windows app icon)")
+    ap.add_argument("--c", type=Path, help="output C source with RGBA array")
+    args = ap.parse_args()
+
+    if not args.ico and not args.c:
+        ap.error("nothing to do: pass --ico and/or --c")
+
+    pixels = decode_frame0(args.input.read_bytes())
+
+    if args.ico:
+        args.ico.parent.mkdir(parents=True, exist_ok=True)
+        write_ico(pixels, args.ico)
+    if args.c:
+        args.c.parent.mkdir(parents=True, exist_ok=True)
+        write_c(pixels, args.c)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
