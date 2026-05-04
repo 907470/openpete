@@ -8,13 +8,6 @@
 
 #include "psx/gtereg.h"   // PsyCross GTERegisters / GTE_operator (used as
                           // ground-truth reference for the GTE trace logger)
-#include "PsyX/common/pgxp_defs.h"  // PGXP cache emit (Phase 2b — populated
-                                    // only during render-pass GTE calls)
-
-#if USE_PGXP
-extern float g_pgxpZOffset;
-extern float g_pgxpZScale;
-#endif
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
@@ -296,41 +289,6 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         gte->MAC0 = static_cast<int32_t>(mac0);
         gte->IR0 = gte->saturate_ir0(static_cast<int32_t>(mac0 >> 12));
     }
-
-#if USE_PGXP
-    /* PGXP cache emit. Populates PsyCross's g_pgxpCache + content-keyed
-     * (sx,sy)→index map so the openpete bridge can resolve a primitive's
-     * pgxp_index at host P_TAG synthesis time (psyq_thunks.cpp DrawOTag).
-     * Math mirrors PsyX_GTE.cpp:412-433 — pre-perspective camera-space
-     * coords scaled by 1/(512*1024) into a unit-ish range that the
-     * GLSL perspective rebuild expects, with the same H/OFX/OFY metadata
-     * the consumer needs to project them into screen space.
-     *
-     * Gated on render_pass_active so we don't pollute the cache with
-     * entries from gameplay-time GTE calls (collision, AI, sound
-     * positioning) — those have no downstream consumer and we'd waste
-     * a slot per call.
-     *
-     * Uses eff_OFX (the Hor+ widened OFX) so the PGXP-rebuilt vertex
-     * lands at the same screen position as the int16 SX/SY the PSX-side
-     * primitive carries. */
-    if (::openpete_render_pass_active) {
-        const double one_by_v = 1.0 / (512.0 * 1024.0);
-        PGXPVData vd;
-        // Lookup key: same int32 the PSX-side primitive will hold —
-        // gte->SXY[2] is exactly (sy_sat:int16 << 16) | sx_sat:int16
-        // after push_sxy clamped+packed. Matches PGXP_LOOKUP_VALUE on
-        // the consumer side.
-        vd.lookup = gte->SXY[2];
-        vd.px = (float)((double)mac1 * one_by_v * (double)g_pgxpZScale + (double)g_pgxpZOffset);
-        vd.py = (float)((double)mac2 * one_by_v * (double)g_pgxpZScale + (double)g_pgxpZOffset);
-        vd.pz = (float)((double)mac3 * one_by_v * (double)g_pgxpZScale + (double)g_pgxpZOffset);
-        vd.ofx = (float)((double)eff_OFX / 65536.0);
-        vd.ofy = (float)((double)gte->OFY / 65536.0);
-        vd.scr_h = (float)eff_H;
-        PGXP_EmitCacheData(&vd);
-    }
-#endif
 }
 
 // RTPS (0x01) — single vertex, always sets MAC0
