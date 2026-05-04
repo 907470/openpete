@@ -126,11 +126,17 @@ description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
 # See manifest/render_channels.toml `sector_visibility_flags`
 # (status: audited_clean) for the audit trail.
 
-[[region]]
-name        = "render_channel:moby_render_queue"
-start       = 0x80071000
-length      = 0x1000
-description = "Moby render queue / pointer table. Bisect identified 0x80071800-0x80071F00 specifically; broad coverage until tightened. Status: OPEN channel."
+# 0x80071000..0x80071FFF was tracked as `render_channel:moby_render_queue`.
+# Audited 2026-05-03 (PC tracking + decomp grep): the range covers
+# g_SonyImage.m_WorldNearQueued / m_WorldFarQueued / m_ShadedMobys —
+# all render-side prim queues. Writers are r_environment.s queue-push
+# at PCs 0x80025B74 / 0x80025BA4, plus per-frame Memset clears. Readers
+# are all in the render module (gamestates/draw.c, flight.inc.h);
+# no asm code outside renderers reads from these offsets. Position-log
+# byte-identical across 3000-frame aspect harness. See
+# manifest/render_channels.toml `moby_render_queue` (status:
+# audited_clean) for the audit trail and the balloonist-transplant
+# caveat.
 
 # 0x80077868..0x80077888 was tracked as `render_channel:dedup_flag_table`.
 # Audited 2026-05-03: it's per-call scratch internal to func_80051FEC

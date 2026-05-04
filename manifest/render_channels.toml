@@ -140,16 +140,58 @@ doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "moby_render_queue"
-status      = "open"
+status      = "audited_clean"
 description = """
-Render walker pushes moby pointers to bucket queues at
-0x80071800..0x80071F00. Gameplay reads downstream of the queue for
-moby-state transitions. Same investigation status as
-sector_visibility_flags."""
+Originally suspected (bisect) of being a render→gameplay channel at
+0x80071000..0x80071FFF. The bisected sub-range 0x80071800..0x80071F00
+maps to g_SonyImage's m_WorldNearQueued[256] (0x800718F4..0x80071CF4),
+m_WorldFarQueued[256] (0x80071CF4..0x800720F4), and the tail of the
+DrawStateSonyBuf union — all three are render-side prim queues.
+
+Audited 2026-05-03 with the env-var write-watcher (PC tracking
+regen) + decomp-grep:
+
+  Writers (recompiled MIPS):
+    PC 0x8001691C  Memset inner loop (per-frame queue clears)
+    PC 0x80025B74  r_environment.s: sw $a1, 0x0($s0); addi $s0,4 —
+                   world-cell push, gated by per-cell flag bit
+                   andi $t1, 0x8000.
+    PC 0x80025BA4  r_environment.s: sw $a1, 0x0($t7); addi $t7,4 —
+                   world-cell push, gated by flag bits
+                   andi $t1, 0x4000 + 0x100-step distance test.
+
+  Readers (decomp grep over spyro-1/{src,include,asm}):
+    All in the render module: gamestates/draw.c (m_ShadedMobys walk
+    + HUD-moby append in func_80018880, func_80019300,
+    func_80019698, …), include/overlays/flight.inc.h (HUD mobys for
+    flight gamestate). Zero asm-level readers outside renderers.
+
+  Harness verdict: 3000-frame aspect_determinism (4:3 vs 16:9)
+    shows position-log byte-identical. Per-region hash diverges as
+    expected (more world cells visible in 16:9 → different queue
+    contents) but no propagation to gameplay state.
+
+Caveat — balloonist overlay transplant (include/overlays/balloonist.\
+inc.h:581-583): right before LoadLevel(1), the homeworld balloon's
+Moby is Memcpy'd into &g_SonyImage.m_WorldFarQueued[106] (addr
+0x80071E9C..0x80071EF4) and re-aliased as gameplay state via
+D_800777E8.m_BalloonMoby. This is a transient level-transition
+storage trick, not steady-state coupling — once the destination
+level renders, slot 106 may be overwritten by world cells, and the
+balloon Moby is dormant until the return-to-home transition reads
+it back. Original PSX behavior is identical regardless of aspect
+because the transplant runs before any render frame in the new
+level. Not currently exercised by the BK2 corpus; if a balloonist-
+return scenario is added and shows divergence, this channel
+re-opens.
+
+Removed from gameplay_state_regions.toml — the address range is
+render scratch + a transient transplant slot, not steady-state
+gameplay state."""
 substitution_sites = []
 verdict_fn         = ""
-verified_against   = []
-state_regions      = ["render_channel:moby_render_queue"]
+verified_against   = ["aspect_determinism"]
+state_regions      = []
 doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
