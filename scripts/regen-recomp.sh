@@ -54,6 +54,19 @@ FNPTR_TOOL="tools/extract_overlay_func_pointers.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
 ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
 
+mkdir -p "$OUT"
+
+# PSYQ stubs: weak-linked abort-on-call placeholders for every PSYQ symbol
+# in the manifest. The cmake build links these so any psyq_<name> the
+# recompiled C declares but psyq_thunks.cpp doesn't override resolves to
+# a stub that logs and aborts (rather than failing the link). Same
+# `--external-prefix=psyq_` we pass to PSXRecomp below — change both
+# together. Inputs are the manifest TOML alone (no recomp output), so
+# this is safe to run before the two-pass recompile.
+echo "[regen] Generating $OUT/psyq_stubs.c"
+python3 tools/gen_psyq_stubs.py --prefix psyq_ \
+    "$PSYQ_MANIFEST" "$OUT/psyq_stubs.c" 2>&1 | sed 's/^/  /'
+
 # Refresh the per-binary forced-entry manifests from the current asm
 # tree. extract_asm_dispatch_targets.py harvests `glabel D_<addr>`
 # jumptable slots; extract_handwritten_ra_returns.py appends return PCs
@@ -278,19 +291,31 @@ main_exe_targets=$(asm_targets_for main_exe)
 for f in "$OUT"/*/external_jals.txt; do
     [[ -f "$f" ]] && cat "$f" >> "$main_exe_extra"
 done
-# Harvest jumptable-case targets that the previous main-EXE recomp left
-# as `case N: call_by_address(cpu, 0xADDR);` stubs (e.g. per-level setup
-# functions like Toasty's 0x8005A930). Without these, level swaps that
-# go through one of those cases never re-init their fn-pointer slots,
-# and the stale level_N pointers from the previous overlay get jalr'd
-# in level_N+1 → cascading stub misses on overlay entry.
-if [[ -f "$OUT/PSX.EXE_full.c" ]]; then
-    python3 tools/extract_dispatch_call_by_address.py \
-        "$OUT/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
-    cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
-fi
-main_exe_args=(
-    --output-dir="$OUT"
+# Two-pass main-EXE recompile.
+#
+# Pass 1 produces $OUT/_main_exe_pass1/PSX.EXE_full.c with no JT-stub
+# forced entries — purely a stub-discovery scratch output. Pass 2
+# reads its `case N: call_by_address(cpu, 0xADDR);` sites for the
+# SetOverlayPointers JT (per-level setup like Toasty's 0x8005A930)
+# and folds them in as forced entries before producing the final
+# $OUT/PSX.EXE_full.c that links into the binary. Without this, level
+# swaps that go through one of those JT cases never re-init their
+# fn-pointer slots, the stale level_N pointers from the previous
+# overlay get jalr'd in level_N+1 → cascading stub misses on overlay
+# entry, with the user-visible symptom of demo-mode hanging in
+# level_24 (Dr Shemp) at frame ~8458.
+#
+# The previous design read $OUT/PSX.EXE_full.c (the final output of
+# the last regen) as its bootstrap input, which made the result
+# dependent on whatever was already on disk — a stale or missing
+# generated/ produced an under-converged stubs file and a hang. This
+# split decouples the two roles into two distinct files, so one
+# invocation is always self-converging:
+#   * PSX.EXE_pass1.c (intermediate, not linked) → stubs.txt
+#   * PSX.EXE_full.c  (final, links into the binary) ← stubs.txt
+# Pass 1 unconditionally deletes pass 2's outputs so the build can't
+# silently link a stale converged file if pass 2 errors out.
+common_psx_args=(
     --external-symbols="$PSYQ_MANIFEST"
     --external-prefix=psyq_
     --forced-entry=0x80032AB0
@@ -300,18 +325,39 @@ main_exe_args=(
     --forced-entry=0x80038620
     --forced-entry=0x8005A7B0
     --forced-entry=0x8005A848
-    --extra-funcs="$main_exe_extra"
     --skip-on-error
     ${PCTRACK_FLAG:+$PCTRACK_FLAG}
 )
-"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE "${main_exe_args[@]}"
+pass1_dir="$OUT/_main_exe_pass1"
+mkdir -p "$pass1_dir"
+# Invalidate pass-2 outputs: whatever's on disk is stale w.r.t. the
+# fresh pass-1 we're about to produce. Mirrors how cmake's mtime-based
+# incremental builds would handle a DAG node whose inputs changed.
+rm -f "$OUT/PSX.EXE_full.c" "$OUT/PSX.EXE_dispatch.c" \
+      "$OUT/main_exe_dispatch_stubs.txt"
+echo "[regen]   pass 1 (stub discovery) → $pass1_dir/"
+"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
+    --output-dir="$pass1_dir" \
+    --extra-funcs="$main_exe_extra" \
+    "${common_psx_args[@]}" >/dev/null
+python3 tools/extract_dispatch_call_by_address.py \
+    "$pass1_dir/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
+cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
+echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stubs.txt") JT-stub forced entries) → $OUT/PSX.EXE_full.c"
+"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
+    --output-dir="$OUT" \
+    --extra-funcs="$main_exe_extra" \
+    "${common_psx_args[@]}"
 # NOTE: main-EXE jal-cont third-pass deliberately disabled. Adding a
 # single forced entry (0x800661D0) reproducibly broke the level_24 demo
 # entry path with stub misses at 0x8005AC40 + 0x8008772C — adding any
 # forced entry to main-EXE evidently shifts function-boundary detection
 # in a way that loses pre-existing dispatch entries. The overlay path
 # is safe (per-overlay third-pass green); main-EXE remains a deferred
-# investigation.
+# investigation. If a future pass-3 turns out to be needed, the
+# pass1/full.c split above generalizes naturally — diff
+# pass1/PSX.EXE_full.c against PSX.EXE_full.c to surface what the
+# folded forced-entries changed.
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
     "$OUT/PSX.EXE_dispatch.c"
 
