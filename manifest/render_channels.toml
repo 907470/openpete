@@ -263,22 +263,62 @@ PROPAGATION PATH (real leak):
   WRITES are gated (psx_runtime_native_cone_pass), but the m_WasDrawn=0
   CLEARS via class_skip_flags are not — that's the leak.
 
-CANDIDATE FIX:
+INVESTIGATION 2026-05-03 — root cause unknown:
 
-  Substitute the cull-threshold immediates around 0x80025B68 (and
-  the symmetric `slti $r, 0x100` test sites in the same loop) so
-  the per-sector cull uses the canonical 4:3 width regardless of
-  aspect. Mirrors the widescreen_clip_x_threshold pattern but for
-  the sector-cull threshold. Needs a new verdict_fn (e.g.
-  psx_runtime_sector_cull_threshold) defaulting to 256 == byte-
-  identical 4:3, widening only when the renderer wants to actually
-  draw extra sectors after the canonical gameplay verdict has been
-  computed.
+  Captured exact divergent writes via env-var watcher across both
+  aspects at frame 42 (env-cull's first divergent run). 4:3 writes
+  98 cells as visible; 16:9 writes 100 — two extra cells at
+  D_800771C8+0x17 and +0x62 (cell idx 23 and 98). Same writer PC
+  (0x80025B50), same value (0xFF). Two extra cells reach
+  .L80025B4C in 16:9.
 
-  Open question: is there a render-pass bracket that lets us widen
-  the threshold *only* during the rendering subsequence after
-  func_800521C0 has run? Same architectural question solved for
-  m_WasDrawn (s_in_render_pass)."""
+  But by inspection, the cull math at func_800258F0 should be
+  aspect-independent:
+    - GTE op is MVMVA 1,0,3,3,0 (rotation only, no projection — does
+      not use C2_H or any aspect-driven register).
+    - ViewMatrix loaded from g_Camera (hashes identically across
+      aspects; the camera region is in the gameplay-state hash and
+      already byte-identical at frame 41).
+    - Camera position $s7/$t8/$t9 derived from g_Camera with `>>4`.
+    - Cone slopes hardcoded 3/4 X and 5/4 Y (encoded in the
+      sub/sll/add cascade at 0x80025AAC..0x80025B40).
+    - g_Environment.m_CullingDistance set in environment.c:31-39
+      from gamestate, not aspect.
+    - No psxrecomp substitutions in the 0x80025900..0x80025BFF
+      range (verified by grep over code_generator.cpp).
+
+  So the empirical divergence shouldn't be possible given the
+  documented inputs. Likely root causes to investigate next:
+    a. GTE saturation/flag carryover from a prior frame's
+       aspect-divergent op leaving MAC/IR in different states (even
+       though MVMVA explicitly mtc2's IR1/IR2/IR3 inputs, the GTE
+       FLAG register and MAC saturation behavior may carry).
+    b. `psx_runtime_clip_x_threshold` substitution in the same .s
+       file (sites at 0x800261A4..0x8002A4C0) running an iteration
+       earlier in the frame perturbing GTE/host state in a way that
+       feeds back.
+    c. Some non-determinism in psxrecomp's COP2 emulation when host
+       state differs across aspect (unlikely if pure integer GTE,
+       but worth ruling out).
+
+  Diagnostic experiment for next session: instrument
+  third_party/psxrecomp/runtime/gte.cpp to log MVMVA inputs/outputs
+  at PC 0x80025A68 across two parallel runs (4:3 + 16:9) for the
+  cell-index iteration that produces the divergent writes. Compare
+  the IR1/IR2/IR3 values and MAC results to isolate where aspect
+  state actually leaks in.
+
+CANDIDATE FIX (once root cause is known):
+
+  Substitute the threshold immediate(s) at the divergent test —
+  most likely the cull-threshold immediates around 0x80025B68 (and
+  the symmetric `slti $r, 0x100` test sites in the same loop) —
+  with a runtime-tunable knob (e.g. psx_runtime_sector_cull_\
+  threshold) defaulting to 256 == byte-identical 4:3. If the leak
+  is GTE-state-carryover, the fix is upstream: clear/canonicalize
+  GTE state at func_800258F0 entry. Render-pass bracket pattern
+  (s_in_render_pass) lets us widen only during the actual emit
+  subsequence."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
