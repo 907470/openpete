@@ -194,11 +194,26 @@ FIFO slot per PC:
   - 0x8005801C (class 0): sx2 — 1 RTPS
   - 0x800576EC (4-vertex strip): OR over sx0|sx1|sx2
 
-Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 4000
+Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000+
 frames (hash + position). Earlier closure attempts using delta_OFX
 math (truncated pixels or Q16) had irreducible 1-pixel boundary
 ambiguity; reading the canonical SX directly from gte.cpp resolves
-that exactly."""
+that exactly.
+
+Open regression (2026-05-04, post-cone-clamp): 20k-frame soak now
+fails at frame 14590 with particle[4].m_03 differing (4:3=0,
+16:9=1). Watcher shows both aspects clear m_03 at 0x80057C3C
+through frame 14587; at frame 14589, 4:3 only clears (rejected
+during cull) while 16:9 clears + sets at 0x80057CDC (passed cull).
+The set at CDC is gated on canonical_part_pass — so the gate fires
+in 16:9, meaning canonical SX is in (0, 512). Yet 4:3 (which IS
+canonical projection) rejects somewhere in C8C..CB8.
+
+Hypothesis: an aspect-coupled cull check between CB4 and CDC that
+the closure doesn't yet account for — likely the per-particle Z
+range test at C8C/C94 or X-bounds against $s4/$s5. Need to
+instrument SZ3/SXY2 at frame 14589 for particle[4] in both aspects
+to identify which test diverges."""
 substitution_sites = [
     0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
     0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s
