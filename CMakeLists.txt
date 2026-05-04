@@ -95,4 +95,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "slow;determinism"
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Channel registry audit — fast static check (no PSX boot). Cross-
+    # references manifest/render_channels.toml against the recompiler's
+    # address-keyed substitution table; fails on missing or orphaned
+    # substitutions. See notes/plans/openpete-determinism-enforcement.md
+    # Phase 4.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME channel_registry_audit
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_channel_registry.py)
+        set_tests_properties(channel_registry_audit PROPERTIES
+            LABELS "determinism"
+            TIMEOUT 30
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 endif()

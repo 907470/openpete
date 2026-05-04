@@ -1,0 +1,138 @@
+# render_channels.toml — registry of every render→gameplay coupling
+# channel openpete knows about. The audit tool
+# (tools/check_channel_registry.py) cross-references this file
+# against the address-keyed substitution table in
+# third_party/psxrecomp/recompiler/src/code_generator.cpp:
+#
+#   - Every `substitution_sites` address listed here MUST exist as
+#     an `addr == 0xNNNNNNNN` clause in code_generator.cpp.
+#   - Conversely, every `addr == 0xNNNNNNNN` clause in
+#     code_generator.cpp MUST appear in at least one channel here.
+#
+# Together those rules turn "we close channels as we find them" into
+# "we know what we don't know" — orphan substitutions and missing
+# substitutions both fail the audit.
+#
+# Statuses:
+#   open      — channel identified (RAM-diff / bisect), no
+#               substitution yet. Aspect harness expected red here.
+#   gated     — substitution(s) in place that restore the canonical
+#               PSX verdict. Harness expected green for this channel.
+#   verified  — gated AND confirmed against the PSX hardware oracle
+#               (Phase 2). Strongest possible status.
+#
+# See notes/plans/openpete-determinism-enforcement.md Phase 4.
+
+# ─── Gated channels ──────────────────────────────────────────────────
+
+[[channel]]
+name        = "m_WasDrawn"
+status      = "gated"
+description = """
+Set by the per-bucket render walker after the cone-pass cull; read
+next frame by func_80051FEC for auto-include grace + per-class AI
+gating. Closed by replaying the canonical 4:3 cone verdict in a
+host-side flag (psx_runtime_native_cone_pass) and gating the
+m_WasDrawn=1 stores on it."""
+substitution_sites = [
+    0x8001F1FC, 0x800209A8, 0x80022B28,  # iter-start clear (force-pass billboards)
+    0x8001F4CC, 0x80020C7C, 0x80022D98,  # m_WasDrawn=1 cull-pass writes (gated)
+    0x8001F30C, 0x80020AB8, 0x80022C0C,  # cone-test verdict-compute sites
+]
+verdict_fn       = "psx_runtime_native_cone_pass"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/spyro-moby-update-vs-render.md"
+
+[[channel]]
+name        = "widescreen_clip_x_threshold"
+status      = "gated"
+description = """
+Per-vertex SX right-edge clip threshold (0x200 == 512) hardcoded
+via `lui $r, 0x200` across the cyclorama / moby / particle /
+environment renderers. Substituted with psx_runtime_clip_x_threshold
+so widescreen widens the clip without altering native PSX
+behavior — default 0x02000000 == byte-identical 4:3."""
+substitution_sites = [
+    0x8004ED8C, 0x8004F1A8,                          # r_cyclorama.s
+    0x8001F9F4, 0x80021190, 0x80022FF8,              # r_moby.s
+    0x800574BC,                                      # r_particles.s
+    0x8002626C, 0x8002652C, 0x800266E0, 0x8002684C,  # r_environment.s
+    0x80027924, 0x80027A60, 0x80028074, 0x8002817C,
+    0x80028A40, 0x80028C50, 0x8002982C, 0x800299AC,
+    0x8002A2F4, 0x8002A4C0,
+]
+verdict_fn       = "psx_runtime_clip_x_threshold"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
+[[channel]]
+name        = "widescreen_portal_clip_rect"
+status      = "gated"
+description = """
+func_80050BD0 portal clip-rect X-upper clamp (`addiu $r, $zero,
+0x200`) and its associated `slti $r, 0x201` test. Substituted with
+psx_runtime_portal_clip_x_max so widescreen widens the per-portal
+clip rect's right edge. Default 512 == byte-identical 4:3."""
+substitution_sites = [
+    0x80051804, 0x80051E98,  # addiu $s4, $zero, 0x200
+    0x800517F4, 0x80051E88,  # slti $r, $r, 0x201
+]
+verdict_fn       = "psx_runtime_portal_clip_x_max"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
+# ─── Open channels — identified, no substitution yet ────────────────
+# These appear in manifest/gameplay_state_regions.toml as
+# `render_channel:*` regions; the harness diffs them and is expected
+# to be RED until each gets a substitution and flips to "gated".
+# Listing them here makes the unknown-unknown visible.
+
+[[channel]]
+name        = "sector_visibility_flags"
+status      = "open"
+description = """
+Environment renderer sets per-cell visibility byte; gameplay reads
+for sector-based moby spawn / particle gating. Bisect identified
+0x80070C00..0x80070FFF as the active sub-range. Writer PC not yet
+pinned (need PC tracking + bisect mode — Phase 5)."""
+substitution_sites = []
+verdict_fn         = ""
+verified_against   = []
+doc                = "notes/plans/openpete-presentation-decoupling.md"
+
+[[channel]]
+name        = "moby_render_queue"
+status      = "open"
+description = """
+Render walker pushes moby pointers to bucket queues at
+0x80071800..0x80071F00. Gameplay reads downstream of the queue for
+moby-state transitions. Same investigation status as
+sector_visibility_flags."""
+substitution_sites = []
+verdict_fn         = ""
+verified_against   = []
+doc                = "notes/plans/openpete-presentation-decoupling.md"
+
+[[channel]]
+name        = "dedup_flag_table"
+status      = "open"
+description = """
+func_80051FEC's per-class dedup flag table at 0x80077868
+(32 bytes). Read by the update list builder; written by render side.
+Likely closes alongside m_WasDrawn but needs its own substitution."""
+substitution_sites = []
+verdict_fn         = ""
+verified_against   = []
+doc                = "notes/plans/spyro-moby-update-vs-render.md"
+
+[[channel]]
+name        = "class_skip_flags"
+status      = "open"
+description = """
+func_800521C0's per-class skip-render flag table at 0x800771C8
+(64 bytes). Render-set, gameplay-read; same shape as
+dedup_flag_table."""
+substitution_sites = []
+verdict_fn         = ""
+verified_against   = []
+doc                = "notes/plans/spyro-moby-update-vs-render.md"

@@ -130,4 +130,12 @@ for a in "${ASPECTS[@]}"; do
     [[ $hash_pass -eq 0 ]] && fail=1
 done
 
+# Channel registry context: any divergence above is "expected red"
+# until every open channel gets a substitution. Print the dashboard
+# so the failure message includes how many are still expected open.
+if [[ -x "$(command -v python3)" && -f "manifest/render_channels.toml" ]]; then
+    echo -n "[determinism] "
+    python3 tools/check_channel_registry.py 2>&1 || true
+fi
+
 exit "$fail"
