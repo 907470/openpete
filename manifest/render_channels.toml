@@ -144,14 +144,20 @@ to intercept the writes (FORCE-DROP test: particle pool divergence
 disappears, shifts to moby_pool_state) but does NOT yet eliminate
 divergence with normal gating: particles iterate through MULTIPLE
 chains per frame and final m_03 depends on the LAST chain's verdict;
-single-flag-per-iteration model doesn't capture that. Needs redesign
-— probably gate the iter-start CLEAR sites too with the same flag,
-or use a 2-pass-stable verdict via a second pass of the cull
-decision committed after all chains run.
+single-flag-per-iteration model doesn't capture that. Needs redesign.
+
+Chosen approach for next attempt: wrap func_800573C8 (single entry,
+spans 0x800573C8..0x800580F4 — every m_03 substitution PC sits
+inside it) via psx_override_dispatch and post-AND the m_03 column of
+g_Particles_pool with a host-computed canonical-4:3 mask. Mirrors
+the working class_skip_flags closure at game_extras_impl.c:489
+(env-renderer wrap → canonical_mask → AND-clear D_800771C8).
+Sidesteps multi-chain bookkeeping entirely: widened renderer runs
+unmodified for visuals, canonical verdict overwrites gameplay-
+readable byte after.
 
 Substitutions left in place (gated harmlessly until the architecture
-is corrected — bigger picture closure work is deferred to a follow-on
-plan)."""
+is corrected — to be removed when the post-AND closure lands)."""
 substitution_sites = [
     0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
     0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s
