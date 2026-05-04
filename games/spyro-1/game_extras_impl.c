@@ -410,7 +410,8 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     extern int32_t openpete_moby_cone_extra_q12_render;
     static int s_in_render_pass = 0;
 
-    if (addr == 0x8001ED5Cu && openpete_disp_w_factor > 0.0f
+    if (addr == 0x8001ED5Cu && openpete_disp_w_factor != 1.0f
+        && openpete_disp_w_factor > 0.0f
         && !s_in_render_pass) {
         s_in_render_pass = 1;
         openpete_render_pass_active = 1;
@@ -428,9 +429,18 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     }
 
     static int s_in_env_renderer = 0;
-    if (addr == 0x800258F0u && openpete_disp_w_factor > 0.0f
+    if (addr == 0x800258F0u && openpete_disp_w_factor != 1.0f
+        && openpete_disp_w_factor > 0.0f
         && !s_in_env_renderer) {
         s_in_env_renderer = 1;
+        /* Capture caller's a0 (occlusion-group id or -1) BEFORE we force
+         * the all-walk path. The canonical_mask below replays the cell-
+         * list iteration the 4:3 native call would have done, which is
+         * group-filtered when a0 >= 0. Without this, our mask iterates
+         * the master sector table and admits cells that lie in the
+         * canonical cone but aren't in the canonical occlusion group —
+         * surfaced at frame 3495 of title autoplay (5 cells leaked). */
+        int32_t original_a0 = (int32_t)cpu->a0;
         cpu->a0 = (uint32_t)-1;        /* walk all sectors */
 
         /* Boost m_CullingDistance to the in-group value (0x28000) — the
@@ -507,7 +517,34 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
             uint32_t cell_count     = cpu->read_word(env_addr + 4);
             if (cell_count > 256) cell_count = 256;
 
-            for (uint32_t i = 0; i < cell_count; i++) {
+            /* Build the canonical iteration set. r_environment.s branches
+             * on $ra (= caller's a0): bltz → all-walk env+0x0/+0x4; else
+             * walk a per-group byte-index list at env+0x8 → groups[a0],
+             * terminated by 0xFF. */
+            uint8_t indices[256];
+            uint32_t n_indices = 0;
+            if (original_a0 < 0) {
+                for (uint32_t i = 0; i < cell_count; i++) {
+                    indices[n_indices++] = (uint8_t)i;
+                }
+            } else {
+                uint32_t groups_table = cpu->read_word(env_addr + 8);
+                if (groups_table) {
+                    uint32_t group_list = cpu->read_word(
+                        groups_table + (uint32_t)original_a0 * 4);
+                    if (group_list) {
+                        uint8_t* gram = openpete_psx_get_ram();
+                        for (uint32_t k = 0; k < 256; k++) {
+                            uint8_t b = gram[(group_list + k) & 0x1FFFFFFFu];
+                            if (b == 0xFF) break;
+                            indices[n_indices++] = b;
+                        }
+                    }
+                }
+            }
+
+            for (uint32_t k = 0; k < n_indices; k++) {
+                uint32_t i = (uint32_t)indices[k];
                 uint32_t cell_ptr = cpu->read_word(cell_list_base + i * 4);
                 if (cell_ptr == 0) continue;
                 uint32_t v0w = cpu->read_word(cell_ptr + 0);
@@ -653,7 +690,8 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
      * scaled IR1 produces SX values that overflow PsyCross's primitive
      * split path and crash DrawSplit. */
     static int s_in_cyclorama = 0;
-    if (addr == 0x8004EBA8u && openpete_disp_w_factor > 0.0f
+    if (addr == 0x8004EBA8u && openpete_disp_w_factor != 1.0f
+        && openpete_disp_w_factor > 0.0f
         && openpete_disp_w_factor <= 2.0f
         && !s_in_cyclorama) {
         s_in_cyclorama = 1;
