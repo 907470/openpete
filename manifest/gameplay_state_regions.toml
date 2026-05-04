@@ -118,11 +118,13 @@ description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
 # during draw and gameplay reads next frame. Documented leak channels.
 # Status of each is tracked separately in render_channels.toml (Phase 4).
 
-[[region]]
-name        = "render_channel:sector_visibility_flags"
-start       = 0x80070000
-length      = 0x1000
-description = "env-renderer per-cell visibility byte table (range covers 0x80070C00-0x80070FFF observed leaks; broad until trimmed). Status: OPEN channel — see render_channels.toml."
+# 0x80070000-0x80070FFF was originally tracked here as
+# `render_channel:sector_visibility_flags`. Audited 2026-05-03 and
+# confirmed to be `g_SonyImage.u.m_Draw.unk_0x900[]` — render-side
+# prim-packet color scratch, not gameplay state. Writer PC
+# 0x8001FE78 (r_moby.s GTE depth-cueing). No gameplay reads.
+# See manifest/render_channels.toml `sector_visibility_flags`
+# (status: audited_clean) for the audit trail.
 
 [[region]]
 name        = "render_channel:moby_render_queue"

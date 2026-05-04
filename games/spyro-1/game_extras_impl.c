@@ -59,6 +59,84 @@ void game_on_overlay_init(CPUState* cpu) {
     /* TODO Phase 1b — runs once after WadInit. */
 }
 
+extern unsigned openpete_frame;
+
+/* --- Optional write-watcher for channel-leak investigations -------------
+ *
+ * Set the following env vars to log every byte/half/word write that
+ * touches [LO, HI):
+ *
+ *   OPENPETE_WATCH_LO=0x80070C00
+ *   OPENPETE_WATCH_HI=0x80071000
+ *   OPENPETE_WATCH_FRAME_MAX=20         (optional; cap noise)
+ *
+ * Output: stderr, one line per write:
+ *   WATCH frame=N pc=0xPPPPPPPP addr=0xAAAAAAAA size=B val=0xVV
+ *
+ * Regen with `OPENPETE_REGEN_PC_TRACKING=1 bash scripts/regen-recomp.sh`
+ * first so cpu->pc reflects the writing MIPS instruction. The recipe
+ * for closing a render→gameplay channel is in
+ * notes/plans/openpete-presentation-decoupling.md "Order of
+ * operations for each new channel". */
+static struct {
+    void (*orig_w)(uint32_t, uint32_t);
+    void (*orig_h)(uint32_t, uint16_t);
+    void (*orig_b)(uint32_t, uint8_t);
+    CPUState* cpu;
+    uint32_t lo, hi;
+    int frame_max;
+    int active;
+} g_watch = {0};
+
+static int watch_should_log(uint32_t addr) {
+    if (!g_watch.active) return 0;
+    if (addr < g_watch.lo || addr >= g_watch.hi) return 0;
+    if (g_watch.frame_max > 0
+        && (int)openpete_frame > g_watch.frame_max) return 0;
+    return 1;
+}
+static void watch_log(uint32_t addr, uint32_t val, int size) {
+    fprintf(stderr,
+            "WATCH frame=%u pc=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
+            openpete_frame, g_watch.cpu->pc, addr, size, size * 2, val);
+}
+static void watch_w(uint32_t a, uint32_t v) {
+    /* A 4-byte store overlaps the watch range if any of its 4 bytes
+     * fall inside; check the start byte (most common case) and then
+     * the tail byte to catch stores straddling the LO boundary. */
+    if (watch_should_log(a) || watch_should_log(a + 3)) watch_log(a, v, 4);
+    g_watch.orig_w(a, v);
+}
+static void watch_h(uint32_t a, uint16_t v) {
+    if (watch_should_log(a)) watch_log(a, v, 2);
+    g_watch.orig_h(a, v);
+}
+static void watch_b(uint32_t a, uint8_t v) {
+    if (watch_should_log(a)) watch_log(a, v, 1);
+    g_watch.orig_b(a, v);
+}
+
+static void install_watch_from_env(CPUState* cpu) {
+    const char* lo_s = getenv("OPENPETE_WATCH_LO");
+    const char* hi_s = getenv("OPENPETE_WATCH_HI");
+    if (!lo_s || !hi_s) return;
+    g_watch.cpu       = cpu;
+    g_watch.lo        = (uint32_t)strtoul(lo_s, NULL, 0);
+    g_watch.hi        = (uint32_t)strtoul(hi_s, NULL, 0);
+    const char* fm_s  = getenv("OPENPETE_WATCH_FRAME_MAX");
+    g_watch.frame_max = fm_s ? atoi(fm_s) : 0;
+    g_watch.orig_w    = cpu->write_word;
+    g_watch.orig_h    = cpu->write_half;
+    g_watch.orig_b    = cpu->write_byte;
+    cpu->write_word   = watch_w;
+    cpu->write_half   = watch_h;
+    cpu->write_byte   = watch_b;
+    g_watch.active    = 1;
+    fprintf(stderr,
+            "[watch] installed: [0x%08x, 0x%08x) frame_max=%d\n",
+            g_watch.lo, g_watch.hi, g_watch.frame_max);
+}
+
 void game_apply_runtime_quirks(CPUState* cpu) {
     (void)cpu;
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
@@ -97,6 +175,14 @@ void game_set_skip_to_level(int level_id) {
 
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* Install env-var write-watcher on the first frame, after the
+     * runtime has wired cpu->write_byte/half/word. */
+    static int s_watch_init_done = 0;
+    if (!s_watch_init_done) {
+        s_watch_init_done = 1;
+        install_watch_from_env(cpu);
+    }
 
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp

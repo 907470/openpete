@@ -107,7 +107,8 @@ def main() -> int:
     print(f"DIVERGE first at frame {first_div_frame}")
     for ch_name, (ch, regions) in by_channel.items():
         status = ch.get("status", "?")
-        tag = "REGRESSION" if status in ("gated", "verified") else "expected"
+        tag = ("REGRESSION" if status in ("gated", "verified", "audited_clean")
+               else "expected")
         print(f"  channel {ch_name!r} (status={status}, {tag}): "
               f"{', '.join(regions)}")
     for rname in unowned:

@@ -83,7 +83,7 @@ def main() -> int:
 
     # registry → address → list of channel names (catches duplicates)
     registry_addrs: dict[int, list[str]] = {}
-    counts = {"open": 0, "gated": 0, "verified": 0}
+    counts = {"open": 0, "gated": 0, "verified": 0, "audited_clean": 0}
     valid_status = set(counts.keys())
 
     errors: list[str] = []
@@ -149,7 +149,8 @@ def main() -> int:
     total = sum(counts.values())
     print(
         f"channels: {total} total / {counts['gated']} gated / "
-        f"{counts['open']} open / {counts['verified']} verified  "
+        f"{counts['open']} open / {counts['verified']} verified / "
+        f"{counts['audited_clean']} audited-clean  "
         f"({len(recompiler_sites)} substitution sites reconciled)"
     )
     return 0

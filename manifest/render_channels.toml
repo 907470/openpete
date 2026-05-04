@@ -14,12 +14,18 @@
 # substitutions both fail the audit.
 #
 # Statuses:
-#   open      — channel identified (RAM-diff / bisect), no
-#               substitution yet. Aspect harness expected red here.
-#   gated     — substitution(s) in place that restore the canonical
-#               PSX verdict. Harness expected green for this channel.
-#   verified  — gated AND confirmed against the PSX hardware oracle
-#               (Phase 2). Strongest possible status.
+#   open           — channel identified (RAM-diff / bisect), no
+#                    substitution yet. Aspect harness expected red.
+#   gated          — substitution(s) in place that restore the
+#                    canonical PSX verdict. Harness green here.
+#   verified       — gated AND confirmed against the PSX hardware
+#                    oracle (Phase 2). Strongest possible status.
+#   audited_clean  — investigation completed; the candidate region
+#                    is presentation scratch (no gameplay code reads
+#                    it) so no substitution is needed. The owning
+#                    region was removed from
+#                    gameplay_state_regions.toml. Recorded here
+#                    so the audit trail isn't lost.
 #
 # See notes/plans/openpete-determinism-enforcement.md Phase 4.
 
@@ -101,16 +107,29 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "sector_visibility_flags"
-status      = "open"
+status      = "audited_clean"
 description = """
-Environment renderer sets per-cell visibility byte; gameplay reads
-for sector-based moby spawn / particle gating. Bisect identified
-0x80070C00..0x80070FFF as the active sub-range. Writer PC not yet
-pinned (need PC tracking + bisect mode — Phase 5)."""
+Originally suspected (bisect 2026-04-xx) of being an env-renderer
+per-cell visibility byte table at 0x80070C00..0x80070FFF.
+
+Audited 2026-05-03 with the env-var write-watcher
+(install_watch_from_env in game_extras_impl.c) + PC tracking. All
+writes to this range come from r_moby.s's GTE per-vertex color
+depth-cueing loop (PC 0x8001FE78: `mfc2 $t1, C2_RGB2; sw $t1, 0x0(\
+$a0)`), targeting `g_SonyImage.u.m_Draw.unk_0x900[]` —
+DrawStateSonyBuf prim-packet color scratch (sony_image.h:14). No
+gameplay code reads this address range (confirmed by grep over
+spyro-1/src, include, asm — no references). Hor+ widening
+legitimately walks more vertices and writes different colors here;
+that is presentation scratch divergence, not a gameplay leak.
+
+Removed from gameplay_state_regions.toml as a result. No
+recompiler substitution is needed; the address range is simply
+not gameplay state."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
-state_regions      = ["render_channel:sector_visibility_flags"]
+state_regions      = []
 doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
