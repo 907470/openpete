@@ -189,6 +189,15 @@ void game_on_hash_emit(uint32_t frame) {
         }
     }
 
+    const char* rp = getenv("OPENPETE_HASHTIME_RAM_DUMP");
+    if (rp) {
+        FILE* fp = fopen(rp, "wb");
+        if (fp) {
+            fwrite(ram, 1, 2u * 1024u * 1024u, fp);
+            fclose(fp);
+        }
+    }
+
     const char* mp = getenv("OPENPETE_HASHTIME_MWD_DUMP");
     if (mp) {
         FILE* fp = fopen(mp, "w");
