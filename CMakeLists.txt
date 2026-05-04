@@ -111,4 +111,18 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 30
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
+
+    # Matrix determinism gate — broaden coverage from one (aspect,
+    # scenario) cell to a sweep across aspects × fovs × scenarios.
+    # Same expected-red-vs-regression policy as aspect_determinism.
+    # Slow (boots N PSX sessions); only runs under `ctest -L slow`.
+    # Phase 6 of openpete-determinism-enforcement.md.
+    add_test(NAME determinism_matrix
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_determinism_matrix.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --frames=2000)
+    set_tests_properties(determinism_matrix PROPERTIES
+        LABELS "slow;determinism;matrix"
+        TIMEOUT 1800
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
