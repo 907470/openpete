@@ -115,6 +115,30 @@ extern int32_t psx_runtime_moby_cone_extra_q12;
  * widescreen rendering still admits + emits edge mobys. */
 extern uint8_t psx_runtime_native_cone_pass;
 
+/* Per-iteration scratch flag for the particle renderer (r_particles.s).
+ * Same shape as psx_runtime_native_cone_pass but for the screen-space
+ * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each
+ * `sub _, _, $s6` site preceding a `sb $s2, -0x1D($ra)` (m_03 = "drawn")
+ * records whether the comparand would also pass the *canonical* 4:3
+ * threshold (0x02000000). The substituted sb at 0x80057720 / 0x80057A10 /
+ * 0x80057B20 / 0x80057CDC reads this flag and only writes m_03=1 when
+ * the canonical 4:3 cull would have admitted the particle — keeping
+ * gameplay-readable bytes 4:3-equivalent while the widened cull still
+ * admits + emits prims for visual coverage outside 4:3. */
+extern uint8_t psx_runtime_native_part_pass;
+
+/* Canonical 4:3 right-edge threshold expressed in *widened*-SX
+ * coordinates. OFX widening shifts every projected SX uniformly by
+ * `(factor - 1) * 256`, so a particle's SX in widened coords is
+ * SX_widened = SX_native + delta_OFX. To replay the canonical cull
+ * verdict against widened SX values, compare against
+ * (0x200 + delta_OFX) << 16 instead of the bare 0x02000000. Set per
+ * frame in run.c alongside psx_runtime_clip_x_threshold; defaults to
+ * 0x02000000 (native 4:3, no shift). Read by the particle-cull
+ * substitution at PCs 0x80057A04 / B14 / CB4 (and the 4-vertex
+ * canonical OR at 0x800576EC). */
+extern uint32_t psx_runtime_native_clip_x_in_widened_space;
+
 /* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
  * clamp. The dispatcher computes a per-portal screen-space clip rect
  * (D_8007AA00..0C) then clamps the upper-X corner with

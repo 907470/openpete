@@ -50,6 +50,15 @@ int32_t psx_runtime_moby_cone_extra_q12 = 0;
  * iteration. */
 uint8_t psx_runtime_native_cone_pass = 0;
 
+/* Per-iteration scratch flag for r_particles.s screen-cull. See
+ * psx_runtime.h. */
+uint8_t psx_runtime_native_part_pass = 0;
+
+/* Canonical 4:3 right-edge threshold expressed in widened-SX coords.
+ * Default 0x02000000 (no widening). Set by run.c to
+ * (0x200 + delta_OFX) << 16 when --aspect widens factor != 1.0. */
+uint32_t psx_runtime_native_clip_x_in_widened_space = 0x02000000u;
+
 /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
  * 512 / 513 preserve native 4:3 behavior. See psx_runtime.h. */
 uint32_t psx_runtime_portal_clip_x_max = 0x200u;

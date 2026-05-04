@@ -633,6 +633,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (thresh_factor > 1.5f) thresh_factor = 1.5f;
         uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
         psx_runtime_clip_x_threshold = edge << 16;
+        /* Canonical 4:3 right-edge in widened-SX coords: native edge
+         * 0x200 plus the OFX delta-shift `(factor - 1) * 256`. The
+         * particle screen-cull substitution gates m_03 stores against
+         * this so gameplay sees the 4:3 verdict regardless of
+         * widening. See psx_runtime.h. */
+        extern uint32_t psx_runtime_native_clip_x_in_widened_space;
+        uint32_t delta_ofx = (uint32_t)((thresh_factor - 1.0f) * 256.0f);
+        psx_runtime_native_clip_x_in_widened_space = (0x200u + delta_ofx) << 16;
+        OPL_INFO_F("aspect", "particle canonical-cull threshold (in widened SX): "
+                   "0x%08X (native edge 0x200 + delta_ofx %u)",
+                   (unsigned)psx_runtime_native_clip_x_in_widened_space,
+                   (unsigned)delta_ofx);
         OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "
                    "0xFE00 -> 0xF800 (env SX-overflow), clip_x_threshold "
                    "0x02000000 -> %u<<16 (env+cyclorama+moby+particles "

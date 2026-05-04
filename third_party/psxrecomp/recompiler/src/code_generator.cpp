@@ -395,6 +395,37 @@ std::string CodeGenerator::translate_sb(uint32_t instr, uint32_t addr) {
         }
     }
 
+    /* Particle "drawn" flag (m_03 of each Particle, written via the
+     * handwritten `sb $s2, -0x1D($ra)` idiom in r_particles.s — $ra
+     * is the iteration cursor pre-incremented by 0x20 to the next
+     * particle, so -0x1D reaches the *current* particle's m_03).
+     *
+     * Same shape as m_WasDrawn for mobys: render path emits prims
+     * for any particle that passes the *widened* screen cull (visual
+     * coverage extends beyond 4:3), but the gameplay-readable byte
+     * itself must reflect the canonical 4:3 verdict — class-specific
+     * particle update handlers in the level overlays read m_03 and
+     * gate expensive work (including rand() calls) on it; an extra
+     * "drawn" particle in 16:9 would call rand() more times and
+     * drift psyq_rand_seed across aspects.
+     *
+     * Verdict is computed at the preceding cull (substituted in
+     * translate_special / translate_sub: `sub $a0, $a0, $s6`); see
+     * psx_runtime.h `psx_runtime_native_part_pass`. */
+    if (addr == 0x80057720u || addr == 0x80057A10u
+     || addr == 0x80057B20u || addr == 0x80057CDCu
+     || addr == 0x80057F60u || addr == 0x80058028u) {
+        if (offset == 0) {
+            return fmt::format(
+                "if (psx_runtime_native_part_pass) cpu->write_byte({}, (uint8_t){});",
+                reg_name(rs), reg_name(rt));
+        } else {
+            return fmt::format(
+                "if (psx_runtime_native_part_pass) cpu->write_byte({} + {}, (uint8_t){});",
+                reg_name(rs), offset, reg_name(rt));
+        }
+    }
+
     if (offset == 0) {
         return fmt::format("cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
     } else {
@@ -699,7 +730,35 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     // SPECIAL opcode (0x00)
     if (opcode == 0x00) {
         switch (funct) {
-            case 0x00: code = translate_sll(instr); break;     // sll
+            case 0x00:                                          // sll
+                if (addr == 0x800576ECu) {
+                    /* Entry to r_particles.s 4-vertex screen-cull chain
+                     * preceding `sb $s2, -0x1D($ra)` at 0x80057720. At
+                     * this PC, the four vertex SXs are in $at, $v0, $v1,
+                     * $a0 (low halves). The cull chain short-circuits on
+                     * widened pass (`bltz $a1, .L8005771C`) which would
+                     * skip later canonical tests; we instead compute the
+                     * full canonical OR here, unconditionally, using all
+                     * four vertices. The sb at 0x80057720 then gates on
+                     * `psx_runtime_native_part_pass`. The actual sll
+                     * (`$a1 = $at << 16`) still executes for the widened
+                     * cull chain to evaluate normally.
+                     *
+                     * Threshold note: OFX widening shifts SX uniformly by
+                     * (factor-1)*256, so the canonical 4:3 cull at SX<0x200
+                     * becomes SX_widened < (0x200 + delta_OFX) in widened
+                     * coords. That's psx_runtime_native_clip_x_in_widened_space. */
+                    code = fmt::format(
+                        "psx_runtime_native_part_pass = "
+                        "(uint8_t)(((int32_t)((int32_t)cpu->at << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
+                        "        | ((int32_t)((int32_t)cpu->v0 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
+                        "        | ((int32_t)((int32_t)cpu->v1 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
+                        "        | ((int32_t)((int32_t)cpu->a0 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space)); "
+                        "cpu->a1 = (int32_t)((int32_t)cpu->at << 16);");
+                } else {
+                    code = translate_sll(instr);
+                }
+                break;
             case 0x02: code = translate_srl(instr); break;     // srl
             case 0x03: code = translate_sra(instr); break;     // sra
             case 0x04: code = translate_sllv(instr); break;    // sllv
@@ -794,6 +853,36 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14);",
                             reg_name(rs), reg_name(rt),
                             reg_name(rd), reg_name(rs), reg_name(rt));
+                    } else if (addr == 0x80057A04u || addr == 0x80057B14u
+                            || addr == 0x80057CB4u || addr == 0x80057F28u
+                            || addr == 0x8005801Cu) {
+                        /* r_particles.s screen-cull verdict (single-vertex
+                         * sites preceding `sb $s2, -0x1D($ra)` at
+                         * 0x80057A10 / 0x80057B20 / 0x80057CDC). $rs holds
+                         * (vertex_SX << 16); $rt is the widened
+                         * psx_runtime_clip_x_threshold. Record canonical
+                         * verdict against the unwidened threshold
+                         * (0x02000000 == 4:3 X-edge), then perform the
+                         * widened sub for the actual visual cull. The sb
+                         * substitution gates on
+                         * `psx_runtime_native_part_pass`. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        uint32_t rd = get_rd(instr);
+                        code = fmt::format(
+                            "psx_runtime_native_part_pass = "
+                            "(uint8_t)((int32_t){} < (int32_t)psx_runtime_native_clip_x_in_widened_space); "
+                            "{} = (int32_t){} - (int32_t){};",
+                            reg_name(rs),
+                            reg_name(rd), reg_name(rs), reg_name(rt));
+                    /* Note: the 4-vertex OR chain leading to
+                     * sb at 0x80057720 (subs at 0x800576F0/FC/708/714)
+                     * is intentionally NOT substituted here — the chain
+                     * short-circuits on widened-pass which would skip
+                     * later canonical tests. Instead the entry `sll`
+                     * at 0x800576EC computes the canonical OR over all
+                     * 4 vertices unconditionally (see translate sll
+                     * handler). */
                     } else {
                         code = translate_sub(instr);
                     }

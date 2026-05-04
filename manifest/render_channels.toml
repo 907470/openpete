@@ -122,6 +122,49 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 # Listing them here makes the unknown-unknown visible.
 
 [[channel]]
+name        = "particle_drawn_flag"
+status      = "open"
+description = """
+Particle m_03 byte (offset 0x3 of each Particle, =1 iff drawn last
+frame, =0 otherwise) — particle equivalent of m_WasDrawn. Written by
+r_particles.s via the handwritten `sb $s2, -0x1D($ra)` idiom (where
+$ra is pre-incremented to next particle). Read by class-specific
+particle update handlers in level overlays (level_10/11/12/13 etc.)
+to gate expensive AI work, including conditional rand() calls — an
+unclosed leak here drifts psyq_rand_seed and propagates into moby
+state across aspects (title autoplay 16:9 first surfaces at frame
+3714 of g_Particles_pool, and at frame 3738 of psyq_rand_seed).
+
+Closure attempted (2026-05-04, commit pending) by recording the
+canonical 4:3 verdict against psx_runtime_native_clip_x_in_widened_space
+(= 0x200 + delta_OFX, accounts for OFX shift) at 5 preceding
+`sub _, _, $s6` sites + 4-vertex SLL OR entry, gating 6 m_03 stores
+on the resulting psx_runtime_native_part_pass flag. Closure verified
+to intercept the writes (FORCE-DROP test: particle pool divergence
+disappears, shifts to moby_pool_state) but does NOT yet eliminate
+divergence with normal gating: particles iterate through MULTIPLE
+chains per frame and final m_03 depends on the LAST chain's verdict;
+single-flag-per-iteration model doesn't capture that. Needs redesign
+— probably gate the iter-start CLEAR sites too with the same flag,
+or use a 2-pass-stable verdict via a second pass of the cull
+decision committed after all chains run.
+
+Substitutions left in place (gated harmlessly until the architecture
+is corrected — bigger picture closure work is deferred to a follow-on
+plan)."""
+substitution_sites = [
+    0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
+    0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s
+    0x80057A04, 0x80057B14, 0x80057CB4,              # single-vertex sub-by-$s6 verdict capture
+    0x80057F28, 0x8005801C,                          # ditto — for the extra two sb sites
+    0x800576EC,                                      # 4-vertex chain entry — canonical OR over $at,$v0,$v1,$a0
+]
+verdict_fn       = "psx_runtime_native_part_pass"
+verified_against = []
+state_regions    = ["g_Particles_pool"]
+doc              = "notes/plans/openpete-presentation-decoupling.md"
+
+[[channel]]
 name        = "moby_pool_state"
 status      = "open"
 description = """
