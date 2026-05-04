@@ -66,6 +66,18 @@ typedef struct {
      * notes/plans/openpete-widescreen-fov.md "FOV slider". */
     float fov_deg;
 
+    /* PGXP (Parallel/Precision Geometry Transform Pipeline) toggle.
+     * -1 = unset (defaults applied at boot); 0 = off; 1 = on.
+     * When 1, PsyCross's g_cfg_pgxpTextureCorrection and g_cfg_pgxpZBuffer
+     * are enabled — gameplay GTE calls populate a sub-pixel-precision
+     * vertex cache that the renderer uses for perspective-correct UV
+     * interpolation and a real Z-buffer (vs PSX's ordering-table-only
+     * depth). When 0, the cache stays unread and rendering is bit-
+     * identical to USE_PGXP=0. Default off until visual + determinism
+     * gates clear at --pgxp 1.
+     * See notes/plans/openpete-internal-resolution.md "Phase 2". */
+    int pgxp_enable;
+
     /* Target display aspect ratio (width / height). 0 = no override
      * (4:3 native). >0 widens the DISPENV / DRAWENV horizontally and
      * re-centres SetGeomOffset so the GTE projects geometry across the

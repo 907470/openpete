@@ -38,6 +38,7 @@ extern "C" {
 #include "psx/libpad.h"
 #include "psx/libspu.h"
 #include "psx/libmcrd.h"
+#include "PsyX/common/pgxp_defs.h"  /* PGXP_GetIndexForXY (Phase 2b bridge) */
 #include "psx/libapi.h"
 
 /* XA streaming source (lives in PsyCross/audio/PsyX_XA.cpp). */
@@ -705,6 +706,34 @@ void psyq_DrawOTag(CPUState* cpu) {
         bool is_known_prim = (expected_longs != 0u);
         uint16_t lenField  = is_known_prim ? expected_longs : 0u;
         uint16_t pgxpField = 0xFFFFu;
+#if USE_PGXP
+        /* PGXP cache index lookup (Phase 2b, Option 4 / content-keyed map).
+         * Only meaningful for POLY codes (0x20-0x3F) — those are the
+         * primitives whose vertices come from RTPS/RTPT and have PGXP
+         * cache entries. Lines / sprites / tiles / env codes use
+         * PSX-stored coords directly.
+         *
+         * The consumer (PsyX_GPU.cpp MakeVertexTriangle/Quad) reads the
+         * primitive's pgxp_index as the LAST vertex's index and offsets
+         * back via PGXP_GetCacheData(idx-2,-1,0) for tris (or -3..0 for
+         * quads). We look up the FIRST vertex's packed (sx,sy) in the
+         * content map (uniform offset payload+4 across POLY variants —
+         * `[tag:4][code:4][xy0:4]...`) then add (n_verts - 1) so the
+         * stored index names the LAST vertex.
+         *
+         * Hash collisions when distinct vertices share an int16 (sx,sy)
+         * resolve to the most-recent emit's index (Option 4 design
+         * tradeoff documented in openpete-internal-resolution.md). */
+        if (is_known_prim && (code_byte >= 0x20u) && (code_byte < 0x40u)) {
+            uint32_t first_xy;
+            std::memcpy(&first_xy, host + 8, 4);  /* tag(4) + code(4) → first XY */
+            uint16_t first_idx = PGXP_GetIndexForXY(first_xy);
+            if (first_idx != 0xFFFFu) {
+                uint16_t n_verts = (code_byte & 0x08u) ? 4u : 3u;
+                pgxpField = (uint16_t)(first_idx + (n_verts - 1));
+            }
+        }
+#endif
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
 

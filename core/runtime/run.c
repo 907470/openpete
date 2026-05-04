@@ -541,6 +541,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * stays as a float global; thunks multiply at every Set*Env / offset
      * call. 0.0f sentinel keeps the multiplier inactive when no
      * override is requested. */
+    /* --pgxp 0|1: PGXP cache consumer toggle (PsyCross-side). The
+     * GTE-side emit (psxrecomp gte_rtps_internal) always populates
+     * the cache when USE_PGXP=1 and render_pass_active; these flags
+     * decide whether the consumer (ApplyVertexPGXP) actually reads
+     * from it. Default 0 until visual + determinism gates clear at
+     * --pgxp 1. Phase 2b ships the wiring, default flip is Phase 2c. */
+    {
+        int want_pgxp = (opts->pgxp_enable >= 0) ? opts->pgxp_enable : 0;
+        g_cfg_pgxpTextureCorrection = want_pgxp;
+        g_cfg_pgxpZBuffer = want_pgxp;
+        OPL_INFO_F("pgxp", "consumer flags texture_correction=%d zbuffer=%d "
+                   "(--pgxp %s)", want_pgxp, want_pgxp,
+                   (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 0");
+    }
+
     if (opts->aspect_w_over_h > 0.0f) {
         openpete_disp_w_factor = opts->aspect_w_over_h / (4.0f / 3.0f);
         OPL_INFO_F("aspect", "Hor+ widescreen: aspect=%.4f -> "

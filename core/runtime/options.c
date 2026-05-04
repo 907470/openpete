@@ -28,6 +28,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->mute                = true;  /* silent by default; --mute off to enable audio */
+    opts->pgxp_enable         = -1;    /* -1 = unset; defaults applied at boot */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -78,6 +79,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
                 if (opts->fov_deg > 140.0f) opts->fov_deg = 140.0f;
             }
+        } else if (strcmp(a, "--pgxp") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            int n = atoi(v);
+            if (n != 0 && n != 1) {
+                fprintf(stderr, "openpete: --pgxp expects 0 or 1, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->pgxp_enable = n; i++;
         } else if (strcmp(a, "--screenshot-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_frame_count = 0;
@@ -235,6 +244,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
+                "  --pgxp 0|1                 PGXP sub-pixel vertex precision + perspective-correct UVs + Z-buffer (default 0)\n"
                 "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list\n"
                 "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for frame number; .png ext writes PNG, otherwise BMP\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
