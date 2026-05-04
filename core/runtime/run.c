@@ -16,6 +16,7 @@
 #include "bk2_record.h"
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
+#include "openpete_psxtrace.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -807,6 +808,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->halt_cpu_dump_output ? opts->halt_cpu_dump_output : "");
     }
 
+    /* PCSX-Redux oracle verifier: open the trace before the game loop so the
+     * advance() in the per-frame block can stream-diff RAM. */
+    static openpete_psxtrace_t s_psxtrace;
+    openpete_psxtrace_t* psxtrace = NULL;
+    if (opts->psxtrace_verify_path) {
+        if (openpete_psxtrace_open(&s_psxtrace,
+                                   opts->psxtrace_verify_path) == 0) {
+            psxtrace = &s_psxtrace;
+        } else {
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    }
+
     /* Engine-level mute: clamp the SPU AL sources and the XA stream's AL
      * gain. Bypasses the game's volume sliders entirely. */
     extern int  PsyX_SPUAL_SetMute(int on_off);
@@ -1279,6 +1293,38 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
 
 
+        /* PCSX-Redux trace advance — same anchor as ram_dump_on_frame so
+         * each iteration corresponds to one logical "frame yielded". */
+        if (psxtrace) {
+            int rc = openpete_psxtrace_advance(psxtrace,
+                                               openpete_psx_get_ram(),
+                                               2u * 1024u * 1024u);
+            if (rc < 0) {
+                quit = 1;
+                exit_reason = "psxtrace-error";
+            } else if (rc == 0) {
+                OPL_INFO_F("psxtrace",
+                           "trace exhausted (consumed %u records, %llu bytes "
+                           "compared, %llu diverged)",
+                           psxtrace->records_consumed,
+                           (unsigned long long)psxtrace->bytes_compared,
+                           (unsigned long long)psxtrace->bytes_diverged);
+                quit = 1;
+                exit_reason = "psxtrace-eof";
+            } else if (psxtrace->diverged && !opts->psxtrace_keep_going) {
+                OPL_ERROR_F("psxtrace",
+                            "DIVERGED at frame=%u addr=0x%08X "
+                            "op=0x%02X oracle=0x%02X (record %u)",
+                            psxtrace->first_divergent_frame,
+                            psxtrace->first_divergent_addr,
+                            psxtrace->first_divergent_op,
+                            psxtrace->first_divergent_oracle,
+                            psxtrace->records_consumed);
+                quit = 1;
+                exit_reason = "psxtrace-divergence";
+            }
+        }
+
         if (g_shutdown_requested) {
             quit = 1;
             exit_reason = "user-quit";
@@ -1409,6 +1455,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (gameplay_hash_log_fp) {
         fclose(gameplay_hash_log_fp);
         gameplay_hash_log_fp = NULL;
+    }
+    if (psxtrace) {
+        OPL_INFO_F("psxtrace",
+                   "summary: records=%u bytes_compared=%llu "
+                   "bytes_diverged=%llu first_div_frame=%u",
+                   psxtrace->records_consumed,
+                   (unsigned long long)psxtrace->bytes_compared,
+                   (unsigned long long)psxtrace->bytes_diverged,
+                   psxtrace->diverged ? psxtrace->first_divergent_frame : 0u);
+        if (psxtrace->diverged && exit_code == OPENPETE_EXIT_OK) {
+            exit_code = OPENPETE_EXIT_DIVERGENCE;
+        }
+        openpete_psxtrace_close(psxtrace);
+        psxtrace = NULL;
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

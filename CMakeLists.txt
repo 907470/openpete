@@ -112,6 +112,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
+    # PSX oracle gate — verify openpete RAM matches a PCSX-Redux baseline
+    # capture frame-for-frame. Skipped automatically if the baseline trace
+    # is missing (the asset is regenerated locally with
+    # scripts/pcsx-redux-trace.lua, see docs/ram-diff-vs-pcsxr.md). Phase 2
+    # of openpete-determinism-enforcement.md.
+    add_test(NAME psx_oracle_match
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
+    set_tests_properties(psx_oracle_match PROPERTIES
+        LABELS "slow;oracle"
+        TIMEOUT 600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1")
+
     # Matrix determinism gate — broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
     # Same expected-red-vs-regression policy as aspect_determinism.

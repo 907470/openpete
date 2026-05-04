@@ -210,6 +210,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--gameplay-hash-log") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->gameplay_hash_log_path = v; i++;
+        } else if (strcmp(a, "--psxtrace-verify") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->psxtrace_verify_path = v; i++;
+        } else if (strcmp(a, "--psxtrace-keep-going") == 0) {
+            opts->psxtrace_keep_going = true;
         } else if (strcmp(a, "--mute") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "on")  == 0) opts->mute = true;
@@ -239,6 +244,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
                 "  --halt-cpu-dump-output PATH also write 528B 'CSv1' CPU dump alongside RAM at halt\n"
                 "  --halt-hit N               dump on Nth (1-indexed) call to --halt-at-pc (default 1)\n"
+                "  --psxtrace-verify PATH     consume per-frame .psxtrace + diff against PSX oracle\n"
+                "  --psxtrace-keep-going      don't exit on first divergence (collect all)\n"
                 "  --log-format json|plain    structured stderr (default plain)\n"
                 "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
                 "  --disc PATH                disc image (BIN/CUE)\n"

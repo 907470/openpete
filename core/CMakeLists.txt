@@ -11,6 +11,7 @@ add_library(openpete_core STATIC
     runtime/options.c
     runtime/screenshot.c
     runtime/run.c
+    runtime/psxtrace_verify.c
 
     # BizHawk .bk2 movie replay (--bk2) + record (--bk2-record). See
     # plans/openpete-bk2-input.md.

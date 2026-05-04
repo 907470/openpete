@@ -5,6 +5,16 @@ PC, capture its 2 MB main RAM and CPU state; run openpete from the same
 seed up to the same PC; byte-diff the two RAMs. Any diverging byte is a
 candidate openpete recompiler / PSYQ-thunk bug.
 
+## Two modes
+
+**Single-shot (this document).** Capture pcsxr's RAM at one PC; run
+openpete to the same PC; one byte diff. Used for halt-PC bisection.
+
+**Streaming oracle.** Capture per-VBL records into a `.psxtrace` file;
+openpete consumes it via `--psxtrace-verify` and diffs every traced
+frame in one run. See the **Streaming oracle** section near the end of
+this document. Phase 2 of `notes/plans/openpete-determinism-enforcement.md`.
+
 Companion to [gte-trace-vs-reference](gte-trace-vs-reference.md): GTE
 verifies math, this verifies _whole-game state_ over an arbitrary span of
 execution.
@@ -335,8 +345,64 @@ revealed that the remaining bug surface is concentrated in PSYQ thunks.
 
 ## Files
 
-- `scripts/pcsx-redux-ram-dump.lua` — capture script
+- `scripts/pcsx-redux-ram-dump.lua` — single-shot capture script
 - `core/runtime/run.c` — `load_cpu_seed`, `seed-ram` block
 - `core/runtime/dispatch.c` — `openpete_halt_at_pc` hook in `psx_override_dispatch`
 - `core/runtime/options.c` — flag parsing
 - `core/include/openpete.h` — option fields
+
+## Streaming oracle (`.psxtrace`)
+
+The single-shot recipe above captures one frame at one PC. The
+streaming oracle captures *every* per-VBL record into one file so
+openpete can diff the entire span in one run. Used by the
+`psx_oracle_match` ctest entry (Phase 2 of
+`notes/plans/openpete-determinism-enforcement.md`).
+
+Components:
+
+- `scripts/pcsx-redux-trace.lua` — Lua dumper. Streams per-frame
+  `(frame_no, pad1, pad2, pc, 2 MB RAM)` to `PCSXR_TRACE_OUT` until
+  `PCSXR_TRACE_FRAMES` frames have elapsed past `PCSXR_TRACE_PC`.
+- `tools/psxtrace_format.py` — format spec + Python codec. Use
+  `python -m tools.psxtrace_format info <path>` to inspect, or
+  `… compress src dst` to recompress raw → zstd (~50–100 MB ship form).
+- `core/runtime/psxtrace_verify.c` — openpete-side consumer. Diffs
+  each record's RAM against live `g_ram` and latches first divergence.
+- `--psxtrace-verify PATH` / `--psxtrace-keep-going` — openpete CLI
+  flags.
+- `scripts/check_psx_oracle.sh` + ctest `psx_oracle_match` (label
+  `slow;oracle`, skipped automatically when the baseline asset is
+  absent).
+
+Capture recipe:
+
+```sh
+PCSXR_TRACE_OUT=tests/golden/spyro-1/psxtrace-titlescreen-baseline.bin \
+PCSXR_TRACE_FRAMES=600 \
+.tools/pcsx-redux/pcsx-redux \
+    --no-ui --interpreter --debugger \
+    --bios .tools/pcsx-redux/openbios.bin \
+    --iso  /path/to/SCUS-94228.cue \
+    --run --dofile scripts/pcsx-redux-trace.lua
+```
+
+Verify:
+
+```sh
+ctest -L oracle --output-on-failure
+# or directly:
+scripts/check_psx_oracle.sh
+```
+
+V1 limits (planned follow-ups):
+
+- C reader handles raw records only; pre-decompress zstd traces with
+  the Python codec.
+- No controller-input replay yet — openpete uses whatever pad-input
+  source it would normally have. To match a recorded run, supply the
+  same `--bk2` movie that drove the pcsxr capture (or hold the same
+  inputs externally).
+- Diff is over the full 2 MB. Manifest-restricted mode (gameplay
+  regions only) lands alongside the integration with
+  `gameplay_state_regions.toml`.
