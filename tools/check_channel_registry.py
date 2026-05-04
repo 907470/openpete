@@ -100,11 +100,31 @@ def main() -> int:
         for s in sites:
             addr = coerce_addr(s)
             registry_addrs.setdefault(addr, []).append(name)
-        # gated channels with no sites are nonsensical; open is fine.
-        if status in ("gated", "verified") and not sites:
+        # gated channels with no sites are usually a manifest mistake.
+        # Exception: a channel can be "gated_via = "other_channel"" if it
+        # closes as a side effect of another channel's substitutions
+        # (cross-channel coupling). The named channel must exist and be
+        # gated/verified itself.
+        gated_via = ch.get("gated_via")
+        if status in ("gated", "verified") and not sites and not gated_via:
             errors.append(
-                f"channel {name!r}: status={status!r} but substitution_sites is empty"
+                f"channel {name!r}: status={status!r} but substitution_sites "
+                f"is empty and no gated_via set"
             )
+        if gated_via:
+            target = next((c for c in channels if c.get("name") == gated_via),
+                          None)
+            if not target:
+                errors.append(
+                    f"channel {name!r}: gated_via references "
+                    f"unknown channel {gated_via!r}"
+                )
+            elif target.get("status") not in ("gated", "verified"):
+                errors.append(
+                    f"channel {name!r}: gated_via={gated_via!r} but that "
+                    f"channel has status={target.get('status')!r} (must be "
+                    "gated or verified)"
+                )
         # state_regions cross-check: every region named here must exist
         # in gameplay_state_regions.toml so the harness can map a
         # divergent region back to this channel.

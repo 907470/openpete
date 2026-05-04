@@ -27,6 +27,12 @@
 #                    gameplay_state_regions.toml. Recorded here
 #                    so the audit trail isn't lost.
 #
+# A `gated` channel may have its substitution_sites empty *iff* it
+# also sets `gated_via = "<other_channel_name>"` — used when one
+# channel closes as a side effect of another's substitutions (e.g.
+# class_skip_flags is gated via widescreen_clip_x_threshold). The
+# audit verifies the referenced channel exists and is itself gated.
+#
 # See notes/plans/openpete-determinism-enforcement.md Phase 4.
 
 # ─── Gated channels ──────────────────────────────────────────────────
@@ -148,26 +154,59 @@ doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "dedup_flag_table"
-status      = "open"
+status      = "audited_clean"
 description = """
-func_80051FEC's per-class dedup flag table at 0x80077868
-(32 bytes). Read by the update list builder; written by render side.
-Likely closes alongside m_WasDrawn but needs its own substitution."""
+Originally suspected (bisect 2026-04-xx) of being an open render→
+gameplay channel at D_80077868 (32 bytes, "func_80051FEC's per-class
+dedup flag table").
+
+Audited 2026-05-03 (asm read of moby_lists.s + grep across decomp):
+this region is purely internal scratch within func_80051FEC. The
+function clears the 32 bytes at entry (lines 17-20 of moby_lists.s),
+populates them during a pass over g_LevelMobys (gated on m_WasDrawn,
+which is itself a gated channel + canonical-camera bounding-box
+tests), and consumes them in a second pass before returning. No
+other code in spyro-1/{src,include,asm} references D_80077868.
+
+Empirically: the matrix harness across title / stone-hill-entry /
+inventory shows zero divergence in this region — the input set
+(m_WasDrawn is gated; positions are canonical) produces aspect-
+identical contents. Confirmed not a leak channel.
+
+Removed from gameplay_state_regions.toml."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
-state_regions      = ["render_channel:dedup_flag_table"]
+state_regions      = []
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "class_skip_flags"
-status      = "open"
+status      = "gated"
 description = """
-func_800521C0's per-class skip-render flag table at 0x800771C8
-(64 bytes). Render-set, gameplay-read; same shape as
-dedup_flag_table."""
+"Rendered world sectors flags" (per the asm comment in
+spyro-1/asm/data/game.bss.s for D_800771C8, 64 bytes). Written by
+r_environment.s during the env-renderer's per-sector cull pass; read
+by func_800521C0 (moby_lists.s) which clears m_WasDrawn=0 on every
+moby whose owning sector wasn't rendered. Genuine render→gameplay
+channel.
+
+Empirically does NOT diverge across the matrix (title, stone-hill-
+entry, inventory, tas, moby-culling-16-9, skip-to-artisans at 4:3
+vs 16:9, 3000 frames). The reason: the env renderer's per-vertex
+SX cull at r_environment.s goes through `lui $X, 0x200` sites
+already substituted by `widescreen_clip_x_threshold` — those keep
+the cone width canonical 4:3 by default (and only widen inside the
+render-pass bracket, after func_800521C0 has already run). So
+D_800771C8 receives the canonical 4:3 sector-rendered verdict,
+which is what gameplay reads.
+
+This is "closed by side effect": the channel is gated, but no own
+substitution exists — the gating comes via widescreen_clip_x_threshold.
+If that channel ever regresses, this one will surface."""
 substitution_sites = []
-verdict_fn         = ""
-verified_against   = []
+gated_via          = "widescreen_clip_x_threshold"
+verdict_fn         = "psx_runtime_clip_x_threshold (cross-channel)"
+verified_against   = ["aspect_determinism", "determinism_matrix"]
 state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"

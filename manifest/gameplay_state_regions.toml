@@ -132,11 +132,11 @@ start       = 0x80071000
 length      = 0x1000
 description = "Moby render queue / pointer table. Bisect identified 0x80071800-0x80071F00 specifically; broad coverage until tightened. Status: OPEN channel."
 
-[[region]]
-name        = "render_channel:dedup_flag_table"
-start       = 0x80077868
-length      = 0x20
-description = "func_80051FEC's per-class dedup flag table (32 bytes). Read by update list builder; written by render-side too."
+# 0x80077868..0x80077888 was tracked as `render_channel:dedup_flag_table`.
+# Audited 2026-05-03: it's per-call scratch internal to func_80051FEC
+# (cleared at entry, filled+consumed within the call, no external
+# references). See manifest/render_channels.toml `dedup_flag_table`
+# (status: audited_clean).
 
 [[region]]
 name        = "render_channel:class_skip_flags"
