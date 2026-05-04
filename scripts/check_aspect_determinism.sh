@@ -82,9 +82,13 @@ run_one() {
     [[ $rc -eq 0 && -s "$pos" && -s "$hash" ]] || {
         echo "FAIL: $label run exited $rc" >&2; return 1; }
     # Strip vbl from both — vbl timing can wobble cosmetically without
-    # indicating gameplay drift.
+    # indicating gameplay drift. The position-log strip is a 4-column
+    # frame,x,y,z extract; the hash log keeps every per-region column
+    # (frame, then total fnv1a64, then one column per region) so the
+    # classifier can pinpoint which region first diverged.
     awk -F, 'NR>1 { print $1","$3","$4","$5 }' "$pos"  > "$OUT_DIR/x-$label.csv"
-    awk -F, 'NR>1 { print $1","$3 }'           "$hash" > "$OUT_DIR/h-$label.csv"
+    awk -F, 'BEGIN { OFS="," }
+             { $2=""; sub(/,,/, ","); print }' "$hash" > "$OUT_DIR/h-$label.csv"
 }
 
 # Run the baseline first.
@@ -112,6 +116,15 @@ for a in "${ASPECTS[@]}"; do
                   | awk -F, '/^[<>] [0-9]/ { sub(/^[<>] /,""); print $1; exit }')
         echo "  FAIL  $a hash diverges from $BASELINE: $nh frames differ (first at frame ~$first_h)"
         echo "        compare: diff $OUT_DIR/h-$BASELINE.csv $OUT_DIR/h-$a.csv"
+        # Region-level classification: name the channel that owns
+        # whichever region first diverged. Stays best-effort — if
+        # python3 / the registry is missing we skip silently and the
+        # raw diff command above is still actionable.
+        if [[ -x "$(command -v python3)" ]]; then
+            python3 tools/classify_hash_divergence.py \
+                "$OUT_DIR/h-$BASELINE.csv" "$OUT_DIR/h-$a.csv" \
+                | sed 's/^/        /' || true
+        fi
     fi
     # Secondary: position log (coarser; useful for "did it reach Spyro yet?").
     if diff -q "$OUT_DIR/x-$BASELINE.csv" "$OUT_DIR/x-$a.csv" > /dev/null; then

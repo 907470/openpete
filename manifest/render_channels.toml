@@ -25,6 +25,12 @@
 
 # ─── Gated channels ──────────────────────────────────────────────────
 
+# `state_regions` lists the gameplay-state-region names (matching the
+# `name` field in manifest/gameplay_state_regions.toml) that this
+# channel affects. The harness uses this mapping to classify a
+# divergent region back to its owning channel — i.e. "the moby pool
+# diverged → m_WasDrawn channel → status gated → REGRESSION".
+
 [[channel]]
 name        = "m_WasDrawn"
 status      = "gated"
@@ -41,6 +47,7 @@ substitution_sites = [
 ]
 verdict_fn       = "psx_runtime_native_cone_pass"
 verified_against = ["aspect_determinism"]
+state_regions    = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
 doc              = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
@@ -63,6 +70,10 @@ substitution_sites = [
 ]
 verdict_fn       = "psx_runtime_clip_x_threshold"
 verified_against = ["aspect_determinism"]
+# Pure presentation-side widening — no gameplay-state region directly
+# tied to this channel; "gated" status here means "verified to not
+# leak via the harness", not "intercepts a known gameplay write".
+state_regions    = []
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
@@ -79,6 +90,7 @@ substitution_sites = [
 ]
 verdict_fn       = "psx_runtime_portal_clip_x_max"
 verified_against = ["aspect_determinism"]
+state_regions    = []  # presentation-side; see widescreen_clip_x_threshold note
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 # ─── Open channels — identified, no substitution yet ────────────────
@@ -98,6 +110,7 @@ pinned (need PC tracking + bisect mode — Phase 5)."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
+state_regions      = ["render_channel:sector_visibility_flags"]
 doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
@@ -111,6 +124,7 @@ sector_visibility_flags."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
+state_regions      = ["render_channel:moby_render_queue"]
 doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
@@ -123,6 +137,7 @@ Likely closes alongside m_WasDrawn but needs its own substitution."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
+state_regions      = ["render_channel:dedup_flag_table"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
@@ -135,4 +150,5 @@ dedup_flag_table."""
 substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
+state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"

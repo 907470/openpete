@@ -47,6 +47,12 @@ def coerce_addr(v) -> int:
     return v if isinstance(v, int) else int(v, 0)
 
 
+def parse_state_region_names(toml_path: Path) -> set[str]:
+    with open(toml_path, "rb") as f:
+        data = tomllib.load(f)
+    return {r["name"] for r in data.get("region", [])}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", default="manifest/render_channels.toml")
@@ -54,10 +60,15 @@ def main() -> int:
         "--recompiler",
         default="third_party/psxrecomp/recompiler/src/code_generator.cpp",
     )
+    ap.add_argument(
+        "--state-regions",
+        default="manifest/gameplay_state_regions.toml",
+    )
     args = ap.parse_args()
 
     registry_path = Path(args.registry)
     cpp_path = Path(args.recompiler)
+    state_regions_path = Path(args.state_regions)
     if not registry_path.is_file():
         print(f"error: registry not found: {registry_path}", file=sys.stderr)
         return 2
@@ -67,6 +78,8 @@ def main() -> int:
 
     channels = parse_registry(registry_path)
     recompiler_sites = parse_recompiler_sites(cpp_path)
+    state_region_names = (parse_state_region_names(state_regions_path)
+                          if state_regions_path.is_file() else set())
 
     # registry → address → list of channel names (catches duplicates)
     registry_addrs: dict[int, list[str]] = {}
@@ -92,6 +105,16 @@ def main() -> int:
             errors.append(
                 f"channel {name!r}: status={status!r} but substitution_sites is empty"
             )
+        # state_regions cross-check: every region named here must exist
+        # in gameplay_state_regions.toml so the harness can map a
+        # divergent region back to this channel.
+        if state_region_names:
+            for sr in ch.get("state_regions") or []:
+                if sr not in state_region_names:
+                    errors.append(
+                        f"channel {name!r}: state_regions references "
+                        f"{sr!r} but no such region in {state_regions_path}"
+                    )
 
     # 1. Missing: registry → recompiler.
     missing = sorted(a for a in registry_addrs if a not in recompiler_sites)

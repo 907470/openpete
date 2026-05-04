@@ -102,15 +102,21 @@ __attribute__((weak)) size_t openpete_state_region_count = 0;
  * as a hash divergence at the first frame the perturbation reaches
  * one of the registered regions. See
  * notes/plans/openpete-determinism-enforcement.md Phase 1. */
-static uint64_t gameplay_hash_compute(void) {
-    uint64_t h = openpete_fnv1a64_init();
+/* Compute the rolling total hash across all regions and, optionally,
+ * a parallel per-region hash array. Per-region hashes let the harness
+ * report which named region first diverged (Phase 5) without RAM
+ * dumps. `out_per_region` (if non-NULL) must hold at least
+ * `openpete_state_region_count` slots; sentinel 0 means the region
+ * was skipped (NULL indirect pointer / out-of-RAM). */
+static uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
+    uint64_t total = openpete_fnv1a64_init();
     const uint8_t* ram = openpete_psx_get_ram();
     const uint32_t RAM_BYTES = 2u * 1024u * 1024u;
     for (size_t r = 0; r < openpete_state_region_count; r++) {
         const OpenpeteStateRegion* reg = &openpete_state_regions[r];
+        if (out_per_region) out_per_region[r] = 0;
         uint32_t base_off;
         if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY) {
-            /* Dereference *(uint32_t*)reg->start as a PSX vaddr. */
             uint32_t ptr_off = reg->start & 0x1FFFFFu;
             if (ptr_off + 4u > RAM_BYTES) continue;
             uint32_t vaddr =
@@ -118,7 +124,6 @@ static uint64_t gameplay_hash_compute(void) {
                 | ((uint32_t)ram[ptr_off + 1] << 8)
                 | ((uint32_t)ram[ptr_off + 2] << 16)
                 | ((uint32_t)ram[ptr_off + 3] << 24);
-            /* NULL or non-KSEG0/KSEG1 pointer → pool not allocated yet. */
             if (vaddr == 0) continue;
             base_off = vaddr & 0x1FFFFFu;
         } else {
@@ -127,14 +132,52 @@ static uint64_t gameplay_hash_compute(void) {
         uint32_t end = base_off + reg->length;
         if (end > RAM_BYTES) end = RAM_BYTES;
         if (end <= base_off) continue;
-        h = openpete_fnv1a64_update(h, ram + base_off, end - base_off);
+        size_t len = end - base_off;
+        const uint8_t* p = ram + base_off;
+        if (out_per_region) out_per_region[r] = openpete_fnv1a64(p, len);
+        total = openpete_fnv1a64_update(total, p, len);
     }
-    return h;
+    return total;
+}
+
+#define OPENPETE_HASH_LOG_MAX_REGIONS 128
+
+static void gameplay_hash_log_emit_header(FILE* fp) {
+    fputs("frame,vbl,fnv1a64", fp);
+    /* One column per registered region, headed by its name. The
+     * harness uses these to pinpoint which region first diverged.
+     * Capped at OPENPETE_HASH_LOG_MAX_REGIONS to keep the per-frame
+     * line bounded; over the cap we still emit the total hash and
+     * skip extra columns (loud assert on first hit). */
+    size_t n = openpete_state_region_count;
+    if (n > OPENPETE_HASH_LOG_MAX_REGIONS) {
+        OPL_ERROR_F("hash-log",
+                    "too many regions (%zu > %d); per-region columns truncated",
+                    n, OPENPETE_HASH_LOG_MAX_REGIONS);
+        n = OPENPETE_HASH_LOG_MAX_REGIONS;
+    }
+    for (size_t r = 0; r < n; r++) {
+        const char* name = openpete_state_regions[r].name;
+        fputc(',', fp);
+        /* Sanitize: strip commas / newlines defensively. */
+        for (const char* c = name; *c; c++) {
+            fputc((*c == ',' || *c == '\n' || *c == '\r') ? '_' : *c, fp);
+        }
+    }
+    fputc('\n', fp);
 }
 
 static void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
-    uint64_t h = gameplay_hash_compute();
-    fprintf(fp, "%u,%d,%016llx\n", frame, vbl, (unsigned long long)h);
+    uint64_t per_region[OPENPETE_HASH_LOG_MAX_REGIONS];
+    size_t n = openpete_state_region_count;
+    if (n > OPENPETE_HASH_LOG_MAX_REGIONS) n = OPENPETE_HASH_LOG_MAX_REGIONS;
+    /* gameplay_hash_compute_ex always fills the prefix [0..region_count); */
+    uint64_t total = gameplay_hash_compute_ex(per_region);
+    fprintf(fp, "%u,%d,%016llx", frame, vbl, (unsigned long long)total);
+    for (size_t r = 0; r < n; r++) {
+        fprintf(fp, ",%016llx", (unsigned long long)per_region[r]);
+    }
+    fputc('\n', fp);
 }
 
 /* Implemented in core/runtime/exe_loader.cpp. */
@@ -794,7 +837,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                         opts->gameplay_hash_log_path, strerror(errno));
             return OPENPETE_EXIT_SETUP_ERROR;
         }
-        fputs("frame,vbl,fnv1a64\n", gameplay_hash_log_fp);
+        gameplay_hash_log_emit_header(gameplay_hash_log_fp);
         OPL_INFO_F("gameplay-hash-log",
                    "FNV1a-64 over %zu state regions to %s",
                    openpete_state_region_count,
