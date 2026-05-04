@@ -11,6 +11,22 @@ presentation matrix (aspect × fov × ...) and asserts every cell is
 bit-identical to its `(4:3, default-fov)` baseline. Adding a new BK2
 here therefore extends regression coverage permanently.
 
+The harness has three modes:
+
+| Mode | Flag | Coverage | Frames/cell | Use when |
+| ---- | ---- | -------- | ----------- | -------- |
+| PR-tier | (default) | 3 scenarios × 3 aspects × 2 fovs | 2000 | quick local check |
+| Full | `--full` | all *.bk2 + title × {4:3,16:9,21:9,32:9} × {default,50,90,120} | 2000 | broad sweep |
+| Soak | `--soak` | all *.bk2 + title × {4:3,16:9} × {default} | 30000, `--bk2-stop-on-end` | hunt slow-burn / late-frame leaks |
+
+Soak mode (ctest target `determinism_soak`, label `soak`) is the
+mode for catching channel leaks that only surface deep into a
+movie — drift accumulators, animation state that diverges slowly,
+or a moby that wanders into a divergent sector after thousands of
+frames. It excludes `tas` + `frame-time-test` by default
+(`--exclude=tas,frame-time-test`); override the exclude list to
+broaden or narrow.
+
 ## Corpus discipline
 
 **Capture every gameplay scenario you exercise manually.** If you

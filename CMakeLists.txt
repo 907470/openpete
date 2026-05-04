@@ -125,4 +125,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "slow;determinism;matrix"
         TIMEOUT 1800
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Soak determinism gate — long-replay mode for hunting slow-burn
+    # / late-frame channel leaks the 2000-frame matrix cells miss.
+    # Iterates the full BK2 corpus (minus tas/frame-time-test) at
+    # 4:3 vs 16:9, default fov, with --bk2-stop-on-end so each cell
+    # exits on movie end. Not part of the default ctest run; opt in
+    # via `ctest -L soak`. Substantially slower than matrix.
+    add_test(NAME determinism_soak
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_determinism_matrix.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --soak)
+    set_tests_properties(determinism_soak PROPERTIES
+        LABELS "slow;determinism;soak"
+        TIMEOUT 7200
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

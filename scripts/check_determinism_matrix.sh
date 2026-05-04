@@ -32,6 +32,13 @@
 #     [--out=/tmp/determinism-matrix]
 #     [--full]                       (4:3,16:9,21:9,32:9 × default,50,90,120
 #                                     × all *.bk2 scenarios + title)
+#     [--soak]                       full BK2 corpus, long-replay mode:
+#                                    all *.bk2 (minus --exclude) at default
+#                                    fov, frames=30000, --bk2-stop-on-end.
+#                                    Use to soak for slow-burn channel leaks
+#                                    that only surface deep into a movie.
+#     [--exclude=tas,...]            soak/full: comma list of BK2 stems to
+#                                    skip (default: tas,frame-time-test).
 #     [--keep-logs]                  (don't delete per-cell stdout)
 #
 # Exit codes:
@@ -51,6 +58,9 @@ SCENARIOS_CSV="title,stone-hill-entry,inventory"
 OUT_DIR="/tmp/determinism-matrix"
 KEEP_LOGS=0
 FULL=0
+SOAK=0
+EXCLUDE_CSV="tas,frame-time-test"
+BK2_STOP_ON_END=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -61,18 +71,47 @@ for arg in "$@"; do
         --scenarios=*) SCENARIOS_CSV="${arg#--scenarios=}" ;;
         --out=*)       OUT_DIR="${arg#--out=}" ;;
         --full)        FULL=1 ;;
+        --soak)        SOAK=1 ;;
+        --exclude=*)   EXCLUDE_CSV="${arg#--exclude=}" ;;
         --keep-logs)   KEEP_LOGS=1 ;;
-        --help|-h)     sed -n '1,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)     sed -n '1,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
 
+# Build a list of bk2 stems on disk, minus the EXCLUDE_CSV list, plus
+# leading "title" (no --bk2). Used by --full and --soak.
+list_bk2_scenarios() {
+    local exclude_csv="$1"
+    local exclude_pat
+    exclude_pat=$(echo "$exclude_csv" | tr ',' '|')
+    local stems
+    stems=$(ls games/spyro-1/bk2/*.bk2 2>/dev/null \
+            | xargs -n1 basename \
+            | sed 's/\.bk2$//' \
+            | { if [[ -n "$exclude_pat" ]]; then grep -Ev "^($exclude_pat)$"; else cat; fi; } \
+            | tr '\n' ',' \
+            | sed 's/,$//')
+    echo "title${stems:+,$stems}"
+}
+
 if [[ $FULL -eq 1 ]]; then
     ASPECTS_CSV="4:3,16:9,21:9,32:9"
     FOVS_CSV="default,50,90,120"
-    # All bk2 stems plus title.
-    bk2_list=$(ls games/spyro-1/bk2/*.bk2 2>/dev/null | xargs -n1 basename | sed 's/\.bk2$//' | tr '\n' ',' | sed 's/,$//')
-    SCENARIOS_CSV="title${bk2_list:+,$bk2_list}"
+    SCENARIOS_CSV=$(list_bk2_scenarios "$EXCLUDE_CSV")
+fi
+
+if [[ $SOAK -eq 1 ]]; then
+    # Soak: long-replay mode for hunting slow-burn / late-frame channel
+    # leaks that 2000-frame PR-tier cells miss. Trade matrix breadth for
+    # per-cell depth — default fov only, default aspect axis, full corpus,
+    # `--bk2-stop-on-end` so each cell exits as soon as its movie ends
+    # rather than spinning out to FRAMES.
+    [[ "$ASPECTS_CSV" == "4:3,16:9,21:9" ]] && ASPECTS_CSV="4:3,16:9"
+    [[ "$FOVS_CSV"    == "default,90"    ]] && FOVS_CSV="default"
+    [[ "$FRAMES"      == "2000"          ]] && FRAMES=30000
+    SCENARIOS_CSV=$(list_bk2_scenarios "$EXCLUDE_CSV")
+    BK2_STOP_ON_END=1
 fi
 
 BIN="$BUILD_DIR/games/spyro-1/openpete-spyro1"
@@ -109,6 +148,7 @@ run_cell() {
         local bk2="games/spyro-1/bk2/$scenario.bk2"
         [[ -f "$bk2" ]] || { echo "missing bk2: $bk2" >&2; return 2; }
         args+=(--bk2 "$bk2")
+        [[ $BK2_STOP_ON_END -eq 1 ]] && args+=(--bk2-stop-on-end)
     fi
     "$BIN" "${args[@]}" > "$log" 2>&1
     local rc=$?
@@ -145,7 +185,10 @@ compare_cell() {
     fi
 }
 
-echo "[matrix] aspects=[${ASPECTS[*]}]  fovs=[${FOVS[*]}]  scenarios=[${SCENARIOS[*]}]  frames=$FRAMES"
+mode_tag="matrix"
+[[ $FULL -eq 1 ]] && mode_tag="full"
+[[ $SOAK -eq 1 ]] && mode_tag="soak"
+echo "[$mode_tag] aspects=[${ASPECTS[*]}]  fovs=[${FOVS[*]}]  scenarios=[${SCENARIOS[*]}]  frames=$FRAMES${BK2_STOP_ON_END:+ stop-on-end=$BK2_STOP_ON_END}"
 echo
 
 for scenario in "${SCENARIOS[@]}"; do
@@ -178,11 +221,11 @@ done
 
 # Print registry context to keep the report self-explanatory.
 if [[ -x "$(command -v python3)" ]]; then
-    python3 tools/check_channel_registry.py 2>/dev/null | sed 's/^/[matrix] /'
+    python3 tools/check_channel_registry.py 2>/dev/null | sed "s/^/[$mode_tag] /"
 fi
 
 echo
-echo "[matrix] cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs"
+echo "[$mode_tag] cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
@@ -195,7 +238,7 @@ if (( regressions > 0 )); then
     exit 1
 fi
 if (( broken_runs > 0 )); then
-    echo "[matrix] FAIL: $broken_runs cell(s) failed to run — see $OUT_DIR/log-*.txt" >&2
+    echo "[$mode_tag] FAIL: $broken_runs cell(s) failed to run — see $OUT_DIR/log-*.txt" >&2
     exit 1
 fi
 exit 0
