@@ -639,10 +639,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * this so gameplay sees the 4:3 verdict regardless of
          * widening. See psx_runtime.h. */
         extern uint32_t psx_runtime_native_clip_x_in_widened_space;
+        extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
         uint32_t delta_ofx = (uint32_t)((thresh_factor - 1.0f) * 256.0f);
         psx_runtime_native_clip_x_in_widened_space = (0x200u + delta_ofx) << 16;
-        OPL_INFO_F("aspect", "particle canonical-cull threshold (in widened SX): "
-                   "0x%08X (native edge 0x200 + delta_ofx %u)",
+        psx_runtime_native_clip_x_low_in_widened_space = delta_ofx << 16;
+        OPL_INFO_F("aspect", "particle canonical-cull thresholds (in widened SX): "
+                   "low=0x%08X high=0x%08X (delta_ofx %u)",
+                   (unsigned)psx_runtime_native_clip_x_low_in_widened_space,
                    (unsigned)psx_runtime_native_clip_x_in_widened_space,
                    (unsigned)delta_ofx);
         OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "

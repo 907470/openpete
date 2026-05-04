@@ -139,6 +139,18 @@ extern uint8_t psx_runtime_native_part_pass;
  * canonical OR at 0x800576EC). */
 extern uint32_t psx_runtime_native_clip_x_in_widened_space;
 
+/* Canonical 4:3 LEFT-edge threshold expressed in *widened*-SX
+ * coordinates. The particle cull at 0x80057A00 (and friends) does
+ * `blez (SX << 16), exit` — i.e. canonical-mode rejects when SX <= 0.
+ * In widened coords SX_widened = SX_canonical + delta_OFX, so the
+ * canonical-pass test in widened space is
+ *   (SX_widened << 16) > (delta_OFX << 16).
+ * This var holds (delta_OFX << 16); 0 means no widening (= native
+ * 4:3 left edge at SX=0). Read by the same particle-cull substitution
+ * at PCs 0x80057A04 / B14 / CB4 / F28 / 801C and the 4-vertex SLL OR
+ * at 0x800576EC, AND-combined with the right-edge test. */
+extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
+
 /* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
  * clamp. The dispatcher computes a per-portal screen-space clip rect
  * (D_8007AA00..0C) then clamps the upper-X corner with

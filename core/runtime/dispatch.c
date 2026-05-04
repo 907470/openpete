@@ -59,6 +59,11 @@ uint8_t psx_runtime_native_part_pass = 0;
  * (0x200 + delta_OFX) << 16 when --aspect widens factor != 1.0. */
 uint32_t psx_runtime_native_clip_x_in_widened_space = 0x02000000u;
 
+/* Canonical 4:3 LEFT-edge threshold in widened-SX coords. Default 0
+ * (no widening = native left edge at SX=0). Set by run.c to
+ * delta_OFX << 16 when --aspect widens factor != 1.0. See psx_runtime.h. */
+uint32_t psx_runtime_native_clip_x_low_in_widened_space = 0u;
+
 /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
  * 512 / 513 preserve native 4:3 behavior. See psx_runtime.h. */
 uint32_t psx_runtime_portal_clip_x_max = 0x200u;

@@ -748,13 +748,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * (factor-1)*256, so the canonical 4:3 cull at SX<0x200
                      * becomes SX_widened < (0x200 + delta_OFX) in widened
                      * coords. That's psx_runtime_native_clip_x_in_widened_space. */
+                    /* Canonical 4:3 strip-pass = (any vertex inside
+                     * canonical left-edge) AND (any vertex inside
+                     * canonical right-edge). The original asm has two
+                     * 4-vertex OR groups (left at 0x800576CC, right at
+                     * 0x800576EC), both of which must succeed for the
+                     * sb at 0x80057720 to fire. With OFX widening, only
+                     * the right-edge $s6 changes — but the left-edge
+                     * blez/bgtz still tests against zero in widened-SX
+                     * space, so we replicate that against
+                     * psx_runtime_native_clip_x_low_in_widened_space
+                     * (= delta_OFX << 16) to get the canonical verdict. */
                     code = fmt::format(
-                        "psx_runtime_native_part_pass = "
-                        "(uint8_t)(((int32_t)((int32_t)cpu->at << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
-                        "        | ((int32_t)((int32_t)cpu->v0 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
-                        "        | ((int32_t)((int32_t)cpu->v1 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space) "
-                        "        | ((int32_t)((int32_t)cpu->a0 << 16) < (int32_t)psx_runtime_native_clip_x_in_widened_space)); "
-                        "cpu->a1 = (int32_t)((int32_t)cpu->at << 16);");
+                        "{{ int32_t at_w = (int32_t)cpu->at << 16; "
+                        "int32_t v0_w = (int32_t)cpu->v0 << 16; "
+                        "int32_t v1_w = (int32_t)cpu->v1 << 16; "
+                        "int32_t a0_w = (int32_t)cpu->a0 << 16; "
+                        "int32_t lo = (int32_t)psx_runtime_native_clip_x_low_in_widened_space; "
+                        "int32_t hi = (int32_t)psx_runtime_native_clip_x_in_widened_space; "
+                        "uint8_t left_pass  = (uint8_t)((at_w > lo) | (v0_w > lo) | (v1_w > lo) | (a0_w > lo)); "
+                        "uint8_t right_pass = (uint8_t)((at_w < hi) | (v0_w < hi) | (v1_w < hi) | (a0_w < hi)); "
+                        "psx_runtime_native_part_pass = (uint8_t)(left_pass & right_pass); "
+                        "cpu->a1 = at_w; }}");
                 } else {
                     code = translate_sll(instr);
                 }
@@ -870,9 +885,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         uint32_t rt = get_rt(instr);
                         uint32_t rd = get_rd(instr);
                         code = fmt::format(
+                            /* Canonical-pass = inside BOTH left and right
+                             * 4:3 edges, expressed in widened-SX coords.
+                             * SX_widened = SX_canonical + delta_OFX, so
+                             * canonical SX > 0 ↔ widened SX > delta_OFX
+                             * (low_in_widened_space) and canonical SX <
+                             * 512 ↔ widened SX < (512 + delta_OFX)
+                             * (in_widened_space). Without the left-edge
+                             * test, particles with widened_SX in
+                             * (0, delta_OFX) leak through and falsely
+                             * set m_03=1 — accounts for the residual
+                             * divergence after the right-only scaffold. */
                             "psx_runtime_native_part_pass = "
-                            "(uint8_t)((int32_t){} < (int32_t)psx_runtime_native_clip_x_in_widened_space); "
+                            "(uint8_t)(((int32_t){} >  (int32_t)psx_runtime_native_clip_x_low_in_widened_space) "
+                            "        & ((int32_t){} <  (int32_t)psx_runtime_native_clip_x_in_widened_space)); "
                             "{} = (int32_t){} - (int32_t){};",
+                            reg_name(rs),
                             reg_name(rs),
                             reg_name(rd), reg_name(rs), reg_name(rt));
                     /* Note: the 4-vertex OR chain leading to
