@@ -180,6 +180,17 @@ extern int64_t openpete_canonical_sx2_q16;
 extern uint32_t psx_runtime_portal_clip_x_max;
 extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
 
+/* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
+ * games/spyro-1/game_extras_impl.c. Activated by env var
+ * OPENPETE_DIAG_CONE_SLOT (with optional FROM/TO frame range). The
+ * substitution at 0x80022C0C calls this with |MAC1|, MAC3, and the
+ * computed native cone-pass verdict so we can compare across aspects. */
+struct CPUState;
+void openpete_diag_cone_dump(void* cpu,
+                             int32_t mac1_abs,
+                             int32_t mac3,
+                             uint8_t native_pass);
+
 #ifdef __cplusplus
 }
 #endif

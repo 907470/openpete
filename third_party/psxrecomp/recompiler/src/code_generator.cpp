@@ -878,7 +878,14 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * expression. Stash to a host-side flag; the
                          * substituted m_WasDrawn=1 write at 0x8001F4CC /
                          * 0x80020C7C reads it. See psx_runtime.h
-                         * `psx_runtime_native_cone_pass`. */
+                         * `psx_runtime_native_cone_pass`.
+                         *
+                         * Widening clamp: when (MAC3+a3) < 0 (moby near or
+                         * behind the camera plane) the widening multiply
+                         * produces a NEGATIVE term, which would tighten
+                         * the cone in 16:9 instead of widening it and
+                         * cull mobys 4:3 admits. Clamp to >= 0 — the
+                         * X-cone is meaningless for behind-Z anyway. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         uint32_t rd = get_rd(instr);
@@ -886,9 +893,11 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "psx_runtime_native_cone_pass = "
                             "(uint8_t)((4 * ((int32_t){} - (int32_t){}) "
                             "- 3 * ((int32_t)cpu->v1 + (int32_t)cpu->a3)) < 0); "
+                            "{{ int32_t mac3p = (int32_t)cpu->v1 + (int32_t)cpu->a3; "
+                            "if (mac3p < 0) mac3p = 0; "
                             "{} = (int32_t){} - (int32_t){} "
-                            "- (int32_t)(((int64_t)((int32_t)cpu->v1 + (int32_t)cpu->a3) "
-                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14);",
+                            "- (int32_t)(((int64_t)mac3p "
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14); }}",
                             reg_name(rs), reg_name(rt),
                             reg_name(rd), reg_name(rs), reg_name(rt));
                     } else if (addr == 0x80057A04u || addr == 0x80057B14u
@@ -982,14 +991,27 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * gating at 0x80022D98. Native chain after this
                          * addi is `4*(|MAC1|-102) - 3*(MAC3+77)`; here
                          * |MAC1|=$rs, MAC3=cpu->gte_data[27]. See
-                         * psx_runtime.h `psx_runtime_native_cone_pass`. */
+                         * psx_runtime.h `psx_runtime_native_cone_pass`.
+                         *
+                         * Widening: subtract `extra*(MAC3+77)` from the
+                         * X-cone test so it admits more mobys. Crucially,
+                         * clamp (MAC3+77) to >= 0 — when the moby is near
+                         * or behind the camera plane (MAC3+77 < 0), a
+                         * naive multiply flips the widening sign and
+                         * TIGHTENS the cone, culling slot 81 in 16:9 at
+                         * frame ~8363 (moby_pool_state leak). Widening
+                         * by zero in that regime preserves the canonical
+                         * 4:3 verdict, which is what we want anyway —
+                         * the X-cone is meaningless when Z is behind. */
                         code = fmt::format(
                             "psx_runtime_native_cone_pass = "
                             "(uint8_t)((4 * ((int32_t){} - 102) "
                             "- 3 * ((int32_t)cpu->gte_data[27] + 77)) < 0); "
+                            "{{ int32_t mac3p = (int32_t)cpu->gte_data[27] + 77; "
+                            "if (mac3p < 0) mac3p = 0; "
                             "{} = (int32_t){} + ({}) "
-                            "- (int32_t)(((int64_t)((int32_t)cpu->gte_data[27] + 77) "
-                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12);",
+                            "- (int32_t)(((int64_t)mac3p "
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12); }}",
                             reg_name(rs),
                             reg_name(rt), reg_name(rs), (int)imm);
                     } else {

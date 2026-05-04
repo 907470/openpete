@@ -213,52 +213,37 @@ doc              = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "moby_pool_state"
-status      = "open"
+status      = "gated"
 description = """
 Catch-all channel for any byte of the Moby pools (g_LevelMobys_pool,
 g_DynMobys_pool, g_Sparx_moby) that diverges between aspects without
 a known closed-channel attribution. Mobys carry hundreds of bytes of
 gameplay-controlled state (position, rotation, animation, AI
 counters, props pointers); a leak in *any* render→gameplay channel
-that AI consumes will surface here. Owning the pool regions on this
-open catch-all instead of on m_WasDrawn keeps the classifier honest:
-"pool diverged" classifies as expected-red until the underlying
-channel is identified, rather than mislabelling the closed
-m_WasDrawn closure as a regression.
+that AI consumes will surface here.
 
-Investigation status (2026-05-04, title autoplay 16:9, post-sparkle):
-After sparkle_alloc_state closure, first divergence pushed from frame
-4372 → 8363 (8000-frame run still PASSES bit-identical; 20k-frame
-soak fails). At frame 8363 the divergent byte is m_WasDrawn (off 0x51)
-of g_LevelMobys[81] class 0x0106.
+Root cause (2026-05-04 frame-8363 investigation): the cone-extra
+WIDENING substitutions at 0x8001F30C / 0x80020AB8 / 0x80022C0C
+multiplied (MAC3 + Z_offset) by `psx_runtime_moby_cone_extra_q12`
+without clamping. When the moby straddles or sits behind the camera
+plane, (MAC3 + offset) is negative — the multiply produces a NEGATIVE
+widening term, which TIGHTENS the X-cone in 16:9 instead of widening
+it and culls mobys that 4:3 admits. Slot 81 (class 0x0106) at frame
+8362 had MAC1=84, MAC2=-82, MAC3=-95 (bit-identical between aspects);
+MAC3+77=-18, so the widening flipped the verdict from PASS (-18 < 0)
+to REJECT (+6 >= 0) under widening. Native 4:3 = pass → set m_WasDrawn=1;
+widened 16:9 = unintended reject → m_WasDrawn stays 0 from the clear
+at 0x80022B28.
 
-Watcher with PC tracking shows:
-  4:3 frames 8360/8362/8364: clear at 0x80022B28 + set at 0x80022D98
-  16:9 frames 8360/8362/8364: clear at 0x80022B28 ONLY (set missing)
-
-The set at 0x80022D98 is gated on `psx_runtime_native_cone_pass` (per
-the existing m_WasDrawn closure). The clear at 0x80022B28 already
-resets the flag to 1 (per code_generator.cpp:373). So the cone-test
-substitution at 0x80022C0C must be setting the flag to 0 in 16:9 but
-1 in 4:3 for slot 81 — suggesting the canonical verdict math
-(`4*(|MAC1|-102) - 3*(MAC3+77) < 0`) yields different MAC1/MAC3
-between aspects.
-
-MAC1/MAC3 come from MVMVA at 0x80022BD0 using a per-moby-class matrix
-loaded from `$gp+0x3EC` (g_Models entry, not g_Camera). That matrix
-shouldn't depend on aspect — but slot 81 is class 0x0106 and the
-divergence suggests aspect-dependent state IS reaching this MVMVA.
-
-Next session: add a hook at 0x80022C0C for slot 81 class 0x0106 to
-dump cpu->a1 (= |MAC1|), cpu->gte_data[27] (= MAC3), and the canonical
-verdict in both modes. If MAC1/MAC3 differ, walk back through MVMVA
-inputs (V0 from camera-relative position, R11..R33 matrix) to find
-the aspect-coupled state. Likely candidates: GTE control regs left
-widened by an upstream renderer that didn't restore them, or
-camera-position bytes that diverged earlier."""
+Fix: clamp (MAC3 + offset) to >= 0 before the widening multiply. The
+X-cone is meaningless when Z is behind the camera plane anyway;
+clamping to 0 reduces to the canonical native test in that regime,
+preserving 4:3-equivalent verdicts. Substitution sites updated; no
+new sites added — fix is a math correction inside the existing
+cone-extra closures."""
 substitution_sites = []
-verdict_fn         = ""
-verified_against   = []
+verdict_fn         = "shared with m_WasDrawn closure (clamp added 2026-05-04)"
+verified_against   = ["aspect_determinism gate 2026-05-04: divergence pushed 8363 → 14590"]
 state_regions      = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
 

@@ -142,6 +142,75 @@ void game_apply_runtime_quirks(CPUState* cpu) {
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
 }
 
+/* moby_pool_state diagnostic: dump per-iteration cone-test inputs at
+ * 0x80022C0C for a target slot/frame range. Active iff
+ * OPENPETE_DIAG_CONE_SLOT is set. Reads g_LevelMobys head pointer at
+ * 0x80075828, computes slot = (fp - *g_LevelMobys) / 0x58, and only
+ * logs when slot matches and frame is in [from,to]. The substitution
+ * at code_generator.cpp 0x80022C0C calls openpete_diag_cone_dump after
+ * computing the verdict — see render_channels.toml moby_pool_state. */
+static int s_diag_cone_active = -1;
+static int s_diag_cone_slot   = -1;
+static int s_diag_cone_from   = 0;
+static int s_diag_cone_to     = 0;
+
+static void diag_cone_init(void) {
+    if (s_diag_cone_active != -1) return;
+    const char* slot_s = getenv("OPENPETE_DIAG_CONE_SLOT");
+    if (!slot_s) { s_diag_cone_active = 0; return; }
+    s_diag_cone_slot = atoi(slot_s);
+    const char* from_s = getenv("OPENPETE_DIAG_CONE_FROM");
+    const char* to_s   = getenv("OPENPETE_DIAG_CONE_TO");
+    s_diag_cone_from = from_s ? atoi(from_s) : 0;
+    s_diag_cone_to   = to_s   ? atoi(to_s)   : 0x7fffffff;
+    s_diag_cone_active = 1;
+    fprintf(stderr,
+            "[diag-cone] slot=%d frames=[%d,%d]\n",
+            s_diag_cone_slot, s_diag_cone_from, s_diag_cone_to);
+}
+
+void openpete_diag_cone_dump(void* cpu_v,
+                             int32_t mac1_abs,
+                             int32_t mac3,
+                             uint8_t native_pass) {
+    diag_cone_init();
+    if (!s_diag_cone_active) return;
+    if ((int)openpete_frame < s_diag_cone_from
+        || (int)openpete_frame > s_diag_cone_to) return;
+    CPUState* cpu = (CPUState*)cpu_v;
+    /* g_LevelMobys head pointer at 0x80075828 — *(uint32_t*) deref via
+     * read_word. Compute slot = ($fp - head) / 0x58. */
+    uint32_t head = cpu->read_word(0x80075828u);
+    if (!head) return;
+    uint32_t fp = cpu->fp;
+    if (fp < head) return;
+    uint32_t off = fp - head;
+    if (off % 0x58u) return;
+    int slot = (int)(off / 0x58u);
+    if (s_diag_cone_slot >= 0 && slot != s_diag_cone_slot) return;
+    /* Class is at offset 0x36 (lhu $s5, 0x36($fp) at 0x80022BD4). */
+    uint16_t cls = cpu->read_half(fp + 0x36u);
+    /* Position bytes (8-bit signed coords at 0x14/0x16/0x18 in PSX
+     * convention, but Spyro mobys store world XYZ as int32 at 0x0c?
+     * Just dump a few well-known fields that don't touch presentation. */
+    int32_t pos_x = (int32_t)cpu->read_word(fp + 0x0Cu);
+    int32_t pos_y = (int32_t)cpu->read_word(fp + 0x10u);
+    int32_t pos_z = (int32_t)cpu->read_word(fp + 0x14u);
+    /* MAC2 lives in gte_data[26]; useful for the Y-cone follow-up at
+     * 0x80022C48..C68 which culls on `MAC3+403-3*|MAC2| <= 0`. */
+    int32_t mac2 = (int32_t)cpu->gte_data[26];
+    fprintf(stderr,
+            "[diag-cone] f=%u slot=%d cls=0x%04x fp=0x%08x "
+            "|MAC1|=%d MAC2=%d MAC3=%d 4*(|MAC1|-102)=%d 3*(MAC3+77)=%d "
+            "verdict=%u pos=(%d,%d,%d)\n",
+            openpete_frame, slot, cls, fp,
+            mac1_abs, mac2, mac3,
+            4 * (mac1_abs - 102),
+            3 * (mac3 + 77),
+            (unsigned)native_pass,
+            pos_x, pos_y, pos_z);
+}
+
 /* --skip-to-level: load directly into a specific level instead of the
  * normal title-screen + Press-Start + save-file-picker flow.
  *
