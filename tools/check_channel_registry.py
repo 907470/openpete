@@ -101,15 +101,19 @@ def main() -> int:
             addr = coerce_addr(s)
             registry_addrs.setdefault(addr, []).append(name)
         # gated channels with no sites are usually a manifest mistake.
-        # Exception: a channel can be "gated_via = "other_channel"" if it
-        # closes as a side effect of another channel's substitutions
-        # (cross-channel coupling). The named channel must exist and be
-        # gated/verified itself.
+        # Exceptions:
+        #  * gated_via = "<other_channel>" — closure is a side effect of
+        #    another channel's substitutions.
+        #  * verdict_fn set — gating happens openpete-side (e.g. a C-side
+        #    canonical-mask AND in the env-renderer wrapper) rather than
+        #    via a recompiler substitution; sites are intentionally empty.
         gated_via = ch.get("gated_via")
-        if status in ("gated", "verified") and not sites and not gated_via:
+        verdict_fn = ch.get("verdict_fn")
+        if (status in ("gated", "verified") and not sites
+                and not gated_via and not verdict_fn):
             errors.append(
                 f"channel {name!r}: status={status!r} but substitution_sites "
-                f"is empty and no gated_via set"
+                f"is empty, no gated_via, and no verdict_fn"
             )
         if gated_via:
             target = next((c for c in channels if c.get("name") == gated_via),

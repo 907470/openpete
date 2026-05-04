@@ -173,6 +173,19 @@ void game_set_skip_to_level(int level_id) {
     s_skip_applied  = 0;
 }
 
+void game_on_hash_emit(uint32_t frame) {
+    const char* dp = getenv("OPENPETE_HASHTIME_CSF_DUMP");
+    const char* df = getenv("OPENPETE_HASHTIME_CSF_FRAME");
+    if (!dp || !df || frame != (uint32_t)atoi(df)) return;
+    FILE* fp = fopen(dp, "w");
+    if (!fp) return;
+    uint8_t* ram = openpete_psx_get_ram();
+    for (uint32_t i = 0; i < 256; i++) {
+        fprintf(fp, "%u,%u\n", i, ram[(0x800771C8u + i) & 0x1FFFFFFFu]);
+    }
+    fclose(fp);
+}
+
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
 
@@ -183,6 +196,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
         s_watch_init_done = 1;
         install_watch_from_env(cpu);
     }
+
 
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp
@@ -450,6 +464,96 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         uint8_t saved_view_matrix[20];
         memcpy(saved_view_matrix,
                openpete_psx_get_ram() + (vm_base & 0x1FFFFFFFu), 20);
+
+        /* Pre-compute the canonical 4:3 per-cell visibility mask used to
+         * de-leak the class_skip_flags channel. r_environment.s writes
+         * D_800771C8[cell_idx] = 0xFF for every cell that passes its
+         * cone-cull (PC 0x80025B50). Gameplay (func_800521C0) reads that
+         * table next frame to clear m_WasDrawn=0 on mobys whose owning
+         * sector wasn't rendered.
+         *
+         * The matrix-row-0 widening below admits more cells in 16:9 →
+         * widened D_800771C8 → wrong gameplay verdict. We replicate the
+         * three cull conditions in C against the canonical (un-widened)
+         * matrix here, then AND the widened-renderer's output with this
+         * mask after func_800258F0 returns.
+         *
+         * The cull conditions (per asm at 0x80025A98..0x80025B04):
+         *   1. Rz + bbox_E > 0   (front face in front of camera)
+         *   2. 4*(|Rx| - 25E/32) - 3*(Rz + 9E/16) < 0   (X-cone)
+         *   3. 32*(|Ry| - 7E/8) - 17*(Rz + 7E/16) < 0  (Y-cone)
+         * Where (Rx,Ry,Rz) = canonical_view_matrix * cell_relative_to_cam,
+         * with sf=1 (>>12) and signed int16 saturation.
+         *
+         * The asm has additional back-corner tests at 0x80025B0C..B40, but
+         * those only adjust the queue-push value $a1; visibility is
+         * always written 0xFF after the front-face cone passes. */
+        uint8_t canonical_mask[256];
+        memset(canonical_mask, 0, sizeof(canonical_mask));
+        {
+            int16_t M[3][3];
+            const int16_t* vm_words = (const int16_t*)saved_view_matrix;
+            M[0][0] = vm_words[0]; M[0][1] = vm_words[1]; M[0][2] = vm_words[2];
+            M[1][0] = vm_words[3]; M[1][1] = vm_words[4]; M[1][2] = vm_words[5];
+            M[2][0] = vm_words[6]; M[2][1] = vm_words[7]; M[2][2] = vm_words[8];
+
+            const uint32_t cam_pos_addr = 0x80076DD0u + 0x28u;  /* g_Camera.m_Position */
+            int32_t cam_x4 = (int32_t)cpu->read_word(cam_pos_addr + 0) >> 4;
+            int32_t cam_y4 = (int32_t)cpu->read_word(cam_pos_addr + 4) >> 4;
+            int32_t cam_z4 = (int32_t)cpu->read_word(cam_pos_addr + 8) >> 4;
+
+            const uint32_t env_addr = 0x800785A8u;
+            uint32_t cell_list_base = cpu->read_word(env_addr + 0);
+            uint32_t cell_count     = cpu->read_word(env_addr + 4);
+            if (cell_count > 256) cell_count = 256;
+
+            for (uint32_t i = 0; i < cell_count; i++) {
+                uint32_t cell_ptr = cpu->read_word(cell_list_base + i * 4);
+                if (cell_ptr == 0) continue;
+                uint32_t v0w = cpu->read_word(cell_ptr + 0);
+                uint32_t a0w = cpu->read_word(cell_ptr + 4);
+                int16_t cell_v0_lo = (int16_t)(v0w & 0xFFFF);
+                int16_t cell_v0_hi = (int16_t)((v0w >> 16) & 0xFFFF);
+                int16_t cell_a0_hi = (int16_t)((a0w >> 16) & 0xFFFF);
+                int32_t bbox_E = (int32_t)(a0w & 0x1FFF);
+
+                int16_t V[3];
+                V[0] = (int16_t)((int32_t)cam_y4 - (int32_t)cell_v0_lo);
+                V[1] = (int16_t)((int32_t)cam_z4 - (int32_t)cell_a0_hi);
+                V[2] = (int16_t)((int32_t)cell_v0_hi - (int32_t)cam_x4);
+
+                int64_t mac1 = (int64_t)M[0][0]*V[0] + (int64_t)M[0][1]*V[1] + (int64_t)M[0][2]*V[2];
+                int64_t mac2 = (int64_t)M[1][0]*V[0] + (int64_t)M[1][1]*V[1] + (int64_t)M[1][2]*V[2];
+                int64_t mac3 = (int64_t)M[2][0]*V[0] + (int64_t)M[2][1]*V[1] + (int64_t)M[2][2]*V[2];
+                mac1 >>= 12; mac2 >>= 12; mac3 >>= 12;
+                int32_t Rx = (mac1 > 32767) ? 32767 : (mac1 < -32768 ? -32768 : (int32_t)mac1);
+                int32_t Ry = (mac2 > 32767) ? 32767 : (mac2 < -32768 ? -32768 : (int32_t)mac2);
+                int32_t Rz = (mac3 > 32767) ? 32767 : (mac3 < -32768 ? -32768 : (int32_t)mac3);
+
+                if (Rz + bbox_E <= 0) continue;
+                int32_t abs_Rx = (Rx < 0) ? -Rx : Rx;
+                int32_t abs_Ry = (Ry < 0) ? -Ry : Ry;
+                /* X half-cone radius = 25E/32. */
+                int32_t t3 = (bbox_E >> 1) + (bbox_E >> 2) + (bbox_E >> 5);
+                /* Front-face X-cone Z adjust = 19E/32. The asm computes
+                 *   t4 = E/2; t5 = E/16; t4 += t5            (9E/16)
+                 *   t5 = E/32
+                 *   ; delay slot of `blez at, cull` (behind-cam test)
+                 *   t4 += t5                                 (19E/32)
+                 * Missing the delay-slot add is what threw the C-side
+                 * canonical cull off — see the original investigation
+                 * in notes/plans/openpete-determinism-enforcement.md. */
+                int32_t t4 = (bbox_E >> 1) + (bbox_E >> 4) + (bbox_E >> 5);
+                /* Y half-cone radius = 7E/8. */
+                int32_t t5 = bbox_E - (bbox_E >> 3);
+                /* Front-face Y-cone Z adjust = 7E/16. */
+                int32_t t6 = (bbox_E >> 1) - (bbox_E >> 4);
+                if (4*(abs_Rx - t3) - 3*(Rz + t4) >= 0) continue;
+                if (32*(abs_Ry - t5) - 17*(Rz + t6) >= 0) continue;
+                canonical_mask[i] = 1;
+            }
+        }
+
         int16_t row0[3];
         for (int i = 0; i < 3; i++) {
             int16_t orig = (int16_t)cpu->read_half(vm_base + (uint32_t)(i * 2));
@@ -506,6 +610,22 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
          * writebacks inside func_800258F0 don't leak into gameplay. */
         memcpy(openpete_psx_get_ram() + (vm_base & 0x1FFFFFFFu),
                saved_view_matrix, 20);
+
+        /* AND D_800771C8 with the canonical mask: any byte the widened
+         * cull set to 0xFF that wouldn't have passed the canonical 4:3
+         * cone gets cleared back to 0. Result: gameplay's func_800521C0
+         * reads exactly the canonical visibility verdict next frame,
+         * while the render queues + emitted prims (already populated by
+         * the widened pass) cover the full Hor+ visible area. */
+        const uint32_t class_skip_addr = 0x800771C8u;
+        uint8_t* ram = openpete_psx_get_ram();
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t a = (class_skip_addr + i) & 0x1FFFFFFFu;
+            if (ram[a] != 0u && canonical_mask[i] == 0u) {
+                ram[a] = 0u;
+            }
+        }
+
         cpu->write_word(cd_addr, saved_cd);
         s_in_env_renderer = 0;
         return 1;

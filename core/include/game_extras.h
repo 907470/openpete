@@ -59,6 +59,12 @@ void game_apply_runtime_quirks(CPUState* cpu);
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
 void game_on_frame(CPUState* cpu, uint32_t frame_counter);
 
+/* --- Hash-emit hook (diagnostic) ---
+ * Fires immediately before the per-frame gameplay-state hash is
+ * captured. Per-game impls can use it for ad-hoc state dumps that
+ * need to be aligned with the hash log's exact timing. */
+void game_on_hash_emit(uint32_t frame);
+
 /* --- Save-state resync hook ---
  * Called from core's save-state loader AFTER cpu/RAM/scratch have been
  * restored, BEFORE the game fiber resumes. Per-game impl resyncs any

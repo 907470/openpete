@@ -224,103 +224,55 @@ doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "class_skip_flags"
-status      = "open"
+status      = "gated"
 description = """
-"Rendered world sectors flags" (per the asm comment in
-spyro-1/asm/data/game.bss.s for D_800771C8, 64 bytes). Written by
-r_environment.s at PC 0x80025B50 (`sb $fp, 0x0($s5)`) during the
-env-renderer's per-sector cull pass; read by func_800521C0
-(moby_lists.s) which clears m_WasDrawn=0 on every moby whose owning
-sector wasn't rendered. Genuine render→gameplay channel.
+"Rendered world sectors flags" — D_800771C8, 256 bytes (the
+manifest's earlier 0x40 was undersized; func_800258F0 actually
+clears 0x100 bytes). Written by r_environment.s at PC 0x80025B50
+(`sb $fp, 0x0($s5)`) during the env-renderer's per-sector cull
+pass; read by func_800521C0 (moby_lists.s) which clears
+m_WasDrawn=0 on every moby whose owning sector wasn't rendered.
+Genuine render→gameplay channel.
 
-PRIOR CLOSURE WAS INCORRECT (re-opened 2026-05-03):
+ROOT CAUSE (traced 2026-05-04 via MVMVA-trace at PC 0x80025A68):
 
-The previous session closed this as gated_via=widescreen_clip_x_\
-threshold on the theory that the env renderer's per-vertex SX cull
-sites (the `lui $X, 0x200` family) already canonicalize the cone
-width. Two errors:
+  The leak originated in openpete's own
+  game_extras_impl.c env-renderer wrapper: it scaled
+  g_Camera.m_ViewMatrix.m[0][0..2] by 1/disp_w_factor before
+  calling func_800258F0 to widen the per-cell cone-cull for Hor+
+  rendering. The cull at 0x80025B50 also writes the per-sector
+  visibility byte that gameplay reads, so the matrix widening
+  leaked into D_800771C8. GTE MVMVA-trace confirmed M[0][0] and
+  M[0][2] differed by exactly the aspect factor (1.334 = 16:9 /
+  4:3) across runs — only row 0, only first/third columns,
+  matching the row-0-X widening. No psxrecomp substitution
+  involvement.
 
-  1. Different threshold. The per-sector cull around 0x80025B50
-     uses `addi $at, $at, 0x100` (256) at 0x80025B68 — a separate
-     bbox-vs-screen-edge test from the `lui $X, 0x200` (512)
-     per-vertex clip. widescreen_clip_x_threshold substitutes only
-     the 0x200 sites and does NOT touch the 0x100 sector-cull path.
+CLOSURE:
 
-  2. False-clean harness verdict. The earlier "empirically does
-     not diverge" claim came from classify_hash_divergence.py's
-     output, which reports only regions differing AT THE FIRST
-     divergent frame. moby_render_queue diverged from frame 1, so
-     class_skip_flags's frame-41 divergence was hidden in column
-     17 and never surfaced. Counting per-column divergences across
-     all 3000 frames shows class_skip_flags differs in 2948/3000.
+  Pre-compute a 256-byte canonical visibility mask in C *before*
+  the matrix widening, by replicating the asm's three cull
+  conditions (behind-camera, front-face X cone, front-face Y cone)
+  with the canonical (un-widened) ViewMatrix. After
+  func_800258F0 returns with widened D_800771C8, AND the table
+  with the canonical mask: bytes the widened cull set to 0xFF
+  that the canonical cull would not have passed get cleared back
+  to 0. Render queues + emitted prims (already populated by the
+  widened pass) are untouched, so Hor+ visual coverage is
+  preserved.
 
-PROPAGATION PATH (real leak):
+  Implementation gotcha caught during the trace: the asm has a
+  delay-slot `add $t4, $t4, $t5` after the behind-camera test
+  (line 137 of r_environment.s) that turns the front-face Z
+  adjust into 19E/32 not 9E/16. Missing that constant in the
+  initial C cull was a silent false-negative on cells like
+  cell-36 in the title-autoplay scenario; corrected during the
+  same fix.
 
-  16:9 widening → r_environment cull at 0x80025B50 marks different
-  sectors as rendered → D_800771C8 bytes diverge → func_800521C0
-  clears m_WasDrawn on a different set of mobys → gameplay AI sees
-  a different visibility set than canonical PSX. m_WasDrawn=1
-  WRITES are gated (psx_runtime_native_cone_pass), but the m_WasDrawn=0
-  CLEARS via class_skip_flags are not — that's the leak.
-
-INVESTIGATION 2026-05-03 — root cause unknown:
-
-  Captured exact divergent writes via env-var watcher across both
-  aspects at frame 42 (env-cull's first divergent run). 4:3 writes
-  98 cells as visible; 16:9 writes 100 — two extra cells at
-  D_800771C8+0x17 and +0x62 (cell idx 23 and 98). Same writer PC
-  (0x80025B50), same value (0xFF). Two extra cells reach
-  .L80025B4C in 16:9.
-
-  But by inspection, the cull math at func_800258F0 should be
-  aspect-independent:
-    - GTE op is MVMVA 1,0,3,3,0 (rotation only, no projection — does
-      not use C2_H or any aspect-driven register).
-    - ViewMatrix loaded from g_Camera (hashes identically across
-      aspects; the camera region is in the gameplay-state hash and
-      already byte-identical at frame 41).
-    - Camera position $s7/$t8/$t9 derived from g_Camera with `>>4`.
-    - Cone slopes hardcoded 3/4 X and 5/4 Y (encoded in the
-      sub/sll/add cascade at 0x80025AAC..0x80025B40).
-    - g_Environment.m_CullingDistance set in environment.c:31-39
-      from gamestate, not aspect.
-    - No psxrecomp substitutions in the 0x80025900..0x80025BFF
-      range (verified by grep over code_generator.cpp).
-
-  So the empirical divergence shouldn't be possible given the
-  documented inputs. Likely root causes to investigate next:
-    a. GTE saturation/flag carryover from a prior frame's
-       aspect-divergent op leaving MAC/IR in different states (even
-       though MVMVA explicitly mtc2's IR1/IR2/IR3 inputs, the GTE
-       FLAG register and MAC saturation behavior may carry).
-    b. `psx_runtime_clip_x_threshold` substitution in the same .s
-       file (sites at 0x800261A4..0x8002A4C0) running an iteration
-       earlier in the frame perturbing GTE/host state in a way that
-       feeds back.
-    c. Some non-determinism in psxrecomp's COP2 emulation when host
-       state differs across aspect (unlikely if pure integer GTE,
-       but worth ruling out).
-
-  Diagnostic experiment for next session: instrument
-  third_party/psxrecomp/runtime/gte.cpp to log MVMVA inputs/outputs
-  at PC 0x80025A68 across two parallel runs (4:3 + 16:9) for the
-  cell-index iteration that produces the divergent writes. Compare
-  the IR1/IR2/IR3 values and MAC results to isolate where aspect
-  state actually leaks in.
-
-CANDIDATE FIX (once root cause is known):
-
-  Substitute the threshold immediate(s) at the divergent test —
-  most likely the cull-threshold immediates around 0x80025B68 (and
-  the symmetric `slti $r, 0x100` test sites in the same loop) —
-  with a runtime-tunable knob (e.g. psx_runtime_sector_cull_\
-  threshold) defaulting to 256 == byte-identical 4:3. If the leak
-  is GTE-state-carryover, the fix is upstream: clear/canonicalize
-  GTE state at func_800258F0 entry. Render-pass bracket pattern
-  (s_in_render_pass) lets us widen only during the actual emit
-  subsequence."""
+  See games/spyro-1/game_extras_impl.c (canonical_mask block)."""
 substitution_sites = []
-verdict_fn         = ""
-verified_against   = []
+verdict_fn         = "openpete-side: canonical_mask AND in env-renderer wrapper"
+verified_against   = ["aspect_determinism"]
 state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
+

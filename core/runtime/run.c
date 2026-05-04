@@ -1066,6 +1066,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                               SDL_AtomicGet(&openpete_vbl));
         }
         if (gameplay_hash_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
+            game_on_hash_emit(openpete_frame);
             gameplay_hash_log_emit(gameplay_hash_log_fp, openpete_frame,
                                    SDL_AtomicGet(&openpete_vbl));
         }

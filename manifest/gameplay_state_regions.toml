@@ -147,8 +147,8 @@ description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
 [[region]]
 name        = "render_channel:class_skip_flags"
 start       = 0x800771C8
-length      = 0x40
-description = "func_800521C0's per-class skip-render flag table."
+length      = 0x100
+description = """Rendered world sectors flags. Written by r_environment.s at PC 0x80025B50 during the per-cell cull pass; read by func_800521C0 to clear m_WasDrawn=0 on mobys whose owning sector wasn't rendered. func_800258F0 clears 0x100 bytes at entry (loop at 0x80025990); see manifest/render_channels.toml for the closure mechanism."""
 
 # ─── Moby pools — indirect regions ────────────────────────────────────
 # Moby data lives in dynamic level-overlay RAM whose location moves
