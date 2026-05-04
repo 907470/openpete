@@ -161,16 +161,20 @@ set(_spyro_state_regions_manifest
     ${CMAKE_SOURCE_DIR}/manifest/gameplay_state_regions.toml)
 set(_spyro_state_regions_header
     ${CMAKE_CURRENT_BINARY_DIR}/gen/gameplay_state_regions.gen.h)
+set(_spyro_state_regions_lua
+    ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_state_regions.gen.lua)
 add_custom_command(
     OUTPUT  ${_spyro_state_regions_header}
+            ${_spyro_state_regions_lua}
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${CMAKE_CURRENT_BINARY_DIR}/gen
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
             --manifest ${_spyro_state_regions_manifest}
             --out      ${_spyro_state_regions_header}
+            --out-lua  ${_spyro_state_regions_lua}
     DEPENDS ${_spyro_state_regions_manifest}
             ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
-    COMMENT "Generating Spyro gameplay_state_regions.gen.h")
+    COMMENT "Generating Spyro gameplay_state_regions.gen.h + lua mirror")
 target_sources(openpete-spyro1 PRIVATE
     ${_spyro_state_regions_header}
     spyro_state_regions.c)

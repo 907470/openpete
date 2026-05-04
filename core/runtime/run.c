@@ -109,7 +109,8 @@ __attribute__((weak)) size_t openpete_state_region_count = 0;
  * dumps. `out_per_region` (if non-NULL) must hold at least
  * `openpete_state_region_count` slots; sentinel 0 means the region
  * was skipped (NULL indirect pointer / out-of-RAM). */
-static uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
+uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
+uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
     uint64_t total = openpete_fnv1a64_init();
     const uint8_t* ram = openpete_psx_get_ram();
     const uint32_t RAM_BYTES = 2u * 1024u * 1024u;
@@ -1308,32 +1309,35 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
 
 
-        /* PCSX-Redux trace advance — same anchor as ram_dump_on_frame so
-         * each iteration corresponds to one logical "frame yielded". */
+        /* PCSX-Redux trace advance — value-equality compare openpete's
+         * gameplay-region hashes against the trace's oracle hashes for
+         * this frame. */
         if (psxtrace) {
-            int rc = openpete_psxtrace_advance(psxtrace,
-                                               openpete_psx_get_ram(),
-                                               2u * 1024u * 1024u);
+            int rc = openpete_psxtrace_advance(psxtrace);
             if (rc < 0) {
                 quit = 1;
                 exit_reason = "psxtrace-error";
             } else if (rc == 0) {
                 OPL_INFO_F("psxtrace",
-                           "trace exhausted (consumed %u records, %llu bytes "
-                           "compared, %llu diverged)",
+                           "trace exhausted (consumed %u records, "
+                           "%llu compared, %llu hash mismatches)",
                            psxtrace->records_consumed,
-                           (unsigned long long)psxtrace->bytes_compared,
-                           (unsigned long long)psxtrace->bytes_diverged);
+                           (unsigned long long)psxtrace->frames_compared,
+                           (unsigned long long)psxtrace->hashes_diverged);
                 quit = 1;
                 exit_reason = "psxtrace-eof";
             } else if (psxtrace->diverged && !opts->psxtrace_keep_going) {
+                int32_t r = psxtrace->first_divergent_region;
+                const char* rname = (r >= 0 &&
+                    r < (int32_t)psxtrace->region_count)
+                    ? psxtrace->region_names[r] : "<total>";
                 OPL_ERROR_F("psxtrace",
-                            "DIVERGED at frame=%u addr=0x%08X "
-                            "op=0x%02X oracle=0x%02X (record %u)",
+                            "DIVERGED at frame=%u region=%d (%s) "
+                            "op=0x%016llx oracle=0x%016llx (record %u)",
                             psxtrace->first_divergent_frame,
-                            psxtrace->first_divergent_addr,
-                            psxtrace->first_divergent_op,
-                            psxtrace->first_divergent_oracle,
+                            (int)r, rname,
+                            (unsigned long long)psxtrace->first_divergent_op,
+                            (unsigned long long)psxtrace->first_divergent_oracle,
                             psxtrace->records_consumed);
                 quit = 1;
                 exit_reason = "psxtrace-divergence";
@@ -1473,11 +1477,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
     if (psxtrace) {
         OPL_INFO_F("psxtrace",
-                   "summary: records=%u bytes_compared=%llu "
-                   "bytes_diverged=%llu first_div_frame=%u",
+                   "summary: records=%u frames_compared=%llu "
+                   "hash_mismatches=%llu first_div_frame=%u",
                    psxtrace->records_consumed,
-                   (unsigned long long)psxtrace->bytes_compared,
-                   (unsigned long long)psxtrace->bytes_diverged,
+                   (unsigned long long)psxtrace->frames_compared,
+                   (unsigned long long)psxtrace->hashes_diverged,
                    psxtrace->diverged ? psxtrace->first_divergent_frame : 0u);
         if (psxtrace->diverged && exit_code == OPENPETE_EXIT_OK) {
             exit_code = OPENPETE_EXIT_DIVERGENCE;

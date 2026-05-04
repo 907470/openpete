@@ -5,8 +5,13 @@
 -- bk2 form a closed input parity loop.
 --
 -- Env vars:
---   PCSXR_PADSTREAM       padstream path (required)
---   PCSXR_PADSTREAM_VERBOSE  if set non-empty, log every press/release edge
+--   PCSXR_PADSTREAM            padstream path (required)
+--   PCSXR_PADSTREAM_VERBOSE    if set non-empty, log every press/release edge
+--   PCSXR_PADSTREAM_PC         anchor PC; bk2 frame N's input is applied on
+--                              the Nth (1-indexed) hit of this PC. Defaults
+--                              to 0x8001ED5C (Spyro 1 GamestateDraw) — the
+--                              same default scripts/pcsx-redux-trace.lua
+--                              uses, so both share an epoch.
 --
 -- Format reference: tools/bk2_to_padstream.py header.
 --
@@ -14,6 +19,13 @@
 -- returns the bit to consulting real input. In `--no-ui` headless, no
 -- input device is attached so the baseline reads as released; pairing
 -- with `--no-ui` is required for clean determinism.
+--
+-- Anchor: rev 1 ticked on GPU::Vsync, which started counting from BIOS
+-- boot. With trace capturing on a per-frame game-function BP, the two
+-- counters had different epochs — bk2 frame 0 was BIOS-time, trace
+-- frame 0 was post-init. Now we anchor on the same BP the trace uses,
+-- so bk2 frame N drives the input that produces trace frame N's RAM
+-- state (same instant in game-time on both engines).
 
 local function envstr(name)
     local v = os.getenv(name)
@@ -21,8 +33,15 @@ local function envstr(name)
     return v
 end
 
+local function envnum(name, default)
+    local v = os.getenv(name)
+    if not v or v == '' then return default end
+    return tonumber(v) or tonumber(v, 16) or default
+end
+
 local PADSTREAM_PATH = envstr('PCSXR_PADSTREAM')
 local VERBOSE        = envstr('PCSXR_PADSTREAM_VERBOSE') ~= nil
+local ANCHOR_PC      = envnum('PCSXR_PADSTREAM_PC', 0x8001ED5C)
 
 if not PADSTREAM_PATH then
     error('[bk2-replay] PCSXR_PADSTREAM env var not set')
@@ -86,23 +105,24 @@ local function apply_word(new_word)
     prev_word = new_word
 end
 
--- Drive the override on every GPU::Vsync. The pcsxr trace dumper anchors
--- on a per-frame game-function BP; this runs on the underlying hardware
--- vblank. They tick at the same rate (one Vsync per frame), so the
--- frame_idx counter stays aligned. (If we ever need finer alignment, fold
--- this hook into the trace BP callback instead.)
-PCSX.Events.createEventListener('GPU::Vsync', function()
-    local w = frames[frame_idx + 1]  -- Lua 1-indexed
-    if w == nil then
-        -- Past the end of the recorded movie — hold last input. To match
-        -- openpete's --bk2 default (which also holds), no clearOverride
-        -- pass needed. The bk2 record itself usually ends with all
-        -- released so this is mostly cosmetic.
+-- Drive the override on every BP hit at ANCHOR_PC — the same per-frame
+-- game function the trace dumper anchors on. PCSX-Redux supports
+-- multiple breakpoints at the same address, so this script and
+-- pcsx-redux-trace.lua coexist; both fire on each hit and share the
+-- frame_idx epoch by construction.
+PCSX.addBreakpoint(ANCHOR_PC, 'Exec', 4, 'bk2-replay-anchor',
+    function(addr)
+        local w = frames[frame_idx + 1]  -- Lua 1-indexed
+        if w == nil then
+            -- Past the end of the recorded movie — hold last input.
+            frame_idx = frame_idx + 1
+            return true
+        end
+        apply_word(w)
         frame_idx = frame_idx + 1
-        return
-    end
-    apply_word(w)
-    frame_idx = frame_idx + 1
-end)
+        return true
+    end,
+    'psxtrace-bk2-replay')
 
-print('[bk2-replay] armed: padstream-driven pad override on GPU::Vsync')
+print(string.format('[bk2-replay] armed: pad override on PC=0x%08X',
+                    ANCHOR_PC))
