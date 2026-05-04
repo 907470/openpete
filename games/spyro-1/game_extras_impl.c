@@ -174,16 +174,65 @@ void game_set_skip_to_level(int level_id) {
 }
 
 void game_on_hash_emit(uint32_t frame) {
-    const char* dp = getenv("OPENPETE_HASHTIME_CSF_DUMP");
     const char* df = getenv("OPENPETE_HASHTIME_CSF_FRAME");
-    if (!dp || !df || frame != (uint32_t)atoi(df)) return;
-    FILE* fp = fopen(dp, "w");
-    if (!fp) return;
+    if (!df || frame != (uint32_t)atoi(df)) return;
     uint8_t* ram = openpete_psx_get_ram();
-    for (uint32_t i = 0; i < 256; i++) {
-        fprintf(fp, "%u,%u\n", i, ram[(0x800771C8u + i) & 0x1FFFFFFFu]);
+
+    const char* dp = getenv("OPENPETE_HASHTIME_CSF_DUMP");
+    if (dp) {
+        FILE* fp = fopen(dp, "w");
+        if (fp) {
+            for (uint32_t i = 0; i < 256; i++) {
+                fprintf(fp, "%u,%u\n", i, ram[(0x800771C8u + i) & 0x1FFFFFFFu]);
+            }
+            fclose(fp);
+        }
     }
-    fclose(fp);
+
+    const char* mp = getenv("OPENPETE_HASHTIME_MWD_DUMP");
+    if (mp) {
+        FILE* fp = fopen(mp, "w");
+        if (fp) {
+            uint32_t lvl_ptr = *(uint32_t*)(ram + (0x80075828u & 0x1FFFFFFFu));
+            uint32_t dyn_ptr = *(uint32_t*)(ram + (0x80075890u & 0x1FFFFFFFu));
+            /* Per-byte pool dump: each row "pool,idx,offset,byte". Set
+             * OPENPETE_HASHTIME_MWD_BYTES=1 to dump every byte; otherwise
+             * dump only m_WasDrawn (offset 0x51). */
+            int dump_bytes = (getenv("OPENPETE_HASHTIME_MWD_BYTES") != NULL);
+            if (dump_bytes) {
+                fprintf(fp, "pool,idx,offset,byte\n");
+            } else {
+                fprintf(fp, "pool,idx,m_WasDrawn\n");
+            }
+            if (lvl_ptr) {
+                for (uint32_t i = 0; i < 512; i++) {
+                    if (dump_bytes) {
+                        for (uint32_t b = 0; b < 0x58u; b++) {
+                            uint32_t off = (lvl_ptr + i * 0x58u + b) & 0x1FFFFFFFu;
+                            fprintf(fp, "L,%u,%u,%u\n", i, b, ram[off]);
+                        }
+                    } else {
+                        uint32_t off = (lvl_ptr + i * 0x58u + 0x51u) & 0x1FFFFFFFu;
+                        fprintf(fp, "L,%u,%u\n", i, ram[off]);
+                    }
+                }
+            }
+            if (dyn_ptr) {
+                for (uint32_t i = 0; i < 128; i++) {
+                    if (dump_bytes) {
+                        for (uint32_t b = 0; b < 0x70u; b++) {
+                            uint32_t off = (dyn_ptr + i * 0x70u + b) & 0x1FFFFFFFu;
+                            fprintf(fp, "D,%u,%u,%u\n", i, b, ram[off]);
+                        }
+                    } else {
+                        uint32_t off = (dyn_ptr + i * 0x70u + 0x51u) & 0x1FFFFFFFu;
+                        fprintf(fp, "D,%u,%u\n", i, ram[off]);
+                    }
+                }
+            }
+            fclose(fp);
+        }
+    }
 }
 
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
