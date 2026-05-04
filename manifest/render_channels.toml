@@ -51,7 +51,17 @@ Set by the per-bucket render walker after the cone-pass cull; read
 next frame by func_80051FEC for auto-include grace + per-class AI
 gating. Closed by replaying the canonical 4:3 cone verdict in a
 host-side flag (psx_runtime_native_cone_pass) and gating the
-m_WasDrawn=1 stores on it."""
+m_WasDrawn=1 stores on it.
+
+Note: this channel intentionally owns NO state_regions. Its closure
+is verified at substitution-site granularity (the only byte it
+controls is Moby+0x51), not by hashing a whole moby pool — pools
+contain hundreds of other gameplay-controlled bytes that any
+unrelated render-channel leak can perturb. See
+`moby_pool_state` (open) for the catch-all that owns the pool
+regions; `OPENPETE_HASHTIME_MWD_DUMP` (game_extras_impl.c) gives a
+direct per-frame check that the m_WasDrawn byte itself matches
+across aspects."""
 substitution_sites = [
     0x8001F1FC, 0x800209A8, 0x80022B28,  # iter-start clear (force-pass billboards)
     0x8001F4CC, 0x80020C7C, 0x80022D98,  # m_WasDrawn=1 cull-pass writes (gated)
@@ -59,7 +69,7 @@ substitution_sites = [
 ]
 verdict_fn       = "psx_runtime_native_cone_pass"
 verified_against = ["aspect_determinism"]
-state_regions    = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
+state_regions    = []
 doc              = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
@@ -110,6 +120,34 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 # `render_channel:*` regions; the harness diffs them and is expected
 # to be RED until each gets a substitution and flips to "gated".
 # Listing them here makes the unknown-unknown visible.
+
+[[channel]]
+name        = "moby_pool_state"
+status      = "open"
+description = """
+Catch-all channel for any byte of the Moby pools (g_LevelMobys_pool,
+g_DynMobys_pool, g_Sparx_moby) that diverges between aspects without
+a known closed-channel attribution. Mobys carry hundreds of bytes of
+gameplay-controlled state (position, rotation, animation, AI
+counters, props pointers); a leak in *any* render→gameplay channel
+that AI consumes will surface here. Owning the pool regions on this
+open catch-all instead of on m_WasDrawn keeps the classifier honest:
+"pool diverged" classifies as expected-red until the underlying
+channel is identified, rather than mislabelling the closed
+m_WasDrawn closure as a regression.
+
+Investigation status (2026-05-04, title autoplay 16:9): full-RAM
+diff at last-matching frame 3739 shows pool memory clean; cascade
+explodes at 3740 fed by something in 0x80180000+ (overlay/level
+data + render scratch). Likely a `m_Props` animation byte the
+render advances and gameplay reads next update. Triage continues
+via PC-tracked recompiler regen — see
+`notes/plans/openpete-determinism-enforcement.md`."""
+substitution_sites = []
+verdict_fn         = ""
+verified_against   = []
+state_regions      = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
+doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "sector_visibility_flags"
