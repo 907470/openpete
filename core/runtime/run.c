@@ -15,6 +15,7 @@
 #include "bk2_movie.h"
 #include "bk2_record.h"
 #include "openpete_state.h"
+#include "openpete_fnv1a64.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -102,20 +103,31 @@ __attribute__((weak)) size_t openpete_state_region_count = 0;
  * one of the registered regions. See
  * notes/plans/openpete-determinism-enforcement.md Phase 1. */
 static uint64_t gameplay_hash_compute(void) {
-    const uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
-    const uint64_t FNV_PRIME  = 0x00000100000001B3ULL;
-    uint64_t h = FNV_OFFSET;
+    uint64_t h = openpete_fnv1a64_init();
     const uint8_t* ram = openpete_psx_get_ram();
+    const uint32_t RAM_BYTES = 2u * 1024u * 1024u;
     for (size_t r = 0; r < openpete_state_region_count; r++) {
         const OpenpeteStateRegion* reg = &openpete_state_regions[r];
-        /* PSX vaddr → raw RAM offset; mask to the low 21 bits (2 MB). */
-        uint32_t off = reg->start & 0x1FFFFFu;
-        uint32_t end = off + reg->length;
-        if (end > 2u * 1024u * 1024u) end = 2u * 1024u * 1024u;
-        for (uint32_t i = off; i < end; i++) {
-            h ^= ram[i];
-            h *= FNV_PRIME;
+        uint32_t base_off;
+        if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY) {
+            /* Dereference *(uint32_t*)reg->start as a PSX vaddr. */
+            uint32_t ptr_off = reg->start & 0x1FFFFFu;
+            if (ptr_off + 4u > RAM_BYTES) continue;
+            uint32_t vaddr =
+                  (uint32_t)ram[ptr_off]
+                | ((uint32_t)ram[ptr_off + 1] << 8)
+                | ((uint32_t)ram[ptr_off + 2] << 16)
+                | ((uint32_t)ram[ptr_off + 3] << 24);
+            /* NULL or non-KSEG0/KSEG1 pointer → pool not allocated yet. */
+            if (vaddr == 0) continue;
+            base_off = vaddr & 0x1FFFFFu;
+        } else {
+            base_off = reg->start & 0x1FFFFFu;
         }
+        uint32_t end = base_off + reg->length;
+        if (end > RAM_BYTES) end = RAM_BYTES;
+        if (end <= base_off) continue;
+        h = openpete_fnv1a64_update(h, ram + base_off, end - base_off);
     }
     return h;
 }

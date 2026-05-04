@@ -54,9 +54,21 @@ uint8_t* openpete_psx_get_scratch(void);
  * sentinel). See manifest/gameplay_state_regions.toml +
  * tools/gen_state_regions.py for the canonical generation path, and
  * notes/plans/openpete-determinism-enforcement.md Phase 1. */
+/* DIRECT regions live at a fixed PSX vaddr.
+ * INDIRECT_ARRAY regions live behind a pointer at `start`: the runtime
+ * reads a 4-byte PSX vaddr from RAM[start] and hashes `length` bytes
+ * starting there. Used for moby pools whose backing storage moves with
+ * level overlays. NULL/unmapped pointers are skipped (the slot just
+ * isn't allocated this frame). */
+typedef enum {
+    OPENPETE_REGION_DIRECT         = 0,
+    OPENPETE_REGION_INDIRECT_ARRAY = 1,
+} OpenpeteStateRegionKind;
+
 typedef struct {
-    uint32_t    start;       /* PSX virtual address (KSEG0) */
-    uint32_t    length;      /* bytes */
+    uint32_t    kind;        /* OpenpeteStateRegionKind */
+    uint32_t    start;       /* PSX virtual address (KSEG0); for INDIRECT, the addr of the base pointer */
+    uint32_t    length;      /* bytes to hash (for INDIRECT: element_size * max_elements) */
     const char* name;        /* for diagnostics */
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;

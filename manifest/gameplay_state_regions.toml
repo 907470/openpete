@@ -142,18 +142,44 @@ start       = 0x800771C8
 length      = 0x40
 description = "func_800521C0's per-class skip-render flag table."
 
-# ─── Moby pools — DEFERRED to indirect-region manifest format ──────────
-# g_LevelMobys / g_DynMobys are pointers; moby data lives in dynamic
-# level-overlay RAM. A naive start..start+length region here would
-# cover megabytes of overlay code/data that legitimately differs
-# between aspects (textures, models, OT scratch loaded at variable
-# times during the title-screen-to-level transition) and would drown
-# the gate in noise.
+# ─── Moby pools — indirect regions ────────────────────────────────────
+# Moby data lives in dynamic level-overlay RAM whose location moves
+# between levels. A direct start..start+length region would cover
+# megabytes of overlay code/data that legitimately differs between
+# aspects (textures, models, OT scratch loaded at variable times) and
+# would drown the gate in noise.
 #
-# To hash the actual moby state, we need an "indirect" region kind:
-#   { kind = "indirect_array", base_ptr_addr = 0x80075828,
-#     element_size = 0x58, max_elements = 256 }
-# i.e. dereference base_ptr_addr, then hash N elements of size S
-# starting at the dereffed pointer. Punt to Phase 1.5 — the
-# singletons + render-channel regions below are sufficient to detect
-# every channel we currently know about.
+# `kind = "indirect_array"` regions tell the runtime to dereference
+# the PSX vaddr at `base_ptr` and hash `element_size * max_elements`
+# bytes starting at the resulting pointer. NULL/unmapped pointers are
+# skipped (pool not allocated yet, e.g. during the title-screen
+# preroll before a level loads).
+#
+# `max_elements` is a generous cap; tighten when the pool's true
+# capacity is known. The hash treats unused trailing slots as part
+# of the gameplay state — which is correct: any divergence in
+# slot-allocation order is itself a determinism failure.
+
+[[region]]
+name         = "g_LevelMobys_pool"
+kind         = "indirect_array"
+base_ptr     = 0x80075828
+element_size = 0x58              # sizeof(Moby), cf. include/moby.h:471
+max_elements = 512
+description  = "Static-level moby array, indexed via *g_LevelMobys."
+
+[[region]]
+name         = "g_DynMobys_pool"
+kind         = "indirect_array"
+base_ptr     = 0x80075890
+element_size = 0x70              # Moby (0x58) + per-slot dyn header (0x18); cf. moby.h:512
+max_elements = 128
+description  = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element stride is 0x70 not 0x58 — pool reserves a 24-byte header per slot ahead of the Moby."
+
+[[region]]
+name         = "g_Sparx_moby"
+kind         = "indirect_array"
+base_ptr     = 0x80075898
+element_size = 0x58
+max_elements = 1
+description  = "Sparx companion: single Moby behind *g_Sparx."

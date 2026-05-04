@@ -43,12 +43,32 @@ def main() -> int:
     lines.append("")
     lines.append(f"#define OPENPETE_STATE_REGION_COUNT {len(regions)}")
     lines.append("")
+    def coerce_int(v: object) -> int:
+        return v if isinstance(v, int) else int(v, 0)  # type: ignore[arg-type]
+
     lines.append("static const OpenpeteStateRegion openpete_state_regions_table[OPENPETE_STATE_REGION_COUNT] = {")
     for r in regions:
-        name   = r["name"]
-        start  = int(r["start"]) if isinstance(r["start"], int) else int(r["start"], 0)
-        length = int(r["length"]) if isinstance(r["length"], int) else int(r["length"], 0)
-        lines.append(f"    {{ 0x{start:08X}u, 0x{length:X}u, \"{name}\" }},")
+        name = r["name"]
+        kind = r.get("kind", "direct")
+        if kind == "direct":
+            start  = coerce_int(r["start"])
+            length = coerce_int(r["length"])
+            kind_macro = "OPENPETE_REGION_DIRECT"
+        elif kind == "indirect_array":
+            # `start` is the PSX vaddr of the base pointer; runtime
+            # dereferences it and hashes `element_size * max_elements`
+            # bytes starting at the resulting address.
+            start    = coerce_int(r["base_ptr"])
+            elem_sz  = coerce_int(r["element_size"])
+            max_n    = coerce_int(r["max_elements"])
+            length   = elem_sz * max_n
+            kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY"
+        else:
+            print(f"error: unknown region kind {kind!r} for {name}", file=sys.stderr)
+            return 1
+        lines.append(
+            f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, \"{name}\" }},"
+        )
     lines.append("};")
     lines.append("")
 

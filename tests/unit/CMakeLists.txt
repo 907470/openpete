@@ -19,3 +19,12 @@ target_include_directories(bk2_movie_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/miniz)
 set_target_properties(bk2_movie_test PROPERTIES C_STANDARD 99)
 add_test(NAME bk2_movie_test COMMAND bk2_movie_test)
+
+# fnv1a64_test — header-only, no openpete deps. Verifies the FNV1a-64
+# implementation underpinning the determinism harness's per-frame
+# gameplay-state hash.
+add_executable(fnv1a64_test fnv1a64_test.c)
+target_include_directories(fnv1a64_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(fnv1a64_test PROPERTIES C_STANDARD 99)
+add_test(NAME fnv1a64_test COMMAND fnv1a64_test)
