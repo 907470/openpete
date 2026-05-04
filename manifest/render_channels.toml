@@ -224,31 +224,63 @@ doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "class_skip_flags"
-status      = "gated"
+status      = "open"
 description = """
 "Rendered world sectors flags" (per the asm comment in
 spyro-1/asm/data/game.bss.s for D_800771C8, 64 bytes). Written by
-r_environment.s during the env-renderer's per-sector cull pass; read
-by func_800521C0 (moby_lists.s) which clears m_WasDrawn=0 on every
-moby whose owning sector wasn't rendered. Genuine render→gameplay
-channel.
+r_environment.s at PC 0x80025B50 (`sb $fp, 0x0($s5)`) during the
+env-renderer's per-sector cull pass; read by func_800521C0
+(moby_lists.s) which clears m_WasDrawn=0 on every moby whose owning
+sector wasn't rendered. Genuine render→gameplay channel.
 
-Empirically does NOT diverge across the matrix (title, stone-hill-
-entry, inventory, tas, moby-culling-16-9, skip-to-artisans at 4:3
-vs 16:9, 3000 frames). The reason: the env renderer's per-vertex
-SX cull at r_environment.s goes through `lui $X, 0x200` sites
-already substituted by `widescreen_clip_x_threshold` — those keep
-the cone width canonical 4:3 by default (and only widen inside the
-render-pass bracket, after func_800521C0 has already run). So
-D_800771C8 receives the canonical 4:3 sector-rendered verdict,
-which is what gameplay reads.
+PRIOR CLOSURE WAS INCORRECT (re-opened 2026-05-03):
 
-This is "closed by side effect": the channel is gated, but no own
-substitution exists — the gating comes via widescreen_clip_x_threshold.
-If that channel ever regresses, this one will surface."""
+The previous session closed this as gated_via=widescreen_clip_x_\
+threshold on the theory that the env renderer's per-vertex SX cull
+sites (the `lui $X, 0x200` family) already canonicalize the cone
+width. Two errors:
+
+  1. Different threshold. The per-sector cull around 0x80025B50
+     uses `addi $at, $at, 0x100` (256) at 0x80025B68 — a separate
+     bbox-vs-screen-edge test from the `lui $X, 0x200` (512)
+     per-vertex clip. widescreen_clip_x_threshold substitutes only
+     the 0x200 sites and does NOT touch the 0x100 sector-cull path.
+
+  2. False-clean harness verdict. The earlier "empirically does
+     not diverge" claim came from classify_hash_divergence.py's
+     output, which reports only regions differing AT THE FIRST
+     divergent frame. moby_render_queue diverged from frame 1, so
+     class_skip_flags's frame-41 divergence was hidden in column
+     17 and never surfaced. Counting per-column divergences across
+     all 3000 frames shows class_skip_flags differs in 2948/3000.
+
+PROPAGATION PATH (real leak):
+
+  16:9 widening → r_environment cull at 0x80025B50 marks different
+  sectors as rendered → D_800771C8 bytes diverge → func_800521C0
+  clears m_WasDrawn on a different set of mobys → gameplay AI sees
+  a different visibility set than canonical PSX. m_WasDrawn=1
+  WRITES are gated (psx_runtime_native_cone_pass), but the m_WasDrawn=0
+  CLEARS via class_skip_flags are not — that's the leak.
+
+CANDIDATE FIX:
+
+  Substitute the cull-threshold immediates around 0x80025B68 (and
+  the symmetric `slti $r, 0x100` test sites in the same loop) so
+  the per-sector cull uses the canonical 4:3 width regardless of
+  aspect. Mirrors the widescreen_clip_x_threshold pattern but for
+  the sector-cull threshold. Needs a new verdict_fn (e.g.
+  psx_runtime_sector_cull_threshold) defaulting to 256 == byte-
+  identical 4:3, widening only when the renderer wants to actually
+  draw extra sectors after the canonical gameplay verdict has been
+  computed.
+
+  Open question: is there a render-pass bracket that lets us widen
+  the threshold *only* during the rendering subsequence after
+  func_800521C0 has run? Same architectural question solved for
+  m_WasDrawn (s_in_render_pass)."""
 substitution_sites = []
-gated_via          = "widescreen_clip_x_threshold"
-verdict_fn         = "psx_runtime_clip_x_threshold (cross-channel)"
-verified_against   = ["aspect_determinism", "determinism_matrix"]
+verdict_fn         = ""
+verified_against   = []
 state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
