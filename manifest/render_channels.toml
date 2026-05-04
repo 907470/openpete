@@ -122,6 +122,49 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 # Listing them here makes the unknown-unknown visible.
 
 [[channel]]
+name        = "sparkle_alloc_state"
+status      = "gated"
+description = """
+g_Sparkles[16] alloc-pool occupancy. Each sparkle slot has a 0xC-byte
+"in_use" tag that func_8005882C scans (first-fit) when SpawnSparkleAt
+allocates. The slot stays in_use until the sparkle render-cull at
+r_particles.s func_80058864 detects it has gone off-screen and clears
+the byte at PC 0x80058818 (`sb $zero, 0xC($t8)`).
+
+The cull at 0x80058648 (left edge) and 0x80058658 (right edge) tests
+projected SX after RTPS at 0x80058604. The right-edge threshold is
+hardcoded `lui $t0, 0x0200` (= 512 << 16, NOT widened by openpete) —
+but the SX itself IS widened (eff_OFX = OFX*factor inside gte.cpp).
+That mismatch means in 16:9, sparkles at canonical SX in
+(-delta_OFX, 0) project to widened SX in (0, delta_OFX), pass widened
+left-clip (blez fails on positive widened SX), survive the kill —
+even though canonical 4:3 would have killed them. Slot stays
+occupied → next SpawnSparkleAt picks a different slot → cascades
+into rotation matrix updates (moby_helpers.c:886's
+UPDATE_PROP_ROTMATRIX call is gated on alloc success), eventually
+diverging Moby pool state.
+
+Closure: substitute the SX-extract sll at 0x80058648 to load $a1 from
+the canonical_sx_q16 side channel (gte.cpp's openpete_canonical_sx2_q16,
+truncated to int via `>> 16` then re-shifted). The asm's subsequent
+`blez $a1` (left) and `sub $a1, $a1, $t0` + `bgez $a1` (right) then
+test canonical SX instead of widened — kill verdict matches canonical
+4:3 exactly. Sparkles outside canonical bounds get killed the same
+frame canonical does, so allocator bookkeeping stays bit-identical.
+Trade-off: sparkles in widened periphery render for one frame then
+die (matches base game behavior at 4:3).
+
+Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000
+frames (hash + position log)."""
+substitution_sites = [
+    0x80058648,  # sll $a1, $a3, 16 — replaced with canonical_sx_q16 load
+]
+verdict_fn       = "openpete_canonical_sx2_q16"
+verified_against = []
+state_regions    = ["g_Sparkles_pool"]
+doc              = "notes/plans/openpete-presentation-decoupling.md"
+
+[[channel]]
 name        = "particle_drawn_flag"
 status      = "gated"
 description = """

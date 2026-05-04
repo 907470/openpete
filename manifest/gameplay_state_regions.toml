@@ -180,6 +180,13 @@ max_elements = 256                   # 0x2000 bytes total — see src/4BEF8.c (m
 description  = "Particle pool. Wraps around g_ParticleAllocPtr — hash the full capacity. Particles drive class-specific update behavior (e.g. level_11 0x80088098 calls rand() conditional on per-particle flag bit) so divergence here propagates into RNG/gameplay state."
 
 [[region]]
+name         = "g_Sparkles_pool"
+kind         = "direct"
+start        = 0x80077108
+length       = 0x180                 # 16 sparkles × 0x18 bytes — psx.map symbol g_Sparkles
+description  = "g_Sparkles[16]: short-lived sparkle effects spawned by SpawnSparkleAt (moby_helpers.c). The +0xC byte is the in_use tag — alloc state cascades into rotation-matrix updates because SpawnSparkleAt only calls UPDATE_PROP_ROTMATRIX on successful alloc. Render-cull at r_particles.s 0x80058648/0x80058654 frees slots when sparkles go off-screen — closure (sparkle_alloc_state channel) makes that cull use the canonical-SX side channel so kill verdict matches 4:3 regardless of widening."
+
+[[region]]
 name              = "g_LevelMobys_pool"
 kind              = "indirect_array"
 base_ptr          = 0x80075828

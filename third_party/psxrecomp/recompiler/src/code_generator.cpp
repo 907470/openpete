@@ -769,6 +769,30 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         "| ((s2 > 0) & (s2 < 512))); "
                         "psx_runtime_native_part_pass = pass; "
                         "cpu->a1 = (int32_t)cpu->at << 16; }}");
+                } else if (addr == 0x80058648u) {
+                    /* Sparkle render-cull SX-left-clip entry in
+                     * r_particles.s func_80058864. Original asm:
+                     *   sll $a1, $a3, 16    ; $a1 = SX_widened << 16
+                     *   blez $a1, .kill     ; canonical-style left-clip
+                     *   lui $t0, 0x0200
+                     *   sub $a1, $a1, $t0   ; right-clip
+                     *   bgez $a1, .kill
+                     *   ... else continue (sparkle stays alive)
+                     * .kill clears in_use byte → frees slot, leaks into
+                     * gameplay (allocator state cascades into next-frame
+                     * SpawnSparkleAt slot assignments which gate rotation
+                     * matrix updates via UPDATE_PROP_ROTMATRIX).
+                     *
+                     * Substitute $a1 with canonical SX_q16 (truncated to
+                     * int via >> 16, then re-shifted to match the asm's
+                     * shape). Both blez (left) and the subsequent sub-
+                     * then-bgez (right at 0x80058654) now test canonical
+                     * SX instead of widened, so the kill verdict matches
+                     * canonical 4:3 — visible periphery in widened mode
+                     * still renders for one frame (sparkle is on its
+                     * normal alive path), then dies the SAME frame
+                     * canonical would. */
+                    code = "{ int32_t cs_q16 = (int32_t)(openpete_canonical_sx2_q16 >> 16) << 16; cpu->a1 = cs_q16; }";
                 } else {
                     code = translate_sll(instr);
                 }
