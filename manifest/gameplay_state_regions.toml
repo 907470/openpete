@@ -172,6 +172,14 @@ description = """Rendered world sectors flags. Written by r_environment.s at PC 
 # divergence in spawn order still trips the gate via those.
 
 [[region]]
+name         = "g_Particles_pool"
+kind         = "indirect_array"
+base_ptr     = 0x80075824            # g_Particles head pointer (Particle*)
+element_size = 0x20                  # sizeof(Particle): 4-byte header + 28-byte data
+max_elements = 256                   # 0x2000 bytes total — see src/4BEF8.c (m_SharedAnimations - 0x2000)
+description  = "Particle pool. Wraps around g_ParticleAllocPtr — hash the full capacity. Particles drive class-specific update behavior (e.g. level_11 0x80088098 calls rand() conditional on per-particle flag bit) so divergence here propagates into RNG/gameplay state."
+
+[[region]]
 name              = "g_LevelMobys_pool"
 kind              = "indirect_array"
 base_ptr          = 0x80075828

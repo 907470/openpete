@@ -1463,12 +1463,47 @@ void psyq_strlen(CPUState* cpu) {
     cpu->v0 = s ? (uint32_t)strlen(s) : 0u;
 }
 
+/* PSYQ rand/srand: byte-identical re-implementation of the LCG at
+ * 0x8006272C / 0x8006275C, including the live mutation of seed slot
+ * D_80075AC0 in PSX RAM. The previous implementation routed through
+ * host libc `rand()` / `srand()`, which (a) doesn't match the PSYQ
+ * sequence, and (b) leaves D_80075AC0 — the gameplay-state hash's
+ * `psyq_rand_seed` region — uninitialized at zero forever. Result:
+ * divergent rand-call counts between presentation modes were
+ * completely invisible to the determinism gate, masking real
+ * render→gameplay leaks (any code path that called rand() a
+ * different number of times based on render-side state would drift
+ * gameplay silently). Mirroring the asm restores both correctness
+ * and detectability. PSYQ formula:
+ *     seed = seed * 0x41C64E6D + 0x3039
+ *     return (seed >> 16) & 0x7FFF */
+extern "C" uint8_t* openpete_psx_get_ram(void);
+static constexpr uint32_t PSYQ_RAND_SEED_VADDR = 0x80075AC0u;
+static inline uint32_t psyq_seed_load(void) {
+    const uint8_t* ram = openpete_psx_get_ram();
+    uint32_t off = PSYQ_RAND_SEED_VADDR & 0x1FFFFFu;
+    return  (uint32_t)ram[off]
+         | ((uint32_t)ram[off + 1] << 8)
+         | ((uint32_t)ram[off + 2] << 16)
+         | ((uint32_t)ram[off + 3] << 24);
+}
+static inline void psyq_seed_store(uint32_t v) {
+    uint8_t* ram = openpete_psx_get_ram();
+    uint32_t off = PSYQ_RAND_SEED_VADDR & 0x1FFFFFu;
+    ram[off    ] = (uint8_t)(v        & 0xFF);
+    ram[off + 1] = (uint8_t)((v >> 8 ) & 0xFF);
+    ram[off + 2] = (uint8_t)((v >> 16) & 0xFF);
+    ram[off + 3] = (uint8_t)((v >> 24) & 0xFF);
+}
 void psyq_rand(CPUState* cpu) {
-    cpu->v0 = (uint32_t)rand();
+    uint32_t seed = psyq_seed_load();
+    seed = seed * 0x41C64E6Du + 0x3039u;
+    psyq_seed_store(seed);
+    cpu->v0 = (seed >> 16) & 0x7FFFu;
 }
 
 void psyq_srand(CPUState* cpu) {
-    srand((unsigned int)cpu->a0);
+    psyq_seed_store(cpu->a0);
 }
 
 void psyq_exit(CPUState* cpu) {
