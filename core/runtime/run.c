@@ -116,20 +116,50 @@ static uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
         const OpenpeteStateRegion* reg = &openpete_state_regions[r];
         if (out_per_region) out_per_region[r] = 0;
         uint32_t base_off;
-        if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY) {
+        uint32_t live_len = reg->length;
+        const int is_indirect = (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY
+                              || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_END_PTR
+                              || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT);
+        uint32_t base_vaddr = 0;
+        if (is_indirect) {
             uint32_t ptr_off = reg->start & 0x1FFFFFu;
             if (ptr_off + 4u > RAM_BYTES) continue;
-            uint32_t vaddr =
+            base_vaddr =
                   (uint32_t)ram[ptr_off]
                 | ((uint32_t)ram[ptr_off + 1] << 8)
                 | ((uint32_t)ram[ptr_off + 2] << 16)
                 | ((uint32_t)ram[ptr_off + 3] << 24);
-            if (vaddr == 0) continue;
-            base_off = vaddr & 0x1FFFFFu;
+            if (base_vaddr == 0) continue;
+            base_off = base_vaddr & 0x1FFFFFu;
         } else {
             base_off = reg->start & 0x1FFFFFu;
         }
-        uint32_t end = base_off + reg->length;
+        if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_END_PTR) {
+            uint32_t aux_off = reg->aux & 0x1FFFFFu;
+            if (aux_off + 4u <= RAM_BYTES) {
+                uint32_t end_vaddr =
+                      (uint32_t)ram[aux_off]
+                    | ((uint32_t)ram[aux_off + 1] << 8)
+                    | ((uint32_t)ram[aux_off + 2] << 16)
+                    | ((uint32_t)ram[aux_off + 3] << 24);
+                if (end_vaddr >= base_vaddr) {
+                    uint32_t live = end_vaddr - base_vaddr;
+                    if (live < live_len) live_len = live;
+                }
+            }
+        } else if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT) {
+            uint32_t aux_off = reg->aux & 0x1FFFFFu;
+            if (aux_off + 4u <= RAM_BYTES && reg->elem_size > 0u) {
+                uint32_t cnt =
+                      (uint32_t)ram[aux_off]
+                    | ((uint32_t)ram[aux_off + 1] << 8)
+                    | ((uint32_t)ram[aux_off + 2] << 16)
+                    | ((uint32_t)ram[aux_off + 3] << 24);
+                uint64_t live = (uint64_t)cnt * (uint64_t)reg->elem_size;
+                if (live < (uint64_t)live_len) live_len = (uint32_t)live;
+            }
+        }
+        uint32_t end = base_off + live_len;
         if (end > RAM_BYTES) end = RAM_BYTES;
         if (end <= base_off) continue;
         size_t len = end - base_off;

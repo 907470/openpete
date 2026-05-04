@@ -61,14 +61,25 @@ uint8_t* openpete_psx_get_scratch(void);
  * level overlays. NULL/unmapped pointers are skipped (the slot just
  * isn't allocated this frame). */
 typedef enum {
-    OPENPETE_REGION_DIRECT         = 0,
-    OPENPETE_REGION_INDIRECT_ARRAY = 1,
+    OPENPETE_REGION_DIRECT                  = 0,
+    OPENPETE_REGION_INDIRECT_ARRAY          = 1,
+    /* Like INDIRECT_ARRAY, but clamps the hashed length to the live
+     * range derived from a runtime end-pointer or count value. The
+     * static `length` field is still the cap (max_elements *
+     * element_size); the live extent is computed each frame from
+     * `aux`. Lets us avoid hashing stale heap garbage in unallocated
+     * tail slots of bump-allocated pools (e.g. g_LevelMobys past
+     * g_MobyAllocPtr). */
+    OPENPETE_REGION_INDIRECT_ARRAY_END_PTR  = 2, /* aux = addr of end ptr (u32 PSX vaddr); live = *aux - *start */
+    OPENPETE_REGION_INDIRECT_ARRAY_COUNT    = 3, /* aux = addr of int count; live = *aux * elem_size */
 } OpenpeteStateRegionKind;
 
 typedef struct {
     uint32_t    kind;        /* OpenpeteStateRegionKind */
-    uint32_t    start;       /* PSX virtual address (KSEG0); for INDIRECT, the addr of the base pointer */
-    uint32_t    length;      /* bytes to hash (for INDIRECT: element_size * max_elements) */
+    uint32_t    start;       /* PSX virtual address (KSEG0); for INDIRECT*, the addr of the base pointer */
+    uint32_t    length;      /* bytes to hash; for INDIRECT*, the cap (element_size * max_elements) */
+    uint32_t    aux;         /* end-ptr or count addr for INDIRECT_ARRAY_{END_PTR,COUNT}; 0 otherwise */
+    uint32_t    elem_size;   /* element_size for INDIRECT_ARRAY_COUNT; 0 otherwise */
     const char* name;        /* for diagnostics */
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;

@@ -50,24 +50,39 @@ def main() -> int:
     for r in regions:
         name = r["name"]
         kind = r.get("kind", "direct")
+        aux = 0
+        elem_size_field = 0
         if kind == "direct":
             start  = coerce_int(r["start"])
             length = coerce_int(r["length"])
             kind_macro = "OPENPETE_REGION_DIRECT"
         elif kind == "indirect_array":
-            # `start` is the PSX vaddr of the base pointer; runtime
+            # `base_ptr` is the PSX vaddr of the base pointer; runtime
             # dereferences it and hashes `element_size * max_elements`
-            # bytes starting at the resulting address.
+            # bytes starting at the resulting address. Optional
+            # `live_end_ptr_addr` clamps the hashed extent to
+            # `*end_ptr - *base_ptr`; `live_count_addr` clamps to
+            # `*count * element_size`. Either lets us avoid hashing
+            # stale heap garbage in unallocated tail slots.
             start    = coerce_int(r["base_ptr"])
             elem_sz  = coerce_int(r["element_size"])
             max_n    = coerce_int(r["max_elements"])
             length   = elem_sz * max_n
-            kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY"
+            if "live_end_ptr_addr" in r:
+                aux = coerce_int(r["live_end_ptr_addr"])
+                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_END_PTR"
+            elif "live_count_addr" in r:
+                aux = coerce_int(r["live_count_addr"])
+                elem_size_field = elem_sz
+                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_COUNT"
+            else:
+                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY"
         else:
             print(f"error: unknown region kind {kind!r} for {name}", file=sys.stderr)
             return 1
         lines.append(
-            f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, \"{name}\" }},"
+            f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, "
+            f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\" }},"
         )
     lines.append("};")
     lines.append("")

@@ -163,26 +163,31 @@ description = """Rendered world sectors flags. Written by r_environment.s at PC 
 # skipped (pool not allocated yet, e.g. during the title-screen
 # preroll before a level loads).
 #
-# `max_elements` is a generous cap; tighten when the pool's true
-# capacity is known. The hash treats unused trailing slots as part
-# of the gameplay state — which is correct: any divergence in
-# slot-allocation order is itself a determinism failure.
+# `max_elements` is a generous cap. Optional `live_end_ptr_addr` /
+# `live_count_addr` clamp the hashed length to the live extent so
+# unallocated tail slots (stale heap garbage left behind by level
+# overlay loads, render scratch, etc.) don't pollute the hash with
+# non-gameplay differences. Allocation *count* is itself tracked via
+# the singleton g_MobyAllocPtr / g_DynMobyCount regions, so a real
+# divergence in spawn order still trips the gate via those.
 
 [[region]]
-name         = "g_LevelMobys_pool"
-kind         = "indirect_array"
-base_ptr     = 0x80075828
-element_size = 0x58              # sizeof(Moby), cf. include/moby.h:471
-max_elements = 512
-description  = "Static-level moby array, indexed via *g_LevelMobys."
+name              = "g_LevelMobys_pool"
+kind              = "indirect_array"
+base_ptr          = 0x80075828
+element_size      = 0x58              # sizeof(Moby), cf. include/moby.h:471
+max_elements      = 512
+live_end_ptr_addr = 0x8007573C        # g_MobyAllocPtr — bump cursor; live = *end_ptr - *base_ptr
+description       = "Static-level moby array, indexed via *g_LevelMobys."
 
 [[region]]
-name         = "g_DynMobys_pool"
-kind         = "indirect_array"
-base_ptr     = 0x80075890
-element_size = 0x70              # Moby (0x58) + per-slot dyn header (0x18); cf. moby.h:512
-max_elements = 128
-description  = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element stride is 0x70 not 0x58 — pool reserves a 24-byte header per slot ahead of the Moby."
+name             = "g_DynMobys_pool"
+kind             = "indirect_array"
+base_ptr         = 0x80075890
+element_size     = 0x70              # Moby (0x58) + per-slot dyn header (0x18); cf. moby.h:512
+max_elements     = 128
+live_count_addr  = 0x800756A4        # g_DynMobyCount; live = *count * element_size
+description      = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element stride is 0x70 not 0x58 — pool reserves a 24-byte header per slot ahead of the Moby."
 
 [[region]]
 name         = "g_Sparx_moby"
