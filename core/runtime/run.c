@@ -640,14 +640,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * widening. See psx_runtime.h. */
         extern uint32_t psx_runtime_native_clip_x_in_widened_space;
         extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
-        uint32_t delta_ofx = (uint32_t)((thresh_factor - 1.0f) * 256.0f);
-        psx_runtime_native_clip_x_in_widened_space = (0x200u + delta_ofx) << 16;
-        psx_runtime_native_clip_x_low_in_widened_space = delta_ofx << 16;
-        OPL_INFO_F("aspect", "particle canonical-cull thresholds (in widened SX): "
-                   "low=0x%08X high=0x%08X (delta_ofx %u)",
+        /* Delta-OFX in Q16 (matches gte.cpp `eff_OFX = OFX * factor` math).
+         * Truncated-to-pixel rounding off-by-one'd the boundary case
+         * (SX=511 canonical → SX=597 widened with actual fractional delta
+         * 85.333 px, but pixel-truncated delta 85 puts the threshold at
+         * 597 itself, rejecting the SX=597 widened vertex). Keeping the
+         * delta in Q16 throughout closes the rounding gap. */
+        int64_t ofx_canonical_q16 = (int64_t)0x01000000;  /* 256<<16, the
+            canonical PSX OFX value Spyro's renderer uses; gte.cpp scales
+            this when openpete_render_pass_active && factor>0. */
+        int64_t ofx_widened_q16 = (int64_t)((double)ofx_canonical_q16
+                                             * (double)thresh_factor);
+        uint32_t delta_ofx_q16 = (uint32_t)(ofx_widened_q16 - ofx_canonical_q16);
+        psx_runtime_native_clip_x_in_widened_space     = 0x02000000u + delta_ofx_q16;
+        psx_runtime_native_clip_x_low_in_widened_space = delta_ofx_q16;
+        OPL_INFO_F("aspect", "particle canonical-cull thresholds (Q16): "
+                   "low=0x%08X high=0x%08X (delta_ofx_q16 0x%08X = %.3fpx)",
                    (unsigned)psx_runtime_native_clip_x_low_in_widened_space,
                    (unsigned)psx_runtime_native_clip_x_in_widened_space,
-                   (unsigned)delta_ofx);
+                   (unsigned)delta_ofx_q16,
+                   (double)delta_ofx_q16 / 65536.0);
         OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "
                    "0xFE00 -> 0xF800 (env SX-overflow), clip_x_threshold "
                    "0x02000000 -> %u<<16 (env+cyclorama+moby+particles "

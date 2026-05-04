@@ -123,75 +123,39 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "particle_drawn_flag"
-status      = "open"
+status      = "gated"
 description = """
 Particle m_03 byte (offset 0x3 of each Particle, =1 iff drawn last
 frame, =0 otherwise) — particle equivalent of m_WasDrawn. Written by
 r_particles.s via the handwritten `sb $s2, -0x1D($ra)` idiom (where
 $ra is pre-incremented to next particle). Read by class-specific
-particle update handlers in level overlays (level_10/11/12/13 etc.)
-to gate expensive AI work, including conditional rand() calls — an
-unclosed leak here drifts psyq_rand_seed and propagates into moby
-state across aspects (title autoplay 16:9 first surfaces at frame
-3714 of g_Particles_pool, and at frame 3738 of psyq_rand_seed).
+particle update handlers in level overlays to gate expensive AI work,
+including conditional rand() calls — an unclosed leak drifts the
+psyq_rand seed and cascades into moby state.
 
-Closure attempted (2026-05-04, commit pending) by recording the
-canonical 4:3 verdict against psx_runtime_native_clip_x_in_widened_space
-(= 0x200 + delta_OFX, accounts for OFX shift) at 5 preceding
-`sub _, _, $s6` sites + 4-vertex SLL OR entry, gating 6 m_03 stores
-on the resulting psx_runtime_native_part_pass flag. Closure verified
-to intercept the writes (FORCE-DROP test: particle pool divergence
-disappears, shifts to moby_pool_state) but does NOT yet eliminate
-divergence with normal gating: particles iterate through MULTIPLE
-chains per frame and final m_03 depends on the LAST chain's verdict;
-single-flag-per-iteration model doesn't capture that. Needs redesign.
+Closure: canonical-SX side channel populated by gte.cpp's RTPS
+(openpete_canonical_sx0/1/2_q16, 3-deep FIFO matching push_sxy
+semantics). Each `sub _, _, $s6` substitution at the right-edge clip
+reads the appropriate FIFO slot, truncates to int16 via `>> 16` to
+match the asm's `mfc2` integer SX, and tests the exact canonical 4:3
+verdict (0 < SX < 512). The 4-vertex SLL substitution at 0x800576EC
+ORs the same test across the FIFO. m_03 stores at 0x80057720 /
+0x80057A10 / 0x80057B20 / 0x80057CDC / 0x80057F60 / 0x80058028 are
+gated on the resulting psx_runtime_native_part_pass flag.
 
-Chosen approach for next attempt: wrap func_800573C8 (single entry,
-spans 0x800573C8..0x800580F4 — every m_03 substitution PC sits
-inside it) via psx_override_dispatch and post-AND the m_03 column of
-g_Particles_pool with a host-computed canonical-4:3 mask. Mirrors
-the working class_skip_flags closure at game_extras_impl.c:489
-(env-renderer wrap → canonical_mask → AND-clear D_800771C8).
-Sidesteps multi-chain bookkeeping entirely: widened renderer runs
-unmodified for visuals, canonical verdict overwrites gameplay-
-readable byte after.
+FIFO slot per PC:
+  - 0x80057A04 (class 4): sx1 — 2 RTPSes precede; mfc2 between them
+  - 0x80057B14 (class 3): sx2 — 1 RTPS
+  - 0x80057CB4 (class 2): sx2 — 1 RTPS
+  - 0x80057F28 (class 1): sx1 — 2 RTPSes; mfc2 between them
+  - 0x8005801C (class 0): sx2 — 1 RTPS
+  - 0x800576EC (4-vertex strip): OR over sx0|sx1|sx2
 
-Substitutions left in place (gated harmlessly until the architecture
-is corrected — to be removed when the post-AND closure lands).
-
-Update 2026-05-04 (5d2efd5): added left-edge canonical bound and
-AND'd into SLL/SUB substitutions. Title-autoplay 16:9 closes from
-410 → 126 diverging frames, first-divergence pushed from 3714 →
-3938.
-
-Residual investigation findings:
-  * Only ONE byte differs at frame 3938: g_Particles_pool slot 81,
-    offset 0x03 (m_03=1 in 4:3, m_03=0 in 16:9).
-  * Slot 81 is class 0, dispatched to single-vertex path at
-    0x80057F98 (NOT the 4-vertex SLL path at 0x800574F8 that I'd
-    initially guessed).
-  * Animation timer m_02 is byte-identical at slot 81 in both
-    aspects, so update logic runs the same in both modes.
-  * Per-frame instrumentation: my substitutions at 0x800576EC and
-    0x8005801C are NEVER reached for slot 81 in either aspect at
-    frame 3938. That means widened-mode rejects at a pre-
-    substitution clip (Z near/far at 0x80058000, Y top/bot at
-    0x80058008/0x80058010, or left-clip at 0x80058018) while
-    canonical accepts and reaches sb at 0x80058028.
-  * This contradicts the model: with delta_OFX > 0, widened_SX >
-    canonical_SX always, so widened can NEVER fail left-clip when
-    canonical passes. And Z/Y don't depend on OFX widening.
-  * Hypothesis: the env-renderer view-matrix-row-0 widening
-    (game_extras_impl.c:652) might be leaving residue that affects
-    IR1 (and therefore SX itself) for particles that render after
-    the env pass within the same widened render bracket. Or the
-    runtime's `eff_OFX = OFX * factor` (gte.cpp:255) interacts
-    poorly with whatever OFX value the particle path is using
-    (Spyro's renderer writes 92, 108, etc — not always 256).
-  * Next session: add a one-shot trace at the START of the class 0
-    handler (0x80057F98) for slot 81, capturing the post-RTPS
-    SXY2/SZ3 values + the GTE OFX/H ctrl regs, to see WHICH clip
-    diverges and what the actual SX values are."""
+Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 4000
+frames (hash + position). Earlier closure attempts using delta_OFX
+math (truncated pixels or Q16) had irreducible 1-pixel boundary
+ambiguity; reading the canonical SX directly from gte.cpp resolves
+that exactly."""
 substitution_sites = [
     0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
     0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s

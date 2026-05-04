@@ -20,6 +20,9 @@ extern "C" {
      * instructions (92, 108, 132, 148, 256, …) — those bypass the thunk
      * and need to be widened here at the GTE-instruction layer. */
     extern float openpete_disp_w_factor;
+    extern int64_t openpete_canonical_sx0_q16;
+    extern int64_t openpete_canonical_sx1_q16;
+    extern int64_t openpete_canonical_sx2_q16;
     extern int   openpete_fov_h_override;
     extern int   openpete_render_pass_active;
 }
@@ -262,6 +265,22 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     int64_t sx = (eff_OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
     int64_t sy = (gte->OFY + (int64_t)gte->IR2 * h_div_sz) >> 16;
     gte->push_sxy(sx, sy);
+
+    /* Side-channel canonical SX for openpete render→gameplay channel
+     * decoupling. The mfc2 read of C2_SXY2 in handwritten asm truncates
+     * SX to int16, losing the q16 fractional bits — so any host-side
+     * "canonical 4:3 verdict" computed from delta_OFX has irreducible
+     * 1-pixel ambiguity at boundaries (canonical SX=512 vs 511.x both
+     * round to widened SX=597 with delta_OFX≈85.33). Stash the
+     * pre-truncation canonical SX in q16 here, in a 3-deep FIFO matching
+     * push_sxy semantics. Substitutions in r_particles.s read
+     * `openpete_canonical_sx2_q16` (top of FIFO = latest projection) and
+     * test it directly against the canonical 4:3 thresholds (0 and
+     * 0x02000000) — exact verdict, no rounding. */
+    int64_t canonical_sx_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
+    ::openpete_canonical_sx0_q16 = ::openpete_canonical_sx1_q16;
+    ::openpete_canonical_sx1_q16 = ::openpete_canonical_sx2_q16;
+    ::openpete_canonical_sx2_q16 = canonical_sx_q16;
 
     // Step 5: Depth cueing (MAC0/IR0) — only for last vertex of RTPT or RTPS
     if (setMac0) {

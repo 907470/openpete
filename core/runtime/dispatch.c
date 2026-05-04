@@ -64,6 +64,16 @@ uint32_t psx_runtime_native_clip_x_in_widened_space = 0x02000000u;
  * delta_OFX << 16 when --aspect widens factor != 1.0. See psx_runtime.h. */
 uint32_t psx_runtime_native_clip_x_low_in_widened_space = 0u;
 
+/* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
+ * after each projection in a 3-deep FIFO matching push_sxy semantics.
+ * sx2_q16 is the latest projection (= what mfc2 C2_SXY2 reads, but in
+ * full q16 precision before int16 truncation). Used by the particle
+ * cull substitutions in r_particles.s to compute exact canonical 4:3
+ * verdicts without delta-OFX rounding errors. See psx_runtime.h. */
+int64_t openpete_canonical_sx0_q16 = 0;
+int64_t openpete_canonical_sx1_q16 = 0;
+int64_t openpete_canonical_sx2_q16 = 0;
+
 /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
  * 512 / 513 preserve native 4:3 behavior. See psx_runtime.h. */
 uint32_t psx_runtime_portal_clip_x_max = 0x200u;

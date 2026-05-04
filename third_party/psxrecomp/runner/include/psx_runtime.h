@@ -151,6 +151,17 @@ extern uint32_t psx_runtime_native_clip_x_in_widened_space;
  * at 0x800576EC, AND-combined with the right-edge test. */
 extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
 
+/* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
+ * after each projection. 3-deep FIFO matching push_sxy semantics —
+ * sx2 is the latest, sx1 the previous, sx0 the oldest. Used by
+ * r_particles.s cull substitutions to test canonical 4:3 verdicts
+ * directly against fractional-precision SX values (avoids the 1-pixel
+ * boundary ambiguity that plain int16 SX after mfc2 has). Canonical
+ * 4:3 verdict: 0 < canonical_sx_q16 < 0x02000000. */
+extern int64_t openpete_canonical_sx0_q16;
+extern int64_t openpete_canonical_sx1_q16;
+extern int64_t openpete_canonical_sx2_q16;
+
 /* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
  * clamp. The dispatcher computes a per-portal screen-space clip rect
  * (D_8007AA00..0C) then clamps the upper-X corner with
