@@ -196,8 +196,35 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
         if (end <= base_off) continue;
         size_t len = end - base_off;
         const uint8_t* p = ram + base_off;
-        if (out_per_region) out_per_region[r] = openpete_fnv1a64(p, len);
-        total = openpete_fnv1a64_update(total, p, len);
+        /* Mask-aware hash: for regions tagged with mask_offsets, skip
+         * the masked bytes during FNV update for BOTH the per-region
+         * and total hashes. Both absolute and per-element variants
+         * supported (see openpete_psx.h). When mask_count==0, falls
+         * through to the existing bulk-update fast path so non-masked
+         * regions retain identical hashes to pre-mask-aware code. */
+        if (reg->mask_count == 0) {
+            if (out_per_region) out_per_region[r] = openpete_fnv1a64(p, len);
+            total = openpete_fnv1a64_update(total, p, len);
+        } else {
+            const uint16_t* m  = reg->mask_offsets;
+            const uint16_t mc  = reg->mask_count;
+            const uint32_t es  = reg->elem_size; /* 0 if not per-element */
+            const int per_el   = (reg->mask_per_element != 0u && es != 0u);
+            uint64_t per = openpete_fnv1a64_init();
+            for (size_t i = 0; i < len; i++) {
+                uint32_t off = per_el ? (uint32_t)(i % es) : (uint32_t)i;
+                int masked = 0;
+                for (uint16_t mi = 0; mi < mc; mi++) {
+                    if ((uint32_t)m[mi] == off) { masked = 1; break; }
+                }
+                if (masked) continue;
+                per   ^= (uint64_t)p[i];
+                per   *= 0x100000001B3ULL;
+                total ^= (uint64_t)p[i];
+                total *= 0x100000001B3ULL;
+            }
+            if (out_per_region) out_per_region[r] = per;
+        }
     }
     return total;
 }

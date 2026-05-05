@@ -81,6 +81,27 @@ typedef struct {
     uint32_t    aux;         /* end-ptr or count addr for INDIRECT_ARRAY_{END_PTR,COUNT}; 0 otherwise */
     uint32_t    elem_size;   /* element_size for INDIRECT_ARRAY_COUNT; 0 otherwise */
     const char* name;        /* for diagnostics */
+    /* Byte-mask: list of byte offsets whose value is excluded from
+     * the region hash. Lets the gameplay-state hash ignore bytes
+     * that are functionally tied to host-emulator-specific behavior
+     * (e.g. SPU voice-slot indices) without dropping the surrounding
+     * gameplay-meaningful state from the gate.
+     *
+     *   mask_per_element=0: offsets are absolute into the region
+     *                       (length-bounded; e.g. g_Spyro 0x2A0).
+     *   mask_per_element=1: offsets repeat per element_size — for
+     *                       INDIRECT_ARRAY pools, masks every
+     *                       element's offset N (e.g. Moby+0x54).
+     * mask_count==0 means hash everything.
+     *
+     * INDIRECT_ARRAY_END_PTR has no elem_size set (length is the cap),
+     * so per-element masks must specify the per-Moby stride implicitly
+     * via the offset (here, `length / max_elements`); manifest emits
+     * elem_size for these regions when a per-element mask is present. */
+    const uint16_t* mask_offsets;
+    uint16_t    mask_count;
+    uint8_t     mask_per_element;
+    uint8_t     mask_pad;
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;

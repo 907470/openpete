@@ -121,6 +121,14 @@ name        = "g_Spyro"
 start       = 0x80078A58
 length      = 0x2A4
 description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
+# SPU voice-slot indices stored by PlaySound when allocating channels for
+# damage-/charge-sound effects. The values depend on which voices the
+# allocator's `for i in 0..23` scan found free at call time, which is in
+# turn driven by SPU envelope precision in the host emulator (DS:
+# sample-accurate, OP: VBL-quantized). Both are valid implementations of
+# the libspu contract; the bytes themselves aren't gameplay-meaningful.
+mask_offsets = [0x2A0, 0x2A1]
+mask_reason  = "m_damageSoundChannel / m_chargeSoundChannel — host SPU-precision-derived"
 
 # ─── PSYQ libpad slot-2 buffer + companion globals ────────────────────
 # Real PSYQ on PCSX-Redux fills this with the slot-2 controller status
@@ -216,6 +224,10 @@ element_size      = 0x58              # sizeof(Moby), cf. include/moby.h:471
 max_elements      = 512
 live_end_ptr_addr = 0x8007573C        # g_MobyAllocPtr — bump cursor; live = *end_ptr - *base_ptr
 description       = "Static-level moby array, indexed via *g_LevelMobys."
+# Moby.m_SoundChannel — see g_Spyro mask_reason. Per-element offset
+# repeats every element_size bytes throughout the live extent.
+mask_per_element  = [0x54]
+mask_reason       = "Moby.m_SoundChannel — host SPU-precision-derived"
 
 [[region]]
 name             = "g_DynMobys_pool"
@@ -225,6 +237,10 @@ element_size     = 0x70              # Moby (0x58) + per-slot dyn header (0x18);
 max_elements     = 128
 live_count_addr  = 0x800756A4        # g_DynMobyCount; live = *count * element_size
 description      = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element stride is 0x70 not 0x58 — pool reserves a 24-byte header per slot ahead of the Moby."
+# Moby.m_SoundChannel at 0x54 within the embedded Moby. The Moby starts
+# at +0x18 within the 0x70-byte slot, so per-element offset is 0x6C.
+mask_per_element = [0x6C]
+mask_reason      = "Moby.m_SoundChannel (Moby starts at +0x18 in 0x70 stride)"
 
 [[region]]
 name         = "g_Sparx_moby"
@@ -233,3 +249,5 @@ base_ptr     = 0x80075898
 element_size = 0x58
 max_elements = 1
 description  = "Sparx companion: single Moby behind *g_Sparx."
+mask_per_element = [0x54]
+mask_reason      = "Moby.m_SoundChannel — host SPU-precision-derived"

@@ -49,6 +49,19 @@ def main() -> int:
     def coerce_int(v: object) -> int:
         return v if isinstance(v, int) else int(v, 0)  # type: ignore[arg-type]
 
+    # First pass: emit per-region static mask arrays for any region
+    # with mask_offsets / mask_per_element. Avoids inline-array
+    # syntax issues and keeps the table struct dense.
+    def sanitize(s: str) -> str:
+        return "".join(c if c.isalnum() else "_" for c in s)
+    for r in regions:
+        mask = r.get("mask_offsets") or r.get("mask_per_element")
+        if not mask: continue
+        sym = f"openpete_mask_{sanitize(r['name'])}"
+        ms = ", ".join(f"0x{coerce_int(m):X}" for m in mask)
+        lines.append(f"static const uint16_t {sym}[] = {{ {ms} }};")
+    lines.append("")
+
     lines.append("static const OpenpeteStateRegion openpete_state_regions_table[OPENPETE_STATE_REGION_COUNT] = {")
     for r in regions:
         name = r["name"]
@@ -73,19 +86,42 @@ def main() -> int:
             length   = elem_sz * max_n
             if "live_end_ptr_addr" in r:
                 aux = coerce_int(r["live_end_ptr_addr"])
+                # Per-element masks need elem_size at runtime so
+                # mask offsets can be applied per-stride. Stash it
+                # in elem_size_field for END_PTR regions when masked.
+                if "mask_per_element" in r:
+                    elem_size_field = elem_sz
                 kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_END_PTR"
             elif "live_count_addr" in r:
                 aux = coerce_int(r["live_count_addr"])
                 elem_size_field = elem_sz
                 kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_COUNT"
             else:
+                # Plain INDIRECT_ARRAY: elem_size still useful for
+                # per-element masks even without a live extent clamp.
+                if "mask_per_element" in r:
+                    elem_size_field = elem_sz
                 kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY"
         else:
             print(f"error: unknown region kind {kind!r} for {name}", file=sys.stderr)
             return 1
+        # Mask config
+        if "mask_offsets" in r:
+            mask_sym = f"openpete_mask_{sanitize(name)}"
+            mask_count = len(r["mask_offsets"])
+            mask_per_elem = 0
+        elif "mask_per_element" in r:
+            mask_sym = f"openpete_mask_{sanitize(name)}"
+            mask_count = len(r["mask_per_element"])
+            mask_per_elem = 1
+        else:
+            mask_sym = "NULL"
+            mask_count = 0
+            mask_per_elem = 0
         lines.append(
             f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, "
-            f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\" }},"
+            f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\", "
+            f"{mask_sym}, {mask_count}, {mask_per_elem}, 0 }},"
         )
     lines.append("};")
     lines.append("")
