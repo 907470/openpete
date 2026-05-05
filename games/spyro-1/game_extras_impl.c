@@ -555,6 +555,35 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
+    /* Issue 4 (titlescreen UI centring) — the titlescreen overlay's
+     * `TitlescreenDrawSprite(int pX, int pY, int pSprite, int pColorId)`
+     * (at PSX vaddr 0x8007CD38) places every titlescreen sprite (Spyro
+     * logo, "PRESS START", memcard window, options text) using PSX-X
+     * coords in the native 4:3 [0..512] frame. With Hor+ widening the
+     * host ortho is left-anchored at 0..disp.w*factor, so a sprite
+     * authored to be 4:3-centred (e.g. logo at X=128 with W=256, centre
+     * at 256) maps to host-px (256 / (512*factor)) * window_w =
+     * window_w / (2*factor) — the leftmost 4:3 inset's centre, NOT the
+     * host window's centre.
+     *
+     * Pre-shift cpu->a0 (= pX) by +(factor-1)*256 PSX-X so the sprite's
+     * effective centre lands at host_w/2. Round half (+0.5) because
+     * (factor-1)*256 is fractional at 16:9 (= 85.333). The recompiled
+     * func_titlescreen_8007CD38 runs with the shifted a0 — no body
+     * replacement needed — so we return 0 (fall through). Static guard
+     * is conservative: the function is non-recursive, but the flag
+     * prevents double-shifting if the sprite path ever calls itself
+     * via a future code path.
+     *
+     * Render-side only (writes go to the OT / POLY_FT4 buffer that
+     * DrawOTag consumes); no gameplay-readable RAM is touched, so the
+     * aspect_determinism gate stays green. */
+    if (addr == 0x8007CD38u && openpete_disp_w_factor > 1.0f) {
+        int shift = (int)((openpete_disp_w_factor - 1.0f) * 256.0f + 0.5f);
+        cpu->a0 = (uint32_t)((int32_t)cpu->a0 + shift);
+        return 0;  /* let the recompiled body run with shifted pX */
+    }
+
     static int s_in_env_renderer = 0;
     if (addr == 0x800258F0u && openpete_disp_w_factor != 1.0f
         && openpete_disp_w_factor > 0.0f
