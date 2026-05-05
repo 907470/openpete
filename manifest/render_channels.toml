@@ -200,20 +200,53 @@ math (truncated pixels or Q16) had irreducible 1-pixel boundary
 ambiguity; reading the canonical SX directly from gte.cpp resolves
 that exactly.
 
-Open regression (2026-05-04, post-cone-clamp): 20k-frame soak now
-fails at frame 14590 with particle[4].m_03 differing (4:3=0,
-16:9=1). Watcher shows both aspects clear m_03 at 0x80057C3C
-through frame 14587; at frame 14589, 4:3 only clears (rejected
-during cull) while 16:9 clears + sets at 0x80057CDC (passed cull).
-The set at CDC is gated on canonical_part_pass — so the gate fires
-in 16:9, meaning canonical SX is in (0, 512). Yet 4:3 (which IS
-canonical projection) rejects somewhere in C8C..CB8.
+Open regression (2026-05-04, post-cone-clamp): 20k-frame soak
+fails at frame 14590, particle[4].m_03 differs (4:3=0, 16:9=1).
 
-Hypothesis: an aspect-coupled cull check between CB4 and CDC that
-the closure doesn't yet account for — likely the per-particle Z
-range test at C8C/C94 or X-bounds against $s4/$s5. Need to
-instrument SZ3/SXY2 at frame 14589 for particle[4] in both aspects
-to identify which test diverges."""
+Diagnosed 2026-05-05: the leak is NOT in the C8C..CB8 cull chain
+itself — it's in the prim-buffer-full early-exit at PC 0x80057C14
+(`bgez $v0, 0x8005809C` where $v0 = $t7 - $fp = remaining buffer
+bytes). At frame 14589:
+  4:3:  t7=0x801a37b0, fp=0x80194124, t7-fp = +0xf68c → no exit
+  16:9: t7=0x801a37b0, fp=0x801a37b8, t7-fp = -8     → EXIT
+       (other widened renderers (cone-cull mobys, cyclorama) consumed
+        ~63KB more buffer in 16:9 by the time particles render)
+
+When 16:9 hits the C14 early-exit, the function returns WITHOUT
+processing any particle. m_03 stays at the previous frame's value
+(=1 for particle[4]). 4:3 processes normally: clear m_03 at C3C,
+RTPS at C4C, cull at CB8 → particle[4] fails (canonical SX=533 ≥
+512), m_03 stays cleared.
+
+Result: 4:3=0, 16:9=1 (stale).
+
+The current canonical-SX closure handles per-particle cull but
+NOT the buffer-full early-exit. Closure paths:
+
+  A) Substitute the C14 branch with a "shadow cull" that runs
+     canonical-SX cull for all remaining particles when 16:9 exits
+     early — set m_03 per canonical verdict for particles past the
+     buffer-full point. Requires recreating projection math for
+     skipped particles since they never reach C4C's RTPS.
+
+  B) Decouple the prim-buffer state from aspect — make widening
+     renderers consume the same buffer bytes as 4:3 would. Per the
+     project's North Star ("presentation features must not perturb
+     gameplay-readable state"), this is the architecturally clean
+     fix but spans cone-cull + cyclorama + env work.
+
+  C) Reserve a fixed prim-buffer slice for the particle render at
+     function entry (save fp, set fp = t7 - reserve, render, restore
+     fp). Non-trivial because intermediate prim writes to the slice
+     overwrite real data.
+
+The cone-clamp fix that pushed divergence 8363→14590 is consistent: more mobys passing
+cone cull → more triangles → buffer fills faster.
+
+Substitution PC for closure: 0x80057C10 (the t7-fp compute) or
+0x80057C14 (the bgez branch). Either site has access to t7/fp/ra
+and can decide whether to take the early exit based on canonical
+state instead of actual buffer state."""
 substitution_sites = [
     0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
     0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s
