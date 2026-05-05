@@ -22,24 +22,26 @@ Two reasons:
 
 DuckStation has no Lua scripting layer (and we don't want to add one —
 maintenance burden, upstream wouldn't accept). Instead we vendor a
-pinned commit + apply a small source patch to `duckstation-regtest`,
-the headless regression-test target that already ships with software
-audio (no audio output), software GPU, and non-persistent memory
-cards.
+fork as a submodule at `third_party/duckstation`, tracking branch
+`openpete-psxtrace` of `github.com/tyscorp/duckstation`. That branch
+carries two commits on top of upstream `stenzek/duckstation`:
 
-The patch (`scripts/duckstation-patches/`):
+1. **build: include the EGL context header unconditionally for
+   surfaceless EGL.** Upstream only includes it when X11 or Wayland
+   is enabled, but the EGL context creation is called unconditionally
+   on Linux. Breaks our headless config.
+2. **regtest: add -psxtrace flag for openpete oracle capture.** Adds
+   a new `psxtrace_capture.{cpp,h}` module to `duckstation-regtest`
+   and four CLI flags (`-psxtrace PATH`, `-psxtrace-anchor-pc HEX`,
+   `-psxtrace-anchor-hit N`, `-psxtrace-frames N`). The module
+   mirrors `manifest/gameplay_state_regions.toml`,
+   `core/include/openpete_fnv1a64.h`, and `tools/psxtrace_format.py`
+   so the emitted v2 `.psxtrace` is byte-compatible with openpete's
+   `--psxtrace-verify`.
 
-- `psxtrace_capture.{cpp,h}` — new module. Owns the gameplay-state
-  region table (mirror of `manifest/gameplay_state_regions.toml`),
-  FNV-1a-64 (mirror of `core/include/openpete_fnv1a64.h`), and the
-  v2 `.psxtrace` format writer (mirror of `tools/psxtrace_format.py`).
-- `01-regtest-psxtrace.patch` — wires CLI flags (`-psxtrace PATH`,
-  `-psxtrace-anchor-pc HEX`, `-psxtrace-anchor-hit N`,
-  `-psxtrace-frames N`) and adds the new TU
-  to the CMake target. Also fixes an unrelated DuckStation build
-  bug: the base EGL header (the EGL context header) was only
-  conditionally included when X11 or Wayland was on, but the
-  surfaceless the EGL context creation call is unconditional.
+`duckstation-regtest` is the headless regression-test target that
+already ships with software audio (no audio output), software
+GPU, and non-persistent memory cards — ideal substrate for the oracle.
 
 The capture mechanism is an execute breakpoint at
 the anchor PC. On each hit, the callback reads main RAM for each

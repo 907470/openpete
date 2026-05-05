@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$OUT" ]] || { echo "[capture-ds] --out required" >&2; exit 64; }
 
-DS_BIN=".tools/duckstation/build-regtest/bin/duckstation-regtest"
+DS_BIN="third_party/duckstation/build-regtest/bin/duckstation-regtest"
 DISC="${OPENPETE_DISC:-$HOME/code/spyro/spyro-1/build/SCUS-94228.cue}"
 
 if [[ ! -x "$DS_BIN" ]]; then
