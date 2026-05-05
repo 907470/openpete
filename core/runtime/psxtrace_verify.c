@@ -121,10 +121,28 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
                     path, t->region_count, openpete_state_region_count);
         goto fail;
     }
+    /* Peek the first record's pc field so callers can use it as the
+     * dispatch-anchor default (the trace was captured at hits of this
+     * PC; openpete should advance() at the same PC for epoch parity).
+     * Layout: u32 magic + u32 frame_no + u32 pad1 + u32 pad2 + u32 pc.
+     * Read pc, then rewind so read_records sees the record intact. */
+    long save = ftell(t->fp);
+    uint32_t peek_magic, peek_frame, peek_p1, peek_p2, peek_pc;
+    if (read_u32_le(t->fp, &peek_magic) == 0 &&
+        peek_magic == PSXTRACE_FRMR_MAGIC &&
+        read_u32_le(t->fp, &peek_frame) == 0 &&
+        read_u32_le(t->fp, &peek_p1)    == 0 &&
+        read_u32_le(t->fp, &peek_p2)    == 0 &&
+        read_u32_le(t->fp, &peek_pc)    == 0) {
+        t->inferred_anchor_pc = peek_pc;
+    }
+    if (save >= 0) fseek(t->fp, save, SEEK_SET);
     OPL_INFO_F("psxtrace",
-               "opened %s: v%u frames=%u regions=%u flags=0x%x has_ram=%d",
+               "opened %s: v%u frames=%u regions=%u flags=0x%x has_ram=%d "
+               "anchor_pc=0x%08X",
                path, t->version, t->frame_count, t->region_count,
-               t->flags, !!(t->flags & PSXTRACE_FLAG_HAS_RAM));
+               t->flags, !!(t->flags & PSXTRACE_FLAG_HAS_RAM),
+               t->inferred_anchor_pc);
     return 0;
 fail:
     if (t->fp) { fclose(t->fp); t->fp = NULL; }

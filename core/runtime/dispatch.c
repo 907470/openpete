@@ -155,6 +155,17 @@ const char* openpete_halt_dump_path      = NULL;
 const char* openpete_halt_cpu_dump_path  = NULL;
 static int  openpete_halt_done           = 0;
 
+/* PCSX-Redux oracle anchor: when openpete_psxtrace_anchor_pc is non-zero
+ * and the dispatch sees that address, fire openpete_psxtrace_dispatch_hook
+ * (set by run.c when --psxtrace-verify is on). Same shape as halt-at-pc
+ * but the hook keeps firing across the whole run (no one-shot done flag),
+ * so each game frame ticks the verifier exactly once at the same logical
+ * instant the trace was captured at. */
+uint32_t    openpete_psxtrace_anchor_pc       = 0u;
+uint32_t    openpete_psxtrace_anchor_hit_target = 1u;
+static uint32_t openpete_psxtrace_anchor_hits = 0u;
+void      (*openpete_psxtrace_dispatch_hook)(uint32_t addr) = NULL;
+
 /* Write a 528-byte 'CSv1' CPU dump matching the format produced by
  * scripts/pcsx-redux-ram-dump.lua (so a single diff helper can post-
  * process either side's dump). Layout:
@@ -341,6 +352,14 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         if (openpete_halt_hit_count >= openpete_halt_hit_target) {
             openpete_halt_dump_and_exit(cpu, addr);
             /* unreachable */
+        }
+    }
+    if (openpete_psxtrace_dispatch_hook &&
+        openpete_psxtrace_anchor_pc != 0u &&
+        addr == openpete_psxtrace_anchor_pc) {
+        openpete_psxtrace_anchor_hits++;
+        if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
+            openpete_psxtrace_dispatch_hook(addr);
         }
     }
     if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);

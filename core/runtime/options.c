@@ -224,6 +224,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->psxtrace_verify_path = v; i++;
         } else if (strcmp(a, "--psxtrace-keep-going") == 0) {
             opts->psxtrace_keep_going = true;
+        } else if (strcmp(a, "--psxtrace-anchor-pc") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->psxtrace_anchor_pc = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--psxtrace-anchor-hit") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->psxtrace_anchor_hit = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--mute") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "on")  == 0) opts->mute = true;
@@ -256,6 +262,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --halt-hit N               dump on Nth (1-indexed) call to --halt-at-pc (default 1)\n"
                 "  --psxtrace-verify PATH     consume per-frame .psxtrace + diff against PSX oracle\n"
                 "  --psxtrace-keep-going      don't exit on first divergence (collect all)\n"
+                "  --psxtrace-anchor-pc HEX   PC where advance() fires (default: trace's first-record pc)\n"
+                "  --psxtrace-anchor-hit N    skip first N-1 hits before starting (default 1 = first)\n"
                 "  --log-format json|plain    structured stderr (default plain)\n"
                 "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
                 "  --disc PATH                disc image (BIN/CUE)\n"

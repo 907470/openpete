@@ -35,6 +35,12 @@ typedef struct {
     uint32_t    region_count;
     uint32_t    records_consumed;
 
+    /* PC of the first record — captured during open() by peeking +
+     * rewinding. This is the PC the trace was anchored at; the verifier
+     * uses it as the default for openpete_psxtrace_anchor_pc, so the
+     * caller doesn't have to thread a per-game constant through core/. */
+    uint32_t    inferred_anchor_pc;
+
     /* Region names from the trace header. Used for the divergence message. */
     char region_names[OPENPETE_PSXTRACE_MAX_REGIONS]
                      [OPENPETE_PSXTRACE_REGION_NAME_MAX];
@@ -54,6 +60,13 @@ typedef struct {
      * caller can byte-diff against live g_ram for attribution. NULL when
      * the trace is hash-only (typical). */
     uint8_t* ram_buf;                    /* malloc'd once, reused */
+
+    /* Coarse terminal verdict written from the dispatch hook so the host
+     * loop can observe it without sharing the file pointer:
+     *   0 = still running, 1 = EOF reached, 2 = divergence latched
+     *   (caller decides whether to honour --psxtrace-keep-going), 3 =
+     *   I/O / parse error. */
+    int terminal_status;
 } openpete_psxtrace_t;
 
 int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);

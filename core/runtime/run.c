@@ -37,6 +37,22 @@
 #define CLEAR_G 0x14
 #define CLEAR_B 0x20
 
+/* PCSX-Redux trace state — file-static so the dispatch hook (which has
+ * to be a plain function pointer with no closure) can find it. There's
+ * only ever one open trace per run. */
+static openpete_psxtrace_t* s_psxtrace_active = NULL;
+
+static void openpete_psxtrace_on_anchor(uint32_t addr) {
+    (void)addr;
+    if (!s_psxtrace_active || s_psxtrace_active->terminal_status != 0) {
+        return;
+    }
+    int rc = openpete_psxtrace_advance(s_psxtrace_active);
+    if (rc < 0)      s_psxtrace_active->terminal_status = 3;
+    else if (rc == 0) s_psxtrace_active->terminal_status = 1;
+    else if (s_psxtrace_active->diverged) s_psxtrace_active->terminal_status = 2;
+}
+
 /* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
  * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
@@ -824,14 +840,37 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->halt_cpu_dump_output ? opts->halt_cpu_dump_output : "");
     }
 
-    /* PCSX-Redux oracle verifier: open the trace before the game loop so the
-     * advance() in the per-frame block can stream-diff RAM. */
+    /* PCSX-Redux oracle verifier: open the trace before the game loop and
+     * register the dispatch hook so advance() ticks at every dispatch of
+     * the trace's anchor PC (read from the trace itself unless the user
+     * overrides via --psxtrace-anchor-pc), matching the BP
+     * scripts/pcsx-redux-trace.lua used to record the trace. */
     static openpete_psxtrace_t s_psxtrace;
     openpete_psxtrace_t* psxtrace = NULL;
     if (opts->psxtrace_verify_path) {
         if (openpete_psxtrace_open(&s_psxtrace,
                                    opts->psxtrace_verify_path) == 0) {
             psxtrace = &s_psxtrace;
+            s_psxtrace_active = &s_psxtrace;
+            extern uint32_t openpete_psxtrace_anchor_pc;
+            extern uint32_t openpete_psxtrace_anchor_hit_target;
+            extern void (*openpete_psxtrace_dispatch_hook)(uint32_t);
+            openpete_psxtrace_anchor_pc =
+                opts->psxtrace_anchor_pc ? opts->psxtrace_anchor_pc
+                                         : s_psxtrace.inferred_anchor_pc;
+            if (openpete_psxtrace_anchor_pc == 0u) {
+                OPL_ERROR_F("psxtrace",
+                            "no anchor PC: trace had no first record pc, "
+                            "pass --psxtrace-anchor-pc HEX");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            openpete_psxtrace_anchor_hit_target =
+                opts->psxtrace_anchor_hit ? opts->psxtrace_anchor_hit : 1u;
+            openpete_psxtrace_dispatch_hook = openpete_psxtrace_on_anchor;
+            OPL_INFO_F("psxtrace",
+                       "anchor armed: PC=0x%08X hit=%u",
+                       openpete_psxtrace_anchor_pc,
+                       openpete_psxtrace_anchor_hit_target);
         } else {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
@@ -1309,38 +1348,41 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
 
 
-        /* PCSX-Redux trace advance — value-equality compare openpete's
-         * gameplay-region hashes against the trace's oracle hashes for
-         * this frame. */
+        /* PCSX-Redux trace advance fires from the dispatch hook (per
+         * game-function entry, not per host-fiber iteration), so all the
+         * host loop has to do is observe its verdict + quit-on-condition.
+         * The hook sets terminal_status to one of:
+         *   0 = still running, 1 = eof, 2 = divergence, 3 = io-error. */
         if (psxtrace) {
-            int rc = openpete_psxtrace_advance(psxtrace);
-            if (rc < 0) {
-                quit = 1;
-                exit_reason = "psxtrace-error";
-            } else if (rc == 0) {
+            switch (psxtrace->terminal_status) {
+            case 1:
                 OPL_INFO_F("psxtrace",
                            "trace exhausted (consumed %u records, "
                            "%llu compared, %llu hash mismatches)",
                            psxtrace->records_consumed,
                            (unsigned long long)psxtrace->frames_compared,
                            (unsigned long long)psxtrace->hashes_diverged);
-                quit = 1;
-                exit_reason = "psxtrace-eof";
-            } else if (psxtrace->diverged && !opts->psxtrace_keep_going) {
-                int32_t r = psxtrace->first_divergent_region;
-                const char* rname = (r >= 0 &&
-                    r < (int32_t)psxtrace->region_count)
-                    ? psxtrace->region_names[r] : "<total>";
-                OPL_ERROR_F("psxtrace",
-                            "DIVERGED at frame=%u region=%d (%s) "
-                            "op=0x%016llx oracle=0x%016llx (record %u)",
-                            psxtrace->first_divergent_frame,
-                            (int)r, rname,
-                            (unsigned long long)psxtrace->first_divergent_op,
-                            (unsigned long long)psxtrace->first_divergent_oracle,
-                            psxtrace->records_consumed);
-                quit = 1;
-                exit_reason = "psxtrace-divergence";
+                quit = 1; exit_reason = "psxtrace-eof"; break;
+            case 2:
+                if (!opts->psxtrace_keep_going) {
+                    int32_t r = psxtrace->first_divergent_region;
+                    const char* rname = (r >= 0 &&
+                        r < (int32_t)psxtrace->region_count)
+                        ? psxtrace->region_names[r] : "<total>";
+                    OPL_ERROR_F("psxtrace",
+                                "DIVERGED at frame=%u region=%d (%s) "
+                                "op=0x%016llx oracle=0x%016llx (record %u)",
+                                psxtrace->first_divergent_frame,
+                                (int)r, rname,
+                                (unsigned long long)psxtrace->first_divergent_op,
+                                (unsigned long long)psxtrace->first_divergent_oracle,
+                                psxtrace->records_consumed);
+                    quit = 1; exit_reason = "psxtrace-divergence";
+                }
+                break;
+            case 3:
+                quit = 1; exit_reason = "psxtrace-error"; break;
+            default: break;
             }
         }
 
@@ -1488,6 +1530,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         openpete_psxtrace_close(psxtrace);
         psxtrace = NULL;
+        s_psxtrace_active = NULL;
+        extern void (*openpete_psxtrace_dispatch_hook)(uint32_t);
+        openpete_psxtrace_dispatch_hook = NULL;
     }
 
     Uint32 elapsed = SDL_GetTicks() - start;

@@ -233,14 +233,19 @@ typedef struct {
     const char* gameplay_hash_log_path;
 
     /* PCSX-Redux oracle verifier. When set, opens a .psxtrace produced by
-     * scripts/pcsx-redux-trace.lua; on each frame yield (same anchor as
-     * --ram-dump-on-frame) consumes the next trace record and byte-diffs
-     * its 2 MB RAM payload against openpete's live g_ram. First divergence
-     * is logged with frame + PSX vaddr + (op,oracle) byte pair; the run
+     * scripts/pcsx-redux-trace.lua; on every dispatch of psxtrace_anchor_pc
+     * the verifier consumes the next trace record and value-equality
+     * compares its per-region hashes against openpete's live
+     * gameplay_hash_compute_ex(). The anchor PC defaults to whatever PC
+     * is recorded in the trace's first record (so the same anchor
+     * scripts/pcsx-redux-trace.lua used). First mismatch is logged with
+     * (frame, region_index, region_name, oracle_hash, op_hash); the run
      * exits non-zero unless --psxtrace-keep-going is set. NULL = disabled.
      * Format spec in tools/psxtrace_format.py. */
     const char* psxtrace_verify_path;
     bool        psxtrace_keep_going;
+    uint32_t    psxtrace_anchor_pc;        /* 0 = inherit from trace      */
+    uint32_t    psxtrace_anchor_hit;       /* 0/1 = first hit; N = Nth    */
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
