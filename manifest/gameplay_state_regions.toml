@@ -103,15 +103,32 @@ description = "Camera struct: ProjectionMatrix, ViewMatrix, m_Position, m_Rotati
 
 # ─── g_Spyro ──────────────────────────────────────────────────────────
 # Moby (0x58) + Spyro-specific tail (animation rig, breath state,
-# health, inventory counts, etc.). The decomp hasn't pinned the exact
-# tail size; 0x500 covers everything observed in bisects without
-# bleeding into adjacent globals.
+# health, inventory counts, etc.). Sized to spyro.h's `Spyro` struct
+# (commented `static_assert(sizeof(Spyro) == 0x2a4, ...)`). Trimmed
+# from 0x500 to 0x2A4 on 2026-05-04 after the PCSX-Redux oracle gate
+# attributed the only frame-0 divergence to libpad slot-2 buffer
+# bytes adjacent in memory (~0x80078E50), *not* inside Spyro itself.
+# Those bytes are isolated as their own region below so we don't
+# mask real Spyro-state leaks behind constant PSYQ libpad skew.
 
 [[region]]
 name        = "g_Spyro"
 start       = 0x80078A58
-length      = 0x500
+length      = 0x2A4
 description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
+
+# ─── PSYQ libpad slot-2 buffer + companion globals ────────────────────
+# Real PSYQ on PCSX-Redux fills this with the slot-2 controller status
+# (FF 00 00 00 00 00 00 00 = empty slot). openpete's psyq_PadInitDirect
+# thunk leaves a different pattern (00 FF FF FF 80 80 80 80 — looks like
+# a connected analog pad with neutral sticks). Documented PSYQ thunk
+# skew per docs/ram-diff-vs-pcsxr.md "libpad-driven kernel growth".
+
+[[region]]
+name        = "pad_input_buffers"
+start       = 0x80078E50
+length      = 0x50
+description = "PSYQ libpad slot-2 buffer + adjacent globals (D_80078E9C, etc.)"
 
 # ─── Sbss render-side scratch with known leak channels ───────────────
 # These are *small* tables in main-exe sbss that the renderer writes
