@@ -167,9 +167,16 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
                     | ((uint32_t)ram[aux_off + 1] << 8)
                     | ((uint32_t)ram[aux_off + 2] << 16)
                     | ((uint32_t)ram[aux_off + 3] << 24);
+                /* Allocator end-pointer < base means the pool is empty
+                 * (alloc_ptr reset to NULL). The deallocated residue
+                 * isn't game-readable; without this clamp we'd hash
+                 * stale bytes in [base..base+reg->length) that vary
+                 * across emulator runs without affecting game state. */
                 if (end_vaddr >= base_vaddr) {
                     uint32_t live = end_vaddr - base_vaddr;
                     if (live < live_len) live_len = live;
+                } else {
+                    live_len = 0;
                 }
             }
         } else if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT) {
