@@ -145,6 +145,9 @@ void psyq___main(CPUState* cpu) {
 
 /* --- libetc -------------------------------------------------------------- */
 
+/* Forward decl: defined later, called from inside psyq_VSync below. */
+static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu);
+
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
      *   mode  < 0 : query — return current vbl counter, no wait
@@ -194,6 +197,13 @@ void psyq_VSync(CPUState* cpu) {
         if (mode == 0) (void)VSync(0);
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
     }
+
+    /* PSYQ libpad parity: PsyCross's input poll (which fired during the
+     * yield above, or via VSync(0) on the smoke-test path) wrote
+     * "connected pad" bytes into slot 2 even though no controller is
+     * present there. Mirror real PSYQ's empty-slot output before the
+     * game's next read. */
+    psyq_libpad_mirror_canonical_slot2(cpu);
 
     cpu->v0 = (uint32_t)SDL_AtomicGet(&openpete_vbl);
 }
@@ -923,6 +933,37 @@ void psyq_PadInitDirect(CPUState* cpu) {
     cpu->write_word(0x80075E48u, 0x80075CF3u);
     cpu->write_word(0x80075E64u, 0xFFFFFF00u);
     cpu->write_word(0x80075E68u, 0x00FFFFFFu);
+}
+
+/* PSYQ libpad slot-2 canonical-state mirror.
+ *
+ * PsyCross's PsyX_Pad_InitPad + PsyX_Pad_UpdateInput unconditionally
+ * stamp all `g_controllers[i].padData` slots with "connected pad"
+ * bytes (status=0, id=0x41/0x73, buttons, neutral analog) on every
+ * poll. Real PSYQ libpad on PSX hardware, with no controller in
+ * slot 2, returns the canonical empty-slot status:
+ *
+ *   slot-2 buffer (g_PadBufferSecondController @ 0x80078E50):
+ *     FF 00 00 00 00 00 00 00      (status=0xFF "no controller", rest 0)
+ *
+ *   D_80078E9C @ 0x80078E9C:
+ *     0x00000190                    (libpad-internal slot config word;
+ *                                    constant from PadInitDirect onward —
+ *                                    PsyCross leaves it 0)
+ *
+ * Captured both values from a real PCSX-Redux RAM dump at the first
+ * GamestateDraw hit and confirmed constant across hits 1..50. Mirroring
+ * per-vsync rather than one-shot at PadInitDirect because PsyCross
+ * overwrites the slot-2 buffer on every input poll, so a one-shot
+ * wouldn't persist past the first frame.
+ *
+ * Closes the last open region in the PCSX-Redux oracle gate
+ * ('pad_input_buffers'); see manifest/gameplay_state_regions.toml. */
+static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu) {
+    /* slot-2 buffer: 8 bytes packed as two LE u32 writes. */
+    cpu->write_word(0x80078E50u, 0x000000FFu);  /* FF 00 00 00 */
+    cpu->write_word(0x80078E54u, 0x00000000u);  /* 00 00 00 00 */
+    cpu->write_word(0x80078E9Cu, 0x00000190u);
 }
 
 void psyq_PadStartCom(CPUState* cpu) {
