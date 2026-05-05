@@ -44,13 +44,20 @@ static openpete_psxtrace_t* s_psxtrace_active = NULL;
 
 static void openpete_psxtrace_on_anchor(uint32_t addr) {
     (void)addr;
-    if (!s_psxtrace_active || s_psxtrace_active->terminal_status != 0) {
-        return;
-    }
+    if (!s_psxtrace_active) return;
+    /* EOF (1) and error (3) are terminal — stop advancing. Divergence (2)
+     * is sticky for the host loop's exit-decision but the verifier keeps
+     * comparing every subsequent frame so --psxtrace-keep-going can
+     * surface ALL leaks across the trace, not just the first. */
+    if (s_psxtrace_active->terminal_status == 1 ||
+        s_psxtrace_active->terminal_status == 3) return;
     int rc = openpete_psxtrace_advance(s_psxtrace_active);
     if (rc < 0)      s_psxtrace_active->terminal_status = 3;
     else if (rc == 0) s_psxtrace_active->terminal_status = 1;
-    else if (s_psxtrace_active->diverged) s_psxtrace_active->terminal_status = 2;
+    else if (s_psxtrace_active->diverged &&
+             s_psxtrace_active->terminal_status == 0) {
+        s_psxtrace_active->terminal_status = 2;
+    }
 }
 
 /* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
@@ -1525,6 +1532,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (unsigned long long)psxtrace->frames_compared,
                    (unsigned long long)psxtrace->hashes_diverged,
                    psxtrace->diverged ? psxtrace->first_divergent_frame : 0u);
+        /* Per-region divergence frequency: how many of frames_compared
+         * each region diverged on. Stable region == real persistent
+         * state difference; flickering region == aliasing or genuinely
+         * intermittent leak. Logged unconditionally so the gate is
+         * actionable on first read. */
+        if (psxtrace->frames_compared > 0 && psxtrace->hashes_diverged > 0) {
+            for (uint32_t r = 0; r < psxtrace->region_count; r++) {
+                uint64_t n = psxtrace->per_region_diverge_count[r];
+                if (n > 0) {
+                    OPL_INFO_F("psxtrace",
+                               "  region[%u] %s: %llu/%llu frames diverged",
+                               r, psxtrace->region_names[r],
+                               (unsigned long long)n,
+                               (unsigned long long)psxtrace->frames_compared);
+                }
+            }
+        }
         if (psxtrace->diverged && exit_code == OPENPETE_EXIT_OK) {
             exit_code = OPENPETE_EXIT_DIVERGENCE;
         }

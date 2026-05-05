@@ -209,9 +209,18 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     uint64_t total_op = gameplay_hash_compute_ex(op_per);
     /* Compare. Latch first divergence. */
     if (total_op != total_oracle) {
+        const char* env_dump = getenv("OPENPETE_PSXTRACE_DUMP");
         for (uint32_t r = 0; r < t->region_count; r++) {
             if (op_per[r] != oracle_per[r]) {
                 t->hashes_diverged++;
+                t->per_region_diverge_count[r]++;
+                if (env_dump) {
+                    OPL_INFO_F("psxtrace",
+                               "frame=%u region=%u (%s) op=0x%016llx oracle=0x%016llx",
+                               frame_no, r, t->region_names[r],
+                               (unsigned long long)op_per[r],
+                               (unsigned long long)oracle_per[r]);
+                }
                 if (!t->diverged) {
                     t->diverged = 1;
                     t->first_divergent_frame  = frame_no;

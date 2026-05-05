@@ -55,6 +55,7 @@ typedef struct {
     /* Counts since open. */
     uint64_t frames_compared;
     uint64_t hashes_diverged;            /* per-region mismatches across run */
+    uint64_t per_region_diverge_count[OPENPETE_PSXTRACE_MAX_REGIONS];
 
     /* If header has RAM payload, last record's RAM is staged here and the
      * caller can byte-diff against live g_ram for attribution. NULL when
