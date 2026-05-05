@@ -37,6 +37,7 @@ extern "C" {
 #include "psx/libcd.h"
 #include "psx/libpad.h"
 #include "psx/libspu.h"
+extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
 
@@ -182,6 +183,14 @@ void psyq_VSync(CPUState* cpu) {
 
     int wait = (mode == 0) ? 1 : mode;
     SDL_AtomicAdd(&openpete_vbl, wait);
+
+    /* Advance PsyCross's deterministic ADSR envelope simulation in
+     * lockstep with VBL. NTSC PSX: 44100 SPU samples / 60 VBL = 735
+     * samples per VBL. Without this, voice key state never transitions
+     * to SPU_RESET and the game's voice-pool bookkeeping leaks. The
+     * envelope sim is independent of the OpenAL playback path, so this
+     * is correct in both audio-on and headless runs. */
+    PsyX_SPUAL_TickEnvelope(wait * 735);
 
     if (openpete_fast_boot_active) {
         /* Fast-boot: don't yield. Initialize()'s splash spins consume vbl
