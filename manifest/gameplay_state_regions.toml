@@ -91,14 +91,19 @@ length      = 0x4
 description = "PSYQ libc rand() state. Critical: any divergent advance of this seed drifts every subsequent random gameplay event."
 
 # ─── g_Camera ─────────────────────────────────────────────────────────
-# include/camera.h Camera struct. SHORTMATRIX = 20 bytes; struct ends
-# at the SphericalCoordsOffset chain + a few state fields. 0x200 is
-# generous; trim once the struct's full size is decoded.
+# camera.h `Camera` struct. Sized to the commented
+# `static_assert(sizeof(Camera) == 0x110)`. Trimmed from 0x200 to
+# 0x110 on 2026-05-04 after the PCSX-Redux oracle gate showed the
+# only g_Camera divergence was bytes inside g_DB[] (libgpu's DRAWENV
+# / DISPENV / DR_ENV command packets, which sit immediately after
+# g_Camera in memory and which PsyCross handles host-side without
+# mirroring to PSX RAM). g_DB is pure render-side state, not
+# gameplay-readable.
 
 [[region]]
 name        = "g_Camera"
 start       = 0x80076DD0
-length      = 0x200
+length      = 0x110
 description = "Camera struct: ProjectionMatrix, ViewMatrix, m_Position, m_Rotation, simulation/sphere coords, focus, state flags."
 
 # ─── g_Spyro ──────────────────────────────────────────────────────────
