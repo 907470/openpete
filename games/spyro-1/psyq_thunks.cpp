@@ -861,17 +861,37 @@ void psyq_SetTransMatrix(CPUState* cpu) {
     gte_sync_psyx_to_cpu(cpu);
 }
 
+/* Replicate PSYQ MulMatrix's final `swc2 $11, 0x10(dst)`: IR3 is a
+ * signed 16-bit GTE register but `swc2` stores 32 bits. Bytes 16-17 of
+ * a MATRIX hold m[2][2]; bytes 18-19 are the two-byte alignment pad
+ * before the long t[3] translation triple — sometimes consumed by a
+ * caller's `Memcpy(SHORTMATRIX, MATRIX, 20)`. PSYQ deposits sign-
+ * extension of IR3 into that pad slot (0xFFFF when m[2][2] negative,
+ * 0x0000 otherwise). PsyCross's MulMatrix only writes m[2][2] as a
+ * 16-bit short and leaves the pad untouched, which appears in the
+ * oracle as a 4-byte g_Camera divergence on the very first
+ * non-identity rotation. Mirror the side effect explicitly. */
+static inline void psyq_matrix_swc2_sign_extend_pad(MATRIX* m) {
+    if (!m) return;
+    int16_t* pad = ((int16_t*)m) + 9; /* word right after m[2][2] */
+    *pad = (m->m[2][2] < 0) ? (int16_t)-1 : (int16_t)0;
+}
+
 void psyq_MulMatrix0(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
+    MATRIX* m2 = (MATRIX*)PTR(cpu->a2);
     MulMatrix0((MATRIX*)PTR(cpu->a0),
                (MATRIX*)PTR(cpu->a1),
-               (MATRIX*)PTR(cpu->a2));
+               m2);
+    psyq_matrix_swc2_sign_extend_pad(m2);
     gte_sync_psyx_to_cpu(cpu);
 }
 
 void psyq_MulMatrix(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
-    MulMatrix((MATRIX*)PTR(cpu->a0), (MATRIX*)PTR(cpu->a1));
+    MATRIX* m0 = (MATRIX*)PTR(cpu->a0);
+    MulMatrix(m0, (MATRIX*)PTR(cpu->a1));
+    psyq_matrix_swc2_sign_extend_pad(m0);
     gte_sync_psyx_to_cpu(cpu);
 }
 
