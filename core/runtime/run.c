@@ -785,6 +785,27 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         uint32_t portal_x_max = (uint32_t)(512.0f * thresh_factor);
         psx_runtime_portal_clip_x_max         = portal_x_max;
         psx_runtime_portal_clip_x_max_plus_1  = portal_x_max + 1u;
+
+        /* 2D full-bleed prims (cutscene letterbox bars in func_80018F30,
+         * fade-to-color overlay in func_800190D4). The PsyCross host ortho
+         * widens to disp.w * openpete_disp_w_factor (left-anchored), so
+         * widen these prims' PSX X-extent by the same factor — uncapped,
+         * since this is a single screen-aligned quad (no poly-buffer or
+         * cull-surface coupling). See psx_runtime.h. */
+        extern uint32_t psx_runtime_fullbleed_x_max;
+        /* ceil() not truncate: at 16:9 (factor 4/3) the exact width is
+         * 682.666..., and truncating to 682 leaves a 1-PSX-px / ~1-host-px
+         * sliver of the right edge uncovered. PsyCross ortho extends to
+         * disp.w * factor (a float); the prim's PSX-X end must be >= that
+         * after the host-px mapping, so round up. */
+        float fullbleed_x_max_f = 512.0f * openpete_disp_w_factor;
+        psx_runtime_fullbleed_x_max = (uint32_t)ceilf(fullbleed_x_max_f);
+        OPL_INFO_F("aspect", "2D full-bleed X-max: 512 -> %u "
+                   "(exact %.3f, factor=%.3f; letterbox/fade cover full "
+                   "host width)",
+                   (unsigned)psx_runtime_fullbleed_x_max,
+                   (double)fullbleed_x_max_f,
+                   (double)openpete_disp_w_factor);
         OPL_INFO_F("aspect", "portal clip-rect X-clamp: 512 -> %u "
                    "(thresh_factor=%.3f)",
                    (unsigned)portal_x_max, (double)thresh_factor);

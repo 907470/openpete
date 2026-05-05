@@ -79,6 +79,10 @@ int64_t openpete_canonical_sx2_q16 = 0;
 uint32_t psx_runtime_portal_clip_x_max = 0x200u;
 uint32_t psx_runtime_portal_clip_x_max_plus_1 = 0x201u;
 
+/* 2D full-bleed primitive width (cutscene letterbox + fade overlay).
+ * See psx_runtime.h. Default 512 = byte-identical 4:3. */
+uint32_t psx_runtime_fullbleed_x_max = 0x200u;
+
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
  * translated yet, stub-and-continue rather than abort. The Phase 2 manifest
  * + per-overlay translation is the proper fix; for now we want the main loop

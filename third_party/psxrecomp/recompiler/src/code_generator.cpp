@@ -1035,6 +1035,17 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} = (int32_t)psx_runtime_portal_clip_x_max;",
                             reg_name(rt));
+                    } else if ((addr == 0x80019004u    /* func_80018F30 letterbox */
+                              || addr == 0x80019138u)  /* func_800190D4 fade */
+                              && rs == 0 && imm == 0x200) {
+                        /* 2D full-bleed prim X-width: see psx_runtime.h
+                         * `psx_runtime_fullbleed_x_max`. Default 512 ==
+                         * byte-identical; --aspect widens to 512*factor so
+                         * fade/letterbox cover the full Hor+-widened host
+                         * window instead of just the leftmost 4:3 inset. */
+                        code = fmt::format(
+                            "{} = (int32_t)psx_runtime_fullbleed_x_max;",
+                            reg_name(rt));
                     } else {
                         code = translate_addiu(instr);
                     }

@@ -115,6 +115,28 @@ verified_against = ["aspect_determinism"]
 state_regions    = []  # presentation-side; see widescreen_clip_x_threshold note
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
+[[channel]]
+name        = "widescreen_2d_fullbleed_x_max"
+status      = "gated"
+description = """
+2D full-bleed primitive X-width for cutscene letterbox bars
+(func_80018F30) and fade-to-color overlay (func_800190D4). Both
+functions emit POLY_F4s sized to the native 4:3 framebuffer width
+(`li $r, 0x200`). With Hor+ widening the host GL ortho widens to
+disp.w * factor (left-anchored), so the unmodified 512-wide prims
+only cover the leftmost 4:3 inset. Substituted with
+psx_runtime_fullbleed_x_max = 512 * openpete_disp_w_factor under
+--aspect so fades and cutscene bars span the full host window.
+Default 512 == byte-identical 4:3."""
+substitution_sites = [
+    0x80019004,  # func_80018F30 letterbox: li $s1, 0x200
+    0x80019138,  # func_800190D4 fade:      li $v1, 0x200
+]
+verdict_fn       = "psx_runtime_fullbleed_x_max"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # presentation-side; render-time only
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
 # ─── Open channels — identified, no substitution yet ────────────────
 # These appear in manifest/gameplay_state_regions.toml as
 # `render_channel:*` regions; the harness diffs them and is expected

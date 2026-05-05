@@ -180,6 +180,22 @@ extern int64_t openpete_canonical_sx2_q16;
 extern uint32_t psx_runtime_portal_clip_x_max;
 extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
 
+/* Spyro 2D full-bleed primitive width clamp. Two render-side functions
+ * emit POLY_F4s sized to the native 4:3 framebuffer width (PSX X = 0..512):
+ *   - func_80018F30 (cutscene letterbox bars), li $s1, 0x200 at 0x80019004
+ *   - func_800190D4 (fade-to-color overlay),   li $v1, 0x200 at 0x80019138
+ * With Hor+ widening the host GL ortho widens to disp.w * factor, so the
+ * 512-wide PSX prims map only to the leftmost 4:3 inset of the host window
+ * — fades and cutscene bars leave the side bars unfilled. Substitute the
+ * 512 immediate with this knob so openpete can widen the prim's right edge
+ * to 512 * openpete_disp_w_factor under --aspect. The PsyCross ortho is
+ * left-anchored (PSX x=0 -> host x=0), so widening the right edge is
+ * sufficient. Default 512 = byte-identical 4:3 behaviour.
+ *
+ * Render-side only; no gameplay-readable RAM is touched (the writes go to
+ * the OT/poly buffer that DrawOTag consumes). */
+extern uint32_t psx_runtime_fullbleed_x_max;
+
 /* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
  * games/spyro-1/game_extras_impl.c. Activated by env var
  * OPENPETE_DIAG_CONE_SLOT (with optional FROM/TO frame range). The
