@@ -675,6 +675,34 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "preserved at ~38.7°",
                    new_h_fov_deg);
     }
+
+    /* --no-lod: feature is parked. The simple m_LodDistance override
+     * works on small 4:3 levels but hangs on dense levels and on any
+     * widescreen aspect (HP-queue overflow at D_8006FCF4+0x1C00..+0x2000
+     * — fixed 256 entries, baked into r_environment.s's literal-offset
+     * addi instructions). The proper no-compromises fix relocates the
+     * env-renderer scratch pool to a virtualized memory region; that
+     * depends on the RAM-virtualization primitive landing first.
+     *
+     * Plans:
+     *   notes/plans/openpete-ram-virtualization.md   (prerequisite)
+     *   notes/plans/openpete-disable-lods.md         (this feature)
+     *
+     * Until those land, refuse the flag with a clear pointer rather
+     * than silently doing nothing or shipping a known-hang. */
+    openpete_no_lod = 0;
+    if (opts->no_lod) {
+        fprintf(stderr,
+                "openpete: --no-lod is not yet implemented. The simple\n"
+                "          m_LodDistance override hangs on dense levels\n"
+                "          (HP-queue overflow in r_environment.s); the\n"
+                "          proper fix depends on the RAM-virtualization\n"
+                "          primitive. See:\n"
+                "            notes/plans/openpete-ram-virtualization.md\n"
+                "            notes/plans/openpete-disable-lods.md\n");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver

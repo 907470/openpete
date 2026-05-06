@@ -73,6 +73,15 @@ extern int openpete_fov_h_override;
  * projects the GTE-emitted vertices across the wider framebuffer. */
 extern float openpete_disp_w_factor;
 
+/* --no-lod: collapse the sector LOD band. When non-zero, the env-renderer
+ * intercept in games/spyro-1/game_extras_impl.c overrides
+ * g_Environment.m_LodDistance to match m_CullingDistance for the body of
+ * func_800258F0, so every visible sector renders at high-poly. m_LodDistance
+ * is renderer-only (verified: only writer is initialization.c, only reader
+ * is r_environment.s), so the override does not perturb gameplay state.
+ * Set once at boot from --no-lod. See notes/plans/openpete-disable-lods.md. */
+extern int openpete_no_lod;
+
 #ifdef __cplusplus
 }
 #endif

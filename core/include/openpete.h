@@ -89,6 +89,16 @@ typedef struct {
      * 512-wide pixel coords — Phase 2 re-anchors per-element. */
     float aspect_w_over_h;
 
+    /* --no-lod: collapse the sector LOD band so every visible sector is
+     * drawn from its high-poly mesh. Implemented by overriding the
+     * Environment's m_LodDistance to match m_CullingDistance for the
+     * duration of func_800258F0; cells past cull stay invisible — this is
+     * an LOD-band collapse, not a cull-distance push. m_LodDistance is
+     * renderer-only (verified: only writer is initialization.c, only
+     * reader is r_environment.s), so the override does not perturb
+     * gameplay state. See notes/plans/openpete-disable-lods.md. */
+    bool no_lod;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via

@@ -18,6 +18,7 @@ int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;
 int          openpete_fov_h_override    = 0;
 float        openpete_disp_w_factor     = 0.0f;
+int          openpete_no_lod            = 0;
 /* Set while GamestateDraw is on the call stack. Hor+ widening (GTE OFX,
  * moby-cone substitution) must only apply to render-pass GTE work; if it
  * leaks into GamestateUpdate, gameplay state diverges between aspects. */

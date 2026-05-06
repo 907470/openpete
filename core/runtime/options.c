@@ -79,6 +79,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
                 if (opts->fov_deg > 140.0f) opts->fov_deg = 140.0f;
             }
+        } else if (strcmp(a, "--no-lod") == 0) {
+            opts->no_lod = true;
         } else if (strcmp(a, "--pgxp") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             int n = atoi(v);
@@ -250,6 +252,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
+                "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
                 "  --pgxp 0|1                 PGXP sub-pixel vertex precision + perspective-correct UVs + Z-buffer (default 0)\n"
                 "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list\n"
                 "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for frame number; .png ext writes PNG, otherwise BMP\n"
