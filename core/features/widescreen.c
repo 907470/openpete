@@ -18,6 +18,73 @@
  * disp_w_factor without touching VRAM-facing widths. */
 extern float g_psyx_render_aspect_factor;
 
+/* === Knob storage ====================================================
+ * Phase 2.1c of notes/plans/openpete-feature-modules.md — these
+ * globals previously lived in core/runtime/dispatch.c. The recompiler-
+ * generated C reaches them via psx_runtime.h externs; the defining TU
+ * is now this feature module. Defaults preserve byte-identical 4:3
+ * behaviour; widescreen_apply_runtime_knobs() above writes the widened
+ * values when --aspect is active.
+ */
+
+/* Per-vertex screen-space clip mask used by recompiled `andi reg, 0xFE00`
+ * cull patterns (Spyro's r_environment.s SXY2 clip). Default 0xFE00 ==
+ * native PSX behavior; openpete widens to 0xF800 when --aspect is set so
+ * widescreen-extra primitives (SX > 512) survive the cull. */
+uint32_t psx_runtime_clip_x_mask = 0xFE00u;
+
+/* Cyclorama right-edge clip threshold; default 512<<16 (native). */
+uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
+
+/* r_moby.s func_80022A2C inline cone-X cull widening. Default 0
+ * preserves native 4:3 cone (slope 0.75). */
+int32_t psx_runtime_moby_cone_extra_q12 = 0;
+
+/* Per-iteration "moby would have passed the native 4:3 cone test" flag
+ * computed alongside the widened cone test in each per-bucket render
+ * walker. Consumed by the substituted m_WasDrawn=1 write sites so
+ * gameplay's m_WasDrawn reads see the 4:3 verdict regardless of the
+ * actual rendered cone width. Address tags live in the recompiler
+ * substitution (third_party/psxrecomp/recompiler/src/code_generator.cpp)
+ * and the doc at notes/plans/spyro-moby-update-vs-render.md; not
+ * repeated here so the core/ purity check stays clean. Reset per-moby;
+ * no thread or recursion concerns since render is single-threaded and
+ * the read site is downstream of the cone test within the same
+ * iteration. */
+uint8_t psx_runtime_native_cone_pass = 0;
+
+/* Per-iteration scratch flag for r_particles.s screen-cull. */
+uint8_t psx_runtime_native_part_pass = 0;
+
+/* Canonical 4:3 right-edge threshold expressed in widened-SX coords.
+ * Default 0x02000000 (no widening). Set by widescreen_apply_runtime_knobs
+ * to (0x200 + delta_OFX) << 16 when --aspect widens factor != 1.0. */
+uint32_t psx_runtime_native_clip_x_in_widened_space = 0x02000000u;
+
+/* Canonical 4:3 LEFT-edge threshold in widened-SX coords. Default 0
+ * (no widening = native left edge at SX=0). Set to delta_OFX << 16
+ * when --aspect widens factor != 1.0. */
+uint32_t psx_runtime_native_clip_x_low_in_widened_space = 0u;
+
+/* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
+ * after each projection in a 3-deep FIFO matching push_sxy semantics.
+ * sx2_q16 is the latest projection (= what mfc2 C2_SXY2 reads, but in
+ * full q16 precision before int16 truncation). Used by the particle
+ * cull substitutions in r_particles.s to compute exact canonical 4:3
+ * verdicts without delta-OFX rounding errors. */
+int64_t openpete_canonical_sx0_q16 = 0;
+int64_t openpete_canonical_sx1_q16 = 0;
+int64_t openpete_canonical_sx2_q16 = 0;
+
+/* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
+ * 512 / 513 preserve native 4:3 behavior. */
+uint32_t psx_runtime_portal_clip_x_max = 0x200u;
+uint32_t psx_runtime_portal_clip_x_max_plus_1 = 0x201u;
+
+/* 2D full-bleed primitive width (cutscene letterbox + fade overlay).
+ * Default 512 = byte-identical 4:3. */
+uint32_t psx_runtime_fullbleed_x_max = 0x200u;
+
 void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
     /* --aspect: widen the framebuffer + GTE offset so the GTE projects
      * vertices across a wider screen (Hor+ widescreen). The factor
