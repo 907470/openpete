@@ -359,11 +359,6 @@ extern int g_skipSwapInterval;
 typedef void (*PsyXPostRenderOverlayFunc)(void);
 extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
 
-/* PsyCross runtime Hor+ aspect factor — see PsyX_public.h. We set it
- * once after PsyX_Initialise so the GL ortho widens to match the host's
- * disp_w_factor without touching VRAM-facing widths. */
-extern float g_psyx_render_aspect_factor;
-
 /* PsyCross's GL window — created by PsyX_Initialise. We need it so --headless
  * can hide the window post-init (we keep a real GL driver for the context;
  * SDL's offscreen driver gives back a context with NULL function pointers

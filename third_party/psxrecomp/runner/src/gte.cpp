@@ -9,22 +9,15 @@
 #include "psx/gtereg.h"   // PsyCross GTERegisters / GTE_operator (used as
                           // ground-truth reference for the GTE trace logger)
 
+/* Hor+ widescreen GTE hooks (eff_H, eff_OFX, canonical-SX FIFO).
+ * static inline — codegen byte-identical to the open-coded math this
+ * replaced; verified via objdump-diff. See
+ * .claude/plans/openpete-feature-modules.md Phase 3. */
+#include "features/widescreen_gte_inline.h"
+
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
     extern uint32_t g_ps1_frame;    /* core/runtime/dispatch.c */
-    /* Hor+ widescreen widening factor applied to GTE OFX on every CTC2
-     * write to reg 24 (and to H on reg 26). 0.0f sentinel = no override.
-     * Set at boot from --aspect (core/runtime/run.c). The libgte
-     * SetGeomOffset thunk in psyq_thunks.cpp can NOT be the only widening
-     * point because Spyro's renderer writes OFX directly via inline CTC2
-     * instructions (92, 108, 132, 148, 256, …) — those bypass the thunk
-     * and need to be widened here at the GTE-instruction layer. */
-    extern float openpete_disp_w_factor;
-    extern int64_t openpete_canonical_sx0_q16;
-    extern int64_t openpete_canonical_sx1_q16;
-    extern int64_t openpete_canonical_sx2_q16;
-    extern int   openpete_fov_h_override;
-    extern int   openpete_render_pass_active;
 }
 
 namespace PSXRecomp {
@@ -242,56 +235,12 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     // Step 2: Push SZ FIFO
     gte->push_sz(gte->MAC3);
 
-    /* --fov / --aspect Hor+ widescreen: substitute the GTE-state H with
-     * the openpete override and scale OFX by disp_w_factor at projection
-     * time. We do NOT mutate gte->H or gte->OFX themselves — those mirror
-     * cpu->gte_ctrl, and writing back widened values would double-apply
-     * the next time gte_execute reloads. Spyro's renderer writes OFX
-     * directly via inline CTC2 (values 92, 108, 132, 148, 256, …); each
-     * of those values gets the same multiplicative shift here at
-     * projection time, so all SX-emitting paths line up.
-     * 0 sentinels = no override, formula reduces to native PSX GTE. */
-    int32_t eff_H = (openpete_fov_h_override != 0)
-                    ? openpete_fov_h_override
-                    : (int32_t)gte->H;
-    /* OFX widening — Hor+ widescreen.
-     *
-     * Standard path: eff_OFX = OFX * factor. Works for gameplay mobys
-     * because they share a stable per-frame OFX (typically 256), so
-     * the proportional shift `OFX*(factor-1) = 256*(factor-1)`
-     * lands the projection centred over the host's 4:3 inset.
-     *
-     * UI moby exception: Spyro's HUD renderer writes EACH icon's
-     * screen-X into OFX directly via inline CTC2, then projects
-     * vertices relative to it. With OFX values varying per moby
-     * (measured: 90, 46, 264, 230, 438, 394 for the gem/dragon/life
-     * icons at f1601 of skip-to-artisans), the proportional widening
-     * `OFX * factor` shifts each moby by `OFX * (factor-1)` — a
-     * different amount per moby, so the icons SPREAD APART instead
-     * of translating uniformly. Empirically this expanded the HUD
-     * outer-bbox PSX-X width from 384 (4:3) to 514 (16:9) — matching
-     * factor — visually presenting as "stretched HUD".
-     *
-     * For UI mobys (classified by openpete_ui_moby_is_current_ui via
-     * a per-moby tracker hooked at func_80022A2C's loop iteration),
-     * substitute a CONSTANT centring shift: eff_OFX = OFX +
-     * (factor-1)*256 PSX-X. This puts each moby's intended screen-X
-     * (= its OFX) into the centre of the host's 4:3 inset
-     * regardless of its X value, restoring the original 4:3 HUD
-     * layout host-centred. */
-    int64_t eff_OFX;
-    if (openpete_disp_w_factor > 0.0f && ::openpete_render_pass_active) {
-        if (openpete_ui_moby_is_current_ui()) {
-            const int64_t centring_shift_q16 = (int64_t)(
-                ((double)openpete_disp_w_factor - 1.0) * 256.0 * 65536.0);
-            eff_OFX = (int64_t)gte->OFX + centring_shift_q16;
-        } else {
-            eff_OFX = (int64_t)((double)gte->OFX
-                                * (double)openpete_disp_w_factor);
-        }
-    } else {
-        eff_OFX = (int64_t)gte->OFX;
-    }
+    /* Hor+ widescreen / FOV slider — see core/features/widescreen_gte_inline.h.
+     * widescreen_eff_h applies the --fov H override; widescreen_eff_ofx
+     * widens OFX with the UI-moby per-element exception. 0/identity
+     * sentinels reduce to native PSX GTE math when widescreen is off. */
+    int32_t eff_H   = widescreen_eff_h((int32_t)gte->H);
+    int64_t eff_OFX = widescreen_eff_ofx((int64_t)gte->OFX);
 
     // Step 3: Perspective division
     int32_t h_div_sz = gte_divide((uint16_t)eff_H, gte->SZ[3], gte->FLAG);
@@ -314,9 +263,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
      * test it directly against the canonical 4:3 thresholds (0 and
      * 0x02000000) — exact verdict, no rounding. */
     int64_t canonical_sx_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
-    ::openpete_canonical_sx0_q16 = ::openpete_canonical_sx1_q16;
-    ::openpete_canonical_sx1_q16 = ::openpete_canonical_sx2_q16;
-    ::openpete_canonical_sx2_q16 = canonical_sx_q16;
+    widescreen_push_canonical_sx_q16(canonical_sx_q16);
 
     // Step 5: Depth cueing (MAC0/IR0) — only for last vertex of RTPT or RTPS
     if (setMac0) {
