@@ -28,6 +28,7 @@ add_library(openpete_core STATIC
     runtime/boot.c
     runtime/dispatch.c
     runtime/openpete_ui_moby.c
+    runtime/feature_registry.c
     runtime/crash.c
     runtime/exe_loader.cpp
 

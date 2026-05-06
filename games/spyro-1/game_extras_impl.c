@@ -9,6 +9,7 @@
 // PSX EXE: SCUS_942.28 (CRC32 over full header+body)
 
 #include "game_extras.h"
+#include "feature_registry.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 
@@ -527,6 +528,16 @@ extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     if (spyro_native_dispatch(cpu, addr)) {
+        return 1;
+    }
+
+    /* Feature modules registered via core/include/feature_registry.h.
+     * Phase 1 of notes/plans/openpete-feature-modules.md: registry
+     * exists but no features are migrated yet, so this is a no-op
+     * (openpete_feature_count == 0). Phase 2 moves the widescreen
+     * dispatch arms below into core/features/widescreen.c and they
+     * start firing through here instead. */
+    if (feature_registry_dispatch(cpu, addr)) {
         return 1;
     }
 

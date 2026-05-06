@@ -85,6 +85,7 @@ endif()
 add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
+    feature_list.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # via the AST rewriter (tools/rewrite_tu.py). Each native TU is

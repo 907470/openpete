@@ -14,6 +14,7 @@
 #include "game_extras.h"
 #include "bk2_movie.h"
 #include "bk2_record.h"
+#include "feature_registry.h"
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
 #include "openpete_psxtrace.h"
@@ -584,6 +585,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         OPL_INFO_F("seed-ram", "g_ram primed from %s (%zu bytes)",
                    opts->seed_ram_path, ram_size);
     }
+
+    /* Feature modules apply their CLI-derived knobs. Phase 1 of
+     * notes/plans/openpete-feature-modules.md: registry exists but
+     * no features are migrated yet (openpete_feature_count == 0), so
+     * this is a no-op. Phase 2 moves the widescreen --aspect block
+     * below into core/features/widescreen.c where it gets called via
+     * this single line. */
+    feature_registry_apply_options(opts);
 
     int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
     int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;
