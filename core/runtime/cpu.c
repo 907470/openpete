@@ -7,6 +7,7 @@
 
 #include "openpete_psx.h"
 #include "openpete_log.h"
+#include "psx_runtime.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -31,6 +32,12 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
     if (phys < RAM_SIZE) return &g_ram[phys];
     if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
         return &g_scratch[phys - 0x1F800000u];
+    }
+    /* Cold-path: consult the renderer-side region table. Empty-table
+     * fast path handled inside resolve_region. */
+    if (psx_runtime_region_count() != 0u) {
+        void* host = NULL;
+        if (psx_runtime_resolve_region(addr, &host, NULL)) return host;
     }
     return NULL;
 }
@@ -76,6 +83,16 @@ static uint8_t* mem_ptr(uint32_t addr) {
     if (phys < RAM_SIZE) return &g_ram[phys];
     if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
         return &g_scratch[phys - 0x1F800000u];
+    }
+    /* Cold-path: registered presentation regions. See
+     * notes/plans/openpete-ram-virtualization.md. Hot recompiler-
+     * emitted accesses bypass this path and should be redirected via
+     * per-site psxrecomp instruction substitutions. */
+    if (psx_runtime_region_count() != 0u) {
+        void* host = NULL;
+        if (psx_runtime_resolve_region(addr, &host, NULL)) {
+            return (uint8_t*)host;
+        }
     }
     return NULL;
 }

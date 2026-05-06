@@ -216,6 +216,48 @@ void     openpete_ui_moby_set_current(uint32_t moby_addr);
 int      openpete_ui_moby_is_current_ui(void);
 uint32_t openpete_ui_moby_get_current(void);
 
+/* --- PSX RAM virtualization (presentation-side region table) ------------
+ *
+ * Lets renderer-side code register a host buffer at any PSX vaddr above
+ * the canonical 2 MB. Consulted by cold-path memory accessors
+ * (cpu->read_X / write_X, mem_ptr, openpete_psx_to_host_ptr, savestate
+ * scans). NOT auto-rerouted into recompiler-emitted inline g_ram[]
+ * accesses — consumers redirect those via psxrecomp instruction
+ * substitutions at the relevant lui+addiu sites. See
+ * .claude/plans/openpete-ram-virtualization.md.
+ *
+ * Determinism: regions are presentation-only by contract. Gameplay code
+ * never addresses a registered range. Debug builds with
+ * OPENPETE_DEBUG_REGION_GUARD assert if they do. */
+
+/* psx_base must be a KSEG0/KSEG1/KUSEG vaddr whose phys (& 0x1FFFFFFF)
+ * is >= 0x200000 — i.e. above the canonical 2 MB. Returns 0 on success;
+ * non-zero on overlap with canonical RAM, scratchpad, or another region,
+ * or if the table is full. host_buffer ownership stays with the caller. */
+int      psx_runtime_register_region(uint32_t psx_base,
+                                     uint32_t size,
+                                     void*    host_buffer);
+
+/* Unregister by base. No-op if no region matches. */
+void     psx_runtime_unregister_region(uint32_t psx_base);
+
+/* Returns 1 if psx_addr falls in a registered region. If so, *out_host
+ * (when non-NULL) gets the host pointer for that exact address, and
+ * *out_remaining (when non-NULL) gets bytes-until-region-end. */
+int      psx_runtime_resolve_region(uint32_t psx_addr,
+                                    void**   out_host,
+                                    uint32_t* out_remaining);
+
+/* Debug-build guard for "this site is canonical-only" 2 MB-mask sites.
+ * In release: returns addr & 0x1FFFFF. In debug: same, plus asserts the
+ * address does not fall in any registered region's band — i.e. that
+ * the caller is on a path that should only ever see canonical RAM. */
+uint32_t psx_runtime_canonicalize(uint32_t addr);
+
+/* Number of currently-registered regions. Zero means cold-path
+ * resolvers can skip the region check entirely. Tests + tooling. */
+uint32_t psx_runtime_region_count(void);
+
 #ifdef __cplusplus
 }
 #endif

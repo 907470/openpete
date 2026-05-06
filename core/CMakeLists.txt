@@ -31,6 +31,10 @@ add_library(openpete_core STATIC
     runtime/crash.c
     runtime/exe_loader.cpp
 
+    # PSX RAM virtualization region table — backs cold-path memory
+    # resolvers. See notes/plans/openpete-ram-virtualization.md.
+    runtime/psx_region.c
+
     # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
     runtime/fiber.c
 
