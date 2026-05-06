@@ -153,8 +153,15 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
                               || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_END_PTR
                               || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT);
         uint32_t base_vaddr = 0;
+        /* Gameplay-state regions are canonical-2 MB by contract (regions
+         * registered via psx_runtime_register_region are presentation-
+         * only and explicitly excluded from the determinism gate).
+         * psx_runtime_canonicalize is `addr & 0x1FFFFF` in release; in
+         * debug it asserts the input doesn't fall in a registered
+         * region's band — catching a future state-region manifest
+         * mistake before it silently mirrors into g_ram. */
         if (is_indirect) {
-            uint32_t ptr_off = reg->start & 0x1FFFFFu;
+            uint32_t ptr_off = psx_runtime_canonicalize(reg->start);
             if (ptr_off + 4u > RAM_BYTES) continue;
             base_vaddr =
                   (uint32_t)ram[ptr_off]
@@ -162,12 +169,12 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
                 | ((uint32_t)ram[ptr_off + 2] << 16)
                 | ((uint32_t)ram[ptr_off + 3] << 24);
             if (base_vaddr == 0) continue;
-            base_off = base_vaddr & 0x1FFFFFu;
+            base_off = psx_runtime_canonicalize(base_vaddr);
         } else {
-            base_off = reg->start & 0x1FFFFFu;
+            base_off = psx_runtime_canonicalize(reg->start);
         }
         if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_END_PTR) {
-            uint32_t aux_off = reg->aux & 0x1FFFFFu;
+            uint32_t aux_off = psx_runtime_canonicalize(reg->aux);
             if (aux_off + 4u <= RAM_BYTES) {
                 uint32_t end_vaddr =
                       (uint32_t)ram[aux_off]
@@ -187,7 +194,7 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
                 }
             }
         } else if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT) {
-            uint32_t aux_off = reg->aux & 0x1FFFFFu;
+            uint32_t aux_off = psx_runtime_canonicalize(reg->aux);
             if (aux_off + 4u <= RAM_BYTES && reg->elem_size > 0u) {
                 uint32_t cnt =
                       (uint32_t)ram[aux_off]
