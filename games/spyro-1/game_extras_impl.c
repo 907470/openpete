@@ -893,6 +893,33 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
+    /* Issue 5/6 follow-up — text-moby UI range. Spyro's text-emit
+     * functions (func_80017FE4 / func_800181AC) allocate character
+     * mobys in the polybuf's top half by decrementing g_HudMobys.
+     * After all text is emitted, func_80018880 copies the mobys
+     * onto m_ShadedMobys and RESETS g_HudMobys back to the polybuf
+     * top — so by the time func_80022A2C iterates and projects, the
+     * "low water mark" is gone. We can't recover it.
+     *
+     * Instead, register the FULL polybuf range as UI. Polybuf is
+     * 0x1C000 bytes, top at D_80075780 (vaddr 0x80075780, stable
+     * through the frame). Anything inside is either a 2D prim
+     * (POLY_F4 / POLY_FT4 / LINE_G2 — never reaches GTE so the
+     * UI tag is a no-op) or a text-character moby (the thing we
+     * want to classify as UI). Safe by construction.
+     *
+     * Set the range at func_80022A2C entry so it's current for
+     * this frame's projection pass. */
+    if (addr == 0x80022A2Cu && openpete_disp_w_factor > 1.0f) {
+        uint32_t poly_top = cpu->read_word(0x80075780u);
+        if (poly_top >= 0x1C000u) {
+            openpete_ui_moby_set_text_range(poly_top - 0x1C000u, poly_top);
+        } else {
+            openpete_ui_moby_set_text_range(0, 0);
+        }
+        /* Don't return — fall through so the recompiled body runs. */
+    }
+
     /* Diagnostic: trace bucket-2 (gems) cull. Walks D_8006FCF4+0x2400 list,
      * computes per-moby cube + MVMVA cone test the same way the inline
      * func_80022A2C cull does, prints which gems pass / fail. Used only
