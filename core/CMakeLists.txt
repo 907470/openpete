@@ -29,6 +29,10 @@ add_library(openpete_core STATIC
     runtime/dispatch.c
     runtime/openpete_ui_moby.c
     runtime/feature_registry.c
+
+    # Per-feature modules. See notes/plans/openpete-feature-modules.md.
+    features/widescreen.c
+
     runtime/crash.c
     runtime/exe_loader.cpp
 
