@@ -9,9 +9,11 @@
 
 #include <stddef.h>
 
+extern const feature_module_t widescreen_module;
+
 const feature_module_t* const openpete_features[] = {
-    /* Phase 2: &widescreen_module, */
-    NULL,  /* keep array non-empty for portability */
+    &widescreen_module,
 };
 
-const size_t openpete_feature_count = 0u;
+const size_t openpete_feature_count =
+    sizeof(openpete_features) / sizeof(openpete_features[0]);
