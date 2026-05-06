@@ -116,6 +116,35 @@ state_regions    = []  # presentation-side; see widescreen_clip_x_threshold note
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
+name        = "widescreen_ui_moby_tag"
+status      = "gated"
+description = """
+Per-moby UI classification hook. func_80022A2C (Spyro's shaded-moby
+renderer) iterates `g_SonyImage.m_ShadedMobys[]` with a loop entry
+at `0x80022B08: lw $s8, 0($ra)`. The recompiler substitution at that
+address calls `openpete_ui_moby_set_current(cpu->fp)` after the lw,
+stashing each moby's PSX vaddr host-side so `gte_rtps_internal` can
+classify the projection as UI (HUD icon, text overlay) or gameplay.
+
+UI mobys get a CONSTANT centring shift `eff_OFX = OFX + (factor-1)*256`
+instead of the standard widening `eff_OFX = OFX * factor`. Spyro's
+HUD render writes EACH icon's screen-X into OFX directly via inline
+CTC2 — so the proportional widening spreads icons apart (measured:
+PSX-X width 384→514 across 4:3→16:9, ratio = factor); the constant
+shift keeps the original 4:3 layout host-centred regardless of OFX.
+
+For non-UI mobys with canonical gameplay OFX (256), both formulas
+produce identical eff_OFX, so determinism is unaffected. Verified:
+aspect_determinism bit-identical across 8000 frames."""
+substitution_sites = [
+    0x80022B08,  # lw $s8, 0($ra) — per-moby loop iteration
+]
+verdict_fn       = "openpete_ui_moby_set_current"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # render-side classification only
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
+[[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
 status      = "gated"
 description = """

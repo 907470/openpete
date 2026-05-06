@@ -254,9 +254,44 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     int32_t eff_H = (openpete_fov_h_override != 0)
                     ? openpete_fov_h_override
                     : (int32_t)gte->H;
-    int64_t eff_OFX = (openpete_disp_w_factor > 0.0f && ::openpete_render_pass_active)
-                     ? (int64_t)((double)gte->OFX * (double)openpete_disp_w_factor)
-                     : (int64_t)gte->OFX;
+    /* OFX widening — Hor+ widescreen.
+     *
+     * Standard path: eff_OFX = OFX * factor. Works for gameplay mobys
+     * because they share a stable per-frame OFX (typically 256), so
+     * the proportional shift `OFX*(factor-1) = 256*(factor-1)`
+     * lands the projection centred over the host's 4:3 inset.
+     *
+     * UI moby exception: Spyro's HUD renderer writes EACH icon's
+     * screen-X into OFX directly via inline CTC2, then projects
+     * vertices relative to it. With OFX values varying per moby
+     * (measured: 90, 46, 264, 230, 438, 394 for the gem/dragon/life
+     * icons at f1601 of skip-to-artisans), the proportional widening
+     * `OFX * factor` shifts each moby by `OFX * (factor-1)` — a
+     * different amount per moby, so the icons SPREAD APART instead
+     * of translating uniformly. Empirically this expanded the HUD
+     * outer-bbox PSX-X width from 384 (4:3) to 514 (16:9) — matching
+     * factor — visually presenting as "stretched HUD".
+     *
+     * For UI mobys (classified by openpete_ui_moby_is_current_ui via
+     * a per-moby tracker hooked at func_80022A2C's loop iteration),
+     * substitute a CONSTANT centring shift: eff_OFX = OFX +
+     * (factor-1)*256 PSX-X. This puts each moby's intended screen-X
+     * (= its OFX) into the centre of the host's 4:3 inset
+     * regardless of its X value, restoring the original 4:3 HUD
+     * layout host-centred. */
+    int64_t eff_OFX;
+    if (openpete_disp_w_factor > 0.0f && ::openpete_render_pass_active) {
+        if (openpete_ui_moby_is_current_ui()) {
+            const int64_t centring_shift_q16 = (int64_t)(
+                ((double)openpete_disp_w_factor - 1.0) * 256.0 * 65536.0);
+            eff_OFX = (int64_t)gte->OFX + centring_shift_q16;
+        } else {
+            eff_OFX = (int64_t)((double)gte->OFX
+                                * (double)openpete_disp_w_factor);
+        }
+    } else {
+        eff_OFX = (int64_t)gte->OFX;
+    }
 
     // Step 3: Perspective division
     int32_t h_div_sz = gte_divide((uint16_t)eff_H, gte->SZ[3], gte->FLAG);
@@ -265,6 +300,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     int64_t sx = (eff_OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
     int64_t sy = (gte->OFY + (int64_t)gte->IR2 * h_div_sz) >> 16;
     gte->push_sxy(sx, sy);
+
 
     /* Side-channel canonical SX for openpete render→gameplay channel
      * decoupling. The mfc2 read of C2_SXY2 in handwritten asm truncates

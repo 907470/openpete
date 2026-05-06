@@ -207,6 +207,15 @@ void openpete_diag_cone_dump(void* cpu,
                              int32_t mac3,
                              uint8_t native_pass);
 
+/* Per-moby UI tracking. The recompiler emits a call to
+ * openpete_ui_moby_set_current at the per-moby loop iteration of
+ * Spyro's func_80022A2C (0x80022B08) so gte_rtps_internal /
+ * diagnostics can ask "is the moby being projected right now a UI
+ * moby?". See core/include/openpete_ui_moby.h. */
+void     openpete_ui_moby_set_current(uint32_t moby_addr);
+int      openpete_ui_moby_is_current_ui(void);
+uint32_t openpete_ui_moby_get_current(void);
+
 #ifdef __cplusplus
 }
 #endif

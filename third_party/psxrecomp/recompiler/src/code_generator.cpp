@@ -1192,7 +1192,38 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x20: code = translate_lb(instr); break;     // lb
             case 0x21: code = translate_lh(instr); break;     // lh
             case 0x22: code = translate_lwl(instr); break;    // lwl
-            case 0x23: code = translate_lw(instr); break;     // lw
+            case 0x23:                                         // lw
+                {
+                    /* Per-moby tracking hook for openpete UI-moby
+                     * tagging. func_80022A2C is Spyro's shaded-moby
+                     * renderer; its loop iteration boundary is
+                     *   0x80022B08:  lw $s8, 0($ra)   ; moby = *iter++
+                     *   0x80022B18:  addi $ra, $ra, 4
+                     *   0x80022B1C:  beqz $s8, exit
+                     * Multiple cull-skip branches inside the body
+                     * jump back to 0x80022B08 to advance to the next
+                     * moby, so this address is the canonical
+                     * per-moby entry. After the lw, $s8 holds the
+                     * fresh moby pointer; stash it host-side via
+                     * openpete_ui_moby_set_current so gte_rtps_internal
+                     * can decide whether the projection is for a UI
+                     * moby (HUD/text-overlay) and apply the
+                     * appropriate compensation.
+                     *
+                     * Game-agnostic from core/'s perspective: the
+                     * function name and address are Spyro-specific,
+                     * but the ranges that classify a moby as UI are
+                     * registered by games/spyro-1/. */
+                    if (addr == 0x80022B08u) {
+                        uint32_t rt = get_rt(instr);
+                        code = fmt::format(
+                            "{} openpete_ui_moby_set_current({});",
+                            translate_lw(instr), reg_name(rt));
+                    } else {
+                        code = translate_lw(instr);
+                    }
+                }
+                break;
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25: code = translate_lhu(instr); break;    // lhu
             case 0x26: code = translate_lwr(instr); break;    // lwr

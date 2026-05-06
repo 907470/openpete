@@ -10,6 +10,7 @@
 
 #include "game_extras.h"
 #include "openpete_psx.h"
+#include "openpete_ui_moby.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,6 +323,14 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     if (!s_watch_init_done) {
         s_watch_init_done = 1;
         install_watch_from_env(cpu);
+        /* Register the static UI-moby range. g_Hud.m_Mobys[12] lives
+         * at PSX vaddr 0x80077FEC (g_Hud at 0x80077FA8 + offset 0x44),
+         * sizeof(Moby)=0x58, so the range is
+         *   [0x80077FEC, 0x80077FEC + 12*0x58 = 0x8007840C).
+         * Used by openpete_ui_moby_is_current_ui to classify the
+         * moby being projected by Spyro's shaded-moby renderer. */
+        openpete_ui_moby_set_static_range(0x80077FECu,
+                                          0x80077FECu + 12u * 0x58u);
     }
 
 
