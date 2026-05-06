@@ -588,15 +588,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
     int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;
     /* If --aspect is set but the user didn't pin --window, scale the
-     * default 480-tall window horizontally to match — otherwise GL
-     * stretches the wider DISPENV into a 4:3 window and the geometry
-     * looks squished. User-provided --window always wins. */
+     * default window so the *cropped* (post-overscan) src exactly fills
+     * it — otherwise the present blit letterboxes the un-rendered
+     * disp/clip difference. Spyro's clip is 224 of 240 disp rows, so the
+     * cropped aspect = requested_aspect × 240/224. User-provided --window
+     * always wins. */
     if (opts->aspect_w_over_h > 0.0f &&
         opts->window_w <= 0 && opts->window_h <= 0) {
-        win_w = (int)((float)WIN_H * opts->aspect_w_over_h + 0.5f);
+        const float crop_factor = 240.0f / 224.0f;
+        win_w = (int)((float)WIN_H * opts->aspect_w_over_h * crop_factor + 0.5f);
         win_h = WIN_H;
-        OPL_INFO_F("aspect", "auto window size %dx%d to match --aspect=%.4f",
-                   win_w, win_h, (double)opts->aspect_w_over_h);
+        OPL_INFO_F("aspect", "auto window size %dx%d (--aspect=%.4f × crop %.4f)",
+                   win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
     }
 
     /* --aspect: widen the framebuffer + GTE offset so the GTE projects
