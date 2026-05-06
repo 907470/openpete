@@ -14,6 +14,7 @@
 #include "psx/libgpu.h"
 #include "PsyX/common/glad.h"
 #include "PsyX/PsyX_public.h"
+#include "PsyX/PsyX_render.h"
 #include "screenshot.h"
 #include "stb_image_write.h"
 #include <SDL.h>
@@ -71,6 +72,12 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
     /* PNG wants RGBA byte order; BMP path keeps the BGRA mask layout it
      * already used. Read in the format the destination needs to skip a
      * channel-swap. */
+    /* The screenshot fires before PsyX_EndScene, so the rendered scene
+     * still lives in the present FBO and the default backbuffer is stale.
+     * Run the cropped-present blit now to populate fb 0 — it's idempotent
+     * (PsyX_EndScene will run it again later) and ensures glReadPixels
+     * sees the same pixels the user is about to see. */
+    GR_PresentCroppedToWindow();
     glReadPixels(0, 0, w, h, is_png ? GL_RGBA : GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 
     /* In-place row flip: swap row i with row h-1-i. */

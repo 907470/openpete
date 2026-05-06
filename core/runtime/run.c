@@ -31,7 +31,12 @@
 #include <unistd.h>  /* _exit */
 
 #define WIN_W 640
-#define WIN_H 480
+/* Window default matches Spyro's visible 224-line viewport (DRAWENV.clip.h)
+ * rather than the full 240-line DISPENV (which has 8px overscan bands top
+ * and bottom that the game never draws into). PsyCross renders to an
+ * oversized FBO and crops those bands at present time so the window
+ * displays the visible region 1:1. */
+#define WIN_H 448
 
 #define CLEAR_R 0x10
 #define CLEAR_G 0x14
