@@ -7,11 +7,13 @@
 
 #include "openpete_fiber.h"   /* openpete_disp_w_factor, openpete_fov_h_override */
 #include "openpete_log.h"
+#include "psx_runtime.h"      /* psx_runtime_register_region, polybuf_size */
 
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* PsyCross runtime Hor+ aspect factor — see PsyX_public.h. We set it
  * post-PsyX_Initialise so the GL ortho widens by openpete's
@@ -179,9 +181,18 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          * off-axis primitives, corrupting the trailing OT and crashing
          * downstream. The PsyCross host-side vertex/OT buffers were bumped
          * to remove their crash modes (DrawSplit strlen, DrawOTag scratch);
-         * the remaining ceiling is the PSX-side poly buffer, which would
-         * need invasive realloc to lift further. 1.5 covers full 16:9 and
-         * gets ~3% improvement at 21:9/32:9. */
+         * the remaining ceiling is the PSX-side poly buffer.
+         *
+         * Lifting this cap was attempted via polybuf relocation through
+         * the RAM virtualization primitive (Step 3 of
+         * notes/plans/openpete-ram-virtualization.md) but uncovered a
+         * deeper coupling: m_LowerPolyBuffer anchors transient scratch
+         * BELOW it (m_LowerPolyBuffer - 0x40000 for titlescreen / update
+         * image loads, m_LowerPolyBuffer - cycloramaSize for cyclorama
+         * loads, m_LowerPolyBuffer - 0x2000 for memcard saves). Those
+         * scratch regions are gameplay-readable, so they can't move
+         * into a presentation-only registered region. See plan for the
+         * follow-up work — keeping the 1.5 cap until it lands. */
         float thresh_factor = openpete_disp_w_factor;
         if (thresh_factor > 1.5f) thresh_factor = 1.5f;
         uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
@@ -298,3 +309,72 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
                                               1.0f)));
     }
 }
+
+/* === Polybuf relocation (RAM virtualization first consumer) ============
+ *
+ * State for the relocated double-buffered polygon buffer. Two slots
+ * sit back-to-back inside one registered region; AllocateBuffers'
+ * substituted polybuf_size knob already scales the rest of the layout
+ * math (D_80075780 end-cursor at draw.c:947/1561/2665, the negated
+ * size in AllocateBuffers itself). The post-call hook in
+ * games/spyro-1/game_extras_impl.c overwrites g_Buffers.{Lower,Higher}
+ * PolyBuffer and g_DB[0/1].m_PolyBuf so reads pick up the relocated
+ * pointer. See notes/plans/openpete-widescreen-fov.md item 2 and
+ * notes/plans/openpete-ram-virtualization.md.
+ */
+static int      s_polybuf_active   = 0;
+static uint32_t s_polybuf_psx_base = 0;   /* slot-0 vaddr inside region */
+static uint8_t* s_polybuf_host     = NULL;
+
+int      widescreen_polybuf_active(void)        { return s_polybuf_active; }
+uint32_t widescreen_polybuf_lower_vaddr(void)   { return s_polybuf_psx_base; }
+uint32_t widescreen_polybuf_higher_vaddr(void) {
+    return s_polybuf_psx_base + psx_runtime_polybuf_size;
+}
+
+int widescreen_polybuf_setup(uint32_t size_per_slot, uint32_t psx_base) {
+    if (size_per_slot == 0u || psx_base < 0x80200000u) return 1;
+
+    if (s_polybuf_active) {
+        /* Idempotent if parameters match; reject otherwise to surface
+         * a misconfiguration loud rather than silently re-registering. */
+        if (s_polybuf_psx_base == psx_base
+            && psx_runtime_polybuf_size == size_per_slot) return 0;
+        OPL_ERROR_F("widescreen",
+                    "polybuf already registered at 0x%08X size 0x%X; "
+                    "re-registration with 0x%08X size 0x%X rejected",
+                    s_polybuf_psx_base, (unsigned)psx_runtime_polybuf_size,
+                    psx_base, (unsigned)size_per_slot);
+        return 2;
+    }
+
+    uint32_t total = size_per_slot * 2u;
+    s_polybuf_host = (uint8_t*)calloc(1, total);
+    if (!s_polybuf_host) {
+        OPL_ERROR_F("widescreen",
+                    "polybuf host alloc failed (size 0x%X)", total);
+        return 3;
+    }
+
+    int rc = psx_runtime_register_region(psx_base, total, s_polybuf_host);
+    if (rc != 0) {
+        OPL_ERROR_F("widescreen",
+                    "psx_runtime_register_region failed rc=%d at 0x%08X "
+                    "size 0x%X", rc, psx_base, total);
+        free(s_polybuf_host);
+        s_polybuf_host = NULL;
+        return 4;
+    }
+
+    s_polybuf_psx_base       = psx_base;
+    psx_runtime_polybuf_size = size_per_slot;
+    s_polybuf_active         = 1;
+
+    OPL_INFO_F("widescreen",
+               "polybuf relocated to virtualized region: base=0x%08X "
+               "slot=0x%X total=0x%X (slot0=0x%08X slot1=0x%08X)",
+               psx_base, (unsigned)size_per_slot, total,
+               psx_base, psx_base + size_per_slot);
+    return 0;
+}
+

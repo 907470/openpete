@@ -461,6 +461,12 @@ extern void func_80023AC4(CPUState* cpu);
 extern void openpete_trace_writes_begin(CPUState* cpu);
 extern void openpete_trace_writes_end(CPUState* cpu);
 
+/* AllocateBuffers (4BEF8.c) post-call hook target — relocate the poly
+ * buffer to a virtualized region when widescreen has set one up. See
+ * notes/plans/openpete-widescreen-fov.md item 2. */
+extern void func_8005B6F8(CPUState* cpu);
+#include "features/widescreen.h"
+
 /* (widescreen-related extern decls + env-renderer instrumentation
  * moved to games/spyro-1/features/widescreen.c — see Phase 2.1b in
  * notes/plans/openpete-feature-modules.md.) */
@@ -563,6 +569,30 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         func_80023AC4(cpu);
         openpete_trace_writes_end(cpu);
         s_in_traced_call = 0;
+        return 1;
+    }
+
+    /* AllocateBuffers post-call relocation hook. AllocateBuffers
+     * (4BEF8.c, PC 0x8005B6F8) sets up the polybuf + OT layout in
+     * canonical 2 MB. When widescreen has registered a relocated
+     * polybuf via widescreen_polybuf_setup(), let the original run
+     * (so OT/scene pointers stay correct), then overwrite the four
+     * polybuf-pointer slots with addresses inside the registered
+     * region. The substituted polybuf_size knob already produces
+     * matching arithmetic at the D_80075780 end-cursor sites. See
+     * notes/plans/openpete-widescreen-fov.md item 2. */
+    static int s_in_alloc_buffers = 0;
+    if (addr == 0x8005B6F8u && widescreen_polybuf_active()
+        && !s_in_alloc_buffers) {
+        s_in_alloc_buffers = 1;
+        func_8005B6F8(cpu);
+        uint32_t lo = widescreen_polybuf_lower_vaddr();
+        uint32_t hi = widescreen_polybuf_higher_vaddr();
+        cpu->write_word(0x800785E8u, lo);  /* g_Buffers.m_LowerPolyBuffer */
+        cpu->write_word(0x800785ECu, hi);  /* g_Buffers.m_HigherPolyBuffer */
+        cpu->write_word(0x80076F50u, lo);  /* g_DB[0].m_PolyBuf           */
+        cpu->write_word(0x80076FD4u, hi);  /* g_DB[1].m_PolyBuf           */
+        s_in_alloc_buffers = 0;
         return 1;
     }
 
