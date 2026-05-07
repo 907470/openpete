@@ -85,6 +85,12 @@ uint32_t psx_runtime_portal_clip_x_max_plus_1 = 0x201u;
  * Default 512 = byte-identical 4:3. */
 uint32_t psx_runtime_fullbleed_x_max = 0x200u;
 
+/* Spyro polybuf slot size. Default 0x1C000 = byte-identical to the
+ * native PSX layout (4BEF8.c:25-27 + draw.c:947/1561/2665). Widened
+ * by the 21:9 / 32:9 path once the relocated buffer is registered.
+ * See psx_runtime.h for the substitution-PC list. */
+uint32_t psx_runtime_polybuf_size = 0x0001C000u;
+
 void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
     /* --aspect: widen the framebuffer + GTE offset so the GTE projects
      * vertices across a wider screen (Hor+ widescreen). The factor

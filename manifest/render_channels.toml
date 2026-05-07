@@ -166,6 +166,40 @@ verified_against = ["aspect_determinism"]
 state_regions    = []  # presentation-side; render-time only
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
+[[channel]]
+name        = "widescreen_polybuf_size"
+status      = "gated"
+description = """
+Spyro's double-buffered polygon-buffer slot is sized 0x1C000 bytes
+(4BEF8.c:25-27, matching decomp). Three sites in gamestates/draw.c
+recompute the end cursor `D_80075780 = m_LowerPolyBuffer + 0x1C000`,
+and AllocateBuffers (4BEF8.c) decrements `m_HudOTStart` and
+`m_HigherPolyBuffer` by 0x1C000 to lay the slots out. The compiler
+emits the constant via `lui $X, 0x1; ori $X, $X, 0xC000` (positive
+sites) or `lui $X, 0xFFFE; ori $X, $X, 0x4000` (AllocateBuffers
+default-path negation).
+
+Wider aspect ratios admit more cells through the cone-cull and
+overflow the existing buffer (cyclorama corrupted at 21:9, crash at
+32:9 — see openpete-widescreen-fov.md). Substituting these four ori
+sites with psx_runtime_polybuf_size lets the runtime register a
+larger host-backed polybuf via the RAM virtualization primitive
+(notes/plans/openpete-ram-virtualization.md) and grow the slot
+without re-recompiling. Default 0x1C000 = byte-identical 4:3.
+
+Render-side only; no gameplay-readable RAM is touched (the bytes
+written to the polybuf are P_TAGs that DrawOTag consumes)."""
+substitution_sites = [
+    0x8001A608,  # func_8001A40C, draw.c:947 path:   ori $a0, $a0, 0xC000
+    0x8001C6AC,  # func_8001C694, draw.c:1561 path:  ori $v1, $v1, 0xC000
+    0x8001ED90,  # func_8001ED5C, GamestateDraw:     ori $a1, $a1, 0xC000
+    0x8005B73C,  # AllocateBuffers default-path:     ori $v1, $v1, 0x4000  (negated)
+]
+verdict_fn       = "psx_runtime_polybuf_size"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # presentation-side; render-time only
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
 # ─── Open channels — identified, no substitution yet ────────────────
 # These appear in manifest/gameplay_state_regions.toml as
 # `render_channel:*` regions; the harness diffs them and is expected

@@ -1070,7 +1070,43 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 break;
             case 0x0B: code = translate_sltiu(instr); break;  // sltiu
             case 0x0C: code = translate_andi(instr); break;   // andi
-            case 0x0D: code = translate_ori(instr); break;    // ori
+            case 0x0D:                                         // ori
+                {
+                    /* Spyro polybuf slot size (0x1C000) appears at four
+                     * specific PCs as `ori $X, $X, 0xC000` (after a
+                     * preceding `lui $X, 0x1`) producing the positive
+                     * constant, or as `ori $X, $X, 0x4000` (after
+                     * `lui $X, 0xFFFE`) producing the two's-complement
+                     * negation `-0x1C000` used by AllocateBuffers.
+                     * Substitute with psx_runtime_polybuf_size so
+                     * widescreen builds can grow the relocated buffer
+                     * without re-recompiling. Default 0x1C000 = native
+                     * 4:3 byte-identical. See psx_runtime.h. */
+                    uint32_t rt = get_rt(instr);
+                    uint16_t imm = get_imm16_u(instr);
+                    if (imm == 0xC000u && (
+                        addr == 0x8001A608u ||  /* func_8001A40C, draw.c:947 */
+                        addr == 0x8001C6ACu ||  /* func_8001C694, draw.c:1561 */
+                        addr == 0x8001ED90u))   /* func_8001ED5C, GamestateDraw */
+                    {
+                        code = fmt::format(
+                            "{} = psx_runtime_polybuf_size;",
+                            reg_name(rt));
+                    } else if (imm == 0x4000u && addr == 0x8005B73Cu) {
+                        /* AllocateBuffers default-path: rs preloaded with
+                         * 0xFFFE0000 by `lui 0xFFFE`, ori 0x4000 yields
+                         * 0xFFFE4000 = -0x1C000. Replace with the
+                         * negation of polybuf_size so HudOTStart -
+                         * polybuf_size and HigherPolyBuffer - polybuf_size
+                         * stay correct. */
+                        code = fmt::format(
+                            "{} = (uint32_t)0u - psx_runtime_polybuf_size;",
+                            reg_name(rt));
+                    } else {
+                        code = translate_ori(instr);
+                    }
+                }
+                break;
             case 0x0E: code = translate_xori(instr); break;   // xori
             case 0x0F:                                         // lui
                 {

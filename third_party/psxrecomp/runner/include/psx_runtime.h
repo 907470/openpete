@@ -196,6 +196,28 @@ extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
  * the OT/poly buffer that DrawOTag consumes). */
 extern uint32_t psx_runtime_fullbleed_x_max;
 
+/* Spyro double-buffered polygon-buffer slot size, in bytes. Spyro
+ * allocates `0x1C000` per slot in 4BEF8.c:25-27 (matching decomp). The
+ * end-cursor `D_80075780 = m_LowerPolyBuffer + 0x1C000` is recomputed
+ * at three sites in gamestates/draw.c. The compiler emits `0x1C000`
+ * via `lui $X, 0x1; ori $X, $X, 0xC000` (positive sites) or
+ * `lui $X, 0xFFFE; ori $X, $X, 0x4000` (negated, in AllocateBuffers).
+ *
+ * The recompiler substitutes the ori at four PCs:
+ *   0x8001A608 — func_8001A40C, draw.c:947 path
+ *   0x8001C6AC — func_8001C694, draw.c:1561 path
+ *   0x8001ED90 — func_8001ED5C, GamestateDraw db->m_PolyBuf path
+ *   0x8005B73C — AllocateBuffers, default (non-reduced) path
+ * with a runtime read of psx_runtime_polybuf_size (positive) or its
+ * two's-complement negation (the AllocateBuffers site).
+ *
+ * Default 0x1C000 = byte-identical 4:3. Widescreen growth registers a
+ * larger host-backed buffer via the RAM virtualization primitive and
+ * sets this knob to the relocated buffer's size; see
+ * .claude/plans/openpete-widescreen-fov.md and
+ * .claude/plans/openpete-ram-virtualization.md. */
+extern uint32_t psx_runtime_polybuf_size;
+
 /* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
  * games/spyro-1/game_extras_impl.c. Activated by env var
  * OPENPETE_DIAG_CONE_SLOT (with optional FROM/TO frame range). The
