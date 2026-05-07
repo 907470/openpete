@@ -193,8 +193,38 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          * scratch regions are gameplay-readable, so they can't move
          * into a presentation-only registered region. See plan for the
          * follow-up work — keeping the 1.5 cap until it lands. */
+        /* Polybuf cap (Option B host-side redirect).
+         *
+         * Beyond factor 1.5 the polybuf overflows the canonical
+         * 0x1C000 slot; under Option B we register a host-backed
+         * region of size ~ceil(0x1C000 * factor) per slot and
+         * redirect g_DB[].m_PolyBuf into it. The layout anchor
+         * (m_LowerPolyBuffer) stays canonical so the gameplay-
+         * readable scratch zones (titlescreen image, cyclorama
+         * dest, memcard, flight stash) are unaffected.
+         *
+         * If registration succeeds we lift the cap to 2.0 (the
+         * cyclorama row-0 / moby cone visual ceiling). If it
+         * fails (host alloc failure, region overlap), we fall
+         * back to the 1.5 cap so prims continue to fit in the
+         * canonical polybuf without overflow.
+         *
+         * See notes/plans/openpete-polybuf-host-redirect.md. */
         float thresh_factor = openpete_disp_w_factor;
-        if (thresh_factor > 1.5f) thresh_factor = 1.5f;
+        if (thresh_factor > 1.5f) {
+            uint32_t size_per_slot =
+                ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
+                & ~0x3FFFu;
+            if (widescreen_polybuf_setup(size_per_slot, 0x80400000u) == 0) {
+                if (thresh_factor > 2.0f) thresh_factor = 2.0f;
+            } else {
+                OPL_WARN_F("aspect", "polybuf host-redirect failed "
+                           "(size_per_slot=0x%X); falling back to 1.5 "
+                           "cap on clip_x_threshold",
+                           (unsigned)size_per_slot);
+                thresh_factor = 1.5f;
+            }
+        }
         uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
         psx_runtime_clip_x_threshold = edge << 16;
         /* Canonical 4:3 right-edge in widened-SX coords: native edge

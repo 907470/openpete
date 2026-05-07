@@ -187,6 +187,10 @@ larger host-backed polybuf via the RAM virtualization primitive
 (notes/plans/openpete-ram-virtualization.md) and grow the slot
 without re-recompiling. Default 0x1C000 = byte-identical 4:3.
 
+Activated by widescreen_polybuf_setup() under the Option B
+two-pointer separation — host-backed cursors, canonical anchor.
+See notes/plans/openpete-polybuf-host-redirect.md.
+
 Render-side only; no gameplay-readable RAM is touched (the bytes
 written to the polybuf are P_TAGs that DrawOTag consumes)."""
 substitution_sites = [
@@ -198,7 +202,7 @@ substitution_sites = [
 verdict_fn       = "psx_runtime_polybuf_size"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # presentation-side; render-time only
-doc              = "notes/plans/openpete-widescreen-fov.md"
+doc              = "notes/plans/openpete-polybuf-host-redirect.md"
 
 # ─── Open channels — identified, no substitution yet ────────────────
 # These appear in manifest/gameplay_state_regions.toml as

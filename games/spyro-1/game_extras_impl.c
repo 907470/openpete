@@ -572,15 +572,27 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
-    /* AllocateBuffers post-call relocation hook. AllocateBuffers
-     * (4BEF8.c, PC 0x8005B6F8) sets up the polybuf + OT layout in
-     * canonical 2 MB. When widescreen has registered a relocated
-     * polybuf via widescreen_polybuf_setup(), let the original run
-     * (so OT/scene pointers stay correct), then overwrite the four
-     * polybuf-pointer slots with addresses inside the registered
-     * region. The substituted polybuf_size knob already produces
-     * matching arithmetic at the D_80075780 end-cursor sites. See
-     * notes/plans/openpete-widescreen-fov.md item 2. */
+    /* AllocateBuffers post-call polybuf-redirect hook (Option B).
+     * AllocateBuffers (4BEF8.c, PC 0x8005B6F8) sets up the polybuf +
+     * OT layout in canonical 2 MB. When widescreen has registered a
+     * host-backed polybuf region via widescreen_polybuf_setup(), let
+     * the original run (so the canonical anchor + OT/scene pointers
+     * stay correct), then redirect only the per-frame write cursors
+     * (`g_DB[0/1].m_PolyBuf`) into the host-backed region.
+     *
+     * `m_LowerPolyBuffer` / `m_HigherPolyBuffer` are deliberately
+     * NOT overwritten — they remain canonical and serve as the layout
+     * anchor for transient scratch zones (`m_LowerPolyBuffer -
+     * 0x40000` titlescreen image, cyclorama dest, memcard scratch,
+     * flight image stash, balloonist bounds check). Moving them was
+     * the bug behind the parked Step 3c crash. The `D_800757B0 =
+     * db->m_PolyBuf` assignment at draw.c:2664 propagates the
+     * redirected cursor automatically every frame; the
+     * `psx_runtime_polybuf_size` substitutions at the
+     * `D_80075780 = ... + 0x1C000` sites cover the end-cursor.
+     *
+     * See notes/plans/openpete-polybuf-host-redirect.md for the
+     * two-pointer separation rationale. */
     static int s_in_alloc_buffers = 0;
     if (addr == 0x8005B6F8u && widescreen_polybuf_active()
         && !s_in_alloc_buffers) {
@@ -588,8 +600,6 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         func_8005B6F8(cpu);
         uint32_t lo = widescreen_polybuf_lower_vaddr();
         uint32_t hi = widescreen_polybuf_higher_vaddr();
-        cpu->write_word(0x800785E8u, lo);  /* g_Buffers.m_LowerPolyBuffer */
-        cpu->write_word(0x800785ECu, hi);  /* g_Buffers.m_HigherPolyBuffer */
         cpu->write_word(0x80076F50u, lo);  /* g_DB[0].m_PolyBuf           */
         cpu->write_word(0x80076FD4u, hi);  /* g_DB[1].m_PolyBuf           */
         s_in_alloc_buffers = 0;
