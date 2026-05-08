@@ -26,7 +26,6 @@
 
 extern void func_8001ED5C(CPUState* cpu);
 extern void func_800258F0(CPUState* cpu);
-extern void func_8004EBA8(CPUState* cpu);
 extern void func_80022A2C(CPUState* cpu);
 
 extern float    openpete_disp_w_factor;
@@ -404,72 +403,6 @@ static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* --aspect: stretch the cyclorama mesh's horizontal projection so
- * its native triangles cover the full widescreen framebuffer width.
- *
- * The recompiler's OFX widening (eff_OFX = 256 * disp_w_factor)
- * shifts every projected vertex right by (eff_OFX - 256). The
- * cyclorama mesh's *angular* extent is unchanged, so its triangles
- * span [shift, shift + 512] in PSX-X — leaving framebuffer edges
- * uncovered, where DrawEnv `isbg=1` paints g_Cyclorama.m_BackgroundColor.
- *
- * Fix: pre-scale the cyclorama's projection-matrix row 0 (the X
- * row) by disp_w_factor before calling the renderer body, so post-
- * MVMVA IR1 is `factor * native_IR1` and projects across the full
- * widened framebuffer. The widened bit-3 cull threshold
- * (psx_runtime_clip_x_threshold) keeps the larger SX values from
- * being cull-rejected.
- *
- * The matrix at *a2 belongs to the caller (typically
- * &g_Camera.m_ProjectionMatrix), so we save and restore around the
- * call. The factor-2.0 cap that used to live here was a stale
- * workaround for a DrawSplit segfault caused by PsyCross's 65k-vertex
- * buffer overflowing into adjacent globals; that's been fixed
- * (MAX_VERTEX_BUFFER_SIZE = 1<<18, see PsyX_render.h). The
- * `headroom = 32700/max_abs` clamp below still protects the int16
- * matrix entries from saturation. */
-static int on_8004EBA8_cyclorama(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    static int s_in_cyclorama = 0;
-    if (!(openpete_disp_w_factor != 1.0f
-          && openpete_disp_w_factor > 0.0f
-          && !s_in_cyclorama)) {
-        return 0;
-    }
-    s_in_cyclorama = 1;
-    uint32_t mat_addr = cpu->a2;
-    /* Save the full 20-byte SHORTMATRIX. The native cyclorama
-     * renderer composes the scaled row 0 into the rest of the
-     * matrix and writes the composed values back; restoring only
-     * row 0 leaves rows 1/2 contaminated and gameplay's next
-     * CameraUpdateMatrices reads widened residue. */
-    uint8_t saved_matrix[20];
-    memcpy(saved_matrix,
-           openpete_psx_get_ram() + (mat_addr & 0x1FFFFFFFu), 20);
-    int16_t saved_row0[3];
-    float max_abs = 1.0f;
-    for (int i = 0; i < 3; i++) {
-        uint16_t h = cpu->read_half(mat_addr + (uint32_t)(i * 2));
-        saved_row0[i] = (int16_t)h;
-        float a = (float)((saved_row0[i] < 0) ? -saved_row0[i]
-                                               :  saved_row0[i]);
-        if (a > max_abs) max_abs = a;
-    }
-    float scale = openpete_disp_w_factor;
-    float headroom = 32700.0f / max_abs;
-    if (scale > headroom) scale = headroom;
-    for (int i = 0; i < 3; i++) {
-        float scaled = (float)saved_row0[i] * scale;
-        cpu->write_half(mat_addr + (uint32_t)(i * 2),
-                        (uint16_t)(int16_t)scaled);
-    }
-    func_8004EBA8(cpu);
-    memcpy(openpete_psx_get_ram() + (mat_addr & 0x1FFFFFFFu),
-           saved_matrix, 20);
-    s_in_cyclorama = 0;
-    return 1;
-}
-
 /* Issue 5/6 follow-up — text-moby UI range. Spyro's text-emit
  * functions (func_80017FE4 / func_800181AC) allocate character
  * mobys in the polybuf's top half by decrementing g_HudMobys.
@@ -505,7 +438,6 @@ static const feature_dispatch_entry_t widescreen_dispatch[] = {
     { 0x8001ED5Cu, on_8001ED5C_render_bracket        },
     { 0x8007CD38u, on_8007CD38_titlescreen_sprite    },
     { 0x800258F0u, on_800258F0_env_renderer          },
-    { 0x8004EBA8u, on_8004EBA8_cyclorama             },
     { 0x80022A2Cu, on_80022A2C_text_moby_range       },
     { 0u, NULL },
 };
