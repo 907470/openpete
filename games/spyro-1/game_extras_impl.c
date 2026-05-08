@@ -12,6 +12,7 @@
 #include "feature_registry.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
+#include "openpete_fiber.h"
 #include "psx_runtime.h"
 
 #include <stdio.h>
@@ -33,6 +34,78 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 uint32_t psx_runtime_env_hp_queue_offset  = 0x1C00u;
 uint32_t psx_runtime_env_mid_queue_offset = 0x1E00u;
 uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
+
+/* --no-lod region layout. Allocated and registered in game_apply_no_lod()
+ * once the canonical splash bytes have been populated; remains live for
+ * the rest of the run.
+ *
+ *   region base = 0x80300000       (openpete-only vaddr, above 2 MB)
+ *   region size = 0x40000 (256 KB)
+ *
+ * Sub-offsets:
+ *   +0x00000..+0x031A0  — mirror of canonical g_SonyImage / D_8006FCF4
+ *                          (initialized by copy from g_ram at boot, then
+ *                           every read+write to the splash struct lands
+ *                           here via the value-keyed lui+addiu redirect).
+ *   +0x031A0..+0x40000  — reserved/scratch (~243 KB).
+ *   +0x40000            — grown HP queue head (psx_runtime_env_hp_queue_offset).
+ *   +0x44000            — grown mid queue head (psx_runtime_env_mid_queue_offset).
+ *   +0x48000            — grown LP queue head (psx_runtime_env_lp_queue_offset).
+ *                          ...wait, 0x48000 > region size 0x40000.
+ *
+ * Resolution: since each queue is NULL-terminated and 4096 entries × 4 B
+ * = 16 KB, three queues need 48 KB total past the 12.5 KB splash mirror.
+ * Region size 0x40000 (256 KB) is plenty; queue offsets 0x40000 / 0x44000 /
+ * 0x48000 fit within. But the offsets above end at 0x4C000, requiring a
+ * region size of at least 0x4C000. We round to 0x80000 (512 KB) for slack.
+ */
+#define NO_LOD_REGION_BASE        0x80300000u
+#define NO_LOD_REGION_SIZE        0x80000u   /* 512 KB */
+#define NO_LOD_HP_QUEUE_OFFSET    0x40000u
+#define NO_LOD_MID_QUEUE_OFFSET   0x44000u
+#define NO_LOD_LP_QUEUE_OFFSET    0x48000u
+#define G_SONY_IMAGE_VADDR        0x8006FCF4u
+#define G_SONY_IMAGE_SIZE         0x31A0u
+
+static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
+
+int game_apply_no_lod(void) {
+    /* Seed the region with the canonical splash bytes so the splash
+     * crossfade in func_80017F24 reads valid pixel data via the
+     * substituted lui+addiu pair. After this point every D_8006FCF4
+     * reference in any recompiled function lands in the region. */
+    const uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) {
+        fprintf(stderr, "[no-lod] openpete_psx_get_ram() returned NULL\n");
+        return 1;
+    }
+    memset(s_no_lod_region, 0, sizeof(s_no_lod_region));
+    memcpy(s_no_lod_region,
+           ram + (G_SONY_IMAGE_VADDR & 0x1FFFFFu),
+           G_SONY_IMAGE_SIZE);
+
+    int rc = psx_runtime_register_region(
+        NO_LOD_REGION_BASE, NO_LOD_REGION_SIZE, s_no_lod_region);
+    if (rc != 0) {
+        fprintf(stderr, "[no-lod] psx_runtime_register_region failed rc=%d\n",
+                rc);
+        return 1;
+    }
+
+    psx_runtime_g_sony_image_base    = NO_LOD_REGION_BASE;
+    psx_runtime_env_hp_queue_offset  = NO_LOD_HP_QUEUE_OFFSET;
+    psx_runtime_env_mid_queue_offset = NO_LOD_MID_QUEUE_OFFSET;
+    psx_runtime_env_lp_queue_offset  = NO_LOD_LP_QUEUE_OFFSET;
+
+    fprintf(stderr,
+            "[no-lod] env scratch pool relocated: base=0x%08X size=%u KB "
+            "(HP=+0x%X mid=+0x%X LP=+0x%X)\n",
+            NO_LOD_REGION_BASE, NO_LOD_REGION_SIZE / 1024u,
+            NO_LOD_HP_QUEUE_OFFSET,
+            NO_LOD_MID_QUEUE_OFFSET,
+            NO_LOD_LP_QUEUE_OFFSET);
+    return 0;
+}
 
 /* --- Identity --- */
 
@@ -334,6 +407,20 @@ void game_on_hash_emit(uint32_t frame) {
 
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* --no-lod sector-LOD collapse. Override m_LodDistance to a value
+     * the env-renderer's `dist >= m_LodDistance` predicate can never
+     * trip, so every visible cell takes the high-poly path. The pool
+     * relocation (game_apply_no_lod) gives the HP queue ~16 KB of
+     * physical bytes (4096 entries) instead of the canonical 256, so
+     * the inflated HP load doesn't overflow into adjacent gameplay
+     * bytes. m_LodDistance is initialized once at level load
+     * (initialization.c:411) and not re-written per frame, so a
+     * per-frame override is safe and idempotent. g_Environment lives
+     * at 0x800785A8; m_LodDistance is offset +0x24. */
+    if (openpete_no_lod) {
+        cpu->write_word(0x800785CCu, 0x7FFFFFFFu);
+    }
 
     /* Install env-var write-watcher on the first frame, after the
      * runtime has wired cpu->write_byte/half/word. */

@@ -1193,7 +1193,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * unchanged addiu adds back its imm, recovering the
                      * pool-relative offset.
                      *
-                     * Pool span ends at 0x80072894 = 0x8006FCF4 + 0x31A0
+                     * Pool span ends at 0x80072E94 = 0x8006FCF4 + 0x31A0
                      * (sizeof g_SonyImage); no other globals live in the
                      * 0x8007XXXX low band before this point (next
                      * labelled BSS sym is g_MobyShadows at 0x80075EF8),
@@ -1212,7 +1212,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                                 uint32_t composed =
                                     (uint32_t)((int64_t)0x80070000 + next_imm);
                                 if (composed >= 0x8006FCF4u &&
-                                    composed <  0x80072894u)
+                                    composed <  0x80072E94u)
                                 {
                                     uint32_t pool_off = composed - 0x8006FCF4u;
                                     /* The unchanged addiu at addr+4

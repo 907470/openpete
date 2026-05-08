@@ -639,31 +639,24 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * before PsyX_Initialise. */
     widescreen_apply_disp_w_factor(opts);
 
-    /* --no-lod: feature is parked. The simple m_LodDistance override
-     * works on small 4:3 levels but hangs on dense levels and on any
-     * widescreen aspect (HP-queue overflow at D_8006FCF4+0x1C00..+0x2000
-     * — fixed 256 entries, baked into r_environment.s's literal-offset
-     * addi instructions). The proper no-compromises fix relocates the
-     * env-renderer scratch pool to a virtualized memory region; that
-     * depends on the RAM-virtualization primitive landing first.
+    /* --no-lod: relocate the env-renderer scratch pool to a virtualized
+     * region (psx_runtime_register_region from openpete-ram-virtualization),
+     * swing the recompiler's value-keyed g_SonyImage base + queue-offset
+     * substitutions to land on grown queue heads, and override
+     * m_LodDistance per-frame so the env renderer takes the high-poly
+     * path for every visible cell. The grown HP/mid/LP queues each get
+     * ~16 KB (4096 entries × 4 bytes) of physical space — way past the
+     * canonical 256 entries that overflow into gameplay-readable bytes
+     * on dense levels and on every widescreen aspect.
      *
-     * Plans:
-     *   notes/plans/openpete-ram-virtualization.md   (prerequisite)
-     *   notes/plans/openpete-disable-lods.md         (this feature)
-     *
-     * Until those land, refuse the flag with a clear pointer rather
-     * than silently doing nothing or shipping a known-hang. */
+     * Plan: notes/plans/openpete-disable-lods.md Phase 2.5. */
     openpete_no_lod = 0;
     if (opts->no_lod) {
-        fprintf(stderr,
-                "openpete: --no-lod is not yet implemented. The simple\n"
-                "          m_LodDistance override hangs on dense levels\n"
-                "          (HP-queue overflow in r_environment.s); the\n"
-                "          proper fix depends on the RAM-virtualization\n"
-                "          primitive. See:\n"
-                "            notes/plans/openpete-ram-virtualization.md\n"
-                "            notes/plans/openpete-disable-lods.md\n");
-        return OPENPETE_EXIT_SETUP_ERROR;
+        if (game_apply_no_lod() != 0) {
+            fprintf(stderr, "openpete: --no-lod setup failed\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        openpete_no_lod = 1;
     }
 
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
