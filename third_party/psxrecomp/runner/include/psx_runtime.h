@@ -92,6 +92,15 @@ extern uint32_t psx_runtime_clip_x_mask;
  * there. */
 extern uint32_t psx_runtime_clip_x_threshold;
 
+/* g_SonyImage / D_8006FCF4 base redirect. Default 0x8006FCF4 (canonical
+ * PSX address; substitution is identity). When --no-lod (or any future
+ * consumer of the env-renderer scratch pool) registers a relocated
+ * region, this knob is set to the new base; the recompiler's lui+addiu
+ * pair substitution emits code that resolves to the new base + offset
+ * for any (lui $X, 0x8007 / addiu $X, $X, lo) pair landing in the pool
+ * range [0x8006FCF4, 0x80072894). See code_generator translate_lui. */
+extern uint32_t psx_runtime_g_sony_image_base;
+
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
  *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
  * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For

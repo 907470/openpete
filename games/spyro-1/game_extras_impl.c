@@ -12,10 +12,19 @@
 #include "feature_registry.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
+#include "psx_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* g_SonyImage / D_8006FCF4 base. Default == canonical PSX address; the
+ * recompiler's lui+addiu pair substitution is then identity. --no-lod
+ * (or any other env-renderer scratch-pool consumer) will swing this to
+ * a relocated region in openpete-only vaddr space. Lives in this game-
+ * specific TU because core/ is not allowed to encode raw Spyro
+ * addresses (see openpete_core_purity_check). */
+uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
 /* --- Identity --- */
 
