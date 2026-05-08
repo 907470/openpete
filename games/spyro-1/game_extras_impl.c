@@ -445,6 +445,15 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * at 0x800785A8; m_LodDistance is offset +0x24. */
     if (openpete_no_lod) {
         cpu->write_word(0x800785CCu, 0x7FFFFFFFu);
+        /* Phase 3 texture LOD collapse: force the HQ atlas everywhere by
+         * pointing m_LQTexturePointer at m_HQTexturePointer's value. The
+         * env renderer reads both via the same lw $reg, 0x18(g_Environment) /
+         * 0x1C(...) idiom; making them equal removes the LQ atlas from
+         * the pipeline. Only loaders.c writes these (set once at level
+         * load); no C-side reader exists, so a per-frame override is
+         * idempotent and renderer-only. */
+        uint32_t hq = cpu->read_word(0x800785C4u);
+        cpu->write_word(0x800785C0u, hq);
     }
 
     /* Install env-var write-watcher on the first frame, after the
