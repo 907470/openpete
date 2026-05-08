@@ -262,7 +262,7 @@ extern "C" void openpete_fps_overlay_emit(void)
         /* Layout in window pixels (host viewport, not PSX coords). */
         const int pixel_size = 1;
         const int origin_x = 8;
-        const int origin_y = 24;
+        const int origin_y = 8;
 
         glViewport(0, 0, g_windowWidth, g_windowHeight);
         glDisable(GL_DEPTH_TEST);
