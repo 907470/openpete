@@ -1089,18 +1089,18 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         addr == 0x8001C6ACu ||  /* func_8001C694, draw.c:1561 */
                         addr == 0x8001ED90u))   /* func_8001ED5C, GamestateDraw */
                     {
+                        /* End-cursor sites only. The companion AllocateBuffers
+                         * substitution (0x8005B73C) was REMOVED — widening the
+                         * canonical layout via that site shifts m_LowerPolyBuffer
+                         * down by (size-0x1C000)*2 bytes, pulling the canonical
+                         * polybuf range into the area where the level loader's
+                         * CdRead destinations land (e.g. 0x8016313C in level_10).
+                         * Keep canonical 0x1C000 layout intact; widen only the
+                         * end-cursor in the host-redirected buffer. The cursor
+                         * BASE comes from psx_runtime_polybuf_lower at the LW
+                         * substitution sites, so D_80075780 = host_lower + size. */
                         code = fmt::format(
                             "{} = psx_runtime_polybuf_size;",
-                            reg_name(rt));
-                    } else if (imm == 0x4000u && addr == 0x8005B73Cu) {
-                        /* AllocateBuffers default-path: rs preloaded with
-                         * 0xFFFE0000 by `lui 0xFFFE`, ori 0x4000 yields
-                         * 0xFFFE4000 = -0x1C000. Replace with the
-                         * negation of polybuf_size so HudOTStart -
-                         * polybuf_size and HigherPolyBuffer - polybuf_size
-                         * stay correct. */
-                        code = fmt::format(
-                            "{} = (uint32_t)0u - psx_runtime_polybuf_size;",
                             reg_name(rt));
                     } else {
                         code = translate_ori(instr);
@@ -1254,6 +1254,19 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         uint32_t rt = get_rt(instr);
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
+                            translate_lw(instr), reg_name(rt));
+                    } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
+                        /* m_LowerPolyBuffer cursor-reset reads. When
+                         * psx_runtime_polybuf_lower is non-zero (widescreen
+                         * polybuf relocated to a host-backed region), redirect
+                         * the loaded pointer so D_800757B0 = host_lower and
+                         * D_80075780 = host_lower + polybuf_size land in the
+                         * relocated buffer. Default 0 sentinel falls through
+                         * to the canonical LW for byte-identical 4:3.
+                         * See psx_runtime.h. */
+                        uint32_t rt = get_rt(instr);
+                        code = fmt::format(
+                            "{} if (psx_runtime_polybuf_lower != 0u) {{ {} = psx_runtime_polybuf_lower; }}",
                             translate_lw(instr), reg_name(rt));
                     } else {
                         code = translate_lw(instr);

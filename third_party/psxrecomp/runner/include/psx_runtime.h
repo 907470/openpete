@@ -218,6 +218,21 @@ extern uint32_t psx_runtime_fullbleed_x_max;
  * .claude/plans/openpete-ram-virtualization.md. */
 extern uint32_t psx_runtime_polybuf_size;
 
+/* Spyro polybuf base override. Default 0 = sentinel ("use canonical
+ * m_LowerPolyBuffer"). When non-zero (set by widescreen_polybuf_setup),
+ * the recompiler substitutes this value at two LW PCs that read
+ * m_LowerPolyBuffer for cursor-reset:
+ *   0x8001A618 — func_8001A40C, draw.c:946 (pause-resume bracket)
+ *   0x8001C6A0 — func_8001C694, draw.c:1559 (Gamestate 10 entry)
+ * Without the substitution those resets re-anchor D_800757B0 at the
+ * canonical buffer while D_80075780 (via polybuf_size) extends past
+ * canonical_lower + 0x1C000, overrunning m_HigherPolyBuffer and the
+ * OT chain — pause-resume hang in widened modes. The third LW site
+ * (0x8001ED8C, GamestateDraw) reads `db->m_PolyBuf` which is already
+ * redirected by the AllocateBuffers post-call hook, so it doesn't
+ * need substitution. See core/features/widescreen.c. */
+extern uint32_t psx_runtime_polybuf_lower;
+
 /* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
  * games/spyro-1/game_extras_impl.c. Activated by env var
  * OPENPETE_DIAG_CONE_SLOT (with optional FROM/TO frame range). The

@@ -181,11 +181,19 @@ default-path negation).
 
 Wider aspect ratios admit more cells through the cone-cull and
 overflow the existing buffer (cyclorama corrupted at 21:9, crash at
-32:9 — see openpete-widescreen-fov.md). Substituting these four ori
-sites with psx_runtime_polybuf_size lets the runtime register a
-larger host-backed polybuf via the RAM virtualization primitive
-(notes/plans/openpete-ram-virtualization.md) and grow the slot
-without re-recompiling. Default 0x1C000 = byte-identical 4:3.
+32:9 — see openpete-widescreen-fov.md). Substituting the three
+end-cursor ori sites with psx_runtime_polybuf_size lets the runtime
+register a larger host-backed polybuf via the RAM virtualization
+primitive (notes/plans/openpete-ram-virtualization.md) and grow
+the slot without re-recompiling. The companion AllocateBuffers
+substitution was deliberately removed: widening the canonical
+layout there shifted m_LowerPolyBuffer down by (size-0x1C000)*2
+bytes, far enough in 21:9+ to land on top of the level loader's
+CdRead destinations (gameplay corruption + pause-resume hang at
+21:9, frame 1686 in the pause-unpause bk2). The canonical 0x1C000
+layout stays intact; widening lives entirely in the host-backed
+buffer accessed via psx_runtime_polybuf_lower (see that channel).
+Default 0x1C000 = byte-identical 4:3.
 
 Activated by widescreen_polybuf_setup() under the Option B
 two-pointer separation — host-backed cursors, canonical anchor.
@@ -197,11 +205,52 @@ substitution_sites = [
     0x8001A608,  # func_8001A40C, draw.c:947 path:   ori $a0, $a0, 0xC000
     0x8001C6AC,  # func_8001C694, draw.c:1561 path:  ori $v1, $v1, 0xC000
     0x8001ED90,  # func_8001ED5C, GamestateDraw:     ori $a1, $a1, 0xC000
-    0x8005B73C,  # AllocateBuffers default-path:     ori $v1, $v1, 0x4000  (negated)
+    # AllocateBuffers (0x8005B73C, ori 0x4000 negated) was originally substituted
+    # to widen canonical layout, but that pulled m_LowerPolyBuffer down by
+    # (size-0x1C000)*2 bytes — far enough in 21:9+ to land inside CdRead level-
+    # data destinations (e.g. 0x8016313C at level_10), corrupting gameplay
+    # state. Keep canonical 0x1C000 layout; widen only host-side end-cursor.
 ]
 verdict_fn       = "psx_runtime_polybuf_size"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # presentation-side; render-time only
+doc              = "notes/plans/openpete-polybuf-host-redirect.md"
+
+[[channel]]
+name        = "widescreen_polybuf_lower"
+status      = "gated"
+description = """
+Companion to widescreen_polybuf_size. The two cursor-reset paths in
+gamestates/draw.c read `g_Buffers.m_LowerPolyBuffer` directly and
+then write D_800757B0 / D_80075780. With Option B's two-pointer
+separation the canonical m_LowerPolyBuffer must stay put (it anchors
+transient scratch zones — cyclorama, savedata, flight image-stash),
+so this channel substitutes the LW result at the two cursor-reset
+PCs only, redirecting the loaded pointer to the host-backed polybuf
+base (psx_runtime_polybuf_lower).
+
+Without this substitution, pause-resume (draw.c:946) and Gamestate-10
+entry (draw.c:1559) would re-anchor D_800757B0 at the canonical
+buffer while D_80075780 is `canonical_lower + polybuf_size` (per
+the polybuf_size sub) — overrunning into m_HigherPolyBuffer /
+HudOTStart and corrupting the OT chain into a DrawOTag hang.
+
+The third polybuf_size site (0x8001ED90, GamestateDraw bracket) reads
+`db->m_PolyBuf` directly — that pointer is already redirected by
+the AllocateBuffers post-call hook (game_extras_impl.c), so no LW
+substitution is needed there.
+
+Default sentinel 0u = byte-identical 4:3 (LW falls through). Set by
+widescreen_polybuf_setup() to the host region base.
+
+Render-side only; no gameplay-readable RAM is touched."""
+substitution_sites = [
+    0x8001A618,  # func_8001A40C, draw.c:946: lw $v1, m_LowerPolyBuffer
+    0x8001C6A0,  # func_8001C694, draw.c:1559: lw $v0, m_LowerPolyBuffer
+]
+verdict_fn       = "psx_runtime_polybuf_lower"
+verified_against = ["aspect_determinism"]
+state_regions    = []
 doc              = "notes/plans/openpete-polybuf-host-redirect.md"
 
 # ─── Open channels — identified, no substitution yet ────────────────

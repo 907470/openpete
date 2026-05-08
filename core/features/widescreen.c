@@ -93,6 +93,20 @@ uint32_t psx_runtime_fullbleed_x_max = 0x200u;
  * See psx_runtime.h for the substitution-PC list. */
 uint32_t psx_runtime_polybuf_size = 0x0001C000u;
 
+/* Spyro polybuf base override. Default 0 = sentinel ("use canonical
+ * m_LowerPolyBuffer"). When non-zero, the recompiler substitutes this
+ * value at the two LW PCs that read m_LowerPolyBuffer for the cursor
+ * reset paths (pause-resume bracket and Gamestate-10 entry). Without
+ * the substitution, those resets re-anchor D_800757B0 at the canonical
+ * buffer while D_80075780 is `canonical_lower + psx_runtime_polybuf_size`
+ * (per the polybuf_size sub), so a widened scene overruns into
+ * m_HigherPolyBuffer / HudOTStart and DrawOTag follows a corrupted
+ * P_TAG into a hang. The third polybuf_size site (GamestateDraw
+ * bracket) reads `db->m_PolyBuf` directly — that pointer is already
+ * redirected by the AllocateBuffers post-call hook, so no LW
+ * substitution is needed there. See psx_runtime.h for the PC list. */
+uint32_t psx_runtime_polybuf_lower = 0u;
+
 void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
     /* --aspect: widen the framebuffer + GTE offset so the GTE projects
      * vertices across a wider screen (Hor+ widescreen). The factor
@@ -396,9 +410,10 @@ int widescreen_polybuf_setup(uint32_t size_per_slot, uint32_t psx_base) {
         return 4;
     }
 
-    s_polybuf_psx_base       = psx_base;
-    psx_runtime_polybuf_size = size_per_slot;
-    s_polybuf_active         = 1;
+    s_polybuf_psx_base        = psx_base;
+    psx_runtime_polybuf_size  = size_per_slot;
+    psx_runtime_polybuf_lower = psx_base;  /* arms the LW substitutions */
+    s_polybuf_active          = 1;
 
     OPL_INFO_F("widescreen",
                "polybuf relocated to virtualized region: base=0x%08X "
