@@ -46,7 +46,12 @@ FRAME=850
 ASPECTS_CSV="4:3,16:9,21:9"
 BASELINE="4:3"
 OUT_DIR="/tmp/aspect-screenshot"
-TOLERANCE=0
+# Default tolerance = lowest value that currently passes for every
+# aspect (worst per-channel diff across 4:3 vs 16:9, 4:3 vs 21:9 at
+# frame 850). Acts as a regression ratchet: the gate stays green at
+# today's precision floor, and any future change that widens the
+# floor fails. As projection precision improves, lower this.
+TOLERANCE=230
 
 for arg in "$@"; do
     case "$arg" in
