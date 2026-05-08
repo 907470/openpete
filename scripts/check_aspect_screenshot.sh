@@ -31,7 +31,8 @@
 #     [--aspects=4:3,16:9,21:9]
 #     [--baseline=4:3]
 #     [--out=/tmp/aspect-screenshot]
-#     [--tolerance=0]              max per-channel abs diff that still passes
+#     [--diff-threshold=32]        per-pixel max-channel-abs threshold
+#     [--max-divergent=N]          max # pixels exceeding threshold
 #
 # Exit codes:
 #   0 — every aspect's central 4:3 region matches the baseline within tolerance
@@ -46,12 +47,15 @@ FRAME=850
 ASPECTS_CSV="4:3,16:9,21:9"
 BASELINE="4:3"
 OUT_DIR="/tmp/aspect-screenshot"
-# Default tolerance = lowest value that currently passes for every
-# aspect (worst per-channel diff across 4:3 vs 16:9, 4:3 vs 21:9 at
-# frame 850). Acts as a regression ratchet: the gate stays green at
-# today's precision floor, and any future change that widens the
-# floor fails. As projection precision improves, lower this.
-TOLERANCE=230
+# Diff-count gate: pass when at most MAX_DIVERGENT pixels in the
+# central 4:3 region have per-channel abs diff > DIFF_THRESHOLD.
+# Locked to the worst observed value at frame 850 across the checked
+# aspects (16:9 sets the ceiling). Sub-pixel edge jitter trivially
+# saturates a worst-per-channel metric to 255 (one anti-aliased edge
+# pixel flipping fg<->bg), so a count metric is the meaningful gate.
+# Lower these values as projection precision improves.
+DIFF_THRESHOLD=32
+MAX_DIVERGENT=5400
 
 for arg in "$@"; do
     case "$arg" in
@@ -60,7 +64,8 @@ for arg in "$@"; do
         --aspects=*)   ASPECTS_CSV="${arg#--aspects=}" ;;
         --baseline=*)  BASELINE="${arg#--baseline=}" ;;
         --out=*)       OUT_DIR="${arg#--out=}" ;;
-        --tolerance=*) TOLERANCE="${arg#--tolerance=}" ;;
+        --diff-threshold=*) DIFF_THRESHOLD="${arg#--diff-threshold=}" ;;
+        --max-divergent=*)  MAX_DIVERGENT="${arg#--max-divergent=}" ;;
         --help|-h)     sed -n '1,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
@@ -121,7 +126,7 @@ run_one() {
     echo "$out_png"
 }
 
-echo "[shot-cmp] frame=$FRAME baseline=$BASELINE tolerance=$TOLERANCE"
+echo "[shot-cmp] frame=$FRAME baseline=$BASELINE thresh=$DIFF_THRESHOLD max_divergent=$MAX_DIVERGENT"
 declare -A SHOT
 for a in "${ASPECTS[@]}"; do
     p="$(run_one "$a")" || exit 1
@@ -137,7 +142,8 @@ for a in "${ASPECTS[@]}"; do
             --candidate "${SHOT[$a]}" \
             --crop-w 960 --crop-h 672 \
             --overscan-top 24 --overscan-bot 24 \
-            --tolerance "$TOLERANCE" \
+            --diff-threshold "$DIFF_THRESHOLD" \
+            --max-divergent "$MAX_DIVERGENT" \
             --diff-out "$OUT_DIR/diff-$BASELINE-vs-$a.png" 2>&1)"
     rc=$?
     if [[ $rc -eq 0 ]]; then

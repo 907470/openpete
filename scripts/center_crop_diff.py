@@ -33,6 +33,14 @@ def main() -> int:
                     help="rows to drop from bottom before comparing")
     ap.add_argument("--tolerance", type=int, default=0,
                     help="max per-channel abs diff that still passes")
+    ap.add_argument("--diff-threshold", type=int, default=None,
+                    help="if set, count pixels whose max-channel diff exceeds "
+                         "this value and require count <= --max-divergent. "
+                         "More stable than --tolerance: a single anti-aliased "
+                         "edge pixel can flip 0→255 across aspects, saturating "
+                         "the worst-per-channel metric.")
+    ap.add_argument("--max-divergent", type=int, default=0,
+                    help="max # pixels with diff > --diff-threshold")
     ap.add_argument("--diff-out", default=None,
                     help="write a magnified diff image when divergent")
     args = ap.parse_args()
@@ -92,6 +100,16 @@ def main() -> int:
         amp.save(args.diff_out)
         print(f"diff image -> {args.diff_out}")
 
+    if args.diff_threshold is not None:
+        n_over = buckets.get(args.diff_threshold)
+        if n_over is None:
+            n_over = sum(1 for r, g, b in diff.getdata()
+                         if max(r, g, b) > args.diff_threshold)
+        ok = n_over <= args.max_divergent
+        print(f"gate: {n_over} pixel(s) > {args.diff_threshold}  "
+              f"(allowed: {args.max_divergent})  -> "
+              f"{'PASS' if ok else 'FAIL'}")
+        return 0 if ok else 1
     return 0 if worst <= args.tolerance else 1
 
 
