@@ -96,6 +96,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Hor+ presentation symmetry — boots the headless demo at 4:3, 16:9
+    # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
+    # central 4:3 region. Asserts that widening the GTE projection does
+    # not perturb the canonical 4:3 view. Currently RED: cyclorama
+    # stretching + sub-pixel projection drift leak into the central
+    # region. Closing the leak makes this gate green.
+    add_test(NAME aspect_screenshot_symmetry
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_aspect_screenshot.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --frame=850)
+    set_tests_properties(aspect_screenshot_symmetry PROPERTIES
+        LABELS "slow;determinism"
+        TIMEOUT 600
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Channel registry audit — fast static check (no PSX boot). Cross-
     # references manifest/render_channels.toml against the recompiler's
     # address-keyed substitution table; fails on missing or orphaned
