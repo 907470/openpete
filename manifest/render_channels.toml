@@ -711,7 +711,8 @@ bumped above its canonical 0x8000. Keeping the raw byte at canonical
 
 Identity at default (openpete_no_lod == 0)."""
 substitution_sites = [
-    0x80026214,  # lw $s3, 0x24($at) — m_LodDistance read at HP-walk start
+    0x800259B0,  # lw $s6, 0x24($at) — m_LodDistance in front-walk classifier
+    0x80026214,  # lw $s3, 0x24($at) — m_LodDistance in LP-walk per-cell test
 ]
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]

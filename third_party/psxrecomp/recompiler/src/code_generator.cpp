@@ -1358,7 +1358,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
                             translate_lw(instr), reg_name(rt));
-                    } else if (addr == 0x80026214u) {
+                    } else if (addr == 0x800259B0u || addr == 0x80026214u) {
                         /* r_environment.s reads g_Environment.m_LodDistance
                          * (offset 0x24) here. Under --no-lod we want the
                          * env-renderer to collapse the LOD band — every
