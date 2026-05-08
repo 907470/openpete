@@ -230,7 +230,12 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
                 ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
                 & ~0x3FFFu;
             if (widescreen_polybuf_setup(size_per_slot, 0x80400000u) == 0) {
-                if (thresh_factor > 2.0f) thresh_factor = 2.0f;
+                /* No upper cap once the host-backed polybuf is armed:
+                 * cull surfaces (env clip_x_threshold, portal clamp, moby
+                 * cone, cyclorama row-0) all scale linearly with
+                 * thresh_factor and the polybuf can hold the wider scene.
+                 * 32:9 (factor 2.667) and beyond render to the full
+                 * host-ortho width without right-edge cutoff. */
             } else {
                 OPL_WARN_F("aspect", "polybuf host-redirect failed "
                            "(size_per_slot=0x%X); falling back to 1.5 "
