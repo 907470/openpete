@@ -30,6 +30,10 @@ int32_t      openpete_moby_cone_extra_q12_render = 0;
  * setup and swapped into psx_runtime_env_cell_x_bound around the
  * GamestateDraw call. 0 sentinel = no widening. */
 uint32_t     openpete_env_cell_x_bound_render = 0u;
+/* Render-pass GTE SXY saturation bound (px), staged by widescreen
+ * setup and swapped into psx_runtime_sxy_sat_bound around the
+ * GamestateDraw call. 0 sentinel = no widening (keep native ±0x400). */
+uint32_t     openpete_sxy_sat_bound_render = 0u;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */

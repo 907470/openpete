@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <cstring>
 
+extern "C" {
+extern uint32_t psx_runtime_sxy_sat_bound;
+}
+
 namespace PSXRecomp {
 namespace GTE {
 
@@ -108,13 +112,22 @@ struct GTEState {
     }
 
     void push_sxy(int64_t sx, int64_t sy) {
-        // Saturate to screen coordinates and set flags
+        // Saturate to screen coordinates and set flags. PSX hardware
+        // clamps SX/SY to ±0x400 (signed 11-bit). For Hor+ widescreen
+        // the projected SX legitimately exceeds 0x400 (e.g. 32:9 right
+        // edge ≈ 1366), so clamping at 0x3FF cuts off the right side
+        // of the rendered scene at FBO-X = 0x400/(0x400*factor) of the
+        // full width. The widened bound is render-pass-only — gameplay-
+        // side GTE work outside the render pass keeps native ±0x400 so
+        // any gameplay code that reads SXY sees canonical 4:3 values.
+        const int32_t sat_lo = -(int32_t)::psx_runtime_sxy_sat_bound;
+        const int32_t sat_hi =  (int32_t)::psx_runtime_sxy_sat_bound - 1;
         int16_t sx_sat, sy_sat;
-        if (sx < -0x400)     { sx_sat = -0x400; FLAG |= FLAG_SX2_SAT; }
-        else if (sx > 0x3FF) { sx_sat = 0x3FF;  FLAG |= FLAG_SX2_SAT; }
+        if (sx < sat_lo)     { sx_sat = (int16_t)sat_lo; FLAG |= FLAG_SX2_SAT; }
+        else if (sx > sat_hi){ sx_sat = (int16_t)sat_hi; FLAG |= FLAG_SX2_SAT; }
         else                 { sx_sat = static_cast<int16_t>(sx); }
-        if (sy < -0x400)     { sy_sat = -0x400; FLAG |= FLAG_SY2_SAT; }
-        else if (sy > 0x3FF) { sy_sat = 0x3FF;  FLAG |= FLAG_SY2_SAT; }
+        if (sy < sat_lo)     { sy_sat = (int16_t)sat_lo; FLAG |= FLAG_SY2_SAT; }
+        else if (sy > sat_hi){ sy_sat = (int16_t)sat_hi; FLAG |= FLAG_SY2_SAT; }
         else                 { sy_sat = static_cast<int16_t>(sy); }
         // Push FIFO
         SXY[0] = SXY[1]; SXY[1] = SXY[2];

@@ -48,6 +48,10 @@ int32_t psx_runtime_moby_cone_extra_q12 = 0;
  * gameplay-side GTE work sees canonical bounds. See psx_runtime.h. */
 uint32_t psx_runtime_env_cell_x_bound = 0x100u;
 
+/* GTE SX/SY saturation bound. Default 0x400 = native PSX hardware
+ * (±0x400 signed 11-bit clamp on push_sxy). See psx_runtime.h. */
+uint32_t psx_runtime_sxy_sat_bound = 0x400u;
+
 /* Per-iteration "moby would have passed the native 4:3 cone test" flag
  * computed alongside the widened cone test in each per-bucket render
  * walker. Consumed by the substituted m_WasDrawn=1 write sites so
@@ -329,6 +333,15 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         openpete_env_cell_x_bound_render =
             (uint32_t)((float)0x100 * thresh_factor);
         psx_runtime_env_cell_x_bound = 0x100u;  /* native outside render */
+
+        /* GTE SXY saturation bound — render-pass-only widening. Native
+         * 0x400 clips widescreen vertices at PSX-X 1023. Widen to
+         * 0x400 * thresh_factor during render. See psx_runtime.h. */
+        extern uint32_t psx_runtime_sxy_sat_bound;
+        extern uint32_t openpete_sxy_sat_bound_render;
+        openpete_sxy_sat_bound_render =
+            (uint32_t)((float)0x400 * thresh_factor);
+        psx_runtime_sxy_sat_bound = 0x400u;  /* native outside render */
 
         /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp.
          * Native code clamps the per-portal clip rect's right edge to

@@ -125,6 +125,16 @@ extern int32_t psx_runtime_moby_cone_extra_q12;
  * bound. */
 extern uint32_t psx_runtime_env_cell_x_bound;
 
+/* GTE push_sxy SX/SY saturation bound (in pixels, magnitude). Native
+ * PSX hardware clamps to ±0x400 (signed 11-bit), which cuts off
+ * Hor+-widescreen vertices whose projected SX exceeds 0x400 — visible
+ * as a hard right-edge cap at PSX-X 1023 regardless of how wide the
+ * GL ortho is. Default 0x400 (native). Render-pass setup widens to
+ * (uint32_t)(0x400 * thresh_factor) so 32:9 (factor 2.667) admits SX
+ * up to ~2730. Reset to 0x400 outside render pass so gameplay GTE
+ * reads see canonical SXY. */
+extern uint32_t psx_runtime_sxy_sat_bound;
+
 /* Per-iteration scratch flag set inside each render-bucket walker's
  * cone test (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1
  * iff the moby would have passed the *native 4:3* cone test, regardless

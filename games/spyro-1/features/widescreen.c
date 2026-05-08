@@ -36,6 +36,8 @@ extern int32_t  psx_runtime_moby_cone_extra_q12;
 extern int32_t  openpete_moby_cone_extra_q12_render;
 extern uint32_t psx_runtime_env_cell_x_bound;
 extern uint32_t openpete_env_cell_x_bound_render;
+extern uint32_t psx_runtime_sxy_sat_bound;
+extern uint32_t openpete_sxy_sat_bound_render;
 
 /* env-renderer instrumentation. Counts writes done by func_800258F0 to
  * help diagnose 16:9 residual: are wider-FOV cells producing more prim
@@ -93,6 +95,8 @@ static int on_8001ED5C_render_bracket(CPUState* cpu, uint32_t addr) {
         psx_runtime_moby_cone_extra_q12 = openpete_moby_cone_extra_q12_render;
         if (openpete_env_cell_x_bound_render != 0u)
             psx_runtime_env_cell_x_bound = openpete_env_cell_x_bound_render;
+        if (openpete_sxy_sat_bound_render != 0u)
+            psx_runtime_sxy_sat_bound = openpete_sxy_sat_bound_render;
         uint32_t saved_gte_data[32], saved_gte_ctrl[32];
         memcpy(saved_gte_data, cpu->gte_data, sizeof(saved_gte_data));
         memcpy(saved_gte_ctrl, cpu->gte_ctrl, sizeof(saved_gte_ctrl));
@@ -101,6 +105,7 @@ static int on_8001ED5C_render_bracket(CPUState* cpu, uint32_t addr) {
         memcpy(cpu->gte_ctrl, saved_gte_ctrl, sizeof(saved_gte_ctrl));
         psx_runtime_moby_cone_extra_q12 = 0;
         psx_runtime_env_cell_x_bound = 0x100u;
+        psx_runtime_sxy_sat_bound = 0x400u;
         openpete_render_pass_active = 0;
         s_in_render_pass = 0;
         return 1;
@@ -417,15 +422,17 @@ static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
  *
  * The matrix at *a2 belongs to the caller (typically
  * &g_Camera.m_ProjectionMatrix), so we save and restore around the
- * call. Capped at factor 2.0 — beyond that (e.g. 32:9 = 2.667) the
- * scaled IR1 produces SX values that overflow PsyCross's primitive
- * split path and crash DrawSplit. */
+ * call. The factor-2.0 cap that used to live here was a stale
+ * workaround for a DrawSplit segfault caused by PsyCross's 65k-vertex
+ * buffer overflowing into adjacent globals; that's been fixed
+ * (MAX_VERTEX_BUFFER_SIZE = 1<<18, see PsyX_render.h). The
+ * `headroom = 32700/max_abs` clamp below still protects the int16
+ * matrix entries from saturation. */
 static int on_8004EBA8_cyclorama(CPUState* cpu, uint32_t addr) {
     (void)addr;
     static int s_in_cyclorama = 0;
     if (!(openpete_disp_w_factor != 1.0f
           && openpete_disp_w_factor > 0.0f
-          && openpete_disp_w_factor <= 2.0f
           && !s_in_cyclorama)) {
         return 0;
     }
