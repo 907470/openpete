@@ -986,7 +986,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     uint32_t rs = get_rs(instr);
                     uint32_t rt = get_rt(instr);
                     int16_t imm = (int16_t)get_imm16_u(instr);
-                    if (addr == 0x80022C0Cu && imm == -0x66) {
+                    if (addr == 0x80026A34u && imm == 0x100) {
+                        /* r_environment.s func_800258F0 per-vertex
+                         * lateral-bound cull, +0x100 site (X axis).
+                         * See psx_runtime.h `psx_runtime_env_cell_x_bound`. */
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_env_cell_x_bound;",
+                            reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x80026A3Cu && imm == -0x200) {
+                        /* Companion -0x200 site for the +0x100 above.
+                         * Subtract 2× bound to land at (X - bound). */
+                        code = fmt::format(
+                            "{} = (int32_t){} - 2 * (int32_t)psx_runtime_env_cell_x_bound;",
+                            reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x80022C0Cu && imm == -0x66) {
                         /* Native (4:3) cone-test verdict for the m_WasDrawn
                          * gating at 0x80022D98. Native chain after this
                          * addi is `4*(|MAC1|-102) - 3*(MAC3+77)`; here

@@ -42,6 +42,12 @@ uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
  * preserves native 4:3 cone (slope 0.75). */
 int32_t psx_runtime_moby_cone_extra_q12 = 0;
 
+/* r_environment.s func_800258F0 per-vertex camera-space X-bound cull.
+ * Default 0x100 (= 256, native). Widened during the render pass to
+ * 0x100 * thresh_factor; reset to 0x100 outside render so the
+ * gameplay-side GTE work sees canonical bounds. See psx_runtime.h. */
+uint32_t psx_runtime_env_cell_x_bound = 0x100u;
+
 /* Per-iteration "moby would have passed the native 4:3 cone test" flag
  * computed alongside the widened cone test in each per-bucket render
  * walker. Consumed by the substituted m_WasDrawn=1 write sites so
@@ -310,6 +316,19 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         }
         openpete_moby_cone_extra_q12_render = (int32_t)(extra_f * 4096.0f);
         psx_runtime_moby_cone_extra_q12 = 0;  /* native cone outside render pass */
+
+        /* r_environment.s per-vertex lateral bound widening (render-pass
+         * only). Native admits |MAC1| < 256; widescreen admits up to
+         * 256 * thresh_factor so the env renderer projects vertices
+         * across the full Hor+-widened framebuffer instead of leaving
+         * the side strips uncovered (32:9 = factor 2.667, the right
+         * 1/3 was bg-color before this). Y-axis bound is left native
+         * since vertical FOV is preserved. */
+        extern uint32_t psx_runtime_env_cell_x_bound;
+        extern uint32_t openpete_env_cell_x_bound_render;
+        openpete_env_cell_x_bound_render =
+            (uint32_t)((float)0x100 * thresh_factor);
+        psx_runtime_env_cell_x_bound = 0x100u;  /* native outside render */
 
         /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp.
          * Native code clamps the per-portal clip rect's right edge to

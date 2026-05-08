@@ -105,6 +105,26 @@ extern uint32_t psx_runtime_clip_x_threshold;
  * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
 extern int32_t psx_runtime_moby_cone_extra_q12;
 
+/* r_environment.s func_800258F0 per-vertex lateral bound cull at
+ * 0x80026A2C..0x80026A50. After RTPS the asm tests
+ *   |MAC1| < 256 && |MAC2| < 256
+ * via two `addi $a2, +0x100` / `addi $a2, -0x200` chains (and same
+ * for $a3). The X-axis bound (0x80026A34 / 0x80026A3C) is what limits
+ * the lateral world-extent admitted to per-vertex projection — at
+ * 32:9 (factor 2.667) the visible horizontal half-extent is 2.667×
+ * native, so the native ±256 admit rejects vertices whose post-MVMVA
+ * camera-space X exceeds 256, leaving the right side of the rendered
+ * frame uncovered (no env strips emitted there).
+ *
+ * Single knob in MAC-1 units. Default 0x100 (= +256, native pre-add).
+ * The `+0x100` site uses `psx_runtime_env_cell_x_bound` directly; the
+ * `-0x200` site subtracts 2× the bound. Y-axis (`$a3`, 0x80026A44 /
+ * 0x80026A4C) is left native — vertical FOV doesn't change. Render-
+ * pass-only: armed in the GamestateDraw pre/post hook so gameplay-
+ * side GTE work outside the render pass sees the canonical native
+ * bound. */
+extern uint32_t psx_runtime_env_cell_x_bound;
+
 /* Per-iteration scratch flag set inside each render-bucket walker's
  * cone test (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1
  * iff the moby would have passed the *native 4:3* cone test, regardless

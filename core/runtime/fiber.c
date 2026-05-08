@@ -26,6 +26,10 @@ int          openpete_render_pass_active = 0;
 /* Render-pass cone-widening value, staged at startup by run.c and swapped
  * into psx_runtime_moby_cone_extra_q12 around the GamestateDraw call. */
 int32_t      openpete_moby_cone_extra_q12_render = 0;
+/* Render-pass env-cell X-bound (in MAC1 units), staged by widescreen
+ * setup and swapped into psx_runtime_env_cell_x_bound around the
+ * GamestateDraw call. 0 sentinel = no widening. */
+uint32_t     openpete_env_cell_x_bound_render = 0u;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */

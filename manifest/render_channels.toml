@@ -167,6 +167,34 @@ state_regions    = []  # presentation-side; render-time only
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
+name        = "widescreen_env_cell_x_bound"
+status      = "gated"
+description = """
+r_environment.s func_800258F0 has a per-vertex lateral-bound cull
+right after RTPS at 0x80026A2C..0x80026A50 testing |MAC1| < 256 &&
+|MAC2| < 256 (camera-space X/Y bound). The X-axis bound caps the
+horizontal world-extent that gets projected: at 32:9 (factor 2.667)
+the visible angular width is ~127°, but ±256 only admits ~74° worth
+of vertices, leaving the right ~1/3 of the rendered frame uncovered
+by env strips (bg-color shows through). Widening this bound to
+256 * thresh_factor admits the rest of the frustum.
+
+Render-pass only: armed in the GamestateDraw bracket
+(games/spyro-1/features/widescreen.c on_8001ED5C_render_bracket) so
+gameplay-side GTE work outside the render pass sees the canonical
+±256 bound. Y-axis is left untouched — vertical FOV is preserved.
+
+Default 0x100 == byte-identical 4:3."""
+substitution_sites = [
+    0x80026A34,  # func_800258F0:  addi $a2, $a2, +0x100  (X+bound)
+    0x80026A3C,  # func_800258F0:  addi $a2, $a2, -0x200  (X-bound, after +bound)
+]
+verdict_fn       = "psx_runtime_env_cell_x_bound"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # render-pass only; bound restored to native outside
+doc              = "notes/plans/openpete-widescreen-fov.md"
+
+[[channel]]
 name        = "widescreen_polybuf_size"
 status      = "gated"
 description = """
