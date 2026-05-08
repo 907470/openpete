@@ -452,19 +452,19 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * (initialization.c:411) and not re-written per frame, so a
      * per-frame override is safe and idempotent. g_Environment lives
      * at 0x800785A8; m_LodDistance is offset +0x24. */
-    if (openpete_no_lod) {
-        /* Phase 3 texture LOD: force HQ atlas everywhere by writing
-         * m_HQTexturePointer into m_LQTexturePointer. Renderer-only
-         * (only loaders.c writes these, no C-side reader). */
-        uint32_t hq = cpu->read_word(0x800785C4u);
-        cpu->write_word(0x800785C0u, hq);
-    }
-    /* Phase 2.5 sector LOD collapse is now done via PC-keyed lw
-     * substitution at r_environment.s 0x80026214 (m_LodDistance read).
-     * That keeps gameplay-readable RAM at canonical bytes; only the
-     * env-renderer's cell-sort sees the bumped value. Avoids the
-     * widescreen+pause-menu hang caused by other consumers seeing a
-     * mutated m_LodDistance during the GS_PauseMenu transition. */
+    /* Phase 2.5 sector LOD collapse is done via PC-keyed lw substitution
+     * at r_environment.s 0x80026214 (m_LodDistance read). That keeps
+     * gameplay-readable RAM at canonical bytes; only the env-renderer's
+     * cell-sort sees the bumped value. Avoids the widescreen+pause-menu
+     * hang caused by other consumers seeing a mutated m_LodDistance.
+     *
+     * Phase 3 (texture LOD collapse) reverted: forcing
+     * m_LQTexturePointer = m_HQTexturePointer makes far sectors index
+     * HQ TIM descriptors that point to VRAM pages the LOD uploader
+     * never staged for far-sector use. Result is texture corruption
+     * everywhere except close-up (where HQ pages are already in VRAM).
+     * A real Phase 3 needs a paired pre-render pass that uploads HQ
+     * TIM pages for every sector touched by the HP-walk. Deferred. */
 
     /* Install env-var write-watcher on the first frame, after the
      * runtime has wired cpu->write_byte/half/word. */
