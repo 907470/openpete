@@ -59,48 +59,73 @@ uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
  * 0x48000 fit within. But the offsets above end at 0x4C000, requiring a
  * region size of at least 0x4C000. We round to 0x80000 (512 KB) for slack.
  */
-#define NO_LOD_REGION_BASE        0x80300000u
-#define NO_LOD_REGION_SIZE        0x80000u   /* 512 KB */
-#define NO_LOD_HP_QUEUE_OFFSET    0x40000u
-#define NO_LOD_MID_QUEUE_OFFSET   0x44000u
-#define NO_LOD_LP_QUEUE_OFFSET    0x48000u
+/* Queue-head offsets relative to canonical g_SonyImage base. Each addi
+ * substitution computes
+ *   $rt = canonical_pool_base + psx_runtime_env_{hp,mid,lp}_queue_offset
+ * The composed address must land outside canonical 2 MB so a registered
+ * region can claim it without overlapping g_ram. With g_SonyImage at
+ * 0x8006FCF4, offsets ≥ 0x190_30C produce absolute vaddrs ≥ 0x80200000.
+ * We pick offsets that put the region at a clean openpete-only base
+ * (0x80300000): HP_OFFSET = 0x80300000 - 0x8006FCF4 = 0x29030C. */
+#define NO_LOD_REGION_VADDR       0x80300000u
 #define G_SONY_IMAGE_VADDR        0x8006FCF4u
-#define G_SONY_IMAGE_SIZE         0x31A0u
+#define NO_LOD_HP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x0000u)
+#define NO_LOD_MID_QUEUE_OFFSET   (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x4000u)
+#define NO_LOD_LP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x8000u)
 
+/* Single backing buffer for the three grown queues (4096 entries × 4 B
+ * = 16 KB per queue). 48 KB total. */
+#define NO_LOD_REGION_SIZE        0xC000u
 static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
 
 int game_apply_no_lod(void) {
-    /* Seed the region with the canonical splash bytes so the splash
-     * crossfade in func_80017F24 reads valid pixel data via the
-     * substituted lui+addiu pair. After this point every D_8006FCF4
-     * reference in any recompiled function lands in the region. */
-    const uint8_t* ram = openpete_psx_get_ram();
-    if (!ram) {
-        fprintf(stderr, "[no-lod] openpete_psx_get_ram() returned NULL\n");
-        return 1;
-    }
+    /* Strategy: leave g_SonyImage base at canonical 0x8006FCF4 — every
+     * base reference (lui+addiu D_8006FCF4) resolves to canonical RAM,
+     * so the splash bitmap bytes stay pristine and any path that reads
+     * those bytes (including the original game's pause-menu, which
+     * incidentally reads sub-offset 0x330 as moby data) gets the same
+     * bytes it would on hardware.
+     *
+     * Only the *grown queues* are relocated. The 11 queue-head addi
+     * substitutions in r_environment.s compute
+     *   $rt = canonical_pool_base + psx_runtime_env_{hp|mid|lp}_queue_offset
+     * Setting the offset to 0x40000 / 0x44000 / 0x48000 lands the queue
+     * heads at 0x800AFCF4 + 0x{40000|44000|48000} = openpete-only vaddr
+     * space. We register a single region at that base with enough size
+     * to cover all three queues (each 16 KB, plus slack).
+     *
+     * This avoids the channel-leak that the prior "redirect base" design
+     * exposed: when the base was redirected, some paths cleared the
+     * relocated region's m_Buf (substituted), but other paths read
+     * canonical splash bytes. The substituted reads got zeros; canonical
+     * reads got splash bytes; downstream interpreted differently. With
+     * the base un-relocated, that whole class of bugs vanishes. */
+
+    /* Region at NO_LOD_REGION_VADDR holds the three grown queues:
+     *   HP head  at region+0x0000 (vaddr NO_LOD_REGION_VADDR)
+     *   mid head at region+0x4000
+     *   LP head  at region+0x8000
+     * Each queue is 16 KB (4096 entries × 4 B), NULL-terminated. */
     memset(s_no_lod_region, 0, sizeof(s_no_lod_region));
-    memcpy(s_no_lod_region,
-           ram + (G_SONY_IMAGE_VADDR & 0x1FFFFFu),
-           G_SONY_IMAGE_SIZE);
 
     int rc = psx_runtime_register_region(
-        NO_LOD_REGION_BASE, NO_LOD_REGION_SIZE, s_no_lod_region);
+        NO_LOD_REGION_VADDR, NO_LOD_REGION_SIZE, s_no_lod_region);
     if (rc != 0) {
-        fprintf(stderr, "[no-lod] psx_runtime_register_region failed rc=%d\n",
-                rc);
+        fprintf(stderr, "[no-lod] psx_runtime_register_region failed rc=%d "
+                "(base=0x%08X size=0x%X)\n", rc, NO_LOD_REGION_VADDR,
+                NO_LOD_REGION_SIZE);
         return 1;
     }
 
-    psx_runtime_g_sony_image_base    = NO_LOD_REGION_BASE;
     psx_runtime_env_hp_queue_offset  = NO_LOD_HP_QUEUE_OFFSET;
     psx_runtime_env_mid_queue_offset = NO_LOD_MID_QUEUE_OFFSET;
     psx_runtime_env_lp_queue_offset  = NO_LOD_LP_QUEUE_OFFSET;
+    /* Leave psx_runtime_g_sony_image_base at canonical (0x8006FCF4). */
 
     fprintf(stderr,
-            "[no-lod] env scratch pool relocated: base=0x%08X size=%u KB "
-            "(HP=+0x%X mid=+0x%X LP=+0x%X)\n",
-            NO_LOD_REGION_BASE, NO_LOD_REGION_SIZE / 1024u,
+            "[no-lod] grown env queues at base=0x%08X size=%u KB "
+            "(HP=+0x%X mid=+0x%X LP=+0x%X from g_SonyImage)\n",
+            NO_LOD_REGION_VADDR, NO_LOD_REGION_SIZE / 1024u,
             NO_LOD_HP_QUEUE_OFFSET,
             NO_LOD_MID_QUEUE_OFFSET,
             NO_LOD_LP_QUEUE_OFFSET);
