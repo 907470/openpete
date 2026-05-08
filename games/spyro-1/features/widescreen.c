@@ -19,6 +19,7 @@
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -434,11 +435,151 @@ static int on_80022A2C_text_moby_range(CPUState* cpu, uint32_t addr) {
     return 0;  /* fall through so the recompiled body runs */
 }
 
+/* --aspect: cyclorama mesh-360 multi-pass.
+ *
+ * The authored dome covers approximately ±63° horizontally at any
+ * camera yaw (62 sectors clustered at world X ±1000 / Z 400-575 in
+ * a typical level — see OPENPETE_CYCLORAMA_DUMP). At 32:9 (127°
+ * h-FOV) this just-barely covers; at cutscene cameras and at
+ * aspect ratios beyond 32:9, the dome's authored extent runs out
+ * and the framebuffer shows g_Cyclorama.m_BackgroundColor at the
+ * left/right edges where no dome geometry projects.
+ *
+ * Fix: re-emit the dome with the view matrix yaw-rotated, so
+ * sectors that were forward-facing on pass 1 project to the
+ * periphery on pass 2/3. The dome's mesh is reused — no new art,
+ * no stretching. Texture content tiles in yaw, which is acceptable
+ * because the sky is largely homogeneous (clouds/gradient).
+ *
+ * Pass count and yaw deltas are picked to cover the FOV beyond the
+ * canonical ±63° extent:
+ *   factor <=1.6 (≤16:9): 1 pass — canonical only.
+ *   factor 1.6..2.5 (~21:9..~30:9): 1 pass (canonical dome covers).
+ *   factor 2.5..4.0 (~32:9..~48:9): 3 passes — canonical, +60°, -60°.
+ *   factor >4.0 (extreme): 5 passes — canonical, ±60°, ±120°.
+ *
+ * Each extra pass save+restores the m_ViewMatrix at *a1 (the first
+ * matrix arg the renderer loads as RT into GTE control regs).
+ * Saved + restored per-call, so gameplay's m_ViewMatrix stays
+ * canonical for any subsequent reads. */
+extern void func_8004EBA8(CPUState* cpu);
+
+static void rotate_view_matrix_y(CPUState* cpu, uint32_t mat_addr,
+                                  float yaw_radians) {
+    /* Pre-multiply view-matrix row 0 and row 2 by a Y-axis rotation:
+     *   row0' =  row0*cos + row2*sin
+     *   row2' = -row0*sin + row2*cos
+     * Row 1 (Y axis) unchanged. Read+write through the CPU's RAM
+     * accessor so any region-routing kicks in. */
+    int16_t M[3][3];
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++) {
+            uint16_t h = cpu->read_half(mat_addr + (uint32_t)((row*3 + col) * 2));
+            M[row][col] = (int16_t)h;
+        }
+    }
+    float c = cosf(yaw_radians);
+    float s = sinf(yaw_radians);
+    int16_t R0[3], R2[3];
+    for (int col = 0; col < 3; col++) {
+        float r0 = (float)M[0][col] *  c + (float)M[2][col] * s;
+        float r2 = (float)M[0][col] * -s + (float)M[2][col] * c;
+        if (r0 >  32767.0f) r0 =  32767.0f;
+        if (r0 < -32768.0f) r0 = -32768.0f;
+        if (r2 >  32767.0f) r2 =  32767.0f;
+        if (r2 < -32768.0f) r2 = -32768.0f;
+        R0[col] = (int16_t)r0;
+        R2[col] = (int16_t)r2;
+    }
+    for (int col = 0; col < 3; col++) {
+        cpu->write_half(mat_addr + (uint32_t)(0*3 + col) * 2u,
+                        (uint16_t)R0[col]);
+        cpu->write_half(mat_addr + (uint32_t)(2*3 + col) * 2u,
+                        (uint16_t)R2[col]);
+    }
+}
+
+static int on_8004EBA8_cyclorama_360(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (openpete_disp_w_factor <= 1.6f) return 0;  /* native */
+    static int s_in = 0;
+    if (s_in) return 0;
+    s_in = 1;
+
+    /* Save argument registers — the recompiled body clobbers them
+     * during execution, but each pass needs the same arg setup as
+     * a fresh PSX-side call. */
+    uint32_t saved_a0 = cpu->a0;
+    uint32_t saved_a1 = cpu->a1;
+    uint32_t saved_a2 = cpu->a2;
+
+    float factor = openpete_disp_w_factor;
+    int n_extra_passes;
+    if (factor <= 2.5f)      n_extra_passes = 0;  /* dome covers */
+    else if (factor <= 4.0f) n_extra_passes = 2;  /* +/-60° */
+    else                     n_extra_passes = 4;  /* +/-60°, +/-120° */
+    if (getenv("OPENPETE_CYC_PASSES")) {
+        n_extra_passes = atoi(getenv("OPENPETE_CYC_PASSES"));
+    }
+
+    /* Pass 0 — canonical. */
+    func_8004EBA8(cpu);
+
+    if (n_extra_passes <= 0) {
+        cpu->a0 = saved_a0;
+        cpu->a1 = saved_a1;
+        cpu->a2 = saved_a2;
+        s_in = 0;
+        return 1;
+    }
+
+    /* Save original view matrix at *a1. Restore between every pass
+     * so each yaw delta is applied to the canonical matrix, not a
+     * compounded one. */
+    uint32_t vm_addr = saved_a1;
+    uint8_t saved_vm[20];
+    memcpy(saved_vm,
+           openpete_psx_get_ram() + (vm_addr & 0x1FFFFFFFu), 20);
+
+    float yaws[4] = {
+        +1.04719755f,  /* +60° */
+        -1.04719755f,  /* -60° */
+        +2.09439510f,  /* +120° */
+        -2.09439510f,  /* -120° */
+    };
+    if (getenv("OPENPETE_CYC_YAW_DEG")) {
+        float deg = (float)atof(getenv("OPENPETE_CYC_YAW_DEG"));
+        float rad = deg * 0.0174532925f;
+        for (int i = 0; i < 4; i++) {
+            yaws[i] = (i & 1) ? -rad : rad;
+            if (i >= 2) yaws[i] *= 2.0f;
+        }
+    }
+
+    for (int p = 0; p < n_extra_passes; p++) {
+        rotate_view_matrix_y(cpu, vm_addr, yaws[p]);
+        cpu->a0 = saved_a0;
+        cpu->a1 = saved_a1;
+        cpu->a2 = saved_a2;
+        func_8004EBA8(cpu);
+        /* restore matrix in PSX RAM for next pass */
+        memcpy(openpete_psx_get_ram() + (vm_addr & 0x1FFFFFFFu),
+               saved_vm, 20);
+    }
+
+    cpu->a0 = saved_a0;
+    cpu->a1 = saved_a1;
+    cpu->a2 = saved_a2;
+    s_in = 0;
+    return 1;  /* we already invoked the renderer body; don't fall through */
+}
+
 static const feature_dispatch_entry_t widescreen_dispatch[] = {
     { 0x8001ED5Cu, on_8001ED5C_render_bracket        },
     { 0x8007CD38u, on_8007CD38_titlescreen_sprite    },
     { 0x800258F0u, on_800258F0_env_renderer          },
     { 0x80022A2Cu, on_80022A2C_text_moby_range       },
+    { 0x8004EBA8u, on_8004EBA8_cyclorama_360         },
     { 0u, NULL },
 };
 
