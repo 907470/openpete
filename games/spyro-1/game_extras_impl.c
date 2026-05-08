@@ -35,6 +35,12 @@ uint32_t psx_runtime_env_hp_queue_offset  = 0x1C00u;
 uint32_t psx_runtime_env_mid_queue_offset = 0x1E00u;
 uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
 
+/* r_moby.s LP-face-load offset. Canonical 0x1C reads m_LpFaces (low-poly
+ * face list at AnimationHeader +0x1C). --no-lod swings to 0x14 so the
+ * LP path reads m_Faces (high-poly) instead. Substituted at the two
+ * `lw $fp, 0x1C($ra)` sites in r_moby.s (PCs 0x8001FE9C, 0x80021674). */
+uint32_t psx_runtime_moby_lp_face_offset = 0x1Cu;
+
 /* --no-lod region layout. Allocated and registered in game_apply_no_lod()
  * once the canonical splash bytes have been populated; remains live for
  * the rest of the run.
@@ -121,6 +127,9 @@ int game_apply_no_lod(void) {
     psx_runtime_env_mid_queue_offset = NO_LOD_MID_QUEUE_OFFSET;
     psx_runtime_env_lp_queue_offset  = NO_LOD_LP_QUEUE_OFFSET;
     /* Leave psx_runtime_g_sony_image_base at canonical (0x8006FCF4). */
+
+    /* Phase 4: redirect r_moby.s LP-face load to read m_Faces (HP). */
+    psx_runtime_moby_lp_face_offset = 0x14u;
 
     fprintf(stderr,
             "[no-lod] grown env queues at base=0x%08X size=%u KB "

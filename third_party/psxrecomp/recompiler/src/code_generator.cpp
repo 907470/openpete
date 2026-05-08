@@ -1358,6 +1358,19 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
                             translate_lw(instr), reg_name(rt));
+                    } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
+                        /* Phase 4 moby model LOD collapse. r_moby.s LP-band
+                         * branch loads `lw $fp, 0x1C($ra)` — the AnimationHeader
+                         * .m_LpFaces field. Default knob 0x1C preserves
+                         * canonical behaviour; --no-lod swings to 0x14
+                         * so the LP path reads m_Faces (high-poly) instead.
+                         * Two sites: 0x8001FE9C and 0x80021674. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        code = fmt::format(
+                            "{} = cpu->read_word({} + psx_runtime_moby_lp_face_offset);"
+                            "  /* moby LP face load (no-lod knob) */",
+                            reg_name(rt), reg_name(rs));
                     } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
                         /* m_LowerPolyBuffer cursor-reset reads. When
                          * psx_runtime_polybuf_lower is non-zero (widescreen

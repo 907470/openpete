@@ -117,6 +117,14 @@ extern uint32_t psx_runtime_env_lp_queue_offset;
  * range [0x8006FCF4, 0x80072894). See code_generator translate_lui. */
 extern uint32_t psx_runtime_g_sony_image_base;
 
+/* Spyro r_moby.s LP-face-load offset. Default 0x1C (canonical PSX:
+ * AnimationHeader.m_LpFaces lives at +0x1C, m_Faces at +0x14). When
+ * --no-lod is active, swung to 0x14 so the LP-path face load reads
+ * the high-poly face list instead. Substituted at the two
+ * `lw $fp, 0x1C($ra)` sites at PC 0x8001FE9C and 0x80021674
+ * (LP-band branch in r_moby.s). Identity at default. */
+extern uint32_t psx_runtime_moby_lp_face_offset;
+
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
  *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
  * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For

@@ -689,3 +689,28 @@ substitution_sites = [
 verdict_fn       = "psx_runtime_env_{hp,mid,lp}_queue_offset"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_moby_face_offset"
+status      = "gated"
+description = """
+r_moby.s LP-band branch loads the AnimationHeader.m_LpFaces field via
+`lw $fp, 0x1C($ra)` at two PCs (0x8001FE9C, 0x80021674). The HP-band
+branch above each loads `lw $fp, 0x14($ra)` (m_Faces).
+
+Substituted via runtime knob psx_runtime_moby_lp_face_offset, default
+0x1C — identity, byte-identical to the canonical recompiler output.
+--no-lod (Phase 4 of openpete-disable-lods.md) swings the knob to
+0x14 so the LP-path load reads m_Faces (high-poly face list) instead.
+
+Render-side only — the loaded value drives only the per-vertex face
+walk inside the same render-pass; nothing outside the renderer reads
+the chosen face pointer."""
+substitution_sites = [
+    0x8001FE9C,  # lw $fp, 0x1C($ra) — LP-face load, first dispatch
+    0x80021674,  # lw $fp, 0x1C($ra) — LP-face load, second dispatch
+]
+verdict_fn       = "psx_runtime_moby_lp_face_offset"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
