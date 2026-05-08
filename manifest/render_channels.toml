@@ -692,6 +692,33 @@ doc              = "notes/plans/openpete-disable-lods.md"
 
 
 [[channel]]
+name        = "no_lod_lod_distance"
+status      = "gated"
+description = """
+r_environment.s reads `g_Environment.m_LodDistance` (offset 0x24) at PC
+0x80026214 via `lw $s3, 0x24($at)` to drive the per-cell LOD predicate
+`dist >= LodDistance`. Substitution emits
+`s3 = openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word(at + 36)` so under
+--no-lod the predicate is always false and every visible cell enters
+the HP-walk.
+
+Surgical (PC-keyed at exactly the env-renderer's read site) instead of
+mutating g_Environment.m_LodDistance globally — a per-frame write of
+m_LodDistance hung widescreen + pause-menu BK2 because some pause-menu
+transition path reads m_LodDistance and misbehaves when the value is
+bumped above its canonical 0x8000. Keeping the raw byte at canonical
+0x8000 and intercepting only at this read site closes that channel.
+
+Identity at default (openpete_no_lod == 0)."""
+substitution_sites = [
+    0x80026214,  # lw $s3, 0x24($at) — m_LodDistance read at HP-walk start
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
 name        = "no_lod_moby_face_offset"
 status      = "gated"
 description = """

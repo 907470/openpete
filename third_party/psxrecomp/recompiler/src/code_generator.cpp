@@ -1358,6 +1358,29 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
                             translate_lw(instr), reg_name(rt));
+                    } else if (addr == 0x80026214u) {
+                        /* r_environment.s reads g_Environment.m_LodDistance
+                         * (offset 0x24) here. Under --no-lod we want the
+                         * env-renderer to collapse the LOD band — every
+                         * visible cell into the HP-walk. Setting the
+                         * loaded value to 0x7FFFFFFF makes the
+                         * `dist >= LodDistance` predicate always false.
+                         *
+                         * PC-keyed (not a global m_LodDistance write) so
+                         * any other consumer of g_Environment.m_LodDistance
+                         * — including pause-menu transition code — sees
+                         * the canonical 0x8000. Per-frame writes hung the
+                         * widescreen + pause-menu BK2 because some
+                         * pause-menu setup path apparently reads it and
+                         * misbehaves when bumped. Surgical substitution
+                         * here keeps gameplay-readable bytes pristine. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{} = openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word({} + {});"
+                            "  /* env-renderer m_LodDistance load (no-lod gate) */",
+                            reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
                         /* Phase 4 moby model LOD collapse. r_moby.s LP-band
                          * branch loads `lw $fp, 0x1C($ra)` — the AnimationHeader

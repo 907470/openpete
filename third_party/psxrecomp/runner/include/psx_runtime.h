@@ -125,6 +125,12 @@ extern uint32_t psx_runtime_g_sony_image_base;
  * (LP-band branch in r_moby.s). Identity at default. */
 extern uint32_t psx_runtime_moby_lp_face_offset;
 
+/* --no-lod feature flag. Read by the recompiler-emitted lw substitution
+ * at PC 0x80026214 (r_environment.s m_LodDistance load) to inject an
+ * always-false LOD predicate without mutating g_Environment.m_LodDistance.
+ * Defined in core/runtime/fiber.c. */
+extern int openpete_no_lod;
+
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
  *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
  * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For

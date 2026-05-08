@@ -453,17 +453,18 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * per-frame override is safe and idempotent. g_Environment lives
      * at 0x800785A8; m_LodDistance is offset +0x24. */
     if (openpete_no_lod) {
-        cpu->write_word(0x800785CCu, 0x7FFFFFFFu);
-        /* Phase 3 texture LOD collapse: force the HQ atlas everywhere by
-         * pointing m_LQTexturePointer at m_HQTexturePointer's value. The
-         * env renderer reads both via the same lw $reg, 0x18(g_Environment) /
-         * 0x1C(...) idiom; making them equal removes the LQ atlas from
-         * the pipeline. Only loaders.c writes these (set once at level
-         * load); no C-side reader exists, so a per-frame override is
-         * idempotent and renderer-only. */
+        /* Phase 3 texture LOD: force HQ atlas everywhere by writing
+         * m_HQTexturePointer into m_LQTexturePointer. Renderer-only
+         * (only loaders.c writes these, no C-side reader). */
         uint32_t hq = cpu->read_word(0x800785C4u);
         cpu->write_word(0x800785C0u, hq);
     }
+    /* Phase 2.5 sector LOD collapse is now done via PC-keyed lw
+     * substitution at r_environment.s 0x80026214 (m_LodDistance read).
+     * That keeps gameplay-readable RAM at canonical bytes; only the
+     * env-renderer's cell-sort sees the bumped value. Avoids the
+     * widescreen+pause-menu hang caused by other consumers seeing a
+     * mutated m_LodDistance during the GS_PauseMenu transition. */
 
     /* Install env-var write-watcher on the first frame, after the
      * runtime has wired cpu->write_byte/half/word. */
