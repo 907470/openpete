@@ -26,6 +26,14 @@
  * addresses (see openpete_core_purity_check). */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
+/* Default queue-head sub-offsets — match the canonical g_SonyImage
+ * struct so the substituted addi sites in r_environment.s land at
+ * the same bytes as before. --no-lod boot will swing these past
+ * the canonical 0x31A0 splash range. */
+uint32_t psx_runtime_env_hp_queue_offset  = 0x1C00u;
+uint32_t psx_runtime_env_mid_queue_offset = 0x1E00u;
+uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
+
 /* --- Identity --- */
 
 uint32_t game_get_entry_point(void) {

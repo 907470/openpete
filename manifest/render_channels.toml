@@ -626,3 +626,66 @@ verified_against   = ["aspect_determinism"]
 state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
+
+[[channel]]
+name        = "no_lod_env_queue_offsets"
+status      = "gated"
+description = """
+r_environment.s queue-head pointer arithmetic: 11 PC-keyed `addi $rt,
+$rs, +0x1C00 | +0x1E00 | +0x2000` sites following a `lui+addiu
+D_8006FCF4` pair, where $rs already holds the splash-and-scratch base
+and the addi shifts to one of three queue heads (HP / mid / LP).
+
+Substituted via three runtime knobs (psx_runtime_env_hp_queue_offset,
+_mid_queue_offset, _lp_queue_offset) defaulting to the canonical
+0x1C00 / 0x1E00 / 0x2000 sub-offsets — identity at default, byte-
+identical to the pre-substitution recompiler output.
+
+--no-lod (Phase 2.5 of openpete-disable-lods.md) collapses Spyro's
+sector LOD band by overriding m_LodDistance every frame; the side
+effect is that every visible sector enters the HP queue, which on
+dense levels and most widescreen aspects exceeds the canonical 256-
+entry queue capacity. The fix is to relocate the splash-and-scratch
+pool to a virtualized region (psx_runtime_register_region from
+openpete-ram-virtualization.md) and swing these offset knobs to fresh
+sub-offsets past the canonical 0x31A0 splash struct, where each queue
+gets ~16 KB (4096 entries × 4 bytes) of physical space before the
+next sub-bucket. Queues are NULL-terminated, so growth is bytes-
+between-sub-buckets — no count-limit substitution needed.
+
+Two `addi $r, $r, 0x2000` sites at 0x80026DEC / 0x80027340 in the
+same file are NOT substituted: they compose `($s5 >> 2) + 0x2000`
+into a Z-saturation chain (sub + addi -0x1000 + bgez) and have no
+relation to the pool. Confirmed by reading the surrounding context.
+
+The base lui+addiu redirect is value-keyed and lives in code_generator
+as the `lui $X, 0x8007 / addiu $X, $X, lo` pair detector; that
+substitution is not enumerated by this channel because it spans 230
+sites across 50+ files (every renderer + every level overlay) — the
+audit tool can't track it as a per-PC list. It is identity at default
+knob (psx_runtime_g_sony_image_base == 0x8006FCF4), verified against
+aspect_determinism.
+
+Render-side only — these queue heads are populated and consumed
+within a single render-pass invocation of r_environment.s; nothing
+outside the renderer reads the queue contents. The downstream
+gameplay-readable channels that *share* sub-offsets with these
+queues (m_ShadedMobys at +0x2400, g_LevelTransGems at +0x2800)
+remain at canonical bytes via the value-keyed base redirect into a
+region that mirrors the canonical 0x31A0 layout 1:1."""
+substitution_sites = [
+    0x800259BC,  # +0x1C00 HP-queue head, front-walk init
+    0x800259C0,  # +0x2000 LP-queue head, front-walk init
+    0x800261EC,  # +0x2000 LP-queue start / NULL terminator
+    0x8002679C,  # +0x1C00 HP-queue head, HP-walk init
+    0x800267A0,  # +0x1E00 mid-queue head, HP-walk init
+    0x800267A4,  # +0x2000 LP-queue head, HP-walk init
+    0x80027698,  # +0x2000 LP-queue head, second HP-walk
+    0x80028584,  # +0x1E00 mid-queue head, second HP-walk
+    0x80028588,  # +0x2000 LP-queue head, second HP-walk
+    0x800294FC,  # +0x1E00 mid-queue read, LP-walk
+    0x8002A0AC,  # +0x2000 LP-queue read, LP-walk
+]
+verdict_fn       = "psx_runtime_env_{hp,mid,lp}_queue_offset"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"

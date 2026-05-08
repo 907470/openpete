@@ -92,6 +92,22 @@ extern uint32_t psx_runtime_clip_x_mask;
  * there. */
 extern uint32_t psx_runtime_clip_x_threshold;
 
+/* r_environment.s queue-head sub-offsets within g_SonyImage (or its
+ * relocated mirror). Default values match the canonical splash struct:
+ *   HP  queue head at +0x1C00 (m_WorldNearQueued)
+ *   mid queue head at +0x1E00 (HP-walk deferred bucket)
+ *   LP  queue head at +0x2000 (m_WorldFarQueued)
+ * --no-lod swings these to fresh sub-offsets past the canonical 0x31A0
+ * struct so the queues can grow past 256 entries without colliding
+ * with each other or with gameplay-readable bytes (m_ShadedMobys at
+ * +0x2400, g_LevelTransGems at +0x2800).
+ *
+ * Substituted at PC-keyed addi sites in r_environment.s; see
+ * code_generator.cpp case 0x08. Identity at default. */
+extern uint32_t psx_runtime_env_hp_queue_offset;
+extern uint32_t psx_runtime_env_mid_queue_offset;
+extern uint32_t psx_runtime_env_lp_queue_offset;
+
 /* g_SonyImage / D_8006FCF4 base redirect. Default 0x8006FCF4 (canonical
  * PSX address; substitution is identity). When --no-lod (or any future
  * consumer of the env-renderer scratch pool) registers a relocated

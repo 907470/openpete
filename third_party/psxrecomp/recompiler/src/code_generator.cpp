@@ -986,7 +986,43 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     uint32_t rs = get_rs(instr);
                     uint32_t rt = get_rt(instr);
                     int16_t imm = (int16_t)get_imm16_u(instr);
-                    if (addr == 0x80026A34u && imm == 0x100) {
+                    /* r_environment.s env-renderer queue-head computations.
+                     * Each site is `addi $rt, $rs, +0x1C00 | +0x1E00 | +0x2000`
+                     * immediately after a `lui+addiu D_8006FCF4` that put
+                     * the pool base in $rs; the addi shifts to a queue
+                     * head. --no-lod swings the offset past the canonical
+                     * 0x31A0 struct to grow the queue past 256 entries.
+                     * Identity at default. PC-keyed (not value-keyed)
+                     * because `addi $r, $r, 0x2000` also appears in
+                     * non-pool integer arithmetic (Z-saturation chains
+                     * at 0x80026DEC / 0x80027340). */
+                    if ((addr == 0x800259BCu && imm == 0x1C00) ||
+                        (addr == 0x8002679Cu && imm == 0x1C00))
+                    {
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_env_hp_queue_offset;"
+                            "  /* env HP-queue head */",
+                            reg_name(rt), reg_name(rs));
+                    } else if ((addr == 0x800267A0u && imm == 0x1E00) ||
+                               (addr == 0x80028584u && imm == 0x1E00) ||
+                               (addr == 0x800294FCu && imm == 0x1E00))
+                    {
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_env_mid_queue_offset;"
+                            "  /* env mid-queue head */",
+                            reg_name(rt), reg_name(rs));
+                    } else if ((addr == 0x800259C0u && imm == 0x2000) ||
+                               (addr == 0x800261ECu && imm == 0x2000) ||
+                               (addr == 0x800267A4u && imm == 0x2000) ||
+                               (addr == 0x80027698u && imm == 0x2000) ||
+                               (addr == 0x80028588u && imm == 0x2000) ||
+                               (addr == 0x8002A0ACu && imm == 0x2000))
+                    {
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_env_lp_queue_offset;"
+                            "  /* env LP-queue head */",
+                            reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x80026A34u && imm == 0x100) {
                         /* r_environment.s func_800258F0 per-vertex
                          * lateral-bound cull, +0x100 site (X axis).
                          * See psx_runtime.h `psx_runtime_env_cell_x_bound`. */
