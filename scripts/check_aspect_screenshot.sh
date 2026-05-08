@@ -47,15 +47,33 @@ FRAME=850
 ASPECTS_CSV="4:3,16:9,21:9"
 BASELINE="4:3"
 OUT_DIR="/tmp/aspect-screenshot"
-# Diff-count gate: pass when at most MAX_DIVERGENT pixels in the
-# central 4:3 region have per-channel abs diff > DIFF_THRESHOLD.
-# Locked to the worst observed value at frame 850 across the checked
-# aspects (16:9 sets the ceiling). Sub-pixel edge jitter trivially
-# saturates a worst-per-channel metric to 255 (one anti-aliased edge
-# pixel flipping fg<->bg), so a count metric is the meaningful gate.
-# Lower these values as projection precision improves.
+# Diff-count gate: pass when at most MAX_DIVERGENT[aspect] pixels in
+# the central 4:3 region have per-channel abs diff > DIFF_THRESHOLD.
+# Per-aspect ceilings — each ratchets the inherent integer-GTE
+# precision floor for that aspect (the irrational-Δ-OFX silhouette
+# jitter described in notes/plans/openpete-widescreen-fov.md).
+# Sub-pixel edge jitter trivially saturates a worst-per-channel
+# metric to 255 (one anti-aliased edge pixel flipping fg<->bg), so a
+# count metric is the meaningful gate.
+#
+# Locked at frame 850 to the deterministic per-aspect counts +
+# small headroom. Lower as projection precision improves; aspects
+# with integer Δ-OFX (5:3, 16:10, 21:9, 48:9, ...) should approach
+# zero while aspects with irrational Δ-OFX (16:9, 32:9, ...) bottom
+# out at their integer-rounding floor.
 DIFF_THRESHOLD=32
-MAX_DIVERGENT=5400
+declare -A MAX_DIVERGENT_BY_ASPECT=(
+    # Δ-OFX = 53.33 PSX-X (irrational); frame-850 floor 5097
+    ["16:9"]=5200
+    # Δ-OFX = 120 PSX-X (integer); frame-850 floor 2871
+    ["21:9"]=3000
+    # Δ-OFX = 266.67 PSX-X (irrational); frame-850 floor 7883
+    ["32:9"]=8000
+)
+# Used for any aspect not listed above (e.g. user-supplied via
+# --aspects=…). Loose so unknown aspects don't silently fail; tighten
+# by adding entries to MAX_DIVERGENT_BY_ASPECT.
+MAX_DIVERGENT_FALLBACK=20000
 
 for arg in "$@"; do
     case "$arg" in
@@ -65,7 +83,16 @@ for arg in "$@"; do
         --baseline=*)  BASELINE="${arg#--baseline=}" ;;
         --out=*)       OUT_DIR="${arg#--out=}" ;;
         --diff-threshold=*) DIFF_THRESHOLD="${arg#--diff-threshold=}" ;;
-        --max-divergent=*)  MAX_DIVERGENT="${arg#--max-divergent=}" ;;
+        # --max-divergent=ASPECT:N overrides one aspect's ceiling.
+        # --max-divergent=N (no colon) sets the fallback for unknowns.
+        --max-divergent=*)
+            v="${arg#--max-divergent=}"
+            if [[ "$v" == *:* ]]; then
+                MAX_DIVERGENT_BY_ASPECT["${v%:*}"]="${v#*:}"
+            else
+                MAX_DIVERGENT_FALLBACK="$v"
+            fi
+            ;;
         --help|-h)     sed -n '1,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
@@ -126,7 +153,12 @@ run_one() {
     echo "$out_png"
 }
 
-echo "[shot-cmp] frame=$FRAME baseline=$BASELINE thresh=$DIFF_THRESHOLD max_divergent=$MAX_DIVERGENT"
+echo "[shot-cmp] frame=$FRAME baseline=$BASELINE thresh=$DIFF_THRESHOLD"
+for a in "${ASPECTS[@]}"; do
+    [[ "$a" == "$BASELINE" ]] && continue
+    cap="${MAX_DIVERGENT_BY_ASPECT[$a]:-$MAX_DIVERGENT_FALLBACK}"
+    echo "           ceiling[$a] = $cap"
+done
 declare -A SHOT
 for a in "${ASPECTS[@]}"; do
     p="$(run_one "$a")" || exit 1
@@ -137,13 +169,14 @@ done
 declare -i fail=0
 for a in "${ASPECTS[@]}"; do
     [[ "$a" == "$BASELINE" ]] && continue
+    cap="${MAX_DIVERGENT_BY_ASPECT[$a]:-$MAX_DIVERGENT_FALLBACK}"
     out="$(python3 scripts/center_crop_diff.py \
             --baseline "${SHOT[$BASELINE]}" \
             --candidate "${SHOT[$a]}" \
             --crop-w 960 --crop-h 672 \
             --overscan-top 24 --overscan-bot 24 \
             --diff-threshold "$DIFF_THRESHOLD" \
-            --max-divergent "$MAX_DIVERGENT" \
+            --max-divergent "$cap" \
             --diff-out "$OUT_DIR/diff-$BASELINE-vs-$a.png" 2>&1)"
     rc=$?
     if [[ $rc -eq 0 ]]; then
