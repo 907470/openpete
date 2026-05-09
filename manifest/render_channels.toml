@@ -723,6 +723,37 @@ doc              = "notes/plans/openpete-disable-lods.md"
 
 
 [[channel]]
+name        = "lp_classify_instrumentation"
+status      = "audited_clean"
+description = """
+Read-only instrumentation hook (OPENPETE_LP_CLASSIFY_LOG=1 env var)
+that records every cell admitted to the env-renderer's LP-queue and
+every cell processed by the HP-walk loop. Cross-referenced at process
+exit to determine whether LP-classified cells are a subset of HP-
+walked cells (same source data, two render outputs) or disjoint (LP-
+only data needing synthesis to lift into HP).
+
+Two PC sites:
+- 0x80025B74: sw $a1, 0x0($s0) — LP-queue push in front-walk
+  classifier. Hook reads $s1 (cell pointer) and $t1 (the 0xE000 cell
+  flag bits that drive the HP/MID/LP routing) before the canonical sw.
+- 0x80026238: xor $t7, $t7, $s1 — HP-walk per-cell entry. After the
+  xor, $t7 holds the cell pointer with the marker bit stripped.
+
+Both substitutions branch on `psx_runtime_lp_classify_log`; when the
+knob is unset (default), the emitted code is byte-identical to the
+canonical instruction. Used to determine `--no-lod` Phase 2.5
+strategy: branch tweak vs data synthesis."""
+substitution_sites = [
+    0x80025B74,  # LP-push site (read $s1, $t1 before sw)
+    0x80026238,  # HP-walk per-cell entry (read $t7 after xor)
+]
+verdict_fn       = "psx_runtime_lp_classify_log"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
 name        = "no_lod_moby_face_offset"
 status      = "gated"
 description = """

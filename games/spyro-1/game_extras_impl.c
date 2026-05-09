@@ -43,6 +43,124 @@ uint32_t psx_runtime_moby_lp_face_offset = 0x1Cu;
 
 int psx_runtime_dbg_kill_env_lp_walk = 0;
 
+/* --- LP/HP classification instrumentation -------------------------- */
+
+int psx_runtime_lp_classify_log = 0;
+
+/* Sparse uniqueness sets keyed on cell pointer. Spyro levels have at
+ * most a few thousand env cells; a fixed-size open-addressed table is
+ * plenty and avoids dynamic alloc on a per-frame hot path. */
+#define LPCL_TABLE_BITS 14
+#define LPCL_TABLE_SIZE (1u << LPCL_TABLE_BITS)
+#define LPCL_TABLE_MASK (LPCL_TABLE_SIZE - 1u)
+
+typedef struct {
+    uint32_t cell;            /* 0 = empty slot */
+    uint32_t flags_e000_seen; /* OR of every flag bitset observed */
+    uint32_t lp_pushes;       /* count of LP pushes for this cell */
+    uint32_t hp_visits;       /* count of HP-walk visits for this cell */
+} lpcl_entry_t;
+
+static lpcl_entry_t s_lpcl_lp_tbl[LPCL_TABLE_SIZE];
+static lpcl_entry_t s_lpcl_hp_tbl[LPCL_TABLE_SIZE];
+static uint32_t     s_lpcl_lp_unique = 0;
+static uint32_t     s_lpcl_hp_unique = 0;
+static uint64_t     s_lpcl_lp_total  = 0;
+static uint64_t     s_lpcl_hp_total  = 0;
+
+static lpcl_entry_t* lpcl_find_or_insert(lpcl_entry_t* tbl, uint32_t cell, uint32_t* unique_counter) {
+    uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
+    for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
+        uint32_t i = (h + probe) & LPCL_TABLE_MASK;
+        if (tbl[i].cell == 0u) {
+            tbl[i].cell = cell;
+            (*unique_counter)++;
+            return &tbl[i];
+        }
+        if (tbl[i].cell == cell) {
+            return &tbl[i];
+        }
+    }
+    return NULL;  /* table full — silently drop */
+}
+
+void psx_runtime_lp_classify_record_lp(uint32_t cell_ptr, uint32_t flags_e000) {
+    if (!psx_runtime_lp_classify_log || cell_ptr == 0u) return;
+    s_lpcl_lp_total++;
+    lpcl_entry_t* e = lpcl_find_or_insert(s_lpcl_lp_tbl, cell_ptr, &s_lpcl_lp_unique);
+    if (e) {
+        e->flags_e000_seen |= (flags_e000 & 0xE000u);
+        e->lp_pushes++;
+    }
+}
+
+void psx_runtime_lp_classify_record_hp(uint32_t cell_ptr) {
+    if (!psx_runtime_lp_classify_log || cell_ptr == 0u) return;
+    s_lpcl_hp_total++;
+    lpcl_entry_t* e = lpcl_find_or_insert(s_lpcl_hp_tbl, cell_ptr, &s_lpcl_hp_unique);
+    if (e) {
+        e->hp_visits++;
+    }
+}
+
+static int lpcl_hp_seen(uint32_t cell) {
+    uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
+    for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
+        uint32_t i = (h + probe) & LPCL_TABLE_MASK;
+        if (s_lpcl_hp_tbl[i].cell == 0u) return 0;
+        if (s_lpcl_hp_tbl[i].cell == cell) return 1;
+    }
+    return 0;
+}
+
+void psx_runtime_lp_classify_dump(FILE* out) {
+    if (!out) return;
+    if (!psx_runtime_lp_classify_log) {
+        fprintf(out, "[lp_classify] not enabled (set OPENPETE_LP_CLASSIFY_LOG=1)\n");
+        return;
+    }
+
+    /* Buckets keyed on observed flag bits in 0xE000 */
+    uint32_t hist_total[8] = {0};
+    uint32_t hist_in_hp[8] = {0};
+
+    for (uint32_t i = 0; i < LPCL_TABLE_SIZE; ++i) {
+        if (s_lpcl_lp_tbl[i].cell == 0u) continue;
+        uint32_t bucket = (s_lpcl_lp_tbl[i].flags_e000_seen >> 13) & 0x7u;
+        hist_total[bucket]++;
+        if (lpcl_hp_seen(s_lpcl_lp_tbl[i].cell)) {
+            hist_in_hp[bucket]++;
+        }
+    }
+
+    fprintf(out, "[lp_classify] LP-pushes total=%llu unique-cells=%u\n",
+            (unsigned long long)s_lpcl_lp_total, s_lpcl_lp_unique);
+    fprintf(out, "[lp_classify] HP-visits total=%llu unique-cells=%u\n",
+            (unsigned long long)s_lpcl_hp_total, s_lpcl_hp_unique);
+    fprintf(out, "[lp_classify] flag-bucket histogram of LP-pushed cells:\n");
+    fprintf(out, "             0x2000 0x4000 0x8000  count   also-in-HP\n");
+    static const char* names[8] = {
+        "  ----", "  2000", "  4000", "  6000",
+        "  8000", "  A000", "  C000", "  E000"
+    };
+    for (uint32_t b = 0; b < 8; ++b) {
+        if (hist_total[b] == 0u) continue;
+        fprintf(out, "  bucket %s   %c     %c     %c    %5u   %5u (%5.1f%%)\n",
+                names[b],
+                (b & 1) ? 'Y' : '.',
+                (b & 2) ? 'Y' : '.',
+                (b & 4) ? 'Y' : '.',
+                hist_total[b], hist_in_hp[b],
+                hist_total[b] ? (100.0 * hist_in_hp[b] / hist_total[b]) : 0.0);
+    }
+
+    /* Headline answer */
+    uint32_t total = 0, also_in_hp = 0;
+    for (uint32_t b = 0; b < 8; ++b) { total += hist_total[b]; also_in_hp += hist_in_hp[b]; }
+    fprintf(out, "[lp_classify] %u/%u (%.1f%%) of LP-pushed unique cells are also HP-walked\n",
+            also_in_hp, total, total ? (100.0 * also_in_hp / total) : 0.0);
+}
+
 /* --no-lod region layout. Allocated and registered in game_apply_no_lod()
  * once the canonical splash bytes have been populated; remains live for
  * the rest of the run.

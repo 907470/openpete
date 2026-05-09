@@ -670,6 +670,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
     }
 
+    /* Instrumentation: log LP-classified vs HP-walked cells, then dump
+     * a histogram at process exit. Used to determine whether LP-pushed
+     * cells are a subset of HP-walked cells (same source data, two
+     * outputs) or disjoint (LP-only data needing synthesis). */
+    {
+        const char* env = getenv("OPENPETE_LP_CLASSIFY_LOG");
+        if (env && env[0] != '\0' && env[0] != '0') {
+            psx_runtime_lp_classify_log = 1;
+            OPL_INFO_F("dbg", "%s", "OPENPETE_LP_CLASSIFY_LOG=1: recording LP/HP cell classification");
+        }
+    }
+
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
@@ -1494,6 +1506,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
 
     PsyX_Shutdown();
+
+    if (psx_runtime_lp_classify_log) {
+        psx_runtime_lp_classify_dump(stdout);
+    }
 
     fprintf(stdout,
             "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",

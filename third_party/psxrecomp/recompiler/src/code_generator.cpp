@@ -957,7 +957,21 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x23: code = translate_subu(instr); break;    // subu
             case 0x24: code = translate_and(instr); break;     // and
             case 0x25: code = translate_or(instr); break;      // or
-            case 0x26: code = translate_xor(instr); break;     // xor
+            case 0x26:                                         // xor
+                {
+                    if (addr == 0x80026238u) {
+                        /* Instrumentation: env-renderer HP-walk per-cell entry.
+                         * After this xor, $t7 holds the cell pointer (with
+                         * the marker bit stripped). Record it. */
+                        code = fmt::format(
+                            "{} if (psx_runtime_lp_classify_log) "
+                            "psx_runtime_lp_classify_record_hp(cpu->t7);",
+                            translate_xor(instr));
+                    } else {
+                        code = translate_xor(instr);
+                    }
+                }
+                break;
             case 0x27: code = translate_nor(instr); break;     // nor
             case 0x2A: code = translate_slt(instr); break;     // slt
             case 0x2B: code = translate_sltu(instr); break;    // sltu
@@ -1423,7 +1437,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x28: code = translate_sb(instr, addr); break;     // sb
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
-            case 0x2B: code = translate_sw(instr); break;     // sw
+            case 0x2B:                                         // sw
+                {
+                    if (addr == 0x80025B74u) {
+                        /* Instrumentation: env-renderer LP-push site.
+                         * Front-walk classifier admits a cell into the
+                         * LP-queue here. Record (cell_ptr=$s1, flags=$t1)
+                         * so we can answer whether LP-classified cells
+                         * are a subset of HP-walked cells. */
+                        code = fmt::format(
+                            "if (psx_runtime_lp_classify_log) "
+                            "psx_runtime_lp_classify_record_lp(cpu->s1, cpu->t1); "
+                            "{}",
+                            translate_sw(instr));
+                    } else {
+                        code = translate_sw(instr);
+                    }
+                }
+                break;
             case 0x2E: code = translate_swr(instr); break;    // swr
             case 0x32:                                         // LWC2 - load word to COP2
                 {
