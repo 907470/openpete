@@ -1358,6 +1358,34 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
                             translate_lw(instr), reg_name(rt));
+                    } else if (addr == 0x800276B4u) {
+                        /* LP-walk loop top in r_environment.s. When the
+                         * OPENPETE_DBG_KILL_LP debug knob is set, force
+                         * the loaded value to 0 so the following beqz
+                         * exits the loop immediately — disables ground-
+                         * plane (LP-walk → HQ atlas) rendering for
+                         * visual identification of which cells use it. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{} = psx_runtime_dbg_kill_env_lp_walk ? 0u : "
+                            "cpu->read_word({} + {});  /* LP-walk kill knob */",
+                            reg_name(rt), reg_name(rs), off);
+                    } else if (addr == 0x800261E0u) {
+                        /* DBG: env-renderer's read of g_SkipLowPolyWorld.
+                         * When psx_runtime_dbg_kill_env_lp_walk is set,
+                         * OR in a 1 so the following bnez at 0x800261F8
+                         * always branches and the LP-walk is skipped.
+                         * Scoped to the env-renderer (not r_moby /
+                         * r_cyclorama, which read the same flag). */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{} = cpu->read_word({} + {}) | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);"
+                            "  /* env-renderer SkipLowPolyWorld (debug LP-kill) */",
+                            reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x800259B0u || addr == 0x80026214u) {
                         /* r_environment.s reads g_Environment.m_LodDistance
                          * (offset 0x24) here. Under --no-lod we want the

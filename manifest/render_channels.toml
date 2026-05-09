@@ -720,6 +720,37 @@ doc              = "notes/plans/openpete-disable-lods.md"
 
 
 [[channel]]
+name        = "dbg_kill_env_lp_walk"
+status      = "audited_clean"
+description = """
+Debug-only knob (OPENPETE_DBG_KILL_LP=1 env var) that disables the
+env-renderer's LP-walk for visual identification of which cells use
+the LP-walk → HQ-atlas ground-plane render path.
+
+Two PC sites:
+- 0x800261E0: lw $at, 0x0(g_SkipLowPolyWorld). OR'd with 1u when knob
+  set so the following bnez at 0x800261F8 always branches and the
+  pre-LP-walk pass at .L80026228 is skipped.
+- 0x800276B4: lw $s3, 0x0($ra) at the second LP-walk loop top
+  (.L800276B4). When knob set, returns 0 so the following beqz exits
+  the loop immediately — kills the actual primitive-emitting LP-walk.
+
+Both substitutions are identity at default (knob == 0), so the
+recompiler-emitted code is byte-identical to the canonical PSX
+behaviour when the debug knob is unset. Used during the Phase 3
+investigation (commit `8fa68ae`) to prove the LP-walk renders ground
+cells, not horizon backdrop. See plan
+`notes/plans/openpete-disable-lods.md` Phase 3 close-out section."""
+substitution_sites = [
+    0x800261E0,  # env-renderer SkipLowPolyWorld read (debug OR with 1)
+    0x800276B4,  # LP-walk loop top (debug short-circuit to 0)
+]
+verdict_fn       = "psx_runtime_dbg_kill_env_lp_walk"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
 name        = "no_lod_moby_face_offset"
 status      = "gated"
 description = """

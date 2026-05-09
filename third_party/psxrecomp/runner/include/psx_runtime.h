@@ -131,6 +131,14 @@ extern uint32_t psx_runtime_moby_lp_face_offset;
  * Defined in core/runtime/fiber.c. */
 extern int openpete_no_lod;
 
+/* Debug knob: when non-zero, force the env-renderer's
+ * `g_SkipLowPolyWorld` read at PC 0x800261E0 to return 1, which makes
+ * the env-renderer skip its LP-walk entirely (`bnez .L80026788`).
+ * Affects ONLY the env-renderer, not r_moby.s / r_cyclorama.s where
+ * the same flag has different semantics. Set via OPENPETE_DBG_KILL_LP=1
+ * env var. Used to visually identify what cells the LP-walk renders. */
+extern int psx_runtime_dbg_kill_env_lp_walk;
+
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
  *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
  * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For

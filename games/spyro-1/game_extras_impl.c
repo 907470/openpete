@@ -41,6 +41,8 @@ uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
  * `lw $fp, 0x1C($ra)` sites in r_moby.s (PCs 0x8001FE9C, 0x80021674). */
 uint32_t psx_runtime_moby_lp_face_offset = 0x1Cu;
 
+int psx_runtime_dbg_kill_env_lp_walk = 0;
+
 /* --no-lod region layout. Allocated and registered in game_apply_no_lod()
  * once the canonical splash bytes have been populated; remains live for
  * the rest of the run.

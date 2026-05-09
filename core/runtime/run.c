@@ -659,6 +659,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_no_lod = 1;
     }
 
+    /* Debug: visually identify what the env-renderer's LP-walk renders
+     * by killing it. Set OPENPETE_DBG_KILL_LP=1. Affects only the
+     * env-renderer (not r_moby/r_cyclorama). */
+    {
+        const char* env = getenv("OPENPETE_DBG_KILL_LP");
+        if (env && env[0] != '\0' && env[0] != '0') {
+            psx_runtime_dbg_kill_env_lp_walk = 1;
+            OPL_INFO_F("dbg", "%s", "OPENPETE_DBG_KILL_LP=1: env-renderer LP-walk disabled");
+        }
+    }
+
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
