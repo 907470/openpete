@@ -1400,46 +1400,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = cpu->read_word({} + {}) | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);"
                             "  /* env-renderer SkipLowPolyWorld (debug LP-kill) */",
                             reg_name(rt), reg_name(rs), off);
-                    } else if (addr == 0x800259B0u) {
-                        /* Phase 2.5 v2: env-renderer m_LodDistance load
-                         * in front-walk classifier prologue. The result
-                         * gets `srl 4` to form $s6, which gates two
-                         * distance tests in the routing blocks:
-                         *
-                         *  Block 1 (LP-push @ 0x80025B74, queue +0x2000):
-                         *    PC 0x80025B70: bgez ($s6 - (Z+bias+0x100))
-                         *    skip LP-push if $s6 >= Z+bias+0x100 (close)
-                         *    → push happens for FAR cells only
-                         *
-                         *  Block 2 (HP-push @ 0x80025BA4, queue +0x1C00):
-                         *    PC 0x80025B90: blez ($s6 - (Z-bias))
-                         *    skip HP-push if Z >= $s6+bias (far)
-                         *    → push happens for CLOSE/MID cells only
-                         *
-                         * Setting $s6 = 0x7FFFFFFF (after srl 4 still
-                         * 0x07FFFFFF, very large) makes:
-                         *  - LP-push gate: $at = $s6 - small ≈ huge
-                         *    positive → bgez always true → SKIP LP-push
-                         *    for every cell. LP-queue stays empty.
-                         *  - HP-push gate: $v1 = $s6 - small ≈ huge
-                         *    positive → blez always false → HP-push
-                         *    fires for every cell. HP-queue gets all
-                         *    cells that survive front-walk cull.
-                         *
-                         * Net effect under --no-lod: every visible cell
-                         * goes through the HP-walk's per-cell tiled
-                         * HQ-atlas render path. The env-renderer's
-                         * LP-queue (offset 0x2000 from g_SonyImage)
-                         * stays empty, so the LP-walk at .L80026200
-                         * iterates a NULL-terminated empty list and
-                         * exits immediately. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{} = openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word({} + {});"
-                            "  /* env-renderer m_LodDistance load (no-lod gate) */",
-                            reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
                         /* Phase 4 moby model LOD collapse. r_moby.s LP-band
                          * branch loads `lw $fp, 0x1C($ra)` — the AnimationHeader
