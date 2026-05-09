@@ -1386,7 +1386,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = cpu->read_word({} + {}) | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);"
                             "  /* env-renderer SkipLowPolyWorld (debug LP-kill) */",
                             reg_name(rt), reg_name(rs), off);
-                    } else if (addr == 0x800259B0u || addr == 0x80026214u) {
+                    } else if (addr == 0x80026214u) {
                         /* r_environment.s reads g_Environment.m_LodDistance
                          * (offset 0x24) here. Under --no-lod we want the
                          * env-renderer to collapse the LOD band — every
