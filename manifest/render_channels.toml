@@ -745,10 +745,59 @@ knob is unset (default), the emitted code is byte-identical to the
 canonical instruction. Used to determine `--no-lod` Phase 2.5
 strategy: branch tweak vs data synthesis."""
 substitution_sites = [
-    0x80025B74,  # LP-push site (read $s1, $t1 before sw)
-    0x80026238,  # HP-walk per-cell entry (read $t7 after xor)
+    0x80025B74,  # HP-push site (sw $a1 to $s0=base+0x2000); records $s1, $t1
+    0x80025BA4,  # LP-push site (sw $a1 to $t7=base+0x1C00); records $s1, $t1
+    0x80026238,  # HP-walk loop per-cell entry (records $t7 after xor)
 ]
 verdict_fn       = "psx_runtime_lp_classify_log"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_lod_distance"
+status      = "gated"
+description = """
+Phase 2.5 v2 — env-renderer sector LOD collapse. r_environment.s
+front-walk classifier loads `g_Environment.m_LodDistance` (offset
+0x24) at PC 0x800259B0 via `lw $s6, 0x24($at)`, then srl by 4 to
+form the $s6 register that gates two distance tests:
+
+  - PC 0x80025B70 (HP-push):
+      bgez ($s6 - (Z+bias+0x100))   ← skip HP-push if true
+  - PC 0x80025B90 (LP-push):
+      blez ($s6 - (Z-bias))         ← skip LP-push if true
+
+Substitution emits
+  $s6 = openpete_no_lod ? 0u : cpu->read_word(at + 0x24)
+
+Setting $s6 = 0 under --no-lod:
+  - HP-push gate: $at = -(Z+bias+0x100) < 0 always → bgez never taken
+    → HP-push unconditional for every cell that survives front-walk
+    cull. This is the "extend HP-band to full cull radius" lever.
+  - LP-push gate: $v1 = -(Z-bias). For visible cells where Z >> bias
+    (typical lod-bias = cell_flags & 0x1FFF, max 8191; visible Z is
+    usually larger), $v1 < 0 → blez taken → LP-push always skipped.
+
+Net visual: every cell goes through the HP-walk's per-cell tiled
+HQ-atlas render path. The env-renderer's LP-queue (offset 0x1C00 from
+g_SonyImage) is empty for cells admitted by front-walk; LP-walk runs
+but finds an empty queue.
+
+Surgical (PC-keyed at the front-walk's m_LodDistance load) so the
+canonical byte at g_Environment.m_LodDistance remains 0x8000 — other
+consumers (pause-menu transition, etc.) see the canonical value.
+
+Note: per-poly demotions inside the HP-walk (PCs 0x80026CAC/CC4/CF8)
+still feed prims into the LP-queue from individual quads; closing
+those is tracked separately. The instrumentation hook on the LP-push
+site reports cells that survive that demotion path.
+
+Identity at default (openpete_no_lod == 0)."""
+substitution_sites = [
+    0x800259B0,  # lw $s6, 0x24($at) — m_LodDistance in front-walk classifier
+]
+verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
 
