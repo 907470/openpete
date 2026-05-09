@@ -795,7 +795,7 @@ site reports cells that survive that demotion path.
 
 Identity at default (openpete_no_lod == 0)."""
 substitution_sites = [
-    0x800259B0,  # lw $s6, 0x24($at) — m_LodDistance in front-walk classifier
+    0x800259B0,  # lw $s6, 0x24($at) — m_LodDistance saturated to 0x7FFFFFFF
 ]
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]

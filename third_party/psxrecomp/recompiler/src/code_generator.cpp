@@ -1404,34 +1404,40 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         /* Phase 2.5 v2: env-renderer m_LodDistance load
                          * in front-walk classifier prologue. The result
                          * gets `srl 4` to form $s6, which gates two
-                         * distance tests:
+                         * distance tests in the routing blocks:
                          *
-                         *  - PC 0x80025B70 (HP-push):
-                         *      bgez ($s6 - (Z+bias+0x100))   skip if true
-                         *  - PC 0x80025B90 (LP-push):
-                         *      blez ($s6 - (Z-bias))         skip if true
+                         *  Block 1 (LP-push @ 0x80025B74, queue +0x2000):
+                         *    PC 0x80025B70: bgez ($s6 - (Z+bias+0x100))
+                         *    skip LP-push if $s6 >= Z+bias+0x100 (close)
+                         *    → push happens for FAR cells only
                          *
-                         * Setting $s6 = 0 makes:
-                         *  - HP-push: $at = -(Z+bias+0x100) < 0 always,
-                         *    bgez never taken → HP-push *unconditional*
-                         *    for every cell that survives front-walk cull.
-                         *  - LP-push: $v1 = -(Z-bias). For visible cells
-                         *    with Z >> bias, $v1 < 0, blez taken → LP-push
-                         *    *always skipped*.
+                         *  Block 2 (HP-push @ 0x80025BA4, queue +0x1C00):
+                         *    PC 0x80025B90: blez ($s6 - (Z-bias))
+                         *    skip HP-push if Z >= $s6+bias (far)
+                         *    → push happens for CLOSE/MID cells only
+                         *
+                         * Setting $s6 = 0x7FFFFFFF (after srl 4 still
+                         * 0x07FFFFFF, very large) makes:
+                         *  - LP-push gate: $at = $s6 - small ≈ huge
+                         *    positive → bgez always true → SKIP LP-push
+                         *    for every cell. LP-queue stays empty.
+                         *  - HP-push gate: $v1 = $s6 - small ≈ huge
+                         *    positive → blez always false → HP-push
+                         *    fires for every cell. HP-queue gets all
+                         *    cells that survive front-walk cull.
                          *
                          * Net effect under --no-lod: every visible cell
-                         * is HP-walked, the env-renderer's LP-queue is
-                         * empty (no decimated render pass). The remaining
-                         * LP-walk consumers (per-poly demotion at PCs
-                         * 0x80026CAC/CC4/CF8) are independent and will
-                         * still emit some prims into the LP-queue from
-                         * inside the HP-walk; that's a separate channel
-                         * tracked under no_lod_per_poly_demotion. */
+                         * goes through the HP-walk's per-cell tiled
+                         * HQ-atlas render path. The env-renderer's
+                         * LP-queue (offset 0x2000 from g_SonyImage)
+                         * stays empty, so the LP-walk at .L80026200
+                         * iterates a NULL-terminated empty list and
+                         * exits immediately. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         int16_t off = get_imm16(instr);
                         code = fmt::format(
-                            "{} = openpete_no_lod ? 0u : cpu->read_word({} + {});"
+                            "{} = openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word({} + {});"
                             "  /* env-renderer m_LodDistance load (no-lod gate) */",
                             reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
