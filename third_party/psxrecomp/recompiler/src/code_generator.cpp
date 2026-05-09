@@ -1442,12 +1442,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     if (addr == 0x80025B74u) {
                         /* Instrumentation: env-renderer LP-push site.
                          * Front-walk classifier admits a cell into the
-                         * LP-queue here. Record (cell_ptr=$s1, flags=$t1)
-                         * so we can answer whether LP-classified cells
-                         * are a subset of HP-walked cells. */
+                         * LP-queue here. Record (cell_ptr=$s1, flags=$t1). */
                         code = fmt::format(
                             "if (psx_runtime_lp_classify_log) "
                             "psx_runtime_lp_classify_record_lp(cpu->s1, cpu->t1); "
+                            "{}",
+                            translate_sw(instr));
+                    } else if (addr == 0x80025BA4u) {
+                        /* Instrumentation: env-renderer HP-push site.
+                         * Front-walk classifier admits a cell into the
+                         * HP-queue (D_8006FCF4 + 0x1C00) here. Record
+                         * (cell_ptr=$s1, flags=$t1). Cross-referenced
+                         * with HP-walk loop to confirm this *is* the
+                         * HP-queue (not MID as previously mis-read). */
+                        code = fmt::format(
+                            "if (psx_runtime_lp_classify_log) "
+                            "psx_runtime_lp_classify_record_hppush(cpu->s1, cpu->t1); "
                             "{}",
                             translate_sw(instr));
                     } else {

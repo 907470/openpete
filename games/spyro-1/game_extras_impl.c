@@ -63,10 +63,13 @@ typedef struct {
 
 static lpcl_entry_t s_lpcl_lp_tbl[LPCL_TABLE_SIZE];
 static lpcl_entry_t s_lpcl_hp_tbl[LPCL_TABLE_SIZE];
-static uint32_t     s_lpcl_lp_unique = 0;
-static uint32_t     s_lpcl_hp_unique = 0;
-static uint64_t     s_lpcl_lp_total  = 0;
-static uint64_t     s_lpcl_hp_total  = 0;
+static lpcl_entry_t s_lpcl_hppush_tbl[LPCL_TABLE_SIZE];
+static uint32_t     s_lpcl_lp_unique     = 0;
+static uint32_t     s_lpcl_hp_unique     = 0;
+static uint32_t     s_lpcl_hppush_unique = 0;
+static uint64_t     s_lpcl_lp_total      = 0;
+static uint64_t     s_lpcl_hp_total      = 0;
+static uint64_t     s_lpcl_hppush_total  = 0;
 
 static lpcl_entry_t* lpcl_find_or_insert(lpcl_entry_t* tbl, uint32_t cell, uint32_t* unique_counter) {
     uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
@@ -103,6 +106,26 @@ void psx_runtime_lp_classify_record_hp(uint32_t cell_ptr) {
     }
 }
 
+void psx_runtime_lp_classify_record_hppush(uint32_t cell_ptr, uint32_t flags_e000) {
+    if (!psx_runtime_lp_classify_log || cell_ptr == 0u) return;
+    s_lpcl_hppush_total++;
+    lpcl_entry_t* e = lpcl_find_or_insert(s_lpcl_hppush_tbl, cell_ptr, &s_lpcl_hppush_unique);
+    if (e) {
+        e->flags_e000_seen |= (flags_e000 & 0xE000u);
+        e->lp_pushes++;
+    }
+}
+
+static int lpcl_hppush_seen(uint32_t cell) {
+    uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
+    for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
+        uint32_t i = (h + probe) & LPCL_TABLE_MASK;
+        if (s_lpcl_hppush_tbl[i].cell == 0u) return 0;
+        if (s_lpcl_hppush_tbl[i].cell == cell) return 1;
+    }
+    return 0;
+}
+
 static int lpcl_hp_seen(uint32_t cell) {
     uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
     for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
@@ -121,44 +144,59 @@ void psx_runtime_lp_classify_dump(FILE* out) {
     }
 
     /* Buckets keyed on observed flag bits in 0xE000 */
-    uint32_t hist_total[8] = {0};
-    uint32_t hist_in_hp[8] = {0};
+    uint32_t hist_total[8]      = {0};
+    uint32_t hist_in_hppush[8]  = {0};
+    uint32_t hist_in_hpwalk[8]  = {0};
 
     for (uint32_t i = 0; i < LPCL_TABLE_SIZE; ++i) {
         if (s_lpcl_lp_tbl[i].cell == 0u) continue;
         uint32_t bucket = (s_lpcl_lp_tbl[i].flags_e000_seen >> 13) & 0x7u;
         hist_total[bucket]++;
+        if (lpcl_hppush_seen(s_lpcl_lp_tbl[i].cell)) {
+            hist_in_hppush[bucket]++;
+        }
         if (lpcl_hp_seen(s_lpcl_lp_tbl[i].cell)) {
-            hist_in_hp[bucket]++;
+            hist_in_hpwalk[bucket]++;
         }
     }
 
-    fprintf(out, "[lp_classify] LP-pushes total=%llu unique-cells=%u\n",
+    fprintf(out, "[lp_classify] LP-pushes (sw 0x80025B74)  total=%llu unique-cells=%u\n",
             (unsigned long long)s_lpcl_lp_total, s_lpcl_lp_unique);
-    fprintf(out, "[lp_classify] HP-visits total=%llu unique-cells=%u\n",
+    fprintf(out, "[lp_classify] HP-pushes (sw 0x80025BA4)  total=%llu unique-cells=%u\n",
+            (unsigned long long)s_lpcl_hppush_total, s_lpcl_hppush_unique);
+    fprintf(out, "[lp_classify] HP-walks  (xor 0x80026238) total=%llu unique-cells=%u\n",
             (unsigned long long)s_lpcl_hp_total, s_lpcl_hp_unique);
     fprintf(out, "[lp_classify] flag-bucket histogram of LP-pushed cells:\n");
-    fprintf(out, "             0x2000 0x4000 0x8000  count   also-in-HP\n");
+    fprintf(out, "             0x2000 0x4000 0x8000  count   also-in-HP-push  also-in-HP-walk\n");
     static const char* names[8] = {
         "  ----", "  2000", "  4000", "  6000",
         "  8000", "  A000", "  C000", "  E000"
     };
     for (uint32_t b = 0; b < 8; ++b) {
         if (hist_total[b] == 0u) continue;
-        fprintf(out, "  bucket %s   %c     %c     %c    %5u   %5u (%5.1f%%)\n",
+        fprintf(out, "  bucket %s   %c     %c     %c    %5u    %5u (%5.1f%%)    %5u (%5.1f%%)\n",
                 names[b],
                 (b & 1) ? 'Y' : '.',
                 (b & 2) ? 'Y' : '.',
                 (b & 4) ? 'Y' : '.',
-                hist_total[b], hist_in_hp[b],
-                hist_total[b] ? (100.0 * hist_in_hp[b] / hist_total[b]) : 0.0);
+                hist_total[b],
+                hist_in_hppush[b],
+                hist_total[b] ? (100.0 * hist_in_hppush[b] / hist_total[b]) : 0.0,
+                hist_in_hpwalk[b],
+                hist_total[b] ? (100.0 * hist_in_hpwalk[b] / hist_total[b]) : 0.0);
     }
 
     /* Headline answer */
-    uint32_t total = 0, also_in_hp = 0;
-    for (uint32_t b = 0; b < 8; ++b) { total += hist_total[b]; also_in_hp += hist_in_hp[b]; }
-    fprintf(out, "[lp_classify] %u/%u (%.1f%%) of LP-pushed unique cells are also HP-walked\n",
-            also_in_hp, total, total ? (100.0 * also_in_hp / total) : 0.0);
+    uint32_t total = 0, also_hppush = 0, also_hpwalk = 0;
+    for (uint32_t b = 0; b < 8; ++b) {
+        total       += hist_total[b];
+        also_hppush += hist_in_hppush[b];
+        also_hpwalk += hist_in_hpwalk[b];
+    }
+    fprintf(out, "[lp_classify] %u/%u (%.1f%%) of LP-pushed cells were also HP-pushed (sw 0x80025BA4)\n",
+            also_hppush, total, total ? (100.0 * also_hppush / total) : 0.0);
+    fprintf(out, "[lp_classify] %u/%u (%.1f%%) of LP-pushed cells were also HP-walked (xor 0x80026238)\n",
+            also_hpwalk, total, total ? (100.0 * also_hpwalk / total) : 0.0);
 }
 
 /* --no-lod region layout. Allocated and registered in game_apply_no_lod()
