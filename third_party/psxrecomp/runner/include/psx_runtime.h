@@ -152,6 +152,7 @@ extern int psx_runtime_lp_classify_log;
 extern void psx_runtime_lp_classify_record_lp(uint32_t cell_ptr, uint32_t flags_e000);
 extern void psx_runtime_lp_classify_record_hp(uint32_t cell_ptr);
 extern void psx_runtime_lp_classify_record_hppush(uint32_t cell_ptr, uint32_t flags_e000);
+extern void psx_runtime_hp_offset_record(uint32_t cell_ptr, uint32_t metadata_word);
 extern void psx_runtime_lp_classify_dump(FILE* out);
 
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests

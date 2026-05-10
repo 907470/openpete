@@ -116,6 +116,54 @@ void psx_runtime_lp_classify_record_hppush(uint32_t cell_ptr, uint32_t flags_e00
     }
 }
 
+/* Probe: per-cell HP-offset metadata recorder. Records the metadata
+ * word at cell+0x14 (loaded into $s2 in the LP-walk). We extract:
+ *   - bits 31..22 = HP vertex section offset (>>22 << 2)
+ *   - bits 7..0   = LP face count
+ * Lets us answer whether every cell has a non-zero HP offset. */
+typedef struct {
+    uint32_t cell;
+    uint32_t metadata_seen;  /* bitwise OR of every observed metadata word */
+    uint32_t hp_offset_min;
+    uint32_t hp_offset_max;
+    uint32_t lp_face_min;
+    uint32_t lp_face_max;
+    uint32_t observations;
+} hp_offset_entry_t;
+
+static hp_offset_entry_t s_hp_offset_tbl[LPCL_TABLE_SIZE];
+static uint32_t          s_hp_offset_unique = 0;
+
+void psx_runtime_hp_offset_record(uint32_t cell_ptr, uint32_t metadata_word) {
+    if (!psx_runtime_lp_classify_log || cell_ptr == 0u) return;
+    uint32_t h = (cell_ptr ^ (cell_ptr >> 13) ^ (cell_ptr >> 24)) & LPCL_TABLE_MASK;
+    uint32_t hp_off  = (metadata_word >> 22) & 0x3FFu;  /* 10 bits */
+    uint32_t lp_face = metadata_word & 0xFFu;
+    for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
+        uint32_t i = (h + probe) & LPCL_TABLE_MASK;
+        if (s_hp_offset_tbl[i].cell == 0u) {
+            s_hp_offset_tbl[i].cell           = cell_ptr;
+            s_hp_offset_tbl[i].metadata_seen  = metadata_word;
+            s_hp_offset_tbl[i].hp_offset_min  = hp_off;
+            s_hp_offset_tbl[i].hp_offset_max  = hp_off;
+            s_hp_offset_tbl[i].lp_face_min    = lp_face;
+            s_hp_offset_tbl[i].lp_face_max    = lp_face;
+            s_hp_offset_tbl[i].observations   = 1;
+            s_hp_offset_unique++;
+            return;
+        }
+        if (s_hp_offset_tbl[i].cell == cell_ptr) {
+            s_hp_offset_tbl[i].metadata_seen |= metadata_word;
+            if (hp_off < s_hp_offset_tbl[i].hp_offset_min) s_hp_offset_tbl[i].hp_offset_min = hp_off;
+            if (hp_off > s_hp_offset_tbl[i].hp_offset_max) s_hp_offset_tbl[i].hp_offset_max = hp_off;
+            if (lp_face < s_hp_offset_tbl[i].lp_face_min)  s_hp_offset_tbl[i].lp_face_min  = lp_face;
+            if (lp_face > s_hp_offset_tbl[i].lp_face_max)  s_hp_offset_tbl[i].lp_face_max  = lp_face;
+            s_hp_offset_tbl[i].observations++;
+            return;
+        }
+    }
+}
+
 static int lpcl_hppush_seen(uint32_t cell) {
     uint32_t h = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
     for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
@@ -197,6 +245,94 @@ void psx_runtime_lp_classify_dump(FILE* out) {
             also_hppush, total, total ? (100.0 * also_hppush / total) : 0.0);
     fprintf(out, "[lp_classify] %u/%u (%.1f%%) of LP-pushed cells were also HP-walked (xor 0x80026238)\n",
             also_hpwalk, total, total ? (100.0 * also_hpwalk / total) : 0.0);
+
+    /* HP-offset probe summary. Reports the distribution of cell[0x14]'s
+     * HP-offset field across cells observed by the LP-walk's per-cell
+     * metadata load (PC 0x80026838). Answers: do all LP-classified
+     * cells have a non-zero HP vertex offset (i.e. is HP geometry data
+     * present for them on disc)? */
+    fprintf(out, "[hp_offset] cells observed by LP-walk metadata load: %u unique\n",
+            s_hp_offset_unique);
+
+    uint32_t bucket_zero = 0;
+    uint32_t bucket_nonzero = 0;
+    uint32_t off_min_observed = 0xFFFFFFFFu;
+    uint32_t off_max_observed = 0;
+    uint32_t face_min_observed = 0xFFFFFFFFu;
+    uint32_t face_max_observed = 0;
+
+    /* Bucket the cells: how many have hp_offset=0 (which would mean
+     * LP-walk reads the same vertex base as HP-walk, i.e. cells share
+     * one format) vs hp_offset>0 (separate HP and LP sections). */
+    for (uint32_t i = 0; i < LPCL_TABLE_SIZE; ++i) {
+        if (s_hp_offset_tbl[i].cell == 0u) continue;
+        if (s_hp_offset_tbl[i].hp_offset_max == 0u) {
+            bucket_zero++;
+        } else {
+            bucket_nonzero++;
+        }
+        if (s_hp_offset_tbl[i].hp_offset_min < off_min_observed)
+            off_min_observed = s_hp_offset_tbl[i].hp_offset_min;
+        if (s_hp_offset_tbl[i].hp_offset_max > off_max_observed)
+            off_max_observed = s_hp_offset_tbl[i].hp_offset_max;
+        if (s_hp_offset_tbl[i].lp_face_min < face_min_observed)
+            face_min_observed = s_hp_offset_tbl[i].lp_face_min;
+        if (s_hp_offset_tbl[i].lp_face_max > face_max_observed)
+            face_max_observed = s_hp_offset_tbl[i].lp_face_max;
+    }
+
+    fprintf(out, "[hp_offset] hp_offset==0:    %u cells (HP-walk would read same base as LP-walk)\n",
+            bucket_zero);
+    fprintf(out, "[hp_offset] hp_offset>0:     %u cells (separate HP and LP sections)\n",
+            bucket_nonzero);
+    if (s_hp_offset_unique > 0) {
+        fprintf(out, "[hp_offset] hp_offset range: 0x%X..0x%X (in 4-byte units; absolute byte offset = value*4)\n",
+                off_min_observed, off_max_observed);
+        fprintf(out, "[hp_offset] LP face count range: %u..%u\n",
+                face_min_observed, face_max_observed);
+    }
+
+    /* Cross-reference: for every LP-pushed cell that was ALSO HP-pushed
+     * (i.e. has both HP and LP cell-pointer entries), what's the
+     * hp_offset distribution? These cells have HP data definitively
+     * (since they're HP-classified). Comparing their offsets to the
+     * LP-only cells tells us whether LP-only cells lack HP data. */
+    uint32_t hp_only_zero = 0;     /* cells in HP-push only with hp_offset=0 */
+    uint32_t hp_only_nonzero = 0;
+    uint32_t lp_only_zero = 0;     /* cells in LP-push only (no HP-push) with hp_offset=0 */
+    uint32_t lp_only_nonzero = 0;
+    uint32_t both_zero = 0;
+    uint32_t both_nonzero = 0;
+
+    for (uint32_t i = 0; i < LPCL_TABLE_SIZE; ++i) {
+        if (s_hp_offset_tbl[i].cell == 0u) continue;
+        uint32_t cell = s_hp_offset_tbl[i].cell;
+        int in_lp_push = 0;
+        int in_hp_push = lpcl_hppush_seen(cell);
+        /* Check LP-push table */
+        uint32_t hh = (cell ^ (cell >> 13) ^ (cell >> 24)) & LPCL_TABLE_MASK;
+        for (uint32_t probe = 0; probe < LPCL_TABLE_SIZE; ++probe) {
+            uint32_t k = (hh + probe) & LPCL_TABLE_MASK;
+            if (s_lpcl_lp_tbl[k].cell == 0u) break;
+            if (s_lpcl_lp_tbl[k].cell == cell) { in_lp_push = 1; break; }
+        }
+        int has_hp = (s_hp_offset_tbl[i].hp_offset_max > 0u);
+        if (in_hp_push && in_lp_push) {
+            if (has_hp) both_nonzero++; else both_zero++;
+        } else if (in_hp_push) {
+            if (has_hp) hp_only_nonzero++; else hp_only_zero++;
+        } else if (in_lp_push) {
+            if (has_hp) lp_only_nonzero++; else lp_only_zero++;
+        }
+    }
+
+    fprintf(out, "[hp_offset] cross-ref with front-walk classification:\n");
+    fprintf(out, "  in HP-push only:  hp_offset=0: %u   hp_offset>0: %u\n",
+            hp_only_zero, hp_only_nonzero);
+    fprintf(out, "  in LP-push only:  hp_offset=0: %u   hp_offset>0: %u\n",
+            lp_only_zero, lp_only_nonzero);
+    fprintf(out, "  in both queues:   hp_offset=0: %u   hp_offset>0: %u\n",
+            both_zero, both_nonzero);
 }
 
 /* --no-lod region layout. Allocated and registered in game_apply_no_lod()

@@ -748,6 +748,7 @@ substitution_sites = [
     0x80025B74,  # HP-push site (sw $a1 to $s0=base+0x2000); records $s1, $t1
     0x80025BA4,  # LP-push site (sw $a1 to $t7=base+0x1C00); records $s1, $t1
     0x80026238,  # HP-walk loop per-cell entry (records $t7 after xor)
+    0x80026838,  # LP-walk per-cell metadata load (records $t9, $s2 = cell[0x14])
 ]
 verdict_fn       = "psx_runtime_lp_classify_log"
 verified_against = ["aspect_determinism"]

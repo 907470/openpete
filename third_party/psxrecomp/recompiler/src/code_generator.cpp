@@ -960,12 +960,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x26:                                         // xor
                 {
                     if (addr == 0x80026238u) {
-                        /* Instrumentation: env-renderer HP-walk per-cell entry.
-                         * After this xor, $t7 holds the cell pointer (with
-                         * the marker bit stripped). Record it. */
+                        /* Instrumentation: env-renderer's other walk
+                         * per-cell entry. After this xor, $t7 holds
+                         * the cell pointer (with the marker bit stripped).
+                         * Record (a) cell ptr for queue-membership
+                         * cross-ref, and (b) cell[0x14] (HP metadata)
+                         * read via memory callback so we can answer
+                         * whether cells in this walk's queue (+0x2000,
+                         * the "LP-only" cells per cross-ref) also have
+                         * HP geometry available. */
                         code = fmt::format(
-                            "{} if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_hp(cpu->t7);",
+                            "{} if (psx_runtime_lp_classify_log) {{ "
+                            "psx_runtime_lp_classify_record_hp(cpu->t7); "
+                            "psx_runtime_hp_offset_record(cpu->t7, cpu->read_word(cpu->t7 + 0x14u)); "
+                            "}}",
                             translate_xor(instr));
                     } else {
                         code = translate_xor(instr);
@@ -1367,7 +1375,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * function name and address are Spyro-specific,
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
-                    if (addr == 0x80022B08u) {
+                    if (addr == 0x80026838u) {
+                        /* Probe: LP-walk per-cell metadata load.
+                         * `lw $s2, 0x14($t9)` reads the cell's metadata
+                         * word. After the lw, $s2's high 10 bits encode
+                         * the HP vertex offset (>>22<<2 used at PC
+                         * 0x80026854) and low byte encodes the LP face
+                         * count. Records ($t9, $s2) so we can answer
+                         * whether every LP-classified cell has a non-
+                         * zero HP offset (i.e. whether HP geometry data
+                         * exists for cells that the front-walk routes
+                         * to LP). */
+                        code = fmt::format(
+                            "{} if (psx_runtime_lp_classify_log) "
+                            "psx_runtime_hp_offset_record(cpu->t9, cpu->s2);",
+                            translate_lw(instr));
+                    } else if (addr == 0x80022B08u) {
                         uint32_t rt = get_rt(instr);
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
