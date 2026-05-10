@@ -745,9 +745,20 @@ knob is unset (default), the emitted code is byte-identical to the
 canonical instruction. Used to determine `--no-lod` Phase 2.5
 strategy: branch tweak vs data synthesis."""
 substitution_sites = [
-    0x80025B74,  # HP-push site (sw $a1 to $s0=base+0x2000); records $s1, $t1
-    0x80025BA4,  # LP-push site (sw $a1 to $t7=base+0x1C00); records $s1, $t1
-    0x80026238,  # HP-walk loop per-cell entry (records $t7 after xor)
+    0x80025B74,  # LP-push site (sw $a1 to $s0=base+0x2000); records $s1, $t1 (delay slot, overcounts)
+    0x80025B78,  # LP-queue HEAD ADVANCE — true commit point (after gate)
+    0x80025BA4,  # HP-push site (sw $a1 to $t7=base+0x1C00); records $s1, $t1 (delay slot, overcounts)
+    0x80025BA8,  # HP-queue HEAD ADVANCE — true commit point (after gate)
+    0x80026238,  # LP-walk pre-pass per-cell entry (records $t7 after xor)
+    0x800267F4,  # REAL HP-walk per-cell entry (block_80026788 loop, records $t9)
+    0x800270E8,  # HP-walk prim emit: fp += 52 (POLY variant A)
+    0x800270F4,  # HP-walk prim emit: fp += 52 (POLY variant A')
+    0x80027158,  # HP-walk prim emit: fp += 36 (POLY variant B)
+    0x80027164,  # HP-walk prim emit: fp += 36 (POLY variant B')
+    0x80027618,  # HP-walk prim emit: fp += 40 (POLY variant C)
+    0x80027624,  # HP-walk prim emit: fp += 40 (POLY variant C')
+    0x80027678,  # HP-walk prim emit: fp += 28 (POLY_GT4)
+    0x80027684,  # HP-walk prim emit: fp += 28 (POLY_GT4')
     0x80026838,  # LP-walk per-cell metadata load (records $t9, $s2 = cell[0x14])
 ]
 verdict_fn       = "psx_runtime_lp_classify_log"
@@ -776,5 +787,82 @@ substitution_sites = [
     0x80021674,  # lw $fp, 0x1C($ra) — LP-face load, second dispatch
 ]
 verdict_fn       = "psx_runtime_moby_lp_face_offset"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_env_routing"
+status      = "gated"
+description = """
+Phase 6.1 of openpete-disable-lods.md: env-renderer front-walk
+classifier substitutions that force every visible cell into the HP-
+queue (canonical: distance-bucketed across HP/LP/skip).
+
+Three substitutions, all identity at openpete_no_lod == 0:
+
+- 0x800259B0: lw $s6, 0x24($at) — m_LodDistance load. Saturated to 0
+  under --no-lod. After the canonical `srl 4` the value stays 0, which
+  inverts both per-cell distance gates so neither LP-push nor HP-push
+  is ruled out by distance.
+- 0x80025B5C: andi $X, $X, 0x8000 — force-LP-push flag test. Cleared
+  to 0 under --no-lod so backdrop/horizon cells (cyclorama, distant
+  skyline) are no longer LP-routed.
+- 0x80025B80: andi $X, $X, 0x4000 — skip-HP-push flag test. Cleared
+  to 0 under --no-lod so close cells aren't held back from HP-queue.
+
+Combined effect: every cell that survives the front-walk's cull cone
+goes to HP-queue. LP-queue stays empty for distance-classified cells.
+The HP-walk's per-cell screen-margin math at PC 0x80026470 etc. is
+calibrated for projected-bbox sizes; with the cull-cone push at 6.1b
+(m_CullingDistance = 0x40000) the projection scale stays in range.
+
+Render-side only — gameplay state reads m_LodDistance / cell flags
+directly from RAM at canonical bytes; only the env-renderer's per-
+frame routing sees the substituted values."""
+substitution_sites = [
+    0x800259B0,  # lw $s6 — m_LodDistance saturated to 0
+    0x80025B5C,  # andi 0x8000 — force-LP-push flag suppressed
+    0x80025B80,  # andi 0x4000 — skip-HP-push flag suppressed
+    0x80026CF8,  # sub t3, s5, t2 — HP-walk per-cell far-cull (admit under no-lod)
+    0x80027250,  # sub t3, s5, t2 — HP-walk per-cell far-cull, HP-extra path
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_culling_distance"
+status      = "gated"
+description = """
+Phase 6.1b of openpete-disable-lods.md: per-frame m_CullingDistance
+push in func_8002B9CC. Canonical writes are 0x28000 (occlusion-group
+extended), 0x1c000 (titlescreen), 0x14000 (gameplay default). Under
+--no-lod, both write sites store 0x40000 instead so the front-walk's
+cull cone admits cells out to the full HP-walk render range.
+
+Two PC sites:
+- 0x8002BA10: sw v0, -31280(at) — occlusion-group branch
+  (canonical 0x28000)
+- 0x8002BA48: sw v0, -31280(at) — default branch
+  (canonical 0x14000 / 0x1c000)
+
+Both substitute the value-being-stored, preserving canonical store
+ordering and word width. Identity at default.
+
+Note: m_CullingDistance is a renderer input — gameplay code in
+src/ never reads it (writes-only at four call sites). The renderer
+*does* have downstream gameplay-readable channels (m_WasDrawn etc.)
+that are sensitive to which cells get processed; --no-lod's effect
+on those is verified by aspect_determinism."""
+substitution_sites = [
+    0x8002BA10,  # PSX.EXE — func_8002B9CC occlusion-group write (0x28000)
+    0x8002BA48,  # PSX.EXE — func_8002B9CC default write (0x14000/0x1c000)
+    0x8001EA68,  # PSX.EXE — draw.c:2566 per-frame setter (0x14000)
+    0x8007DCC8,  # titlescreen overlay — titlescreen.c:1422 (0x1c000)
+    0x8007C240,  # credits overlay — same canonical pattern
+]
+verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
