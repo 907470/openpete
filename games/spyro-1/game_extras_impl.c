@@ -14,6 +14,8 @@
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
+#include "features/widescreen.h"
+#include "openpete_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -650,6 +652,26 @@ int game_apply_no_lod(void) {
             NO_LOD_HP_QUEUE_OFFSET,
             NO_LOD_MID_QUEUE_OFFSET,
             NO_LOD_LP_QUEUE_OFFSET);
+
+    /* Phase 6.3: grow the polybuf to absorb the increased HP-walk prim
+     * emission. Default polybuf is 0x1C000 (112 KB) per slot, sized for
+     * the canonical render load. Under --no-lod the front-walk routes
+     * every cell to HP-walk and the per-cell far-cull defeat lifts
+     * emission ~3x; peak frames hit ~26500 prims × ~28-52 B = up to
+     * ~1.4 MB per slot. Reserve 0x100000 (1 MB) per slot for headroom.
+     *
+     * Reuses widescreen_polybuf_setup() — the host-backed redirect and
+     * idempotent registration apply identically; only the canonical
+     * size threshold differs. PSX-base 0x80400000 matches widescreen's
+     * own choice; if both subsystems request setup the first call
+     * wins and the second is rejected by the idempotency check —
+     * benign as long as the larger size is requested first. */
+    if (widescreen_polybuf_setup(0x100000u, 0x80400000u) != 0) {
+        OPL_WARN_F("no-lod", "polybuf host-redirect setup failed; "
+                   "render may overflow at heavy frames");
+        /* Non-fatal — fall through; the canonical 112 KB polybuf may
+         * still cover light scenes. */
+    }
     return 0;
 }
 
@@ -1125,7 +1147,6 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * buffer to a virtualized region when widescreen has set one up. See
  * notes/plans/openpete-widescreen-fov.md item 2. */
 extern void func_8005B6F8(CPUState* cpu);
-#include "features/widescreen.h"
 
 /* (widescreen-related extern decls + env-renderer instrumentation
  * moved to games/spyro-1/features/widescreen.c — see Phase 2.1b in

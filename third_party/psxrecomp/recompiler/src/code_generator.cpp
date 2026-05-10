@@ -1240,13 +1240,36 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * $s6 saturation at PC 0x800259B0 makes every cell
                      * survive the routing block as HP-bound. Identity
                      * at default (openpete_no_lod == 0). */
-                    if (addr == 0x80025B5Cu || addr == 0x80025B80u) {
+                    if (addr == 0x80025B5Cu) {
+                        /* Phase 6.1a (bisect-narrowed): suppress only the
+                         * 0x8000 force-LP-push test under --no-lod. This
+                         * lifts cells that canonical force-routed to
+                         * LP-pre-pass into the distance-test path, where
+                         * the saturated $s6 then routes them to HP-queue.
+                         *
+                         * The companion 0x4000 skip-HP-push test at PC
+                         * 0x80025B80 is NOT suppressed: cells with that
+                         * flag are authored *without HP geometry* (cyclo-
+                         * rama / horizon tiles), and routing them into
+                         * HP-walk causes the per-cell quad loop to read
+                         * tile-strip data as quad indices and infinite-
+                         * loop. Verified by bisect at b1aswd2os ... b3zamvj25:
+                         * suppressing 0x80025B5C alone runs 5000 frames
+                         * clean; suppressing 0x80025B80 alone hangs at
+                         * frame 3457 (CdControl 0x1B → no progress).
+                         *
+                         * Net under --no-lod: 0x8000-only cells (force-LP-
+                         * push) go HP. 0x4000-only cells (skip-HP-push)
+                         * stay in LP queue and get rendered by the post-
+                         * LP loop at .L800276B4 (which still runs even
+                         * when the LP-walk pre-pass is skipped via
+                         * g_SkipLowPolyWorld). Identity at default. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         uint16_t imm = get_imm16_u(instr);
                         code = fmt::format(
                             "{} = openpete_no_lod ? 0u : ({} & {}u);"
-                            "  /* env-renderer routing andi gate (no-lod) */",
+                            "  /* env-renderer 0x8000 force-LP gate (no-lod) */",
                             reg_name(rt), reg_name(rs), (uint32_t)imm);
                     } else {
                         code = translate_andi(instr);
