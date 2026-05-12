@@ -949,28 +949,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * at 0x800576EC computes the canonical OR over all
                      * 4 vertices unconditionally (see translate sll
                      * handler). */
-                    } else if (addr == 0x80026CF8u || addr == 0x80027250u) {
-                        /* Phase 6.1d: HP-walk per-cell far-distance cull.
-                         *   t3 = $s5 - $t2  (m_LodDistance - sum_of_vertex_Z)
-                         *   if (t3 <= 0) → cull cell, goto loop top
-                         *
-                         * Both PCs 0x80026CFC and 0x80027254 perform
-                         * the same blez t3 cull (one in HP-extra path,
-                         * one in main path). $t3 is overwritten by the
-                         * very next instruction (t3 = $t2 - 8192) so
-                         * the only consumer of this t3 is the cull
-                         * branch itself.
-                         *
-                         * Under --no-lod: force t3 = 1 (positive) so
-                         * the blez branch is never taken. Cell admitted
-                         * regardless of distance. Identity at default. */
-                        uint32_t s_rd = get_rd(instr);
-                        uint32_t s_rs = get_rs(instr);
-                        uint32_t s_rt = get_rt(instr);
-                        code = fmt::format(
-                            "{} = openpete_no_lod ? 1 : ((int32_t){} - (int32_t){});"
-                            "  /* HP-walk far-cull (no-lod admit) */",
-                            reg_name(s_rd), reg_name(s_rs), reg_name(s_rt));
                     } else {
                         code = translate_sub(instr);
                     }
@@ -982,37 +960,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x26:                                         // xor
                 {
                     if (addr == 0x80026238u) {
-                        /* Instrumentation: LP-walk pre-pass per-cell
-                         * entry (block_80026228 loop, reads $ra =
-                         * +0x2000 LP queue head). After this xor, $t7
-                         * holds the cell pointer (marker bit stripped).
+                        /* Instrumentation: env-renderer's other walk
+                         * per-cell entry. After this xor, $t7 holds
+                         * the cell pointer (with the marker bit stripped).
                          * Record (a) cell ptr for queue-membership
                          * cross-ref, and (b) cell[0x14] (HP metadata)
-                         * via memory callback. NOTE: misnamed
-                         * historically as "HP-walk" — this is the
-                         * LP-walk pre-pass at .L80026200, which is
-                         * SKIPPED under --no-lod (g_SkipLowPolyWorld
-                         * branch jumps past it to the real HP-walk
-                         * at block_80026788). */
+                         * read via memory callback so we can answer
+                         * whether cells in this walk's queue (+0x2000,
+                         * the "LP-only" cells per cross-ref) also have
+                         * HP geometry available. */
                         code = fmt::format(
                             "{} if (psx_runtime_lp_classify_log) {{ "
                             "psx_runtime_lp_classify_record_hp(cpu->t7); "
                             "psx_runtime_hp_offset_record(cpu->t7, cpu->read_word(cpu->t7 + 0x14u)); "
                             "}}",
-                            translate_xor(instr));
-                    } else if (addr == 0x800267F4u) {
-                        /* Instrumentation: REAL HP-walk per-cell entry
-                         * inside the loop at .L80026788. After this
-                         * xor, $t9 holds the cell pointer (marker bit
-                         * stripped). Pass cell[0x14] alongside so the
-                         * recorder can attribute per-cell metadata to
-                         * the prim count it emits — distinguishes
-                         * "data-empty cell (HP poly block size = 0)"
-                         * from "HP-walk projection culled this cell". */
-                        code = fmt::format(
-                            "{} if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_hpwalk_real("
-                            "cpu->t9, cpu->t9 ? cpu->read_word(cpu->t9 + 0x14u) : 0u);",
                             translate_xor(instr));
                     } else {
                         code = translate_xor(instr);
@@ -1096,47 +1057,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} = (int32_t){} - 2 * (int32_t)psx_runtime_env_cell_x_bound;",
                             reg_name(rt), reg_name(rs));
-                    } else if (addr == 0x800270E8u || addr == 0x800270F4u
-                            || addr == 0x80027158u || addr == 0x80027164u
-                            || addr == 0x80027618u || addr == 0x80027624u
-                            || addr == 0x80027678u || addr == 0x80027684u) {
-                        /* Instrumentation: HP-walk per-prim emission.
-                         * Each of these 8 PCs is `addi $fp, $fp, +N`
-                         * (N ∈ {28, 36, 40, 52}) immediately following
-                         * a write_word that links the just-emitted prim
-                         * into its OT slot. Counting these gives the
-                         * total number of GPU primitives the HP-walk
-                         * pushed during the run. Combined with HP-WALK-
-                         * REAL (per-cell visit count), prims/cell ratio
-                         * tells us whether cells reach HP-walk and emit
-                         * (good) vs reach but emit zero (cull). */
-                        code = fmt::format(
-                            "{} = (int32_t){} + ({});"
-                            " if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_hp_prim_emit();",
-                            reg_name(rt), reg_name(rs), (int)imm);
-                    } else if (addr == 0x80025B78u) {
-                        /* Instrumentation: env-renderer LP-queue head
-                         * advance. Unlike the sw at 0x80025B74 (which
-                         * fires unconditionally as the bgez delay
-                         * slot), this addi only executes when control
-                         * actually fell through the LP-push gate —
-                         * making it the true commit point. */
-                        code = fmt::format(
-                            "{} = (int32_t){} + ({});"
-                            " if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_lp_commit();",
-                            reg_name(rt), reg_name(rs), (int)imm);
-                    } else if (addr == 0x80025BA8u) {
-                        /* Instrumentation: env-renderer HP-queue head
-                         * advance. Sister to 0x80025B78 — true HP
-                         * commit point; the sw at 0x80025BA4 is also
-                         * a delay slot. */
-                        code = fmt::format(
-                            "{} = (int32_t){} + ({});"
-                            " if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_hp_commit();",
-                            reg_name(rt), reg_name(rs), (int)imm);
                     } else if (addr == 0x80022C0Cu && imm == -0x66) {
                         /* Native (4:3) cone-test verdict for the m_WasDrawn
                          * gating at 0x80022D98. Native chain after this
@@ -1220,39 +1140,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x0B: code = translate_sltiu(instr); break;  // sltiu
-            case 0x0C:                                         // andi
-                {
-                    /* Phase 6.1a: env-renderer front-walk classifier
-                     * andi gates that route per-cell flags:
-                     *   PC 0x80025B5C: andi $X, $X, 0x8000
-                     *     The 0x8000 cell flag forces LP-push regardless
-                     *     of distance. Used for backdrop/horizon cells
-                     *     authored as LP-only (cyclorama, distant skyline).
-                     *     Under --no-lod we want these to flow through
-                     *     HP-walk too — clear the bit by ANDing with 0.
-                     *   PC 0x80025B80: andi $X, $X, 0x4000
-                     *     The 0x4000 cell flag suppresses HP-push (skips
-                     *     close cells from the HP queue). Clearing it
-                     *     ensures every cell is admitted to HP queue.
-                     *
-                     * Both substitutions force the andi result to 0
-                     * under openpete_no_lod, which combined with the
-                     * $s6 saturation at PC 0x800259B0 makes every cell
-                     * survive the routing block as HP-bound. Identity
-                     * at default (openpete_no_lod == 0). */
-                    if (addr == 0x80025B5Cu || addr == 0x80025B80u) {
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        uint16_t imm = get_imm16_u(instr);
-                        code = fmt::format(
-                            "{} = openpete_no_lod ? 0u : ({} & {}u);"
-                            "  /* env-renderer routing andi gate (no-lod) */",
-                            reg_name(rt), reg_name(rs), (uint32_t)imm);
-                    } else {
-                        code = translate_andi(instr);
-                    }
-                }
-                break;
+            case 0x0C: code = translate_andi(instr); break;   // andi
             case 0x0D:                                         // ori
                 {
                     /* Spyro polybuf slot size (0x1C000) appears at four
@@ -1523,77 +1411,17 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x800261E0u) {
                         /* DBG: env-renderer's read of g_SkipLowPolyWorld.
-                         * When psx_runtime_dbg_kill_env_lp_walk OR
-                         * openpete_no_lod is set, OR in a 1 so the
-                         * following bnez at 0x800261F8 always branches
-                         * and the LP-walk pre-pass is skipped. Scoped
-                         * to the env-renderer (not r_moby / r_cyclorama,
-                         * which read the same flag). Phase 6.2: under
-                         * --no-lod, every cell goes through HP-walk,
-                         * so the LP-walk has nothing to render — skip
-                         * it so we don't waste cycles iterating an
-                         * empty queue (the queue *is* empty at this
-                         * point because of the front-walk routing
-                         * substitutions, but skipping the loop is
-                         * still cheaper than iterating it). The post-
-                         * LP loop at .L800276B4 runs unconditionally
-                         * and still handles per-poly demoted entries
-                         * pushed by the HP-walk. */
+                         * When psx_runtime_dbg_kill_env_lp_walk is set,
+                         * OR in a 1 so the following bnez at 0x800261F8
+                         * always branches and the LP-walk is skipped.
+                         * Scoped to the env-renderer (not r_moby /
+                         * r_cyclorama, which read the same flag). */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         int16_t off = get_imm16(instr);
                         code = fmt::format(
-                            "{} = cpu->read_word({} + {}) | "
-                            "((psx_runtime_dbg_kill_env_lp_walk || openpete_no_lod) ? 1u : 0u);"
-                            "  /* env-renderer SkipLowPolyWorld (debug LP-kill / no-lod) */",
-                            reg_name(rt), reg_name(rs), off);
-                    } else if (addr == 0x800259B0u) {
-                        /* Phase 6.1a: env-renderer m_LodDistance load
-                         * in front-walk classifier prologue. The result
-                         * gets `srl 4` to form $s6, which gates the
-                         * two distance tests in the routing block.
-                         * Verified by tracing the recompiled flow:
-                         *
-                         *  LP-push gate (bgez @ 0x80025B70):
-                         *    `at = $s6 - (Z+bias+0x100)`
-                         *    bgez TAKEN → SKIP LP-push (jump to HP-
-                         *    routing entry at block_80025B80).
-                         *    NOT TAKEN → fall through, LP head advances.
-                         *
-                         *  HP-push gate (blez @ 0x80025B90):
-                         *    `v1 = $s6 - (Z-bias)`
-                         *    blez TAKEN → SKIP HP-push (jump to
-                         *    block_80025BAC).
-                         *    NOT TAKEN → fall through, HP head advances.
-                         *
-                         * To force HP-only: $s6 must be LARGE so that
-                         * `$s6 - Z_threshold > 0` for every cell:
-                         *   - LP gate: at > 0 → bgez taken → LP skipped
-                         *   - HP gate: v1 > 0 → blez NOT taken → HP fires
-                         *
-                         * Saturate to 0x7FFFFFFF (the canonical srl 4
-                         * after still leaves 0x07FFFFFF, far larger
-                         * than any cell's Z bbox). Combined with the
-                         * andi-suppress at 0x80025B5C (0x8000 force-LP
-                         * flag) and 0x80025B80 (0x4000 skip-HP flag),
-                         * every visible cell goes to HP queue and the
-                         * LP queue stays empty.
-                         *
-                         * History note: an earlier attempt set $s6 = 0
-                         * (commit ede20a7, reverted by b3f17ee). The
-                         * commit message at the time mis-described the
-                         * gate direction; instrumentation that fired on
-                         * the unconditional delay-slot sw (PC 0x80025B74)
-                         * couldn't distinguish "LP-push committed" from
-                         * "delay slot ran but head didn't advance", so
-                         * the wrong direction looked superficially OK
-                         * until the user reported missing far geometry. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{} = openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word({} + {});"
-                            "  /* env-renderer m_LodDistance load (no-lod gate) */",
+                            "{} = cpu->read_word({} + {}) | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);"
+                            "  /* env-renderer SkipLowPolyWorld (debug LP-kill) */",
                             reg_name(rt), reg_name(rs), off);
                     } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
                         /* Phase 4 moby model LOD collapse. r_moby.s LP-band
@@ -1634,45 +1462,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw
                 {
-                    if (addr == 0x8002BA10u || addr == 0x8002BA48u
-                        || addr == 0x8001EA68u || addr == 0x8007DCC8u
-                        || addr == 0x8007C240u) {
-                        /* Phase 6.1b: m_CullingDistance write sites
-                         * across PSX.EXE and overlays. Five canonical
-                         * writers to g_Environment.m_CullingDistance
-                         * (vaddr 0x800785D0 = lui $at,0x8008 + sw at
-                         * offset -31280):
-                         *
-                         *   PSX.EXE:
-                         *     0x8002BA10  func_8002B9CC occlusion (0x28000)
-                         *     0x8002BA48  func_8002B9CC default (0x14000/0x1c000)
-                         *     0x8001EA68  draw.c:2566   per-frame setter (0x14000)
-                         *   titlescreen overlay:
-                         *     0x8007DCC8  titlescreen.c:1422 (0x1c000)
-                         *   credits overlay:
-                         *     0x8007C240  credits.c (matches pattern)
-                         *
-                         * All five push to 0x40000 under --no-lod so the
-                         * front-walk's cull cone admits cells at the
-                         * full HP-walk range regardless of which gameplay
-                         * state is driving env setup. Missing any one
-                         * of these (especially 0x8007DCC8) leaves a
-                         * gameplay phase silently using the canonical
-                         * cull radius — visible as missing geometry on
-                         * titlescreen even though LP queue is verified
-                         * empty.
-                         *
-                         * Substitute the value-being-stored (not the
-                         * sw itself) so store ordering / word width
-                         * stay canonical. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "cpu->write_word({} + {}, openpete_no_lod ? 0x40000u : {});"
-                            "  /* m_CullingDistance write (no-lod push) */",
-                            reg_name(rs), off, reg_name(rt));
-                    } else if (addr == 0x80025B74u) {
+                    if (addr == 0x80025B74u) {
                         /* Instrumentation: env-renderer LP-push site.
                          * Front-walk classifier admits a cell into the
                          * LP-queue here. Record (cell_ptr=$s1, flags=$t1). */
