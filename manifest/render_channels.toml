@@ -821,11 +821,9 @@ Render-side only — gameplay state reads m_LodDistance / cell flags
 directly from RAM at canonical bytes; only the env-renderer's per-
 frame routing sees the substituted values."""
 substitution_sites = [
-    0x800259B0,  # lw $s6 — m_LodDistance saturated to 0x7FFFFFFF
+    0x800259B0,  # lw $s6 — m_LodDistance saturated to 0
     0x80025B5C,  # andi 0x8000 — force-LP-push flag suppressed
-    # 0x80025B80 (0x4000 skip-HP-push) intentionally NOT suppressed: cells with
-    # that flag are authored without HP geometry (cyclorama / horizon tiles).
-    # Forcing them into HP-walk infinite-loops; bisected at frame 3457 hang.
+    0x80025B80,  # andi 0x4000 — skip-HP-push flag suppressed
     0x80026CF8,  # sub t3, s5, t2 — HP-walk per-cell far-cull (admit under no-lod)
     0x80027250,  # sub t3, s5, t2 — HP-walk per-cell far-cull, HP-extra path
 ]
