@@ -1057,6 +1057,34 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} = (int32_t){} - 2 * (int32_t)psx_runtime_env_cell_x_bound;",
                             reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x80026F94u
+                            || addr == 0x80027064u
+                            || addr == 0x80027484u) {
+                        /* Phase 3 (texture LOD): force HQ tier in HP-walk.
+                         *
+                         * The env renderer's `m_LQTexturePointer` is
+                         * misnamed: each 16-byte entry packs *both* a
+                         * HQ descriptor (bytes 0..7) and an LQ
+                         * descriptor (bytes 8..15). HP-walk does a
+                         * per-quad screen-size test (`bgtz $t0` at PC
+                         * 0x80026F88 / 0x80027058 / 0x80027478); when
+                         * the polygon is below the threshold, it falls
+                         * through to one of these three identical
+                         *   addi $t5, $t5, 0x8
+                         * instructions, bumping $t5 from the HQ half
+                         * of the entry to the LQ half.
+                         *
+                         * Suppressing the +8 bump under --no-lod
+                         * forces every quad to read the HQ half,
+                         * regardless of screen size. Identity at
+                         * default. Pure renderer-side: $t5 is consumed
+                         * only by the GTE-side texture-descriptor
+                         * fetches that follow. */
+                        code = fmt::format(
+                            "{} = openpete_no_lod ? (int32_t){} : ((int32_t){} + ({}));"
+                            "  /* env HP-walk LQ-tier select (no-lod) */",
+                            reg_name(rt), reg_name(rs),
+                            reg_name(rs), (int)imm);
                     } else if (addr == 0x80022C0Cu && imm == -0x66) {
                         /* Native (4:3) cone-test verdict for the m_WasDrawn
                          * gating at 0x80022D98. Native chain after this

@@ -778,3 +778,37 @@ substitution_sites = [
 verdict_fn       = "psx_runtime_moby_lp_face_offset"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+[[channel]]
+name        = "no_lod_env_texture_tier"
+status      = "gated"
+description = """
+Phase 3 of openpete-disable-lods.md: force HQ texture tier inside
+HP-walk. Despite the name, `g_Environment.m_LQTexturePointer` is a
+paired-tier table — each 16-byte entry packs an HQ descriptor in
+bytes 0..7 and an LQ descriptor in bytes 8..15. HP-walk does a
+per-quad screen-size test (`bgtz $t0` at PCs 0x80026F88 /
+0x80027058 / 0x80027478) and, when the polygon is below the
+threshold, falls through to an `addi $t5, $t5, 0x8` that bumps the
+descriptor pointer from the HQ half to the LQ half.
+
+Under --no-lod, the +8 bump is suppressed at all three sites, so
+every quad reads the HQ descriptor half regardless of screen size.
+
+Pure renderer-side: $t5 is consumed only by the GTE-side texture-
+descriptor fetches that immediately follow.
+
+Earlier (Phase 3 v1, commit c3a411f, reverted in d915c2d) tried to
+mirror m_LQTexturePointer = m_HQTexturePointer. That was the wrong
+intercept — m_HQ is a separate per-quad descriptor pool used only
+by the post-LP loop, with different stride and layout, so mirroring
+sent HP-walk indexing into garbage. The per-quad LOD decision is
+entirely intra-m_LQ, gated by the three +8 bumps targeted here."""
+substitution_sites = [
+    0x80026F94,  # addi $t5, $t5, 0x8 — first per-quad LQ-tier bump
+    0x80027064,  # addi $t5, $t5, 0x8 — second per-quad LQ-tier bump
+    0x80027484,  # addi $t5, $t5, 0x8 — third per-quad LQ-tier bump
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
