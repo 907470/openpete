@@ -1464,6 +1464,33 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = cpu->read_word({} + psx_runtime_moby_lp_face_offset);"
                             "  /* moby LP face load (no-lod knob) */",
                             reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x800259B0u
+                            || addr == 0x80026214u
+                            || addr == 0x800267B0u) {
+                        /* Phase 6 (m_LodDistance doubler): r_environment.s
+                         * reads g_Environment.m_LodDistance (offset 0x24)
+                         * at three PCs:
+                         *   0x800259B0 → $s6 (front-walk routing gate)
+                         *   0x80026214 → $s3 (LP-walk screen margin)
+                         *   0x800267B0 → $s5 (HP-walk OT-slot + cull math)
+                         *
+                         * Under --no-lod, return INT32_MAX (0x7FFFFFFF).
+                         * Saturates the front-walk routing gate (admits
+                         * every cell), the LP-walk screen margin, and
+                         * HP-walk's screen-margin cull. Identity at
+                         * default. Earlier saturation experiment
+                         * (b3f17ee) regressed cyclorama Z because the
+                         * OT-slot math `srl $t5, $s5, 2` shifts env
+                         * cells into closer buckets than cyclorama's
+                         * authored slot — watch for that visually. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{{ uint32_t _v = cpu->read_word({} + {}); "
+                            "{} = openpete_no_lod ? 0x7FFFFFFFu : _v; }}"
+                            "  /* m_LodDistance INT32_MAX (no-lod) */",
+                            reg_name(rs), off, reg_name(rt));
                     } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
                         /* m_LowerPolyBuffer cursor-reset reads. When
                          * psx_runtime_polybuf_lower is non-zero (widescreen

@@ -812,3 +812,48 @@ substitution_sites = [
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_lod_distance_saturate"
+status      = "gated"
+description = """
+Phase 6 of openpete-disable-lods.md: the three `lw $X, 0x24($at)`
+reads of g_Environment.m_LodDistance in r_environment.s return
+0x7FFFFFFF (INT32_MAX) under --no-lod. Identity at default.
+
+Sites:
+  0x800259B0 → $s6 (front-walk routing gate)
+  0x80026214 → $s3 (LP-walk screen margin)
+  0x800267B0 → $s5 (HP-walk OT-slot + screen-margin cull math)
+
+Effect:
+  - Front-walk classifier admits every cell that survives cone cull
+    into the HP queue (the `bgez $s6 - (Z+0x100)` gate at 0x80025B70
+    always passes; the `blez $s6 - (Z-bias)` HP-push gate at
+    0x80025B90 never trips). The 0x4000 andi gate at 0x80025B80
+    still LP-routes cyclorama tiles (empirically the 71 Level-11
+    cells with HP_POLY_BYTES == 0 are all 0x4000-flagged).
+  - HP-walk's screen-margin cull at 0x80026CFC / 0x80027254
+    (`sub $t3, $s5, $t2; blez $t3, .L80026B74`) never trips, so
+    far-cell projected bboxes still emit prims.
+  - Per Phase 2.5 pool relocation, the HP queue holds 4096 entries
+    in the openpete-only 0x80300000+ region, so the inflated HP
+    load fits.
+
+History: an earlier $s6 saturation experiment (b3f17ee) was
+reverted on the theory that it caused cyclorama Z-order
+regression. User later confirmed that observation came from an
+old emulator test, not the recompiler — saturating m_LodDistance
+in recomp doesn't reproduce it. The misdiagnosis spawned several
+dead-end exploration branches (routing-branch overrides + cull-
+defeat, surgical PC-keyed gates, etc.); see the git log between
+2f6416d and 483e586 for the cautionary record."""
+substitution_sites = [
+    0x800259B0,  # lw $s6 — front-walk m_LodDistance load
+    0x80026214,  # lw $s3 — LP-walk m_LodDistance load
+    0x800267B0,  # lw $s5 — HP-walk m_LodDistance load
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
