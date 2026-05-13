@@ -140,21 +140,6 @@ extern int openpete_no_lod;
  * env var. Used to visually identify what cells the LP-walk renders. */
 extern int psx_runtime_dbg_kill_env_lp_walk;
 
-/* Instrumentation: when non-zero, record every cell admitted to the
- * env-renderer's LP-queue (PC 0x80025B74) and every cell processed by
- * the HP-walk loop (PC 0x80026238 after the xor that strips the marker
- * bit). Histograms cross-referenced at process exit answer the question:
- * "are LP-classified cells a strict subset of HP-walked cells (same
- * source data, two outputs) or a disjoint set (LP-only data)?"
- *
- * Toggle via OPENPETE_LP_CLASSIFY_LOG=1 env var. */
-extern int psx_runtime_lp_classify_log;
-extern void psx_runtime_lp_classify_record_lp(uint32_t cell_ptr, uint32_t flags_e000);
-extern void psx_runtime_lp_classify_record_hp(uint32_t cell_ptr);
-extern void psx_runtime_lp_classify_record_hppush(uint32_t cell_ptr, uint32_t flags_e000);
-extern void psx_runtime_hp_offset_record(uint32_t cell_ptr, uint32_t metadata_word);
-extern void psx_runtime_lp_classify_dump(FILE* out);
-
 /* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
  *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
  * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For

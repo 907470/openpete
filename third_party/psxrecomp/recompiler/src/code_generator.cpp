@@ -957,29 +957,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x23: code = translate_subu(instr); break;    // subu
             case 0x24: code = translate_and(instr); break;     // and
             case 0x25: code = translate_or(instr); break;      // or
-            case 0x26:                                         // xor
-                {
-                    if (addr == 0x80026238u) {
-                        /* Instrumentation: env-renderer's other walk
-                         * per-cell entry. After this xor, $t7 holds
-                         * the cell pointer (with the marker bit stripped).
-                         * Record (a) cell ptr for queue-membership
-                         * cross-ref, and (b) cell[0x14] (HP metadata)
-                         * read via memory callback so we can answer
-                         * whether cells in this walk's queue (+0x2000,
-                         * the "LP-only" cells per cross-ref) also have
-                         * HP geometry available. */
-                        code = fmt::format(
-                            "{} if (psx_runtime_lp_classify_log) {{ "
-                            "psx_runtime_lp_classify_record_hp(cpu->t7); "
-                            "psx_runtime_hp_offset_record(cpu->t7, cpu->read_word(cpu->t7 + 0x14u)); "
-                            "}}",
-                            translate_xor(instr));
-                    } else {
-                        code = translate_xor(instr);
-                    }
-                }
-                break;
+            case 0x26: code = translate_xor(instr); break;     // xor
             case 0x27: code = translate_nor(instr); break;     // nor
             case 0x2A: code = translate_slt(instr); break;     // slt
             case 0x2B: code = translate_sltu(instr); break;    // sltu
@@ -1403,22 +1381,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * function name and address are Spyro-specific,
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
-                    if (addr == 0x80026838u) {
-                        /* Probe: LP-walk per-cell metadata load.
-                         * `lw $s2, 0x14($t9)` reads the cell's metadata
-                         * word. After the lw, $s2's high 10 bits encode
-                         * the HP vertex offset (>>22<<2 used at PC
-                         * 0x80026854) and low byte encodes the LP face
-                         * count. Records ($t9, $s2) so we can answer
-                         * whether every LP-classified cell has a non-
-                         * zero HP offset (i.e. whether HP geometry data
-                         * exists for cells that the front-walk routes
-                         * to LP). */
-                        code = fmt::format(
-                            "{} if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_hp_offset_record(cpu->t9, cpu->s2);",
-                            translate_lw(instr));
-                    } else if (addr == 0x80022B08u) {
+                    if (addr == 0x80022B08u) {
                         uint32_t rt = get_rt(instr);
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
@@ -1515,34 +1478,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x28: code = translate_sb(instr, addr); break;     // sb
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
-            case 0x2B:                                         // sw
-                {
-                    if (addr == 0x80025B74u) {
-                        /* Instrumentation: env-renderer LP-push site.
-                         * Front-walk classifier admits a cell into the
-                         * LP-queue here. Record (cell_ptr=$s1, flags=$t1). */
-                        code = fmt::format(
-                            "if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_lp(cpu->s1, cpu->t1); "
-                            "{}",
-                            translate_sw(instr));
-                    } else if (addr == 0x80025BA4u) {
-                        /* Instrumentation: env-renderer HP-push site.
-                         * Front-walk classifier admits a cell into the
-                         * HP-queue (D_8006FCF4 + 0x1C00) here. Record
-                         * (cell_ptr=$s1, flags=$t1). Cross-referenced
-                         * with HP-walk loop to confirm this *is* the
-                         * HP-queue (not MID as previously mis-read). */
-                        code = fmt::format(
-                            "if (psx_runtime_lp_classify_log) "
-                            "psx_runtime_lp_classify_record_hppush(cpu->s1, cpu->t1); "
-                            "{}",
-                            translate_sw(instr));
-                    } else {
-                        code = translate_sw(instr);
-                    }
-                }
-                break;
+            case 0x2B: code = translate_sw(instr); break;     // sw
             case 0x2E: code = translate_swr(instr); break;    // swr
             case 0x32:                                         // LWC2 - load word to COP2
                 {
