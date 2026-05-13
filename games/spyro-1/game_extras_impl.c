@@ -14,6 +14,7 @@
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
+#include "features/widescreen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,6 +134,24 @@ int game_apply_no_lod(void) {
 
     /* Phase 4: redirect r_moby.s LP-face load to read m_Faces (HP). */
     psx_runtime_moby_lp_face_offset = 0x14u;
+
+    /* Phase 6 polybuf grow: with m_LodDistance saturated, every visible
+     * cell routes through HP-walk, ~2-3× the canonical prim count per
+     * frame even at 4:3 and ~4-5× at 16:9 inside dense levels (e.g.
+     * Level 11 Dr Shemp). The canonical polybuf at 0x1C000 (115 KB)
+     * overflows; the openpete renderer then either drops prims or
+     * walks corrupted P_TAG lists. The widescreen path only enables
+     * the host-redirected polybuf for thresh_factor > 1.5 (i.e.
+     * ≥ 21:9), leaving 4:3 and 16:9 unprotected.
+     *
+     * Force-enable a 1 MB per-slot host polybuf under --no-lod so the
+     * inflated prim load fits regardless of aspect. Identity at
+     * default (--no-lod off): this function isn't called. */
+    if (widescreen_polybuf_setup(0x100000u, 0x80400000u) != 0) {
+        fprintf(stderr, "[no-lod] widescreen_polybuf_setup failed; "
+                "scene density may exceed the canonical polybuf at "
+                "wide aspects or in dense levels.\n");
+    }
 
     fprintf(stderr,
             "[no-lod] grown env queues at base=0x%08X size=%u KB "
@@ -592,7 +611,6 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * buffer to a virtualized region when widescreen has set one up. See
  * notes/plans/openpete-widescreen-fov.md item 2. */
 extern void func_8005B6F8(CPUState* cpu);
-#include "features/widescreen.h"
 
 /* (widescreen-related extern decls + env-renderer instrumentation
  * moved to games/spyro-1/features/widescreen.c — see Phase 2.1b in
