@@ -124,11 +124,13 @@ void openpete_ticker_start(void) {
 
 void openpete_ticker_stop(void) {
     if (s_ticker_thread) {
-        /* Signal the thread to exit. It may block in op_sleep_until for
-         * up to one period (~17 ms) before noticing — fine for shutdown,
-         * and waiting is correct (we want a clean tick boundary, not a
-         * thread torn down mid-cond-broadcast). */
+        /* Signal the thread to exit, then force-wake any pending
+         * op_sleep_until on Win32 so the join completes promptly even
+         * if the high-res waitable timer is slow to fire on its
+         * natural deadline. On POSIX clock_nanosleep already wakes at
+         * the next deadline (~17 ms max), no force-wake needed. */
         SDL_AtomicSet(&s_ticker_running, 0);
+        op_time_wake_pending_sleeps();
         SDL_WaitThread(s_ticker_thread, NULL);
         s_ticker_thread = NULL;
 

@@ -102,6 +102,24 @@ void op_time_init(void) {
     s_initialized = 1;
 }
 
+void op_time_wake_pending_sleeps(void) {
+#if defined(_WIN32)
+    if (!s_initialized) return;
+    if (s_hi_res_timer) {
+        /* SetWaitableTimer with a 0 due time fires immediately — any
+         * thread currently in WaitForSingleObject(s_hi_res_timer,
+         * INFINITE) wakes and returns. The spin-tail then notices
+         * op_now() >= deadline (or its own caller's exit predicate
+         * is true) and unwinds. CancelWaitableTimer would NOT signal
+         * waiters, only the next SetWaitableTimer would — so we set
+         * with a 0 time instead. */
+        LARGE_INTEGER due;
+        due.QuadPart = 0;
+        SetWaitableTimer(s_hi_res_timer, &due, 0, NULL, NULL, FALSE);
+    }
+#endif
+}
+
 void op_time_shutdown(void) {
     if (!s_initialized) return;
 #if defined(_WIN32)

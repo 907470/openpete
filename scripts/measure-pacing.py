@@ -85,43 +85,47 @@ def read_log(path: Path):
 
 
 def classify_bimodal(deltas_ns):
-    """Bucket inter-present deltas into "fast"/"slow" modes using a
-    midpoint threshold derived from the data, not a hardcoded constant
-    — the game's swap interval can be N=1 (60 Hz flyby) or N=2 (30 Hz
-    gameplay); the actual period depends on the host's measured VBL.
+    """Bucket inter-present deltas into "fast"/"slow" modes around the
+    median. Spyro switches between VSync(2) (30 Hz gameplay) and
+    VSync(1) (60 Hz flyby / 60-Hz title animations); these can mix in
+    sparse minority bursts (e.g. 19 % 60 Hz / 81 % 30 Hz on the title
+    screen) where IQR-based detection fails because both quartiles
+    sit in the dominant mode.
 
     Strategy:
-      1. Take the median delta. If the IQR (p75 - p25) is small relative
-         to the median (< 25 %), declare unimodal — no flybys present.
-      2. Otherwise pick the threshold at the geometric mean of the
-         two natural anchors: the p25 (fast mode) and p75 (slow mode).
-         Anything below threshold → fast; above → slow.
-      3. Report counts and per-mode rate + p99 + drift slope.
+      1. Take the median delta. Count the fraction of records that
+         fall below 0.75 × median (i.e. clearly belong to a faster
+         mode — for 33 ms median that's < 25 ms).
+      2. If that fraction is < 2 % the distribution is unimodal —
+         outliers, not a second mode.
+      3. Otherwise split at 0.75 × median: below → fast, above → slow.
 
     Returns a dict: {'unimodal': bool, 'threshold_ns': int or None,
-                      'fast': stats|None, 'slow': stats|None}
+                      'fast': stats|None, 'slow': stats|None,
+                      'reason': str (only when unimodal)}
     """
     n = len(deltas_ns)
     if n < 32:
         return {"unimodal": True, "threshold_ns": None,
                 "fast": None, "slow": None, "reason": "too few records"}
     s = sorted(deltas_ns)
-    p25 = s[n // 4]
     p50 = s[n // 2]
-    p75 = s[(3 * n) // 4]
-    iqr = p75 - p25
-    if p50 > 0 and iqr / p50 < 0.25:
+    if p50 <= 0:
         return {"unimodal": True, "threshold_ns": None,
                 "fast": None, "slow": None,
-                "reason": f"IQR/median={iqr/p50:.3f} < 0.25"}
-    # Threshold at geometric mean of p25 and p75.
-    if p25 <= 0 or p75 <= 0:
-        return {"unimodal": True, "threshold_ns": None,
-                "fast": None, "slow": None,
-                "reason": "non-positive percentile"}
-    thresh = int((p25 * p75) ** 0.5)
+                "reason": "non-positive median"}
+
+    thresh = int(p50 * 0.75)
     fast = [d for d in deltas_ns if d <= thresh]
     slow = [d for d in deltas_ns if d > thresh]
+    fast_frac = len(fast) / n
+
+    # Need at least 2 % minority share to call it bimodal — below that
+    # it's just outliers (cd-read stalls, single-frame catch-ups).
+    if fast_frac < 0.02:
+        return {"unimodal": True, "threshold_ns": None,
+                "fast": None, "slow": None,
+                "reason": f"only {fast_frac*100:.1f}% below 0.75×median"}
     return {
         "unimodal": False,
         "threshold_ns": thresh,

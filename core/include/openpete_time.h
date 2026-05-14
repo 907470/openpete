@@ -71,6 +71,15 @@ void op_time_init(void);
  * (Win32 timeEndPeriod, waitable-timer handle). Idempotent. */
 void op_time_shutdown(void);
 
+/* Cancel any in-flight op_sleep_until on Win32 by force-signalling the
+ * shared waitable timer. Callers that want to wake a sleeping thread
+ * during shutdown (e.g. the ticker thread join in openpete_ticker_stop)
+ * use this to bound shutdown latency at a few µs instead of waiting
+ * for the natural period boundary. No-op on POSIX — clock_nanosleep is
+ * already bounded by the deadline, and the natural period (~17 ms) is
+ * acceptable shutdown latency there. */
+void op_time_wake_pending_sleeps(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -851,25 +851,40 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
-    /* Dual-pacer state for --render-fps N (0 = legacy condvar pacer).
-     * sim_period_ms tracks PSX VBlank (60 Hz, two yields per logical 30 fps
-     * frame); render_period_ms is the host loop's outer cadence.
+    /* Phase 2 pacer state — single time source (op_now / op_sleep_until)
+     * for both the legacy --render-fps=0 path and the --render-fps>0
+     * wall-clock pacer. Both branches step phase-locked deadlines in
+     * integer ns and slip-clamp identically, eliminating the
+     * condvar-drain race that left Phase 1a ~3 % rate-hot.
      *
-     * Invariant (locked in by openpete-fps-unlock.md "vbl-counter loops"):
-     * the inner sim block yields the game fiber at most once per outer
-     * iteration. Multi-vbl catch-up would race-complete the
+     * Period choices:
+     *   sim_period_ns    = NTSC PSX VBL (1001/60000 s = 16683333 ns,
+     *                      matches core/runtime/ticker.c constant)
+     *   render_period_ns = 1/render_fps when --render-fps>0, else
+     *                      sim_period_ns (one present per sim tick).
+     *
+     * Invariant (locked in by openpete-fps-unlock.md "vbl-counter
+     * loops"): the inner sim block yields the game fiber at most once
+     * per outer iteration. Multi-vbl catch-up would race-complete the
      * `pre - post < 2` GPU-pacing loops in draw.c and the 210-vbl Sony /
-     * Universal logo waits in initialization.c. The slip-clamp below resets
+     * Universal logo waits in initialization.c. The slip-clamp resets
      * the deadline forward without firing extra yields. */
-    const double sim_period_ms    = 1000.0 / 60.0;
-    const double render_period_ms = (opts->render_fps > 0)
-        ? 1000.0 / (double)opts->render_fps
-        : sim_period_ms;
-    double next_sim_ms    = (double)start;
-    double next_render_ms = (double)start;
+    const op_time_t sim_period_ns    = (OP_NS_PER_SEC * 1001) / 60000;
+    const op_time_t render_period_ns = (opts->render_fps > 0)
+        ? (OP_NS_PER_SEC / (op_time_t)opts->render_fps)
+        : sim_period_ns;
+    const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms */
+    op_time_t start_ns      = op_now();
+    op_time_t next_sim_ns    = start_ns;
+    op_time_t next_render_ns = start_ns;
     if (opts->render_fps > 0) {
-        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.2f ms render=%.2f ms (--render-fps=%d)",
-                   sim_period_ms, render_period_ms, opts->render_fps);
+        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (--render-fps=%d)",
+                   (double)sim_period_ns / 1e6,
+                   (double)render_period_ns / 1e6,
+                   opts->render_fps);
+    } else {
+        OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0)",
+                   (double)sim_period_ns / 1e6);
     }
 
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
@@ -1041,9 +1056,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * render cadence, and sim_due fires when the sim deadline has
          * elapsed — or unconditionally under unlock_now so fast-forward
          * actually fast-forwards. */
-        Uint32 iter_now_ms = SDL_GetTicks();
+        op_time_t iter_now_ns = op_now();
         bool   sim_due = (opts->render_fps == 0) || unlock_now ||
-                         ((double)iter_now_ms >= next_sim_ms);
+                         (iter_now_ns >= next_sim_ns);
 
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
@@ -1443,60 +1458,63 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             SDL_Delay(16);
         }
 
-        if (opts->render_fps == 0) {
-            /* Legacy condvar pacer. Block until the ticker advances
-             * `openpete_ticker_seq`, gating game-fiber resume on a
-             * wall-clock vblank. dispatch.c's no-tick stub yields (where
-             * `ticked_this_iter` is false) skip the wait so a frame full of
-             * overlay stubs doesn't multiply 16.67 ms by N stubs. Tab-held /
-             * --headless skip the wait too — they want to spin as fast as
-             * the pipeline allows. */
-            if (!unlock_fps && ticked_this_iter && openpete_ticker_active) {
-                int seq_before = SDL_AtomicGet(&openpete_ticker_seq);
-                SDL_LockMutex(openpete_ticker_wake_mutex);
-                while (SDL_AtomicGet(&openpete_ticker_seq) == seq_before &&
-                       !g_shutdown_requested) {
-                    SDL_CondWaitTimeout(openpete_ticker_wake_cond,
-                                        openpete_ticker_wake_mutex, 100);
+        /* Phase 2 unified pacer. Both branches step phase-locked
+         * integer-ns deadlines and sleep via op_sleep_until (Phase 0
+         * abstraction). No condvar drain race, no SDL_Delay integer-ms
+         * rounding.
+         *
+         * Unlock path (Tab / --headless / scheduled fast-forward):
+         * re-anchor both deadlines to now so we don't stall on Tab
+         * release. Mirrors the legacy `next_sim_ms = next_render_ms
+         * = now` reset.
+         *
+         * Skip the sleep entirely once shutdown has been requested
+         * (ESC / window close / SIGINT). The pacer's worst-case wait
+         * is normally one period (~17 ms), but a Win32 waitable timer
+         * that misbehaves could leave us stuck on a multi-second
+         * WaitForSingleObject — the legacy condvar pacer always
+         * checked g_shutdown_requested in its wait loop; mirror that
+         * here so ESC closes the window promptly. */
+        if (unlock_fps || g_shutdown_requested) {
+            op_time_t anchor = op_now();
+            next_sim_ns    = anchor;
+            next_render_ns = anchor;
+        } else if (opts->render_fps == 0) {
+            /* Legacy "match sim cadence" pacer. One present per VBL
+             * cadence, advanced only when the game fiber actually
+             * yielded with a frame bump (ticked_this_iter). dispatch.c
+             * no-tick stub yields skip the pace step so a frame full
+             * of stubs doesn't park us for 16.67 ms per stub. */
+            if (ticked_this_iter) {
+                next_sim_ns += sim_period_ns;
+                op_time_t now2 = op_now();
+                if (now2 - next_sim_ns > slip_threshold_ns) {
+                    op_time_t skip = (now2 - next_sim_ns) / sim_period_ns;
+                    next_sim_ns += skip * sim_period_ns;
                 }
-                SDL_UnlockMutex(openpete_ticker_wake_mutex);
+                op_sleep_until(next_sim_ns);
             }
         } else {
-            /* Wall-clock dual-pacer. sim deadline advances once per
-             * sim-due iteration (slip-clamp resets it forward without
-             * firing extra yields). render deadline advances once per
-             * outer iteration. Sleep until the sooner of the two unless
-             * unlock_fps is held.
-             *
-             * Re-anchor both deadlines to now while unlocked. Without this,
-             * a long Tab-hold would let next_sim_ms / next_render_ms race
-             * thousands of iterations ahead of wall-clock; on Tab release
-             * the pacer would then stall for seconds waiting for wall-
-             * clock to catch up to the bogus deadlines. */
-            Uint32 now2 = SDL_GetTicks();
-            if (unlock_fps) {
-                next_sim_ms = (double)now2;
-                next_render_ms = (double)now2;
-            } else {
-                if (sim_due) {
-                    next_sim_ms += sim_period_ms;
-                    if ((double)now2 > next_sim_ms + 100.0) next_sim_ms = (double)now2;
-                }
-                next_render_ms += render_period_ms;
-                if ((double)now2 > next_render_ms + 100.0) next_render_ms = (double)now2;
-            }
-
-            if (!unlock_fps) {
-                double next = (next_sim_ms < next_render_ms)
-                              ? next_sim_ms : next_render_ms;
-                double delta = next - (double)SDL_GetTicks();
-                if (delta > 0.0) {
-                    /* Cap the per-iter sleep so a Tab-release after a long
-                     * idle window can't park us for seconds. */
-                    if (delta > 100.0) delta = 100.0;
-                    SDL_Delay((Uint32)delta);
+            /* Wall-clock dual-pacer. sim deadline advances on sim-due
+             * iters; render deadline advances every outer iter; we
+             * sleep to the sooner of the two so an under-paced render
+             * doesn't starve the sim or vice-versa. */
+            op_time_t now2 = op_now();
+            if (sim_due) {
+                next_sim_ns += sim_period_ns;
+                if (now2 - next_sim_ns > slip_threshold_ns) {
+                    op_time_t skip = (now2 - next_sim_ns) / sim_period_ns;
+                    next_sim_ns += skip * sim_period_ns;
                 }
             }
+            next_render_ns += render_period_ns;
+            if (now2 - next_render_ns > slip_threshold_ns) {
+                op_time_t skip = (now2 - next_render_ns) / render_period_ns;
+                next_render_ns += skip * render_period_ns;
+            }
+            op_time_t next = (next_sim_ns < next_render_ns)
+                             ? next_sim_ns : next_render_ns;
+            op_sleep_until(next);
         }
     }
 
