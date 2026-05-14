@@ -142,10 +142,18 @@ endif()
 # address or Win32-only header into core/. The exit-criteria greps in
 # §5 Phase 0b live here as build-time guards.
 if(NOT CMAKE_HOST_WIN32)
-    # crash.c is the one core/ TU that legitimately #includes <windows.h>
-    # (Win32 SEH unhandled-exception filter, behind `#ifdef _WIN32`). The
-    # rest of core/ must remain game-agnostic AND platform-agnostic, so
-    # keep the grep-guard but exclude the crash file.
+    # A handful of core/ TUs legitimately #include <windows.h>, each
+    # behind `#ifdef _WIN32` so the POSIX build is unaffected:
+    #   - crash.c             Win32 SEH unhandled-exception filter
+    #   - openpete_time.c     QPC + waitable timer + timeBeginPeriod
+    #   - openpete_frame_time_log.c  FILETIME / GetSystemTimeAsFileTime
+    # The rest of core/ must remain game-agnostic AND platform-agnostic,
+    # so keep the grep-guard but list the exempt TUs by name. New core
+    # TUs that need Win32 APIs MUST be added here AND keep their
+    # platform calls under `#ifdef _WIN32`, AND NOT pull CreateFiber
+    # (we use libco's amd64.c on POSIX and fiber.c on Win32; CreateFiber
+    # specifically is what core/ is forbidden from touching).
+    #
     # The address regex matches Spyro-specific addresses like 0x80012204
     # AND generic PSX bus constants like 0x80000000 (KSEG0 base). We only
     # care about the former, so allow `#define`d named constants through —
@@ -155,7 +163,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 endif()
