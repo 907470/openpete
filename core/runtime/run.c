@@ -1021,6 +1021,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         frame_time_log_start_ns = op_now();
     }
 
+    /* Vertex trace — see openpete_vertex_trace.h. Off unless
+     * --vertex-trace-log PATH given. */
+    if (opts->vertex_trace_log_path && *opts->vertex_trace_log_path) {
+        extern int openpete_vtrace_open(const char* path);
+        if (openpete_vtrace_open(opts->vertex_trace_log_path) != 0) {
+            fprintf(stderr, "openpete: failed to open --vertex-trace-log %s\n",
+                    opts->vertex_trace_log_path);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    }
+
     /* Input pump rate. We used to throttle to 120 Hz when Tab was held
      * to keep per-iter cost down at 1000+ Hz, but that broke BK2 replay
      * determinism: g_PsyX_Pad_InputOverride is set per host iter, and
@@ -1350,7 +1361,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         extern uint8_t** openpete_last_ot_slot_host_ptr;
         extern int       openpete_last_ot_slot_count;
         extern void      openpete_re_emit_last_ot(void);
-        if (!opts->headless && !openpete_unlock_fps &&
+        /* Headless gate is lifted when --vertex-trace-log is on so the
+         * harness can characterize the substitute pipeline without a
+         * display surface. BeginScene/EndScene are no-ops in headless,
+         * but prepare_substitute still runs and writes trace records. */
+        extern int openpete_vtrace_enabled(void);
+        const bool headless_block = opts->headless && !openpete_vtrace_enabled();
+        if (!headless_block && !openpete_unlock_fps &&
             opts->render_fps > 0 &&
             !sim_due && !openpete_present_pending &&
             openpete_last_ot_slot_host_ptr &&
@@ -1668,6 +1685,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
+    {
+        extern void openpete_vtrace_close(void);
+        openpete_vtrace_close();
+    }
     if (openpete_interp_enabled()) {
         OPL_INFO_F("interp",
                    "captured=%llu, dedupe-skipped=%llu",

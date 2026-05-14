@@ -330,6 +330,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--frame-time-log") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->frame_time_log_path = v; i++;
+        } else if (strcmp(a, "--vertex-trace-log") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->vertex_trace_log_path = v; i++;
         } else if (strcmp(a, "--psxtrace-verify") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->psxtrace_verify_path = v; i++;
@@ -398,6 +401,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
                 "                             Primary determinism gate — see check_aspect_determinism.sh\n"
                 "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record)\n"
+                "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
                 "                             for scripts/measure-pacing.py. Off by default.\n"
                 "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);

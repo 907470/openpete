@@ -28,6 +28,7 @@
 
 #include "openpete_render_matcher.h"
 #include "openpete_render_cache.h"
+#include "openpete_vertex_trace.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -62,6 +63,7 @@ typedef struct matcher_batch {
      * this batch. Lerp anchors are (centroid → next_centroid) and
      * (sxy_centroid → next_sxy_centroid). */
     int      has_future_anchor;
+    int      vtrace_velocity_capped; /* 1 if cap engaged at least once during this batch's match probe — trace-only */
     int32_t  next_centroid[3];
     int32_t  next_sxy_centroid[2];
 
@@ -433,6 +435,7 @@ void openpete_render_matcher_prepare_substitute(void) {
         b->has_future_anchor = 0;
         b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
         b->is_ui_opt_out = matrix_is_near_identity(b->rt);
+        b->vtrace_velocity_capped = 0;
     }
 
     /* Pass 3: match matcher.curr against matcher.prev (= last render's
@@ -474,6 +477,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                 const int32_t vy = cb->sxy_centroid[1] - pb->sxy_centroid[1];
                 if (abs(vx) + abs(vy) > MATCHER_VELOCITY_CAP_PX) {
                     velocity_capped++;
+                    cb->vtrace_velocity_capped = 1;
                     /* Don't consume pb; try next slot (may have a
                      * legitimate hash neighbor with sane velocity). */
                     slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
@@ -503,6 +507,24 @@ void openpete_render_matcher_prepare_substitute(void) {
     /* Phase 4: consume any pending OPENPETE_PREV_TRANSFORM override
      * (no-op if no override set). */
     apply_prev_transform_override();
+
+    /* Trace pass — one record per batch. iter_kind is set externally by
+     * psyq_DrawOTag (0) or re_emit_last_ot (1) before this function is
+     * called. No-op if --vertex-trace-log isn't enabled. */
+    if (openpete_vtrace_enabled()) {
+        const uint32_t batch_count = s_curr->count;
+        for (uint32_t i = 0; i < batch_count; ++i) {
+            const matcher_batch_t* b = &s_curr->batches[i];
+            openpete_vtrace_record_batch(
+                i, batch_count,
+                b->matrix_span_id, b->object_id,
+                b->centroid, b->sxy_centroid, b->next_sxy_centroid,
+                (uint16_t)b->vertex_count,
+                (uint8_t)b->is_ui_opt_out,
+                (uint8_t)b->has_future_anchor,
+                (uint8_t)b->vtrace_velocity_capped);
+        }
+    }
 }
 
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(

@@ -264,6 +264,12 @@ typedef struct {
      * scripts/measure-pacing.py. */
     const char* frame_time_log_path;
 
+    /* --vertex-trace-log PATH (default NULL): write one 72-byte record
+     * per matcher batch per OT walk (sim-due + intermediate). Used by
+     * scripts/analyze-vtrace.py to diagnose substitute-pipeline issues
+     * empirically. Off by default. */
+    const char* vertex_trace_log_path;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

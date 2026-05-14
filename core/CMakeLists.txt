@@ -59,6 +59,11 @@ add_library(openpete_core STATIC
     # decompose + interpolate. No render changes in Phase 1.
     runtime/openpete_render_matcher.c
 
+    # Per-batch binary trace for the substitute pipeline. Off unless
+    # --vertex-trace-log PATH is given. Consumed by
+    # scripts/analyze-vtrace.py.
+    runtime/openpete_vertex_trace.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c
