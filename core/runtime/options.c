@@ -19,6 +19,102 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
+/* Tokenize a sidecar args-file buffer in place. Whitespace separates
+ * tokens; '#' to end-of-line is a comment. Modifies buf (NUL-inserts
+ * after each token). Returns token count, or -1 on overflow. */
+static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
+    int n = 0;
+    char* p = buf;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) break;
+        if (*p == '#') { while (*p && *p != '\n') p++; continue; }
+        if (n >= max_tokens) {
+            fprintf(stderr, "openpete: too many tokens in bk2 sidecar (max %d)\n", max_tokens);
+            return -1;
+        }
+        tokens[n++] = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+        if (*p) *p++ = '\0';
+    }
+    return n;
+}
+
+/* If argv contains "--bk2 PATH" and PATH.args exists on disk, splice
+ * its tokens into argv right after argv[0] so they're parsed BEFORE the
+ * user's flags — user CLI then wins on scalar conflicts (last-write).
+ *
+ * Returns:
+ *    1  expanded; *out_argc / *out_argv hold the new argv (heap-owned,
+ *       leaked for program lifetime — token strings point into a malloc
+ *       buffer that has to outlive opts).
+ *    0  no --bk2 or no sidecar; caller keeps original argv.
+ *   -1  error (logged); caller should bail with SETUP_ERROR.
+ */
+static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_argv) {
+    int bk2_idx = -1;
+    for (int i = 1; i < argc - 1; i++) {
+        if (strcmp(argv[i], "--bk2") == 0) { bk2_idx = i; break; }
+    }
+    if (bk2_idx < 0) return 0;
+
+    const char* bk2_path = argv[bk2_idx + 1];
+    size_t plen = strlen(bk2_path);
+    char* args_path = (char*)malloc(plen + 6);
+    if (!args_path) return -1;
+    memcpy(args_path, bk2_path, plen);
+    memcpy(args_path + plen, ".args", 6);
+
+    FILE* f = fopen(args_path, "rb");
+    if (!f) { free(args_path); return 0; }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); free(args_path); return -1; }
+    long sz = ftell(f);
+    if (sz < 0 || sz > 4096) {
+        fprintf(stderr, "openpete: bk2 sidecar %s rejected (size=%ld; cap 4096)\n",
+                args_path, sz);
+        fclose(f); free(args_path); return -1;
+    }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); free(args_path); return -1; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        fprintf(stderr, "openpete: short read on %s\n", args_path);
+        fclose(f); free(args_path); free(buf); return -1;
+    }
+    buf[sz] = '\0';
+    fclose(f);
+
+    enum { MAX_SIDECAR_TOKENS = 64 };
+    char** tokens = (char**)malloc(sizeof(char*) * MAX_SIDECAR_TOKENS);
+    if (!tokens) { free(args_path); free(buf); return -1; }
+    int ntoks = tokenize_sidecar_args(buf, tokens, MAX_SIDECAR_TOKENS);
+    if (ntoks < 0) { free(args_path); free(buf); free(tokens); return -1; }
+    if (ntoks == 0) {
+        free(args_path); free(buf); free(tokens);
+        return 0; /* empty/comments-only sidecar — nothing to splice */
+    }
+
+    int new_argc = argc + ntoks;
+    char** new_argv = (char**)malloc(sizeof(char*) * (size_t)(new_argc + 1));
+    if (!new_argv) { free(args_path); free(buf); free(tokens); return -1; }
+    int o = 0;
+    new_argv[o++] = argv[0];
+    for (int i = 0; i < ntoks; i++) new_argv[o++] = tokens[i];
+    for (int i = 1; i < argc; i++)  new_argv[o++] = argv[i];
+    new_argv[o] = NULL;
+
+    fprintf(stderr, "openpete: bk2 sidecar %s -> %d arg(s) prepended\n",
+            args_path, ntoks);
+
+    free(args_path);
+    free(tokens);
+    /* buf is intentionally retained — token pointers reference it. */
+
+    *out_argc = new_argc;
+    *out_argv = new_argv;
+    return 1;
+}
+
 void openpete_options_init(openpete_options_t* opts) {
     memset(opts, 0, sizeof(*opts));
     opts->display_name        = "OpenPete";
@@ -32,6 +128,16 @@ void openpete_options_init(openpete_options_t* opts) {
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+    /* Per-bk2 sidecar: <path>.bk2.args next to the movie can supply
+     * scenario-specific defaults (e.g. --skip-to-level 10 for an
+     * Artisans-only movie). Spliced before user argv so explicit CLI
+     * flags still override. See games/spyro-1/bk2/README.md. */
+    int sidecar_argc = 0;
+    char** sidecar_argv = NULL;
+    int sidecar_rc = expand_bk2_sidecar(argc, argv, &sidecar_argc, &sidecar_argv);
+    if (sidecar_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+    if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
+
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         const char* v = NULL;

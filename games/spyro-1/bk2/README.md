@@ -53,6 +53,27 @@ To extend an existing movie with new input, combine `--bk2` with
 `--bk2-record` — replays the movie and appends live input from
 where it ends.
 
+## Per-BK2 args sidecar
+
+A movie can ship with a sidecar file `<name>.bk2.args` that supplies
+extra CLI flags whenever `--bk2 <name>.bk2` is passed. Useful for
+scenarios that need a non-default startup flag to be reproducible —
+e.g. an Artisans-only movie that should always boot via
+`--skip-to-level 10` instead of relying on title-screen input timing.
+
+Format: whitespace-separated tokens; `#` to end-of-line is a comment.
+Example `skip-to-artisans.bk2.args`:
+
+```
+# Skip the title-screen demo and drop straight into Artisans Homeworld.
+--skip-to-level 10
+```
+
+Sidecar tokens are spliced into argv **before** the user's flags, so
+explicit CLI args still override (e.g. passing `--skip-to-level 20`
+on the command line wins over a sidecar's `10`). Missing sidecar is
+not an error; it's the common case.
+
 ## Current corpus
 
 | BK2                          | What it exercises                                          |
