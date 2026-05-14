@@ -12,6 +12,7 @@
 #include "openpete_ticker.h"
 #include "openpete_time.h"
 #include "openpete_frame_time_log.h"
+#include "openpete_interp.h"
 #include "screenshot.h"
 #include "game_extras.h"
 #include "bk2_movie.h"
@@ -887,6 +888,27 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (double)sim_period_ns / 1e6);
     }
 
+    /* fps-unlock Phase 2 (scaffolding): bring up the interpolation
+     * snapshot ring. Capture is enabled only when the render rate
+     * exceeds sim rate — at parity there's nothing to interpolate
+     * between, and the per-tick memcpy is pure overhead. The lerped
+     * re-emit path is task #58; for now the ring captures + dedupes
+     * and that's all. Safe to run unconditionally: capture is a
+     * read-only PSX-RAM memcpy on the host fiber while the game
+     * fiber is yielded inside VSync(0). */
+    if (openpete_interp_init() == 0) {
+        const op_time_t sim_hz_x1000 = (OP_NS_PER_SEC * 1000) / sim_period_ns;
+        const op_time_t render_hz_x1000 = (render_period_ns > 0)
+            ? (OP_NS_PER_SEC * 1000) / render_period_ns
+            : 0;
+        if (opts->render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
+            openpete_interp_set_enabled(1);
+            OPL_INFO_F("interp",
+                       "capture enabled (--render-fps=%d > sim ~30 Hz)",
+                       opts->render_fps);
+        }
+    }
+
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
      * naturally pacing the host loop at ~60 Hz. The previous fractional
@@ -1181,6 +1203,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
             if (ticked_this_iter) {
                 game_on_frame(&g_game.cpu, openpete_frame);
+
+                /* fps-unlock Phase 2: snapshot the transform-bearing
+                 * regions into the interp ring while the game fiber
+                 * is still yielded (consistent RAM). No-op unless
+                 * --render-fps > sim rate. */
+                openpete_interp_capture(openpete_frame, op_now());
             }
         }
 
@@ -1575,6 +1603,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
+    if (openpete_interp_enabled()) {
+        OPL_INFO_F("interp",
+                   "captured=%llu, dedupe-skipped=%llu",
+                   (unsigned long long)openpete_interp_total_captures(),
+                   (unsigned long long)openpete_interp_total_dedupe_skips());
+    }
+    openpete_interp_shutdown();
 
     /* Best-effort fiber teardown. Our game fiber is parked in its forever-
      * yield loop, so co_delete is safe. */

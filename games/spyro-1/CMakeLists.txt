@@ -180,7 +180,11 @@ add_custom_command(
     COMMENT "Generating Spyro gameplay_state_regions.gen.h + lua mirror")
 target_sources(openpete-spyro1 PRIVATE
     ${_spyro_state_regions_header}
-    spyro_state_regions.c)
+    spyro_state_regions.c
+    # Phase 2 of fps-unlock: render-side interpolation region table.
+    # Hardcoded (g_Spyro + g_Camera) for v1 scaffolding; will graduate
+    # to manifest-generated when mobies land in #59.
+    spyro_interp_regions.c)
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
