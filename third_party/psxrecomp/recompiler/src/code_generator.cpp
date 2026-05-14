@@ -862,12 +862,23 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      *   sll t3, 1; sub t2, t2, t3; bgez t2 → cull
                      *   (where t3 = MAC3 + a3)
                      * encodes slope 0.75 (= 4:3 horiz half-FOV). Substitute
-                     * to also subtract extra*(MAC3+a3)/4 from t2 — after
-                     * the subsequent sll/sub chain the final test becomes
-                     *   bgez (4*(|x|-a2) - (3+extra)*(t3))
-                     * with slope (3+extra)/4. Default extra=0 ⇒ slope 0.75
-                     * unchanged. Address-explicit so unrelated `sub r,r,r`
-                     * stay untouched. */
+                     * to also subtract (mac3p * extra_q12) >> 12 from t2 —
+                     * after the subsequent sll/sub chain the final test
+                     * becomes
+                     *   bgez (4*(|x|-a2) - (3 + 4*extra)*mac3p)
+                     * with slope (3 + 4*extra)/4, matching the shaded path
+                     * at 0x80022C0C. Default extra=0 ⇒ slope 0.75 unchanged.
+                     * Address-explicit so unrelated `sub r,r,r` stay
+                     * untouched.
+                     *
+                     * Historical note: this site originally used `>> 14`
+                     * (commit 7be4a6f) under the mistaken belief that it
+                     * produced the same slope-widening as the shaded path.
+                     * It actually under-widened by 4× — at extra_q12=2309
+                     * (21:9 calibration) regular gave slope 0.891 vs the
+                     * required 1.314, so regular-path enemies culled
+                     * ~145 px inside the visible 21:9 viewport. Fixed to
+                     * `>> 12` (Phase 7.1 follow-up). */
                     if (addr == 0x8001F30Cu || addr == 0x80020AB8u) {
                         /* Compute the *native* (4:3) cone-test verdict
                          * alongside the widened substitution. The full
@@ -897,7 +908,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "if (mac3p < psx_runtime_moby_cone_mac3p_floor) mac3p = psx_runtime_moby_cone_mac3p_floor;"
                             "{} = (int32_t){} - (int32_t){} "
                             "- (int32_t)(((int64_t)mac3p "
-                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14) "
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12) "
                             "- (int32_t)(((int64_t)(int32_t){} "
                             "* (int64_t)psx_runtime_moby_cone_bias_scale_q12) >> 12); }}",
                             reg_name(rs), reg_name(rt),
