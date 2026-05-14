@@ -118,9 +118,20 @@ static inline uint32_t hash_sxy(uint32_t key) {
     return h & (OPENPETE_RENDER_CACHE_SLOTS - 1u);
 }
 
+extern int  openpete_vstab_enabled(void);
+extern void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3]);
+
 void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src) {
     /* First-emit-per-yield rotate. No-op if not armed. */
     consume_pending_rotate();
+
+    /* Per-vertex stability trace (no-op unless OPENPETE_VERT_STABILITY_LOG
+     * env is set). Called BEFORE span detection so vert_idx accounting
+     * uses the freshest span id. */
+    if (openpete_vstab_enabled()) {
+        int16_t vl[3] = { src->v_local[0], src->v_local[1], src->v_local[2] };
+        openpete_vstab_record_vertex(vl, src->mac);
+    }
 
     /* Detect matrix change against last-emitted RT/TR. */
     if (!s_matrix_state_initialized ||

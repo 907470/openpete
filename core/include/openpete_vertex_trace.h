@@ -75,6 +75,38 @@ void openpete_vtrace_record_batch(uint32_t batch_idx,
                                   uint8_t matched,
                                   uint8_t velocity_capped);
 
+/* ---- Per-vertex stability log (separate file, complementary harness) ----
+ *
+ * Records one fixed-size entry per cache emit. Used to answer:
+ *   - Does GTE emit vertices in stable order per moby across frames?
+ *   - Are vertex counts per moby stable (no LOD-switch chatter)?
+ *   - How often does the same moby (= same v_local set) appear?
+ *
+ * Enabled via env: OPENPETE_VERT_STABILITY_LOG=path/to/file.bin
+ *                  OPENPETE_VERT_STABILITY_LOG_FRAMES=N (default 50)
+ *
+ * Capped at N frames because per-emit logging is high-frequency
+ * (~1500 emits/frame). N=50 frames ≈ 1.5 MB, plenty for the question.
+ *
+ * Format: 32B header (magic 'VSTB', version 1, record_sz 32) then
+ * fixed records.
+ */
+
+#define VSTAB_MAGIC    0x56535442u  /* "VSTB" */
+#define VSTAB_VERSION  1u
+
+typedef struct {
+    uint32_t openpete_frame;
+    uint32_t matrix_span_id;        /* batch id within this frame */
+    uint32_t vert_idx_in_span;      /* emit order, 0..N-1 within batch */
+    int16_t  v_local[3];            /* model-local pre-transform — stable per logical vertex */
+    int16_t  _pad;
+    int32_t  mac[3];                /* post-transform, for cross-check */
+} openpete_vstab_record_t;
+
+void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3]);
+int  openpete_vstab_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif
