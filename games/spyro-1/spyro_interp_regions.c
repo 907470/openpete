@@ -2,6 +2,15 @@
  * table. Captured per-tick into the openpete_interp ring so render
  * frames at >29.97 Hz can lerp transforms and re-emit DrawOTag.
  *
+ * Registration model:
+ *   This TU defines spyro_interp_register() which forwards the static
+ *   table to openpete_interp_register_regions(). main.cpp calls it
+ *   once at startup before openpete_run(). We avoid the weak-symbol
+ *   override pattern used by spyro_state_regions.c because MinGW's
+ *   PE/COFF linker has been observed to mis-resolve it, leaving the
+ *   weak NULL in place at runtime and crashing the recomp boot path.
+ *   Explicit registration works identically across toolchains.
+ *
  * Scope decisions (Phase 2 scaffolding):
  *   - g_Spyro covers Spyro's Moby header (pos / rotation matrix /
  *     anim state) and the Spyro-specific tail. Lerping starts here.
@@ -25,13 +34,15 @@
  */
 
 #include "openpete_interp.h"
+#include "spyro_interp_regions.h"
 
 static const openpete_interp_region_t s_spyro_interp_regions[] = {
     { "g_Spyro",  0x80078A58, 0x2A4 },
     { "g_Camera", 0x80076DD0, 0x110 },
 };
 
-const openpete_interp_region_t* openpete_interp_regions =
-    s_spyro_interp_regions;
-size_t openpete_interp_region_count =
-    sizeof(s_spyro_interp_regions) / sizeof(s_spyro_interp_regions[0]);
+void spyro_interp_register(void) {
+    openpete_interp_register_regions(
+        s_spyro_interp_regions,
+        sizeof(s_spyro_interp_regions) / sizeof(s_spyro_interp_regions[0]));
+}

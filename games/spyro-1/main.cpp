@@ -7,6 +7,7 @@
 #include <SDL.h>
 #include "openpete.h"
 #include "game_extras.h"
+#include "spyro_interp_regions.h"
 
 #include <cstdio>
 
@@ -29,6 +30,14 @@ int main(int argc, char** argv) {
 
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* fps-unlock Phase 2: register the interp ring's region table. Must
+     * happen before openpete_run() so openpete_interp_init() (called
+     * from inside the run loop) sees the regions. Explicit registration
+     * instead of the weak-symbol pattern used by openpete_state_regions
+     * — MinGW's PE/COFF linker mis-resolves weak overrides in this
+     * configuration. */
+    spyro_interp_register();
 
     /* Spyro's gp comes from PSYQ's _96_init boot stub, which we don't
      * recompile (psyq___main is a no-op). main()'s prologue assumes gp is

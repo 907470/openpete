@@ -47,10 +47,17 @@ typedef struct {
     uint32_t    length;     /* bytes to capture */
 } openpete_interp_region_t;
 
-/* Game-supplied region table. NULL/0 in the fallback case
- * (capture becomes a no-op). Override in games/<game>/interp_regions.c. */
-extern const openpete_interp_region_t* openpete_interp_regions;
-extern size_t                          openpete_interp_region_count;
+/* Game registers its region table via this call before openpete_interp_init.
+ * Explicit registration (instead of weak symbols) so we don't depend on
+ * cross-toolchain weak-symbol semantics — MinGW's PE/COFF link rules don't
+ * reliably let a strong override in an executable object override a weak
+ * definition pulled from a static library archive. Call once at game
+ * startup; pass NULL/0 to keep capture disabled.
+ *
+ * Safe to call multiple times — last call wins. Caller retains ownership
+ * of the table; openpete_interp captures the pointer + count by value. */
+void openpete_interp_register_regions(const openpete_interp_region_t* regions,
+                                      size_t count);
 
 /* One ring slot. `data[]` holds the concatenation of each region's bytes
  * in table order; `region_offsets[r]` gives the offset of region r within

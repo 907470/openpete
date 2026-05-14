@@ -19,9 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Weak fallback: no regions = no-op capture. Game-specific TU overrides. */
-__attribute__((weak)) const openpete_interp_region_t* openpete_interp_regions = NULL;
-__attribute__((weak)) size_t                          openpete_interp_region_count = 0;
+/* Game-registered region table. NULL/0 until the game's startup calls
+ * openpete_interp_register_regions(); init() short-circuits to no-op
+ * capture in that case. Explicit registration avoids relying on
+ * cross-toolchain weak-symbol semantics — MinGW's PE/COFF linker mis-
+ * resolves the strong override in some configurations, leaving the
+ * weak NULL in place at runtime even though the strong def exists. */
+static const openpete_interp_region_t* s_regions = NULL;
+static size_t                          s_region_count = 0;
 
 static openpete_interp_snapshot_t s_snap[2];
 static int      s_head        = 0;   /* index of the most-recently-written slot */
@@ -31,18 +36,26 @@ static int      s_enabled     = 0;
 static uint64_t s_total_captures     = 0;
 static uint64_t s_total_dedupe_skips = 0;
 
+void openpete_interp_register_regions(const openpete_interp_region_t* regions,
+                                      size_t count) {
+    s_regions = regions;
+    s_region_count = (regions ? count : 0);
+}
+
 int openpete_interp_init(void) {
     if (s_initialized) return 0;
 
-    if (!openpete_interp_regions || openpete_interp_region_count == 0) {
+    if (!s_regions || s_region_count == 0) {
         OPL_INFO_F("interp", "no game regions registered; capture disabled");
         s_initialized = 1;
         return 0;
     }
-    if (openpete_interp_region_count > OPENPETE_INTERP_MAX_REGIONS) {
+    if (s_region_count > OPENPETE_INTERP_MAX_REGIONS) {
+        /* %u + cast rather than %zu — MinGW's default MSVCRT printf
+         * doesn't reliably understand C99 %zu. */
         OPL_ERROR_F("interp",
-                    "region table has %zu entries (max %u); bump OPENPETE_INTERP_MAX_REGIONS",
-                    openpete_interp_region_count,
+                    "region table has %u entries (max %u); bump OPENPETE_INTERP_MAX_REGIONS",
+                    (unsigned)s_region_count,
                     (unsigned)OPENPETE_INTERP_MAX_REGIONS);
         return 1;
     }
@@ -50,9 +63,9 @@ int openpete_interp_init(void) {
     /* Compute per-region offsets; reject tables that exceed the snapshot cap. */
     uint32_t total = 0;
     uint32_t offsets[OPENPETE_INTERP_MAX_REGIONS] = {0};
-    for (size_t r = 0; r < openpete_interp_region_count; ++r) {
+    for (size_t r = 0; r < s_region_count; ++r) {
         offsets[r] = total;
-        total += openpete_interp_regions[r].length;
+        total += s_regions[r].length;
     }
     if (total > OPENPETE_INTERP_MAX_SNAPSHOT_BYTES) {
         OPL_ERROR_F("interp",
@@ -64,7 +77,7 @@ int openpete_interp_init(void) {
     memset(s_snap, 0, sizeof(s_snap));
     for (int i = 0; i < 2; ++i) {
         s_snap[i].total_bytes = total;
-        for (size_t r = 0; r < openpete_interp_region_count; ++r) {
+        for (size_t r = 0; r < s_region_count; ++r) {
             s_snap[i].region_offsets[r] = offsets[r];
         }
     }
@@ -72,8 +85,8 @@ int openpete_interp_init(void) {
     s_initialized = 1;
 
     OPL_INFO_F("interp",
-               "initialised: %zu regions, %u bytes/snapshot",
-               openpete_interp_region_count, (unsigned)total);
+               "initialised: %u regions, %u bytes/snapshot",
+               (unsigned)s_region_count, (unsigned)total);
     return 0;
 }
 
@@ -92,7 +105,7 @@ int openpete_interp_enabled(void) {
 
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     if (!s_initialized || !s_enabled) return;
-    if (!openpete_interp_regions || openpete_interp_region_count == 0) return;
+    if (!s_regions || s_region_count == 0) return;
 
     /* Advance the head, then fill. snap[s_head] becomes "latest tick";
      * snap[s_head ^ 1] holds "previous tick". */
@@ -101,8 +114,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     slot->tick    = tick;
     slot->tick_ns = tick_ns;
 
-    for (size_t r = 0; r < openpete_interp_region_count; ++r) {
-        const openpete_interp_region_t* reg = &openpete_interp_regions[r];
+    for (size_t r = 0; r < s_region_count; ++r) {
+        const openpete_interp_region_t* reg = &s_regions[r];
         void* host = openpete_psx_to_host_ptr(reg->psx_addr);
         uint32_t off = slot->region_offsets[r];
         if (host) {
