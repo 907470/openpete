@@ -89,14 +89,8 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
  * relevant globals don't exist until the game's own init has run). */
 void game_set_skip_to_level(int level_id); /* 0 = disabled */
 
-/* --- LOD collapse setup (--no-lod) ---
- * Allocate + register the relocated env-renderer scratch pool, copy the
- * canonical splash bytes, and swing the pool-base / queue-offset knobs
- * so the recompiled body's substitutions land on the grown queues.
- * Must be called AFTER openpete_psx_boot (so canonical splash bytes are
- * populated) and BEFORE the first dispatch into recompiled code.
- * Returns 0 on success, non-zero on setup error. */
-int  game_apply_no_lod(void);
+/* --no-lod setup is now a feature module — see
+ * core/features/no_lod.h + games/<game>/features/no_lod.c. */
 
 /* --- Disc layout (each game's WAD/asset structure differs) --- */
 typedef struct {

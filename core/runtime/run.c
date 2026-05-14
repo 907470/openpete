@@ -15,6 +15,7 @@
 #include "bk2_movie.h"
 #include "bk2_record.h"
 #include "feature_registry.h"
+#include "features/no_lod.h"
 #include "features/widescreen.h"
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
@@ -639,35 +640,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * before PsyX_Initialise. */
     widescreen_apply_disp_w_factor(opts);
 
-    /* --no-lod: relocate the env-renderer scratch pool to a virtualized
-     * region (psx_runtime_register_region from openpete-ram-virtualization),
-     * swing the recompiler's value-keyed g_SonyImage base + queue-offset
-     * substitutions to land on grown queue heads, and override
-     * m_LodDistance per-frame so the env renderer takes the high-poly
-     * path for every visible cell. The grown HP/mid/LP queues each get
-     * ~16 KB (4096 entries × 4 bytes) of physical space — way past the
-     * canonical 256 entries that overflow into gameplay-readable bytes
-     * on dense levels and on every widescreen aspect.
-     *
-     * Plan: notes/plans/openpete-disable-lods.md Phase 2.5. */
-    openpete_no_lod = 0;
-    if (opts->no_lod) {
-        if (game_apply_no_lod() != 0) {
-            fprintf(stderr, "openpete: --no-lod setup failed\n");
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        openpete_no_lod = 1;
-    }
-
-    /* Debug: visually identify what the env-renderer's LP-walk renders
-     * by killing it. Set OPENPETE_DBG_KILL_LP=1. Affects only the
-     * env-renderer (not r_moby/r_cyclorama). */
-    {
-        const char* env = getenv("OPENPETE_DBG_KILL_LP");
-        if (env && env[0] != '\0' && env[0] != '0') {
-            psx_runtime_dbg_kill_env_lp_walk = 1;
-            OPL_INFO_F("dbg", "%s", "OPENPETE_DBG_KILL_LP=1: env-renderer LP-walk disabled");
-        }
+    /* --no-lod: feature module owns scratch-pool relocation, queue-
+     * offset / moby-LP / DBG_KILL_LP knob arming, and polybuf grow.
+     * Module's apply_options ran inside feature_registry_apply_options
+     * above and installed the per-game setup hook; the call below
+     * actually fires the hook when opts->no_lod is set. See
+     * notes/plans/openpete-disable-lods.md. */
+    if (no_lod_apply_options(opts) != 0) {
+        return OPENPETE_EXIT_SETUP_ERROR;
     }
 
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",

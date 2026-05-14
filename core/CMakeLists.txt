@@ -31,6 +31,7 @@ add_library(openpete_core STATIC
     runtime/feature_registry.c
 
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
+    features/no_lod.c
     features/widescreen.c
 
     runtime/crash.c

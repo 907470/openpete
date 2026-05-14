@@ -10,9 +10,11 @@
 #include <stddef.h>
 
 extern const feature_module_t widescreen_module;
+extern const feature_module_t no_lod_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
+    &no_lod_module,
 };
 
 const size_t openpete_feature_count =
