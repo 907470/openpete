@@ -235,10 +235,22 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          *
          * See notes/plans/openpete-polybuf-host-redirect.md. */
         float thresh_factor = openpete_disp_w_factor;
-        if (thresh_factor > 1.5f) {
+        if (thresh_factor > 1.5f || openpete_no_lod) {
             uint32_t size_per_slot =
                 ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
                 & ~0x3FFFu;
+            /* --no-lod arms a 1 MB polybuf in game_apply_no_lod() before
+             * this runs. widescreen_polybuf_setup is non-idempotent for
+             * different sizes — bump our requested size up to the already-
+             * armed value so the re-registration matches and returns 0
+             * (idempotent). Otherwise the rc=2 reject below trips the
+             * thresh_factor=1.5 fallback, clamping every right-edge cull
+             * (clip_x_threshold, moby cone, env_cell_x_bound, sxy_sat)
+             * while the framebuffer still draws the full wide aspect —
+             * visible as missing right-edge polys at 21:9+ under --no-lod. */
+            if (openpete_no_lod && size_per_slot < 0x100000u) {
+                size_per_slot = 0x100000u;
+            }
             if (widescreen_polybuf_setup(size_per_slot, 0x80400000u) == 0) {
                 /* No upper cap once the host-backed polybuf is armed:
                  * cull surfaces (env clip_x_threshold, portal clamp, moby
