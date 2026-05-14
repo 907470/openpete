@@ -189,3 +189,28 @@ void openpete_render_cache_begin_frame(void) {
      * spanning a DrawOTag boundary). */
     s_matrix_state_initialized = 0;
 }
+
+/* Phase 2.1 — sim-tick boundary state. Tracks the timestamp of the
+ * most recent sim_tick_advanced call so substitute can compute alpha
+ * relative to it. sim_period_ns is the inter-tick interval (= Spyro
+ * game-frame period ≈ 33.36 ms). */
+static openpete_op_time_t s_last_sim_tick_ns   = 0;
+static openpete_op_time_t s_last_sim_period_ns = 0;
+
+void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
+                                           openpete_op_time_t sim_period_ns) {
+    s_last_sim_tick_ns   = sim_tick_ns;
+    s_last_sim_period_ns = sim_period_ns;
+}
+
+void openpete_render_sim_tick_rotate_cache(void) {
+    openpete_render_cache_begin_frame();
+}
+
+float openpete_render_compute_alpha(openpete_op_time_t now_ns) {
+    if (s_last_sim_period_ns <= 0) return 0.0f;
+    openpete_op_time_t delta = now_ns - s_last_sim_tick_ns;
+    if (delta <= 0) return 0.0f;
+    if (delta >= s_last_sim_period_ns) return 1.0f;
+    return (float)((double)delta / (double)s_last_sim_period_ns);
+}

@@ -1198,6 +1198,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (yield_now) {
             g_step_one = false;
             game_on_frame_pre(&g_game.cpu, openpete_frame);
+            /* Renderer-foundation Phase 2.1 — advance the sim-tick
+             * timestamp BEFORE the game-fiber yield so substitute (which
+             * fires inside the yield's DrawOTag → prepare → ParsePrim
+             * chain) reads alpha ≈ 0. */
+            {
+                extern void openpete_render_sim_tick_advance_time(
+                    int64_t sim_tick_ns, int64_t sim_period_ns);
+                openpete_render_sim_tick_advance_time(op_now(),
+                                                      2 * sim_period_ns);
+            }
             co_switch((cothread_t)openpete_game_fiber);
             ticked_this_iter = (openpete_frame != frame_before_yield);
 
@@ -1278,6 +1288,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             PsyX_EndScene();
             openpete_present_pending = 0;
 
+            /* Renderer-foundation Phase 2.1 — rotate cache once per
+             * sim-due EndScene (previously done inside EndScene; moved
+             * here so intermediate-render EndScenes don't double-rotate). */
+            {
+                extern void openpete_render_sim_tick_rotate_cache(void);
+                openpete_render_sim_tick_rotate_cache();
+            }
+
             /* Phase 4.1 frame-time recorder: one 32-byte record per
              * actual present. The deadline is computed against a
              * per-PRESENT counter (not openpete_frame, which is the
@@ -1299,6 +1317,39 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                                deadline_ns,
                                                deadline_ns - now_ns);
             }
+        }
+
+        /* Renderer-foundation Phase 2.1 — intermediate render between
+         * sim ticks. When render-fps > sim and we have a saved OT from
+         * the last DrawOTag, re-walk it through PsyCross with a fresh
+         * substitute alpha. Each intermediate iter presents a smoothed
+         * intermediate frame; alpha advances across the sim period via
+         * openpete_render_compute_alpha(op_now()).
+         *
+         * Conditions:
+         *  - Not headless / unlock mode (no display target).
+         *  - render-fps > 0 and exceeds sim cadence.
+         *  - sim_due is false (this is an intermediate iter; sim-due
+         *    iters already rendered via the present_pending block above).
+         *  - At least one DrawOTag has fired (saved OT available).
+         *  - Not paused without step pending. */
+        extern uint8_t** openpete_last_ot_slot_host_ptr;
+        extern int       openpete_last_ot_slot_count;
+        extern void      openpete_re_emit_last_ot(void);
+        if (!opts->headless && !openpete_unlock_fps &&
+            opts->render_fps > 0 &&
+            !sim_due && !openpete_present_pending &&
+            openpete_last_ot_slot_host_ptr &&
+            openpete_last_ot_slot_count > 0 &&
+            !(g_paused && !g_step_one)) {
+            if (PsyX_BeginScene()) {
+                /* nothing else needed — re_emit does ClearSplits */
+            }
+            openpete_re_emit_last_ot();
+            PsyX_EndScene();
+            /* No cache rotate here — sim_tick_advanced fires only at
+             * sim-due iters. Intermediate renders reuse the cache state
+             * from the most recent sim tick. */
         }
 
         /* RAM dump runs outside the present_pending gate so a request for

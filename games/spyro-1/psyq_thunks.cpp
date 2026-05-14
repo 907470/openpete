@@ -39,6 +39,27 @@ extern "C" {
 #include "psx/libspu.h"
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
 extern "C" void openpete_render_matcher_prepare_substitute(void);
+
+/* Phase 2.1 intermediate-render: pointer + count to the OT walked by
+ * the most recent psyq_DrawOTag, exposed to run.c for re-emit between
+ * sim ticks. NULL until first DrawOTag fires. */
+extern "C" uint8_t** openpete_last_ot_slot_host_ptr = NULL;
+extern "C" int       openpete_last_ot_slot_count    = 0;
+
+/* Public re-emit entry: re-walk the last OT through PsyCross with
+ * fresh substitute alpha. Caller is responsible for any PsyX
+ * BeginScene/EndScene framing (run.c does it explicitly). */
+extern "C" void openpete_re_emit_last_ot(void) {
+    if (!openpete_last_ot_slot_host_ptr || openpete_last_ot_slot_count <= 0)
+        return;
+    extern void ClearSplits(void);
+    extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
+    extern void DrawAllSplits(void);
+    ClearSplits();
+    openpete_render_matcher_prepare_substitute();
+    ParsePrimitivesLinkedList((u_long*)openpete_last_ot_slot_host_ptr[0], 0);
+    DrawAllSplits();
+}
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
 
@@ -793,6 +814,11 @@ void psyq_DrawOTag(CPUState* cpu) {
         extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
         ParsePrimitivesLinkedList((u_long*)g_ot_slot_host[0], 0);
         DrawAllSplits();
+        /* Remember this OT for Phase 2.1 intermediate-render re-emit. */
+        extern uint8_t** openpete_last_ot_slot_host_ptr;
+        extern int       openpete_last_ot_slot_count;
+        openpete_last_ot_slot_host_ptr = g_ot_slot_host;
+        openpete_last_ot_slot_count    = g_ot_slot_count;
         /* Tell the host loop this iter's GL backbuffer holds fresh game pixels.
          * Spyro is a 30fps game: it calls VSync(0) twice per logical frame, so
          * if the host loop swapped on every yield we'd flash the bare clear-

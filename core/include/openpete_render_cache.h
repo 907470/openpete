@@ -61,9 +61,34 @@ int openpete_render_cache_lookup_curr(uint32_t sxy_key,
 int openpete_render_cache_lookup_prev(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
 
-/* Rotate: previous <- current; bump current's seq (logical clear). Called
- * from PsyX_BeginScene per render frame. */
+/* Rotate: previous <- current; bump current's seq (logical clear).
+ * NOTE: Phase 2.1 moved the per-sim-tick caller from PsyX_EndScene to
+ * run.c (via openpete_render_sim_tick_advanced) so EndScene can fire
+ * multiple times per sim tick during intermediate rendering. Direct
+ * callers should be rare. */
 void openpete_render_cache_begin_frame(void);
+
+/* Phase 2.1 — sim-tick boundary, split into two calls:
+ *
+ *   advance_time: update the "this sim tick started at T" timestamp +
+ *     sim_period so substitute can compute alpha. Call BEFORE the
+ *     game-fiber yield that runs DrawOTag, so substitute (inside that
+ *     yield) reads alpha ≈ 0. Called once per sim-due iter (cheap).
+ *
+ *   rotate_cache: rotate s_curr ↔ s_prev. Call ONCE per Spyro game
+ *     frame (after sim-due EndScene fires) so the OT walked next sim
+ *     tick sees fresh cache state. */
+#include <stdint.h>
+typedef int64_t openpete_op_time_t;
+void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
+                                           openpete_op_time_t sim_period_ns);
+void openpete_render_sim_tick_rotate_cache(void);
+
+/* Phase 2.1 — return clamped alpha in [0, 1.0] for the time elapsed
+ * since the last sim_tick_advanced call. Used by the substitute
+ * pipeline at intermediate-render time. Returns 0.0 if no sim tick
+ * has been recorded yet. */
+float openpete_render_compute_alpha(openpete_op_time_t now_ns);
 
 /* Iterate every populated slot in s_curr (the "next-visible" buffer just
  * emitted by the game fiber's GTE pass). Used by Phase 2's
