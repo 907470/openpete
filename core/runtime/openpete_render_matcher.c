@@ -102,6 +102,9 @@ unsigned g_openpete_render_substitute_vert_hit_count       = 0u;
 unsigned g_openpete_render_substitute_vert_miss_count      = 0u;
 /* Phase 3 HUD opt-out stat. */
 unsigned g_openpete_render_substitute_ui_optout_count      = 0u;
+/* Velocity sanity cap rejects (mispair detector — should be small in
+ * healthy gameplay, large during scene transitions). */
+unsigned g_openpete_render_substitute_velocity_capped_count = 0u;
 
 /* Phase 4 — OPENPETE_PREV_TRANSFORM escape hatch state. One-shot
  * override consumed by the next prepare_substitute call. See header
@@ -290,18 +293,37 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  *
  * Tuning history (level_10 f2200):
  *   shift=16 (16-unit buckets) + bbox_size_log2 + vc → 40 % match
- *   shift=18 (64-unit buckets), vc only             → see below */
+ *   shift=18 (64-unit buckets), centroid only        → 100 % match
+ *     in active gameplay, but moving mobys can collide with unrelated
+ *     stationary batches sharing the bucket → nonsense velocity →
+ *     visible flicker. Mitigated by adding bbox-size and vertex-count
+ *     to the hash (this file) AND a per-batch velocity sanity cap. */
 #define MATCHER_CENTROID_SHIFT 18
 
+/* Velocity sanity cap (screen-space pixels, Manhattan). A legitimate
+ * moby moves at most ~30 px between game frames; anything beyond this
+ * is almost certainly a mispair via hash collision. Capped matches
+ * are released (pb->consumed=0) so a legitimate curr batch can still
+ * pair with that prev, and the curr batch probes the next hash slot
+ * for a better candidate. */
+#define MATCHER_VELOCITY_CAP_PX 128
+
 /* Shared hash function so the future-anchor scan produces identical
- * hashes for the same logical batch as the OT-walker observe pass. */
+ * hashes for the same logical batch as the OT-walker observe pass.
+ *
+ * Centroid-only hashing was retained after a brief experiment with
+ * (centroid + bbox-log2 + vert-count): adding bbox-log2 caused ~50 %
+ * of legitimate matches to fail because the log2-ceil bucket flipped
+ * across power-of-two boundaries under small frame-to-frame noise.
+ * Hash collisions between unrelated batches in the same centroid
+ * bucket are now caught downstream by the velocity sanity cap — see
+ * MATCHER_VELOCITY_CAP_PX. */
 static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
     int32_t cq[3] = {
         cx >> MATCHER_CENTROID_SHIFT,
         cy >> MATCHER_CENTROID_SHIFT,
         cz >> MATCHER_CENTROID_SHIFT,
     };
-    /* See "Phase 1 hash" rationale in finalize_frame: centroid-only. */
     return fnv1a64(cq, sizeof(cq));
 }
 
@@ -431,6 +453,7 @@ void openpete_render_matcher_prepare_substitute(void) {
     }
 
     unsigned paired = 0u;
+    unsigned velocity_capped = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
         uint64_t h = cb->hash;
@@ -440,16 +463,30 @@ void openpete_render_matcher_prepare_substitute(void) {
             if (entry == 0u) break;
             matcher_batch_t* pb = &s_prev->batches[entry - 1u];
             if (pb->hash == h && !pb->consumed) {
+                /* Velocity sanity cap. Even with multi-feature hashing
+                 * (centroid+bbox+vc), occasional false-positive matches
+                 * survive — typically a moving moby colliding with a
+                 * shape-similar stationary batch. Drop the match when
+                 * the resulting screen-space velocity is implausibly
+                 * large; release the prev slot so a legitimate curr
+                 * batch can still pair with it. */
+                const int32_t vx = cb->sxy_centroid[0] - pb->sxy_centroid[0];
+                const int32_t vy = cb->sxy_centroid[1] - pb->sxy_centroid[1];
+                if (abs(vx) + abs(vy) > MATCHER_VELOCITY_CAP_PX) {
+                    velocity_capped++;
+                    /* Don't consume pb; try next slot (may have a
+                     * legitimate hash neighbor with sane velocity). */
+                    slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
+                    continue;
+                }
                 pb->consumed = 1;
                 cb->object_id   = pb->object_id;
                 /* Velocity in world (q12 MAC) and screen-space pixels. */
                 cb->velocity[0] = cb->centroid[0] - pb->centroid[0];
                 cb->velocity[1] = cb->centroid[1] - pb->centroid[1];
                 cb->velocity[2] = cb->centroid[2] - pb->centroid[2];
-                cb->next_sxy_centroid[0] = cb->sxy_centroid[0] +
-                    (cb->sxy_centroid[0] - pb->sxy_centroid[0]);
-                cb->next_sxy_centroid[1] = cb->sxy_centroid[1] +
-                    (cb->sxy_centroid[1] - pb->sxy_centroid[1]);
+                cb->next_sxy_centroid[0] = cb->sxy_centroid[0] + vx;
+                cb->next_sxy_centroid[1] = cb->sxy_centroid[1] + vy;
                 cb->has_future_anchor = 1;
                 paired++;
                 break;
@@ -461,6 +498,7 @@ void openpete_render_matcher_prepare_substitute(void) {
         }
     }
     g_openpete_render_substitute_pair_count = paired;
+    g_openpete_render_substitute_velocity_capped_count = velocity_capped;
 
     /* Phase 4: consume any pending OPENPETE_PREV_TRANSFORM override
      * (no-op if no override set). */
