@@ -33,6 +33,11 @@ int32_t      openpete_moby_cone_extra_q12_render = 0;
  * widescreen.c and swapped into psx_runtime_moby_cone_bias_scale_q12 around
  * the GamestateDraw call. 0 = identity. */
 int32_t      openpete_moby_cone_bias_scale_q12_render = 0;
+/* Phase 7.2: near-Z clamp soften. Lifts the (mac3p < floor → floor)
+ * clamp from 0 to a positive value during the render pass so slope
+ * widening still contributes a partial cone in the strip right at the
+ * camera plane. 0 = preserve native clamp. */
+int32_t      openpete_moby_cone_mac3p_floor_render = 0;
 /* Render-pass env-cell X-bound (in MAC1 units), staged by widescreen
  * setup and swapped into psx_runtime_env_cell_x_bound around the
  * GamestateDraw call. 0 sentinel = no widening. */

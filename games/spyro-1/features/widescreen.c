@@ -36,6 +36,8 @@ extern int32_t  psx_runtime_moby_cone_extra_q12;
 extern int32_t  openpete_moby_cone_extra_q12_render;
 extern int32_t  psx_runtime_moby_cone_bias_scale_q12;
 extern int32_t  openpete_moby_cone_bias_scale_q12_render;
+extern int32_t  psx_runtime_moby_cone_mac3p_floor;
+extern int32_t  openpete_moby_cone_mac3p_floor_render;
 extern uint32_t psx_runtime_env_cell_x_bound;
 extern uint32_t openpete_env_cell_x_bound_render;
 extern uint32_t psx_runtime_sxy_sat_bound;
@@ -96,6 +98,7 @@ static int on_8001ED5C_render_bracket(CPUState* cpu, uint32_t addr) {
         openpete_render_pass_active = 1;
         psx_runtime_moby_cone_extra_q12 = openpete_moby_cone_extra_q12_render;
         psx_runtime_moby_cone_bias_scale_q12 = openpete_moby_cone_bias_scale_q12_render;
+        psx_runtime_moby_cone_mac3p_floor = openpete_moby_cone_mac3p_floor_render;
         if (openpete_env_cell_x_bound_render != 0u)
             psx_runtime_env_cell_x_bound = openpete_env_cell_x_bound_render;
         if (openpete_sxy_sat_bound_render != 0u)
@@ -108,6 +111,7 @@ static int on_8001ED5C_render_bracket(CPUState* cpu, uint32_t addr) {
         memcpy(cpu->gte_ctrl, saved_gte_ctrl, sizeof(saved_gte_ctrl));
         psx_runtime_moby_cone_extra_q12 = 0;
         psx_runtime_moby_cone_bias_scale_q12 = 0;
+        psx_runtime_moby_cone_mac3p_floor = 0;
         psx_runtime_env_cell_x_bound = 0x100u;
         psx_runtime_sxy_sat_bound = 0x400u;
         openpete_render_pass_active = 0;

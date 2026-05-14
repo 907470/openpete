@@ -46,6 +46,10 @@ int32_t psx_runtime_moby_cone_extra_q12 = 0;
  * (factor-1), so 0 = identity. See psx_runtime.h. */
 int32_t psx_runtime_moby_cone_bias_scale_q12 = 0;
 
+/* Phase 7.2 near-Z clamp soften. Floor used by the cone substitutions'
+ * mac3p clamp; default 0 preserves the existing native clamp. */
+int32_t psx_runtime_moby_cone_mac3p_floor = 0;
+
 /* r_environment.s func_800258F0 per-vertex camera-space X-bound cull.
  * Default 0x100 (= 256, native). Widened during the render pass to
  * 0x100 * thresh_factor; reset to 0x100 outside render so the
@@ -355,6 +359,25 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         openpete_moby_cone_bias_scale_q12_render =
             (int32_t)(bias_scale * 4096.0f);
         psx_runtime_moby_cone_bias_scale_q12 = 0;  /* native outside render */
+
+        /* Phase 7.2: near-Z clamp soften. Lifts the mac3p->0 clamp to a
+         * small positive floor so slope widening still applies a partial
+         * cone in the strip right at the camera plane. Trades a tiny
+         * near-Z over-admit (geometrically meaningless — the cone is
+         * ill-defined behind-Z) for fewer aspect-asymmetric clips of
+         * mobys at the screen edge near the camera. Default value 64
+         * tuned to lift the floor by ~half the typical Z-bias (77 for
+         * shaded), so slope widening gets meaningful traction even when
+         * mac3p would have been clamped. Tunable via env var. */
+        extern int32_t psx_runtime_moby_cone_mac3p_floor;
+        extern int32_t openpete_moby_cone_mac3p_floor_render;
+        int32_t mac3p_floor = 64;
+        if (getenv("OPENPETE_MOBY_CONE_MAC3P_FLOOR")) {
+            mac3p_floor = atoi(getenv("OPENPETE_MOBY_CONE_MAC3P_FLOOR"));
+            if (mac3p_floor < 0) mac3p_floor = 0;
+        }
+        openpete_moby_cone_mac3p_floor_render = mac3p_floor;
+        psx_runtime_moby_cone_mac3p_floor = 0;  /* native outside render */
 
         /* r_environment.s per-vertex lateral bound widening (render-pass
          * only). Native admits |MAC1| < 256; widescreen admits up to

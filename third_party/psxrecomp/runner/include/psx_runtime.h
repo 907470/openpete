@@ -170,6 +170,17 @@ extern int32_t psx_runtime_moby_cone_extra_q12;
  * func_80022A2C callers (moby ticking) still see the canonical bias. */
 extern int32_t psx_runtime_moby_cone_bias_scale_q12;
 
+/* Phase 7.2: near-Z clamp soften. The cone widening clamps mac3p to >=
+ * this floor before multiplying by extra_q12; native floor is 0 (the
+ * proj_cone_extra_signed_clamp fix) which collapses slope widening to
+ * zero whenever MAC3+Z_bias is negative — i.e. mobys near or behind
+ * the camera plane fall back to native cone width. Setting a small
+ * positive floor preserves a partial slope widening in that strip,
+ * giving aspect-proportional headroom even at near-Z. Default 0 =
+ * preserve existing clamp behaviour. Render-pass-only; staged by
+ * widescreen.c. */
+extern int32_t psx_runtime_moby_cone_mac3p_floor;
+
 /* r_environment.s func_800258F0 per-vertex lateral bound cull at
  * 0x80026A2C..0x80026A50. After RTPS the asm tests
  *   |MAC1| < 256 && |MAC2| < 256
