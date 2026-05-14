@@ -71,7 +71,18 @@ def main():
                     help="dump per-render trajectory for this object_id")
     ap.add_argument("--limit", type=int, default=None,
                     help="stop after N records (debugging)")
+    ap.add_argument("--clamp-px", type=float, default=None,
+                    help="if set, clamp the reconstructed applied delta "
+                         "per-axis to [-N, N] before measuring jumps "
+                         "(matches the in-engine clamp; use to test "
+                         "what numbers would look like with that cap)")
     args = ap.parse_args()
+
+    def apply_clamp(dx, dy):
+        if args.clamp_px is None:
+            return dx, dy
+        c = args.clamp_px
+        return (max(-c, min(c, dx)), max(-c, min(c, dy)))
 
     n = 0
     by_iter_kind = defaultdict(int)
@@ -103,8 +114,9 @@ def main():
 
         # Apply substitute-equivalent delta for trajectory analysis
         if matched and not is_ui:
-            applied_sx = sx + (nsx - sx) * alpha
-            applied_sy = sy + (nsy - sy) * alpha
+            dx, dy = apply_clamp((nsx - sx) * alpha, (nsy - sy) * alpha)
+            applied_sx = sx + dx
+            applied_sy = sy + dy
         else:
             applied_sx, applied_sy = sx, sy
 
@@ -198,8 +210,9 @@ def main():
          _, iter_kind, is_ui, matched, vcapped, _) = rec
         if is_ui or not matched:
             continue
-        applied_sx = sx + (nsx - sx) * alpha
-        applied_sy = sy + (nsy - sy) * alpha
+        dx, dy = apply_clamp((nsx - sx) * alpha, (nsy - sy) * alpha)
+        applied_sx = sx + dx
+        applied_sy = sy + dy
         if object_id in last_pos_by_oid:
             last_sx, last_sy = last_pos_by_oid[object_id]
             last_rid = last_render_by_oid[object_id]

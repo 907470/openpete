@@ -1021,6 +1021,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         frame_time_log_start_ns = op_now();
     }
 
+    /* Substitute clamp — apply CLI override or env, else compiled default. */
+    {
+        extern float g_openpete_substitute_clamp_px;
+        if (opts->substitute_clamp_px >= 0.0f) {
+            g_openpete_substitute_clamp_px = opts->substitute_clamp_px;
+        } else {
+            const char* e = getenv("OPENPETE_SUBSTITUTE_CLAMP_PX");
+            if (e && *e) g_openpete_substitute_clamp_px = (float)atof(e);
+        }
+        OPL_INFO_F("render", "substitute clamp = %.1f px/render (0 = disabled)",
+                   (double)g_openpete_substitute_clamp_px);
+    }
+
     /* Vertex trace — see openpete_vertex_trace.h. Off unless
      * --vertex-trace-log PATH given. */
     if (opts->vertex_trace_log_path && *opts->vertex_trace_log_path) {

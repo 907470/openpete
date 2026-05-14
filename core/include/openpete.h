@@ -270,6 +270,12 @@ typedef struct {
      * empirically. Off by default. */
     const char* vertex_trace_log_path;
 
+    /* --substitute-clamp-px N (default 8): max per-axis per-vertex
+     * applied delta in pixels. 0 disables substitute entirely. Bounds
+     * the worst visible flicker from constant-velocity over-prediction
+     * at intermediate renders. <0 = unset (use compiled default). */
+    float substitute_clamp_px;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

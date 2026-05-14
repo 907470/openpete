@@ -310,6 +310,28 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * for a better candidate. */
 #define MATCHER_VELOCITY_CAP_PX 128
 
+/* Applied-delta clamp (per-axis, per-vertex, per-render). The velocity
+ * cap above operates on the MATCHER batch's whole-frame velocity at
+ * match time, rejecting catastrophic mispairs. This second clamp
+ * operates on the APPLIED delta (alpha * sxy_velocity) at query time,
+ * bounding how far any one vertex can be pushed in a single intermediate
+ * render. It catches the "matched but over-predicted" failure mode that
+ * surfaced in trace analysis: 11.1 % of consecutive-render transitions
+ * had jumps > 64 px because constant-velocity extrapolation overshoots
+ * objects that stop or change direction.
+ *
+ * The clamp value is a trade-off: high values pass full motion smoothing
+ * through but allow visible flicker; low values produce a "stuck" look
+ * for fast motion but suppress flicker. 16 px / render is roughly the
+ * minimum smoothing threshold the eye notices between 8 ms frames; jumps
+ * above it tend to look like glitches rather than motion. */
+#define SUBSTITUTE_APPLIED_DELTA_CAP_PX_DEFAULT 8.0f
+
+/* Runtime-tunable clamp. Set via --substitute-clamp-px or
+ * OPENPETE_SUBSTITUTE_CLAMP_PX env. 0 = substitute fully disabled
+ * (intermediate renders show identical positions to last sim-due). */
+float g_openpete_substitute_clamp_px = SUBSTITUTE_APPLIED_DELTA_CAP_PX_DEFAULT;
+
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.
  *
@@ -557,8 +579,21 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
                            s_curr->batches[i].sxy_centroid[0]);
         float vy = (float)(s_curr->batches[i].next_sxy_centroid[1] -
                            s_curr->batches[i].sxy_centroid[1]);
-        out.dx = vx * alpha;
-        out.dy = vy * alpha;
+        float dx = vx * alpha;
+        float dy = vy * alpha;
+        /* Applied-delta clamp — bounds visible per-vertex motion to
+         * g_openpete_substitute_clamp_px even when velocity is large
+         * AND alpha is high. cap=0 disables substitute entirely
+         * (returns no delta — intermediate renders identical to last
+         * sim-due, "30 Hz look at high refresh rate"). */
+        const float cap = g_openpete_substitute_clamp_px;
+        if (cap <= 0.0f) return out;  /* 0 = substitute off */
+        if (dx >  cap) dx =  cap;
+        if (dx < -cap) dx = -cap;
+        if (dy >  cap) dy =  cap;
+        if (dy < -cap) dy = -cap;
+        out.dx = dx;
+        out.dy = dy;
         g_openpete_render_substitute_vert_hit_count++;
         return out;
     }
