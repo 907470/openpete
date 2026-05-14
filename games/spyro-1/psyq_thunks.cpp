@@ -39,6 +39,8 @@ extern "C" {
 #include "psx/libspu.h"
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
 extern "C" void openpete_render_matcher_prepare_substitute(void);
+extern "C" void openpete_render_sim_tick_mark_now(void);
+extern "C" void openpete_render_substitute_alpha_snapshot_intermediate(void);
 
 /* Phase 2.1 intermediate-render: pointer + count to the OT walked by
  * the most recent psyq_DrawOTag, exposed to run.c for re-emit between
@@ -56,6 +58,10 @@ extern "C" void openpete_re_emit_last_ot(void) {
     extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
     extern void DrawAllSplits(void);
     ClearSplits();
+    /* Phase 2.1 hotfix: pin alpha for THIS intermediate walk now, so
+     * all per-vertex queries inside ParsePrimitivesLinkedList read the
+     * same value (no per-vertex op_now drift across a multi-ms walk). */
+    openpete_render_substitute_alpha_snapshot_intermediate();
     openpete_render_matcher_prepare_substitute();
     ParsePrimitivesLinkedList((u_long*)openpete_last_ot_slot_host_ptr[0], 0);
     DrawAllSplits();
@@ -809,7 +815,15 @@ void psyq_DrawOTag(CPUState* cpu) {
             ClearSplits();
         }
         /* Renderer-foundation Phase 2: eager dual-scan right before the
-         * OT walk. See parallel hook in PsyCross's LIBGPU.C::DrawOTag. */
+         * OT walk. See parallel hook in PsyCross's LIBGPU.C::DrawOTag.
+         *
+         * Phase 2.1 hotfix: re-stamp the sim-tick timestamp HERE, not
+         * before the game-fiber yield in run.c. The yield runs ~16 ms
+         * of game logic before DrawOTag fires; if the tick origin is
+         * pinned at yield-time, substitute sees alpha ≈ 0.5 even on
+         * sim-due renders, smearing static geometry by alpha·velocity
+         * (which is non-zero whenever the matcher mispairs). */
+        openpete_render_sim_tick_mark_now();
         openpete_render_matcher_prepare_substitute();
         extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
         ParsePrimitivesLinkedList((u_long*)g_ot_slot_host[0], 0);

@@ -1199,14 +1199,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             g_step_one = false;
             game_on_frame_pre(&g_game.cpu, openpete_frame);
             /* Renderer-foundation Phase 2.1 — advance the sim-tick
-             * timestamp BEFORE the game-fiber yield so substitute (which
-             * fires inside the yield's DrawOTag → prepare → ParsePrim
-             * chain) reads alpha ≈ 0. */
+             * timestamp + period. The exact tick-origin is re-stamped by
+             * psyq_DrawOTag→mark_now (Phase 2.1 hotfix) so this call's
+             * tick value is overridden; we keep it only to set the
+             * sim_period_ns the compute_alpha clamp uses. */
             {
                 extern void openpete_render_sim_tick_advance_time(
                     int64_t sim_tick_ns, int64_t sim_period_ns);
                 openpete_render_sim_tick_advance_time(op_now(),
                                                       2 * sim_period_ns);
+            }
+            /* Phase 2.1 hotfix — rotate the cache RIGHT BEFORE the game
+             * fiber's GTE pass overwrites cache.s_curr. Previously this
+             * ran post-EndScene, which left cache.s_prev = THIS frame's
+             * emissions during intermediate renders that were re-walking
+             * the LAST frame's OT — substitute lookups mostly missed,
+             * the few coincidental hits returned random-batch deltas,
+             * and per-poly mixing produced the visible stretching.
+             *
+             * Rotating here keeps cache.s_prev = last-yield's emissions
+             * across all intermediate renders, which matches the SXY
+             * values in the saved OT being re-walked. The next yield's
+             * GTE then fills the freshly-cleared cache.s_curr. */
+            {
+                extern void openpete_render_sim_tick_rotate_cache(void);
+                openpete_render_sim_tick_rotate_cache();
             }
             co_switch((cothread_t)openpete_game_fiber);
             ticked_this_iter = (openpete_frame != frame_before_yield);
@@ -1288,13 +1305,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             PsyX_EndScene();
             openpete_present_pending = 0;
 
-            /* Renderer-foundation Phase 2.1 — rotate cache once per
-             * sim-due EndScene (previously done inside EndScene; moved
-             * here so intermediate-render EndScenes don't double-rotate). */
-            {
-                extern void openpete_render_sim_tick_rotate_cache(void);
-                openpete_render_sim_tick_rotate_cache();
-            }
+            /* Cache rotate moved to "right before next yield's GTE"
+             * (see the yield_now block above) so intermediate renders
+             * between sim ticks see the correct cache.s_prev for the
+             * saved OT they're re-walking. */
 
             /* Phase 4.1 frame-time recorder: one 32-byte record per
              * actual present. The deadline is computed against a

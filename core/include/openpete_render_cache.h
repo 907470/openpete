@@ -84,11 +84,33 @@ void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
                                            openpete_op_time_t sim_period_ns);
 void openpete_render_sim_tick_rotate_cache(void);
 
+/* Phase 2.1 hotfix — re-stamp s_last_sim_tick_ns to op_now() at the
+ * moment DrawOTag actually fires. advance_time is called from run.c
+ * BEFORE the game-fiber yield, but the game runs a full VBL of logic
+ * before DrawOTag → substitute would observe alpha = (~16 ms / 33 ms)
+ * ≈ 0.5 of a sim period, smearing static geometry by alpha·velocity.
+ * Calling this from psyq_DrawOTag immediately before prepare_substitute
+ * pins the sim-tick origin to the actual DrawOTag moment, so:
+ *   sim-due render:  alpha ≈ 0 (microseconds of substitute setup)
+ *   intermediate:    alpha grows naturally from that origin */
+void openpete_render_sim_tick_mark_now(void);
+
 /* Phase 2.1 — return clamped alpha in [0, 1.0] for the time elapsed
  * since the last sim_tick_advanced call. Used by the substitute
  * pipeline at intermediate-render time. Returns 0.0 if no sim tick
  * has been recorded yet. */
 float openpete_render_compute_alpha(openpete_op_time_t now_ns);
+
+/* Phase 2.1 hotfix — snapshot alpha. The OT walk reads alpha once
+ * per vertex via openpete_get_lerp_alpha(); calling op_now() per
+ * vertex during a multi-ms walk lets alpha drift mid-frame and the
+ * resulting per-vertex deltas alias as jitter on mispaired batches.
+ * Snapshotted at two points (and ONLY those):
+ *   mark_now()          → snapshot = 0  (sim-due render: ground truth)
+ *   snapshot_intermediate() → snapshot = compute_alpha(op_now())
+ * PsyX_GPU's get_lerp_alpha reads this global; env override still wins. */
+extern float g_openpete_substitute_alpha_snapshot;
+void openpete_render_substitute_alpha_snapshot_intermediate(void);
 
 /* Iterate every populated slot in s_curr (the "next-visible" buffer just
  * emitted by the game fiber's GTE pass). Used by Phase 2's

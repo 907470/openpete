@@ -19,6 +19,7 @@
  */
 
 #include "openpete_render_cache.h"
+#include "openpete_time.h"
 
 #include <string.h>
 
@@ -205,6 +206,18 @@ void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
 
 void openpete_render_sim_tick_rotate_cache(void) {
     openpete_render_cache_begin_frame();
+}
+
+float g_openpete_substitute_alpha_snapshot = 0.0f;
+
+void openpete_render_sim_tick_mark_now(void) {
+    s_last_sim_tick_ns = op_now();
+    g_openpete_substitute_alpha_snapshot = 0.0f;
+}
+
+void openpete_render_substitute_alpha_snapshot_intermediate(void) {
+    g_openpete_substitute_alpha_snapshot =
+        openpete_render_compute_alpha(op_now());
 }
 
 float openpete_render_compute_alpha(openpete_op_time_t now_ns) {
