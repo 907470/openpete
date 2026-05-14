@@ -45,6 +45,13 @@ add_library(openpete_core STATIC
     # notes/plans/openpete-fps-unlock.md.
     runtime/openpete_interp.c
 
+    # World-space render cache. Populated per-vertex by psxrecomp's
+    # gte_rtps_internal; consumed by PsyCross's OT walker (PsyX_GPU.cpp
+    # MakeVertexTriangle/Quad) to recover world-space + matrix state at
+    # draw time. Phase 0 foundation for draw-call matching and renderer-
+    # side lerp. See notes/plans/openpete-renderer-foundation.md.
+    runtime/openpete_render_cache.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c

@@ -15,6 +15,10 @@
  * .claude/plans/openpete-feature-modules.md Phase 3. */
 #include "features/widescreen_gte_inline.h"
 
+/* Renderer-foundation Phase 0 (world-space cache). gte_rtps_internal
+ * emits per-vertex entries here; PsyCross's OT walker consumes them. */
+#include "openpete_render_cache.h"
+
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
     extern uint32_t g_ps1_frame;    /* core/runtime/dispatch.c */
@@ -264,6 +268,33 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
      * 0x02000000) — exact verdict, no rounding. */
     int64_t canonical_sx_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
     widescreen_push_canonical_sx_q16(canonical_sx_q16);
+
+    /* Render-cache emit (renderer-foundation Phase 0). The packed sxy
+     * just pushed onto SXY[2] is the int16-saturated form that the game
+     * will subsequently mfc2 into prim packets — so it's also the key
+     * the OT walker will look up by at draw time. We store the
+     * *canonical* (pre-Hor+) OFX so the matcher sees aspect-independent
+     * world coords; the live projection path still uses eff_OFX above. */
+    {
+        openpete_render_cache_entry_t e;
+        e.sxy_key = gte->SXY[2];
+        e.seq = 0;                /* filled by cache */
+        e.matrix_span_id = 0;     /* filled by cache */
+        e.mac[0] = gte->MAC1;
+        e.mac[1] = gte->MAC2;
+        e.mac[2] = gte->MAC3;
+        e.v_local[0] = V[0];
+        e.v_local[1] = V[1];
+        e.v_local[2] = V[2];
+        e._pad0 = 0;
+        std::memcpy(e.rt, gte->RT, sizeof(e.rt));
+        e.tr[0] = gte->TR[0]; e.tr[1] = gte->TR[1]; e.tr[2] = gte->TR[2];
+        e.ofx = (int32_t)gte->OFX;
+        e.ofy = (int32_t)gte->OFY;
+        e.h = (uint16_t)gte->H;
+        e._pad1 = 0;
+        openpete_render_cache_emit_vertex(&e);
+    }
 
     // Step 5: Depth cueing (MAC0/IR0) — only for last vertex of RTPT or RTPS
     if (setMac0) {
