@@ -84,6 +84,68 @@ def read_log(path: Path):
     }
 
 
+def classify_bimodal(deltas_ns):
+    """Bucket inter-present deltas into "fast"/"slow" modes using a
+    midpoint threshold derived from the data, not a hardcoded constant
+    — the game's swap interval can be N=1 (60 Hz flyby) or N=2 (30 Hz
+    gameplay); the actual period depends on the host's measured VBL.
+
+    Strategy:
+      1. Take the median delta. If the IQR (p75 - p25) is small relative
+         to the median (< 25 %), declare unimodal — no flybys present.
+      2. Otherwise pick the threshold at the geometric mean of the
+         two natural anchors: the p25 (fast mode) and p75 (slow mode).
+         Anything below threshold → fast; above → slow.
+      3. Report counts and per-mode rate + p99 + drift slope.
+
+    Returns a dict: {'unimodal': bool, 'threshold_ns': int or None,
+                      'fast': stats|None, 'slow': stats|None}
+    """
+    n = len(deltas_ns)
+    if n < 32:
+        return {"unimodal": True, "threshold_ns": None,
+                "fast": None, "slow": None, "reason": "too few records"}
+    s = sorted(deltas_ns)
+    p25 = s[n // 4]
+    p50 = s[n // 2]
+    p75 = s[(3 * n) // 4]
+    iqr = p75 - p25
+    if p50 > 0 and iqr / p50 < 0.25:
+        return {"unimodal": True, "threshold_ns": None,
+                "fast": None, "slow": None,
+                "reason": f"IQR/median={iqr/p50:.3f} < 0.25"}
+    # Threshold at geometric mean of p25 and p75.
+    if p25 <= 0 or p75 <= 0:
+        return {"unimodal": True, "threshold_ns": None,
+                "fast": None, "slow": None,
+                "reason": "non-positive percentile"}
+    thresh = int((p25 * p75) ** 0.5)
+    fast = [d for d in deltas_ns if d <= thresh]
+    slow = [d for d in deltas_ns if d > thresh]
+    return {
+        "unimodal": False,
+        "threshold_ns": thresh,
+        "fast": _mode_stats(fast),
+        "slow": _mode_stats(slow),
+    }
+
+
+def _mode_stats(xs):
+    if not xs:
+        return None
+    s = sorted(xs)
+    mean = sum(xs) / len(xs)
+    return {
+        "count": len(xs),
+        "mean_ns": mean,
+        "p50_ns": s[len(s) // 2],
+        "p99_ns": s[int(0.99 * (len(s) - 1))],
+        "min_ns": s[0],
+        "max_ns": s[-1],
+        "rate_hz": 1e9 / mean if mean > 0 else float("nan"),
+    }
+
+
 def percentile(sorted_xs, p):
     if not sorted_xs:
         return float("nan")
@@ -137,27 +199,62 @@ def summarize(log, args):
     drift_total = err[-1] - err[0]
     total_slips = sum(log["slips"])
 
+    # Classify before printing so we can qualify mean-rate / phase-drift
+    # stats — both average across two distributions when the run mixes
+    # 30 Hz gameplay with 60 Hz flybys (Spyro switches via VSync(N)).
+    bm = classify_bimodal(deltas)
+
     print(f"log:                {log['path']}")
     print(f"records:            {n}")
     print(f"target rate:        {target_hz:>10.4f} Hz "
           f"({period_ns/1e6:.4f} ms / frame)")
-    print(f"achieved rate:      {achieved_hz:>10.4f} Hz "
-          f"({mean_delta/1e6:.4f} ms / frame)")
-    print(f"rate error:         {(achieved_hz - target_hz)/target_hz*100:+.3f} %")
+    if bm["unimodal"]:
+        print(f"achieved rate:      {achieved_hz:>10.4f} Hz "
+              f"({mean_delta/1e6:.4f} ms / frame)")
+        print(f"rate error:         "
+              f"{(achieved_hz - target_hz)/target_hz*100:+.3f} %")
+    else:
+        print(f"achieved rate:      [mixed — see bimodal breakdown below]")
     print(f"delta p50:          {p50/1e6:>10.4f} ms "
           f"({(p50-period_ns)/1e6:+.4f} from target)")
     print(f"delta p99:          {p99/1e6:>10.4f} ms "
           f"({(p99-period_ns)/1e6:+.4f} from target)")
     print(f"delta max:          {pmax/1e6:>10.4f} ms")
     print(f"delta min:          {pmin/1e6:>10.4f} ms")
-    print(f"phase drift total:  {drift_total/1e6:>10.4f} ms "
-          f"over {n} frames")
-    print(f"phase drift slope:  {slope/1e3:>10.4f} us/frame")
+    if bm["unimodal"]:
+        print(f"phase drift total:  {drift_total/1e6:>10.4f} ms "
+              f"over {n} frames")
+        print(f"phase drift slope:  {slope/1e3:>10.4f} us/frame")
+    else:
+        print(f"phase drift:        [not meaningful under mixed rates]")
     print(f"slip events:        {total_slips}")
+
+    print()
+    if bm["unimodal"]:
+        print(f"bimodal check:      unimodal ({bm.get('reason', '')})")
+    else:
+        thresh_ms = bm["threshold_ns"] / 1e6
+        print(f"bimodal check:      threshold {thresh_ms:.3f} ms "
+              f"(below = fast / above = slow)")
+        for name in ("fast", "slow"):
+            m = bm[name]
+            if m is None:
+                continue
+            print(f"  {name:>4}: n={m['count']:>6}  "
+                  f"rate={m['rate_hz']:>7.3f} Hz  "
+                  f"p50={m['p50_ns']/1e6:>7.3f} ms  "
+                  f"p99={m['p99_ns']/1e6:>7.3f} ms  "
+                  f"min={m['min_ns']/1e6:>6.3f}  max={m['max_ns']/1e6:>7.3f}")
 
     if args.histogram:
         print()
-        print_histogram(deltas, period_ns)
+        # Trim the top 1 % so a single outlier (cd-read stall, level
+        # load) doesn't squash bucket resolution. The slow-mode max is
+        # already reported in the bimodal block above.
+        ds = sorted(deltas)
+        cap = ds[int(0.99 * (len(ds) - 1))]
+        trimmed = [d for d in deltas if d <= cap]
+        print_histogram(trimmed, period_ns)
 
 
 def print_histogram(deltas, period_ns):
