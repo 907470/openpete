@@ -257,6 +257,13 @@ typedef struct {
     uint32_t    psxtrace_anchor_pc;        /* 0 = inherit from trace      */
     uint32_t    psxtrace_anchor_hit;       /* 0/1 = first hit; N = Nth    */
 
+    /* --frame-time-log PATH (default NULL): write one 32-byte record
+     * per present (frame, slip_count, op_now_ns, deadline_ns, slack_ns)
+     * for the pacing measurement harness. Off by default. See
+     * notes/plans/openpete-frame-pacing.md and
+     * scripts/measure-pacing.py. */
+    const char* frame_time_log_path;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

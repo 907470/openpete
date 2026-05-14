@@ -1,0 +1,78 @@
+/* openpete_time.h — high-resolution monotonic clock + hybrid waiter.
+ *
+ * Phase 0 of notes/plans/openpete-frame-pacing.md. Leaf module: no SDL,
+ * no openpete dependencies. The pacer (ticker.c, run.c dual-pacer) builds
+ * on this. The point of the abstraction is that *every* time source in
+ * openpete that cares about wall-clock pacing routes through here, so the
+ * platform-specific knobs (Win32 waitable timer, Linux clock_nanosleep,
+ * spin-tail granularity, env-overridable slack) live in exactly one TU.
+ *
+ * Sources are always monotonic — never wall clock — so daylight-saving
+ * jumps, ntpd corrections, and `date -s` cannot disturb pacing.
+ *
+ *   op_now()                      monotonic time in ns
+ *   op_sleep_until(deadline_ns)   block until clock >= deadline; hybrid
+ *                                 sleep-then-spin, sub-ms accuracy
+ *   op_pacer_slack_ns()           current safety margin (env-overridable)
+ *
+ * Determinism note: this module changes the *timing* of co_switches, not
+ * their count or order. See the plan's "Determinism contract" section.
+ */
+
+#ifndef OPENPETE_TIME_H
+#define OPENPETE_TIME_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef int64_t op_time_t; /* nanoseconds since arbitrary monotonic epoch */
+
+#define OP_NS_PER_SEC  ((op_time_t)1000000000)
+#define OP_NS_PER_MS   ((op_time_t)1000000)
+#define OP_NS_PER_US   ((op_time_t)1000)
+
+/* Current monotonic time, nanoseconds. Strictly increasing across calls
+ * on the same thread (we never lie even if the OS source has rounding —
+ * the previous-return clamp guarantees it). */
+op_time_t op_now(void);
+
+/* Block until op_now() >= deadline_ns. Returns immediately if already
+ * past the deadline. Hybrid strategy:
+ *   1. If (deadline - now) > slack, OS-sleep until deadline - slack.
+ *   2. Spin (yielding) until deadline reached.
+ * "slack" is op_pacer_slack_ns().
+ *
+ * Overshoot on a quiet Linux dev box should be well under 100 µs; on
+ * a noisy Windows box with the waitable-timer-high-res path it should
+ * be under 500 µs. The frame-pacing harness in
+ * notes/plans/openpete-frame-pacing.md measures the actual figure
+ * per platform and gates regressions.
+ */
+void op_sleep_until(op_time_t deadline_ns);
+
+/* Current safety margin between OS-sleep wake and the real deadline.
+ * Defaults: 1500 µs Linux, 2500 µs Windows. Overridable at startup via
+ * env var OPENPETE_PACER_SLACK_US (parsed once, lazy-initialized on
+ * first call). Larger = more CPU spent spinning but tighter deadline;
+ * smaller = less spin but more risk of overshoot when the OS oversleeps. */
+op_time_t op_pacer_slack_ns(void);
+
+/* One-shot init: requests timer-resolution boosts (Win32
+ * timeBeginPeriod(1)) and probes for high-resolution waitable timers.
+ * Idempotent. Optional — op_now / op_sleep_until self-init on first
+ * call, but callers that want startup latency out of the hot loop can
+ * call this explicitly. */
+void op_time_init(void);
+
+/* One-shot teardown: releases any OS resources acquired by op_time_init
+ * (Win32 timeEndPeriod, waitable-timer handle). Idempotent. */
+void op_time_shutdown(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* OPENPETE_TIME_H */

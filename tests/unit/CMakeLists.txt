@@ -29,6 +29,21 @@ target_include_directories(fnv1a64_test PRIVATE
 set_target_properties(fnv1a64_test PROPERTIES C_STANDARD 99)
 add_test(NAME fnv1a64_test COMMAND fnv1a64_test)
 
+# openpete_time_test — verifies the high-resolution monotonic clock +
+# hybrid sleep+spin waiter (Phase 0 of openpete-frame-pacing.md).
+# Compiles openpete_time.c directly to stay SDL-free. The Win32 path
+# needs winmm; Linux is link-clean.
+add_executable(openpete_time_test
+    openpete_time_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+target_include_directories(openpete_time_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(openpete_time_test PROPERTIES C_STANDARD 99)
+if(WIN32)
+    target_link_libraries(openpete_time_test PRIVATE winmm)
+endif()
+add_test(NAME openpete_time_test COMMAND openpete_time_test)
+
 # psx_region_test — verifies the PSX RAM virtualization region table
 # (registration / lookup / overlap-rejection). Compiles psx_region.c
 # directly so we don't drag openpete_core's SDL2 dependency into a

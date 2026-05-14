@@ -327,6 +327,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--gameplay-hash-log") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->gameplay_hash_log_path = v; i++;
+        } else if (strcmp(a, "--frame-time-log") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->frame_time_log_path = v; i++;
         } else if (strcmp(a, "--psxtrace-verify") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->psxtrace_verify_path = v; i++;
@@ -394,6 +397,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
                 "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
                 "                             Primary determinism gate — see check_aspect_determinism.sh\n"
+                "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record)\n"
+                "                             for scripts/measure-pacing.py. Off by default.\n"
                 "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */

@@ -30,6 +30,15 @@ add_library(openpete_core STATIC
     runtime/openpete_ui_moby.c
     runtime/feature_registry.c
 
+    # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
+    # module (no SDL); used by ticker + dual-pacer. See
+    # notes/plans/openpete-frame-pacing.md.
+    runtime/openpete_time.c
+
+    # Binary per-present frame-time recorder for the pacing harness.
+    # Off by default; enabled by --frame-time-log PATH.
+    runtime/openpete_frame_time_log.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c
@@ -110,6 +119,11 @@ if(TARGET psycross_static)
         ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
         ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_PSYCROSS=1)
+endif()
+
+# Win32: openpete_time.c uses timeBeginPeriod from winmm.
+if(WIN32)
+    target_link_libraries(openpete_core PUBLIC winmm)
 endif()
 
 # Vendored pcsx-redux GTE — third reference engine for the trace logger in

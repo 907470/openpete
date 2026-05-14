@@ -1,0 +1,245 @@
+/* openpete_time.c — high-resolution monotonic clock + hybrid waiter.
+ * See openpete_time.h for API contract. Phase 0 of
+ * notes/plans/openpete-frame-pacing.md. */
+
+#include "openpete_time.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#  include <mmsystem.h>  /* timeBeginPeriod */
+#else
+#  include <time.h>
+#  include <errno.h>
+#  include <sched.h>
+#  if defined(__x86_64__) || defined(__i386__)
+#    include <immintrin.h>  /* _mm_pause */
+#  endif
+#endif
+
+/* ---------------------------------------------------------------- *
+ * Lazy init                                                         *
+ * ---------------------------------------------------------------- */
+
+static int s_initialized = 0;
+static op_time_t s_slack_ns = 0;
+
+#if defined(_WIN32)
+/* QPC frequency, ticks per second. */
+static int64_t s_qpc_freq = 0;
+/* High-resolution waitable timer (Win10 1803+). NULL on older Windows;
+ * the fallback path uses timeBeginPeriod(1) + Sleep. */
+static HANDLE  s_hi_res_timer = NULL;
+static int     s_timeperiod_set = 0;
+#endif
+
+/* Monotonicity guard. clock_gettime is monotonic by definition, but
+ * QueryPerformanceCounter can — extremely rarely — go backwards by a few
+ * ticks across cores in pathological cases. Keep the prior return and
+ * clamp. Thread-local would be more correct, but openpete's pacer is
+ * single-threaded and the worst this does in multi-threaded callers is
+ * mask a tiny step backwards, which is harmless for pacing. */
+static op_time_t s_last_now = 0;
+
+static op_time_t parse_slack_env_us_to_ns(void) {
+    const char* s = getenv("OPENPETE_PACER_SLACK_US");
+    if (!s || !*s) {
+#if defined(_WIN32)
+        return 2500 * OP_NS_PER_US;
+#else
+        return 1500 * OP_NS_PER_US;
+#endif
+    }
+    /* Accept negative-as-zero just to be safe. */
+    long v = strtol(s, NULL, 10);
+    if (v < 0) v = 0;
+    return (op_time_t)v * OP_NS_PER_US;
+}
+
+void op_time_init(void) {
+    if (s_initialized) return;
+    s_slack_ns = parse_slack_env_us_to_ns();
+
+#if defined(_WIN32)
+    LARGE_INTEGER f;
+    if (QueryPerformanceFrequency(&f)) {
+        s_qpc_freq = f.QuadPart;
+    }
+    /* Win10 1803+ supports CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (0x2).
+     * No header constant on older toolchains, so use the numeric value
+     * and gracefully fall back when CreateWaitableTimerExW rejects it. */
+#  ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#    define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#  endif
+    s_hi_res_timer = CreateWaitableTimerExW(
+        NULL, NULL,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        TIMER_ALL_ACCESS);
+    if (!s_hi_res_timer) {
+        /* Fall back to coarse Sleep path with a 1 ms period request.
+         * Document the perf hit by leaving timeEndPeriod paired in
+         * op_time_shutdown. */
+        if (timeBeginPeriod(1) == TIMERR_NOERROR) {
+            s_timeperiod_set = 1;
+        }
+    }
+#endif
+
+    s_initialized = 1;
+}
+
+void op_time_shutdown(void) {
+    if (!s_initialized) return;
+#if defined(_WIN32)
+    if (s_hi_res_timer) {
+        CloseHandle(s_hi_res_timer);
+        s_hi_res_timer = NULL;
+    }
+    if (s_timeperiod_set) {
+        timeEndPeriod(1);
+        s_timeperiod_set = 0;
+    }
+#endif
+    s_initialized = 0;
+}
+
+static void ensure_initialized(void) {
+    if (!s_initialized) op_time_init();
+}
+
+op_time_t op_pacer_slack_ns(void) {
+    ensure_initialized();
+    return s_slack_ns;
+}
+
+/* ---------------------------------------------------------------- *
+ * op_now                                                            *
+ * ---------------------------------------------------------------- */
+
+op_time_t op_now(void) {
+    ensure_initialized();
+    op_time_t ns;
+#if defined(_WIN32)
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    /* freq is typically 10 MHz on modern Windows (100 ns ticks), so
+     * (c * 1e9 / freq) fits int64 comfortably for any sane uptime. Do
+     * the multiply-then-divide to keep precision. */
+    if (s_qpc_freq > 0) {
+        /* Avoid overflow: ticks * 1e9 overflows int64 around 9.2e9
+         * seconds (~292 years) on 10 MHz, so direct multiply is safe.
+         * Larger freqs (rare) reduce the window. Split the math:
+         *   ns = (ticks / freq) * 1e9 + ((ticks % freq) * 1e9) / freq */
+        int64_t t = c.QuadPart;
+        int64_t whole = (t / s_qpc_freq) * OP_NS_PER_SEC;
+        int64_t frac  = ((t % s_qpc_freq) * OP_NS_PER_SEC) / s_qpc_freq;
+        ns = whole + frac;
+    } else {
+        ns = (op_time_t)GetTickCount64() * OP_NS_PER_MS;
+    }
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return s_last_now;
+    }
+    ns = (op_time_t)ts.tv_sec * OP_NS_PER_SEC + (op_time_t)ts.tv_nsec;
+#endif
+    /* Monotonicity clamp — see s_last_now comment. */
+    if (ns < s_last_now) ns = s_last_now;
+    s_last_now = ns;
+    return ns;
+}
+
+/* ---------------------------------------------------------------- *
+ * Sleep helpers                                                     *
+ * ---------------------------------------------------------------- */
+
+static void cpu_relax(void) {
+#if defined(_WIN32)
+    YieldProcessor();
+#elif defined(__x86_64__) || defined(__i386__)
+    _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#else
+    /* portable, slow */
+#endif
+}
+
+#if defined(_WIN32)
+static void sleep_until_win(op_time_t deadline_ns) {
+    op_time_t now = op_now();
+    if (now >= deadline_ns) return;
+    op_time_t delay_ns = deadline_ns - now;
+    if (s_hi_res_timer) {
+        /* SetWaitableTimerEx with negative due time = relative, in 100 ns
+         * units. Capped at INT64_MAX/2 to be safe. */
+        LARGE_INTEGER due;
+        int64_t hundreds = delay_ns / 100;
+        if (hundreds < 1) return;
+        due.QuadPart = -hundreds;
+        if (SetWaitableTimer(s_hi_res_timer, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(s_hi_res_timer, INFINITE);
+        }
+    } else {
+        /* Coarse Sleep with timeBeginPeriod(1). Sleep is in integer ms,
+         * round DOWN so we always undershoot — the spin tail covers
+         * the remainder. */
+        DWORD ms = (DWORD)(delay_ns / OP_NS_PER_MS);
+        if (ms > 0) Sleep(ms);
+    }
+}
+#else
+static void sleep_until_posix(op_time_t deadline_ns) {
+    struct timespec ts;
+    ts.tv_sec  = (time_t)(deadline_ns / OP_NS_PER_SEC);
+    ts.tv_nsec = (long)(deadline_ns % OP_NS_PER_SEC);
+#  if defined(CLOCK_MONOTONIC)
+    /* TIMER_ABSTIME: target an absolute deadline. Restart on EINTR. */
+    int rc;
+    do {
+        rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+    } while (rc == EINTR);
+#  else
+    /* Fallback: relative nanosleep with current-now delta. */
+    op_time_t now = op_now();
+    if (now >= deadline_ns) return;
+    op_time_t delta = deadline_ns - now;
+    struct timespec rel;
+    rel.tv_sec  = (time_t)(delta / OP_NS_PER_SEC);
+    rel.tv_nsec = (long)(delta % OP_NS_PER_SEC);
+    while (nanosleep(&rel, &rel) == -1 && errno == EINTR) {}
+#  endif
+}
+#endif
+
+void op_sleep_until(op_time_t deadline_ns) {
+    ensure_initialized();
+    op_time_t slack = s_slack_ns;
+    op_time_t now = op_now();
+    if (now >= deadline_ns) return;
+
+    /* Stage 1: OS-sleep until deadline - slack. */
+    if (deadline_ns - now > slack) {
+        op_time_t sleep_target = deadline_ns - slack;
+#if defined(_WIN32)
+        sleep_until_win(sleep_target);
+#else
+        sleep_until_posix(sleep_target);
+#endif
+    }
+
+    /* Stage 2: spin until deadline. cpu_relax keeps the spin cheap on
+     * SMT cores; sched_yield once early gives co-runners a chance, but
+     * we don't yield inside the inner loop — yielding while the slack
+     * budget is sub-ms tends to oversleep on Linux. */
+#if !defined(_WIN32)
+    sched_yield();
+#endif
+    while (op_now() < deadline_ns) {
+        cpu_relax();
+    }
+}

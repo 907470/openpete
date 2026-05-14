@@ -10,6 +10,8 @@
 #include "openpete_log.h"
 #include "openpete_psx.h"
 #include "openpete_ticker.h"
+#include "openpete_time.h"
+#include "openpete_frame_time_log.h"
 #include "screenshot.h"
 #include "game_extras.h"
 #include "bk2_movie.h"
@@ -803,8 +805,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * to keep that path deterministic — psyq_VSync advances `openpete_vbl`
      * synchronously when no ticker is running. See
      * plans/openpete-free-running-vblank-counter.md. */
-    if (!opts->headless) {
-        openpete_ticker_start();
+    {
+        /* Ticker is normally suppressed under --headless (vbl is then
+         * advanced synchronously inside psyq_VSync — see
+         * plans/openpete-free-running-vblank-counter.md). The
+         * frame-pacing measurement harness needs the ticker active even
+         * under --headless to capture a representative paced baseline;
+         * OPENPETE_FORCE_PACING=1 opts in. */
+        const char* fp = getenv("OPENPETE_FORCE_PACING");
+        bool force_pacing = (fp && *fp && *fp != '0');
+        if (!opts->headless || force_pacing) {
+            openpete_ticker_start();
+        }
     }
 
     openpete_host_fiber = co_active();
@@ -901,6 +913,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    opts->gameplay_hash_log_path);
     }
 
+    /* Forward-declare the frame-time-log state — opened below after bk2
+     * setup so its early-returns don't leak the FILE*. */
+    openpete_frame_time_log_t frame_time_log = {0};
+    int64_t frame_time_log_target_period_ns = 0;
+    int64_t frame_time_log_start_ns = 0;
+
     /* --bk2-record: prepare the in-memory frame buffer. The file isn't
      * touched until exit, so a SIGTERM/Ctrl-C against the run still
      * produces a usable movie. */
@@ -933,6 +951,37 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    bk2.frame_count, opts->bk2_path, bk2.first_input_frame,
                    bk2_offset, bk2_offset,
                    opts->bk2_frame_offset_set ? " (explicit)" : "");
+    }
+
+    /* --frame-time-log: per-present binary recorder for the pacing
+     * harness. The "deadline" we record against is a pure-ideal
+     * cadence:
+     *     deadline = start_op_ns + frame * target_period_ns
+     * This is platform-agnostic and pacer-agnostic — it tells us how
+     * the *actual* present time drifts from a perfectly-paced clock,
+     * regardless of whether the legacy SDL_AddTimer pacer or a future
+     * high-res pacer is driving the loop. The target period is the
+     * sim cadence today (30 fps = 33.333 ms), upgraded to 29.97 once
+     * Phase 1 lands the NTSC-correct ticker. See
+     * notes/plans/openpete-frame-pacing.md. */
+    if (opts->frame_time_log_path && *opts->frame_time_log_path) {
+        /* Default target: NTSC present cadence = 1001/30000 sec per
+         * present (= 1/2 of 59.94 Hz VBL). When --render-fps N is set
+         * the dual-pacer drives the loop at N Hz instead, so use that.
+         * See plan §1: "ship --vbl-rate=59.94 as default". */
+        if (opts->render_fps > 0) {
+            frame_time_log_target_period_ns =
+                (int64_t)((double)OP_NS_PER_SEC / (double)opts->render_fps);
+        } else {
+            frame_time_log_target_period_ns =
+                (OP_NS_PER_SEC * (int64_t)1001) / (int64_t)30000;
+        }
+        if (openpete_frame_time_log_open(&frame_time_log,
+                                         opts->frame_time_log_path,
+                                         frame_time_log_target_period_ns) != 0) {
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        frame_time_log_start_ns = op_now();
     }
 
     /* Input pump rate. We used to throttle to 120 Hz when Tab was held
@@ -971,7 +1020,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
         const Uint8* kbd_top = SDL_GetKeyboardState(NULL);
-        bool unlock_now = opts->headless ||
+        /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
+         * caches it; mirror the same gate here so the sim-due predicate
+         * follows the pacer when measurement mode is on. Re-read each
+         * iter — cheap, and getenv on Linux is a libc env-pointer lookup. */
+        const char* fp_env = getenv("OPENPETE_FORCE_PACING");
+        bool force_pacing = (fp_env && *fp_env && *fp_env != '0');
+        bool unlock_now = (opts->headless && !force_pacing) ||
                           (kbd_top && kbd_top[SDL_SCANCODE_TAB]) ||
                           (opts->unlock_ranges_count > 0 &&
                            unlock_frame_in_ranges(opts, openpete_frame));
@@ -1179,6 +1234,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
+
+            /* Phase 4.1 frame-time recorder: one 32-byte record per
+             * actual present. The deadline is computed against a
+             * per-PRESENT counter (not openpete_frame, which is the
+             * yield counter at PSX VBlank cadence — typically 2x
+             * present rate for a 30 fps game), so the drift math in
+             * scripts/measure-pacing.py compares like with like. The
+             * record's `frame` field still carries openpete_frame as
+             * metadata for cross-referencing with position-log /
+             * gameplay-hash-log. */
+            if (frame_time_log.fp) {
+                int64_t now_ns      = op_now();
+                int64_t deadline_ns = frame_time_log_start_ns +
+                                      (int64_t)frame_time_log.records_written *
+                                      frame_time_log_target_period_ns;
+                openpete_frame_time_log_record(&frame_time_log,
+                                               openpete_frame,
+                                               0u,
+                                               now_ns,
+                                               deadline_ns,
+                                               deadline_ns - now_ns);
+            }
         }
 
         /* RAM dump runs outside the present_pending gate so a request for
@@ -1336,7 +1413,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * replay determinism. Scheduled --unlock-frames windows (test
          * harness) OR into the same flag. */
         const Uint8* kbd = SDL_GetKeyboardState(NULL);
-        bool tab_unlock = opts->headless || (kbd && kbd[SDL_SCANCODE_TAB]);
+        /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
+         * legacy / dual-pacer cadence active even under --headless. Used
+         * by scripts/measure-pacing.py to capture before/after numbers
+         * for the frame-pacing plan without needing a real display. */
+        static int s_force_pacing_init = 0;
+        static int s_force_pacing = 0;
+        if (!s_force_pacing_init) {
+            const char* v = getenv("OPENPETE_FORCE_PACING");
+            s_force_pacing = (v && *v && *v != '0') ? 1 : 0;
+            s_force_pacing_init = 1;
+            OPL_INFO_F("pacer", "OPENPETE_FORCE_PACING=%d (env=%s)",
+                       s_force_pacing, v ? v : "<unset>");
+        }
+        bool tab_unlock = (opts->headless && !s_force_pacing) ||
+                          (kbd && kbd[SDL_SCANCODE_TAB]);
         bool sched_unlock = opts->unlock_ranges_count > 0 &&
                             unlock_frame_in_ranges(opts, openpete_frame);
         bool unlock_fps = tab_unlock || sched_unlock;
@@ -1465,6 +1556,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                exit_reason, openpete_frame, elapsed, g_game.dispatch_ok);
 
     openpete_ticker_stop();
+    openpete_frame_time_log_close(&frame_time_log);
 
     /* Best-effort fiber teardown. Our game fiber is parked in its forever-
      * yield loop, so co_delete is safe. */
