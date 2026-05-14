@@ -1493,27 +1493,49 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25:                                         // lhu
                 {
-                    if (addr == 0x80022B20u) {
+                    if (addr == 0x80022B20u
+                            || addr == 0x8001F1F4u
+                            || addr == 0x800209A0u) {
                         /* Phase 8: per-moby render distance saturation.
                          * r_moby.s reads the packed m_Renderer half-word
-                         * at offset 0x50 (low byte: m_Distance | shiny
-                         * flag in bit 7; high byte 0x51: m_RenderRadius).
-                         * The downstream per-axis box cull at PCs
-                         * 0x80022B48..0x80022B90 rejects mobys outside
-                         * |delta/4| < (m_Distance << 8), so the authored
-                         * m_Distance=16 default gives only ~16 K-unit
-                         * draw range. Under --no-lod force the 7-bit
-                         * distance field to 0x7F (max), preserving the
-                         * shiny bit and the m_RenderRadius high byte so
-                         * the bltz shiny-routing branch at 0x80022B38
-                         * and downstream bbox math are unaffected.
-                         * Identity at default. */
+                         * at moby offset 0x50 in three parallel paths:
+                         *   0x8001F1F4 → regular  (lhu $a0, 0x50($sp))
+                         *   0x800209A0 → specular (lhu $a0, 0x50($sp))
+                         *   0x80022B20 → shaded   (lhu $a0, 0x50($fp))
+                         * Low 7 bits: m_Distance, bit 7: m_ShinyRenderer;
+                         * byte 0x51: m_SpecularMetalColor[0], used as a
+                         * +0x200 cull bias via its LSB on non-shiny
+                         * mobys and cleared by the immediately following
+                         * sb $zero, 0x51. The shaded path bltz-routes
+                         * shiny mobys away before using $a0; the
+                         * regular/specular paths use the full low byte
+                         * as the distance (their moby lists are
+                         * authored so m_ShinyRenderer is clear).
+                         *
+                         * Box-cull at PCs 0x80022B48..0x80022B90 (and
+                         * the analogous PCs in the other two paths)
+                         * rejects mobys outside |delta/4| < (low_byte
+                         * << 8) + bias, so authored m_Distance=16
+                         * gives ~16 K-unit range. Under --no-lod,
+                         * force m_Distance to 0x7F (max 7-bit) so the
+                         * threshold rises to ~130 K units, matching the
+                         * saturated env cull radius (Phase 6.B).
+                         * Preserve the shiny bit and byte 0x51.
+                         *
+                         * CRITICAL: only bump mobys whose current
+                         * m_Distance is non-zero. m_Distance == 0 is
+                         * the "uninitialized / disabled moby slot"
+                         * sentinel — forcing it to 0x7F admits stale /
+                         * uninit moby memory into the renderer and
+                         * hangs during the post-level-load fade-in.
+                         * Identity when openpete_no_lod==0. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         int16_t off = get_imm16(instr);
                         code = fmt::format(
                             "{{ uint32_t _v = cpu->read_half({} + {}); "
-                            "if (openpete_no_lod) _v = (_v & 0xFF80u) | 0x7Fu; "
+                            "if (openpete_no_lod && (_v & 0x7Fu) != 0u) "
+                            "_v = (_v & 0xFF80u) | 0x7Fu; "
                             "{} = _v; }}"
                             "  /* m_Distance saturate (no-lod) */",
                             reg_name(rs), off, reg_name(rt));

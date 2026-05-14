@@ -883,23 +883,37 @@ in-group env cull radius. Distant mobys are dropped before the
 cone test (Phase 7) gets a chance to see them.
 
 Under --no-lod this channel forces the m_Distance bits to 0x7F
-(max 7-bit value), preserving the shiny flag and m_RenderRadius
-high byte. Threshold rises to 4 * 0x7F00 ≈ 130 K units, matching
+(max 7-bit value), preserving the shiny flag and the high byte
+(m_SpecularMetalColor[0], used as a +0x200 cull bias via its LSB
+on non-shiny mobys and zeroed by the immediately following
+`sb $zero, 0x51($fp)`). Threshold rises to ~130 K units, matching
 the saturated env cull radius (Phase 6.B).
 
-Site:
-  0x80022B20 → $a0 (per-moby box cull setup; lhu of struct + 0x50)
+CRITICAL: only bump mobys whose current m_Distance is non-zero.
+m_Distance == 0 is the "uninitialized / disabled moby slot"
+sentinel — forcing it to 0x7F admits stale moby memory into the
+renderer and hangs during the post-level-load fade-in (verified
+empirically: any bump on zero-distance mobys hangs at frame ~3457
+in the demo's level_11 transition).
+
+Sites (all three moby render paths in r_moby.s):
+  0x8001F1F4 → $a0 (regular  path; lhu of struct + 0x50 via $sp)
+  0x800209A0 → $a0 (specular path; lhu of struct + 0x50 via $sp)
+  0x80022B20 → $a0 (shaded   path; lhu of struct + 0x50 via $fp)
 
 Gameplay isolation: m_Distance is a packed half-word with the
-shiny renderer flag and m_RenderRadius. Substitution at this
-specific PC only affects the renderer's per-moby cull path; AI /
-gameplay reads of m_Distance, m_UpdateDistance, m_ShinyRenderer
-and m_RenderRadius happen at different PCs and stay canonical.
-Both bits we preserve (shiny + radius) are essential for correct
-routing/bbox math even under --no-lod, so the substitution is
-minimal-perturbation. Identity at default (openpete_no_lod==0)."""
+shiny renderer flag and m_SpecularMetalColor[0]. Substitution at
+this specific PC only affects the renderer's per-moby cull path;
+AI / gameplay reads of m_Distance, m_UpdateDistance,
+m_ShinyRenderer happen at different PCs and stay canonical. Both
+bits we preserve (shiny + spec-color LSB) are essential for
+correct routing/bias math even under --no-lod, so the
+substitution is minimal-perturbation. Identity at default
+(openpete_no_lod==0)."""
 substitution_sites = [
-    0x80022B20,  # lhu $a0 — per-moby m_Renderer half-word load
+    0x8001F1F4,  # lhu $a0 — regular  moby renderer m_Renderer load
+    0x800209A0,  # lhu $a0 — specular moby renderer m_Renderer load
+    0x80022B20,  # lhu $a0 — shaded   moby renderer m_Renderer load
 ]
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
