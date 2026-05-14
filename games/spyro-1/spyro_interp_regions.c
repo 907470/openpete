@@ -11,25 +11,30 @@
  *   weak NULL in place at runtime and crashing the recomp boot path.
  *   Explicit registration works identically across toolchains.
  *
- * Scope decisions (Phase 2 scaffolding):
- *   - g_Spyro covers Spyro's Moby header (pos / rotation matrix /
- *     anim state) and the Spyro-specific tail. Lerping starts here.
- *   - g_Camera covers projection / view / position / rotation. Camera
- *     interpolation is the single biggest perceived smoothness win.
- *   - Moby pools (g_LevelMobys / g_DynMobys / g_Sparx) are deferred
- *     to task #59 — they need indirect-array support in the interp
- *     module, plus a per-element transform-field schema.
- *   - Particles are deferred indefinitely (no host-readable list).
+ * Scope (2026-05-14 architecture revision — see
+ * notes/plans/openpete-renderer-foundation.md and
+ * notes/plans/openpete-fps-unlock.md):
+ *   - g_Camera ONLY. Captured for use by the renderer-foundation
+ *     Phase 2g stretch (depth-aware async reprojection), which wants
+ *     a single authoritative camera per tick rather than per-prim
+ *     composite matrices.
+ *   - g_Spyro / mobies / animation are NOT snapshotted here. Their
+ *     lerp story lives in renderer-foundation Phases 0+1+2: the
+ *     matcher reads per-vertex world-space + composite matrices
+ *     directly from psxrecomp's gte_execute, pairs prims across
+ *     frames by (texpage+clut+bbox+velocity), and decompose-lerp-
+ *     recomposes the composite transform. That path doesn't read
+ *     g_Spyro / g_LevelMobys from PSX RAM at all, so snapshotting
+ *     them here is dead weight.
+ *   - Particles are deferred indefinitely (no host-readable list;
+ *     handled by the matcher if they're identifiable, otherwise they
+ *     pop at 29.97 Hz).
  *
  * Address verification: 2026-05-14 nm of games/spyro-1/spyro-1/build/psx.elf:
  *   80076dd0 B g_Camera                   (next = 0x80076ee0 → 0x110 bytes)
- *   80078a58 B g_Spyro                    (next = 0x80078d00 → 0x2A8 bytes;
- *                                           manifest uses 0x2A4 — Spyro struct
- *                                           size; bytes 0x2A4..0x2A7 belong
- *                                           to g_FairyCutscene tail padding)
  *
  * Lengths match manifest/gameplay_state_regions.toml so the same
- * boundaries that the determinism gate trusts are the boundaries we
+ * boundaries the determinism gate trusts are the boundaries we
  * snapshot.
  */
 
@@ -37,7 +42,6 @@
 #include "spyro_interp_regions.h"
 
 static const openpete_interp_region_t s_spyro_interp_regions[] = {
-    { "g_Spyro",  0x80078A58, 0x2A4 },
     { "g_Camera", 0x80076DD0, 0x110 },
 };
 
