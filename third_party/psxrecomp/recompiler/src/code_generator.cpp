@@ -897,9 +897,12 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "if (mac3p < 0) mac3p = 0; "
                             "{} = (int32_t){} - (int32_t){} "
                             "- (int32_t)(((int64_t)mac3p "
-                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14); }}",
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 14) "
+                            "- (int32_t)(((int64_t)(int32_t){} "
+                            "* (int64_t)psx_runtime_moby_cone_bias_scale_q12) >> 12); }}",
                             reg_name(rs), reg_name(rt),
-                            reg_name(rd), reg_name(rs), reg_name(rt));
+                            reg_name(rd), reg_name(rs), reg_name(rt),
+                            reg_name(rt));
                     } else if (addr == 0x80057A04u || addr == 0x80057B14u
                             || addr == 0x80057CB4u || addr == 0x80057F28u
                             || addr == 0x8005801Cu) {
@@ -1088,7 +1091,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "if (mac3p < 0) mac3p = 0; "
                             "{} = (int32_t){} + ({}) "
                             "- (int32_t)(((int64_t)mac3p "
-                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12); }}",
+                            "* (int64_t)psx_runtime_moby_cone_extra_q12) >> 12) "
+                            "- (int32_t)((102 "
+                            "* (int64_t)psx_runtime_moby_cone_bias_scale_q12) >> 12); }}",
                             reg_name(rs),
                             reg_name(rt), reg_name(rs), (int)imm);
                     } else {

@@ -42,6 +42,10 @@ uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
  * preserves native 4:3 cone (slope 0.75). */
 int32_t psx_runtime_moby_cone_extra_q12 = 0;
 
+/* Companion to _moby_cone_extra_q12: X-bias aspect scaling. Q12 of
+ * (factor-1), so 0 = identity. See psx_runtime.h. */
+int32_t psx_runtime_moby_cone_bias_scale_q12 = 0;
+
 /* r_environment.s func_800258F0 per-vertex camera-space X-bound cull.
  * Default 0x100 (= 256, native). Widened during the render pass to
  * 0x100 * thresh_factor; reset to 0x100 outside render so the
@@ -332,6 +336,25 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         }
         openpete_moby_cone_extra_q12_render = (int32_t)(extra_f * 4096.0f);
         psx_runtime_moby_cone_extra_q12 = 0;  /* native cone outside render pass */
+
+        /* Companion X-bias scale. The slope-only widening above leaves a
+         * near-Z slice with native cone width because the X-bias term
+         * (102 in shaded, per-moby radius in regular/specular) doesn't
+         * scale with aspect — and the `mac3p<0` clamp collapses the slope
+         * widening near the camera plane. Multiplying the X-bias by the
+         * factor restores aspect-proportional headroom at every Z. Q12 of
+         * (factor-1) so 0 = identity. Render-pass only. */
+        extern int32_t psx_runtime_moby_cone_bias_scale_q12;
+        extern int32_t openpete_moby_cone_bias_scale_q12_render;
+        float bias_scale = thresh_factor - 1.0f;
+        if (bias_scale < 0.0f) bias_scale = 0.0f;
+        if (getenv("OPENPETE_MOBY_CONE_BIAS_SCALE")) {
+            bias_scale = (float)atof(getenv("OPENPETE_MOBY_CONE_BIAS_SCALE"));
+            if (bias_scale < 0.0f) bias_scale = 0.0f;
+        }
+        openpete_moby_cone_bias_scale_q12_render =
+            (int32_t)(bias_scale * 4096.0f);
+        psx_runtime_moby_cone_bias_scale_q12 = 0;  /* native outside render */
 
         /* r_environment.s per-vertex lateral bound widening (render-pass
          * only). Native admits |MAC1| < 256; widescreen admits up to

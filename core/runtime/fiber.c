@@ -26,6 +26,13 @@ int          openpete_render_pass_active = 0;
 /* Render-pass cone-widening value, staged at startup by run.c and swapped
  * into psx_runtime_moby_cone_extra_q12 around the GamestateDraw call. */
 int32_t      openpete_moby_cone_extra_q12_render = 0;
+/* Render-pass cone X-bias scale (Q12, (factor-1) form). Companion to the
+ * slope widening above — the slope-only widening leaves a near-Z slice with
+ * native cone width because the X-bias terms (102/77 constants in shaded,
+ * per-moby radius in regular/specular) don't scale with aspect. Staged by
+ * widescreen.c and swapped into psx_runtime_moby_cone_bias_scale_q12 around
+ * the GamestateDraw call. 0 = identity. */
+int32_t      openpete_moby_cone_bias_scale_q12_render = 0;
 /* Render-pass env-cell X-bound (in MAC1 units), staged by widescreen
  * setup and swapped into psx_runtime_env_cell_x_bound around the
  * GamestateDraw call. 0 sentinel = no widening. */

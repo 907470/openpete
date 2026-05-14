@@ -153,6 +153,23 @@ extern int psx_runtime_dbg_kill_env_lp_walk;
  * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
 extern int32_t psx_runtime_moby_cone_extra_q12;
 
+/* Companion X-bias scale to the slope widening above. The cone test in
+ * all three moby paths reduces to
+ *   admit if  |MAC1| < X_bias + slope*(MAC3 + Z_bias)
+ * where slope=3/4 native, and X_bias is 102 (shaded) or the per-moby
+ * `a2` value (regular/specular). The slope widening alone leaves a
+ * near-Z slice with native cone width because the X-bias term doesn't
+ * scale with aspect — and the `mac3p<0` clamp collapses the slope
+ * widening to zero in that strip too. This knob multiplies the X-bias
+ * by (1 + bias_scale_q12/4096), restoring aspect-proportional X-
+ * headroom even at MAC3+Z_bias ≤ 0.
+ *
+ * Q12 fixed-point of (factor-1). Default 0 = bias unchanged. For 16:9
+ * (factor 1.333) set 0.333*4096 = 1365. Render-pass-only — swapped in
+ * around the GamestateDraw call, zeroed outside, so gameplay-side
+ * func_80022A2C callers (moby ticking) still see the canonical bias. */
+extern int32_t psx_runtime_moby_cone_bias_scale_q12;
+
 /* r_environment.s func_800258F0 per-vertex lateral bound cull at
  * 0x80026A2C..0x80026A50. After RTPS the asm tests
  *   |MAC1| < 256 && |MAC2| < 256
