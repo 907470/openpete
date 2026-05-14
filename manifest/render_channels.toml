@@ -858,3 +858,49 @@ substitution_sites = [
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_moby_render_distance_saturate"
+status      = "gated"
+description = """
+Phase 8: per-moby render distance saturation. r_moby.s reads the
+packed m_Renderer half-word at offset 0x50 of the moby struct via
+`lhu $a0, 0x50($fp)` at PC 0x80022B20. The half-word lays out as:
+  byte 0x50 low 7 bits : m_Distance      (authored 7-bit draw range)
+  byte 0x50 bit 7      : m_ShinyRenderer (routes to shiny path via
+                                          bltz at PC 0x80022B38)
+  byte 0x51            : m_RenderRadius  (bbox half-extent, used
+                                          downstream for cull math)
+
+Downstream the m_Distance field is shifted into bits 8..14 and
+serves as the per-axis box-cull threshold at PCs 0x80022B48..
+0x80022B90: a moby is rejected when |camera_delta / 4| >=
+(m_Distance << 8), i.e. roughly when world-axis distance from
+camera exceeds 4 * (m_Distance << 8) units. Authored defaults
+of m_Distance == 16 give ~16 K-unit cutoff — a tenth of the
+in-group env cull radius. Distant mobys are dropped before the
+cone test (Phase 7) gets a chance to see them.
+
+Under --no-lod this channel forces the m_Distance bits to 0x7F
+(max 7-bit value), preserving the shiny flag and m_RenderRadius
+high byte. Threshold rises to 4 * 0x7F00 ≈ 130 K units, matching
+the saturated env cull radius (Phase 6.B).
+
+Site:
+  0x80022B20 → $a0 (per-moby box cull setup; lhu of struct + 0x50)
+
+Gameplay isolation: m_Distance is a packed half-word with the
+shiny renderer flag and m_RenderRadius. Substitution at this
+specific PC only affects the renderer's per-moby cull path; AI /
+gameplay reads of m_Distance, m_UpdateDistance, m_ShinyRenderer
+and m_RenderRadius happen at different PCs and stay canonical.
+Both bits we preserve (shiny + radius) are essential for correct
+routing/bbox math even under --no-lod, so the substitution is
+minimal-perturbation. Identity at default (openpete_no_lod==0)."""
+substitution_sites = [
+    0x80022B20,  # lhu $a0 — per-moby m_Renderer half-word load
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"

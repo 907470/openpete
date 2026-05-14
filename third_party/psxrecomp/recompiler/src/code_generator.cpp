@@ -1491,7 +1491,37 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x24: code = translate_lbu(instr); break;    // lbu
-            case 0x25: code = translate_lhu(instr); break;    // lhu
+            case 0x25:                                         // lhu
+                {
+                    if (addr == 0x80022B20u) {
+                        /* Phase 8: per-moby render distance saturation.
+                         * r_moby.s reads the packed m_Renderer half-word
+                         * at offset 0x50 (low byte: m_Distance | shiny
+                         * flag in bit 7; high byte 0x51: m_RenderRadius).
+                         * The downstream per-axis box cull at PCs
+                         * 0x80022B48..0x80022B90 rejects mobys outside
+                         * |delta/4| < (m_Distance << 8), so the authored
+                         * m_Distance=16 default gives only ~16 K-unit
+                         * draw range. Under --no-lod force the 7-bit
+                         * distance field to 0x7F (max), preserving the
+                         * shiny bit and the m_RenderRadius high byte so
+                         * the bltz shiny-routing branch at 0x80022B38
+                         * and downstream bbox math are unaffected.
+                         * Identity at default. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{{ uint32_t _v = cpu->read_half({} + {}); "
+                            "if (openpete_no_lod) _v = (_v & 0xFF80u) | 0x7Fu; "
+                            "{} = _v; }}"
+                            "  /* m_Distance saturate (no-lod) */",
+                            reg_name(rs), off, reg_name(rt));
+                    } else {
+                        code = translate_lhu(instr);
+                    }
+                }
+                break;
             case 0x26: code = translate_lwr(instr); break;    // lwr
             case 0x28: code = translate_sb(instr, addr); break;     // sb
             case 0x29: code = translate_sh(instr); break;     // sh
