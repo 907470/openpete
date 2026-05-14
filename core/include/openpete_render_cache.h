@@ -65,6 +65,23 @@ int openpete_render_cache_lookup_prev(uint32_t sxy_key,
  * from PsyX_BeginScene per render frame. */
 void openpete_render_cache_begin_frame(void);
 
+/* Iterate every populated slot in s_curr (the "next-visible" buffer just
+ * emitted by the game fiber's GTE pass). Used by Phase 2's
+ * future-anchor scan to build FRAME-N batches from the in-flight cache
+ * before the rotate moves it to s_prev. The callback is called once
+ * per valid entry; iteration order is implementation-defined. */
+typedef void (*openpete_render_cache_iter_fn)(
+    const openpete_render_cache_entry_t* entry, void* userdata);
+
+void openpete_render_cache_for_each_curr_entry(
+    openpete_render_cache_iter_fn cb, void* userdata);
+
+/* Iterate every populated slot in s_prev (the "currently visible"
+ * buffer; consumer of OT walker lookups). Used by Phase 2's dual-scan
+ * to build FRAME-N-1 anchors alongside FRAME-N future anchors. */
+void openpete_render_cache_for_each_prev_entry(
+    openpete_render_cache_iter_fn cb, void* userdata);
+
 /* Diagnostic counters (per render frame; reset by PsyX_EndScene summary). */
 extern unsigned g_openpete_render_cache_emit_count;
 extern unsigned g_openpete_render_cache_lookup_count;

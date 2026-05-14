@@ -38,6 +38,7 @@ extern "C" {
 #include "psx/libpad.h"
 #include "psx/libspu.h"
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
+extern "C" void openpete_render_matcher_prepare_substitute(void);
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
 
@@ -786,6 +787,9 @@ void psyq_DrawOTag(CPUState* cpu) {
         if (PsyX_BeginScene()) {
             ClearSplits();
         }
+        /* Renderer-foundation Phase 2: eager dual-scan right before the
+         * OT walk. See parallel hook in PsyCross's LIBGPU.C::DrawOTag. */
+        openpete_render_matcher_prepare_substitute();
         extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
         ParsePrimitivesLinkedList((u_long*)g_ot_slot_host[0], 0);
         DrawAllSplits();

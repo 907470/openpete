@@ -49,6 +49,44 @@ void openpete_render_matcher_observe_quad(const int16_t* p0,
  * is still the buffer the matcher observed against). */
 void openpete_render_matcher_finalize_frame(void);
 
+/* ----------------------------------------------------------------------
+ * Phase 2 — substitute pipeline.
+ *
+ * Independent of the Phase 1 observe/finalize pipeline. Performs an
+ * eager dual-scan of cache.s_prev (= FRAME N-1, currently visible) and
+ * cache.s_curr (= FRAME N, next visible), groups each buffer's entries
+ * by matrix_span_id, hashes by quantized centroid, and matches them to
+ * produce (FRAME N-1, FRAME N) anchor pairs per object.
+ *
+ * Substitute is then called per prim during the OT walk; it looks up
+ * each vertex's matrix_span_id (via the cache.s_prev hit), finds the
+ * paired anchor for that batch, lerps screen-space delta at alpha, and
+ * mutates the GL vertex buffer entry (NOT the prim packet, NOT PSX
+ * RAM — see "Determinism" note in the plan).
+ *
+ * Phase 2.0 milestone uses uniform per-batch screen-space delta; the
+ * full T/R/S+slerp recompose lands in Phase 2.1+ once the skeletal-
+ * granularity test passes. */
+void openpete_render_matcher_prepare_substitute(void);
+
+/* Query: given a vertex's int16 SXY pair, return the lerp delta (dx, dy
+ * in screen-space pixels) that the caller should ADD to the vertex's
+ * already-projected position. Zero if the vertex has no matching
+ * batch or the batch has no future anchor. PsyCross applies the
+ * returned delta to the GL vertex buffer entry's x/y fields. */
+typedef struct {
+    float dx;
+    float dy;
+} openpete_substitute_delta_t;
+
+openpete_substitute_delta_t openpete_render_matcher_substitute_query(
+    const int16_t* p, float alpha);
+
+/* Phase 2 stats. */
+extern unsigned g_openpete_render_substitute_pair_count;
+extern unsigned g_openpete_render_substitute_vert_hit_count;
+extern unsigned g_openpete_render_substitute_vert_miss_count;
+
 /* Per-frame stats (reset inside finalize; read by PsyX_EndScene's
  * summary line before reset). */
 extern unsigned g_openpete_render_matcher_batch_count;
@@ -56,6 +94,9 @@ extern unsigned g_openpete_render_matcher_matched_count;
 extern unsigned g_openpete_render_matcher_unmatched_new_count;
 extern unsigned g_openpete_render_matcher_unmatched_dropped_count;
 extern unsigned g_openpete_render_matcher_no_cache_count;
+/* Phase 2: number of curr batches that successfully paired with a
+ * FRAME-N future-anchor batch (i.e., ready to lerp). */
+extern unsigned g_openpete_render_matcher_future_anchored_count;
 
 #ifdef __cplusplus
 }

@@ -30,6 +30,7 @@
 #include "openpete_render_cache.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define MATCHER_MAX_BATCHES 256u
@@ -48,6 +49,21 @@ typedef struct matcher_batch {
     int32_t  centroid[3];
     int32_t  velocity[3];
     int      consumed;       /* used by finalize to count dropped prev batches */
+
+    /* Phase 2 — screen-space centroid for SXY substitution. Accumulated
+     * from each observed prim's vertex SXY values (which the cache key
+     * stores in packed form). */
+    int64_t  sxy_sum[2];
+    int32_t  sxy_centroid[2];
+
+    /* Phase 2 — FRAME-N future anchor. Populated by the
+     * build_future_anchors pass after the OT-walker observe pass
+     * completes, when a future batch hashes to the same bucket as
+     * this batch. Lerp anchors are (centroid → next_centroid) and
+     * (sxy_centroid → next_sxy_centroid). */
+    int      has_future_anchor;
+    int32_t  next_centroid[3];
+    int32_t  next_sxy_centroid[2];
 } matcher_batch_t;
 
 typedef struct matcher_frame {
@@ -70,6 +86,12 @@ unsigned g_openpete_render_matcher_matched_count           = 0u;
 unsigned g_openpete_render_matcher_unmatched_new_count     = 0u;
 unsigned g_openpete_render_matcher_unmatched_dropped_count = 0u;
 unsigned g_openpete_render_matcher_no_cache_count          = 0u;
+unsigned g_openpete_render_matcher_future_anchored_count   = 0u;
+
+/* Phase 2 substitute pipeline stats. */
+unsigned g_openpete_render_substitute_pair_count           = 0u;
+unsigned g_openpete_render_substitute_vert_hit_count       = 0u;
+unsigned g_openpete_render_substitute_vert_miss_count      = 0u;
 
 /* Accumulators reset on every observe call's caller-decided frame
  * boundary — we use s_curr->count == 0 as the "fresh frame" signal.
@@ -100,6 +122,12 @@ static inline void accumulate_vertex(matcher_batch_t* b,
         if (v > b->bbox_max[axis]) b->bbox_max[axis] = v;
         b->centroid_sum[axis] += (int64_t)v;
     }
+    /* Screen-space centroid accumulator. sxy_key packs sx in low half,
+     * sy in high half (matching cache.s_curr/s_prev's storage). */
+    int16_t sx = (int16_t)(uint16_t)(e->sxy_key & 0xFFFFu);
+    int16_t sy = (int16_t)(uint16_t)(e->sxy_key >> 16);
+    b->sxy_sum[0] += (int64_t)sx;
+    b->sxy_sum[1] += (int64_t)sy;
     b->vertex_count++;
 }
 
@@ -113,35 +141,49 @@ static int observe_vertex(const int16_t* p, openpete_render_cache_entry_t* out) 
     return 0;
 }
 
-static void observe_prim_n(const int16_t* const* pts, int n) {
-    /* Need the first vertex's cache hit to identify the batch. If even
-     * the first vertex isn't in s_prev (untextured line, sprite, debug
-     * tri, …), skip the prim — it can't be matched without world data. */
-    openpete_render_cache_entry_t first;
-    if (!observe_vertex(pts[0], &first)) return;
-    matcher_batch_t* b = find_or_create_batch(first.matrix_span_id);
-    if (!b) return;
-    b->prim_count++;
-    accumulate_vertex(b, &first);
-    for (int v = 1; v < n; ++v) {
-        openpete_render_cache_entry_t e;
-        if (observe_vertex(pts[v], &e)) accumulate_vertex(b, &e);
+/* Observe hooks are RETAINED in the API for source compatibility with
+ * Phase 1's plumbing in PsyX_GPU.cpp, but no longer drive matcher state
+ * — Phase 2 builds matcher.curr eagerly via cache scan in
+ * openpete_render_matcher_prepare_substitute(). The observe hooks
+ * only bump prim_count on the batch (used for per-batch stats), since
+ * eager scan is vertex-level and doesn't know prim boundaries. */
+static matcher_batch_t* find_batch_by_span(uint32_t matrix_span_id) {
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        if (s_curr->batches[i].matrix_span_id == matrix_span_id)
+            return &s_curr->batches[i];
     }
+    return NULL;
 }
 
 void openpete_render_matcher_observe_tri(const int16_t* p0,
                                           const int16_t* p1,
                                           const int16_t* p2) {
-    const int16_t* pts[3] = { p0, p1, p2 };
-    observe_prim_n(pts, 3);
+    (void)p1; (void)p2;
+    openpete_render_cache_entry_t e;
+    uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
+                   (((uint32_t)(uint16_t)p0[1]) << 16);
+    if (!openpete_render_cache_lookup_prev(key, &e)) {
+        g_openpete_render_matcher_no_cache_count++;
+        return;
+    }
+    matcher_batch_t* b = find_batch_by_span(e.matrix_span_id);
+    if (b) b->prim_count++;
 }
 
 void openpete_render_matcher_observe_quad(const int16_t* p0,
                                            const int16_t* p1,
                                            const int16_t* p2,
                                            const int16_t* p3) {
-    const int16_t* pts[4] = { p0, p1, p2, p3 };
-    observe_prim_n(pts, 4);
+    (void)p1; (void)p2; (void)p3;
+    openpete_render_cache_entry_t e;
+    uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
+                   (((uint32_t)(uint16_t)p0[1]) << 16);
+    if (!openpete_render_cache_lookup_prev(key, &e)) {
+        g_openpete_render_matcher_no_cache_count++;
+        return;
+    }
+    matcher_batch_t* b = find_batch_by_span(e.matrix_span_id);
+    if (b) b->prim_count++;
 }
 
 static inline int ilog2_ceil_i64(int64_t v_signed) {
@@ -174,8 +216,82 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  *   shift=18 (64-unit buckets), vc only             → see below */
 #define MATCHER_CENTROID_SHIFT 18
 
-void openpete_render_matcher_finalize_frame(void) {
-    /* 1) Finalize each curr batch: centroid + bbox_size_log2 + hash. */
+/* Shared hash function so the future-anchor scan produces identical
+ * hashes for the same logical batch as the OT-walker observe pass. */
+static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
+    int32_t cq[3] = {
+        cx >> MATCHER_CENTROID_SHIFT,
+        cy >> MATCHER_CENTROID_SHIFT,
+        cz >> MATCHER_CENTROID_SHIFT,
+    };
+    /* See "Phase 1 hash" rationale in finalize_frame: centroid-only. */
+    return fnv1a64(cq, sizeof(cq));
+}
+
+/* ----------------------------------------------------------------------
+ * Phase 2 — substitute pipeline (velocity-extrapolation model).
+ *
+ * Empirically (2026-05-14), Spyro does DrawOTag BEFORE GTE within a
+ * single game frame: the OT walked at frame N's render contains prims
+ * from frame N-1's GTE, and frame N's GTE happens AFTER DrawOTag
+ * returns. This means at substitute time, cache.s_curr is empty (no
+ * "future" anchor available) — only cache.s_prev (the just-completed
+ * GTE work that produced the OT being walked) has data.
+ *
+ * Without a known future anchor we extrapolate: compute velocity from
+ * (last render's matcher batches → this render's matcher batches),
+ * then at substitute time apply `delta_sxy = alpha * sxy_velocity` to
+ * predict where each matched batch will be at alpha within the current
+ * display period. For stationary play velocity≈0 → no-op. For constant
+ * motion, prediction is exact. For accel/decel, prediction
+ * over/undershoots but stays smooth.
+ *
+ * Pipeline:
+ *   psyq_DrawOTag → openpete_render_matcher_prepare_substitute():
+ *     - Scan cache.s_prev → build matcher.curr batches.
+ *     - Match against matcher.prev (= last frame's matcher.curr) by
+ *       centroid hash → compute sxy_velocity per matched batch.
+ *
+ *   MakeVertexTriangle/Quad → openpete_render_matcher_substitute_query:
+ *     - Lookup cache.s_prev[p's sxy] → matrix_span_id.
+ *     - Find matcher.curr batch with that span_id.
+ *     - Return alpha * batch.sxy_velocity as delta.
+ *
+ *   PsyX_EndScene → openpete_render_matcher_finalize_frame():
+ *     - Swap matcher.curr ↔ matcher.prev (preserves N-1 batches as
+ *       N-2 for the next render's velocity computation).
+ * ---------------------------------------------------------------------- */
+
+/* Scratch frame state for the substitute pipeline. We use the existing
+ * matcher_frame_t struct so the (curr, prev) swap mechanism is the
+ * same, but build matcher.curr eagerly via cache scan instead of via
+ * per-prim observe. Observe still runs (for Phase 1 diagnostic match-
+ * rate metric); its incremental matcher.curr build is redundant with
+ * the eager scan, but harmless — it writes to the same matcher state
+ * after prepare ran, so its accumulators add on top. */
+
+static void sub_scan_cb_curr(const openpete_render_cache_entry_t* e, void* ud) {
+    (void)ud;
+    matcher_batch_t* b = find_or_create_batch(e->matrix_span_id);
+    if (!b) return;
+    /* Don't bump prim_count here — eager scan is vertex-level. We just
+     * accumulate position data; matcher.curr is otherwise built the
+     * usual way via per-vertex accumulate. */
+    accumulate_vertex(b, e);
+}
+
+void openpete_render_matcher_prepare_substitute(void) {
+    /* Reset matcher.curr to a clean state, then rebuild from cache scan. */
+    s_curr->count = 0u;
+    g_openpete_render_substitute_vert_hit_count  = 0u;
+    g_openpete_render_substitute_vert_miss_count = 0u;
+    g_openpete_render_matcher_no_cache_count     = 0u;
+
+    /* Pass 1: scan cache.s_prev (= world data for OT about to be walked)
+     * to build matcher.curr batches keyed by matrix_span_id. */
+    openpete_render_cache_for_each_prev_entry(sub_scan_cb_curr, NULL);
+
+    /* Pass 2: finalize each batch (centroid, sxy_centroid, hash). */
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* b = &s_curr->batches[i];
         if (b->vertex_count == 0) continue;
@@ -183,43 +299,25 @@ void openpete_render_matcher_finalize_frame(void) {
             b->centroid[axis] =
                 (int32_t)(b->centroid_sum[axis] / (int64_t)b->vertex_count);
         }
-        int32_t cq[3] = {
-            b->centroid[0] >> MATCHER_CENTROID_SHIFT,
-            b->centroid[1] >> MATCHER_CENTROID_SHIFT,
-            b->centroid[2] >> MATCHER_CENTROID_SHIFT,
-        };
-        /* Phase 1 hash: quantized centroid only.
-         *
-         * prim_count and vertex_count were attractive (per RT64) but
-         * empirically jitter ±2..10 per frame even on stationary
-         * batches (LOD / cull thresholds fluctuate). Including them
-         * tanked match rate to 40 %. Bbox min/max have the same
-         * problem.
-         *
-         * The centroid is averaged over all bbox vertices, so per-
-         * vertex jitter cancels out — far more stable. Coarse
-         * quantization (64 world units / bucket) absorbs object
-         * motion up to ~64 units/frame, well above typical Spyro
-         * mobility (~3-30 units/30Hz frame).
-         *
-         * Centroid-only collides for objects co-located on screen —
-         * Phase 2 will narrow ambiguity by including a hash of the
-         * first vertex's model-local position (stable invariant per
-         * logical mesh, not affected by world transform). */
-        struct {
-            int32_t cx, cy, cz;
-        } hk = { cq[0], cq[1], cq[2] };
-        b->hash = fnv1a64(&hk, sizeof(hk));
+        b->sxy_centroid[0] = (int32_t)(b->sxy_sum[0] / (int64_t)b->vertex_count);
+        b->sxy_centroid[1] = (int32_t)(b->sxy_sum[1] / (int64_t)b->vertex_count);
+        b->hash = batch_centroid_hash(b->centroid[0],
+                                      b->centroid[1],
+                                      b->centroid[2]);
+        b->has_future_anchor = 0;
+        b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
     }
 
-    /* 2) Build hash table over prev frame's batches. */
+    /* Pass 3: match matcher.curr against matcher.prev (= last render's
+     * batches). On match, compute sxy_velocity = curr.sxy_centroid -
+     * prev.sxy_centroid for the substitute step. */
     memset(s_prev->hash_table, 0, sizeof(s_prev->hash_table));
     for (uint32_t i = 0; i < s_prev->count; ++i) {
         s_prev->batches[i].consumed = 0;
         uint64_t h = s_prev->batches[i].hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            if (s_prev->hash_table[slot] == 0) {
+            if (s_prev->hash_table[slot] == 0u) {
                 s_prev->hash_table[slot] = (uint16_t)(i + 1u);
                 break;
             }
@@ -227,54 +325,99 @@ void openpete_render_matcher_finalize_frame(void) {
         }
     }
 
-    /* 3) Match curr batches against prev. */
-    unsigned matched = 0u, unmatched_new = 0u;
+    unsigned paired = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
-        matcher_batch_t* b = &s_curr->batches[i];
-        uint64_t h = b->hash;
+        matcher_batch_t* cb = &s_curr->batches[i];
+        uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
-        int found = 0;
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
             uint16_t entry = s_prev->hash_table[slot];
-            if (entry == 0) break;
+            if (entry == 0u) break;
             matcher_batch_t* pb = &s_prev->batches[entry - 1u];
             if (pb->hash == h && !pb->consumed) {
                 pb->consumed = 1;
-                b->object_id   = pb->object_id;
-                b->velocity[0] = b->centroid[0] - pb->centroid[0];
-                b->velocity[1] = b->centroid[1] - pb->centroid[1];
-                b->velocity[2] = b->centroid[2] - pb->centroid[2];
-                found = 1;
-                matched++;
+                cb->object_id   = pb->object_id;
+                /* Velocity in world (q12 MAC) and screen-space pixels. */
+                cb->velocity[0] = cb->centroid[0] - pb->centroid[0];
+                cb->velocity[1] = cb->centroid[1] - pb->centroid[1];
+                cb->velocity[2] = cb->centroid[2] - pb->centroid[2];
+                cb->next_sxy_centroid[0] = cb->sxy_centroid[0] +
+                    (cb->sxy_centroid[0] - pb->sxy_centroid[0]);
+                cb->next_sxy_centroid[1] = cb->sxy_centroid[1] +
+                    (cb->sxy_centroid[1] - pb->sxy_centroid[1]);
+                cb->has_future_anchor = 1;
+                paired++;
                 break;
             }
             slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
         }
-        if (!found) {
-            b->object_id = s_next_object_id++;
-            b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
-            unmatched_new++;
+        if (!cb->has_future_anchor) {
+            cb->object_id = s_next_object_id++;
         }
     }
+    g_openpete_render_substitute_pair_count = paired;
+}
 
-    /* 4) Count dropped prev batches. */
-    unsigned unmatched_dropped = 0u;
+openpete_substitute_delta_t openpete_render_matcher_substitute_query(
+        const int16_t* p, float alpha) {
+    openpete_substitute_delta_t out = { 0.0f, 0.0f };
+    if (alpha <= 0.0f) return out;
+
+    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
+                   (((uint32_t)(uint16_t)p[1]) << 16);
+    openpete_render_cache_entry_t entry;
+    if (!openpete_render_cache_lookup_prev(key, &entry)) {
+        g_openpete_render_substitute_vert_miss_count++;
+        return out;
+    }
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
+        if (!s_curr->batches[i].has_future_anchor) {
+            g_openpete_render_substitute_vert_miss_count++;
+            return out;
+        }
+        /* Screen-space velocity = curr - prev. Predict next = curr + vel.
+         * delta from curr-position by alpha = alpha * (next - curr) = alpha * vel. */
+        float vx = (float)(s_curr->batches[i].next_sxy_centroid[0] -
+                           s_curr->batches[i].sxy_centroid[0]);
+        float vy = (float)(s_curr->batches[i].next_sxy_centroid[1] -
+                           s_curr->batches[i].sxy_centroid[1]);
+        out.dx = vx * alpha;
+        out.dy = vy * alpha;
+        g_openpete_render_substitute_vert_hit_count++;
+        return out;
+    }
+    g_openpete_render_substitute_vert_miss_count++;
+    return out;
+}
+
+/* Phase 2 finalize: matcher state was fully built + matched in
+ * prepare_substitute (at DrawOTag-prepare time). Finalize only needs
+ * to publish remaining stats and swap curr↔prev so next render's
+ * prepare can compute velocity vs THIS render's batches. */
+void openpete_render_matcher_finalize_frame(void) {
+    /* Stats: how many of this frame's curr batches got paired (matched
+     * via velocity-extrapolation against prev). Also count prev batches
+     * not consumed (dropped this frame). */
+    unsigned matched_count = 0u, unmatched_new = 0u, unmatched_dropped = 0u;
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        if (s_curr->batches[i].has_future_anchor) matched_count++;
+        else unmatched_new++;
+    }
     for (uint32_t i = 0; i < s_prev->count; ++i) {
         if (!s_prev->batches[i].consumed) unmatched_dropped++;
     }
-
-    /* 5) Publish stats. */
     g_openpete_render_matcher_batch_count             = s_curr->count;
-    g_openpete_render_matcher_matched_count           = matched;
+    g_openpete_render_matcher_matched_count           = matched_count;
     g_openpete_render_matcher_unmatched_new_count     = unmatched_new;
     g_openpete_render_matcher_unmatched_dropped_count = unmatched_dropped;
+    g_openpete_render_matcher_future_anchored_count   = matched_count;
 
-    /* 6) Swap prev / curr; reset new-curr for next observe pass. */
+    /* Swap. Next render's prepare will build a fresh curr (via cache
+     * scan) and match against this frame's batches sitting in prev. */
     matcher_frame_t* tmp = s_prev;
     s_prev = s_curr;
     s_curr = tmp;
     s_curr->count = 0u;
-    /* no_cache_count is monotonic-per-frame; reset here so the next
-     * frame's observe pass starts clean. */
-    g_openpete_render_matcher_no_cache_count = 0u;
 }
+

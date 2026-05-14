@@ -160,6 +160,24 @@ int openpete_render_cache_lookup_curr_raw(uint32_t sxy_key) {
     return lookup_frame(s_prev, sxy_key, NULL);
 }
 
+void openpete_render_cache_for_each_curr_entry(
+        openpete_render_cache_iter_fn cb, void* userdata) {
+    const uint32_t curr_seq = s_curr->seq;
+    for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_SLOTS; ++i) {
+        const openpete_render_cache_entry_t* slot = &s_curr->slots[i];
+        if (slot->seq == curr_seq) cb(slot, userdata);
+    }
+}
+
+void openpete_render_cache_for_each_prev_entry(
+        openpete_render_cache_iter_fn cb, void* userdata) {
+    const uint32_t prev_seq = s_prev->seq;
+    for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_SLOTS; ++i) {
+        const openpete_render_cache_entry_t* slot = &s_prev->slots[i];
+        if (slot->seq == prev_seq) cb(slot, userdata);
+    }
+}
+
 void openpete_render_cache_begin_frame(void) {
     openpete_render_cache_frame_t* tmp = s_prev;
     s_prev = s_curr;
