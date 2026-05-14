@@ -1,10 +1,14 @@
-// core/include/openpete_ticker.h — 60 Hz wall-clock pacer for the host loop.
+// core/include/openpete_ticker.h — NTSC PSX-VBL pacer for the host loop.
 //
-// The ticker runs on its own SDL_AddTimer thread and signals a condvar
-// every ~17 ms. The host loop in run.c blocks on that condvar between
-// game-fiber slices, which paces wall-clock at ~58.8 Hz without polling.
+// Phase 1a of openpete-frame-pacing.md. The ticker runs on its own
+// SDL thread and signals a condvar at exactly 60000/1001 Hz (59.94,
+// NTSC PSX VBL), sleeping to a phase-locked deadline via
+// op_sleep_until — sub-ms jitter on a quiet host.
 //
-// IMPORTANT: the ticker no longer drives `openpete_vbl`. vbl is advanced
+// The host loop in run.c blocks on that condvar between game-fiber
+// slices, which paces wall-clock at 59.94 Hz without polling.
+//
+// IMPORTANT: the ticker does not drive `openpete_vbl`. vbl is advanced
 // synchronously by psyq_VSync(0) — exactly one increment per yield —
 // because BK2 input replay relies on yields-per-logical-frame being
 // deterministic regardless of pacing. The ticker only affects how fast
@@ -40,10 +44,11 @@ extern SDL_cond*    openpete_ticker_wake_cond;
 extern SDL_mutex*   openpete_ticker_wake_mutex;
 extern SDL_atomic_t openpete_ticker_seq;
 
-/* Start the ticker at ~60 Hz (17 ms SDL timer — close enough; integer-ms
- * jitter is dominated by display vsync downstream). Allocates the cond +
- * mutex and sets `openpete_ticker_drives_vbl = 1`. Idempotent — second
- * calls are no-ops. */
+/* Start the ticker at NTSC 59.94 Hz on a dedicated SDL thread that
+ * sleeps to phase-locked deadlines via op_sleep_until. Allocates the
+ * cond + mutex and sets `openpete_ticker_active = 1`. Idempotent —
+ * second calls are no-ops. Calls op_time_init() up front to pay the
+ * Win32 timer-resolution boost outside the first VBL. */
 void openpete_ticker_start(void);
 
 /* Stop the ticker. Safe to call without a prior start. */
