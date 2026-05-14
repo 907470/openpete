@@ -86,6 +86,7 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
 extern unsigned g_openpete_render_substitute_pair_count;
 extern unsigned g_openpete_render_substitute_vert_hit_count;
 extern unsigned g_openpete_render_substitute_vert_miss_count;
+extern unsigned g_openpete_render_substitute_ui_optout_count;
 
 /* Per-frame stats (reset inside finalize; read by PsyX_EndScene's
  * summary line before reset). */
@@ -97,6 +98,38 @@ extern unsigned g_openpete_render_matcher_no_cache_count;
 /* Phase 2: number of curr batches that successfully paired with a
  * FRAME-N future-anchor batch (i.e., ready to lerp). */
 extern unsigned g_openpete_render_matcher_future_anchored_count;
+
+/* ----------------------------------------------------------------------
+ * Phase 4 — OPENPETE_PREV_TRANSFORM escape hatch.
+ *
+ * Modeled on RT64's gEXPreviousMatrix extension
+ * (https://github.com/rt64/rt64/issues/93). For the small number of
+ * call sites where the heuristic matcher pairs the wrong objects across
+ * frames (mesh teleports, infinite scrollers, level transitions),
+ * game-side code can override the matcher's inferred "previous
+ * transform" with an explicit one.
+ *
+ * Usage: just before the game's GTE pass for a specific object emits
+ * its addPrim, call:
+ *
+ *   openpete_render_matcher_set_prev_transform(curr_rt, curr_tr,
+ *                                              prev_rt, prev_tr);
+ *
+ * `curr_rt` / `curr_tr` identify the batch (the matcher looks up the
+ * batch whose first vertex has matching RT/TR). `prev_rt` / `prev_tr`
+ * declare the matrix the batch had one game frame ago. The matcher
+ * uses these to compute screen-space velocity instead of inferring it
+ * via hash matching against matcher.prev.
+ *
+ * One-shot: the override is consumed by the next prepare_substitute
+ * call. If multiple batches share the same `curr_rt`/`curr_tr`, only
+ * the first is patched (use distinct matrices per object).
+ *
+ * No call sites currently exist; this is forward-looking infrastructure
+ * for the matcher's eventual failure modes. */
+void openpete_render_matcher_set_prev_transform(
+    const int16_t curr_rt[3][3], const int32_t curr_tr[3],
+    const int16_t prev_rt[3][3], const int32_t prev_tr[3]);
 
 #ifdef __cplusplus
 }

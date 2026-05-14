@@ -30,7 +30,7 @@
 #include "openpete_render_cache.h"
 
 #include <stdint.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define MATCHER_MAX_BATCHES 256u
@@ -64,6 +64,14 @@ typedef struct matcher_batch {
     int      has_future_anchor;
     int32_t  next_centroid[3];
     int32_t  next_sxy_centroid[2];
+
+    /* Phase 3 — HUD/particle opt-out. Captured from the first cache
+     * entry of the batch (all entries in a span share the same
+     * matrix). If the rotation matrix is near-identity, the batch is
+     * almost certainly UI/HUD drawn in screen-space — opt out of lerp
+     * so 2D overlays don't smear under interpolation. */
+    int16_t  rt[3][3];
+    int      is_ui_opt_out;
 } matcher_batch_t;
 
 typedef struct matcher_frame {
@@ -92,6 +100,75 @@ unsigned g_openpete_render_matcher_future_anchored_count   = 0u;
 unsigned g_openpete_render_substitute_pair_count           = 0u;
 unsigned g_openpete_render_substitute_vert_hit_count       = 0u;
 unsigned g_openpete_render_substitute_vert_miss_count      = 0u;
+/* Phase 3 HUD opt-out stat. */
+unsigned g_openpete_render_substitute_ui_optout_count      = 0u;
+
+/* Phase 4 — OPENPETE_PREV_TRANSFORM escape hatch state. One-shot
+ * override consumed by the next prepare_substitute call. See header
+ * for usage and rationale. */
+static int     s_prev_xform_active = 0;
+static int16_t s_prev_xform_curr_rt[3][3];
+static int32_t s_prev_xform_curr_tr[3];
+static int16_t s_prev_xform_prev_rt[3][3];
+static int32_t s_prev_xform_prev_tr[3];
+
+void openpete_render_matcher_set_prev_transform(
+        const int16_t curr_rt[3][3], const int32_t curr_tr[3],
+        const int16_t prev_rt[3][3], const int32_t prev_tr[3]) {
+    memcpy(s_prev_xform_curr_rt, curr_rt, sizeof(s_prev_xform_curr_rt));
+    memcpy(s_prev_xform_curr_tr, curr_tr, sizeof(s_prev_xform_curr_tr));
+    memcpy(s_prev_xform_prev_rt, prev_rt, sizeof(s_prev_xform_prev_rt));
+    memcpy(s_prev_xform_prev_tr, prev_tr, sizeof(s_prev_xform_prev_tr));
+    s_prev_xform_active = 1;
+}
+
+/* Apply any pending Phase 4 override to matcher.curr. Called near the
+ * end of prepare_substitute, after match-against-prev produced default
+ * velocities. The override replaces the matched batch's
+ * sxy_velocity-derived `next_sxy_centroid` with one computed from the
+ * declared prev_rt/tr.
+ *
+ * The current implementation patches the FIRST batch whose RT/TR match
+ * the override's curr identifier. For accurate screen-space delta from
+ * a world-space prev matrix, we'd need to re-project the batch's
+ * vertices through the override matrix — full T/R/S+slerp territory.
+ * Phase 4 minimal landing assumes a small RT/TR change between frames
+ * so screen-space delta ≈ world-space delta projection of the centroid
+ * via the current OFX/OFY/H (captured per cache entry).
+ *
+ * Override is consumed (s_prev_xform_active reset to 0). */
+static void apply_prev_transform_override(void) {
+    if (!s_prev_xform_active) return;
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        matcher_batch_t* b = &s_curr->batches[i];
+        if (memcmp(b->rt, s_prev_xform_curr_rt, sizeof(b->rt)) != 0) continue;
+        /* Recompute velocity using the override's prev_tr → curr_tr
+         * translation delta. (Rotation lerp deferred to full T/R/S.) */
+        int32_t delta_tr[3] = {
+            s_prev_xform_curr_tr[0] - s_prev_xform_prev_tr[0],
+            s_prev_xform_curr_tr[1] - s_prev_xform_prev_tr[1],
+            s_prev_xform_curr_tr[2] - s_prev_xform_prev_tr[2],
+        };
+        b->velocity[0] = delta_tr[0];
+        b->velocity[1] = delta_tr[1];
+        b->velocity[2] = delta_tr[2];
+        b->has_future_anchor = 1;
+        /* Projection of world-space TR delta to screen-space isn't
+         * exact without OFX/OFY/H + perspective division — Phase 4
+         * minimal uses an approximation: the centroid's empirical
+         * world→screen ratio. For small deltas this is acceptable. */
+        if (b->vertex_count > 0 && b->centroid[2] != 0) {
+            float ratio_x = (float)b->sxy_centroid[0] / (float)b->centroid[0];
+            float ratio_y = (float)b->sxy_centroid[1] / (float)b->centroid[1];
+            b->next_sxy_centroid[0] = b->sxy_centroid[0] +
+                (int32_t)((float)delta_tr[0] * ratio_x);
+            b->next_sxy_centroid[1] = b->sxy_centroid[1] +
+                (int32_t)((float)delta_tr[1] * ratio_y);
+        }
+        break;
+    }
+    s_prev_xform_active = 0;
+}
 
 /* Accumulators reset on every observe call's caller-decided frame
  * boundary — we use s_curr->count == 0 as the "fresh frame" signal.
@@ -272,12 +349,39 @@ static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
 
 static void sub_scan_cb_curr(const openpete_render_cache_entry_t* e, void* ud) {
     (void)ud;
+    /* find_or_create returns the existing batch OR creates a fresh one
+     * with bbox sentinels. We need to detect "fresh" vs "existing" to
+     * only capture RT on the first vertex of a span. Cheap heuristic:
+     * vertex_count==0 means just-created (accumulate_vertex hasn't run). */
     matcher_batch_t* b = find_or_create_batch(e->matrix_span_id);
     if (!b) return;
-    /* Don't bump prim_count here — eager scan is vertex-level. We just
-     * accumulate position data; matcher.curr is otherwise built the
-     * usual way via per-vertex accumulate. */
+    if (b->vertex_count == 0) {
+        /* First vertex of this batch — capture RT for Phase 3 UI detect. */
+        memcpy(b->rt, e->rt, sizeof(b->rt));
+    }
     accumulate_vertex(b, e);
+}
+
+/* Phase 3 — UI/HUD detection. PSX matrices are s3.12 fixed (1.0 =
+ * 0x1000 = 4096). Identity is diag=4096 with off-diag=0. Real HUD
+ * prims occasionally have small rotations from animation, so accept a
+ * generous tolerance (~3 degrees worth of off-diag). Batches that
+ * pass this test (rotation ≈ identity) are 2D overlays in camera-
+ * local coords; lerping them would smear pixels under motion. */
+static int matrix_is_near_identity(const int16_t rt[3][3]) {
+    const int16_t one = 0x1000;
+    const int16_t diag_tol     = 0x80;  /* ±128 / 4096 ≈ ±3 % per axis */
+    const int16_t offdiag_tol  = 0x200; /* ±512 / 4096 ≈ ±12 % per cell */
+    if (abs((int)rt[0][0] - one) > diag_tol) return 0;
+    if (abs((int)rt[1][1] - one) > diag_tol) return 0;
+    if (abs((int)rt[2][2] - one) > diag_tol) return 0;
+    if (abs((int)rt[0][1]) > offdiag_tol) return 0;
+    if (abs((int)rt[0][2]) > offdiag_tol) return 0;
+    if (abs((int)rt[1][0]) > offdiag_tol) return 0;
+    if (abs((int)rt[1][2]) > offdiag_tol) return 0;
+    if (abs((int)rt[2][0]) > offdiag_tol) return 0;
+    if (abs((int)rt[2][1]) > offdiag_tol) return 0;
+    return 1;
 }
 
 void openpete_render_matcher_prepare_substitute(void) {
@@ -306,6 +410,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                                       b->centroid[2]);
         b->has_future_anchor = 0;
         b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
+        b->is_ui_opt_out = matrix_is_near_identity(b->rt);
     }
 
     /* Pass 3: match matcher.curr against matcher.prev (= last render's
@@ -356,6 +461,10 @@ void openpete_render_matcher_prepare_substitute(void) {
         }
     }
     g_openpete_render_substitute_pair_count = paired;
+
+    /* Phase 4: consume any pending OPENPETE_PREV_TRANSFORM override
+     * (no-op if no override set). */
+    apply_prev_transform_override();
 }
 
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
@@ -372,6 +481,12 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     }
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
+        if (s_curr->batches[i].is_ui_opt_out) {
+            /* Phase 3: HUD/UI batches must not lerp — they live in
+             * screen-space with near-identity world matrix; any motion
+             * delta would smear 2D overlays. */
+            return out;
+        }
         if (!s_curr->batches[i].has_future_anchor) {
             g_openpete_render_substitute_vert_miss_count++;
             return out;
@@ -400,10 +515,13 @@ void openpete_render_matcher_finalize_frame(void) {
      * via velocity-extrapolation against prev). Also count prev batches
      * not consumed (dropped this frame). */
     unsigned matched_count = 0u, unmatched_new = 0u, unmatched_dropped = 0u;
+    unsigned ui_optout = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
+        if (s_curr->batches[i].is_ui_opt_out) ui_optout++;
         if (s_curr->batches[i].has_future_anchor) matched_count++;
         else unmatched_new++;
     }
+    g_openpete_render_substitute_ui_optout_count = ui_optout;
     for (uint32_t i = 0; i < s_prev->count; ++i) {
         if (!s_prev->batches[i].consumed) unmatched_dropped++;
     }
