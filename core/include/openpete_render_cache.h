@@ -61,12 +61,17 @@ int openpete_render_cache_lookup_curr(uint32_t sxy_key,
 int openpete_render_cache_lookup_prev(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
 
-/* Rotate: previous <- current; bump current's seq (logical clear).
- * NOTE: Phase 2.1 moved the per-sim-tick caller from PsyX_EndScene to
- * run.c (via openpete_render_sim_tick_advanced) so EndScene can fire
- * multiple times per sim tick during intermediate rendering. Direct
- * callers should be rare. */
+/* Legacy immediate rotate — advances the 3-generation ring one step
+ * synchronously. Retained for tests; production callers use the
+ * deferred arm_rotate() instead. */
 void openpete_render_cache_begin_frame(void);
+
+/* Arm a deferred rotate. The next emit_vertex consumes the arm and
+ * advances the ring. PadVSync-only yields produce no emits, so the
+ * arm carries over harmlessly — this is the mechanism that keeps the
+ * cache aligned with the 30 Hz GAME FRAME cadence on a 60 Hz VBL game
+ * fiber. See openpete_render_cache.c header comment for rationale. */
+void openpete_render_cache_arm_rotate(void);
 
 /* Phase 2.1 — sim-tick boundary, split into two calls:
  *

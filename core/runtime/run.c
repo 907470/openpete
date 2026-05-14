@@ -1209,21 +1209,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 openpete_render_sim_tick_advance_time(op_now(),
                                                       2 * sim_period_ns);
             }
-            /* Phase 2.1 hotfix — rotate the cache RIGHT BEFORE the game
-             * fiber's GTE pass overwrites cache.s_curr. Previously this
-             * ran post-EndScene, which left cache.s_prev = THIS frame's
-             * emissions during intermediate renders that were re-walking
-             * the LAST frame's OT — substitute lookups mostly missed,
-             * the few coincidental hits returned random-batch deltas,
-             * and per-poly mixing produced the visible stretching.
+            /* Renderer-foundation: arm the deferred cache rotate. The
+             * actual ring advance happens on the FIRST emit_vertex of
+             * this yield's GTE pass. PadVSync-only yields produce no
+             * emits, so the arm is harmlessly carried over to the next
+             * yield that does run GTE — keeps the cache aligned with
+             * the 30 Hz GAME FRAME cadence on a 60 Hz VBL fiber.
              *
-             * Rotating here keeps cache.s_prev = last-yield's emissions
-             * across all intermediate renders, which matches the SXY
-             * values in the saved OT being re-walked. The next yield's
-             * GTE then fills the freshly-cleared cache.s_curr. */
+             * Earlier iterations tried (a) post-EndScene rotate, which
+             * left cache.prev = THIS frame's emits during intermediate
+             * walks of LAST frame's OT — stretching artifacts; and
+             * (b) unconditional pre-co_switch rotate, which destroyed
+             * data on PadVSync-only yields — 86% miss rate in soak. */
             {
-                extern void openpete_render_sim_tick_rotate_cache(void);
-                openpete_render_sim_tick_rotate_cache();
+                extern void openpete_render_cache_arm_rotate(void);
+                openpete_render_cache_arm_rotate();
             }
             co_switch((cothread_t)openpete_game_fiber);
             ticked_this_iter = (openpete_frame != frame_before_yield);
