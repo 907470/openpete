@@ -325,12 +325,16 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * for fast motion but suppress flicker. 16 px / render is roughly the
  * minimum smoothing threshold the eye notices between 8 ms frames; jumps
  * above it tend to look like glitches rather than motion. */
-#define SUBSTITUTE_APPLIED_DELTA_CAP_PX_DEFAULT 8.0f
-
-/* Runtime-tunable clamp. Set via --substitute-clamp-px or
- * OPENPETE_SUBSTITUTE_CLAMP_PX env. 0 = substitute fully disabled
- * (intermediate renders show identical positions to last sim-due). */
-float g_openpete_substitute_clamp_px = SUBSTITUTE_APPLIED_DELTA_CAP_PX_DEFAULT;
+/* Default OFF — substitute pipeline is net-negative at current matcher
+ * quality (67% one-shot object_ids, constant-velocity extrapolation
+ * overshoots stopped/reversed motion). Even at the data-driven optimal
+ * clamp=8 the residual 1.56% catastrophic flicker is nausea-inducing in
+ * practice. Set --substitute-clamp-px N (or OPENPETE_SUBSTITUTE_CLAMP_PX
+ * env) > 0 to re-enable for experimentation. The proper fix is
+ * 1-frame-lag interpolation with known endpoints, not better
+ * extrapolation — until that lands, intermediate renders show identical
+ * positions to last sim-due ("30 Hz look at high refresh"). */
+float g_openpete_substitute_clamp_px = 0.0f;
 
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.

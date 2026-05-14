@@ -406,7 +406,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "                             Primary determinism gate — see check_aspect_determinism.sh\n"
                 "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record)\n"
                 "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
-                "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 8); 0 disables substitute entirely\n"
+                "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 0 = substitute off); >0 enables clamped extrapolation\n"
                 "                             for scripts/measure-pacing.py. Off by default.\n"
                 "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);
