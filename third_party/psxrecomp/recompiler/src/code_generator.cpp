@@ -1427,6 +1427,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = cpu->read_word({} + psx_runtime_moby_lp_face_offset);"
                             "  /* moby LP face load (no-lod knob) */",
                             reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x80026210u) {
+                        /* --no-lod also saturates m_CullingDistance
+                         * (g_Environment offset 0x28) at this PC, the
+                         * LP-walk pre-pass's radial-distance gate. Cone-
+                         * admitted cells beyond the canonical 0x14000/
+                         * 0x1c000/0x28000 radius then survive and reach
+                         * HP-walk. Renderer-only — collision.s and math.s
+                         * also read offset 0x28 (10 PCs) and must keep
+                         * the canonical value so gameplay state is
+                         * unaffected. Identity when openpete_no_lod==0. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "{{ uint32_t _v = cpu->read_word({} + {}); "
+                            "{} = openpete_no_lod ? 0x7FFFFFFFu : _v; }}"
+                            "  /* m_CullingDistance INT32_MAX (no-lod) */",
+                            reg_name(rs), off, reg_name(rt));
                     } else if (addr == 0x800259B0u
                             || addr == 0x80026214u
                             || addr == 0x800267B0u) {

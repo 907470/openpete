@@ -824,3 +824,37 @@ substitution_sites = [
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_culling_distance_saturate"
+status      = "gated"
+description = """
+Companion to `no_lod_lod_distance_saturate`: the single
+`lw $s2, 0x28($at)` read of g_Environment.m_CullingDistance at
+PC 0x80026210 in r_environment.s returns 0x7FFFFFFF under
+--no-lod. Identity at default.
+
+Site:
+  0x80026210 → $s2 (LP-walk pre-pass radial-distance gate; $s2
+                    becomes m_CullingDistance >> 7, then gates
+                    far-cell early-skip in the loop body)
+
+Effect: cells that pass the front-walk cone cull and would
+normally be dropped by the LP-walk's radial-distance test now
+survive and reach HP-walk. Combined with the m_LodDistance
+saturation, every cone-admitted cell renders at high-poly /
+high-quality regardless of how far away it is.
+
+Gameplay isolation: collision.s and math.s also read offset
+0x28 of g_Environment (10 PCs total) for gameplay-side distance
+math. Those callsites are NOT substituted — they must keep
+seeing the canonical 0x14000 / 0x1C000 / 0x28000 values so
+collision results stay byte-identical to PSX hardware. Only the
+single renderer-side read at 0x80026210 is touched here."""
+substitution_sites = [
+    0x80026210,  # lw $s2 — LP-walk pre-pass m_CullingDistance load
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
