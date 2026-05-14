@@ -2,6 +2,17 @@
  * See openpete_time.h for API contract. Phase 0 of
  * notes/plans/openpete-frame-pacing.md. */
 
+/* Need Vista+ headers for GetTickCount64 + CreateWaitableTimerExW
+ * declarations. MinGW-w64's <_mingw.h> pins _WIN32_WINNT on first
+ * include, so this MUST be set before any other #include (including
+ * <stdlib.h>, which pulls _mingw.h transitively). The runtime check
+ * for CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Win10 1803+) is handled
+ * by the lazy-init fallback in op_time_init, so this define is only
+ * about which symbols the linker can resolve. */
+#if defined(_WIN32) && !defined(_WIN32_WINNT)
+#  define _WIN32_WINNT 0x0600
+#endif
+
 #include "openpete_time.h"
 
 #include <stdlib.h>

@@ -64,11 +64,23 @@ static int test_sleep_in_the_past_returns_fast(void) {
     return 0;
 }
 
+/* setenv/unsetenv are POSIX; MinGW only ships _putenv_s. Use the
+ * platform primitive directly so the test stays portable. _putenv_s
+ * with an empty value also serves as unset on the Win32 CRT. */
+#if defined(_WIN32)
+#  include <stdlib.h>
+static int env_set(const char* k, const char* v)   { return _putenv_s(k, v); }
+static int env_unset(const char* k)                 { return _putenv_s(k, ""); }
+#else
+static int env_set(const char* k, const char* v)   { return setenv(k, v, 1); }
+static int env_unset(const char* k)                 { return unsetenv(k); }
+#endif
+
 static int test_slack_env_override(void) {
-    /* Reset the lazy-init by simulating a fresh process: setenv then
+    /* Reset the lazy-init by simulating a fresh process: env_set then
      * teardown+re-init. shutdown/init are documented idempotent. */
-    if (setenv("OPENPETE_PACER_SLACK_US", "3300", 1) != 0) {
-        FAIL("setenv failed\n");
+    if (env_set("OPENPETE_PACER_SLACK_US", "3300") != 0) {
+        FAIL("env_set failed\n");
     }
     op_time_shutdown();
     op_time_init();
@@ -77,7 +89,7 @@ static int test_slack_env_override(void) {
         FAIL("slack override expected 3300 us, got %" PRId64 " ns\n",
              (int64_t)got);
     }
-    unsetenv("OPENPETE_PACER_SLACK_US");
+    env_unset("OPENPETE_PACER_SLACK_US");
     op_time_shutdown();
     op_time_init();  /* restore defaults for subsequent runs */
     return 0;

@@ -3,6 +3,11 @@
 #include "openpete_frame_time_log.h"
 #include "openpete_log.h"
 
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>          /* FILETIME, GetSystemTimeAsFileTime */
+#endif
+
 #include <errno.h>
 #include <string.h>
 #include <time.h>
