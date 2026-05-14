@@ -1139,6 +1139,32 @@ void gte_trace_log_post(uint8_t func, uint32_t cmd,
 // gte_execute — C-linkage bridge called from generated code
 // ---------------------------------------------------------------------------
 
+/* fps-unlock Phase 2 / PGXP-fix diagnostic: counters used to verify
+ * what the recomp's gte_execute sees vs what PsyCross's OT walker
+ * sees. Gated by OPENPETE_RENDER_PROBE=1. The expensive per-frame
+ * RTPS/RTPT sample dump was dropped after we confirmed PsyCross's
+ * OT-walker counts disagree with the AddPrim function-call counts
+ * (because the game uses the inline addPrim() macro, not the
+ * function). Counters reset per frame from PsyX_EndScene. */
+extern "C" {
+    int      g_openpete_render_probe_active = -1;  /* lazy-init from env */
+    unsigned g_openpete_render_probe_count_rtps  = 0u;
+    unsigned g_openpete_render_probe_count_rtpt  = 0u;
+    unsigned g_openpete_render_probe_count_mvmva = 0u;
+    unsigned g_openpete_render_probe_count_other = 0u;
+    unsigned g_openpete_render_probe_count_matrix_changes = 0u;
+    int16_t  g_openpete_render_probe_last_rt[3][3] = {{0}};
+    int32_t  g_openpete_render_probe_last_tr[3] = {0};
+}
+
+static inline int render_probe_enabled() {
+    if (g_openpete_render_probe_active < 0) {
+        const char* e = std::getenv("OPENPETE_RENDER_PROBE");
+        g_openpete_render_probe_active = (e && *e == '1') ? 1 : 0;
+    }
+    return g_openpete_render_probe_active;
+}
+
 extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
     using namespace PSXRecomp::GTE;
 
@@ -1192,6 +1218,26 @@ extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
 
     gte_trace_log_post(func, cmd, pre_data, pre_ctrl,
                        cpu->gte_data, cpu->gte_ctrl);
+
+    /* fps-unlock Phase 2 probe — see comment block above. */
+    if (render_probe_enabled()) {
+        if      (func == 0x01) g_openpete_render_probe_count_rtps++;
+        else if (func == 0x30) g_openpete_render_probe_count_rtpt++;
+        else if (func == 0x12) g_openpete_render_probe_count_mvmva++;
+        else                   g_openpete_render_probe_count_other++;
+        bool matrix_change =
+            (std::memcmp(gte.RT, g_openpete_render_probe_last_rt, sizeof(gte.RT)) != 0) ||
+            (gte.TR[0] != g_openpete_render_probe_last_tr[0]) ||
+            (gte.TR[1] != g_openpete_render_probe_last_tr[1]) ||
+            (gte.TR[2] != g_openpete_render_probe_last_tr[2]);
+        if (matrix_change && (func == 0x01 || func == 0x30 || func == 0x12)) {
+            g_openpete_render_probe_count_matrix_changes++;
+            std::memcpy(g_openpete_render_probe_last_rt, gte.RT, sizeof(gte.RT));
+            g_openpete_render_probe_last_tr[0] = gte.TR[0];
+            g_openpete_render_probe_last_tr[1] = gte.TR[1];
+            g_openpete_render_probe_last_tr[2] = gte.TR[2];
+        }
+    }
 
     /* Diagnostic: log when RTPS/RTPT produces FLAG error bit (bit 31).
      * Print at most one sample per frame so a single early-boot burst can't
