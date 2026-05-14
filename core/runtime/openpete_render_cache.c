@@ -46,6 +46,23 @@ unsigned g_openpete_render_cache_hit_count             = 0u;
 unsigned g_openpete_render_cache_probe_overflow_count  = 0u;
 unsigned g_openpete_render_cache_matrix_span_id        = 0u;
 
+/* Linker force-pull anchor for the renderer-foundation matcher.
+ *
+ * The matcher TU (openpete_render_matcher.c) is referenced only by
+ * PsyCross's PsyX_GPU.cpp and PsyX_main.cpp, both of which compile
+ * into libpsycross.a — a separate archive linked AFTER
+ * libopenpete_core.a. GNU ld's default left-to-right archive pass
+ * won't revisit openpete_core.a once it has moved on to psycross, so
+ * matcher.c.o would be left out of the final binary.
+ *
+ * This file (cache.c) IS pulled into the link by gte.cpp's reference
+ * to openpete_render_cache_emit_vertex, so referencing a matcher
+ * symbol here drags the matcher TU along as a fellow-traveler. */
+extern void openpete_render_matcher_finalize_frame(void);
+__attribute__((used))
+static void (*const s_openpete_render_matcher_force_link)(void) =
+    openpete_render_matcher_finalize_frame;
+
 static inline uint32_t hash_sxy(uint32_t key) {
     /* Fibonacci-style mix: cheap, distributes both halves over the slot
      * range so neighbours-on-screen don't always collide. */

@@ -52,6 +52,13 @@ add_library(openpete_core STATIC
     # side lerp. See notes/plans/openpete-renderer-foundation.md.
     runtime/openpete_render_cache.c
 
+    # Draw-call matcher (renderer-foundation Phase 1). Groups OT prims
+    # by matrix_span_id, hashes each batch by geometric fingerprint,
+    # matches curr-frame batches against prev-frame. Produces stable
+    # object_ids that Phase 2 lerp will use as identity for T/R/S
+    # decompose + interpolate. No render changes in Phase 1.
+    runtime/openpete_render_matcher.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c
