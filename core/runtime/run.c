@@ -1363,6 +1363,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * PsyX_EndScene calls openpete_fps_overlay_emit between
          * StoreFrameBuffer and SwapWindow, so it lands on the presented
          * backbuffer without polluting the VRAM mirror. */
+        /* True once a REAL game frame has been presented this iter.
+         * The intermediate block must key off THIS, not
+         * openpete_present_pending, which the block below clears to 0
+         * before the intermediate gate runs — keying off the cleared
+         * flag double-presented (game frame + a spurious alpha≈0
+         * interpolated frame) on every draw iter (the "+30 fps"). */
+        bool did_present_this_iter = false;
         if (openpete_present_pending) {
             static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
             for (int si = 0; si < opts->screenshot_frame_count; ++si) {
@@ -1380,6 +1387,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
+            did_present_this_iter = true;
 
             /* Cache rotate moved to "right before next yield's GTE"
              * (see the yield_now block above) so intermediate renders
@@ -1419,15 +1427,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Conditions:
          *  - Not headless / unlock mode (no display target).
          *  - render-fps > 0 and exceeds sim cadence.
-         *  - present_pending is false. This — NOT !sim_due — is the
-         *    correct guard. sim_due fires every PSX VBL (~60 Hz), but
-         *    Spyro is 30 fps and only issues DrawOTag every other VBL,
-         *    so ~30 sim-due iters/sec set present_pending=0 (nothing
-         *    drawn). The old `!sim_due` made those iters present
-         *    NOTHING (no game frame, intermediate suppressed) — exactly
-         *    the "render-fps minus ~30" deficit. present_pending alone
-         *    means "a fresh game frame was just drawn this iter"; that's
-         *    the only thing that should preempt an interpolated frame.
+         *  - No REAL frame presented this iter (did_present_this_iter).
+         *    NOT !sim_due (sim_due fires every PSX VBL ~60 Hz but Spyro
+         *    draws every other VBL, so ~30 sim-due iters/sec draw
+         *    nothing — !sim_due wrongly made those present NOTHING:
+         *    the "render-fps minus 30" deficit). And NOT
+         *    !openpete_present_pending either — the present block clears
+         *    that to 0 before this gate, so on draw iters it would read
+         *    false and we'd double-present a spurious alpha≈0
+         *    interpolated frame right after the game frame (the
+         *    "render-fps plus 30"). did_present_this_iter is the exact
+         *    predicate: present an interpolated frame iff a real one
+         *    wasn't already shown this iteration.
          *  - At least one DrawOTag has fired (saved OT available).
          *  - Not paused without step pending. */
         extern uint8_t** openpete_last_ot_slot_host_ptr;
@@ -1441,7 +1452,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const bool headless_block = opts->headless && !openpete_vtrace_enabled();
         if (!headless_block && !openpete_unlock_fps &&
             opts->render_fps > 0 &&
-            !openpete_present_pending &&
+            !did_present_this_iter &&
             openpete_last_ot_slot_host_ptr &&
             openpete_last_ot_slot_count > 0 &&
             !(g_paused && !g_step_one)) {
