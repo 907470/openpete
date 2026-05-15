@@ -695,6 +695,26 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     return out;
 }
 
+/* Debug-viz predicate. Returns 1 iff the vertex's batch is one the
+ * interpolation is actively SMOOTHING this render (rigid: paired
+ * from↔to, vfp-matched, not UI). Independent of alpha, so a paused /
+ * sim-due frame still reports the classification stably. Used by the
+ * --debug-highlight-smoothed render mode to paint smoothed geometry
+ * solid red so you can SEE the rigid/animated split the harness can't
+ * show. No side effects, no counters. */
+int openpete_render_matcher_is_smoothed(const int16_t* p) {
+    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
+                   (((uint32_t)(uint16_t)p[1]) << 16);
+    openpete_render_cache_entry_t entry;
+    if (!openpete_render_cache_lookup_prev2(key, &entry)) return 0;
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
+        if (s_curr->batches[i].is_ui_opt_out) return 0;
+        return s_curr->batches[i].has_future_anchor ? 1 : 0;
+    }
+    return 0;
+}
+
 /* Finalize: matcher state was fully built + paired in
  * prepare_substitute. Publish stats and swap s_curr↔s_prev so the next
  * render's object-id continuity pass can match against THIS render's

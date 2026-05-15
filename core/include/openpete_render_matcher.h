@@ -82,6 +82,11 @@ typedef struct {
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     const int16_t* p, float alpha);
 
+/* Debug viz: 1 iff this vertex's batch is being smoothed (rigid /
+ * vfp-matched / non-UI) this render. Alpha-independent. Drives the
+ * OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED solid-red overlay. */
+int openpete_render_matcher_is_smoothed(const int16_t* p);
+
 /* Phase 2 stats. */
 extern unsigned g_openpete_render_substitute_pair_count;
 extern unsigned g_openpete_render_substitute_vert_hit_count;
