@@ -1462,8 +1462,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * display surface. BeginScene/EndScene are no-ops in headless,
          * but prepare_substitute still runs and writes trace records. */
         extern int openpete_vtrace_enabled(void);
+        extern int g_openpete_interp_enabled;
         const bool headless_block = opts->headless && !openpete_vtrace_enabled();
         if (!headless_block && !openpete_unlock_fps &&
+            g_openpete_interp_enabled &&   /* 'I' off → no intermediates → ~29.97 fps */
             opts->render_fps > 0 &&
             !did_present_this_iter &&
             openpete_last_ot_slot_host_ptr &&

@@ -281,11 +281,19 @@ static openpete_op_time_t s_prev_mark_ns       = 0;
 
 void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
                                            openpete_op_time_t sim_period_ns) {
-    s_last_sim_tick_ns = sim_tick_ns;
-    /* Seed only — once mark_now has measured a real cadence, don't let
-     * this pre-yield estimate clobber it back to the 2×VBL constant. */
-    if (s_last_sim_period_ns <= 0)
-        s_last_sim_period_ns = sim_period_ns;
+    /* STARTUP SEED ONLY. This is called every sim-due iter (~60/s, one
+     * per PSX VBL), but mark_now() — fired at the actual DrawOTag
+     * (~30/s, the real keyframe boundary) — is the sole authority for
+     * the alpha origin. If advance_time kept resetting s_last_sim_tick_ns
+     * every VBL, the ~30/s sim-due-no-draw iters would re-anchor the
+     * origin to "just now", collapsing alpha to ~0 for the intermediates
+     * that follow → substitute applies ~0 delta → no sub-frame motion
+     * (the "still looks 30 fps / no blue" symptom). So only set the
+     * origin/period before the first mark_now has ever run. */
+    if (s_prev_mark_ns == 0) {
+        if (s_last_sim_tick_ns <= 0)   s_last_sim_tick_ns   = sim_tick_ns;
+        if (s_last_sim_period_ns <= 0) s_last_sim_period_ns = sim_period_ns;
+    }
 }
 
 void openpete_render_sim_tick_rotate_cache(void) {

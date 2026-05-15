@@ -122,11 +122,27 @@ static u_long* openpete_black_intermediate_ot(void) {
  * lagged frame exactly); intermediate → alpha ramps 0→1 toward the
  * next frame. Caller owns PsyX BeginScene/EndScene framing. */
 extern "C" void openpete_render_walk_lagged_ot(int sim_due) {
-    saved_ot_t* disp = s_ot_has_prev ? g_ot_prev : g_ot_cur;
-    if (disp->slot_count <= 0) return;
+    extern int g_openpete_interp_enabled;
     extern void ClearSplits(void);
     extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
     extern void DrawAllSplits(void);
+
+    /* 'I' off → full frame-gen bypass: present the CURRENT OT (no
+     * 1-frame lag), no matcher, no substitute = bit-original Spyro
+     * presentation. run.c also skips the intermediate-render block, so
+     * the present rate falls back to the game's native ~29.97 fps —
+     * a true whole-system A/B against the interpolated path. */
+    if (!g_openpete_interp_enabled) {
+        if (g_ot_cur->slot_count <= 0) return;
+        ClearSplits();
+        openpete_render_sim_tick_mark_now();   /* keep alpha origin sane */
+        ParsePrimitivesLinkedList((u_long*)g_ot_cur->slots[0], 0);
+        DrawAllSplits();
+        return;
+    }
+
+    saved_ot_t* disp = s_ot_has_prev ? g_ot_prev : g_ot_cur;
+    if (disp->slot_count <= 0) return;
     ClearSplits();
     if (sim_due) {
         /* Pin sim-tick origin to NOW so substitute reads alpha ≈ 0 for
