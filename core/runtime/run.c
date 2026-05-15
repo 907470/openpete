@@ -1101,6 +1101,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_pause_key = false;
     bool prev_dbg_key = false;
     bool prev_blk_key = false;
+    bool prev_i_key = false;
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -1258,6 +1259,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            g_openpete_dbg_black_present);
             }
             prev_blk_key = blk_k;
+
+            /* I: live on/off A/B for interpolation itself. Off =
+             * intermediate renders present the lagged frame unchanged
+             * (clean "is frame-gen doing anything perceptible?" test). */
+            bool i_k = kbd_pre && kbd_pre[SDL_SCANCODE_I];
+            if (i_k && !prev_i_key) {
+                extern int g_openpete_interp_enabled;
+                g_openpete_interp_enabled = !g_openpete_interp_enabled;
+                OPL_INFO_F("render", "interpolation -> %s",
+                           g_openpete_interp_enabled ? "ON" : "OFF");
+            }
+            prev_i_key = i_k;
         }
 
         PsyX_UpdateInput();

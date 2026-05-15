@@ -423,6 +423,14 @@ int g_openpete_dbg_highlight_smoothed = 0;
  * no delta" from "intermediate frames never reach the display". */
 int g_openpete_dbg_black_present = 0;
 
+/* Master interpolation enable (default on). When 0, substitute_query
+ * returns zero delta so intermediate renders present the lagged frame
+ * unchanged — a clean live A/B: toggle the 'I' key and see whether
+ * --render-fps>30 looks any different with interpolation vs without.
+ * If it looks identical either way, interpolation is contributing
+ * nothing perceptible (the thing we're chasing). */
+int g_openpete_interp_enabled = 1;
+
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.
  *
@@ -721,6 +729,7 @@ void openpete_render_matcher_prepare_substitute(void) {
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha) {
     openpete_substitute_delta_t out = { 0.0f, 0.0f };
+    if (!g_openpete_interp_enabled) return out;  /* 'I' kill switch */
     if (alpha <= 0.0f) return out;
 
     uint32_t key = ((uint32_t)(uint16_t)p[0]) |

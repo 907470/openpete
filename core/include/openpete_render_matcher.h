@@ -91,6 +91,9 @@ extern int g_openpete_dbg_highlight_smoothed;
 /* 0/1. Black-out the window on intermediate presents (presentation
  * isolation test). Seeded CLI/env in run.c, live-toggled by F10. */
 extern int g_openpete_dbg_black_present;
+/* 0/1. Master interpolation enable; live-toggled by 'I'. 0 = lagged
+ * frame presented unchanged on intermediates (clean on/off A/B). */
+extern int g_openpete_interp_enabled;
 
 /* Phase 2 stats. */
 extern unsigned g_openpete_render_substitute_pair_count;
