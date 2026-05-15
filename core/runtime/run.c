@@ -1419,8 +1419,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Conditions:
          *  - Not headless / unlock mode (no display target).
          *  - render-fps > 0 and exceeds sim cadence.
-         *  - sim_due is false (this is an intermediate iter; sim-due
-         *    iters already rendered via the present_pending block above).
+         *  - present_pending is false. This — NOT !sim_due — is the
+         *    correct guard. sim_due fires every PSX VBL (~60 Hz), but
+         *    Spyro is 30 fps and only issues DrawOTag every other VBL,
+         *    so ~30 sim-due iters/sec set present_pending=0 (nothing
+         *    drawn). The old `!sim_due` made those iters present
+         *    NOTHING (no game frame, intermediate suppressed) — exactly
+         *    the "render-fps minus ~30" deficit. present_pending alone
+         *    means "a fresh game frame was just drawn this iter"; that's
+         *    the only thing that should preempt an interpolated frame.
          *  - At least one DrawOTag has fired (saved OT available).
          *  - Not paused without step pending. */
         extern uint8_t** openpete_last_ot_slot_host_ptr;
@@ -1434,7 +1441,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const bool headless_block = opts->headless && !openpete_vtrace_enabled();
         if (!headless_block && !openpete_unlock_fps &&
             opts->render_fps > 0 &&
-            !sim_due && !openpete_present_pending &&
+            !openpete_present_pending &&
             openpete_last_ot_slot_host_ptr &&
             openpete_last_ot_slot_count > 0 &&
             !(g_paused && !g_step_one)) {
