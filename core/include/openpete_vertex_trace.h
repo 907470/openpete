@@ -21,7 +21,11 @@ extern "C" {
 #endif
 
 #define VTRACE_MAGIC    0x56545243u  /* "VTRC" */
-#define VTRACE_VERSION  1u
+/* v2: interpolation model. next_sxy_centroid (predicted future endpoint
+ * under the old extrapolation model) replaced by delta_sxy (the known
+ * [from→to] interpolation span). analyze-vtrace.py reconstructs applied
+ * position as sx + delta_sxy*alpha (was sx + (nsx-sx)*alpha). */
+#define VTRACE_VERSION  2u
 
 /* File header — 32 bytes, one per file. */
 typedef struct {
@@ -42,8 +46,8 @@ typedef struct {
     uint32_t matrix_span_id;       /* RT/TR span identity              */
     uint32_t object_id;            /* matcher's persistent object id   */
     int32_t  centroid[3];          /* world q12                        */
-    int32_t  sxy_centroid[2];      /* screen pixels                    */
-    int32_t  next_sxy_centroid[2]; /* predicted next-frame centroid    */
+    int32_t  sxy_centroid[2];      /* screen pixels (= "from" centroid) */
+    int32_t  delta_sxy[2];         /* interpolation span (to - from)   */
     uint16_t vertex_count;
     uint8_t  iter_kind;            /* 0=sim-due, 1=intermediate        */
     uint8_t  is_ui_opt_out;
@@ -69,7 +73,7 @@ void openpete_vtrace_record_batch(uint32_t batch_idx,
                                   uint32_t object_id,
                                   const int32_t centroid[3],
                                   const int32_t sxy_centroid[2],
-                                  const int32_t next_sxy_centroid[2],
+                                  const int32_t delta_sxy[2],
                                   uint16_t vertex_count,
                                   uint8_t is_ui_opt_out,
                                   uint8_t matched,

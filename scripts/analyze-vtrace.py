@@ -28,8 +28,8 @@ RECORD_FMT = (
     "I"      # matrix_span_id           uint32
     "I"      # object_id                uint32
     "iii"    # centroid[3]              int32
-    "ii"     # sxy_centroid[2]          int32
-    "ii"     # next_sxy_centroid[2]     int32
+    "ii"     # sxy_centroid[2]          int32  (= "from" centroid)
+    "ii"     # delta_sxy[2]             int32  (interpolation span to-from)
     "H"      # vertex_count             uint16
     "B"      # iter_kind                uint8
     "B"      # is_ui_opt_out            uint8
@@ -47,6 +47,10 @@ def read_records(path):
         magic, version, record_sz = struct.unpack(HEADER_FMT, hdr)
         if magic != 0x56545243:
             sys.exit(f"bad magic 0x{magic:08x} (expected 0x56545243 'VTRC')")
+        if version != 2:
+            sys.exit(f"vtrace version {version} not supported — this script "
+                     f"reads v2 (delta_sxy / interpolation model). Re-capture "
+                     f"the trace with the current build.")
         if record_sz != RECORD_SZ:
             sys.exit(f"record_sz mismatch: file={record_sz} script={RECORD_SZ}")
         while True:
@@ -101,7 +105,7 @@ def main():
         n += 1
         (op_now_ns, frame, render_idx, alpha, batch_idx, batch_count,
          matrix_span_id, object_id,
-         cx, cy, cz, sx, sy, nsx, nsy,
+         cx, cy, cz, sx, sy, dsx, dsy,
          vc, iter_kind, is_ui, matched, vcapped, _pad) = rec
 
         renders.add(render_idx)
@@ -112,9 +116,11 @@ def main():
         if vcapped: capped += 1
         if is_ui: ui_opt_out += 1
 
-        # Apply substitute-equivalent delta for trajectory analysis
+        # Reconstruct the in-engine applied position. Interpolation
+        # model: applied = from + alpha * delta_sxy (delta is the KNOWN
+        # [from→to] span, not a prediction).
         if matched and not is_ui:
-            dx, dy = apply_clamp((nsx - sx) * alpha, (nsy - sy) * alpha)
+            dx, dy = apply_clamp(dsx * alpha, dsy * alpha)
             applied_sx = sx + dx
             applied_sy = sy + dy
         else:
@@ -123,7 +129,7 @@ def main():
         obj_renders[object_id].add(render_idx)
         if args.object is not None and object_id == args.object:
             obj_positions[object_id].append(
-                (render_idx, frame, alpha, sx, sy, nsx, nsy,
+                (render_idx, frame, alpha, sx, sy, dsx, dsy,
                  applied_sx, applied_sy, matched, iter_kind, vcapped))
 
         cur_min, cur_max = per_render_alpha_minmax[render_idx]
@@ -179,11 +185,11 @@ def main():
     # If user asked for a specific object, dump its trajectory
     if args.object is not None and args.object in obj_positions:
         print(f"\n=== object_id={args.object} trajectory ===")
-        print(f"  render | frame | alpha  | iter | matched | capped | sx,sy → next_sx,sy")
-        for r, frame, alpha, sx, sy, nsx, nsy, asx, asy, m, ik, vc in obj_positions[args.object]:
+        print(f"  render | frame | alpha  | iter | matched | capped | from(sx,sy) Δ(dx,dy)")
+        for r, frame, alpha, sx, sy, dsx, dsy, asx, asy, m, ik, vc in obj_positions[args.object]:
             ik_str = "sim" if ik == 0 else "int"
             print(f"  {r:>6} | {frame:>5} | {alpha:.3f} | {ik_str:>4} | "
-                  f"{m:>7} | {vc:>6} | {sx:>4},{sy:>4} → {nsx:>4},{nsy:>4}  "
+                  f"{m:>7} | {vc:>6} | {sx:>4},{sy:>4} Δ {dsx:>4},{dsy:>4}  "
                   f"applied=({asx:.1f},{asy:.1f})")
 
     # JUMP DETECTION: for each matched batch with object_id stability,
@@ -206,11 +212,11 @@ def main():
             break
         n2 += 1
         (_, frame, render_idx, alpha, _, _, _, object_id,
-         _, _, _, sx, sy, nsx, nsy,
+         _, _, _, sx, sy, dsx, dsy,
          _, iter_kind, is_ui, matched, vcapped, _) = rec
         if is_ui or not matched:
             continue
-        dx, dy = apply_clamp((nsx - sx) * alpha, (nsy - sy) * alpha)
+        dx, dy = apply_clamp(dsx * alpha, dsy * alpha)
         applied_sx = sx + dx
         applied_sy = sy + dy
         if object_id in last_pos_by_oid:

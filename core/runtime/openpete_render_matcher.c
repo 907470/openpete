@@ -57,15 +57,17 @@ typedef struct matcher_batch {
     int64_t  sxy_sum[2];
     int32_t  sxy_centroid[2];
 
-    /* Phase 2 — FRAME-N future anchor. Populated by the
-     * build_future_anchors pass after the OT-walker observe pass
-     * completes, when a future batch hashes to the same bucket as
-     * this batch. Lerp anchors are (centroid → next_centroid) and
-     * (sxy_centroid → next_sxy_centroid). */
+    /* Interpolation span. `has_future_anchor` means this "from"
+     * (gen_prev2 = G(N-1)) batch paired with a "to" (gen_prev = G(N))
+     * batch by centroid hash, so `delta_sxy` = to.sxy_centroid -
+     * from.sxy_centroid is the KNOWN screen-space displacement across
+     * this display cycle. substitute lerps base + alpha*delta_sxy;
+     * alpha=0 → lagged frame, alpha=1 → next frame. Unpaired batches
+     * keep delta_sxy = {0,0} (render frozen at the lagged position —
+     * see plan "Spawn / despawn handling"). */
     int      has_future_anchor;
     int      vtrace_velocity_capped; /* 1 if cap engaged at least once during this batch's match probe — trace-only */
-    int32_t  next_centroid[3];
-    int32_t  next_sxy_centroid[2];
+    int32_t  delta_sxy[2];
 
     /* Phase 3 — HUD/particle opt-out. Captured from the first cache
      * entry of the batch (all entries in a span share the same
@@ -86,8 +88,14 @@ typedef struct matcher_frame {
 
 static matcher_frame_t  s_frame_a;
 static matcher_frame_t  s_frame_b;
-static matcher_frame_t* s_curr = &s_frame_a;
-static matcher_frame_t* s_prev = &s_frame_b;
+static matcher_frame_t* s_curr = &s_frame_a;   /* "from" = gen_prev2 (G(N-1)) batches; swapped each call for object_id continuity */
+static matcher_frame_t* s_prev = &s_frame_b;   /* last call's "from" batches — object_id source */
+
+/* Transient "to" = gen_prev (G(N)) batches. Built fresh every
+ * prepare_substitute, never swapped: both interpolation endpoints are
+ * simultaneously alive in the 3-gen cache ring during the whole
+ * display cycle, so the span is computed intra-call. */
+static matcher_frame_t  s_to;
 
 static uint32_t s_next_object_id = 1u;
 
@@ -161,14 +169,14 @@ static void apply_prev_transform_override(void) {
         /* Projection of world-space TR delta to screen-space isn't
          * exact without OFX/OFY/H + perspective division — Phase 4
          * minimal uses an approximation: the centroid's empirical
-         * world→screen ratio. For small deltas this is acceptable. */
+         * world→screen ratio. For small deltas this is acceptable.
+         * Under the interpolation model the override declares the
+         * KNOWN [from→to] span directly as delta_sxy. */
         if (b->vertex_count > 0 && b->centroid[2] != 0) {
             float ratio_x = (float)b->sxy_centroid[0] / (float)b->centroid[0];
             float ratio_y = (float)b->sxy_centroid[1] / (float)b->centroid[1];
-            b->next_sxy_centroid[0] = b->sxy_centroid[0] +
-                (int32_t)((float)delta_tr[0] * ratio_x);
-            b->next_sxy_centroid[1] = b->sxy_centroid[1] +
-                (int32_t)((float)delta_tr[1] * ratio_y);
+            b->delta_sxy[0] = (int32_t)((float)delta_tr[0] * ratio_x);
+            b->delta_sxy[1] = (int32_t)((float)delta_tr[1] * ratio_y);
         }
         break;
     }
@@ -178,13 +186,14 @@ static void apply_prev_transform_override(void) {
 /* Accumulators reset on every observe call's caller-decided frame
  * boundary — we use s_curr->count == 0 as the "fresh frame" signal.
  * find_or_create_batch initializes a slot with bbox sentinels. */
-static matcher_batch_t* find_or_create_batch(uint32_t matrix_span_id) {
-    for (uint32_t i = 0; i < s_curr->count; ++i) {
-        if (s_curr->batches[i].matrix_span_id == matrix_span_id)
-            return &s_curr->batches[i];
+static matcher_batch_t* find_or_create_batch_in(matcher_frame_t* f,
+                                                uint32_t matrix_span_id) {
+    for (uint32_t i = 0; i < f->count; ++i) {
+        if (f->batches[i].matrix_span_id == matrix_span_id)
+            return &f->batches[i];
     }
-    if (s_curr->count >= MATCHER_MAX_BATCHES) return NULL;
-    matcher_batch_t* b = &s_curr->batches[s_curr->count++];
+    if (f->count >= MATCHER_MAX_BATCHES) return NULL;
+    matcher_batch_t* b = &f->batches[f->count++];
     memset(b, 0, sizeof(*b));
     b->matrix_span_id = matrix_span_id;
     b->bbox_min[0] = b->bbox_min[1] = b->bbox_min[2] = INT32_MAX;
@@ -213,12 +222,12 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     b->vertex_count++;
 }
 
-/* Observe one vertex: lookup s_prev → return entry by value. On miss
- * (vertex not in cache, e.g. line or sprite not produced by GTE),
- * bumps the no_cache counter and returns 0. */
+/* Observe one vertex: lookup gen_prev2 (the lagged OT's generation) →
+ * return entry by value. On miss (vertex not in cache, e.g. line or
+ * sprite not produced by GTE), bumps the no_cache counter, returns 0. */
 static int observe_vertex(const int16_t* p, openpete_render_cache_entry_t* out) {
     uint32_t key = sxy_key_from_pair(p);
-    if (openpete_render_cache_lookup_prev(key, out)) return 1;
+    if (openpete_render_cache_lookup_prev2(key, out)) return 1;
     g_openpete_render_matcher_no_cache_count++;
     return 0;
 }
@@ -244,7 +253,7 @@ void openpete_render_matcher_observe_tri(const int16_t* p0,
     openpete_render_cache_entry_t e;
     uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
                    (((uint32_t)(uint16_t)p0[1]) << 16);
-    if (!openpete_render_cache_lookup_prev(key, &e)) {
+    if (!openpete_render_cache_lookup_prev2(key, &e)) {
         g_openpete_render_matcher_no_cache_count++;
         return;
     }
@@ -260,7 +269,7 @@ void openpete_render_matcher_observe_quad(const int16_t* p0,
     openpete_render_cache_entry_t e;
     uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
                    (((uint32_t)(uint16_t)p0[1]) << 16);
-    if (!openpete_render_cache_lookup_prev(key, &e)) {
+    if (!openpete_render_cache_lookup_prev2(key, &e)) {
         g_openpete_render_matcher_no_cache_count++;
         return;
     }
@@ -310,31 +319,24 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * for a better candidate. */
 #define MATCHER_VELOCITY_CAP_PX 128
 
-/* Applied-delta clamp (per-axis, per-vertex, per-render). The velocity
- * cap above operates on the MATCHER batch's whole-frame velocity at
- * match time, rejecting catastrophic mispairs. This second clamp
- * operates on the APPLIED delta (alpha * sxy_velocity) at query time,
- * bounding how far any one vertex can be pushed in a single intermediate
- * render. It catches the "matched but over-predicted" failure mode that
- * surfaced in trace analysis: 11.1 % of consecutive-render transitions
- * had jumps > 64 px because constant-velocity extrapolation overshoots
- * objects that stop or change direction.
+/* Applied-delta clamp (per-axis, per-vertex, per-render) — now an
+ * emergency bound / kill switch, not the primary safety mechanism.
  *
- * The clamp value is a trade-off: high values pass full motion smoothing
- * through but allow visible flicker; low values produce a "stuck" look
- * for fast motion but suppress flicker. 16 px / render is roughly the
- * minimum smoothing threshold the eye notices between 8 ms frames; jumps
- * above it tend to look like glitches rather than motion. */
-/* Default OFF — substitute pipeline is net-negative at current matcher
- * quality (67% one-shot object_ids, constant-velocity extrapolation
- * overshoots stopped/reversed motion). Even at the data-driven optimal
- * clamp=8 the residual 1.56% catastrophic flicker is nausea-inducing in
- * practice. Set --substitute-clamp-px N (or OPENPETE_SUBSTITUTE_CLAMP_PX
- * env) > 0 to re-enable for experimentation. The proper fix is
- * 1-frame-lag interpolation with known endpoints, not better
- * extrapolation — until that lands, intermediate renders show identical
- * positions to last sim-due ("30 Hz look at high refresh"). */
-float g_openpete_substitute_clamp_px = 0.0f;
+ * Under the OLD extrapolation model this clamp was load-bearing: it
+ * fought constant-velocity overshoot of objects that stopped or
+ * reversed (11.1% of transitions jumped >64 px), and no setting was
+ * good — clamp=0 disabled it, clamp=8 still left 1.56% nausea-inducing
+ * flicker. The INTERPOLATION model removed the structural error: the
+ * applied delta is alpha·(to−from) with alpha∈[0,1], so motion is
+ * bounded by the KNOWN single-game-frame span itself — it physically
+ * cannot overshoot the next frame's position.
+ *
+ * So the default is wide-open (substitute ON, no artificial clamp).
+ * --substitute-clamp-px N (or OPENPETE_SUBSTITUTE_CLAMP_PX env) still
+ * works for A/B testing; the special value 0 is the kill switch
+ * (substitute fully off → intermediate renders identical to the last
+ * sim-due, the "30 Hz look at high refresh"). */
+float g_openpete_substitute_clamp_px = 4096.0f;
 
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.
@@ -356,60 +358,98 @@ static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
 }
 
 /* ----------------------------------------------------------------------
- * Phase 2 — substitute pipeline (velocity-extrapolation model).
+ * Substitute pipeline — 1-frame-lag INTERPOLATION model.
+ * See notes/plans/openpete-interpolation-frame-gen.md.
  *
- * Empirically (2026-05-14), Spyro does DrawOTag BEFORE GTE within a
- * single game frame: the OT walked at frame N's render contains prims
- * from frame N-1's GTE, and frame N's GTE happens AFTER DrawOTag
- * returns. This means at substitute time, cache.s_curr is empty (no
- * "future" anchor available) — only cache.s_prev (the just-completed
- * GTE work that produced the OT being walked) has data.
+ * We display a LAGGED OT (OT#(N-1), built by GTE G(N-1)). Its vertices'
+ * SXY keys resolve in the cache generation G(N-1) wrote — which, at
+ * DrawOTag#N time, sits at gen_prev2 (because Spyro does DrawOTag
+ * BEFORE that frame's GTE, so gen_prev = G(N) is the just-completed
+ * pass and gen_prev2 = G(N-1) is the one that built the lagged OT;
+ * gen_current is empty until frame N's GTE runs after DrawOTag).
  *
- * Without a known future anchor we extrapolate: compute velocity from
- * (last render's matcher batches → this render's matcher batches),
- * then at substitute time apply `delta_sxy = alpha * sxy_velocity` to
- * predict where each matched batch will be at alpha within the current
- * display period. For stationary play velocity≈0 → no-op. For constant
- * motion, prediction is exact. For accel/decel, prediction
- * over/undershoots but stays smooth.
+ * Both interpolation endpoints are therefore simultaneously alive in
+ * the 3-gen ring for the WHOLE display cycle (no GTE/rotate happens
+ * during intermediate renders):
+ *
+ *   "from" = gen_prev2 = G(N-1)  — the lagged OT's own positions
+ *   "to"   = gen_prev  = G(N)    — where those objects ended up
+ *
+ * We pair from↔to batches by centroid hash WITHIN one call (no
+ * cross-call swap needed for the span). delta_sxy = to - from is the
+ * KNOWN displacement; substitute returns alpha*delta_sxy, so
+ * alpha=0 → exactly the lagged frame, alpha=1 → exactly G(N). No
+ * extrapolation, no overshoot — bounded by the [from,to] segment.
  *
  * Pipeline:
- *   psyq_DrawOTag → openpete_render_matcher_prepare_substitute():
- *     - Scan cache.s_prev → build matcher.curr batches.
- *     - Match against matcher.prev (= last frame's matcher.curr) by
- *       centroid hash → compute sxy_velocity per matched batch.
- *
- *   MakeVertexTriangle/Quad → openpete_render_matcher_substitute_query:
- *     - Lookup cache.s_prev[p's sxy] → matrix_span_id.
- *     - Find matcher.curr batch with that span_id.
- *     - Return alpha * batch.sxy_velocity as delta.
- *
- *   PsyX_EndScene → openpete_render_matcher_finalize_frame():
- *     - Swap matcher.curr ↔ matcher.prev (preserves N-1 batches as
- *       N-2 for the next render's velocity computation).
+ *   prepare_substitute():
+ *     - Scan gen_prev2 → s_curr ("from"); scan gen_prev → s_to ("to").
+ *     - Object-id continuity: hash-match s_curr vs s_prev (last call's
+ *       "from") to keep object_id stable across renders/frames (the
+ *       trace harness groups trajectories by object_id).
+ *     - Span: hash-match s_curr(from) vs s_to → delta_sxy per pair.
+ *   substitute_query():
+ *     - Lookup gen_prev2[p's sxy] → matrix_span_id → s_curr batch →
+ *       return alpha * batch.delta_sxy.
+ *   finalize_frame():
+ *     - Swap s_curr ↔ s_prev for next call's object-id continuity.
  * ---------------------------------------------------------------------- */
 
-/* Scratch frame state for the substitute pipeline. We use the existing
- * matcher_frame_t struct so the (curr, prev) swap mechanism is the
- * same, but build matcher.curr eagerly via cache scan instead of via
- * per-prim observe. Observe still runs (for Phase 1 diagnostic match-
- * rate metric); its incremental matcher.curr build is redundant with
- * the eager scan, but harmless — it writes to the same matcher state
- * after prepare ran, so its accumulators add on top. */
-
-static void sub_scan_cb_curr(const openpete_render_cache_entry_t* e, void* ud) {
-    (void)ud;
-    /* find_or_create returns the existing batch OR creates a fresh one
-     * with bbox sentinels. We need to detect "fresh" vs "existing" to
-     * only capture RT on the first vertex of a span. Cheap heuristic:
-     * vertex_count==0 means just-created (accumulate_vertex hasn't run). */
-    matcher_batch_t* b = find_or_create_batch(e->matrix_span_id);
+/* Scan one cache generation into a matcher frame, one batch per
+ * matrix_span_id. `ud` is the target matcher_frame_t*. */
+static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
+    matcher_frame_t* f = (matcher_frame_t*)ud;
+    matcher_batch_t* b = find_or_create_batch_in(f, e->matrix_span_id);
     if (!b) return;
     if (b->vertex_count == 0) {
-        /* First vertex of this batch — capture RT for Phase 3 UI detect. */
+        /* First vertex of this batch — capture RT for UI-opt-out test. */
         memcpy(b->rt, e->rt, sizeof(b->rt));
     }
     accumulate_vertex(b, e);
+}
+
+static int matrix_is_near_identity(const int16_t rt[3][3]);
+
+/* Finalize a freshly-scanned frame: per-batch centroid, sxy_centroid,
+ * geometric hash, reset span/match state. */
+static void finalize_scanned_frame(matcher_frame_t* f) {
+    for (uint32_t i = 0; i < f->count; ++i) {
+        matcher_batch_t* b = &f->batches[i];
+        if (b->vertex_count == 0) continue;
+        for (int axis = 0; axis < 3; ++axis) {
+            b->centroid[axis] =
+                (int32_t)(b->centroid_sum[axis] / (int64_t)b->vertex_count);
+        }
+        b->sxy_centroid[0] = (int32_t)(b->sxy_sum[0] / (int64_t)b->vertex_count);
+        b->sxy_centroid[1] = (int32_t)(b->sxy_sum[1] / (int64_t)b->vertex_count);
+        b->hash = batch_centroid_hash(b->centroid[0],
+                                      b->centroid[1],
+                                      b->centroid[2]);
+        b->has_future_anchor = 0;
+        b->delta_sxy[0] = b->delta_sxy[1] = 0;
+        b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
+        b->is_ui_opt_out = matrix_is_near_identity(b->rt);
+        b->vtrace_velocity_capped = 0;
+        b->consumed = 0;
+    }
+}
+
+/* Open-addressed hash table over a frame's batches (slot = batch_idx+1,
+ * 0 = empty). Used for both object-id continuity (vs s_prev) and span
+ * pairing (vs s_to). */
+static void build_frame_hash_table(matcher_frame_t* f) {
+    memset(f->hash_table, 0, sizeof(f->hash_table));
+    for (uint32_t i = 0; i < f->count; ++i) {
+        uint64_t h = f->batches[i].hash;
+        uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
+        for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
+            if (f->hash_table[slot] == 0u) {
+                f->hash_table[slot] = (uint16_t)(i + 1u);
+                break;
+            }
+            slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
+        }
+    }
 }
 
 /* Phase 3 — UI/HUD detection. PSX matrices are s3.12 fixed (1.0 =
@@ -435,52 +475,66 @@ static int matrix_is_near_identity(const int16_t rt[3][3]) {
 }
 
 void openpete_render_matcher_prepare_substitute(void) {
-    /* Reset matcher.curr to a clean state, then rebuild from cache scan. */
     s_curr->count = 0u;
+    s_to.count    = 0u;
     g_openpete_render_substitute_vert_hit_count  = 0u;
     g_openpete_render_substitute_vert_miss_count = 0u;
     g_openpete_render_matcher_no_cache_count     = 0u;
 
-    /* Pass 1: scan cache.s_prev (= world data for OT about to be walked)
-     * to build matcher.curr batches keyed by matrix_span_id. */
-    openpete_render_cache_for_each_prev_entry(sub_scan_cb_curr, NULL);
+    /* Scan both interpolation endpoints. "from" = gen_prev2 (G(N-1),
+     * the lagged OT we display); "to" = gen_prev (G(N)). */
+    openpete_render_cache_for_each_prev2_entry(sub_scan_cb, s_curr);
+    openpete_render_cache_for_each_prev_entry (sub_scan_cb, &s_to);
+    finalize_scanned_frame(s_curr);
+    finalize_scanned_frame(&s_to);
 
-    /* Pass 2: finalize each batch (centroid, sxy_centroid, hash). */
+    /* --- Object-id continuity (s_curr "from" vs s_prev = last call's
+     * "from"). Identity only — no velocity cap; within a display cycle
+     * s_curr content is identical call-to-call so a batch matches its
+     * own prior incarnation, and across cycles the centroid bucket
+     * persists for objects that stayed in roughly the same place. The
+     * trace harness groups trajectories by object_id. */
+    build_frame_hash_table(s_prev);
     for (uint32_t i = 0; i < s_curr->count; ++i) {
-        matcher_batch_t* b = &s_curr->batches[i];
-        if (b->vertex_count == 0) continue;
-        for (int axis = 0; axis < 3; ++axis) {
-            b->centroid[axis] =
-                (int32_t)(b->centroid_sum[axis] / (int64_t)b->vertex_count);
-        }
-        b->sxy_centroid[0] = (int32_t)(b->sxy_sum[0] / (int64_t)b->vertex_count);
-        b->sxy_centroid[1] = (int32_t)(b->sxy_sum[1] / (int64_t)b->vertex_count);
-        b->hash = batch_centroid_hash(b->centroid[0],
-                                      b->centroid[1],
-                                      b->centroid[2]);
-        b->has_future_anchor = 0;
-        b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
-        b->is_ui_opt_out = matrix_is_near_identity(b->rt);
-        b->vtrace_velocity_capped = 0;
-    }
-
-    /* Pass 3: match matcher.curr against matcher.prev (= last render's
-     * batches). On match, compute sxy_velocity = curr.sxy_centroid -
-     * prev.sxy_centroid for the substitute step. */
-    memset(s_prev->hash_table, 0, sizeof(s_prev->hash_table));
-    for (uint32_t i = 0; i < s_prev->count; ++i) {
-        s_prev->batches[i].consumed = 0;
-        uint64_t h = s_prev->batches[i].hash;
+        matcher_batch_t* cb = &s_curr->batches[i];
+        uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
+        int got_id = 0;
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            if (s_prev->hash_table[slot] == 0u) {
-                s_prev->hash_table[slot] = (uint16_t)(i + 1u);
+            uint16_t entry = s_prev->hash_table[slot];
+            if (entry == 0u) break;
+            matcher_batch_t* pb = &s_prev->batches[entry - 1u];
+            if (pb->hash == h && !pb->consumed) {
+                /* Same velocity sanity cap as the span pass. The
+                 * centroid bucket (64-unit) collides unrelated batches;
+                 * without this, a moving moby inherits a stationary
+                 * batch's object_id and the trace harness reads a giant
+                 * phantom "jump" between two physically different
+                 * batches sharing an id. Within a display cycle the
+                 * scan content is identical (delta 0 → always passes);
+                 * across a cycle a real same-object move is ≤ ~30 px. */
+                const int32_t idx = cb->sxy_centroid[0] - pb->sxy_centroid[0];
+                const int32_t idy = cb->sxy_centroid[1] - pb->sxy_centroid[1];
+                if (abs(idx) + abs(idy) > MATCHER_VELOCITY_CAP_PX) {
+                    slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
+                    continue;
+                }
+                pb->consumed   = 1;
+                cb->object_id  = pb->object_id;
+                got_id = 1;
                 break;
             }
             slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
         }
+        if (!got_id) cb->object_id = s_next_object_id++;
     }
 
+    /* --- Interpolation span (s_curr "from" ↔ s_to "to"). delta_sxy =
+     * to.sxy_centroid - from.sxy_centroid is the KNOWN single-game-frame
+     * displacement; substitute lerps it by alpha. The velocity sanity
+     * cap rejects hash collisions between unrelated batches sharing a
+     * centroid bucket (a real object moves ≤ ~30 px / game frame). */
+    build_frame_hash_table(&s_to);
     unsigned paired = 0u;
     unsigned velocity_capped = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
@@ -488,55 +542,46 @@ void openpete_render_matcher_prepare_substitute(void) {
         uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            uint16_t entry = s_prev->hash_table[slot];
+            uint16_t entry = s_to.hash_table[slot];
             if (entry == 0u) break;
-            matcher_batch_t* pb = &s_prev->batches[entry - 1u];
-            if (pb->hash == h && !pb->consumed) {
-                /* Velocity sanity cap. Even with multi-feature hashing
-                 * (centroid+bbox+vc), occasional false-positive matches
-                 * survive — typically a moving moby colliding with a
-                 * shape-similar stationary batch. Drop the match when
-                 * the resulting screen-space velocity is implausibly
-                 * large; release the prev slot so a legitimate curr
-                 * batch can still pair with it. */
-                const int32_t vx = cb->sxy_centroid[0] - pb->sxy_centroid[0];
-                const int32_t vy = cb->sxy_centroid[1] - pb->sxy_centroid[1];
-                if (abs(vx) + abs(vy) > MATCHER_VELOCITY_CAP_PX) {
+            matcher_batch_t* tb = &s_to.batches[entry - 1u];
+            if (tb->hash == h && !tb->consumed) {
+                const int32_t dx = tb->sxy_centroid[0] - cb->sxy_centroid[0];
+                const int32_t dy = tb->sxy_centroid[1] - cb->sxy_centroid[1];
+                if (abs(dx) + abs(dy) > MATCHER_VELOCITY_CAP_PX) {
                     velocity_capped++;
                     cb->vtrace_velocity_capped = 1;
-                    /* Don't consume pb; try next slot (may have a
-                     * legitimate hash neighbor with sane velocity). */
+                    /* Hash neighbor mispair — release tb, probe on. */
                     slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
                     continue;
                 }
-                pb->consumed = 1;
-                cb->object_id   = pb->object_id;
-                /* Velocity in world (q12 MAC) and screen-space pixels. */
-                cb->velocity[0] = cb->centroid[0] - pb->centroid[0];
-                cb->velocity[1] = cb->centroid[1] - pb->centroid[1];
-                cb->velocity[2] = cb->centroid[2] - pb->centroid[2];
-                cb->next_sxy_centroid[0] = cb->sxy_centroid[0] + vx;
-                cb->next_sxy_centroid[1] = cb->sxy_centroid[1] + vy;
+                tb->consumed = 1;
+                cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
+                cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
+                cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
+                cb->delta_sxy[0] = dx;
+                cb->delta_sxy[1] = dy;
                 cb->has_future_anchor = 1;
                 paired++;
                 break;
             }
             slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
         }
-        if (!cb->has_future_anchor) {
-            cb->object_id = s_next_object_id++;
-        }
+        /* Unpaired "from" batch → delta_sxy stays {0,0}: the object
+         * despawned (or hash-collided away) between G(N-1) and G(N);
+         * it renders frozen at its lagged position for this cycle. */
     }
     g_openpete_render_substitute_pair_count = paired;
     g_openpete_render_substitute_velocity_capped_count = velocity_capped;
 
-    /* Phase 4: consume any pending OPENPETE_PREV_TRANSFORM override
-     * (no-op if no override set). */
+    /* Consume any pending OPENPETE_PREV_TRANSFORM override (no-op if
+     * none). It overwrites the matched batch's delta_sxy with an
+     * explicitly-declared span. */
     apply_prev_transform_override();
 
-    /* Trace pass — one record per batch. iter_kind is set externally by
-     * psyq_DrawOTag (0) or re_emit_last_ot (1) before this function is
-     * called. No-op if --vertex-trace-log isn't enabled. */
+    /* Trace pass — one record per "from" batch. iter_kind is set
+     * externally by the OT-walk caller (sim-due 0 / intermediate 1).
+     * No-op unless --vertex-trace-log is enabled. */
     if (openpete_vtrace_enabled()) {
         const uint32_t batch_count = s_curr->count;
         for (uint32_t i = 0; i < batch_count; ++i) {
@@ -544,7 +589,7 @@ void openpete_render_matcher_prepare_substitute(void) {
             openpete_vtrace_record_batch(
                 i, batch_count,
                 b->matrix_span_id, b->object_id,
-                b->centroid, b->sxy_centroid, b->next_sxy_centroid,
+                b->centroid, b->sxy_centroid, b->delta_sxy,
                 (uint16_t)b->vertex_count,
                 (uint8_t)b->is_ui_opt_out,
                 (uint8_t)b->has_future_anchor,
@@ -561,35 +606,35 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     uint32_t key = ((uint32_t)(uint16_t)p[0]) |
                    (((uint32_t)(uint16_t)p[1]) << 16);
     openpete_render_cache_entry_t entry;
-    if (!openpete_render_cache_lookup_prev(key, &entry)) {
+    /* The vertex belongs to the lagged OT (OT#(N-1)) → its SXY resolves
+     * in gen_prev2 (= "from" = G(N-1)), the same generation s_curr was
+     * scanned from. */
+    if (!openpete_render_cache_lookup_prev2(key, &entry)) {
         g_openpete_render_substitute_vert_miss_count++;
         return out;
     }
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
         if (s_curr->batches[i].is_ui_opt_out) {
-            /* Phase 3: HUD/UI batches must not lerp — they live in
-             * screen-space with near-identity world matrix; any motion
-             * delta would smear 2D overlays. */
+            /* HUD/UI batches must not lerp — they live in screen-space
+             * with near-identity world matrix; a delta would smear the
+             * 2D overlay. */
             return out;
         }
         if (!s_curr->batches[i].has_future_anchor) {
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
-        /* Screen-space velocity = curr - prev. Predict next = curr + vel.
-         * delta from curr-position by alpha = alpha * (next - curr) = alpha * vel. */
-        float vx = (float)(s_curr->batches[i].next_sxy_centroid[0] -
-                           s_curr->batches[i].sxy_centroid[0]);
-        float vy = (float)(s_curr->batches[i].next_sxy_centroid[1] -
-                           s_curr->batches[i].sxy_centroid[1]);
-        float dx = vx * alpha;
-        float dy = vy * alpha;
-        /* Applied-delta clamp — bounds visible per-vertex motion to
-         * g_openpete_substitute_clamp_px even when velocity is large
-         * AND alpha is high. cap=0 disables substitute entirely
-         * (returns no delta — intermediate renders identical to last
-         * sim-due, "30 Hz look at high refresh rate"). */
+        /* Interpolate along the KNOWN [from→to] span: applied =
+         * from + alpha * delta_sxy. alpha=0 → lagged frame exactly,
+         * alpha=1 → next frame exactly. Bounded by the segment — no
+         * extrapolation overshoot. */
+        float dx = (float)s_curr->batches[i].delta_sxy[0] * alpha;
+        float dy = (float)s_curr->batches[i].delta_sxy[1] * alpha;
+        /* Applied-delta clamp — emergency bound / kill switch. The span
+         * itself already bounds motion (≤ one game-frame displacement),
+         * so this defaults wide-open; cap=0 disables substitute
+         * entirely (intermediate renders = last sim-due, "30 Hz look"). */
         const float cap = g_openpete_substitute_clamp_px;
         if (cap <= 0.0f) return out;  /* 0 = substitute off */
         if (dx >  cap) dx =  cap;
@@ -605,14 +650,14 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     return out;
 }
 
-/* Phase 2 finalize: matcher state was fully built + matched in
- * prepare_substitute (at DrawOTag-prepare time). Finalize only needs
- * to publish remaining stats and swap curr↔prev so next render's
- * prepare can compute velocity vs THIS render's batches. */
+/* Finalize: matcher state was fully built + paired in
+ * prepare_substitute. Publish stats and swap s_curr↔s_prev so the next
+ * render's object-id continuity pass can match against THIS render's
+ * "from" batches. (s_to is transient — never swapped.) */
 void openpete_render_matcher_finalize_frame(void) {
-    /* Stats: how many of this frame's curr batches got paired (matched
-     * via velocity-extrapolation against prev). Also count prev batches
-     * not consumed (dropped this frame). */
+    /* matched = "from" batches that paired with a "to" (have a valid
+     * interpolation span). dropped = last call's "from" batches with
+     * no object-id successor this call. */
     unsigned matched_count = 0u, unmatched_new = 0u, unmatched_dropped = 0u;
     unsigned ui_optout = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
@@ -630,8 +675,7 @@ void openpete_render_matcher_finalize_frame(void) {
     g_openpete_render_matcher_unmatched_dropped_count = unmatched_dropped;
     g_openpete_render_matcher_future_anchored_count   = matched_count;
 
-    /* Swap. Next render's prepare will build a fresh curr (via cache
-     * scan) and match against this frame's batches sitting in prev. */
+    /* Swap for object-id continuity (see prepare_substitute). */
     matcher_frame_t* tmp = s_prev;
     s_prev = s_curr;
     s_curr = tmp;

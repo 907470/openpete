@@ -97,6 +97,9 @@ static inline openpete_render_cache_frame_t* gen_current(void) {
 static inline openpete_render_cache_frame_t* gen_prev(void) {
     return &s_gens[gen_idx_prev()];
 }
+static inline openpete_render_cache_frame_t* gen_prev2(void) {
+    return &s_gens[gen_idx_prev2()];
+}
 
 static void consume_pending_rotate(void) {
     if (!s_rotate_pending) return;
@@ -197,6 +200,16 @@ int openpete_render_cache_lookup_prev(uint32_t sxy_key,
     return lookup_frame(gen_prev(), sxy_key, out);
 }
 
+/* Interpolation "from" endpoint. At DrawOTag#N the lagged OT we display
+ * (OT#(N-1), built by GTE G(N-1)) has SXY keys that were emitted into
+ * the generation now sitting at prev2 (= G(N-1)); gen_prev holds G(N)
+ * = the "to" endpoint. See notes/plans/openpete-interpolation-frame-
+ * gen.md "Architecture". */
+int openpete_render_cache_lookup_prev2(uint32_t sxy_key,
+                                       openpete_render_cache_entry_t* out) {
+    return lookup_frame(gen_prev2(), sxy_key, out);
+}
+
 /* OT-walker entry point. Target = gen[prev] = last game frame's GTE
  * writes, which is the source of the SXY values in the OT being
  * walked. 98% hit rate empirically (level_10 active gameplay). */
@@ -217,6 +230,19 @@ void openpete_render_cache_for_each_curr_entry(
 void openpete_render_cache_for_each_prev_entry(
         openpete_render_cache_iter_fn cb, void* userdata) {
     const openpete_render_cache_frame_t* frame = gen_prev();
+    const uint32_t seq = frame->seq;
+    for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_SLOTS; ++i) {
+        const openpete_render_cache_entry_t* slot = &frame->slots[i];
+        if (slot->seq == seq) cb(slot, userdata);
+    }
+}
+
+/* "from" endpoint scan (gen_prev2 = G(N-1)). Paired with the
+ * for_each_prev scan (gen_prev = G(N) = "to") inside the matcher's
+ * interpolation prepare pass. */
+void openpete_render_cache_for_each_prev2_entry(
+        openpete_render_cache_iter_fn cb, void* userdata) {
+    const openpete_render_cache_frame_t* frame = gen_prev2();
     const uint32_t seq = frame->seq;
     for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_SLOTS; ++i) {
         const openpete_render_cache_entry_t* slot = &frame->slots[i];

@@ -60,6 +60,11 @@ int openpete_render_cache_lookup_curr(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
 int openpete_render_cache_lookup_prev(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
+/* Interpolation "from" endpoint (gen two game frames back = the GTE
+ * that built the lagged OT we display). See openpete-interpolation-
+ * frame-gen.md. */
+int openpete_render_cache_lookup_prev2(uint32_t sxy_key,
+                                       openpete_render_cache_entry_t* out);
 
 /* Legacy immediate rotate — advances the 3-generation ring one step
  * synchronously. Retained for tests; production callers use the
@@ -132,6 +137,11 @@ void openpete_render_cache_for_each_curr_entry(
  * buffer; consumer of OT walker lookups). Used by Phase 2's dual-scan
  * to build FRAME-N-1 anchors alongside FRAME-N future anchors. */
 void openpete_render_cache_for_each_prev_entry(
+    openpete_render_cache_iter_fn cb, void* userdata);
+
+/* Iterate every populated slot in gen_prev2 (= G(N-1), the "from"
+ * endpoint of the interpolation span; gen_prev = G(N) is "to"). */
+void openpete_render_cache_for_each_prev2_entry(
     openpete_render_cache_iter_fn cb, void* userdata);
 
 /* Diagnostic counters (per render frame; reset by PsyX_EndScene summary). */

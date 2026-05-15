@@ -127,7 +127,7 @@ void openpete_vtrace_record_batch(uint32_t batch_idx,
                                   uint32_t object_id,
                                   const int32_t centroid[3],
                                   const int32_t sxy_centroid[2],
-                                  const int32_t next_sxy_centroid[2],
+                                  const int32_t delta_sxy[2],
                                   uint16_t vertex_count,
                                   uint8_t is_ui_opt_out,
                                   uint8_t matched,
@@ -156,8 +156,8 @@ void openpete_vtrace_record_batch(uint32_t batch_idx,
     r.centroid[2]    = centroid[2];
     r.sxy_centroid[0] = sxy_centroid[0];
     r.sxy_centroid[1] = sxy_centroid[1];
-    r.next_sxy_centroid[0] = next_sxy_centroid[0];
-    r.next_sxy_centroid[1] = next_sxy_centroid[1];
+    r.delta_sxy[0]   = delta_sxy[0];
+    r.delta_sxy[1]   = delta_sxy[1];
     r.vertex_count   = vertex_count;
     r.iter_kind      = s_iter_kind;
     r.is_ui_opt_out  = is_ui_opt_out;
