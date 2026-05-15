@@ -339,27 +339,6 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * for a better candidate. */
 #define MATCHER_VELOCITY_CAP_PX 128
 
-/* Phase-1 world tuning (data-driven from the 8000-frame trace:
- * vertex_count p50=28, p90=222, p99=1562; velocity-cap was rejecting
- * 51.6% of pairings — the dominant reason the world never smoothed).
- *
- * A batch with >= MATCHER_ENV_BATCH_VC vertices is treated as
- * environment / static world geometry: large, distinctive (so a
- * centroid-bucket hash collision into an unrelated batch is unlikely),
- * and RIGID even though frustum culling churns *which* of its verts
- * are visible frame-to-frame. For such batches we (a) skip the strict
- * vfp-equality gate — culling churn would otherwise freeze all world
- * geometry — and (b) allow a much larger screen-space delta, because a
- * camera pan legitimately sweeps a world chunk far past 128 px/frame.
- *
- * The threshold sits well above any single Spyro/enemy per-bone
- * matrix-span (those are < ~128 verts), so the animated-mesh freeze
- * (the neck-stretch fix) is untouched: small batches still require
- * exact vfp + the tight 128 px cap. All three are deliberately loose
- * knobs for visual iteration with --debug-highlight-smoothed. */
-#define MATCHER_ENV_BATCH_VC       256u
-#define MATCHER_VELOCITY_CAP_ENV_PX 768
-
 /* Applied-delta clamp (per-axis, per-vertex, per-render) — now an
  * emergency bound / kill switch, not the primary safety mechanism.
  *
@@ -595,13 +574,6 @@ void openpete_render_matcher_prepare_substitute(void) {
     unsigned velocity_capped = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
-        /* Large, distinctive environment chunk → relax both gates so the
-         * world actually smooths under camera motion (see
-         * MATCHER_ENV_BATCH_VC). Small batches keep strict vfp + tight
-         * cap so animated mobys stay frozen (neck-stretch fix). */
-        const int is_env = (cb->vertex_count >= MATCHER_ENV_BATCH_VC);
-        const int32_t vel_cap = is_env ? MATCHER_VELOCITY_CAP_ENV_PX
-                                        : MATCHER_VELOCITY_CAP_PX;
         uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
@@ -624,7 +596,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                 uint32_t vc_diff = (cb->vertex_count > tb->vertex_count)
                     ? cb->vertex_count - tb->vertex_count
                     : tb->vertex_count - cb->vertex_count;
-                if (abs(dx) + abs(dy) > vel_cap ||
+                if (abs(dx) + abs(dy) > MATCHER_VELOCITY_CAP_PX ||
                     vc_diff > vc_tol) {
                     velocity_capped++;
                     cb->vtrace_velocity_capped = 1;
@@ -637,13 +609,9 @@ void openpete_render_matcher_prepare_substitute(void) {
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
                 cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
                 cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
-                if (is_env || cb->vfp == tb->vfp) {
-                    /* Rigid: either an exact-vfp match (static prop /
-                     * rigid moby) OR a large environment chunk whose
-                     * vfp churns only because culling changed the
-                     * visible subset, not because it deforms. The
-                     * centroid delta is pure (camera-driven)
-                     * translation → smooth it. */
+                if (cb->vfp == tb->vfp) {
+                    /* Rigid (world / static / camera-moved): the
+                     * centroid delta is pure translation → smooth it. */
                     cb->delta_sxy[0] = dx;
                     cb->delta_sxy[1] = dy;
                     cb->has_future_anchor = 1;
