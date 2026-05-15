@@ -715,9 +715,15 @@ int openpete_render_matcher_is_smoothed(const int16_t* p) {
     openpete_render_cache_entry_t entry;
     if (!openpete_render_cache_lookup_prev2(key, &entry)) return 0;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
-        if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
-        if (s_curr->batches[i].is_ui_opt_out) return 0;
-        return s_curr->batches[i].has_future_anchor ? 1 : 0;
+        const matcher_batch_t* b = &s_curr->batches[i];
+        if (b->matrix_span_id != entry.matrix_span_id) continue;
+        if (b->is_ui_opt_out || !b->has_future_anchor) return 0;
+        /* Only count it as "smoothed" if interpolation actually moves
+         * it this cycle. A paired-but-zero-delta batch (camera still,
+         * object stationary → same screen pos before/after) gets
+         * alpha*0 = no displacement; painting it red would imply
+         * frame-gen is doing something when it isn't. */
+        return (b->delta_sxy[0] != 0 || b->delta_sxy[1] != 0) ? 1 : 0;
     }
     return 0;
 }
