@@ -69,6 +69,19 @@ typedef struct matcher_batch {
     int      vtrace_velocity_capped; /* 1 if cap engaged at least once during this batch's match probe — trace-only */
     int32_t  delta_sxy[2];
 
+    /* Order-independent fingerprint of the batch's model-local v_local
+     * set. RIGID geometry (world mesh, static props, anything moved
+     * only by camera RT/TR) keeps an identical v_local set frame-to-
+     * frame → vfp stable. ANIMATED meshes (Spyro's pre-baked keyframe
+     * deformation) get a fresh v_local set every game frame → vfp
+     * churns. We only apply the interpolation delta when from.vfp ==
+     * to.vfp; a churning batch is the SAME object animating, so we
+     * freeze it at its lagged position (= the intended 30 Hz cinematic
+     * fallback for animated mobys, plan goal #2) instead of shoving it
+     * by a pose-contaminated centroid delta (the "neck stretches 3×"
+     * artifact). */
+    uint64_t vfp;
+
     /* Phase 3 — HUD/particle opt-out. Captured from the first cache
      * entry of the batch (all entries in a span share the same
      * matrix). If the rotation matrix is near-identity, the batch is
@@ -220,6 +233,13 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     b->sxy_sum[0] += (int64_t)sx;
     b->sxy_sum[1] += (int64_t)sy;
     b->vertex_count++;
+
+    /* Order-independent v_local fingerprint (sum-combine so emission
+     * order can't false-trigger the rigid/animated test). */
+    uint32_t vp = ((uint32_t)(uint16_t)e->v_local[0]) ^
+                  (((uint32_t)(uint16_t)e->v_local[1]) << 11) ^
+                  (((uint32_t)(uint16_t)e->v_local[2]) << 22);
+    b->vfp += (uint64_t)(vp * 0x9E3779B1u) + 0x100000001b3ULL;
 }
 
 /* Observe one vertex: lookup gen_prev2 (the lagged OT's generation) →
@@ -548,21 +568,46 @@ void openpete_render_matcher_prepare_substitute(void) {
             if (tb->hash == h && !tb->consumed) {
                 const int32_t dx = tb->sxy_centroid[0] - cb->sxy_centroid[0];
                 const int32_t dy = tb->sxy_centroid[1] - cb->sxy_centroid[1];
-                if (abs(dx) + abs(dy) > MATCHER_VELOCITY_CAP_PX) {
+                /* Cross-object mispair guards (release tb, probe on):
+                 *  - implausible screen-space jump (a real object moves
+                 *    ≤ ~30 px / game frame; cap is generous), and
+                 *  - very different vertex count (Spyro's ~tens-of-vert
+                 *    head batch colliding into a hundreds-of-vert wall
+                 *    in the same centroid bucket). vstab verified per-
+                 *    moby vertex_count is stable across consecutive
+                 *    frames, so a true pair has near-equal counts. */
+                uint32_t vc_tol = cb->vertex_count / 4u;
+                if (vc_tol < 4u) vc_tol = 4u;
+                uint32_t vc_diff = (cb->vertex_count > tb->vertex_count)
+                    ? cb->vertex_count - tb->vertex_count
+                    : tb->vertex_count - cb->vertex_count;
+                if (abs(dx) + abs(dy) > MATCHER_VELOCITY_CAP_PX ||
+                    vc_diff > vc_tol) {
                     velocity_capped++;
                     cb->vtrace_velocity_capped = 1;
-                    /* Hash neighbor mispair — release tb, probe on. */
                     slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
                     continue;
                 }
+                /* Same logical object. Consume regardless so it can't
+                 * re-pair elsewhere and so stats/object-id are right. */
                 tb->consumed = 1;
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
                 cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
                 cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
-                cb->delta_sxy[0] = dx;
-                cb->delta_sxy[1] = dy;
-                cb->has_future_anchor = 1;
-                paired++;
+                if (cb->vfp == tb->vfp) {
+                    /* Rigid (world / static / camera-moved): the
+                     * centroid delta is pure translation → smooth it. */
+                    cb->delta_sxy[0] = dx;
+                    cb->delta_sxy[1] = dy;
+                    cb->has_future_anchor = 1;
+                    paired++;
+                }
+                /* else: ANIMATING (v_local set churned). Leave
+                 * delta_sxy {0,0} / has_future_anchor 0 → substitute
+                 * returns 0 → the moby renders frozen at its lagged
+                 * position = original 30 Hz cinematic cadence (plan
+                 * goal #2). No pose-contaminated centroid shove → no
+                 * neck-stretch. */
                 break;
             }
             slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
