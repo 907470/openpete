@@ -79,6 +79,42 @@ static uint32_t    s_ot_build_count = 0;
 extern "C" uint8_t** openpete_last_ot_slot_host_ptr = NULL;
 extern "C" int       openpete_last_ot_slot_count    = 0;
 
+extern "C" int g_openpete_dbg_black_present;  /* presentation isolation test */
+
+/* Presentation isolation test. Builds (once) a host OT containing a
+ * single fullscreen flat-black POLY_F4 in the EXACT slot format
+ * psyq_DrawOTag emits, and returns its head. Walked through the SAME
+ * ParsePrimitivesLinkedList → DrawAllSplits → EndScene path the real
+ * intermediate uses — only the OT contents differ. So: working
+ * intermediate presentation → screen strobes black with ~30 Hz game
+ * flashes (sim-due frames are untouched); broken presentation → normal
+ * game, no black at all. This faithfully exercises the codepath in
+ * doubt instead of side-injecting a clear. */
+static u_long* openpete_black_intermediate_ot(void) {
+    static uint8_t buf[32];
+    static bool    init = false;
+    if (!init) {
+        init = true;
+        uintptr_t next = (uintptr_t)&prim_terminator;
+        std::memcpy(buf + 0, &next, sizeof(uintptr_t));   /* slot addr → end */
+        uint16_t len = 5u, pgxp = 0xFFFFu;                /* POLY_F4 = 5 longs */
+        std::memcpy(buf + 8,  &len,  2);
+        std::memcpy(buf + 10, &pgxp, 2);
+        auto pack = [](int x, int y) -> uint32_t {
+            return ((uint32_t)(uint16_t)(int16_t)x) |
+                   (((uint32_t)(uint16_t)(int16_t)y) << 16);
+        };
+        uint32_t w[5];
+        w[0] = (0x28u << 24);                 /* POLY_F4 opaque, RGB=0 (black) */
+        w[1] = pack(-2048, -2048);            /* x0,y0 TL */
+        w[2] = pack( 2047, -2048);            /* x1,y1 TR */
+        w[3] = pack(-2048,  2047);            /* x2,y2 BL */
+        w[4] = pack( 2047,  2047);            /* x3,y3 BR */
+        std::memcpy(buf + 12, w, sizeof(w));  /* payload, like host+4 copy */
+    }
+    return (u_long*)buf;
+}
+
 /* Shared display walk. Walks the LAGGED OT (g_ot_prev) through
  * PsyCross; the matcher's prepare_substitute pairs gen_prev2 ("from",
  * = this OT's own generation) against gen_prev ("to") and the OT-walk
@@ -108,7 +144,16 @@ extern "C" void openpete_render_walk_lagged_ot(int sim_due) {
      * smoothing — imperceptible. */
     if (!s_ot_has_prev) g_openpete_substitute_alpha_snapshot = 0.0f;
     openpete_render_matcher_prepare_substitute();
-    ParsePrimitivesLinkedList((u_long*)disp->slots[0], 0);
+    /* Presentation isolation: on INTERMEDIATE frames only, swap the OT
+     * contents for a single fullscreen black prim. Everything else
+     * (alpha snapshot, prepare_substitute, ParsePrimitivesLinkedList,
+     * DrawAllSplits, the run.c EndScene present) is byte-for-byte the
+     * real intermediate path — so this proves whether intermediate
+     * frames actually reach the display. sim-due untouched. */
+    u_long* head = (!sim_due && g_openpete_dbg_black_present)
+        ? openpete_black_intermediate_ot()
+        : (u_long*)disp->slots[0];
+    ParsePrimitivesLinkedList(head, 0);
     DrawAllSplits();
 }
 

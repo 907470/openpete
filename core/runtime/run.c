@@ -1049,6 +1049,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "debug-highlight-smoothed = %d (F9 toggles live)",
                    g_openpete_dbg_highlight_smoothed);
     }
+    {
+        extern int g_openpete_dbg_black_present;
+        if (opts->debug_black_intermediates >= 0) {
+            g_openpete_dbg_black_present = opts->debug_black_intermediates;
+        } else {
+            const char* e = getenv("OPENPETE_DEBUG_BLACK_INTERMEDIATES");
+            if (e && *e) g_openpete_dbg_black_present = (atoi(e) != 0);
+        }
+        OPL_INFO_F("render",
+                   "debug-black-intermediates = %d (F10 toggles live)",
+                   g_openpete_dbg_black_present);
+    }
 
     /* Vertex trace — see openpete_vertex_trace.h. Off unless
      * --vertex-trace-log PATH given. */
@@ -1088,6 +1100,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool g_step_one = false;
     bool prev_pause_key = false;
     bool prev_dbg_key = false;
+    bool prev_blk_key = false;
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -1234,6 +1247,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            g_openpete_dbg_highlight_smoothed);
             }
             prev_dbg_key = dbg_k;
+
+            /* F10: live-toggle the black-intermediate presentation test. */
+            bool blk_k = kbd_pre && kbd_pre[SDL_SCANCODE_F10];
+            if (blk_k && !prev_blk_key) {
+                extern int g_openpete_dbg_black_present;
+                g_openpete_dbg_black_present =
+                    !g_openpete_dbg_black_present;
+                OPL_INFO_F("render", "debug-black-intermediates -> %d",
+                           g_openpete_dbg_black_present);
+            }
+            prev_blk_key = blk_k;
         }
 
         PsyX_UpdateInput();

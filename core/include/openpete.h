@@ -281,6 +281,11 @@ typedef struct {
      * -1 = unset (fall back to env), 0 = off, 1 = on. Live-toggle F9. */
     int debug_highlight_smoothed;
 
+    /* --debug-black-intermediates: present a single black prim instead
+     * of the interpolated OT on intermediate renders (presentation
+     * isolation test). -1 unset / 0 off / 1 on. Live-toggle F10. */
+    int debug_black_intermediates;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

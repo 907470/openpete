@@ -365,6 +365,14 @@ float g_openpete_substitute_clamp_px = 4096.0f;
  * env vars don't reach the .exe's environment. */
 int g_openpete_dbg_highlight_smoothed = 0;
 
+/* Diagnostic: when set, PsyX_EndScene clears the window to black AFTER
+ * the game blit but BEFORE the FPS overlay. run.c raises it only around
+ * the INTERMEDIATE-render present, so a working presentation path
+ * strobes black (with ~30 Hz game flashes) while a broken one shows
+ * the normal game and no black at all — isolating "matcher produces
+ * no delta" from "intermediate frames never reach the display". */
+int g_openpete_dbg_black_present = 0;
+
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.
  *
