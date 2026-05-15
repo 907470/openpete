@@ -358,6 +358,13 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * sim-due, the "30 Hz look at high refresh"). */
 float g_openpete_substitute_clamp_px = 4096.0f;
 
+/* Debug viz toggle. Set by --debug-highlight-smoothed /
+ * OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED (seeded in run.c) and live-toggled
+ * by F9. PsyX_GPU reads this directly — a real global, not a
+ * getenv(), so it works across the WSL2→Win32 boundary where bare
+ * env vars don't reach the .exe's environment. */
+int g_openpete_dbg_highlight_smoothed = 0;
+
 /* Shared hash function so the future-anchor scan produces identical
  * hashes for the same logical batch as the OT-walker observe pass.
  *

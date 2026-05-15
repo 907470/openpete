@@ -276,6 +276,11 @@ typedef struct {
      * at intermediate renders. <0 = unset (use compiled default). */
     float substitute_clamp_px;
 
+    /* --debug-highlight-smoothed: paint actively-smoothed batches solid
+     * untextured red (diagnostic for the rigid/animated split).
+     * -1 = unset (fall back to env), 0 = off, 1 = on. Live-toggle F9. */
+    int debug_highlight_smoothed;
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever

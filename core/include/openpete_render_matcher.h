@@ -86,6 +86,8 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
  * vfp-matched / non-UI) this render. Alpha-independent. Drives the
  * OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED solid-red overlay. */
 int openpete_render_matcher_is_smoothed(const int16_t* p);
+/* 0/1. Seeded from CLI/env in run.c, live-toggled by F9. */
+extern int g_openpete_dbg_highlight_smoothed;
 
 /* Phase 2 stats. */
 extern unsigned g_openpete_render_substitute_pair_count;

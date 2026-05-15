@@ -126,6 +126,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->mute                = true;  /* silent by default; --mute off to enable audio */
     opts->pgxp_enable         = -1;    /* -1 = unset; defaults applied at boot */
     opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
+    opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -337,6 +338,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--substitute-clamp-px") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->substitute_clamp_px = (float)atof(v); i++;
+        } else if (strcmp(a, "--debug-highlight-smoothed") == 0) {
+            opts->debug_highlight_smoothed = 1;  /* boolean flag, no value */
         } else if (strcmp(a, "--psxtrace-verify") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->psxtrace_verify_path = v; i++;
@@ -407,6 +410,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record)\n"
                 "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
                 "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 0 = substitute off); >0 enables clamped extrapolation\n"
+                "  --debug-highlight-smoothed paint actively-smoothed batches solid red (diagnostic); live-toggle F9\n"
                 "                             for scripts/measure-pacing.py. Off by default.\n"
                 "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
                 opts->display_name, argv[0]);

@@ -1034,6 +1034,22 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (double)g_openpete_substitute_clamp_px);
     }
 
+    /* Debug-highlight-smoothed — CLI flag wins, else env. A real global
+     * (not a getenv at draw time) so it works across the WSL2→Win32
+     * boundary where bare env vars never reach the .exe. */
+    {
+        extern int g_openpete_dbg_highlight_smoothed;
+        if (opts->debug_highlight_smoothed >= 0) {
+            g_openpete_dbg_highlight_smoothed = opts->debug_highlight_smoothed;
+        } else {
+            const char* e = getenv("OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED");
+            if (e && *e) g_openpete_dbg_highlight_smoothed = (atoi(e) != 0);
+        }
+        OPL_INFO_F("render",
+                   "debug-highlight-smoothed = %d (F9 toggles live)",
+                   g_openpete_dbg_highlight_smoothed);
+    }
+
     /* Vertex trace — see openpete_vertex_trace.h. Off unless
      * --vertex-trace-log PATH given. */
     if (opts->vertex_trace_log_path && *opts->vertex_trace_log_path) {
@@ -1071,6 +1087,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool g_paused = false;
     bool g_step_one = false;
     bool prev_pause_key = false;
+    bool prev_dbg_key = false;
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -1206,6 +1223,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 g_step_one = true;
             }
             prev_pause_key = pause_k;
+
+            /* F9: live-toggle the smoothed-batch red overlay. */
+            bool dbg_k = kbd_pre && kbd_pre[SDL_SCANCODE_F9];
+            if (dbg_k && !prev_dbg_key) {
+                extern int g_openpete_dbg_highlight_smoothed;
+                g_openpete_dbg_highlight_smoothed =
+                    !g_openpete_dbg_highlight_smoothed;
+                OPL_INFO_F("render", "debug-highlight-smoothed -> %d",
+                           g_openpete_dbg_highlight_smoothed);
+            }
+            prev_dbg_key = dbg_k;
         }
 
         PsyX_UpdateInput();
