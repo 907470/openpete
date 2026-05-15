@@ -57,30 +57,22 @@ typedef struct matcher_batch {
     int64_t  sxy_sum[2];
     int32_t  sxy_centroid[2];
 
-    /* Interpolation span. `has_future_anchor` means this "from"
-     * (gen_prev2 = G(N-1)) batch paired with a "to" (gen_prev = G(N))
-     * batch by centroid hash, so `delta_sxy` = to.sxy_centroid -
-     * from.sxy_centroid is the KNOWN screen-space displacement across
-     * this display cycle. substitute lerps base + alpha*delta_sxy;
-     * alpha=0 → lagged frame, alpha=1 → next frame. Unpaired batches
-     * keep delta_sxy = {0,0} (render frozen at the lagged position —
-     * see plan "Spawn / despawn handling"). */
+    /* Batch pairing. `has_future_anchor` = this "from" (gen_prev2 =
+     * G(N-1)) batch hash-paired with a "to" (gen_prev = G(N)) batch, so
+     * `to_span_id` names the to-batch's matrix_span for the per-vertex
+     * v_local correspondence lookup. delta_sxy is the centroid delta,
+     * kept ONLY as a trace/diagnostic indicator — the applied motion is
+     * now per-vertex (see substitute_query), not this batch aggregate.
+     * A single per-batch centroid translation can't represent
+     * perspective parallax across a large world span and its anchor
+     * wanders under frustum-culling membership change; per-vertex
+     * correspondence fixes both and subsumes the old rigid/animated
+     * vfp heuristic (animated meshes churn v_local → correspondence
+     * naturally misses → those verts freeze at 30 Hz for free). */
     int      has_future_anchor;
     int      vtrace_velocity_capped; /* 1 if cap engaged at least once during this batch's match probe — trace-only */
-    int32_t  delta_sxy[2];
-
-    /* Order-independent fingerprint of the batch's model-local v_local
-     * set. RIGID geometry (world mesh, static props, anything moved
-     * only by camera RT/TR) keeps an identical v_local set frame-to-
-     * frame → vfp stable. ANIMATED meshes (Spyro's pre-baked keyframe
-     * deformation) get a fresh v_local set every game frame → vfp
-     * churns. We only apply the interpolation delta when from.vfp ==
-     * to.vfp; a churning batch is the SAME object animating, so we
-     * freeze it at its lagged position (= the intended 30 Hz cinematic
-     * fallback for animated mobys, plan goal #2) instead of shoving it
-     * by a pose-contaminated centroid delta (the "neck stretches 3×"
-     * artifact). */
-    uint64_t vfp;
+    int32_t  delta_sxy[2];           /* centroid delta — trace/diagnostic only */
+    uint32_t to_span_id;             /* matched to-batch's matrix_span_id */
 
     /* Phase 3 — HUD/particle opt-out. Captured from the first cache
      * entry of the batch (all entries in a span share the same
@@ -109,6 +101,30 @@ static matcher_frame_t* s_prev = &s_frame_b;   /* last call's "from" batches —
  * simultaneously alive in the 3-gen cache ring during the whole
  * display cycle, so the span is computed intra-call. */
 static matcher_frame_t  s_to;
+
+/* ---- Per-vertex correspondence map (the right primitive) ------------
+ *
+ * Keyed by (to-batch matrix_span_id, v_local[3]) → packed "to" SXY.
+ * Built from the gen_prev ("to") scan; queried per vertex in
+ * substitute_query: the lagged vertex's own v_local (from its
+ * gen_prev2 cache hit) looks up its corresponding screen position one
+ * game frame later. delta = to_sxy − from_sxy, per vertex — captures
+ * perspective parallax and is immune to culling membership change (a
+ * vertex present in only one frame simply has no entry → no delta →
+ * renders at base). Animated meshes churn v_local every frame → the
+ * lookup misses → those verts freeze at 30 Hz with no special-casing.
+ *
+ * Open-addressed, seq-stamped so it clears in O(1) per prepare (same
+ * trick as the render cache). 32768 slots × 16 B = 512 KB static. */
+#define TOMAP_SLOTS 32768u            /* power of two */
+#define TOMAP_PROBE 24u
+typedef struct {
+    uint64_t key;   /* fnv1a64(to_span_id, v_local[3]) */
+    uint32_t seq;   /* == s_tomap_seq when live */
+    uint32_t sxy;   /* packed: sx in low 16, sy in high 16 */
+} tomap_ent_t;
+static tomap_ent_t s_tomap[TOMAP_SLOTS];
+static uint32_t    s_tomap_seq = 0u;  /* bumped each prepare; stale = empty */
 
 static uint32_t s_next_object_id = 1u;
 
@@ -233,13 +249,6 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     b->sxy_sum[0] += (int64_t)sx;
     b->sxy_sum[1] += (int64_t)sy;
     b->vertex_count++;
-
-    /* Order-independent v_local fingerprint (sum-combine so emission
-     * order can't false-trigger the rigid/animated test). */
-    uint32_t vp = ((uint32_t)(uint16_t)e->v_local[0]) ^
-                  (((uint32_t)(uint16_t)e->v_local[1]) << 11) ^
-                  (((uint32_t)(uint16_t)e->v_local[2]) << 22);
-    b->vfp += (uint64_t)(vp * 0x9E3779B1u) + 0x100000001b3ULL;
 }
 
 /* Observe one vertex: lookup gen_prev2 (the lagged OT's generation) →
@@ -314,6 +323,47 @@ static uint64_t fnv1a64(const void* data, size_t len) {
         h *= 0x100000001b3ULL;
     }
     return h;
+}
+
+/* Per-vertex correspondence map helpers. Key = fnv1a64 over the
+ * to-batch's matrix_span_id followed by the 3 model-local v_local
+ * shorts. Including the span scopes the lookup to the matched batch
+ * pair (so v_local reuse across unrelated batches can't cross-match),
+ * while v_local identifies the logical vertex within it. */
+static inline uint64_t tomap_key(uint32_t to_span_id, const int16_t vl[3]) {
+    /* Fixed 10-byte layout, NO struct (struct padding bytes would be
+     * uninitialized → nondeterministic hash → every lookup misses). */
+    uint8_t kb[10];
+    memcpy(kb,     &to_span_id, 4);
+    memcpy(kb + 4, vl,          6);
+    return fnv1a64(kb, sizeof(kb));
+}
+static inline void tomap_insert(uint32_t to_span_id, const int16_t vl[3],
+                                uint32_t sxy) {
+    uint64_t key = tomap_key(to_span_id, vl);
+    uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
+    for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
+        tomap_ent_t* e = &s_tomap[slot];
+        if (e->seq != s_tomap_seq || e->key == key) {
+            /* empty (stale) or same logical vertex → most-recent wins */
+            e->key = key; e->sxy = sxy; e->seq = s_tomap_seq;
+            return;
+        }
+        slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
+    }
+    /* table full along the probe run — drop (vertex just won't smooth) */
+}
+static inline int tomap_lookup(uint32_t to_span_id, const int16_t vl[3],
+                               uint32_t* out_sxy) {
+    uint64_t key = tomap_key(to_span_id, vl);
+    uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
+    for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
+        const tomap_ent_t* e = &s_tomap[slot];
+        if (e->seq != s_tomap_seq) return 0;          /* empty → miss */
+        if (e->key == key) { *out_sxy = e->sxy; return 1; }
+        slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
+    }
+    return 0;
 }
 
 /* Centroid quantization shift. MAC is q12 (world * 4096). Shifting
@@ -441,6 +491,12 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         memcpy(b->rt, e->rt, sizeof(b->rt));
     }
     accumulate_vertex(b, e);
+    /* For the "to" generation (gen_prev = G(N)) also record every
+     * vertex's screen position keyed by (its span, v_local) so the
+     * per-vertex correspondence query can find where this logical
+     * vertex ended up one game frame later. */
+    if (f == &s_to)
+        tomap_insert(e->matrix_span_id, e->v_local, e->sxy_key);
 }
 
 static int matrix_is_near_identity(const int16_t rt[3][3]);
@@ -515,9 +571,13 @@ void openpete_render_matcher_prepare_substitute(void) {
     g_openpete_render_substitute_vert_hit_count  = 0u;
     g_openpete_render_substitute_vert_miss_count = 0u;
     g_openpete_render_matcher_no_cache_count     = 0u;
+    /* O(1) clear of the per-vertex correspondence map: every entry
+     * with seq != this now reads as empty. */
+    s_tomap_seq++;
 
     /* Scan both interpolation endpoints. "from" = gen_prev2 (G(N-1),
-     * the lagged OT we display); "to" = gen_prev (G(N)). */
+     * the lagged OT we display); "to" = gen_prev (G(N)). The "to" scan
+     * also populates the per-vertex correspondence map (sub_scan_cb). */
     openpete_render_cache_for_each_prev2_entry(sub_scan_cb, s_curr);
     openpete_render_cache_for_each_prev_entry (sub_scan_cb, &s_to);
     finalize_scanned_frame(s_curr);
@@ -603,26 +663,26 @@ void openpete_render_matcher_prepare_substitute(void) {
                     slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
                     continue;
                 }
-                /* Same logical object. Consume regardless so it can't
-                 * re-pair elsewhere and so stats/object-id are right. */
+                /* Paired. Consume so it can't re-pair elsewhere.
+                 * has_future_anchor only scopes the per-vertex
+                 * correspondence lookup to this to-batch's span — the
+                 * actual rigid/animated decision and the applied
+                 * motion are made PER VERTEX in substitute_query (a
+                 * vertex whose v_local exists one frame later gets its
+                 * true screen delta; an animated mesh churns v_local so
+                 * its verts simply miss and freeze at 30 Hz). No vfp
+                 * gate, no centroid shove — that's what caused both the
+                 * neck-stretch and the world jitter. delta_sxy is kept
+                 * only as a coarse trace/diagnostic indicator. */
                 tb->consumed = 1;
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
                 cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
                 cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
-                if (cb->vfp == tb->vfp) {
-                    /* Rigid (world / static / camera-moved): the
-                     * centroid delta is pure translation → smooth it. */
-                    cb->delta_sxy[0] = dx;
-                    cb->delta_sxy[1] = dy;
-                    cb->has_future_anchor = 1;
-                    paired++;
-                }
-                /* else: ANIMATING (v_local set churned). Leave
-                 * delta_sxy {0,0} / has_future_anchor 0 → substitute
-                 * returns 0 → the moby renders frozen at its lagged
-                 * position = original 30 Hz cinematic cadence (plan
-                 * goal #2). No pose-contaminated centroid shove → no
-                 * neck-stretch. */
+                cb->delta_sxy[0] = dx;
+                cb->delta_sxy[1] = dy;
+                cb->to_span_id   = tb->matrix_span_id;
+                cb->has_future_anchor = 1;
+                paired++;
                 break;
             }
             slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
@@ -674,27 +734,40 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         return out;
     }
     for (uint32_t i = 0; i < s_curr->count; ++i) {
-        if (s_curr->batches[i].matrix_span_id != entry.matrix_span_id) continue;
-        if (s_curr->batches[i].is_ui_opt_out) {
-            /* HUD/UI batches must not lerp — they live in screen-space
-             * with near-identity world matrix; a delta would smear the
-             * 2D overlay. */
+        const matcher_batch_t* b = &s_curr->batches[i];
+        if (b->matrix_span_id != entry.matrix_span_id) continue;
+        if (b->is_ui_opt_out) {
+            /* HUD/UI batches must not lerp — screen-space, near-identity
+             * world matrix; a delta would smear the 2D overlay. */
             return out;
         }
-        if (!s_curr->batches[i].has_future_anchor) {
+        if (!b->has_future_anchor) {           /* batch didn't pair */
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
-        /* Interpolate along the KNOWN [from→to] span: applied =
-         * from + alpha * delta_sxy. alpha=0 → lagged frame exactly,
-         * alpha=1 → next frame exactly. Bounded by the segment — no
-         * extrapolation overshoot. */
-        float dx = (float)s_curr->batches[i].delta_sxy[0] * alpha;
-        float dy = (float)s_curr->batches[i].delta_sxy[1] * alpha;
-        /* Applied-delta clamp — emergency bound / kill switch. The span
-         * itself already bounds motion (≤ one game-frame displacement),
-         * so this defaults wide-open; cap=0 disables substitute
-         * entirely (intermediate renders = last sim-due, "30 Hz look"). */
+        /* Per-vertex correspondence: where did THIS logical vertex
+         * (identified by its model-local v_local, recovered from the
+         * gen_prev2 cache hit) end up one game frame later? Look it up
+         * in the matched to-batch's span. A hit gives this vertex's
+         * own true screen motion — captures perspective parallax
+         * across the batch. A miss means the vertex has no counterpart
+         * in G(N): either newly culled-in, or the mesh is animating
+         * (v_local churned). Either way → no delta → it renders at its
+         * base (lagged) position = clean 30 Hz, no smear. */
+        uint32_t to_sxy;
+        if (!tomap_lookup(b->to_span_id, entry.v_local, &to_sxy)) {
+            g_openpete_render_substitute_vert_miss_count++;
+            return out;
+        }
+        int16_t from_sx = (int16_t)p[0];
+        int16_t from_sy = (int16_t)p[1];
+        int16_t to_sx   = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);
+        int16_t to_sy   = (int16_t)(uint16_t)(to_sxy >> 16);
+        float dx = (float)((int)to_sx - (int)from_sx) * alpha;
+        float dy = (float)((int)to_sy - (int)from_sy) * alpha;
+        /* Applied-delta clamp — catastrophic safety / kill switch only.
+         * True per-vertex motion is already bounded by one game frame;
+         * cap=0 disables substitute entirely ("30 Hz look"). */
         const float cap = g_openpete_substitute_clamp_px;
         if (cap <= 0.0f) return out;  /* 0 = substitute off */
         if (dx >  cap) dx =  cap;
@@ -710,13 +783,14 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     return out;
 }
 
-/* Debug-viz predicate. Returns 1 iff the vertex's batch is one the
- * interpolation is actively SMOOTHING this render (rigid: paired
- * from↔to, vfp-matched, not UI). Independent of alpha, so a paused /
- * sim-due frame still reports the classification stably. Used by the
- * --debug-highlight-smoothed render mode to paint smoothed geometry
- * solid red so you can SEE the rigid/animated split the harness can't
- * show. No side effects, no counters. */
+/* Debug-viz predicate. Returns 1 iff THIS vertex actually receives a
+ * non-zero per-vertex correspondence delta this render (paired batch,
+ * not UI, v_local found one frame later, and it moved). Mirrors
+ * substitute_query's decision exactly so the red overlay shows
+ * precisely the geometry frame-gen is moving — rigid world under
+ * camera motion lights up; animated/culled-in/static verts don't.
+ * Alpha-independent (uses raw screen delta, not alpha-scaled). No
+ * side effects, no counters. */
 int openpete_render_matcher_is_smoothed(const int16_t* p) {
     uint32_t key = ((uint32_t)(uint16_t)p[0]) |
                    (((uint32_t)(uint16_t)p[1]) << 16);
@@ -726,12 +800,13 @@ int openpete_render_matcher_is_smoothed(const int16_t* p) {
         const matcher_batch_t* b = &s_curr->batches[i];
         if (b->matrix_span_id != entry.matrix_span_id) continue;
         if (b->is_ui_opt_out || !b->has_future_anchor) return 0;
-        /* Only count it as "smoothed" if interpolation actually moves
-         * it this cycle. A paired-but-zero-delta batch (camera still,
-         * object stationary → same screen pos before/after) gets
-         * alpha*0 = no displacement; painting it red would imply
-         * frame-gen is doing something when it isn't. */
-        return (b->delta_sxy[0] != 0 || b->delta_sxy[1] != 0) ? 1 : 0;
+        uint32_t to_sxy;
+        if (!tomap_lookup(b->to_span_id, entry.v_local, &to_sxy)) return 0;
+        int16_t from_sx = (int16_t)p[0];
+        int16_t from_sy = (int16_t)p[1];
+        int16_t to_sx   = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);
+        int16_t to_sy   = (int16_t)(uint16_t)(to_sxy >> 16);
+        return (to_sx != from_sx || to_sy != from_sy) ? 1 : 0;
     }
     return 0;
 }
