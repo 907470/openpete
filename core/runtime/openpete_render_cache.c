@@ -261,14 +261,31 @@ void openpete_render_cache_begin_frame(void) {
     consume_pending_rotate();
 }
 
-/* Phase 2.1 — sim-tick boundary state. */
+/* Phase 2.1 — sim-tick boundary state. The interpolation period is the
+ * MEASURED interval between consecutive mark_now() calls (= actual
+ * DrawOTag cadence), not a hardcoded constant. The old fixed 2×VBL
+ * assumed a 30 fps game frame; when the game draws every VBL (~60 Hz)
+ * the real window is ~16.6 ms, so alpha = elapsed / 33.3 ms could only
+ * reach ~0.5 before mark_now reset it — the displayed position
+ * sawtoothed 0→~0.5·step→0 every frame instead of completing a smooth
+ * 0→1 sweep (judder, not interpolation). Measuring the cadence makes
+ * alpha sweep a true 0→~1 regardless of the game's draw rate. */
 static openpete_op_time_t s_last_sim_tick_ns   = 0;
 static openpete_op_time_t s_last_sim_period_ns = 0;
+static openpete_op_time_t s_prev_mark_ns       = 0;
+
+/* Clamp the measured cadence to a sane band so a load hitch / scene
+ * transition can't poison the period (8 ms ≈ 120 Hz, 50 ms ≈ 20 Hz). */
+#define OPENPETE_ALPHA_PERIOD_MIN_NS  8000000
+#define OPENPETE_ALPHA_PERIOD_MAX_NS 50000000
 
 void openpete_render_sim_tick_advance_time(openpete_op_time_t sim_tick_ns,
                                            openpete_op_time_t sim_period_ns) {
-    s_last_sim_tick_ns   = sim_tick_ns;
-    s_last_sim_period_ns = sim_period_ns;
+    s_last_sim_tick_ns = sim_tick_ns;
+    /* Seed only — once mark_now has measured a real cadence, don't let
+     * this pre-yield estimate clobber it back to the 2×VBL constant. */
+    if (s_last_sim_period_ns <= 0)
+        s_last_sim_period_ns = sim_period_ns;
 }
 
 void openpete_render_sim_tick_rotate_cache(void) {
@@ -281,7 +298,22 @@ void openpete_render_sim_tick_rotate_cache(void) {
 float g_openpete_substitute_alpha_snapshot = 0.0f;
 
 void openpete_render_sim_tick_mark_now(void) {
-    s_last_sim_tick_ns = op_now();
+    openpete_op_time_t now = op_now();
+    /* Measure the actual draw cadence: interval since the previous
+     * mark_now (= previous DrawOTag). EMA-smooth (3:1) so a one-frame
+     * hitch doesn't wobble the period (which would itself judder), but
+     * a sustained 30↔60 Hz cadence change is tracked within a few
+     * frames. Clamped to the sane band. */
+    if (s_prev_mark_ns > 0) {
+        openpete_op_time_t iv = now - s_prev_mark_ns;
+        if (iv < OPENPETE_ALPHA_PERIOD_MIN_NS) iv = OPENPETE_ALPHA_PERIOD_MIN_NS;
+        if (iv > OPENPETE_ALPHA_PERIOD_MAX_NS) iv = OPENPETE_ALPHA_PERIOD_MAX_NS;
+        s_last_sim_period_ns = (s_last_sim_period_ns > 0)
+            ? (s_last_sim_period_ns * 3 + iv) / 4
+            : iv;
+    }
+    s_prev_mark_ns     = now;
+    s_last_sim_tick_ns = now;
     g_openpete_substitute_alpha_snapshot = 0.0f;
 }
 
