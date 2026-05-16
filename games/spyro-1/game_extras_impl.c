@@ -404,9 +404,90 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     }
 }
 
+/* --- G2 (transform-interp §7): moby slot/address-reuse probe ---------
+ * Read-only. Each canonical game tick (this hook fires once per tick,
+ * after the fiber yields with consistent RAM — run.c:1321), walk
+ * g_LevelMobys and dump {tick, frame, addr, m_Class, m_State,
+ * AnimationState, m_Position} per live moby. The G2 question: within
+ * the 1–2-frame lag window, does a slot/address get reused by a
+ * different logical object such that {addr, m_Class, liveness} reads
+ * as false continuity? Analyzed offline.
+ *
+ * Offsets anchored from the instruction-verified m_Class@+0x36
+ * (lhu $s5,0x36($fp) @ 0x80022BD4) + moby.h declaration order:
+ *   +0x0C m_Position (i32 x/y/z)   +0x36 m_Class (i16)
+ *   +0x3C m_AnimationState (m_Animation,_,m_Frame,m_NextFrame,
+ *          m_FrameProgress @ +0x3C..+0x40)   +0x48 m_State (u8)
+ * stride 0x58, terminator m_State==0xFF (decomp loaders.c:696).
+ * Gate: OPENPETE_G2_LOG=path  OPENPETE_G2_LOG_SKIP=frame
+ *       OPENPETE_G2_LOG_TICKS=N (self-closes => clean file under timeout)
+ */
+extern unsigned openpete_frame;
+static FILE*    s_g2_fp        = NULL;
+static int      s_g2_init      = 0;
+static uint32_t s_g2_skip      = 0;
+static uint32_t s_g2_tick_cap  = 3000;
+static uint32_t s_g2_ticks     = 0;
+static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
+
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
-    (void)cpu; (void)frame_counter;
-    /* TODO — only needed if a per-frame DMA timing hack surfaces. */
+    (void)frame_counter;
+    if (!s_g2_init) {
+        s_g2_init = 1;
+        const char* p = getenv("OPENPETE_G2_LOG");
+        if (p && *p) {
+            const char* sk = getenv("OPENPETE_G2_LOG_SKIP");
+            if (sk && *sk) s_g2_skip = (uint32_t)atoi(sk);
+            const char* tc = getenv("OPENPETE_G2_LOG_TICKS");
+            if (tc && *tc) s_g2_tick_cap = (uint32_t)atoi(tc);
+            s_g2_fp = fopen(p, "wb");
+            if (s_g2_fp) {
+                uint32_t h[8] = { 0x47324C47u /*"GL2G"*/, 1u, 32u,
+                                  0,0,0,0,0 };
+                fwrite(h, sizeof(h), 1, s_g2_fp);
+                fflush(s_g2_fp);
+            }
+        }
+    }
+    if (!s_g2_fp) return;
+    if (openpete_frame < s_g2_skip) return;
+    (void)s_g2_last_tick;
+    /* game_on_frame is ALREADY once-per-canonical-tick (run.c:1321,
+     * ticked_this_iter), so no dedup needed. */
+    if (s_g2_ticks >= s_g2_tick_cap) {                     /* self-close */
+        fflush(s_g2_fp); fclose(s_g2_fp); s_g2_fp = NULL; return;
+    }
+    s_g2_ticks++;
+
+    uint32_t tick = cpu->read_word(0x800758C8u);           /* g_LevelTicks */
+    uint32_t gs   = cpu->read_word(0x800757D8u);           /* g_Gamestate */
+    uint32_t base = cpu->read_word(0x80075828u);           /* g_LevelMobys */
+    if (!base) return;                                     /* no moby pool yet */
+
+    for (uint32_t i = 0; i < 4096u; i++) {
+        uint32_t m = base + i * 0x58u;
+        uint8_t st = cpu->read_byte(m + 0x48u);            /* m_State */
+        if (st == 0xFFu) break;                            /* list terminator */
+        int16_t  cls = (int16_t)cpu->read_half(m + 0x36u);
+        int32_t  px  = (int32_t)cpu->read_word(m + 0x0Cu);
+        int32_t  py  = (int32_t)cpu->read_word(m + 0x10u);
+        int32_t  pz  = (int32_t)cpu->read_word(m + 0x14u);
+        uint8_t  an  = cpu->read_byte(m + 0x3Cu);          /* m_Animation */
+        uint8_t  fr  = cpu->read_byte(m + 0x3Eu);          /* m_Frame */
+        uint8_t  nf  = cpu->read_byte(m + 0x3Fu);          /* m_NextFrame */
+        uint8_t  fp  = cpu->read_byte(m + 0x40u);          /* m_FrameProgress */
+        uint8_t  buf[32];
+        memcpy(buf +  0, &tick, 4);
+        memcpy(buf +  4, &openpete_frame, 4);
+        memcpy(buf +  8, &m,    4);
+        memcpy(buf + 12, &px,   4);
+        memcpy(buf + 16, &py,   4);
+        memcpy(buf + 20, &pz,   4);
+        memcpy(buf + 24, &cls,  2);
+        buf[26] = st; buf[27] = an; buf[28] = fr;
+        buf[29] = nf; buf[30] = fp; buf[31] = (uint8_t)gs;
+        fwrite(buf, 1, 32, s_g2_fp);
+    }
 }
 
 /* Each Spyro overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON
