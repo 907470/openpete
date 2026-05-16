@@ -293,7 +293,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         e.ofx = (int32_t)gte->OFX;
         e.ofy = (int32_t)gte->OFY;
         e.h = (uint16_t)gte->H;
-        e._pad1 = 0;
+        /* e.world_vidx set in the obj_tag block below (was _pad1). */
         /* transform-interp §4: real per-moby identity from the
          * recompiler's per-moby ui-moby capture (0 = world/non-moby).
          * Same side-channel widescreen_eff_ofx already consumes. */
@@ -305,8 +305,16 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
              * moby vaddrs (0x80xxxxxx) and 0. Otherwise fall back to
              * the per-moby vaddr (UI/gameplay moby identity). */
             uint32_t wg = openpete_world_geo_get_current();
-            e.obj_tag = wg ? (wg | OPENPETE_WORLD_GEO_TAG_BIT)
-                           : openpete_ui_moby_get_current();
+            if (wg) {
+                e.obj_tag = wg | OPENPETE_WORLD_GEO_TAG_BIT;
+                /* PHASE-B: per-strip emission ordinal — exact cross-
+                 * frame per-vertex world key (v_local is camera-
+                 * relative for terrain and useless as a key). */
+                e.world_vidx = openpete_world_geo_next_vidx();
+            } else {
+                e.obj_tag    = openpete_ui_moby_get_current();
+                e.world_vidx = 0;
+            }
         }
         openpete_render_cache_emit_vertex(&e);
     }

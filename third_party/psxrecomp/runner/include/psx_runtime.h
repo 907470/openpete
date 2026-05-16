@@ -376,6 +376,7 @@ uint32_t openpete_ui_moby_get_current(void);
 void     openpete_world_geo_set_current(uint32_t strip_addr);
 void     openpete_world_geo_clear(void);
 uint32_t openpete_world_geo_get_current(void);
+uint16_t openpete_world_geo_next_vidx(void);
 
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *

@@ -414,41 +414,57 @@ static uint64_t fnv1a64(const void* data, size_t len) {
 }
 
 /* Per-vertex correspondence map helpers. Key = fnv1a64 over the
- * to-batch's matrix_span_id followed by the 3 model-local v_local
- * shorts. Including the span scopes the lookup to the matched batch
- * pair (so v_local reuse across unrelated batches can't cross-match),
- * while v_local identifies the logical vertex within it. */
-static inline uint64_t tomap_key(uint32_t to_span_id, const int16_t vl[3]) {
-    /* Fixed 10-byte layout, NO struct (struct padding bytes would be
+ * to-batch's (eff) span id followed by a per-vertex discriminator
+ * that identifies the logical vertex within the matched batch pair:
+ *
+ *   - MOBY / untagged: the 3 model-local v_local shorts (stable
+ *     because moby v_local is genuinely model-local).
+ *   - WORLD-tagged (§7.5-R3 PHASE-B): the per-strip emission ordinal
+ *     world_vidx. Terrain v_local is camera-RELATIVE and churns
+ *     every frame, so it's useless as a key; G1-stable emission
+ *     order makes (span, world_vidx) an exact cross-frame key.
+ *
+ * Including the span scopes the lookup to the matched batch pair. */
+static inline uint64_t tomap_key_e(uint32_t to_span_id,
+                                    const openpete_render_cache_entry_t* e) {
+    /* Fixed byte layout, NO struct (padding bytes would be
      * uninitialized → nondeterministic hash → every lookup misses). */
+    if (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) {
+        uint8_t kb[6];
+        memcpy(kb,     &to_span_id,   4);
+        memcpy(kb + 4, &e->world_vidx, 2);
+        return fnv1a64(kb, sizeof(kb));
+    }
     uint8_t kb[10];
     memcpy(kb,     &to_span_id, 4);
-    memcpy(kb + 4, vl,          6);
+    memcpy(kb + 4, e->v_local,  6);
     return fnv1a64(kb, sizeof(kb));
 }
-static inline void tomap_insert(uint32_t to_span_id, const int16_t vl[3],
+static inline void tomap_insert(uint32_t to_span_id,
+                                const openpete_render_cache_entry_t* e,
                                 uint32_t sxy) {
-    uint64_t key = tomap_key(to_span_id, vl);
+    uint64_t key = tomap_key_e(to_span_id, e);
     uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
     for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
-        tomap_ent_t* e = &s_tomap[slot];
-        if (e->seq != s_tomap_seq || e->key == key) {
+        tomap_ent_t* te = &s_tomap[slot];
+        if (te->seq != s_tomap_seq || te->key == key) {
             /* empty (stale) or same logical vertex → most-recent wins */
-            e->key = key; e->sxy = sxy; e->seq = s_tomap_seq;
+            te->key = key; te->sxy = sxy; te->seq = s_tomap_seq;
             return;
         }
         slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
     }
     /* table full along the probe run — drop (vertex just won't smooth) */
 }
-static inline int tomap_lookup(uint32_t to_span_id, const int16_t vl[3],
+static inline int tomap_lookup(uint32_t to_span_id,
+                               const openpete_render_cache_entry_t* e,
                                uint32_t* out_sxy) {
-    uint64_t key = tomap_key(to_span_id, vl);
+    uint64_t key = tomap_key_e(to_span_id, e);
     uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
     for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
-        const tomap_ent_t* e = &s_tomap[slot];
-        if (e->seq != s_tomap_seq) return 0;          /* empty → miss */
-        if (e->key == key) { *out_sxy = e->sxy; return 1; }
+        const tomap_ent_t* te = &s_tomap[slot];
+        if (te->seq != s_tomap_seq) return 0;         /* empty → miss */
+        if (te->key == key) { *out_sxy = te->sxy; return 1; }
         slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
     }
     return 0;
@@ -596,7 +612,7 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
      * per-vertex correspondence query can find where this logical
      * vertex ended up one game frame later. */
     if (f == &s_to)
-        tomap_insert(eff_span(e), e->v_local, e->sxy_key);
+        tomap_insert(eff_span(e), e, e->sxy_key);
 }
 
 static int matrix_is_near_identity(const int16_t rt[3][3]);
@@ -674,7 +690,7 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     if (!b || !b->has_future_anchor) return;
     b->corr_tot++;
     uint32_t to_sxy;
-    if (tomap_lookup(b->to_span_id, e->v_local, &to_sxy)) b->corr_hit++;
+    if (tomap_lookup(b->to_span_id, e, &to_sxy)) b->corr_hit++;
 }
 
 /* Finalize a freshly-scanned frame: per-batch centroid, sxy_centroid,
@@ -1095,29 +1111,23 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
-        /* §7.3 — WORLD (obj_tag==0): composite per-span reprojection.
-         * G3 proved world is ~37 composite per-span matrices; the
-         * per-vertex tomap path below tears it under camera pan
-         * (parallax-moved verts vs culled-frozen verts) and the
-         * cull-churn made tomap correspondence ~0 ("zero blue on
-         * world"). Instead: reproject THIS vertex through the
-         * span's own from-matrix (exact, from the gen_prev2 cache
-         * hit `entry`) and the matched to-span's matrix, and apply
-         * α·(to−from). Every vertex of the span uses the SAME
-         * matrix pair ⇒ consistent motion, no tear; α=0 ⇒ 0 ⇒
-         * exactly the cached lagged frame (residual cancels).
-         *
-         * §7.5-R3: bit30-tagged terrain strips route here too. With
-         * the recompiler strip tag, world batches now pair via the
-         * REAL-identity find_unconsumed_by_obj_tag path (same strip
-         * K-1↔K), fixing the mispairing that produced the §7.5
-         * `samemtx` 0px artifact. KNOWN LIMITATION (not papered
-         * over): this reprojects entry.v_local (K-1 camera-relative)
-         * through from vs to matrix — it captures camera ROTATION
-         * but is blind to camera TRANSLATION (campos move with rt
-         * unchanged ⇒ 0 delta). Full fix = PHASE-B emission-ordinal
-         * endpoint-lerp (cache schema), gated on this measurement. */
-        if (is_world_obj_tag(b->obj_tag)) {
+        /* §7.3 — LEGACY untagged world (obj_tag==0): the terrain
+         * RTPS variants NOT yet covered by the §7.5-R3 strip-tag
+         * recompiler hook. Composite per-span reprojection: reproject
+         * THIS vertex through the span's own from-matrix (exact, from
+         * the gen_prev2 hit `entry`) and the matched to-span's
+         * matrix, α·(to−from). Whole-span-consistent (no tear),
+         * α=0 ⇒ 0 (residual cancels). KNOWN LIMITATION (measured in
+         * §7.5-R3 PHASE-A: max 2px, samemtx≈68%): uses K-1 camera-
+         * relative v_local for both endpoints ⇒ captures camera
+         * ROTATION but is blind to camera TRANSLATION. This is why
+         * PHASE-B exists — bit30 strips DON'T come here; they fall
+         * through to the per-vertex tomap path below, which
+         * tomap_key_e now keys by the cross-frame-exact world_vidx
+         * (emission ordinal), giving full endpoint-exact motion
+         * incl. camera translation. Expanding the recomp hook to the
+         * remaining RTPS variants shrinks this legacy path to zero. */
+        if (b->obj_tag == 0u) {
             s_wd_q_total++;
             const matcher_batch_t* tb = find_span(&s_to, b->to_span_id);
             if (!tb || tb->vertex_count == 0u) {
@@ -1161,8 +1171,16 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
          * in G(N): either newly culled-in, or the mesh is animating
          * (v_local churned). Either way → no delta → it renders at its
          * base (lagged) position = clean 30 Hz, no smear. */
+        /* §7.5-R3 PHASE-B: bit30 world reaches here. tomap_key_e keyed
+         * it by (eff_span, world_vidx) — the cross-frame-exact
+         * emission ordinal — so this is the SAME strip vertex's
+         * actual K screen position. Diag accounting mirrors the §7.3
+         * block so PHASE-B is measurable in OPENPETE_WORLD_DIAG. */
+        const int wtag = (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u;
         uint32_t to_sxy;
-        if (!tomap_lookup(b->to_span_id, entry.v_local, &to_sxy)) {
+        if (wtag) s_wd_q_total++;
+        if (!tomap_lookup(b->to_span_id, &entry, &to_sxy)) {
+            if (wtag) s_wd_q_no_tb++;
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
@@ -1170,6 +1188,14 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         int16_t from_sy = (int16_t)p[1];
         int16_t to_sx   = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);
         int16_t to_sy   = (int16_t)(uint16_t)(to_sxy >> 16);
+        if (wtag) {
+            s_wd_q_applied++;
+            unsigned long mg = (unsigned long)(abs((int)to_sx-(int)from_sx)
+                                             + abs((int)to_sy-(int)from_sy));
+            if (mg >= 1u) s_wd_q_ge1++;
+            if (mg >= 4u) s_wd_q_ge4++;
+            if (mg > s_wd_q_maxmag) s_wd_q_maxmag = mg;
+        }
         float dx = (float)((int)to_sx - (int)from_sx) * alpha;
         float dy = (float)((int)to_sy - (int)from_sy) * alpha;
         /* Applied-delta clamp — catastrophic safety / kill switch only.
@@ -1208,7 +1234,7 @@ int openpete_render_matcher_is_smoothed(const int16_t* p) {
         if (b->matrix_span_id != eff_span(&entry)) continue;
         if (b->is_ui_opt_out || !b->has_future_anchor) return 0;
         uint32_t to_sxy;
-        if (!tomap_lookup(b->to_span_id, entry.v_local, &to_sxy)) return 0;
+        if (!tomap_lookup(b->to_span_id, &entry, &to_sxy)) return 0;
         int16_t from_sx = (int16_t)p[0];
         int16_t from_sy = (int16_t)p[1];
         int16_t to_sx   = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);

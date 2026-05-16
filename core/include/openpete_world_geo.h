@@ -53,6 +53,14 @@ void openpete_world_geo_clear(void);
  * `strip ? (strip | OPENPETE_WORLD_GEO_TAG_BIT) : 0`. */
 uint32_t openpete_world_geo_get_current(void);
 
+/* PHASE-B: return the current strip's emission ordinal and post-
+ * increment it. set_current resets the counter to 0, so the Nth
+ * vertex GTE-projected within a strip gets ordinal N. G1-stable
+ * emission order ⇒ (strip, ordinal) is an exact cross-frame
+ * per-vertex world key. Called once per world vertex from
+ * gte_rtps_internal's cache emit. */
+uint16_t openpete_world_geo_next_vidx(void);
+
 #ifdef __cplusplus
 }
 #endif

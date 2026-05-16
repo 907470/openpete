@@ -40,7 +40,16 @@ typedef struct openpete_render_cache_entry {
     int32_t  ofx;            /* canonical projection state (pre-Hor+) */
     int32_t  ofy;
     uint16_t h;
-    uint16_t _pad1;
+    /* transform-interp §7.5-R3 PHASE-B: per-strip emission ordinal for
+     * WORLD-tagged geometry (obj_tag has the world bit). Assigned by
+     * the world-geo side-channel: reset to 0 at each strip-entry
+     * substitution, post-incremented per projected vertex. G1 proved
+     * emission order is cross-frame stable, so (eff_span, world_vidx)
+     * is an exact per-vertex world key — unlike v_local which is
+     * camera-relative for terrain and churns every frame. Meaningless
+     * (0) for moby / untagged geometry. Reuses the old _pad1 slot —
+     * no struct-size change. */
+    uint16_t world_vidx;
     /* transform-interp §4: PSX vaddr of the moby that produced this
      * vertex (from the recompiler's per-moby ui-moby capture), or 0
      * for world / non-moby geometry. Real cross-frame identity,
