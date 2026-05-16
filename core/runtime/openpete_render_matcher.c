@@ -33,6 +33,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define MATCHER_MAX_BATCHES 256u
 #define MATCHER_HASH_SLOTS  512u  /* power-of-two */
@@ -171,7 +172,8 @@ unsigned g_openpete_render_matcher_future_anchored_count   = 0u;
  * fall out — pairing → anchor → ui-opt-out → §7.3 reproject guards. */
 static unsigned long s_wd_batches, s_wd_uiopt, s_wd_anchored,
     s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail, s_wd_q_applied,
-    s_wd_frames, s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry;
+    s_wd_frames, s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
+    s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx;
 static int world_diag(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_WORLD_DIAG");
@@ -974,11 +976,12 @@ void openpete_render_matcher_prepare_substitute(void) {
               "[world-diag] f=%lu | world-batches=%lu uiopt=%lu "
               "anchored=%lu | sq_calls=%lu prev2miss=%lu "
               "world_entry=%lu | world: total=%lu no_to_span=%lu "
-              "reproj_fail=%lu APPLIED=%lu\n",
+              "reproj_fail=%lu APPLIED=%lu | mag>=1px=%lu >=4px=%lu "
+              "max=%lupx samemtx=%lu\n",
               s_wd_frames, s_wd_batches, s_wd_uiopt, s_wd_anchored,
               s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
               s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail,
-              s_wd_q_applied);
+              s_wd_q_applied, s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx);
         }
     }
 
@@ -1083,8 +1086,15 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
                 return out;
             }
             s_wd_q_applied++;
+            if (memcmp(entry.rt, tb->rt, sizeof(entry.rt)) == 0 &&
+                entry.tr[0]==tb->tr[0] && entry.tr[1]==tb->tr[1] &&
+                entry.tr[2]==tb->tr[2]) s_wd_q_samemtx++;
             float dx = (float)((tx - fx) * (double)alpha);
             float dy = (float)((ty - fy) * (double)alpha);
+            { unsigned long mg = (unsigned long)(fabs(dx) + fabs(dy));
+              if (mg >= 1u) s_wd_q_ge1++;
+              if (mg >= 4u) s_wd_q_ge4++;
+              if (mg > s_wd_q_maxmag) s_wd_q_maxmag = mg; }
             const float capw = g_openpete_substitute_clamp_px;
             if (capw <= 0.0f) return out;
             if (dx >  capw) dx =  capw; if (dx < -capw) dx = -capw;
