@@ -166,6 +166,19 @@ unsigned g_openpete_render_matcher_unmatched_dropped_count = 0u;
 unsigned g_openpete_render_matcher_no_cache_count          = 0u;
 unsigned g_openpete_render_matcher_future_anchored_count   = 0u;
 
+/* World-span diagnostic (OPENPETE_WORLD_DIAG=1, read-only stderr).
+ * Answers "why zero blue on world": counts where obj_tag==0 spans
+ * fall out — pairing → anchor → ui-opt-out → §7.3 reproject guards. */
+static unsigned long s_wd_batches, s_wd_uiopt, s_wd_anchored,
+    s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail, s_wd_q_applied,
+    s_wd_frames, s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry;
+static int world_diag(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_WORLD_DIAG");
+                 v = (e && *e && atoi(e) != 0) ? 1 : 0; }
+    return v;
+}
+
 /* Phase 2 substitute pipeline stats. */
 unsigned g_openpete_render_substitute_pair_count           = 0u;
 unsigned g_openpete_render_substitute_vert_hit_count       = 0u;
@@ -947,6 +960,28 @@ void openpete_render_matcher_prepare_substitute(void) {
         }
     }
 
+    /* World-span diagnostic: per-batch fallout tally + periodic dump. */
+    if (world_diag()) {
+        for (uint32_t i = 0; i < s_curr->count; ++i) {
+            const matcher_batch_t* b = &s_curr->batches[i];
+            if (b->vertex_count == 0u || b->obj_tag != 0u) continue;
+            s_wd_batches++;
+            if (b->is_ui_opt_out) s_wd_uiopt++;
+            else if (b->has_future_anchor) s_wd_anchored++;
+        }
+        if (++s_wd_frames % 300u == 0u) {
+            fprintf(stderr,
+              "[world-diag] f=%lu | world-batches=%lu uiopt=%lu "
+              "anchored=%lu | sq_calls=%lu prev2miss=%lu "
+              "world_entry=%lu | world: total=%lu no_to_span=%lu "
+              "reproj_fail=%lu APPLIED=%lu\n",
+              s_wd_frames, s_wd_batches, s_wd_uiopt, s_wd_anchored,
+              s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
+              s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail,
+              s_wd_q_applied);
+        }
+    }
+
     /* Trace pass — one record per "from" batch. iter_kind is set
      * externally by the OT-walk caller (sim-due 0 / intermediate 1).
      * No-op unless --vertex-trace-log is enabled. */
@@ -993,6 +1028,7 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     openpete_substitute_delta_t out = { 0.0f, 0.0f };
     if (!g_openpete_interp_enabled) return out;  /* 'I' kill switch */
     if (alpha <= 0.0f) return out;
+    s_wd_q_calls++;
 
     uint32_t key = ((uint32_t)(uint16_t)p[0]) |
                    (((uint32_t)(uint16_t)p[1]) << 16);
@@ -1001,9 +1037,11 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
      * in gen_prev2 (= "from" = G(N-1)), the same generation s_curr was
      * scanned from. */
     if (!openpete_render_cache_lookup_prev2(key, &entry)) {
+        s_wd_q_prev2miss++;
         g_openpete_render_substitute_vert_miss_count++;
         return out;
     }
+    if (entry.obj_tag == 0u) s_wd_q_world_entry++;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         const matcher_batch_t* b = &s_curr->batches[i];
         if (b->matrix_span_id != entry.matrix_span_id) continue;
@@ -1028,8 +1066,10 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
          * matrix pair ⇒ consistent motion, no tear; α=0 ⇒ 0 ⇒
          * exactly the cached lagged frame (residual cancels). */
         if (b->obj_tag == 0u) {
+            s_wd_q_total++;
             const matcher_batch_t* tb = find_span(&s_to, b->to_span_id);
             if (!tb || tb->vertex_count == 0u) {
+                s_wd_q_no_tb++;
                 g_openpete_render_substitute_vert_miss_count++;
                 return out;
             }
@@ -1038,9 +1078,11 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
                                  entry.ofx, entry.ofy, entry.h, &fx, &fy) ||
                 !world_reproject(tb->rt, tb->tr, entry.v_local,
                                  entry.ofx, entry.ofy, entry.h, &tx, &ty)) {
+                s_wd_q_reproj_fail++;
                 g_openpete_render_substitute_vert_miss_count++;
                 return out;
             }
+            s_wd_q_applied++;
             float dx = (float)((tx - fx) * (double)alpha);
             float dy = (float)((ty - fy) * (double)alpha);
             const float capw = g_openpete_substitute_clamp_px;
