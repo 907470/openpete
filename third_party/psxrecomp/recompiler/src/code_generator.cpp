@@ -1402,6 +1402,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({});",
                             translate_lw(instr), reg_name(rt));
+                    } else if (addr == 0x80025A34u) {
+                        /* §7.5 terrain-reproject validation probe.
+                         * r_environment.s per-vertex transform:
+                         *   0x80025A30 lw $v0,0($s1)  ; word0 = X<<16|Y
+                         *   0x80025A34 lw $a0,4($s1)  ; word1 = Z<<16|.
+                         *   ... sub $s7/$t8/$t9 (scaled campos) → MVMVA.
+                         * After this lw, $v0/$a0 hold the CAMERA-FREE
+                         * world vertex, $s1 the vert ptr, $s7/$t8/$t9
+                         * the scaled camera position. Read-only dump
+                         * (OPENPETE_ENVVERT_LOG) to validate the
+                         * PSX-RAM camera-reproject forward model. */
+                        code = fmt::format(
+                            "{} openpete_envvert_probe(cpu, cpu->v0, "
+                            "cpu->a0, cpu->s1, cpu->s7, cpu->t8, "
+                            "cpu->t9);",
+                            translate_lw(instr));
                     } else if (addr == 0x800276B4u) {
                         /* LP-walk loop top in r_environment.s. When the
                          * OPENPETE_DBG_KILL_LP debug knob is set, force

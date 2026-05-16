@@ -174,6 +174,61 @@ static void diag_cone_init(void) {
             s_diag_cone_slot, s_diag_cone_from, s_diag_cone_to);
 }
 
+/* §7.5 terrain-reproject validation probe (read-only). Per terrain
+ * vertex: camera-free packed world (w0=X<<16|Y, w1=Z<<16|flags), vert
+ * ptr, scaled campos (s7,t8,t9), + g_Camera.m_ViewMatrix (9 shorts
+ * @0x80076DD0+0x14). Offline we compute M·(world-campos) per
+ * r_environment.s and check parity vs Spyro's actual terrain output.
+ * Env: OPENPETE_ENVVERT_LOG / _SKIP / _FRAMES. */
+void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
+                            uint32_t s1, uint32_t s7, uint32_t t8,
+                            uint32_t t9) {
+    static FILE*    s_ev_fp = NULL;
+    static int      s_ev_init = 0;
+    static uint32_t s_ev_skip = 0, s_ev_cap = 80, s_ev_lastf = 0xFFFFFFFFu,
+                    s_ev_frames = 0;
+    if (!s_ev_init) {
+        s_ev_init = 1;
+        const char* p = getenv("OPENPETE_ENVVERT_LOG");
+        if (p && *p) {
+            const char* sk = getenv("OPENPETE_ENVVERT_LOG_SKIP");
+            if (sk && *sk) s_ev_skip = (uint32_t)atoi(sk);
+            const char* fl = getenv("OPENPETE_ENVVERT_LOG_FRAMES");
+            if (fl && *fl) s_ev_cap = (uint32_t)atoi(fl);
+            s_ev_fp = fopen(p, "wb");
+            if (s_ev_fp) {
+                uint32_t h[8] = { 0x54525645u /*"EVRT"*/, 1u, 48u,
+                                  0,0,0,0,0 };
+                fwrite(h, sizeof(h), 1, s_ev_fp);
+            }
+        }
+    }
+    if (!s_ev_fp) return;
+    if (openpete_frame < s_ev_skip) return;
+    if (openpete_frame != s_ev_lastf) {
+        if (s_ev_frames >= s_ev_cap) {
+            fflush(s_ev_fp); fclose(s_ev_fp); s_ev_fp = NULL; return;
+        }
+        s_ev_lastf = openpete_frame;
+        s_ev_frames++;
+    }
+    CPUState* cpu = (CPUState*)cpu_v;
+    uint8_t b[48];
+    memcpy(b +  0, &openpete_frame, 4);
+    memcpy(b +  4, &s1, 4);
+    memcpy(b +  8, &w0, 4);
+    memcpy(b + 12, &w1, 4);
+    memcpy(b + 16, &s7, 4);
+    memcpy(b + 20, &t8, 4);
+    memcpy(b + 24, &t9, 4);
+    for (int k = 0; k < 9; k++) {              /* g_Camera.m_ViewMatrix */
+        int16_t v = (int16_t)cpu->read_half(0x80076DD0u + 0x14u + k*2u);
+        memcpy(b + 28 + k * 2, &v, 2);
+    }
+    int16_t pad = 0; memcpy(b + 46, &pad, 2);
+    fwrite(b, 1, 48, s_ev_fp);
+}
+
 void openpete_diag_cone_dump(void* cpu_v,
                              int32_t mac1_abs,
                              int32_t mac3,

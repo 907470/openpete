@@ -350,6 +350,14 @@ void openpete_diag_cone_dump(void* cpu,
                              int32_t mac3,
                              uint8_t native_pass);
 
+/* §7.5 terrain-reproject validation probe. Recompiler emits a call at
+ * r_environment.s 0x80025A34 with the camera-free packed world vertex
+ * (w0=X<<16|Y, w1=Z<<16|flags), vert ptr, scaled camera position.
+ * Read-only; gated by OPENPETE_ENVVERT_LOG. Impl game_extras_impl.c. */
+void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
+                            uint32_t s1, uint32_t s7, uint32_t t8,
+                            uint32_t t9);
+
 /* Per-moby UI tracking. The recompiler emits a call to
  * openpete_ui_moby_set_current at the per-moby loop iteration of
  * Spyro's func_80022A2C (0x80022B08) so gte_rtps_internal /
