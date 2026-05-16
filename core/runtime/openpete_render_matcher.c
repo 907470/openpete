@@ -103,6 +103,10 @@ typedef struct matcher_batch {
      * span (not per-vertex) to avoid the tear-apart artifact where
      * some verts move and some don't. */
     uint32_t corr_hit, corr_tot;
+
+    /* Camera-independent v_local centroid (Option-B world key). */
+    int64_t  vloc_sum[3];
+    int32_t  vloc_centroid[3];
 } matcher_batch_t;
 
 typedef struct matcher_frame {
@@ -270,6 +274,14 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     int16_t sy = (int16_t)(uint16_t)(e->sxy_key >> 16);
     b->sxy_sum[0] += (int64_t)sx;
     b->sxy_sum[1] += (int64_t)sy;
+    /* Camera-INDEPENDENT signature: v_local is model/sector-local
+     * (invariant under camera motion — G3 proved mac/centroid is
+     * camera-baked, so the mac-centroid hash bucket moves with the
+     * camera and world spans never re-pair). v_local centroid is
+     * stable for static terrain → the Option-B world key. */
+    b->vloc_sum[0] += (int64_t)e->v_local[0];
+    b->vloc_sum[1] += (int64_t)e->v_local[1];
+    b->vloc_sum[2] += (int64_t)e->v_local[2];
     b->vertex_count++;
 }
 
@@ -622,9 +634,24 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         }
         b->sxy_centroid[0] = (int32_t)(b->sxy_sum[0] / (int64_t)b->vertex_count);
         b->sxy_centroid[1] = (int32_t)(b->sxy_sum[1] / (int64_t)b->vertex_count);
-        b->hash = batch_centroid_hash(b->centroid[0],
-                                      b->centroid[1],
-                                      b->centroid[2]);
+        for (int axis = 0; axis < 3; ++axis)
+            b->vloc_centroid[axis] =
+                (int32_t)(b->vloc_sum[axis] / (int64_t)b->vertex_count);
+        /* World/composite spans (obj_tag==0): hash on the CAMERA-
+         * INDEPENDENT v_local centroid. G3 proved mac/centroid is
+         * camera-baked, so a mac-centroid hash bucket drifts every
+         * frame the camera moves and world spans never re-pair
+         * (= "level geo rarely blue"). v_local is sector-local and
+         * stable for static terrain. Tagged mobys pair by obj_tag
+         * (hash unused on that path) so keep their mac hash. */
+        if (b->obj_tag == 0u)
+            b->hash = batch_centroid_hash(b->vloc_centroid[0],
+                                          b->vloc_centroid[1],
+                                          b->vloc_centroid[2]);
+        else
+            b->hash = batch_centroid_hash(b->centroid[0],
+                                          b->centroid[1],
+                                          b->centroid[2]);
         b->has_future_anchor = 0;
         b->delta_sxy[0] = b->delta_sxy[1] = 0;
         b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
