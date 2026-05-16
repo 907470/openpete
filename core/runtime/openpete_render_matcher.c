@@ -675,6 +675,23 @@ static int corr_min_pct(void) {
     return v;
 }
 
+/* §7.5-R3 PHASE-B: stricter whole-strip-freeze threshold for bit30
+ * WORLD strips. Terrain triangles tear visibly if a strip is only
+ * PARTIALLY corresponded K-1↔K (some verts frustum-culled in one
+ * frame): moved + frozen verts in the same tri → degenerate/popping
+ * polys (user: "very flickery, geo popping out of existence" at
+ * 60fps). A strip must be near-FULLY present on both endpoints to
+ * interpolate; otherwise freeze the whole strip (clean 30 Hz for it,
+ * no tear). Default 90; env-tunable; 0 disables (per-vertex partial,
+ * the flickery PHASE-B-initial behavior). */
+static int world_corr_min_pct(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_WORLD_CORR_MIN_PCT");
+                 v = (e && *e) ? atoi(e) : 90;
+                 if (v < 0) v = 0; if (v > 100) v = 100; }
+    return v;
+}
+
 /* find-only (batches already exist from sub_scan_cb's prev2 pass). */
 static matcher_batch_t* find_span(matcher_frame_t* f, uint32_t span) {
     for (uint32_t i = 0; i < f->count; ++i)
@@ -990,23 +1007,31 @@ void openpete_render_matcher_prepare_substitute(void) {
      * during movement") that obj_tag's cap-bypass exposed. */
     {
         const int min_pct = corr_min_pct();
-        if (min_pct > 0) {
+        if (min_pct > 0 || world_corr_min_pct() > 0) {
             openpete_render_cache_for_each_prev2_entry(corr_scan_cb, NULL);
             for (uint32_t i = 0; i < s_curr->count; ++i) {
                 matcher_batch_t* b = &s_curr->batches[i];
-                /* Mobys only: a low ratio means animation v_local
-                 * churn → tear. World spans (obj_tag==0) have low
-                 * ratio from FRUSTUM-CULL membership change, not
-                 * deformation — they use the composite-reproject path
-                 * (whole-span consistent motion, no tear) so the gate
-                 * must NOT freeze them (that was the round-2 "zero
-                 * blue on world"). §7.5-R3: bit30-tagged terrain
-                 * strips are world too — same exemption (their
-                 * v_local-keyed corr is ~0 by construction; they
-                 * use §7.3 composite reproject, not tomap). */
-                if (!b->has_future_anchor || is_world_obj_tag(b->obj_tag)
-                    || b->corr_tot < 8u) continue;
-                if (b->corr_hit * 100u < (uint32_t)min_pct * b->corr_tot) {
+                if (!b->has_future_anchor) continue;
+                /* Legacy untagged world (obj_tag==0) is EXEMPT: it
+                 * rides the §7.3 composite-reproject path (whole-span
+                 * consistent, no tear) and its v_local-keyed corr is
+                 * ~0 by construction — freezing it was the round-2
+                 * "zero blue on world". */
+                if (b->obj_tag == 0u) continue;
+                int is_w = (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u;
+                /* §7.5-R3 PHASE-B: bit30 WORLD strips use the
+                 * per-vertex (eff_span,world_vidx) tomap. corr_hit/
+                 * corr_tot is now the real vidx coverage K-1↔K. A
+                 * partially-culled strip MUST freeze whole (stricter
+                 * world threshold) or its triangles tear/pop. Mobys
+                 * keep the v_local-churn animation threshold. The
+                 * corr_tot<8 noise guard is bypassed for world —
+                 * small terrain strips tear too. */
+                int thr = is_w ? world_corr_min_pct() : min_pct;
+                if (thr <= 0) continue;
+                if (!is_w && b->corr_tot < 8u) continue;
+                if (b->corr_tot == 0u) continue;
+                if (b->corr_hit * 100u < (uint32_t)thr * b->corr_tot) {
                     b->has_future_anchor = 0;          /* whole-span freeze */
                     if (paired) paired--;
                 }
