@@ -87,6 +87,15 @@ typedef struct matcher_batch {
      * endpoints it supersedes the centroid-hash + velocity-cap
      * heuristic for pairing (real identity, no false-merge). */
     uint32_t obj_tag;
+
+    /* transform-interp §7.2 / Option B: emission-ordinal among
+     * obj_tag==0 (world/composite) batches this frame. G1 measured
+     * span emission order 99.3% stable + vertex_count stable, so
+     * {world_ord, ~vertex_count} is a deterministic cross-frame key
+     * for untagged world spans — supersedes centroid-hash for them
+     * (centroid wanders under frustum-cull membership change).
+     * UINT32_MAX = not a world span. */
+    uint32_t world_ord;
 } matcher_batch_t;
 
 typedef struct matcher_frame {
@@ -531,6 +540,25 @@ static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag) {
     return -1;
 }
 
+/* transform-interp §7.2 / Option B: pair an untagged world span by
+ * its deterministic emission ordinal, gated by vertex_count
+ * similarity (G1: per-span vertex_count stable; a count mismatch
+ * means an ordinal slipped across a cull boundary → bail to the
+ * centroid-hash fallback rather than mispair). */
+static int find_unconsumed_by_world_ord(matcher_frame_t* f, uint32_t ord,
+                                        uint32_t ref_vc) {
+    if (ord == 0xFFFFFFFFu) return -1;
+    for (uint32_t i = 0; i < f->count; ++i) {
+        matcher_batch_t* b = &f->batches[i];
+        if (b->world_ord != ord || b->consumed) continue;
+        uint32_t tol = ref_vc / 4u; if (tol < 4u) tol = 4u;
+        uint32_t d = (b->vertex_count > ref_vc)
+            ? b->vertex_count - ref_vc : ref_vc - b->vertex_count;
+        return (d > tol) ? -1 : (int)i;
+    }
+    return -1;
+}
+
 /* Finalize a freshly-scanned frame: per-batch centroid, sxy_centroid,
  * geometric hash, reset span/match state. */
 static void finalize_scanned_frame(matcher_frame_t* f) {
@@ -552,6 +580,16 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         b->is_ui_opt_out = matrix_is_near_identity(b->rt);
         b->vtrace_velocity_capped = 0;
         b->consumed = 0;
+        b->world_ord = 0xFFFFFFFFu;
+    }
+    /* Assign world ordinal in batch (≈emission) order to untagged
+     * spans — the deterministic Option-B cross-frame key. */
+    uint32_t wo = 0u;
+    for (uint32_t i = 0; i < f->count; ++i) {
+        matcher_batch_t* b = &f->batches[i];
+        if (b->vertex_count == 0) continue;
+        if (b->obj_tag == 0u && !b->is_ui_opt_out)
+            b->world_ord = wo++;
     }
 }
 
@@ -634,6 +672,17 @@ void openpete_render_matcher_prepare_substitute(void) {
                 continue;
             }
         }
+        /* World (untagged): deterministic ordinal+signature identity
+         * (G1-backed) before the centroid heuristic. */
+        if (cb->obj_tag == 0u && cb->world_ord != 0xFFFFFFFFu) {
+            int pi = find_unconsumed_by_world_ord(s_prev, cb->world_ord,
+                                                  cb->vertex_count);
+            if (pi >= 0) {
+                s_prev->batches[pi].consumed = 1;
+                cb->object_id = s_prev->batches[pi].object_id;
+                continue;
+            }
+        }
         uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         int got_id = 0;
@@ -683,6 +732,25 @@ void openpete_render_matcher_prepare_substitute(void) {
          * vertex tomap lookup keyed by to_span_id is unchanged. */
         if (cb->obj_tag != 0u) {
             int ti = find_unconsumed_by_obj_tag(&s_to, cb->obj_tag);
+            if (ti >= 0) {
+                matcher_batch_t* tb = &s_to.batches[ti];
+                tb->consumed = 1;
+                cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
+                cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
+                cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
+                cb->delta_sxy[0] = tb->sxy_centroid[0] - cb->sxy_centroid[0];
+                cb->delta_sxy[1] = tb->sxy_centroid[1] - cb->sxy_centroid[1];
+                cb->to_span_id   = tb->matrix_span_id;
+                cb->has_future_anchor = 1;
+                paired++;
+                continue;
+            }
+        }
+        /* World (untagged): ordinal+signature span pairing (Option B)
+         * before centroid-hash. Same downstream per-vertex tomap. */
+        if (cb->obj_tag == 0u && cb->world_ord != 0xFFFFFFFFu) {
+            int ti = find_unconsumed_by_world_ord(&s_to, cb->world_ord,
+                                                  cb->vertex_count);
             if (ti >= 0) {
                 matcher_batch_t* tb = &s_to.batches[ti];
                 tb->consumed = 1;
