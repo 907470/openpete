@@ -293,6 +293,10 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         e.ofy = (int32_t)gte->OFY;
         e.h = (uint16_t)gte->H;
         e._pad1 = 0;
+        /* transform-interp §4: real per-moby identity from the
+         * recompiler's per-moby ui-moby capture (0 = world/non-moby).
+         * Same side-channel widescreen_eff_ofx already consumes. */
+        e.obj_tag = openpete_ui_moby_get_current();
         openpete_render_cache_emit_vertex(&e);
     }
 

@@ -152,7 +152,7 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
          * OPENPETE_SPAN_LOG set). id already incremented above. */
         if (openpete_spanlog_enabled())
             openpete_spanlog_record(src->rt, src->tr, src->v_local,
-                                    src->sxy_key);
+                                    src->sxy_key, src->obj_tag);
     }
 
     openpete_render_cache_frame_t* curr = gen_current();

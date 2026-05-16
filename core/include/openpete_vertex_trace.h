@@ -116,9 +116,10 @@ int  openpete_vstab_enabled(void);
  * i16 rt[9], i32 tr[3], i16 v0[3], u32 sxy_key}. Env:
  * OPENPETE_SPAN_LOG=path  _SKIP=frame  _FRAMES=N (self-closes). */
 #define SPANLOG_MAGIC   0x4C4E5053u  /* "SPNL" */
-#define SPANLOG_VERSION 1u
+#define SPANLOG_VERSION 2u           /* v2: + obj_tag (52B record) */
 void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
-                             const int16_t v0[3], uint32_t sxy_key);
+                             const int16_t v0[3], uint32_t sxy_key,
+                             uint32_t obj_tag);
 int  openpete_spanlog_enabled(void);
 
 #ifdef __cplusplus

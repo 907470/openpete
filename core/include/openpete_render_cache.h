@@ -41,6 +41,13 @@ typedef struct openpete_render_cache_entry {
     int32_t  ofy;
     uint16_t h;
     uint16_t _pad1;
+    /* transform-interp §4: PSX vaddr of the moby that produced this
+     * vertex (from the recompiler's per-moby ui-moby capture), or 0
+     * for world / non-moby geometry. Real cross-frame identity,
+     * replacing the matcher's centroid-hash heuristic. NOTE: until
+     * moby-scope bracketing lands, this is best-effort (last ui-moby
+     * ptr); consumers must gate on moby-pool validity. */
+    uint32_t obj_tag;
 } openpete_render_cache_entry_t;
 
 /* 8192 slots × ~64 B ≈ 512 KB per frame × 2 frames = 1 MB. Comfortably

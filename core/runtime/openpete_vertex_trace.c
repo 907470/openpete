@@ -124,7 +124,7 @@ static void spanlog_init(void) {
     if (fl && *fl) s_span_cap = (uint32_t)atoi(fl);
     s_span_fp = fopen(p, "wb");
     if (!s_span_fp) return;
-    uint32_t h[8] = { SPANLOG_MAGIC, SPANLOG_VERSION, 48u, 0,0,0,0,0 };
+    uint32_t h[8] = { SPANLOG_MAGIC, SPANLOG_VERSION, 52u, 0,0,0,0,0 };
     fwrite(h, sizeof(h), 1, s_span_fp);
     fflush(s_span_fp);
 }
@@ -135,7 +135,8 @@ int openpete_spanlog_enabled(void) {
 }
 
 void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
-                             const int16_t v0[3], uint32_t sxy_key) {
+                             const int16_t v0[3], uint32_t sxy_key,
+                             uint32_t obj_tag) {
     spanlog_init();
     if (!s_span_fp) return;
     if (openpete_frame < s_span_skip) return;
@@ -146,7 +147,7 @@ void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
         s_span_last_fr = openpete_frame;
         s_span_frames++;
     }
-    uint8_t buf[48];
+    uint8_t buf[52];
     memcpy(buf +  0, &openpete_frame, 4);
     memcpy(buf +  4, &g_openpete_render_cache_matrix_span_id, 4);
     int16_t rt9[9] = { rt[0][0],rt[0][1],rt[0][2],
@@ -156,7 +157,8 @@ void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
     memcpy(buf + 26, tr,  12);
     memcpy(buf + 38, v0,   6);
     memcpy(buf + 44, &sxy_key, 4);
-    fwrite(buf, 1, 48, s_span_fp);
+    memcpy(buf + 48, &obj_tag, 4);
+    fwrite(buf, 1, 52, s_span_fp);
 }
 
 void openpete_vtrace_close(void) {
