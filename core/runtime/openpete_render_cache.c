@@ -148,6 +148,11 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
         s_last_tr[1] = src->tr[1];
         s_last_tr[2] = src->tr[2];
         s_matrix_state_initialized = 1;
+        /* G3: one RT/TR record per span bump (no-op unless
+         * OPENPETE_SPAN_LOG set). id already incremented above. */
+        if (openpete_spanlog_enabled())
+            openpete_spanlog_record(src->rt, src->tr, src->v_local,
+                                    src->sxy_key);
     }
 
     openpete_render_cache_frame_t* curr = gen_current();

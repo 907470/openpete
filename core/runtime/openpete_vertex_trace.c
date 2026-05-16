@@ -105,12 +105,67 @@ void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3]) {
     fwrite(&r, sizeof(r), 1, s_vstab_fp);
 }
 
+/* ---- Per-span RT/TR log (G3) ---- */
+static FILE*    s_span_fp        = NULL;
+static int      s_span_init      = 0;
+static uint32_t s_span_skip      = 0;
+static uint32_t s_span_cap       = 250;
+static uint32_t s_span_last_fr   = 0xFFFFFFFFu;
+static uint32_t s_span_frames    = 0;
+
+static void spanlog_init(void) {
+    if (s_span_init) return;
+    s_span_init = 1;
+    const char* p = getenv("OPENPETE_SPAN_LOG");
+    if (!p || !*p) return;
+    const char* sk = getenv("OPENPETE_SPAN_LOG_SKIP");
+    if (sk && *sk) s_span_skip = (uint32_t)atoi(sk);
+    const char* fl = getenv("OPENPETE_SPAN_LOG_FRAMES");
+    if (fl && *fl) s_span_cap = (uint32_t)atoi(fl);
+    s_span_fp = fopen(p, "wb");
+    if (!s_span_fp) return;
+    uint32_t h[8] = { SPANLOG_MAGIC, SPANLOG_VERSION, 48u, 0,0,0,0,0 };
+    fwrite(h, sizeof(h), 1, s_span_fp);
+    fflush(s_span_fp);
+}
+
+int openpete_spanlog_enabled(void) {
+    spanlog_init();
+    return s_span_fp != NULL;
+}
+
+void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
+                             const int16_t v0[3], uint32_t sxy_key) {
+    spanlog_init();
+    if (!s_span_fp) return;
+    if (openpete_frame < s_span_skip) return;
+    if (openpete_frame != s_span_last_fr) {
+        if (s_span_frames >= s_span_cap) {
+            fflush(s_span_fp); fclose(s_span_fp); s_span_fp = NULL; return;
+        }
+        s_span_last_fr = openpete_frame;
+        s_span_frames++;
+    }
+    uint8_t buf[48];
+    memcpy(buf +  0, &openpete_frame, 4);
+    memcpy(buf +  4, &g_openpete_render_cache_matrix_span_id, 4);
+    int16_t rt9[9] = { rt[0][0],rt[0][1],rt[0][2],
+                       rt[1][0],rt[1][1],rt[1][2],
+                       rt[2][0],rt[2][1],rt[2][2] };
+    memcpy(buf +  8, rt9, 18);
+    memcpy(buf + 26, tr,  12);
+    memcpy(buf + 38, v0,   6);
+    memcpy(buf + 44, &sxy_key, 4);
+    fwrite(buf, 1, 48, s_span_fp);
+}
+
 void openpete_vtrace_close(void) {
     if (s_fp) {
         fflush(s_fp);
         fclose(s_fp);
         s_fp = NULL;
     }
+    if (s_span_fp) { fflush(s_span_fp); fclose(s_span_fp); s_span_fp = NULL; }
 }
 
 int openpete_vtrace_enabled(void) {

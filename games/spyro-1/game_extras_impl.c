@@ -432,6 +432,61 @@ static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
 
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* --- G3: per-tick g_Camera log (independent of G2; must run
+     * BEFORE any G2 early-return). g_Camera @ 0x80076DD0 (camera.h,
+     * SHORTMATRIX=0x14): m_ViewMatrix @ +0x14 (9 shorts raw),
+     * m_Position @ +0x28 (3 i32), m_Rotation @ +0x4C (3 i16),
+     * m_State @ +0x58 (u32). Env OPENPETE_CAM_LOG / _SKIP / _TICKS. */
+    {
+        static FILE* s_cam_fp = NULL;
+        static int   s_cam_init = 0;
+        static uint32_t s_cam_skip = 0, s_cam_cap = 250, s_cam_n = 0;
+        if (!s_cam_init) {
+            s_cam_init = 1;
+            const char* p = getenv("OPENPETE_CAM_LOG");
+            if (p && *p) {
+                const char* sk = getenv("OPENPETE_CAM_LOG_SKIP");
+                if (sk && *sk) s_cam_skip = (uint32_t)atoi(sk);
+                const char* tc = getenv("OPENPETE_CAM_LOG_TICKS");
+                if (tc && *tc) s_cam_cap = (uint32_t)atoi(tc);
+                s_cam_fp = fopen(p, "wb");
+                if (s_cam_fp) {
+                    uint32_t h[8] = { 0x4C4D4143u /*"CAML"*/, 1u, 48u,
+                                      0,0,0,0,0 };
+                    fwrite(h, sizeof(h), 1, s_cam_fp);
+                }
+            }
+        }
+        if (s_cam_fp && openpete_frame >= s_cam_skip) {
+            if (s_cam_n >= s_cam_cap) {
+                fflush(s_cam_fp); fclose(s_cam_fp); s_cam_fp = NULL;
+            } else {
+                s_cam_n++;
+                uint32_t C = 0x80076DD0u;
+                uint8_t cb[48];
+                uint32_t lt = cpu->read_word(0x800758C8u);
+                memcpy(cb + 0, &openpete_frame, 4);
+                memcpy(cb + 4, &lt, 4);
+                for (int k = 0; k < 9; k++) {
+                    int16_t v = (int16_t)cpu->read_half(C + 0x14u + k*2u);
+                    memcpy(cb + 8 + k * 2, &v, 2);
+                }
+                for (int k = 0; k < 3; k++) {
+                    int32_t v = (int32_t)cpu->read_word(C + 0x28u + k*4u);
+                    memcpy(cb + 26 + k * 4, &v, 4);
+                }
+                for (int k = 0; k < 3; k++) {
+                    int16_t v = (int16_t)cpu->read_half(C + 0x4Cu + k*2u);
+                    memcpy(cb + 38 + k * 2, &v, 2);
+                }
+                uint32_t cstate = cpu->read_word(C + 0x58u);
+                memcpy(cb + 44, &cstate, 4);
+                fwrite(cb, 1, 48, s_cam_fp);
+            }
+        }
+    }
+
     if (!s_g2_init) {
         s_g2_init = 1;
         const char* p = getenv("OPENPETE_G2_LOG");

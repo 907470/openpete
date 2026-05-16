@@ -111,6 +111,16 @@ typedef struct {
 void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3]);
 int  openpete_vstab_enabled(void);
 
+/* ---- Per-span RT/TR log (G3: camera-only-world vs sector-chunked) ----
+ * One 48B record per matrix-span bump: {u32 frame, u32 span_id,
+ * i16 rt[9], i32 tr[3], i16 v0[3], u32 sxy_key}. Env:
+ * OPENPETE_SPAN_LOG=path  _SKIP=frame  _FRAMES=N (self-closes). */
+#define SPANLOG_MAGIC   0x4C4E5053u  /* "SPNL" */
+#define SPANLOG_VERSION 1u
+void openpete_spanlog_record(const int16_t rt[3][3], const int32_t tr[3],
+                             const int16_t v0[3], uint32_t sxy_key);
+int  openpete_spanlog_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif
