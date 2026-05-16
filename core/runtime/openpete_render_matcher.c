@@ -81,6 +81,12 @@ typedef struct matcher_batch {
      * so 2D overlays don't smear under interpolation. */
     int16_t  rt[3][3];
     int      is_ui_opt_out;
+
+    /* transform-interp §4: authoritative cross-frame identity — the
+     * PSX moby vaddr (0 = world/composite). When nonzero on both
+     * endpoints it supersedes the centroid-hash + velocity-cap
+     * heuristic for pairing (real identity, no false-merge). */
+    uint32_t obj_tag;
 } matcher_batch_t;
 
 typedef struct matcher_frame {
@@ -495,8 +501,11 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     matcher_batch_t* b = find_or_create_batch_in(f, e->matrix_span_id);
     if (!b) return;
     if (b->vertex_count == 0) {
-        /* First vertex of this batch — capture RT for UI-opt-out test. */
+        /* First vertex of this batch — capture RT for UI-opt-out test
+         * and obj_tag for authoritative cross-frame identity. (All
+         * verts of a matrix-span share one moby/transform.) */
         memcpy(b->rt, e->rt, sizeof(b->rt));
+        b->obj_tag = e->obj_tag;
     }
     accumulate_vertex(b, e);
     /* For the "to" generation (gen_prev = G(N)) also record every
@@ -508,6 +517,19 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
 }
 
 static int matrix_is_near_identity(const int16_t rt[3][3]);
+
+/* transform-interp §4: authoritative pairing by real moby identity.
+ * Linear scan — frame batch counts are small (tens–hundreds), host-
+ * side, once per game frame. Returns batch index or -1. obj_tag==0
+ * (world/composite) is NOT identified this way; those keep the
+ * centroid/ordinal path. */
+static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag) {
+    if (tag == 0u) return -1;
+    for (uint32_t i = 0; i < f->count; ++i)
+        if (f->batches[i].obj_tag == tag && !f->batches[i].consumed)
+            return (int)i;
+    return -1;
+}
 
 /* Finalize a freshly-scanned frame: per-batch centroid, sxy_centroid,
  * geometric hash, reset span/match state. */
@@ -600,6 +622,18 @@ void openpete_render_matcher_prepare_substitute(void) {
     build_frame_hash_table(s_prev);
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
+        /* Authoritative identity first: a tagged moby inherits its
+         * prior object_id by real vaddr — no centroid bucket, no
+         * velocity cap (a fast-moving moby kept its id wrongly only
+         * because the cap rejected it). World (tag 0) → heuristic. */
+        if (cb->obj_tag != 0u) {
+            int pi = find_unconsumed_by_obj_tag(s_prev, cb->obj_tag);
+            if (pi >= 0) {
+                s_prev->batches[pi].consumed = 1;
+                cb->object_id = s_prev->batches[pi].object_id;
+                continue;
+            }
+        }
         uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         int got_id = 0;
@@ -642,6 +676,27 @@ void openpete_render_matcher_prepare_substitute(void) {
     unsigned velocity_capped = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
+        /* Authoritative span pairing for tagged mobys: pair "from"↔
+         * "to" by real vaddr, bypassing centroid hash + velocity/
+         * vertex-count caps (which exist only to reject heuristic
+         * mispairs — real identity needs neither). Downstream per-
+         * vertex tomap lookup keyed by to_span_id is unchanged. */
+        if (cb->obj_tag != 0u) {
+            int ti = find_unconsumed_by_obj_tag(&s_to, cb->obj_tag);
+            if (ti >= 0) {
+                matcher_batch_t* tb = &s_to.batches[ti];
+                tb->consumed = 1;
+                cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
+                cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
+                cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
+                cb->delta_sxy[0] = tb->sxy_centroid[0] - cb->sxy_centroid[0];
+                cb->delta_sxy[1] = tb->sxy_centroid[1] - cb->sxy_centroid[1];
+                cb->to_span_id   = tb->matrix_span_id;
+                cb->has_future_anchor = 1;
+                paired++;
+                continue;
+            }
+        }
         uint64_t h = cb->hash;
         uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
         for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
