@@ -80,6 +80,11 @@ typedef struct matcher_batch {
      * almost certainly UI/HUD drawn in screen-space — opt out of lerp
      * so 2D overlays don't smear under interpolation. */
     int16_t  rt[3][3];
+    int32_t  tr[3];          /* §7.3: span translation, for composite
+                              * world reprojection (world spans pair
+                              * by world_ord/v_local; this is the to-
+                              * span matrix the from-verts re-project
+                              * through at α). */
     int      is_ui_opt_out;
 
     /* transform-interp §4: authoritative cross-frame identity — the
@@ -533,6 +538,7 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
          * and obj_tag for authoritative cross-frame identity. (All
          * verts of a matrix-span share one moby/transform.) */
         memcpy(b->rt, e->rt, sizeof(b->rt));
+        b->tr[0] = e->tr[0]; b->tr[1] = e->tr[1]; b->tr[2] = e->tr[2];
         b->obj_tag = e->obj_tag;
     }
     accumulate_vertex(b, e);
@@ -923,7 +929,15 @@ void openpete_render_matcher_prepare_substitute(void) {
             openpete_render_cache_for_each_prev2_entry(corr_scan_cb, NULL);
             for (uint32_t i = 0; i < s_curr->count; ++i) {
                 matcher_batch_t* b = &s_curr->batches[i];
-                if (!b->has_future_anchor || b->corr_tot < 8u) continue;
+                /* Mobys only: a low ratio means animation v_local
+                 * churn → tear. World spans (obj_tag==0) have low
+                 * ratio from FRUSTUM-CULL membership change, not
+                 * deformation — they use the composite-reproject path
+                 * (whole-span consistent motion, no tear) so the gate
+                 * must NOT freeze them (that was the round-2 "zero
+                 * blue on world"). */
+                if (!b->has_future_anchor || b->obj_tag == 0u
+                    || b->corr_tot < 8u) continue;
                 if (b->corr_hit * 100u < (uint32_t)min_pct * b->corr_tot) {
                     b->has_future_anchor = 0;          /* whole-span freeze */
                     if (paired) paired--;
@@ -952,6 +966,28 @@ void openpete_render_matcher_prepare_substitute(void) {
     }
 }
 
+/* §7.3 world composite reprojection. Replicates the PSX RTPS path in
+ * float (presentation only — never feeds gameplay; determinism
+ * unaffected): MAC = RT_q12·v + TR (SHORTMATRIX is Q12, 1.0=4096);
+ * screen = (OFX + MAC·(H/SZ)) / 65536  (OFX/OFY are Q16, SZ=MAC3).
+ * Returns 0 if behind the projection plane (SZ≤0). Used ONLY via the
+ * DIFFERENCE project(to)-project(from), so any constant scale/offset
+ * imprecision in this reimplementation cancels and endpoints stay
+ * exact (the §9 α-anchoring requirement, by construction). */
+static int world_reproject(const int16_t rt[3][3], const int32_t tr[3],
+                           const int16_t v[3], int32_t ofx, int32_t ofy,
+                           uint16_t h, double* sx, double* sy) {
+    double vx = v[0], vy = v[1], vz = v[2];
+    double m1 = (rt[0][0]*vx + rt[0][1]*vy + rt[0][2]*vz) / 4096.0 + tr[0];
+    double m2 = (rt[1][0]*vx + rt[1][1]*vy + rt[1][2]*vz) / 4096.0 + tr[1];
+    double m3 = (rt[2][0]*vx + rt[2][1]*vy + rt[2][2]*vz) / 4096.0 + tr[2];
+    if (m3 <= 1.0) return 0;                 /* behind / on the plane */
+    double hsz = (double)h / m3;
+    *sx = ((double)ofx + m1 * hsz) / 65536.0;
+    *sy = ((double)ofy + m2 * hsz) / 65536.0;
+    return 1;
+}
+
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha) {
     openpete_substitute_delta_t out = { 0.0f, 0.0f };
@@ -978,6 +1014,41 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         }
         if (!b->has_future_anchor) {           /* batch didn't pair */
             g_openpete_render_substitute_vert_miss_count++;
+            return out;
+        }
+        /* §7.3 — WORLD (obj_tag==0): composite per-span reprojection.
+         * G3 proved world is ~37 composite per-span matrices; the
+         * per-vertex tomap path below tears it under camera pan
+         * (parallax-moved verts vs culled-frozen verts) and the
+         * cull-churn made tomap correspondence ~0 ("zero blue on
+         * world"). Instead: reproject THIS vertex through the
+         * span's own from-matrix (exact, from the gen_prev2 cache
+         * hit `entry`) and the matched to-span's matrix, and apply
+         * α·(to−from). Every vertex of the span uses the SAME
+         * matrix pair ⇒ consistent motion, no tear; α=0 ⇒ 0 ⇒
+         * exactly the cached lagged frame (residual cancels). */
+        if (b->obj_tag == 0u) {
+            const matcher_batch_t* tb = find_span(&s_to, b->to_span_id);
+            if (!tb || tb->vertex_count == 0u) {
+                g_openpete_render_substitute_vert_miss_count++;
+                return out;
+            }
+            double fx, fy, tx, ty;
+            if (!world_reproject(entry.rt, entry.tr, entry.v_local,
+                                 entry.ofx, entry.ofy, entry.h, &fx, &fy) ||
+                !world_reproject(tb->rt, tb->tr, entry.v_local,
+                                 entry.ofx, entry.ofy, entry.h, &tx, &ty)) {
+                g_openpete_render_substitute_vert_miss_count++;
+                return out;
+            }
+            float dx = (float)((tx - fx) * (double)alpha);
+            float dy = (float)((ty - fy) * (double)alpha);
+            const float capw = g_openpete_substitute_clamp_px;
+            if (capw <= 0.0f) return out;
+            if (dx >  capw) dx =  capw; if (dx < -capw) dx = -capw;
+            if (dy >  capw) dy =  capw; if (dy < -capw) dy = -capw;
+            out.dx = dx; out.dy = dy;
+            g_openpete_render_substitute_vert_hit_count++;
             return out;
         }
         /* Per-vertex correspondence: where did THIS logical vertex
