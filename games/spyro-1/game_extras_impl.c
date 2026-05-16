@@ -14,6 +14,7 @@
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
+#include "openpete_render_cache.h"
 #include "features/widescreen.h"
 
 #include <stdio.h>
@@ -227,6 +228,35 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
     }
     int16_t pad = 0; memcpy(b + 46, &pad, 2);
     fwrite(b, 1, 48, s_ev_fp);
+}
+
+/* §7.5 re-validation callback. Read-only: emits one 64B record per
+ * world (obj_tag==0) render-cache entry. Layout:
+ *   0  u32 frame      4  u32 sxy_key   8  u32 obj_tag
+ *   12 i16 rt[9]      30 i16 v_local[3]
+ *   36 i32 tr[3]      48 i32 mac[3]    60 u32 pad   (=64) */
+typedef struct { FILE* fp; uint32_t left; } openpete_wr_ud_t;
+
+static void openpete_worldrt_dump_cb(
+        const openpete_render_cache_entry_t* e, void* userdata) {
+    openpete_wr_ud_t* ud = (openpete_wr_ud_t*)userdata;
+    if (!ud || !ud->fp || ud->left == 0) return;
+    if (e->obj_tag != 0u) return;            /* world / non-moby only */
+    ud->left--;
+    uint8_t r[64];
+    memcpy(r +  0, &openpete_frame, 4);
+    memcpy(r +  4, &e->sxy_key, 4);
+    memcpy(r +  8, &e->obj_tag, 4);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            int16_t v = e->rt[i][j];
+            memcpy(r + 12 + (i*3 + j) * 2, &v, 2);
+        }
+    memcpy(r + 30, e->v_local, 6);
+    memcpy(r + 36, e->tr, 12);
+    memcpy(r + 48, e->mac, 12);
+    uint32_t z = 0; memcpy(r + 60, &z, 4);
+    fwrite(r, 1, 64, ud->fp);
 }
 
 void openpete_diag_cone_dump(void* cpu_v,
@@ -538,6 +568,50 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
                 uint32_t cstate = cpu->read_word(C + 0x58u);
                 memcpy(cb + 44, &cstate, 4);
                 fwrite(cb, 1, 48, s_cam_fp);
+            }
+        }
+    }
+
+    /* --- §7.5 re-validation: world render-cache RT/TR/mac dump.
+     * Read-only. Iterates the curr render-cache generation and writes
+     * one 64B record per world (obj_tag==0) entry, capped per frame.
+     * Offline analysis answers the decisive question: does cached `rt`
+     * for world entries VARY frame-to-frame (⇒ rt = live view matrix,
+     * §7.5's "static cached RT" premise is falsified ⇒ world IS
+     * reprojectable at the cache layer) or is it constant (⇒ §7.5
+     * stands). Env OPENPETE_WORLDRT_LOG / _SKIP / _FRAMES / _CAP. */
+    {
+        static FILE* s_wr_fp = NULL;
+        static int   s_wr_init = 0;
+        static uint32_t s_wr_skip = 0, s_wr_cap = 120,
+                        s_wr_perfr = 96, s_wr_n = 0;
+        if (!s_wr_init) {
+            s_wr_init = 1;
+            const char* p = getenv("OPENPETE_WORLDRT_LOG");
+            if (p && *p) {
+                const char* sk = getenv("OPENPETE_WORLDRT_LOG_SKIP");
+                if (sk && *sk) s_wr_skip = (uint32_t)atoi(sk);
+                const char* fl = getenv("OPENPETE_WORLDRT_LOG_FRAMES");
+                if (fl && *fl) s_wr_cap = (uint32_t)atoi(fl);
+                const char* pc = getenv("OPENPETE_WORLDRT_LOG_CAP");
+                if (pc && *pc) s_wr_perfr = (uint32_t)atoi(pc);
+                s_wr_fp = fopen(p, "wb");
+                if (s_wr_fp) {
+                    uint32_t h[8] = { 0x30545257u /*"WRT0"*/, 1u, 64u,
+                                      0,0,0,0,0 };
+                    fwrite(h, sizeof(h), 1, s_wr_fp);
+                }
+            }
+        }
+        if (s_wr_fp && openpete_frame >= s_wr_skip) {
+            if (s_wr_n >= s_wr_cap) {
+                fflush(s_wr_fp); fclose(s_wr_fp); s_wr_fp = NULL;
+            } else {
+                s_wr_n++;
+                openpete_wr_ud_t ud;
+                ud.fp = s_wr_fp; ud.left = s_wr_perfr;
+                openpete_render_cache_for_each_curr_entry(
+                    openpete_worldrt_dump_cb, &ud);
             }
         }
     }
