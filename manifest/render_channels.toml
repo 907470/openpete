@@ -145,6 +145,36 @@ state_regions    = []  # render-side classification only
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
+name        = "envvert_terrain_probe"
+status      = "audited_clean"
+description = """
+§7.5 terrain-reproject validation probe. func_800258F0 (r_environment.s,
+the env/terrain renderer) per-vertex transform loads the camera-free
+packed world vertex then CPU-subtracts the camera position before the
+MVMVA. The recompiler substitution at `0x80025A34: lw $a0, 4($s1)`
+appends `openpete_envvert_probe(cpu, v0,a0,s1,s7,t8,t9)` AFTER the
+load — passing the camera-free world vert, vert ptr, and scaled
+camera position; the probe additionally read-only-reads
+g_Camera.m_ViewMatrix.
+
+READ-ONLY: the probe only fwrites a binary log (gated by env
+OPENPETE_ENVVERT_LOG; no-op when unset) and never writes PSX RAM,
+cpu state, or any gameplay-readable byte — exactly the diag_cone /
+ui_moby precedent. Mechanism: the appended call does not alter the
+translated `lw` (the original load is emitted verbatim before it).
+Verified: aspect_determinism bit-identical across 3000 frames with
+the substitution present (gameplay log unchanged); validated the
+camera-free property (100% of terrain verts constant per ptr across
+frames) used by the §7.5 PSX-RAM terrain-reproject path."""
+substitution_sites = [
+    0x80025A34,  # lw $a0, 4($s1) — env per-vertex world load
+]
+verdict_fn       = "openpete_envvert_probe"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # read-only diagnostic; no state written
+doc              = "notes/plans/openpete-transform-interp.md"
+
+[[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
 status      = "gated"
 description = """
