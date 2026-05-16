@@ -532,7 +532,19 @@ static int matrix_is_near_identity(const int16_t rt[3][3]);
  * side, once per game frame. Returns batch index or -1. obj_tag==0
  * (world/composite) is NOT identified this way; those keep the
  * centroid/ordinal path. */
+/* A/B verification toggle: OPENPETE_LEGACY_IDENTITY=1 disables the
+ * transform-interp identity (obj_tag + world_ord), forcing the pre-
+ * foundation centroid-hash-only path. Lets a same-window A/B on the
+ * deterministic demo measure exactly what the foundation buys. */
+static int legacy_identity(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_LEGACY_IDENTITY");
+                 v = (e && *e && atoi(e) != 0) ? 1 : 0; }
+    return v;
+}
+
 static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag) {
+    if (legacy_identity()) return -1;
     if (tag == 0u) return -1;
     for (uint32_t i = 0; i < f->count; ++i)
         if (f->batches[i].obj_tag == tag && !f->batches[i].consumed)
@@ -547,6 +559,7 @@ static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag) {
  * centroid-hash fallback rather than mispair). */
 static int find_unconsumed_by_world_ord(matcher_frame_t* f, uint32_t ord,
                                         uint32_t ref_vc) {
+    if (legacy_identity()) return -1;
     if (ord == 0xFFFFFFFFu) return -1;
     for (uint32_t i = 0; i < f->count; ++i) {
         matcher_batch_t* b = &f->batches[i];
