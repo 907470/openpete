@@ -971,7 +971,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x23: code = translate_subu(instr); break;    // subu
             case 0x24: code = translate_and(instr); break;     // and
             case 0x25: code = translate_or(instr); break;      // or
-            case 0x26: code = translate_xor(instr); break;     // xor
+            case 0x26:                                          // xor
+                if (addr == 0x80026238u) {
+                    /* §7.5-R3 dominant-terrain world-geo tag hook.
+                     * r_environment.s func_800258F0 `.L80026228`:
+                     *   0x80026228 lw  $t7,0($ra)  ; strip list entry
+                     *   0x80026234 andi $s1,$t7,1  ; tag low bit
+                     *   0x80026238 xor $t7,$t7,$s1 ; $t7 = strip base
+                     *   ... vertex loop → RTPS @ 0x800262C0 (the path
+                     *   that fills the render cache for terrain).
+                     * After the xor, $t7 (= rd) holds the aligned
+                     * strip-base pointer — a stable per-strip address
+                     * for static level geometry. Stash it so gte_rtps_
+                     * internal can stamp a stable cross-frame WORLD
+                     * batch tag. Cleared at the per-moby loop
+                     * (0x80022B08). */
+                    code = fmt::format(
+                        "{} openpete_world_geo_set_current({});",
+                        translate_xor(instr), reg_name(get_rd(instr)));
+                } else {
+                    code = translate_xor(instr);
+                }
+                break;
             case 0x27: code = translate_nor(instr); break;     // nor
             case 0x2A: code = translate_slt(instr); break;     // slt
             case 0x2B: code = translate_sltu(instr); break;    // sltu
@@ -1399,8 +1420,13 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * registered by games/spyro-1/. */
                     if (addr == 0x80022B08u) {
                         uint32_t rt = get_rt(instr);
+                        /* Also clear the world-geo strip tag (§7.5-R3):
+                         * once per-moby rendering begins, world-strip
+                         * state is stale, so moby projections must fall
+                         * back to the moby-vaddr identity in gte. */
                         code = fmt::format(
-                            "{} openpete_ui_moby_set_current({});",
+                            "{} openpete_ui_moby_set_current({}); "
+                            "openpete_world_geo_clear();",
                             translate_lw(instr), reg_name(rt));
                     } else if (addr == 0x80025A34u) {
                         /* §7.5 terrain-reproject validation probe.

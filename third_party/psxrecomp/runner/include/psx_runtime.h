@@ -367,6 +367,16 @@ void     openpete_ui_moby_set_current(uint32_t moby_addr);
 int      openpete_ui_moby_is_current_ui(void);
 uint32_t openpete_ui_moby_get_current(void);
 
+/* Per-strip world-geometry identity (transform-interp §7.5-R3). The
+ * recompiler emits openpete_world_geo_set_current at the dominant
+ * terrain strip-entry of func_800258F0 (0x80026238, after the strip
+ * base ptr is aligned) and openpete_world_geo_clear at the per-moby
+ * loop (0x80022B08), so gte_rtps_internal can stamp a stable cross-
+ * frame world batch tag. See core/include/openpete_world_geo.h. */
+void     openpete_world_geo_set_current(uint32_t strip_addr);
+void     openpete_world_geo_clear(void);
+uint32_t openpete_world_geo_get_current(void);
+
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *
  * Lets renderer-side code register a host buffer at any PSX vaddr above

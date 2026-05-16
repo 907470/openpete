@@ -18,6 +18,7 @@
 /* Renderer-foundation Phase 0 (world-space cache). gte_rtps_internal
  * emits per-vertex entries here; PsyCross's OT walker consumes them. */
 #include "openpete_render_cache.h"
+#include "openpete_world_geo.h"
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
@@ -296,7 +297,17 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         /* transform-interp §4: real per-moby identity from the
          * recompiler's per-moby ui-moby capture (0 = world/non-moby).
          * Same side-channel widescreen_eff_ofx already consumes. */
-        e.obj_tag = openpete_ui_moby_get_current();
+        {
+            /* §7.5-R3: stable cross-frame WORLD batch identity. When
+             * the recompiler's terrain strip-entry injection has a
+             * strip ptr stashed (and the per-moby loop hasn't cleared
+             * it), tag this vertex with strip|BIT30 — disjoint from
+             * moby vaddrs (0x80xxxxxx) and 0. Otherwise fall back to
+             * the per-moby vaddr (UI/gameplay moby identity). */
+            uint32_t wg = openpete_world_geo_get_current();
+            e.obj_tag = wg ? (wg | OPENPETE_WORLD_GEO_TAG_BIT)
+                           : openpete_ui_moby_get_current();
+        }
         openpete_render_cache_emit_vertex(&e);
     }
 

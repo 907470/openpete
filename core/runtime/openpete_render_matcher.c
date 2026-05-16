@@ -28,15 +28,49 @@
 
 #include "openpete_render_matcher.h"
 #include "openpete_render_cache.h"
+#include "openpete_world_geo.h"
 #include "openpete_vertex_trace.h"
+
+/* transform-interp §7.5-R3: a batch is WORLD geometry if it's
+ * untagged (legacy obj_tag==0 fallback) or carries the recompiler's
+ * stable terrain strip tag (bit30 set, disjoint from moby vaddrs). */
+static inline int is_world_obj_tag(uint32_t t) {
+    return (t == 0u) || (t & OPENPETE_WORLD_GEO_TAG_BIT) != 0u;
+}
+
+/* §7.5-R3: batches are keyed by matrix_span_id, which equals one
+ * object only when each object has its own RT/TR (true for mobys).
+ * World strips SHARE the camera view matrix → one span collapses
+ * many strips into a single batch, destroying per-strip identity.
+ * For world-tagged strips, remap to a synthetic per-strip span id =
+ * (1<<31) | mix(matrix_span_id, strip_tag). This is a pure function
+ * of (span, strip) so it's cross-frame stable, and the top bit puts
+ * it in a range disjoint from real (small, sequential)
+ * matrix_span_ids — so every existing span-keyed mechanism (batch
+ * create, tomap, find_span, pairing, substitute selection) delivers
+ * strip granularity with zero ripple. Mobys and untagged world
+ * (obj_tag==0, legacy world_ord path) are returned unchanged. */
+static inline uint32_t eff_span(const openpete_render_cache_entry_t* e) {
+    if (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)
+        return (1u << 31) | (e->matrix_span_id * 2654435761u
+                             ^ e->obj_tag);
+    return e->matrix_span_id;
+}
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
-#define MATCHER_MAX_BATCHES 256u
-#define MATCHER_HASH_SLOTS  512u  /* power-of-two */
+/* §7.5-R3: world is now per-STRIP batched (eff_span splits the shared
+ * terrain view-matrix span into one batch per strip tag) instead of
+ * ~1 batch per matrix_span. A level's visible terrain can be many
+ * hundreds of strips, so the old 256 cap would silently overflow
+ * (find_or_create → NULL → strip gets no interp). 4096 covers full
+ * terrain + mobys with headroom; ~matcher_batch_t·4096·3 frames is a
+ * few MB, trivial host-side. */
+#define MATCHER_MAX_BATCHES 4096u
+#define MATCHER_HASH_SLOTS  8192u  /* power-of-two, >2× max batches */
 #define MATCHER_PROBE_MAX   32u
 
 typedef struct matcher_batch {
@@ -340,7 +374,7 @@ void openpete_render_matcher_observe_tri(const int16_t* p0,
         g_openpete_render_matcher_no_cache_count++;
         return;
     }
-    matcher_batch_t* b = find_batch_by_span(e.matrix_span_id);
+    matcher_batch_t* b = find_batch_by_span(eff_span(&e));
     if (b) b->prim_count++;
 }
 
@@ -356,7 +390,7 @@ void openpete_render_matcher_observe_quad(const int16_t* p0,
         g_openpete_render_matcher_no_cache_count++;
         return;
     }
-    matcher_batch_t* b = find_batch_by_span(e.matrix_span_id);
+    matcher_batch_t* b = find_batch_by_span(eff_span(&e));
     if (b) b->prim_count++;
 }
 
@@ -546,7 +580,7 @@ static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
  * matrix_span_id. `ud` is the target matcher_frame_t*. */
 static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     matcher_frame_t* f = (matcher_frame_t*)ud;
-    matcher_batch_t* b = find_or_create_batch_in(f, e->matrix_span_id);
+    matcher_batch_t* b = find_or_create_batch_in(f, eff_span(e));
     if (!b) return;
     if (b->vertex_count == 0) {
         /* First vertex of this batch — capture RT for UI-opt-out test
@@ -562,7 +596,7 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
      * per-vertex correspondence query can find where this logical
      * vertex ended up one game frame later. */
     if (f == &s_to)
-        tomap_insert(e->matrix_span_id, e->v_local, e->sxy_key);
+        tomap_insert(eff_span(e), e->v_local, e->sxy_key);
 }
 
 static int matrix_is_near_identity(const int16_t rt[3][3]);
@@ -636,7 +670,7 @@ static matcher_batch_t* find_span(matcher_frame_t* f, uint32_t span) {
  * paired span, how many resolve in its matched to-span. */
 static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     (void)ud;
-    matcher_batch_t* b = find_span(s_curr, e->matrix_span_id);
+    matcher_batch_t* b = find_span(s_curr, eff_span(e));
     if (!b || !b->has_future_anchor) return;
     b->corr_tot++;
     uint32_t to_sxy;
@@ -950,8 +984,11 @@ void openpete_render_matcher_prepare_substitute(void) {
                  * deformation — they use the composite-reproject path
                  * (whole-span consistent motion, no tear) so the gate
                  * must NOT freeze them (that was the round-2 "zero
-                 * blue on world"). */
-                if (!b->has_future_anchor || b->obj_tag == 0u
+                 * blue on world"). §7.5-R3: bit30-tagged terrain
+                 * strips are world too — same exemption (their
+                 * v_local-keyed corr is ~0 by construction; they
+                 * use §7.3 composite reproject, not tomap). */
+                if (!b->has_future_anchor || is_world_obj_tag(b->obj_tag)
                     || b->corr_tot < 8u) continue;
                 if (b->corr_hit * 100u < (uint32_t)min_pct * b->corr_tot) {
                     b->has_future_anchor = 0;          /* whole-span freeze */
@@ -966,7 +1003,8 @@ void openpete_render_matcher_prepare_substitute(void) {
     if (world_diag()) {
         for (uint32_t i = 0; i < s_curr->count; ++i) {
             const matcher_batch_t* b = &s_curr->batches[i];
-            if (b->vertex_count == 0u || b->obj_tag != 0u) continue;
+            if (b->vertex_count == 0u || !is_world_obj_tag(b->obj_tag))
+                continue;
             s_wd_batches++;
             if (b->is_ui_opt_out) s_wd_uiopt++;
             else if (b->has_future_anchor) s_wd_anchored++;
@@ -1044,10 +1082,10 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         g_openpete_render_substitute_vert_miss_count++;
         return out;
     }
-    if (entry.obj_tag == 0u) s_wd_q_world_entry++;
+    if (is_world_obj_tag(entry.obj_tag)) s_wd_q_world_entry++;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         const matcher_batch_t* b = &s_curr->batches[i];
-        if (b->matrix_span_id != entry.matrix_span_id) continue;
+        if (b->matrix_span_id != eff_span(&entry)) continue;
         if (b->is_ui_opt_out) {
             /* HUD/UI batches must not lerp — screen-space, near-identity
              * world matrix; a delta would smear the 2D overlay. */
@@ -1067,8 +1105,19 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
          * hit `entry`) and the matched to-span's matrix, and apply
          * α·(to−from). Every vertex of the span uses the SAME
          * matrix pair ⇒ consistent motion, no tear; α=0 ⇒ 0 ⇒
-         * exactly the cached lagged frame (residual cancels). */
-        if (b->obj_tag == 0u) {
+         * exactly the cached lagged frame (residual cancels).
+         *
+         * §7.5-R3: bit30-tagged terrain strips route here too. With
+         * the recompiler strip tag, world batches now pair via the
+         * REAL-identity find_unconsumed_by_obj_tag path (same strip
+         * K-1↔K), fixing the mispairing that produced the §7.5
+         * `samemtx` 0px artifact. KNOWN LIMITATION (not papered
+         * over): this reprojects entry.v_local (K-1 camera-relative)
+         * through from vs to matrix — it captures camera ROTATION
+         * but is blind to camera TRANSLATION (campos move with rt
+         * unchanged ⇒ 0 delta). Full fix = PHASE-B emission-ordinal
+         * endpoint-lerp (cache schema), gated on this measurement. */
+        if (is_world_obj_tag(b->obj_tag)) {
             s_wd_q_total++;
             const matcher_batch_t* tb = find_span(&s_to, b->to_span_id);
             if (!tb || tb->vertex_count == 0u) {
@@ -1156,7 +1205,7 @@ int openpete_render_matcher_is_smoothed(const int16_t* p) {
     if (!openpete_render_cache_lookup_prev2(key, &entry)) return 0;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         const matcher_batch_t* b = &s_curr->batches[i];
-        if (b->matrix_span_id != entry.matrix_span_id) continue;
+        if (b->matrix_span_id != eff_span(&entry)) continue;
         if (b->is_ui_opt_out || !b->has_future_anchor) return 0;
         uint32_t to_sxy;
         if (!tomap_lookup(b->to_span_id, entry.v_local, &to_sxy)) return 0;

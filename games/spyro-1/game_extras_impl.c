@@ -230,12 +230,14 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
     fwrite(b, 1, 48, s_ev_fp);
 }
 
-/* §7.5 re-validation callback. Read-only: emits one 64B record per
- * world (obj_tag==0) render-cache entry. Layout:
+/* §7.5 re-validation callback. Read-only: emits one 80B record per
+ * world (obj_tag==0) render-cache entry. Layout (v2):
  *   0  u32 frame      4  u32 sxy_key   8  u32 obj_tag
  *   12 i16 rt[9]      30 i16 v_local[3]
- *   36 i32 tr[3]      48 i32 mac[3]    60 u32 pad   (=64) */
-typedef struct { FILE* fp; uint32_t left; } openpete_wr_ud_t;
+ *   36 i32 tr[3]      48 i32 mac[3]
+ *   60 i32 campos[3]  72 u32 pad[2]    (=80) */
+typedef struct { FILE* fp; uint32_t left; int32_t campos[3]; }
+    openpete_wr_ud_t;
 
 static void openpete_worldrt_dump_cb(
         const openpete_render_cache_entry_t* e, void* userdata) {
@@ -243,7 +245,7 @@ static void openpete_worldrt_dump_cb(
     if (!ud || !ud->fp || ud->left == 0) return;
     if (e->obj_tag != 0u) return;            /* world / non-moby only */
     ud->left--;
-    uint8_t r[64];
+    uint8_t r[80];
     memcpy(r +  0, &openpete_frame, 4);
     memcpy(r +  4, &e->sxy_key, 4);
     memcpy(r +  8, &e->obj_tag, 4);
@@ -255,8 +257,9 @@ static void openpete_worldrt_dump_cb(
     memcpy(r + 30, e->v_local, 6);
     memcpy(r + 36, e->tr, 12);
     memcpy(r + 48, e->mac, 12);
-    uint32_t z = 0; memcpy(r + 60, &z, 4);
-    fwrite(r, 1, 64, ud->fp);
+    memcpy(r + 60, ud->campos, 12);
+    uint32_t z[2] = {0,0}; memcpy(r + 72, z, 8);
+    fwrite(r, 1, 80, ud->fp);
 }
 
 void openpete_diag_cone_dump(void* cpu_v,
@@ -597,7 +600,7 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
                 if (pc && *pc) s_wr_perfr = (uint32_t)atoi(pc);
                 s_wr_fp = fopen(p, "wb");
                 if (s_wr_fp) {
-                    uint32_t h[8] = { 0x30545257u /*"WRT0"*/, 1u, 64u,
+                    uint32_t h[8] = { 0x30545257u /*"WRT0"*/, 2u, 80u,
                                       0,0,0,0,0 };
                     fwrite(h, sizeof(h), 1, s_wr_fp);
                 }
@@ -610,6 +613,9 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
                 s_wr_n++;
                 openpete_wr_ud_t ud;
                 ud.fp = s_wr_fp; ud.left = s_wr_perfr;
+                for (int k = 0; k < 3; k++)   /* g_Camera.m_Position */
+                    ud.campos[k] =
+                        (int32_t)cpu->read_word(0x80076DD0u + 0x28u + k*4u);
                 openpete_render_cache_for_each_curr_entry(
                     openpete_worldrt_dump_cb, &ud);
             }
