@@ -88,12 +88,35 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;
     }
+    /* Escape quits — but not while a gamepad is connected, so a controller's
+     * phantom desktop-config keystroke can't kill the game. The window-close
+     * path above still quits. */
     if (ev->type == SDL_EVENT_KEY_DOWN &&
-        ev->key.scancode == SDL_SCANCODE_ESCAPE) {
+        ev->key.scancode == SDL_SCANCODE_ESCAPE &&
+        !SDL_HasGamepad()) {
         g_shutdown_requested = 1;
         return false;
     }
     return true;  /* keep everything else in queue for PsyCross */
+}
+
+/* Host hotkeys (Tab fast-forward, 1/2/3 savestates, F7-F10, I) read the
+ * keyboard directly. A connected controller can inject phantom keystrokes —
+ * the Steam Controller's Steam-Input desktop config does exactly this — and
+ * SDL surfaces them with which==0, indistinguishable from a real keyboard.
+ * So while a gamepad is connected we suppress the keyboard for hotkeys,
+ * EXCEPT keys that no controller config emits and which are therefore always
+ * a genuine press. Tab (fast-forward) is the one such key today; add more to
+ * the allowlist below if they prove phantom-safe. Returns a buffer indexed
+ * exactly like SDL_GetKeyboardState's array; all callers already null-check. */
+static const bool* openpete_keyboard_state(void) {
+    const bool* sdl = SDL_GetKeyboardState(NULL);
+    if (!sdl || !SDL_HasGamepad())
+        return sdl;
+    static bool filtered[SDL_SCANCODE_COUNT];
+    memset(filtered, 0, sizeof(filtered));
+    filtered[SDL_SCANCODE_TAB] = sdl[SDL_SCANCODE_TAB];  /* phantom-safe */
+    return filtered;
 }
 
 static void openpete_on_sigint(int sig) {
@@ -1114,7 +1137,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * keyboard cache and AFTER the present has consumed the previous
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
-        const bool* kbd_top = SDL_GetKeyboardState(NULL);
+        const bool* kbd_top = openpete_keyboard_state();
         /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
          * caches it; mirror the same gate here so the sim-due predicate
          * follows the pacer when measurement mode is on. Re-read each
@@ -1180,7 +1203,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Tab-held throttle: cap the event pump at ~120 Hz so per-iteration
          * cost drops at unlocked frame rate. We still pump *some* events so
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
-        const bool* kbd_pre = SDL_GetKeyboardState(NULL);
+        const bool* kbd_pre = openpete_keyboard_state();
 
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
@@ -1638,7 +1661,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * speed, not game state — fast-forward is invisible to BK2
          * replay determinism. Scheduled --unlock-frames windows (test
          * harness) OR into the same flag. */
-        const bool* kbd = SDL_GetKeyboardState(NULL);
+        const bool* kbd = openpete_keyboard_state();
         /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
          * legacy / dual-pacer cadence active even under --headless. Used
          * by scripts/measure-pacing.py to capture before/after numbers
