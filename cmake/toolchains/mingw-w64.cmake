@@ -20,6 +20,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 # Single-file .exe: statically link libgcc, libstdc++, and winpthread so we
-# don't have to ship .dll alongside. SDL2 itself remains a runtime .dll
-# (libSDL2-2.0.dll) — that's the prebuilt's ABI.
+# don't have to ship .dll alongside. SDL3 is built from the third_party/SDL
+# submodule as a static lib (SDL_STATIC=ON), so it links into the .exe too —
+# no SDL runtime .dll.
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++ -static")

@@ -26,7 +26,7 @@
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <libco.h>
 #include <errno.h>
 #include <math.h>
@@ -78,23 +78,22 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * the game fiber and vblank thread still mid-flight). */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
-static int openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
+static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
     (void)userdata;
-    if (ev->type == SDL_QUIT) {
+    if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
-        return 0;  /* drop so PsyX_Sys_DoPollEvent never sees it */
+        return false;  /* drop so PsyX_Sys_DoPollEvent never sees it */
     }
-    if (ev->type == SDL_WINDOWEVENT &&
-        ev->window.event == SDL_WINDOWEVENT_CLOSE) {
+    if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         g_shutdown_requested = 1;
-        return 0;
+        return false;
     }
-    if (ev->type == SDL_KEYDOWN &&
-        ev->key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+    if (ev->type == SDL_EVENT_KEY_DOWN &&
+        ev->key.scancode == SDL_SCANCODE_ESCAPE) {
         g_shutdown_requested = 1;
-        return 0;
+        return false;
     }
-    return 1;  /* keep everything else in queue for PsyCross */
+    return true;  /* keep everything else in queue for PsyCross */
 }
 
 static void openpete_on_sigint(int sig) {
@@ -679,14 +678,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         extern const int openpete_spyro1_icon_w __attribute__((weak));
         extern const int openpete_spyro1_icon_h __attribute__((weak));
         if (&openpete_spyro1_icon_w && openpete_spyro1_icon_w > 0) {
-            SDL_Surface* icon = SDL_CreateRGBSurfaceFrom(
-                (void*)openpete_spyro1_icon_rgba,
+            SDL_Surface* icon = SDL_CreateSurfaceFrom(
                 openpete_spyro1_icon_w, openpete_spyro1_icon_h,
-                32, openpete_spyro1_icon_w * 4,
-                0x000000FFu, 0x0000FF00u, 0x00FF0000u, 0xFF000000u);
+                SDL_PIXELFORMAT_RGBA32,
+                (void*)openpete_spyro1_icon_rgba,
+                openpete_spyro1_icon_w * 4);
             if (icon) {
                 SDL_SetWindowIcon(g_window, icon);
-                SDL_FreeSurface(icon);
+                SDL_DestroySurface(icon);
             }
         }
     }
@@ -847,7 +846,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * Net effect: GL output is naturally 30fps and there's no yellow flash
      * between game frames. (Phase 1f rendering fix.) */
 
-    Uint32 start = SDL_GetTicks();
+    Uint64 start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
     int    exit_code = OPENPETE_EXIT_OK;
     const char* exit_reason = "frame-limit";
     int    quit = 0;
@@ -1111,7 +1110,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * keyboard cache and AFTER the present has consumed the previous
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
-        const Uint8* kbd_top = SDL_GetKeyboardState(NULL);
+        const bool* kbd_top = SDL_GetKeyboardState(NULL);
         /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
          * caches it; mirror the same gate here so the sim-due predicate
          * follows the pacer when measurement mode is on. Re-read each
@@ -1177,7 +1176,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Tab-held throttle: cap the event pump at ~120 Hz so per-iteration
          * cost drops at unlocked frame rate. We still pump *some* events so
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
-        const Uint8* kbd_pre = SDL_GetKeyboardState(NULL);
+        const bool* kbd_pre = SDL_GetKeyboardState(NULL);
 
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
@@ -1334,12 +1333,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * deterministic across runs by construction. */
         if (position_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
             position_log_emit(position_log_fp, openpete_frame,
-                              SDL_AtomicGet(&openpete_vbl));
+                              SDL_GetAtomicInt(&openpete_vbl));
         }
         if (gameplay_hash_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
             game_on_hash_emit(openpete_frame);
             gameplay_hash_log_emit(gameplay_hash_log_fp, openpete_frame,
-                                   SDL_AtomicGet(&openpete_vbl));
+                                   SDL_GetAtomicInt(&openpete_vbl));
         }
 
         /* --bk2-record: one bk2 frame per openpete_frame so replay timing
@@ -1608,7 +1607,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         if (!quit && opts->max_runtime_seconds > 0 &&
             (SDL_GetTicks() - start)
-                > (Uint32)opts->max_runtime_seconds * 1000) {
+                > (Uint64)opts->max_runtime_seconds * 1000) {
             quit = 1;
             exit_reason = "max-runtime-seconds";
         }
@@ -1621,9 +1620,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (sim_due) {
             if ((openpete_frame & 0x3F) == 1u) {
                 OPL_INFO_F("loop",
-                           "frame=%u prims_last=%u elapsed_ms=%u",
+                           "frame=%u prims_last=%u elapsed_ms=%llu",
                            openpete_frame, openpete_primitives_drawn,
-                           (unsigned)(SDL_GetTicks() - start));
+                           (unsigned long long)(SDL_GetTicks() - start));
             }
             openpete_primitives_drawn = 0u;
         }
@@ -1635,7 +1634,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * speed, not game state — fast-forward is invisible to BK2
          * replay determinism. Scheduled --unlock-frames windows (test
          * harness) OR into the same flag. */
-        const Uint8* kbd = SDL_GetKeyboardState(NULL);
+        const bool* kbd = SDL_GetKeyboardState(NULL);
         /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
          * legacy / dual-pacer cadence active even under --headless. Used
          * by scripts/measure-pacing.py to capture before/after numbers
@@ -1776,10 +1775,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_psxtrace_dispatch_hook = NULL;
     }
 
-    Uint32 elapsed = SDL_GetTicks() - start;
+    Uint64 elapsed = SDL_GetTicks() - start;
     OPL_INFO_F("exit",
-               "reason=%s frames=%u elapsed_ms=%u dispatch_ok=%d",
-               exit_reason, openpete_frame, elapsed, g_game.dispatch_ok);
+               "reason=%s frames=%u elapsed_ms=%llu dispatch_ok=%d",
+               exit_reason, openpete_frame,
+               (unsigned long long)elapsed, g_game.dispatch_ok);
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
@@ -1844,17 +1844,17 @@ int openpete_run(const openpete_options_t* opts) {
 #endif
 
     if (opts->headless) {
-        SDL_setenv("SDL_VIDEODRIVER", "offscreen", 0);
+        SDL_setenv_unsafe("SDL_VIDEODRIVER", "offscreen", 0);
         OPL_INFO_F("boot", "headless mode requested (preferred driver: %s)",
                    SDL_getenv("SDL_VIDEODRIVER"));
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         if (opts->headless) {
             OPL_WARN_F("boot", "SDL_Init under '%s' failed (%s); retrying with dummy",
                        SDL_getenv("SDL_VIDEODRIVER"), SDL_GetError());
-            SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
-            if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+            SDL_setenv_unsafe("SDL_VIDEODRIVER", "dummy", 1);
+            if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
                 OPL_ERROR_F("boot", "SDL_Init dummy fallback also failed: %s", SDL_GetError());
                 return OPENPETE_EXIT_PANIC;
             }
@@ -1865,27 +1865,26 @@ int openpete_run(const openpete_options_t* opts) {
     }
     OPL_INFO_F("boot", "SDL video driver: %s", SDL_GetCurrentVideoDriver());
 
-    Uint32 window_flags = SDL_WINDOW_SHOWN;
-    if (opts->headless) {
-        window_flags = SDL_WINDOW_HIDDEN;
-    }
+    /* SDL3: windows are shown by default; SDL_WINDOW_SHOWN is gone. */
+    SDL_WindowFlags window_flags = opts->headless ? SDL_WINDOW_HIDDEN : 0;
     SDL_Window* window = SDL_CreateWindow(
-        opts->display_name,
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WIN_W, WIN_H, window_flags);
+        opts->display_name, WIN_W, WIN_H, window_flags);
     if (!window) {
         OPL_ERROR_F("boot", "SDL_CreateWindow: %s", SDL_GetError());
         SDL_Quit();
         return OPENPETE_EXIT_PANIC;
     }
 
-    Uint32 renderer_flags = opts->headless ? SDL_RENDERER_SOFTWARE
-                                           : SDL_RENDERER_ACCELERATED;
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, renderer_flags);
+    /* SDL3: SDL_CreateRenderer takes a driver name, not an index+flags.
+     * NULL = let SDL pick (accelerated); SDL_SOFTWARE_RENDERER forces the
+     * software rasteriser used for the headless screenshot path. */
+    SDL_Renderer* renderer = opts->headless
+        ? SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER)
+        : SDL_CreateRenderer(window, NULL);
     if (!renderer && !opts->headless) {
         OPL_WARN_F("boot", "accelerated renderer unavailable, falling back: %s",
                    SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+        renderer = SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
     }
     if (!renderer) {
         OPL_ERROR_F("boot", "SDL_CreateRenderer: %s", SDL_GetError());
@@ -1894,7 +1893,7 @@ int openpete_run(const openpete_options_t* opts) {
         return OPENPETE_EXIT_PANIC;
     }
 
-    Uint32 start = SDL_GetTicks();
+    Uint64 start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
     int frame = 0;
     int exit_code = OPENPETE_EXIT_OK;
     const char* exit_reason = "window-closed";
@@ -1904,7 +1903,7 @@ int openpete_run(const openpete_options_t* opts) {
     while (!quit) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT) {
+            if (ev.type == SDL_EVENT_QUIT) {
                 quit = true;
                 exit_reason = "sdl-quit";
             }
@@ -1937,21 +1936,22 @@ int openpete_run(const openpete_options_t* opts) {
             exit_reason = "frame-limit";
         }
         if (opts->max_runtime_seconds > 0 &&
-            (SDL_GetTicks() - start) > (Uint32)opts->max_runtime_seconds * 1000) {
+            (SDL_GetTicks() - start) > (Uint64)opts->max_runtime_seconds * 1000) {
             quit = true;
             exit_reason = "max-runtime-seconds";
         }
     }
 
-    Uint32 elapsed_ms = SDL_GetTicks() - start;
-    OPL_INFO_F("exit", "reason=%s frames=%d elapsed_ms=%u screenshot_status=%d",
-               exit_reason, frame, elapsed_ms, screenshot_status);
+    Uint64 elapsed_ms = SDL_GetTicks() - start;
+    OPL_INFO_F("exit", "reason=%s frames=%d elapsed_ms=%llu screenshot_status=%d",
+               exit_reason, frame, (unsigned long long)elapsed_ms,
+               screenshot_status);
 
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    fprintf(stdout, "openpete-exit: reason=%s frames=%d ms=%u code=%d\n",
-            exit_reason, frame, elapsed_ms, exit_code);
+    fprintf(stdout, "openpete-exit: reason=%s frames=%d ms=%llu code=%d\n",
+            exit_reason, frame, (unsigned long long)elapsed_ms, exit_code);
     return exit_code;
 }

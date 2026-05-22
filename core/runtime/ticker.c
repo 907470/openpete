@@ -17,19 +17,19 @@
 #include "openpete_log.h"
 #include "openpete_time.h"
 
-#include <SDL.h>
-#include <SDL_thread.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_thread.h>
 #include <stddef.h>
 
-int          openpete_ticker_active     = 0;
-int          openpete_unlock_fps        = 0;
-SDL_cond*    openpete_ticker_wake_cond  = NULL;
-SDL_mutex*   openpete_ticker_wake_mutex = NULL;
-SDL_atomic_t openpete_ticker_seq        = {0};
+int            openpete_ticker_active     = 0;
+int            openpete_unlock_fps        = 0;
+SDL_Condition* openpete_ticker_wake_cond  = NULL;
+SDL_Mutex*     openpete_ticker_wake_mutex = NULL;
+SDL_AtomicInt  openpete_ticker_seq        = {0};
 
 static SDL_Thread*   s_ticker_thread     = NULL;
-static SDL_atomic_t  s_ticker_running    = {0};
-static SDL_atomic_t  s_ticker_slip_count = {0};
+static SDL_AtomicInt s_ticker_running    = {0};
+static SDL_AtomicInt s_ticker_slip_count = {0};
 
 /* NTSC PSX VBL: 1001/60000 sec = 16683333.33... ns. We keep this in
  * integer ns so the running deadline never accumulates floating-point
@@ -53,7 +53,7 @@ static int ticker_thread_fn(void* user) {
      * cumulative drift can't sneak in via OS-sleep overshoot. */
     op_time_t deadline = op_now() + period_ns;
 
-    while (SDL_AtomicGet(&s_ticker_running)) {
+    while (SDL_GetAtomicInt(&s_ticker_running)) {
         /* Detect host stalls before sleeping. Without this the catch-up
          * loop would fire (now - deadline) / period extra ticks
          * back-to-back, triggering N condvar wakes inside the same
@@ -64,7 +64,7 @@ static int ticker_thread_fn(void* user) {
             op_time_t behind   = now - deadline;
             op_time_t skip_n   = behind / period_ns;
             deadline += skip_n * period_ns;
-            SDL_AtomicAdd(&s_ticker_slip_count, (int)skip_n);
+            SDL_AddAtomicInt(&s_ticker_slip_count, (int)skip_n);
             OPL_WARN_F("ticker",
                        "slip: host stalled %.1f ms (skipped %lld periods)",
                        (double)behind / 1e6, (long long)skip_n);
@@ -73,10 +73,10 @@ static int ticker_thread_fn(void* user) {
         op_sleep_until(deadline);
         deadline += period_ns;
 
-        SDL_AtomicAdd(&openpete_ticker_seq, 1);
+        SDL_AddAtomicInt(&openpete_ticker_seq, 1);
         if (openpete_ticker_wake_cond && openpete_ticker_wake_mutex) {
             SDL_LockMutex(openpete_ticker_wake_mutex);
-            SDL_CondBroadcast(openpete_ticker_wake_cond);
+            SDL_BroadcastCondition(openpete_ticker_wake_cond);
             SDL_UnlockMutex(openpete_ticker_wake_mutex);
         }
     }
@@ -90,26 +90,21 @@ void openpete_ticker_start(void) {
      * the first tick doesn't pay startup latency. Idempotent. */
     op_time_init();
 
-    /* SDL_INIT_TIMER is required for SDL_GetTicks / SDL_Delay (used all
-     * over run.c + audio callbacks). PsyCross only initialises
-     * SDL_INIT_VIDEO, so we top up here. Ref-counted; safe to call
-     * regardless of who initialised first. */
-    if (SDL_InitSubSystem(SDL_INIT_TIMER) != 0) {
-        OPL_ERROR_F("ticker", "SDL_InitSubSystem(TIMER) failed: %s", SDL_GetError());
-        return;
-    }
+    /* SDL3 has no separate timer subsystem — SDL_GetTicks / SDL_Delay and
+     * the perf counters are always available once SDL is initialised, so
+     * the old SDL_InitSubSystem(SDL_INIT_TIMER) top-up is gone. */
 
-    if (!openpete_ticker_wake_cond)  openpete_ticker_wake_cond  = SDL_CreateCond();
+    if (!openpete_ticker_wake_cond)  openpete_ticker_wake_cond  = SDL_CreateCondition();
     if (!openpete_ticker_wake_mutex) openpete_ticker_wake_mutex = SDL_CreateMutex();
     if (!openpete_ticker_wake_cond || !openpete_ticker_wake_mutex) {
-        OPL_ERROR_F("ticker", "SDL_CreateCond/Mutex failed: %s", SDL_GetError());
+        OPL_ERROR_F("ticker", "SDL_CreateCondition/Mutex failed: %s", SDL_GetError());
         return;
     }
 
-    SDL_AtomicSet(&s_ticker_running, 1);
+    SDL_SetAtomicInt(&s_ticker_running, 1);
     s_ticker_thread = SDL_CreateThread(ticker_thread_fn, "openpete-ticker", NULL);
     if (!s_ticker_thread) {
-        SDL_AtomicSet(&s_ticker_running, 0);
+        SDL_SetAtomicInt(&s_ticker_running, 0);
         OPL_ERROR_F("ticker", "SDL_CreateThread failed: %s", SDL_GetError());
         return;
     }
@@ -129,12 +124,12 @@ void openpete_ticker_stop(void) {
          * if the high-res waitable timer is slow to fire on its
          * natural deadline. On POSIX clock_nanosleep already wakes at
          * the next deadline (~17 ms max), no force-wake needed. */
-        SDL_AtomicSet(&s_ticker_running, 0);
+        SDL_SetAtomicInt(&s_ticker_running, 0);
         op_time_wake_pending_sleeps();
         SDL_WaitThread(s_ticker_thread, NULL);
         s_ticker_thread = NULL;
 
-        int total_slips = SDL_AtomicGet(&s_ticker_slip_count);
+        int total_slips = SDL_GetAtomicInt(&s_ticker_slip_count);
         if (total_slips > 0) {
             OPL_INFO_F("ticker",
                        "stopped; %d slip events over session", total_slips);
@@ -144,7 +139,7 @@ void openpete_ticker_stop(void) {
     if (openpete_ticker_wake_cond && openpete_ticker_wake_mutex) {
         /* Wake any host-loop iteration blocked on us before we tear down. */
         SDL_LockMutex(openpete_ticker_wake_mutex);
-        SDL_CondBroadcast(openpete_ticker_wake_cond);
+        SDL_BroadcastCondition(openpete_ticker_wake_cond);
         SDL_UnlockMutex(openpete_ticker_wake_mutex);
     }
 }

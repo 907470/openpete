@@ -17,8 +17,8 @@
 #ifndef OPENPETE_TICKER_H
 #define OPENPETE_TICKER_H
 
-#include <SDL_atomic.h>
-#include <SDL_mutex.h>
+#include <SDL3/SDL_atomic.h>
+#include <SDL3/SDL_mutex.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,9 +40,9 @@ extern int openpete_unlock_fps;
  * next slice on a wall-clock vblank. `_seq` increments on every fire so
  * the host wait can detect "tick happened" without racing on a side
  * counter (vbl is yield-driven now and useless for this). */
-extern SDL_cond*    openpete_ticker_wake_cond;
-extern SDL_mutex*   openpete_ticker_wake_mutex;
-extern SDL_atomic_t openpete_ticker_seq;
+extern SDL_Condition* openpete_ticker_wake_cond;
+extern SDL_Mutex*     openpete_ticker_wake_mutex;
+extern SDL_AtomicInt  openpete_ticker_seq;
 
 /* Start the ticker at NTSC 59.94 Hz on a dedicated SDL thread that
  * sleeps to phase-locked deadlines via op_sleep_until. Allocates the

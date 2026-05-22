@@ -7,16 +7,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# When cross-compiling with MinGW, point find_package(SDL2) at the vendored
-# prebuilt under third_party/SDL2-mingw/. Native Linux uses the system SDL2.
-# Phase 0b TODO: replace the prebuilt with the SDL submodule under
-# third_party/SDL/ once we wire its CMake build into our tree.
+# OpenAL has no Config-mode package file in the openal-soft prebuilt, so
+# when cross-compiling with MinGW seed the cache vars FindOpenAL.cmake reads.
+# Native Linux uses the system OpenAL via FindOpenAL's default search.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    set(SDL2_DIR "${CMAKE_SOURCE_DIR}/third_party/SDL2-mingw/x86_64-w64-mingw32/lib/cmake/SDL2"
-        CACHE PATH "SDL2 cmake config dir")
-
-    # OpenAL has no Config-mode package file in the openal-soft prebuilt,
-    # so seed the cache vars FindOpenAL.cmake reads. Mirrors SDL2-mingw.
     set(_OAL_ROOT "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32")
     # PsyCross uses `#include <AL/al.h>` form, so point at the parent of
     # AL/ (FindOpenAL.cmake's PATH_SUFFIXES allow either, but the one
@@ -29,7 +23,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     unset(_OAL_ROOT)
 endif()
 
-find_package(SDL2 REQUIRED)
+# SDL3 is built from the third_party/SDL submodule, pinned to a recent
+# main commit for Steam Controller (2026) support. See
+# notes/plans/openpete-sdl3-upgrade.md. Static link, no shared lib, no
+# SDL test apps — produces the SDL3::SDL3-static target consumed by
+# openpete_core and PsyCross. Replaces the old find_package(SDL2) +
+# SDL2-mingw prebuilt path.
+set(SDL_STATIC ON  CACHE BOOL "" FORCE)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_TEST   OFF CACHE BOOL "" FORCE)
+# XTEST (X11 synthetic-input extension) is not used by openpete — it only
+# polls input, never injects it. Disabling drops the libXtst-dev build
+# dependency so a from-source SDL build needs no extra system packages.
+set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/SDL)
 
 # Which games to enable. Phase 0b only spyro-1 is wired up.
 set(OPENPETE_GAMES "spyro-1" CACHE STRING "Games to build (semicolon-separated)")

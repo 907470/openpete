@@ -132,7 +132,7 @@ add_executable(openpete-spyro1
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     target_link_options(openpete-spyro1 PRIVATE
         -Wl,--allow-multiple-definition
-        # Override SDL2main's -mwindows so the .exe is a console-subsystem
+        # Override SDL3main's -mwindows so the .exe is a console-subsystem
         # binary; otherwise stdout/stderr aren't attached to the parent
         # terminal when launched via WSL2 interop.
         -mconsole
@@ -228,10 +228,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(openpete-spyro1 PRIVATE -rdynamic)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND TARGET SDL2::SDL2main)
-    target_link_libraries(openpete-spyro1 PRIVATE SDL2::SDL2main)
-elseif(TARGET SDL2::SDL2main)
-    target_link_libraries(openpete-spyro1 PRIVATE SDL2::SDL2main)
+# SDL3's platform entry shim. Required by the TU including <SDL3/SDL_main.h>.
+if(TARGET SDL3::SDL3main)
+    target_link_libraries(openpete-spyro1 PRIVATE SDL3::SDL3main)
 endif()
 
 set_target_properties(openpete-spyro1 PROPERTIES

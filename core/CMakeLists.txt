@@ -126,15 +126,9 @@ set_target_properties(openpete_core PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# SDL2 is required for window/render/screenshot.
-if(TARGET SDL2::SDL2-static)
-    target_link_libraries(openpete_core PUBLIC SDL2::SDL2-static)
-elseif(TARGET SDL2::SDL2)
-    target_link_libraries(openpete_core PUBLIC SDL2::SDL2)
-else()
-    target_include_directories(openpete_core PUBLIC ${SDL2_INCLUDE_DIRS})
-    target_link_libraries(openpete_core PUBLIC ${SDL2_LIBRARIES})
-endif()
+# SDL3 is required for window/render/screenshot. Built from the
+# third_party/SDL submodule (see top-level CMakeLists.txt).
+target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by
 # PSYQ-targeted thunks. Phase 1c flips this default ON; downstream targets

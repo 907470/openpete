@@ -17,7 +17,7 @@
 #include "PsyX/PsyX_render.h"
 #include "screenshot.h"
 #include "stb_image_write.h"
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -56,7 +56,7 @@ extern "C" void openpete_debug_triangle_init(void) {
 
 /* Screenshot dumper. PsyCross ships a `PsyX_TakeScreenshot()` but it produces
  * an upside-down image: glReadPixels returns rows bottom-up (GL origin is
- * bottom-left), SDL_CreateRGBSurfaceFrom treats row 0 as the surface top,
+ * bottom-left), SDL_CreateSurfaceFrom treats row 0 as the surface top,
  * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
  * flip. We re-implement here with an explicit row flip. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
@@ -97,13 +97,13 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
     if (is_png) {
         stbi_write_png(out_path, w, h, 4, pixels, (int)pitch);
     } else {
-        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
-            pixels, w, h, /*depth=*/32, /*pitch=*/(int)pitch,
-            /*Rmask=*/0x00FF0000u, /*Gmask=*/0x0000FF00u,
-            /*Bmask=*/0x000000FFu, /*Amask=*/0xFF000000u);
+        /* glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE) stores bytes B,G,R,A —
+         * the 32-bit little-endian value 0xAARRGGBB, i.e. ARGB8888. */
+        SDL_Surface* surface = SDL_CreateSurfaceFrom(
+            w, h, SDL_PIXELFORMAT_ARGB8888, pixels, (int)pitch);
         if (surface) {
             SDL_SaveBMP(surface, out_path);
-            SDL_FreeSurface(surface);
+            SDL_DestroySurface(surface);
         }
     }
     std::free(pixels);

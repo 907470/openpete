@@ -3,7 +3,7 @@
 #ifndef OPENPETE_SCREENSHOT_H
 #define OPENPETE_SCREENSHOT_H
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #ifdef __cplusplus
 extern "C" {

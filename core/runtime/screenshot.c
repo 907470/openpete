@@ -19,60 +19,47 @@
 int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path) {
     if (!renderer || !path) return -1;
 
-    int w = 0, h = 0;
-    if (SDL_GetRendererOutputSize(renderer, &w, &h) != 0) {
-        OPL_ERROR_F("screenshot", "SDL_GetRendererOutputSize: %s", SDL_GetError());
-        return -1;
-    }
-    if (w <= 0 || h <= 0) {
-        OPL_ERROR_F("screenshot", "renderer has zero size (%dx%d)", w, h);
-        return -1;
-    }
-
-    /* RGBA8888 keeps stb_image_write happy at 4 channels per pixel. */
-    const int channels = 4;
-    const Uint32 fmt   = SDL_PIXELFORMAT_RGBA32;
-    const int   pitch  = w * channels;
-
-    uint8_t* pixels = (uint8_t*)malloc((size_t)pitch * (size_t)h);
-    if (!pixels) {
-        OPL_ERROR_F("screenshot", "malloc %d bytes failed", pitch * h);
-        return -1;
-    }
-
-    if (SDL_RenderReadPixels(renderer, NULL, fmt, pixels, pitch) != 0) {
+    /* SDL3 SDL_RenderReadPixels allocates and returns a surface in the
+     * renderer's native format. Normalise to RGBA8888 so stb_image_write
+     * gets 4 channels per pixel and the BMP path has a known layout. */
+    SDL_Surface* raw = SDL_RenderReadPixels(renderer, NULL);
+    if (!raw) {
         OPL_ERROR_F("screenshot", "SDL_RenderReadPixels: %s", SDL_GetError());
-        free(pixels);
         return -1;
     }
+    SDL_Surface* surface = (raw->format == SDL_PIXELFORMAT_RGBA32)
+        ? raw
+        : SDL_ConvertSurface(raw, SDL_PIXELFORMAT_RGBA32);
+    if (surface != raw) SDL_DestroySurface(raw);
+    if (!surface) {
+        OPL_ERROR_F("screenshot", "SDL_ConvertSurface: %s", SDL_GetError());
+        return -1;
+    }
+
+    const int w = surface->w, h = surface->h;
+    int rc = 0;
 
     /* SDL_RenderReadPixels gives top-down; both PNG and SDL_SaveBMP want
-     * top-down with these masks, so no flip needed. */
+     * top-down, so no flip needed. */
     if (openpete_screenshot_path_is_png(path)) {
-        if (!stbi_write_png(path, w, h, channels, pixels, pitch)) {
+        if (!stbi_write_png(path, w, h, 4, surface->pixels, surface->pitch)) {
             OPL_ERROR_F("screenshot", "stbi_write_png to %s failed", path);
-            free(pixels);
-            return -1;
+            rc = -1;
+        } else {
+            OPL_INFO_F("screenshot", "saved %dx%d PNG to %s", w, h, path);
         }
-        OPL_INFO_F("screenshot", "saved %dx%d PNG to %s", w, h, path);
     } else {
-        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
-            pixels, w, h, /*depth=*/32, /*pitch=*/pitch,
-            /*Rmask=*/0x000000FFu, /*Gmask=*/0x0000FF00u,
-            /*Bmask=*/0x00FF0000u, /*Amask=*/0xFF000000u);
-        if (!surface || SDL_SaveBMP(surface, path) != 0) {
+        if (!SDL_SaveBMP(surface, path)) {
             OPL_ERROR_F("screenshot", "SDL_SaveBMP to %s failed: %s",
                         path, SDL_GetError());
-            if (surface) SDL_FreeSurface(surface);
-            free(pixels);
-            return -1;
+            rc = -1;
+        } else {
+            OPL_INFO_F("screenshot", "saved %dx%d BMP to %s", w, h, path);
         }
-        SDL_FreeSurface(surface);
-        OPL_INFO_F("screenshot", "saved %dx%d BMP to %s", w, h, path);
     }
 
-    free(pixels);
-    return 0;
+    SDL_DestroySurface(surface);
+    return rc;
 }
 
 void openpete_screenshot_format_path(const char* tmpl, int frame,

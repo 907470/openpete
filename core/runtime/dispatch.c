@@ -275,7 +275,7 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_threshold_inited = 1;
     }
     if (s_hang_threshold && !s_hang_tripped) {
-        uint32_t vbl_now = (uint32_t)SDL_AtomicGet(&openpete_vbl);
+        uint32_t vbl_now = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
         if (vbl_now != s_hang_last_vbl) {
             /* Vbl boundary: snapshot the ring before the next vbl interval's
              * dispatches overwrite it. If a hang trips during the next

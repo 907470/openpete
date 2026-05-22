@@ -11,7 +11,7 @@
 #ifndef OPENPETE_FIBER_H
 #define OPENPETE_FIBER_H
 
-#include <SDL_atomic.h>
+#include <SDL3/SDL_atomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,7 +26,7 @@ extern void*    openpete_game_fiber;
  * The game's busy-waits like `int s = VSync(-1); while (VSync(-1) - s < N) VSync(0);`
  * key off this. Atomic because the 60 Hz ticker thread (see
  * openpete_ticker.h) advances it free-running, racing PSX-fiber readers. */
-extern SDL_atomic_t openpete_vbl;
+extern SDL_AtomicInt openpete_vbl;
 
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
  * (i.e. until the game actually starts rendering), then increments on each

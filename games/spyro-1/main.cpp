@@ -1,10 +1,10 @@
 // games/spyro-1/main.cpp — Spyro 1 binary entry point.
 //
 // Tiny wrapper: parse opts, set the display name, hand off to core's run loop.
-// SDL_main is provided by SDL2main on Windows; SDL.h re-#defines main when
-// needed.
+// SDL3's SDL_main.h re-#defines main → SDL_main and supplies the platform
+// entry shim (links SDL3::SDL3main); must be included by the TU with main().
 
-#include <SDL.h>
+#include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "game_extras.h"
 #include "spyro_interp_regions.h"

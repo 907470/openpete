@@ -16,7 +16,7 @@
 #include "PsyX/common/glad.h"
 #include "PsyX/PsyX_globals.h" /* g_windowWidth / g_windowHeight */
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <cstdint>
 #include <cstdio>

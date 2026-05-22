@@ -310,7 +310,7 @@ void psyq_VSync(CPUState* cpu) {
      * so BK2 state at any frame is identical regardless of pacing. */
     int mode = (int)cpu->a0;
     static uint32_t calls = 0u;
-    int observed = SDL_AtomicGet(&openpete_vbl);
+    int observed = SDL_GetAtomicInt(&openpete_vbl);
     if ((++calls & 0x3FFu) == 1u) {
         OPL_INFO_F("thunks", "VSync(%d) vbl=%d frame=%u (call #%u)",
                    mode, observed, openpete_frame, calls);
@@ -322,7 +322,7 @@ void psyq_VSync(CPUState* cpu) {
     }
 
     int wait = (mode == 0) ? 1 : mode;
-    SDL_AtomicAdd(&openpete_vbl, wait);
+    SDL_AddAtomicInt(&openpete_vbl, wait);
 
     /* Advance PsyCross's deterministic ADSR envelope simulation in
      * lockstep with VBL. NTSC PSX: 44100 SPU samples / 60 VBL = 735
@@ -354,7 +354,7 @@ void psyq_VSync(CPUState* cpu) {
      * game's next read. */
     psyq_libpad_mirror_canonical_slot2(cpu);
 
-    cpu->v0 = (uint32_t)SDL_AtomicGet(&openpete_vbl);
+    cpu->v0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
@@ -633,7 +633,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         openpete_fast_boot_active = 0;
         OPL_INFO_F("boot",
                    "fast-boot ended at vbl=%d (first DrawOTag); openpete_frame "
-                   "anchored to 0", SDL_AtomicGet(&openpete_vbl));
+                   "anchored to 0", SDL_GetAtomicInt(&openpete_vbl));
     }
 
     /* 1-game-frame-lag: ping-pong the capture buffers. After the swap
