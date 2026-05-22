@@ -78,18 +78,6 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * the game fiber and vblank thread still mid-flight). */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
-/* Controllers like the Steam Controller emit OS keyboard events ("lizard
- * mode" desktop emulation) alongside their gamepad reports. openpete reads
- * the keyboard via SDL's global state and can't tell a phantom keystroke
- * from a real one, so whenever a gamepad is connected we ignore the
- * keyboard entirely — the controller is the input device. Mirrors the
- * PsyCross pad layer, which gates keyboard-as-pad on the slot having a
- * gamepad. Returns NULL (treated as "nothing pressed" by all callers, which
- * already null-check) when a gamepad is present. */
-static const bool* openpete_keyboard_state(void) {
-    return SDL_HasGamepad() ? NULL : SDL_GetKeyboardState(NULL);
-}
-
 static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
     (void)userdata;
     if (ev->type == SDL_EVENT_QUIT) {
@@ -100,12 +88,8 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;
     }
-    /* Escape quits — but not while a gamepad is connected, so a controller's
-     * phantom lizard-mode keystroke can't kill the game. The window-close
-     * path above still works. */
     if (ev->type == SDL_EVENT_KEY_DOWN &&
-        ev->key.scancode == SDL_SCANCODE_ESCAPE &&
-        !SDL_HasGamepad()) {
+        ev->key.scancode == SDL_SCANCODE_ESCAPE) {
         g_shutdown_requested = 1;
         return false;
     }
@@ -1130,7 +1114,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * keyboard cache and AFTER the present has consumed the previous
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
-        const bool* kbd_top = openpete_keyboard_state();
+        const bool* kbd_top = SDL_GetKeyboardState(NULL);
         /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
          * caches it; mirror the same gate here so the sim-due predicate
          * follows the pacer when measurement mode is on. Re-read each
@@ -1196,7 +1180,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Tab-held throttle: cap the event pump at ~120 Hz so per-iteration
          * cost drops at unlocked frame rate. We still pump *some* events so
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
-        const bool* kbd_pre = openpete_keyboard_state();
+        const bool* kbd_pre = SDL_GetKeyboardState(NULL);
 
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
@@ -1654,7 +1638,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * speed, not game state — fast-forward is invisible to BK2
          * replay determinism. Scheduled --unlock-frames windows (test
          * harness) OR into the same flag. */
-        const bool* kbd = openpete_keyboard_state();
+        const bool* kbd = SDL_GetKeyboardState(NULL);
         /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
          * legacy / dual-pacer cadence active even under --headless. Used
          * by scripts/measure-pacing.py to capture before/after numbers
