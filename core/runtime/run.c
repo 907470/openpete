@@ -341,7 +341,7 @@ static int load_cpu_seed(CPUState* cpu, const char* path) {
  * call (ResetGraph, SetGeomScreen, etc.) — those touch internal SDL/GL
  * state set up here. */
 extern void PsyX_Initialise(char* windowName, int screenWidth,
-                            int screenHeight, int fullscreen);
+                            int screenHeight, int fullscreen, int startHidden);
 extern void PsyX_Shutdown(void);
 extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
 extern char PsyX_BeginScene(void);
@@ -435,7 +435,8 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     /* libgpu/libgte calls touch internal SDL/GL state that PsyX_Initialise
      * sets up. For the smoke-test path we still want PsyCross alive. */
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window", WIN_W, WIN_H);
-    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0);
+    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0,
+                    /*startHidden=*/opts->headless ? 1 : 0);
 
     /* Wire PsyCross's CDFS to the disc .bin so CdRead has real data.
      * --disc PATH.cue derives the sibling .bin; otherwise we skip and
@@ -656,10 +657,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
      * hands back a context with NULL gl* function pointers, so the first call
-     * from GR_InitialisePSX segfaults. We hide the window post-init below. A
-     * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
-     * pure-console CI needs Xvfb. */
-    PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0);
+     * from GR_InitialisePSX segfaults. A GPU/display backend (X/Wayland/WSLg/
+     * WGL) must therefore be present; pure-console CI needs Xvfb. The window
+     * is created unmapped via startHidden so it never flashes or steals
+     * focus — GL/FBO rendering works fine without it ever being shown. */
+    PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
+                    /*startHidden=*/opts->headless ? 1 : 0);
 
     /* Hor+ post-PsyX knob population — see core/features/widescreen.c.
      * Sets g_psyx_render_aspect_factor + every psx_runtime_* knob the
@@ -691,8 +694,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
 
     if (opts->headless && g_window) {
-        SDL_HideWindow(g_window);
-        OPL_INFO_F("boot", "headless: hid PsyCross window (driver=%s)",
+        /* Window was created unmapped (PsyX_Initialise startHidden=1) — no
+         * hide needed here; just record the driver SDL picked. */
+        OPL_INFO_F("boot", "headless: PsyCross window created hidden (driver=%s)",
                    SDL_GetCurrentVideoDriver());
     }
 
