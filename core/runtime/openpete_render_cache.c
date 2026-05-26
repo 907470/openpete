@@ -258,7 +258,19 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
      * int16 SXY path produces, just with sub-pixel detail preserved). */
     out->px = fofx + fmac1 * h_div_sz;
     out->py = fofy + fmac2 * h_div_sz;
-    out->pz = fmac3;             /* reserved for future Z-buffer mode */
+    /* Day 3 — intra-batch perturbation is zero. Spyro's draw-call
+     * vertex order isn't depth-sorted (the player mesh has overlap
+     * between body parts at the same screen pixel; LEQUAL test on
+     * unsorted intra-batch real Z rejects fragments and visibly
+     * breaks the character model). The per-split uniform
+     * u_pgxp_z_bias carries the OT-order signal; intra-batch verts
+     * all share that bias, so they degenerate to OT/triangle-order
+     * which is what Spyro's renderer expects.
+     *
+     * Real-Z intra-batch tiebreaking (for gem-pile / ledge Z-fight
+     * resolution) requires per-primitive opt-in by prim type or
+     * region — that's a follow-up. */
+    out->pz = 0.0f;
     out->ofx = fofx;             /* unused in ortho path */
     out->ofy = fofy;             /* unused in ortho path */
     out->scr_h = 0.0f;           /* keep shader on ortho fallback path */
