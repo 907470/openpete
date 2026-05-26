@@ -340,7 +340,18 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
     out->pz = 0.0f;
     out->ofx = fofx;             /* unused in ortho path */
     out->ofy = fofy;             /* unused in ortho path */
-    out->scr_h = 0.0f;           /* keep shader on ortho fallback path */
+
+    /* Day 4 Phase 2: canonical-context discriminator. Phase 1.0 found
+     * that h=341 is the only frustum in use; non-canonical (ofx, ofy)
+     * are the PSYQ 2D-via-GTE glyph-emit idiom (HUD/text). Route
+     * canonical (256, 120) vertices to the perspective shader path
+     * with a real w for hyperbolic UV interp; leave non-canonical on
+     * the ortho path that Day 1c established as correct. */
+    const int32_t k_canonical_ofx_q16 = (int32_t)(256u << 16);
+    const int32_t k_canonical_ofy_q16 = (int32_t)(120u << 16);
+    const int is_canonical = (e.ofx == k_canonical_ofx_q16 &&
+                              e.ofy == k_canonical_ofy_q16);
+    out->scr_h = is_canonical ? fsz : 0.0f;
     return 1;
 }
 
