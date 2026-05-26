@@ -18,6 +18,13 @@
 /* Renderer-foundation Phase 0 (world-space cache). gte_rtps_internal
  * emits per-vertex entries here; PsyCross's OT walker consumes them. */
 #include "openpete_render_cache.h"
+
+/* Day 4 Phase 1.1: PC-of-issuing-instruction for the current GTE op.
+ * Recompiled code writes this immediately before each gte_execute()
+ * call (emitted by code_generator.cpp). Stays at 0 from pre-regen
+ * generated code, hand-written thunks, and the interpreter path —
+ * those paths look like "unknown caller" downstream. */
+extern "C" uint32_t openpete_gte_caller_pc = 0;
 #include "openpete_world_geo.h"
 
 extern "C" {
@@ -293,6 +300,11 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         e.ofx = (int32_t)gte->OFX;
         e.ofy = (int32_t)gte->OFY;
         e.h = (uint16_t)gte->H;
+        /* Day 4 Phase 1.1: tag with the calling instruction's PC.
+         * Recompiled code sets openpete_gte_caller_pc before each
+         * gte_execute() call; pre-regen code, thunks, and the
+         * interpreter leave it 0 (== "unknown caller"). */
+        e.gte_pc = openpete_gte_caller_pc;
         /* e.world_vidx set in the obj_tag block below (was _pad1). */
         /* transform-interp §4: real per-moby identity from the
          * recompiler's per-moby ui-moby capture (0 = world/non-moby).

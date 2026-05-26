@@ -61,6 +61,14 @@ void psx_syscall(CPUState* cpu, uint32_t code);
 /* GTE coprocessor — implemented in gte.cpp. */
 void gte_execute(CPUState* cpu, uint32_t cmd);
 
+/* Calling-instruction PC for the most recently issued GTE command,
+ * written by recompiled code immediately before each gte_execute()
+ * call. Read by the render cache emit to tag each cached vertex with
+ * the function that produced it — used for per-prim-class
+ * discrimination (cyclorama vs world-moby vs Spyro mesh vs HUD).
+ * 0 = unknown (pre-regen generated code or interpreter path). */
+extern uint32_t openpete_gte_caller_pc;
+
 /* GTE register transfer helpers (for overlay interpreter) */
 uint32_t gte_read_data(CPUState* cpu, uint8_t reg);
 uint32_t gte_read_ctrl(CPUState* cpu, uint8_t reg);

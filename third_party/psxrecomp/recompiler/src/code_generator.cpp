@@ -1386,8 +1386,14 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format("cpu->gte_ctrl[{}] = {};  /* ctc2 */", rd, reg_name(rt));
                     } else if ((cop_op & 0x10) != 0) { // GTE command (bit 25 set)
                         uint32_t gte_cmd = instr & 0x1FFFFFF;
-                        // Route ALL GTE commands through gte_execute() for correct behavior
-                        code = fmt::format("gte_execute(cpu, 0x{:07X});  /* gte cmd 0x{:02X} */", gte_cmd, gte_cmd & 0x3F);
+                        // Route ALL GTE commands through gte_execute() for correct behavior.
+                        // openpete Day 4 Phase 1.1: stash issuing PC for the render cache to
+                        // tag each vertex with its calling MIPS function — used by
+                        // per-prim-class discrimination (cyclorama vs world-moby vs HUD vs
+                        // Spyro mesh). One extra store per GTE op; negligible cost.
+                        code = fmt::format(
+                            "openpete_gte_caller_pc = 0x{:08X}u; gte_execute(cpu, 0x{:07X});  /* gte cmd 0x{:02X} */",
+                            addr, gte_cmd, gte_cmd & 0x3F);
                     } else {
                         code = fmt::format("/* cop2: 0x{:08X} */", instr);
                     }

@@ -58,12 +58,10 @@ static int proj_ctx_dump_check_env(void) {
     return s_state;
 }
 
-static void proj_ctx_observe(uint16_t h, int32_t ofx, int32_t ofy) {
+static void proj_ctx_observe(uint16_t h, int32_t ofx, int32_t ofy, uint32_t gte_pc) {
     if (!proj_ctx_dump_check_env()) return;
 
-    /* Independent always-on h-watcher: any h != canonical 341 is the
-     * cyclorama smoking gun we're hunting. Print first 8 distinct h
-     * values regardless of unique-tuple table state. */
+    /* Always-on h-watcher (Phase 1.0 cyclorama disprove). */
     {
         enum { H_TABLE_SZ = 8 };
         static uint16_t s_h_seen[H_TABLE_SZ];
@@ -75,6 +73,30 @@ static void proj_ctx_observe(uint16_t h, int32_t ofx, int32_t ofy) {
             s_h_seen[s_h_seen_count++] = h;
             fprintf(stderr, "[PGXP-PROJCTX-H] new h=%u (distinct h's seen so far: %u)\n",
                     (unsigned)h, s_h_seen_count);
+        }
+    }
+
+    /* Phase 1.1: also distinct PC tracker. Print every new calling PC
+     * the cache emit sees — gives us the prim-class roster for Phase 2.5
+     * gating. PC is stable per function for the duration of the run. */
+    {
+        enum { PC_TABLE_SZ = 64 };
+        static uint32_t s_pc_seen[PC_TABLE_SZ];
+        static uint32_t s_pc_count[PC_TABLE_SZ];
+        static unsigned s_pc_seen_count = 0;
+        unsigned i;
+        for (i = 0; i < s_pc_seen_count; ++i) {
+            if (s_pc_seen[i] == gte_pc) {
+                s_pc_count[i]++;
+                break;
+            }
+        }
+        if (i == s_pc_seen_count && s_pc_seen_count < PC_TABLE_SZ) {
+            s_pc_seen[s_pc_seen_count] = gte_pc;
+            s_pc_count[s_pc_seen_count] = 1;
+            s_pc_seen_count++;
+            fprintf(stderr, "[PGXP-PC] new gte caller pc=0x%08x (distinct PCs: %u)\n",
+                    gte_pc, s_pc_seen_count);
         }
     }
 
@@ -95,13 +117,11 @@ static void proj_ctx_observe(uint16_t h, int32_t ofx, int32_t ofy) {
         s_seen[s_seen_count].ofy = ofy;
         s_seen[s_seen_count].count = 1;
         s_seen_count++;
-        /* OFX/OFY are q16 fixed-point as stored in COP2; print decoded float
-         * for readability. */
-        fprintf(stderr, "[PGXP-PROJCTX] new tuple #%u: h=%u ofx=%d (%.2f) ofy=%d (%.2f)\n",
+        fprintf(stderr, "[PGXP-PROJCTX] new tuple #%u: h=%u ofx=%d (%.2f) ofy=%d (%.2f) first_pc=0x%08x\n",
                 s_seen_count, (unsigned)h, ofx, (double)ofx / 65536.0,
-                ofy, (double)ofy / 65536.0);
+                ofy, (double)ofy / 65536.0, gte_pc);
     } else if (!s_table_full_warned) {
-        fprintf(stderr, "[PGXP-PROJCTX] tuple table full at %u entries; uniques suppressed (h-watcher still active)\n",
+        fprintf(stderr, "[PGXP-PROJCTX] tuple table full at %u entries; uniques suppressed (h/pc-watchers still active)\n",
                 TABLE_SZ);
         s_table_full_warned = 1;
     }
@@ -193,7 +213,7 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
     /* First-emit-per-yield rotate. No-op if not armed. */
     consume_pending_rotate();
 
-    proj_ctx_observe(src->h, src->ofx, src->ofy);
+    proj_ctx_observe(src->h, src->ofx, src->ofy, src->gte_pc);
 
     /* Per-vertex stability trace (no-op unless OPENPETE_VERT_STABILITY_LOG
      * env is set). Called BEFORE span detection so vert_idx accounting

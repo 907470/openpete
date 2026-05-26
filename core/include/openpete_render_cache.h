@@ -57,6 +57,14 @@ typedef struct openpete_render_cache_entry {
      * moby-scope bracketing lands, this is best-effort (last ui-moby
      * ptr); consumers must gate on moby-pool validity. */
     uint32_t obj_tag;
+    /* Day 4 Phase 1.1: PC of the MIPS instruction that issued the GTE
+     * op for this vertex. Recompiled code writes a per-call PC into
+     * openpete_gte_caller_pc immediately before each gte_execute(), and
+     * gte.cpp snapshots that here at cache emit. 0 = unknown caller
+     * (pre-regen code, hand-written thunks, interpreter). Used by
+     * downstream per-prim-class discrimination (cyclorama vs world-moby
+     * vs Spyro mesh vs HUD). */
+    uint32_t gte_pc;
 } openpete_render_cache_entry_t;
 
 /* 8192 slots × ~64 B ≈ 512 KB per frame × 2 frames = 1 MB. Comfortably
