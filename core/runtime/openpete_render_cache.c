@@ -222,6 +222,49 @@ int openpete_render_cache_lookup_curr_raw(uint32_t sxy_key) {
     return lookup_frame(gen_prev(), sxy_key, NULL);
 }
 
+int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
+                                      openpete_pgxp_lookup_t* out) {
+    openpete_render_cache_entry_t e;
+    if (!openpete_render_cache_lookup_prev(sxy_key, &e)) return 0;
+
+    /* Compute float-precision SX/SY in PSX pixel space by mirroring
+     * the PSX integer projection (gte_rtps_internal lines 247-256)
+     * in float arithmetic. Vertex screen positions stop quantizing
+     * to int16 SXY pixels — the wobble that motivated PGXP.
+     *
+     * The upstream PsyCross PGXP path (PsyX_GTE.cpp::PGXP_EmitCacheData
+     * + the `(px+0.5)*scr_h` shader perspective branch) was tuned for
+     * a different game's GTE magnitudes; for Spyro it produces NDC
+     * values 3+ orders of magnitude off-screen. Float-project here
+     * directly and let the existing ortho fallback shader path
+     * consume the result. PGXP-Z-buffer mode and texture correction
+     * are deferred to a follow-up (see openpete-pgxp.md). */
+    const float fmac1 = (float)e.mac[0];
+    const float fmac2 = (float)e.mac[1];
+    const float fmac3 = (float)e.mac[2];
+    /* SZ is clamped positive by the integer GTE (Lm_D). Mirror that
+     * to avoid divide-by-zero for verts at / behind the near plane —
+     * the resulting projection is approximate but those verts are
+     * clipped/culled by downstream stages anyway. */
+    const float fsz = (fmac3 > 1.0f) ? fmac3 : 1.0f;
+    const float fH = (float)e.h;
+    const float h_div_sz = fH / fsz;
+    /* OFX/OFY are stored as raw Q16 ints in the cache; divide to get
+     * pixel units, matching the integer projection's `>> 16`. */
+    const float fofx = (float)e.ofx * (1.0f / 65536.0f);
+    const float fofy = (float)e.ofy * (1.0f / 65536.0f);
+
+    /* Float-precision SXY in PSX pixel space (same coord space the
+     * int16 SXY path produces, just with sub-pixel detail preserved). */
+    out->px = fofx + fmac1 * h_div_sz;
+    out->py = fofy + fmac2 * h_div_sz;
+    out->pz = fmac3;             /* reserved for future Z-buffer mode */
+    out->ofx = fofx;             /* unused in ortho path */
+    out->ofy = fofy;             /* unused in ortho path */
+    out->scr_h = 0.0f;           /* keep shader on ortho fallback path */
+    return 1;
+}
+
 void openpete_render_cache_for_each_curr_entry(
         openpete_render_cache_iter_fn cb, void* userdata) {
     const openpete_render_cache_frame_t* frame = gen_current();

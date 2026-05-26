@@ -76,6 +76,22 @@ int openpete_render_cache_lookup_curr(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
 int openpete_render_cache_lookup_prev(uint32_t sxy_key,
                                       openpete_render_cache_entry_t* out);
+
+/* PGXP consumer convenience — look up by SXY in `prev` (the buffer the
+ * OT walker reads from; see openpete-pgxp.md) and convert the cached
+ * entry into the float values PsyCross's ApplyVertexPGXP expects.
+ * Returns 1 on hit (out filled), 0 on miss. The conversion mirrors
+ * what PsyX_GTE.cpp::PGXP_EmitCacheData would have written if it ran
+ * (it doesn't, because Spyro uses inline COP2 not the libgte function
+ * API — see openpete-pgxp.md "the two findings"). */
+typedef struct openpete_pgxp_lookup {
+    float px, py, pz;   /* mac[3] / 128 * g_pgxpZScale + g_pgxpZOffset */
+    float ofx, ofy;     /* gte->OFX/OFY are Q16 — divide by 65536 */
+    float scr_h;        /* gte->H, direct cast to float */
+} openpete_pgxp_lookup_t;
+
+int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
+                                      openpete_pgxp_lookup_t* out);
 /* Interpolation "from" endpoint (gen two game frames back = the GTE
  * that built the lagged OT we display). See openpete-interpolation-
  * frame-gen.md. */
