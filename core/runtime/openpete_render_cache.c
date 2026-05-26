@@ -341,12 +341,26 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
     out->ofx = fofx;             /* unused in ortho path */
     out->ofy = fofy;             /* unused in ortho path */
 
-    /* Day 4 Phase 2: canonical-context discriminator. Phase 1.0 found
-     * that h=341 is the only frustum in use; non-canonical (ofx, ofy)
-     * are the PSYQ 2D-via-GTE glyph-emit idiom (HUD/text). Route
-     * canonical (256, 120) vertices to the perspective shader path
-     * with a real w for hyperbolic UV interp; leave non-canonical on
-     * the ortho path that Day 1c established as correct. */
+    /* Day 4 Phase 2: canonical-context discriminator (OFF by default).
+     * Phase 1.0 found h=341 is the only frustum and non-canonical
+     * (ofx, ofy) are the PSYQ 2D-via-GTE glyph-emit idiom. But that
+     * discriminator turned out to be necessary-not-sufficient: the
+     * cyclorama, authored-affine world surfaces, and Spyro's character
+     * mesh all hit the canonical context yet want different rendering
+     * semantics. Phase 2 stays in tree as plumbing for the eventual
+     * per-prim-class selective gating (Phase 2.5), gated behind
+     * OPENPETE_PGXP_ENABLE_PERSPECTIVE=1. Shipping default is
+     * Day 1c (float-projected SXY, ortho path) + Day 3 v2 (per-split
+     * depth bias). */
+    static int s_enable_persp = -1;
+    if (s_enable_persp < 0) {
+        const char* v = getenv("OPENPETE_PGXP_ENABLE_PERSPECTIVE");
+        s_enable_persp = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    if (!s_enable_persp) {
+        out->scr_h = 0.0f;
+        return 1;
+    }
     const int32_t k_canonical_ofx_q16 = (int32_t)(256u << 16);
     const int32_t k_canonical_ofy_q16 = (int32_t)(120u << 16);
     const int is_canonical = (e.ofx == k_canonical_ofx_q16 &&
