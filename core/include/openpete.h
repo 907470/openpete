@@ -108,6 +108,19 @@ typedef struct {
     int         screenshot_frame_count;   /* 0 = disabled */
     const char* screenshot_output;        /* path template; default ./screenshot.png */
 
+    /* Multi-present capture for the transform-interp visual regression
+     * harness (`scripts/check_interp_visual.sh`): once the sim reaches
+     * `screenshot_presents_start`, capture the next
+     * `screenshot_presents_count` *presents* (canonical + intermediates)
+     * with sequential indices in `{p}`. Distinct from
+     * `screenshot_on_frame` which fires once per sim frame on the
+     * canonical present only. Used to compare alpha-1.0 (canonical) vs
+     * alpha<1.0 (intermediate) outputs at different --render-fps
+     * settings — the latter is the only way to observe whether the
+     * interp delta is reaching the GL submit. */
+    int         screenshot_presents_start;  /* -1 = disabled */
+    int         screenshot_presents_count;  /* default 1 */
+
     /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */

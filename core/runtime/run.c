@@ -1411,6 +1411,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * flag double-presented (game frame + a spurious alpha≈0
          * interpolated frame) on every draw iter (the "+30 fps"). */
         bool did_present_this_iter = false;
+        /* Multi-present capture (--screenshot-presents-start/count):
+         * shared between the canonical block immediately below and the
+         * intermediate block further down so both contribute to the
+         * present sequence. Tracks how many presents have fired since
+         * the sim reached the start frame. */
+        static int s_presents_captured = 0;
         if (openpete_present_pending) {
             static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
             for (int si = 0; si < opts->screenshot_frame_count; ++si) {
@@ -1420,11 +1426,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 char path[1024];
                 openpete_screenshot_format_path(opts->screenshot_output,
                                                 opts->screenshot_frames[si],
+                                                /*present=*/0,
                                                 path, sizeof(path));
                 openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",
                            "wrote %s on frame %u (target=%d)",
                            path, openpete_frame, opts->screenshot_frames[si]);
+            }
+            if (opts->screenshot_presents_start >= 0
+                    && (int)openpete_frame >= opts->screenshot_presents_start
+                    && s_presents_captured < opts->screenshot_presents_count) {
+                char path[1024];
+                openpete_screenshot_format_path(opts->screenshot_output,
+                                                (int)openpete_frame,
+                                                s_presents_captured,
+                                                path, sizeof(path));
+                openpete_psyx_take_screenshot(path);
+                OPL_INFO_F("screenshot",
+                           "wrote %s on frame %u (present=%d, canonical)",
+                           path, openpete_frame, s_presents_captured);
+                s_presents_captured++;
             }
             PsyX_EndScene();
             openpete_present_pending = 0;
@@ -1503,6 +1524,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 /* nothing else needed — re_emit does ClearSplits */
             }
             openpete_re_emit_last_ot();
+            /* Multi-present capture, intermediate-frame leg. Same
+             * counter as the canonical block above; this branch fires
+             * only when --render-fps > 30 and an interpolated present
+             * is being drawn between sim ticks. Comparing capture index
+             * 0 (canonical) against 1+ (intermediate) is exactly how
+             * the visual harness detects whether interp deltas reach
+             * the GL submit at high render-fps (the §7.5-R3 PHASE-B
+             * 480fps NO-blue investigation). */
+            if (opts->screenshot_presents_start >= 0
+                    && (int)openpete_frame >= opts->screenshot_presents_start
+                    && s_presents_captured < opts->screenshot_presents_count) {
+                char path[1024];
+                openpete_screenshot_format_path(opts->screenshot_output,
+                                                (int)openpete_frame,
+                                                s_presents_captured,
+                                                path, sizeof(path));
+                openpete_psyx_take_screenshot(path);
+                OPL_INFO_F("screenshot",
+                           "wrote %s on frame %u (present=%d, intermediate)",
+                           path, openpete_frame, s_presents_captured);
+                s_presents_captured++;
+            }
             PsyX_EndScene();
             /* No cache rotate here — sim_tick_advanced fires only at
              * sim-due iters. Intermediate renders reuse the cache state
@@ -1947,6 +1990,7 @@ int openpete_run(const openpete_options_t* opts) {
             char path[1024];
             openpete_screenshot_format_path(opts->screenshot_output,
                                             opts->screenshot_frames[si],
+                                            /*present=*/0,
                                             path, sizeof(path));
             int rc = openpete_screenshot_save_png(renderer, path);
             if (rc != 0) {

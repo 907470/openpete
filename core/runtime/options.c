@@ -120,6 +120,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->display_name        = "OpenPete";
     opts->screenshot_frame_count = 0;
     opts->screenshot_output      = "./screenshot.png";
+    opts->screenshot_presents_start = -1;
+    opts->screenshot_presents_count = 1;
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
@@ -223,6 +225,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--screenshot-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;
+        } else if (strcmp(a, "--screenshot-presents-start") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->screenshot_presents_start = atoi(v); i++;
+        } else if (strcmp(a, "--screenshot-presents-count") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->screenshot_presents_count = atoi(v); i++;
         } else if (strcmp(a, "--ram-dump-on-frame") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->ram_dump_on_frame = atoi(v); i++;
@@ -377,7 +385,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
                 "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 1; UV correction + Z-buffer deferred — see openpete-pgxp.md)\n"
                 "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list\n"
-                "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for frame number; .png ext writes PNG, otherwise BMP\n"
+                "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
+                "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
+                "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
                 "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
                 "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"

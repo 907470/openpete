@@ -207,7 +207,11 @@ unsigned g_openpete_render_matcher_future_anchored_count   = 0u;
 static unsigned long s_wd_batches, s_wd_uiopt, s_wd_anchored,
     s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail, s_wd_q_applied,
     s_wd_frames, s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
-    s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx;
+    s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx,
+    /* §7.5-R3 PHASE-C: split world-batch tally into bit30-tagged vs
+     * legacy (obj_tag==0) so the post-hook-expansion shrinkage of the
+     * legacy `world_reproject` path is directly measurable. */
+    s_wd_batches_tagged, s_wd_batches_legacy;
 static int world_diag(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_WORLD_DIAG");
@@ -1047,17 +1051,20 @@ void openpete_render_matcher_prepare_substitute(void) {
             if (b->vertex_count == 0u || !is_world_obj_tag(b->obj_tag))
                 continue;
             s_wd_batches++;
+            if (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) s_wd_batches_tagged++;
+            else s_wd_batches_legacy++;
             if (b->is_ui_opt_out) s_wd_uiopt++;
             else if (b->has_future_anchor) s_wd_anchored++;
         }
         if (++s_wd_frames % 300u == 0u) {
             fprintf(stderr,
-              "[world-diag] f=%lu | world-batches=%lu uiopt=%lu "
-              "anchored=%lu | sq_calls=%lu prev2miss=%lu "
+              "[world-diag] f=%lu | world-batches=%lu (tagged=%lu legacy=%lu) "
+              "uiopt=%lu anchored=%lu | sq_calls=%lu prev2miss=%lu "
               "world_entry=%lu | world: total=%lu no_to_span=%lu "
               "reproj_fail=%lu APPLIED=%lu | mag>=1px=%lu >=4px=%lu "
               "max=%lupx samemtx=%lu\n",
-              s_wd_frames, s_wd_batches, s_wd_uiopt, s_wd_anchored,
+              s_wd_frames, s_wd_batches, s_wd_batches_tagged,
+              s_wd_batches_legacy, s_wd_uiopt, s_wd_anchored,
               s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
               s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail,
               s_wd_q_applied, s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx);

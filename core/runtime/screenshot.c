@@ -63,13 +63,16 @@ int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path) {
 }
 
 void openpete_screenshot_format_path(const char* tmpl, int frame,
+                                     int present,
                                      char* out, size_t out_sz) {
     if (!out || out_sz == 0) return;
     if (!tmpl) { out[0] = '\0'; return; }
     size_t o = 0;
     for (size_t i = 0; tmpl[i] && o + 1 < out_sz; ) {
-        if (tmpl[i] == '{' && tmpl[i+1] == 'n' && tmpl[i+2] == '}') {
-            int n = snprintf(out + o, out_sz - o, "%d", frame);
+        if (tmpl[i] == '{' && tmpl[i+2] == '}'
+                && (tmpl[i+1] == 'n' || tmpl[i+1] == 'p')) {
+            int val = (tmpl[i+1] == 'n') ? frame : present;
+            int n = snprintf(out + o, out_sz - o, "%d", val);
             if (n < 0) break;
             o += (size_t)n;
             if (o >= out_sz) o = out_sz - 1;

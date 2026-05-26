@@ -14,9 +14,12 @@ extern "C" {
  * else writes BMP via SDL_SaveBMP. Returns 0 on success, nonzero on error. */
 int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path);
 
-/* Substitute `{n}` in `tmpl` with `frame` (decimal). If no `{n}` appears,
- * the template is copied verbatim. Output is always NUL-terminated. */
+/* Substitute `{n}` (sim frame) and `{p}` (present index) in `tmpl` with the
+ * given decimals. If a placeholder doesn't appear, that field is omitted.
+ * Output is always NUL-terminated. Pass present=0 when capturing a single
+ * present per frame (the historical screenshot-on-frame behaviour).  */
 void openpete_screenshot_format_path(const char* tmpl, int frame,
+                                     int present,
                                      char* out, size_t out_sz);
 
 /* True if `path`'s extension (case-insensitive) is `.png`. */
