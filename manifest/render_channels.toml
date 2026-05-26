@@ -119,12 +119,28 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 name        = "widescreen_ui_moby_tag"
 status      = "gated"
 description = """
-Per-moby UI classification hook. func_80022A2C (Spyro's shaded-moby
-renderer) iterates `g_SonyImage.m_ShadedMobys[]` with a loop entry
-at `0x80022B08: lw $s8, 0($ra)`. The recompiler substitution at that
-address calls `openpete_ui_moby_set_current(cpu->fp)` after the lw,
-stashing each moby's PSX vaddr host-side so `gte_rtps_internal` can
-classify the projection as UI (HUD icon, text overlay) or gameplay.
+Per-moby UI classification + transform-interp identity hook.
+r_moby.s has three render functions, each iterating its moby pool;
+each gets the same hook at its per-moby loop iteration boundary:
+
+  0x80022B08  func_80022A2C (shaded)   lw $s8,0($ra)   → set_current($fp)
+  0x8001F800  func_8001F798 (regular)  lw $ra,4($gp)   → set_current($ra)
+  0x80020F9C  func_80020F34 (specular) lw $ra,4($gp)   → set_current($ra)
+
+(The post-lw register name differs because the recompiler emits the
+target per MIPS register; in all three cases the value is the
+current moby's PSX vaddr.)
+
+The appended call stashes the moby vaddr host-side so
+`gte_rtps_internal` can:
+  (a) classify the projection as UI (HUD icon, text overlay) or
+      gameplay for the widescreen centring shift, and
+  (b) stamp the cache entry's obj_tag with the moby vaddr so the
+      transform-interp matcher pairs by real per-object identity
+      across frames (instead of the heuristic world-ordinal fallback,
+      which broke once PHASE-C inflated the world-ordinal stream
+      2.7× and starved the regular/specular mobys of stable ordinal
+      slots).
 
 UI mobys get a CONSTANT centring shift `eff_OFX = OFX + (factor-1)*256`
 instead of the standard widening `eff_OFX = OFX * factor`. Spyro's
@@ -134,10 +150,15 @@ PSX-X width 384→514 across 4:3→16:9, ratio = factor); the constant
 shift keeps the original 4:3 layout host-centred regardless of OFX.
 
 For non-UI mobys with canonical gameplay OFX (256), both formulas
-produce identical eff_OFX, so determinism is unaffected. Verified:
-aspect_determinism bit-identical across 8000 frames."""
+produce identical eff_OFX, so determinism is unaffected.
+
+The companion `openpete_world_geo_clear()` is appended to every
+moby-loop hook (not just the shaded one) so terrain strip tags from
+the prior renderer never bleed into moby cache entries."""
 substitution_sites = [
-    0x80022B08,  # lw $s8, 0($ra) — per-moby loop iteration
+    0x80022B08,  # lw $s8, 0($ra)   — shaded   per-moby loop iter
+    0x8001F800,  # lw $ra, 4($gp)   — regular  per-moby loop iter
+    0x80020F9C,  # lw $ra, 4($gp)   — specular per-moby loop iter
 ]
 verdict_fn       = "openpete_ui_moby_set_current"
 verified_against = ["aspect_determinism"]

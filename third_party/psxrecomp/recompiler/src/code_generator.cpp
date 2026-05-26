@@ -1404,27 +1404,45 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x22: code = translate_lwl(instr); break;    // lwl
             case 0x23:                                         // lw
                 {
-                    /* Per-moby tracking hook for openpete UI-moby
-                     * tagging. func_80022A2C is Spyro's shaded-moby
-                     * renderer; its loop iteration boundary is
-                     *   0x80022B08:  lw $s8, 0($ra)   ; moby = *iter++
-                     *   0x80022B18:  addi $ra, $ra, 4
-                     *   0x80022B1C:  beqz $s8, exit
-                     * Multiple cull-skip branches inside the body
-                     * jump back to 0x80022B08 to advance to the next
-                     * moby, so this address is the canonical
-                     * per-moby entry. After the lw, $s8 holds the
-                     * fresh moby pointer; stash it host-side via
+                    /* Per-moby tracking hook for openpete UI-moby +
+                     * transform-interp identity tagging. r_moby.s has
+                     * three render functions, each with its own per-
+                     * moby loop iteration boundary:
+                     *
+                     *   0x80022B08  func_80022A2C (shaded)   $s8
+                     *               lw $s8,0($ra) ; addi $ra,$ra,4
+                     *               ; beqz $s8,exit ; iter via $ra
+                     *
+                     *   0x8001F800  func_8001F798 (regular)  $ra
+                     *               (loop top .L8001F7FC at 0x8001F7FC:
+                     *                lw $s3,0($gp) ; lw $ra,4($gp) ;
+                     *                beqz $s3,exit ; iter via $gp+=0x38)
+                     *               After 0x8001F800, $ra holds the
+                     *               current moby pointer.
+                     *
+                     *   0x80020F9C  func_80020F34 (specular) $ra
+                     *               (same structure as func_8001F798,
+                     *                loop top .L80020F98 at 0x80020F98)
+                     *
+                     * After the lw, the named register holds the fresh
+                     * moby pointer; stash it host-side via
                      * openpete_ui_moby_set_current so gte_rtps_internal
-                     * can decide whether the projection is for a UI
-                     * moby (HUD/text-overlay) and apply the
-                     * appropriate compensation.
+                     * can stamp a stable per-moby obj_tag (matcher
+                     * pairs by real vaddr instead of falling back to
+                     * world-ordinal — fixes the visible jitter on
+                     * regular and specular mobys that the §7.2
+                     * Increment 1 "graceful fall-through" path produced
+                     * once PHASE-C inflated the world-ordinal stream
+                     * 2.7×). Also classifies UI mobys for the
+                     * widescreen centring shift.
                      *
                      * Game-agnostic from core/'s perspective: the
-                     * function name and address are Spyro-specific,
+                     * function names and addresses are Spyro-specific,
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
-                    if (addr == 0x80022B08u) {
+                    if (addr == 0x80022B08u
+                            || addr == 0x8001F800u
+                            || addr == 0x80020F9Cu) {
                         uint32_t rt = get_rt(instr);
                         /* Also clear the world-geo strip tag (§7.5-R3):
                          * once per-moby rendering begins, world-strip
