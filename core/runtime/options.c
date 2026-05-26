@@ -375,7 +375,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
                 "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
-                "  --pgxp 0|1                 PGXP sub-pixel vertex precision + perspective-correct UVs + Z-buffer (default 0)\n"
+                "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 1; UV correction + Z-buffer deferred — see openpete-pgxp.md)\n"
                 "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list\n"
                 "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for frame number; .png ext writes PNG, otherwise BMP\n"
                 "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
