@@ -136,17 +136,12 @@ g_Cyclorama is loaded into $at by the addiu at 0x8004F078. Both
 registers are still live at the hook PC because the lw reads from
 them rather than into them.)
 
-Regular (func_8001F798) and specular (func_80020F34) renderers were
-briefly hooked at their loop heads (0x8001F800, 0x80020F9C in an
-intermediate commit) on the assumption that the lw's destination
-register was the per-instance moby vaddr. It turned out to be a
-*class-shared* pointer (likely m_Props / model template), so every
-instance of the same class collapsed onto one obj_tag and the
-matcher's ordinal-pairing-within-bucket produced visible "blending
-across the screen" between two instances of the same class whenever
-cull order shifted. Reverted; deferred follow-up is to plumb the
-cull-pass moby instance pointer through a host-side queue so the
-render pass can tag with the real per-instance vaddr.
+Regular (func_8001F798) and specular (func_80020F34) renderers get
+their per-instance identity through `openpete_moby_queue`, owned by
+the separate `transform_interp_moby_queue` channel below. (Their
+render-list slots only carry a class-shared m_Props ptr; the queue
+plumbs the real per-instance moby vaddr from func_8001F158's cull
+pass to each render-pass iter.)
 
 The appended call stashes the moby vaddr host-side so
 `gte_rtps_internal` can:
@@ -181,6 +176,55 @@ verdict_fn       = "openpete_ui_moby_set_current"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # render-side classification only
 doc              = "notes/plans/openpete-widescreen-fov.md"
+
+[[channel]]
+name        = "transform_interp_moby_queue"
+status      = "gated"
+description = """
+Per-instance moby identity FIFO for the regular (func_8001F798) and
+specular (func_80020F34) renderers. Their render-list slots only
+carry a *class-shared* pointer (likely m_Props / model template);
+tagging cache entries with that made the matcher collapse all same-
+class instances onto one obj_tag → ordinal-pairing-within-bucket →
+visible "blending across the screen" when cull order shifted.
+
+Plumbed via three recompiler substitution sites:
+
+  0x8001F268  lhu $t7, 0x36($sp)   func_8001F158 (cull pass)
+              — PC reached iff the moby just passed cull (the first
+                instruction past every cull-skip back-branch in the
+                cascade at PCs 0x8001F224..0x8001F260). At this PC
+                $sp holds the cull-survivor's Moby instance vaddr.
+                Appends `openpete_moby_queue_push(cpu->sp)`.
+
+  0x8001F800  lw $ra, 4($gp)       func_8001F798 (regular render)
+  0x80020F9C  lw $ra, 4($gp)       func_80020F34 (specular render)
+              — Loop iter top. Appends
+                `openpete_ui_moby_set_current(openpete_moby_queue_pop());
+                 openpete_world_geo_clear();`
+                replacing the lw's destination-register reasoning
+                with a FIFO pop that returns the real per-instance
+                moby vaddr.
+
+FIFO invariant: each cull pass fully populates the queue before its
+render pass begins (draw.c sequences them as separate function
+calls). The two cull→render cycles per frame (regular + specular)
+are serialised, so a single shared queue works: cycle pushes, cycle
+pops to empty, next cycle pushes, etc. Pop-on-empty returns 0 — gte
+falls back to world-ordinal pairing (the pre-queue baseline).
+
+READ-ONLY w.r.t. gameplay: push stashes a PSX vaddr in a host-side
+ring; pop returns it. The canonical lhu/lw is emitted verbatim
+before the push/pop, same diag_cone / ui_moby precedent."""
+substitution_sites = [
+    0x8001F268,  # lhu $t7, 0x36($sp) — cull-pass-confirmed (push)
+    0x8001F800,  # lw  $ra, 4($gp)    — regular  render iter (pop)
+    0x80020F9C,  # lw  $ra, 4($gp)    — specular render iter (pop)
+]
+verdict_fn       = "openpete_moby_queue_push"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # render-side identity tag; no state written
+doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "envvert_terrain_probe"

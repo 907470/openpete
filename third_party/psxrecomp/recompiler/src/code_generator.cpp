@@ -1440,7 +1440,38 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * function names and addresses are Spyro-specific,
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
-                    if (addr == 0x80022B08u
+                    if (addr == 0x8001F800u || addr == 0x80020F9Cu) {
+                        /* Regular (func_8001F798) and specular
+                         * (func_80020F34) render passes: at the loop
+                         * iter top, POP the cull-pass queue and tag
+                         * with the popped per-instance moby vaddr.
+                         *
+                         * The lw at this PC loads a class-shared
+                         * pointer (m_Props / model template) from the
+                         * render-list slot, NOT a per-instance vaddr —
+                         * so we don't pass the lw's destination
+                         * register. Instead, the cull pass
+                         * (func_8001F158 at PC 0x8001F268, hooked in
+                         * case 0x25 below) pushed each cull-survivor's
+                         * Moby instance ptr ($sp) onto
+                         * openpete_moby_queue in cull-pass-confirmed
+                         * order. Pop here in render-pass order, which
+                         * must match by FIFO invariant (the cull pass
+                         * fully populates before the render pass
+                         * begins; draw.c sequences them as separate
+                         * function calls). Pop-on-empty returns 0 →
+                         * gte falls back to world-ordinal pairing
+                         * (same as the pre-queue baseline).
+                         *
+                         * Also clears the world-geo strip tag so a
+                         * stale terrain tag doesn't bleed into moby
+                         * projections. */
+                        code = fmt::format(
+                            "{} openpete_ui_moby_set_current("
+                            "openpete_moby_queue_pop()); "
+                            "openpete_world_geo_clear();",
+                            translate_lw(instr));
+                    } else if (addr == 0x80022B08u
                             || addr == 0x80023B0Cu
                             || addr == 0x8004F088u) {
                         /* Per-renderer identity tag.
@@ -1448,23 +1479,10 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * Per-moby loop iter boundary (r_moby.s):
                          *   0x80022B08  func_80022A2C (shaded)   $fp = *iter
                          * After the lw, $fp holds the current shaded
-                         * moby's PSX vaddr.
-                         *
-                         * NOTE: regular (func_8001F798) and specular
-                         * (func_80020F34) renderers were briefly
-                         * hooked at their loop heads (0x8001F800,
-                         * 0x80020F9C) on the assumption that the lw's
-                         * destination was a per-instance moby vaddr.
-                         * That turned out to be a class-shared pointer
-                         * (likely m_Props / model template), so every
-                         * instance of the same class collapsed onto
-                         * one obj_tag → matcher ordinal-pairing
-                         * within the bucket → visible "blending across
-                         * the screen" between two instances of the
-                         * same class whenever cull order shifted.
-                         * Reverted; the proper fix is to plumb the
-                         * cull-pass moby instance pointer through a
-                         * host-side queue (deferred sub-project).
+                         * moby's PSX vaddr (the shaded-moby array
+                         * stores instance ptrs directly, unlike the
+                         * regular/specular render-list slots — see
+                         * the 0x8001F800/0x80020F9C handler above).
                          *
                          * Per-singleton renderer tags (r_pete.s,
                          * r_cyclorama.s) — the lw at the hook PC reads
@@ -1736,6 +1754,32 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = _v; }}"
                             "  /* m_Distance saturate (no-lod) */",
                             reg_name(rs), off, reg_name(rt));
+                    } else if (addr == 0x8001F268u) {
+                        /* transform-interp moby-queue push.
+                         * r_moby.s func_8001F158 (the cull pass) walks
+                         * mobys via `lw $sp, 0($ra)` at the loop top
+                         * (0x8001F1E8). The cascade of cull-skip
+                         * back-branches all jump back to the loop top;
+                         * the first instruction past the last back-
+                         * branch is `lhu $t7, 0x36($sp)` at 0x8001F268
+                         * — i.e. THIS PC is reached iff the moby
+                         * passed cull and is about to be added to the
+                         * render-list. At this point $sp still holds
+                         * the cull-survivor's Moby instance vaddr.
+                         *
+                         * Push $sp onto openpete_moby_queue; the
+                         * regular/specular render passes
+                         * (func_8001F798 at 0x8001F800,
+                         * func_80020F34 at 0x80020F9C) pop in the
+                         * same order to recover per-instance identity
+                         * (their render-list slots only carry a
+                         * class-shared m_Props ptr, not the moby
+                         * vaddr). READ-ONLY: stashes the vaddr in a
+                         * host-side ring; the canonical lhu is emitted
+                         * verbatim before the push. */
+                        code = fmt::format(
+                            "{} openpete_moby_queue_push(cpu->sp);",
+                            translate_lhu(instr));
                     } else {
                         code = translate_lhu(instr);
                     }

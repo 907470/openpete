@@ -386,6 +386,16 @@ void     openpete_world_geo_clear(void);
 uint32_t openpete_world_geo_get_current(void);
 uint16_t openpete_world_geo_next_vidx(void);
 
+/* Per-instance moby vaddr FIFO. Recompiler emits push at the cull-pass-
+ * confirmed PC in func_8001F158 (0x8001F268), and pop+set_current at
+ * the regular/specular render-pass loop iters (0x8001F800 / 0x80020F9C)
+ * so the matcher pairs each instance by real PSX vaddr instead of the
+ * class-shared m_Props ptr that the render-list slot carries.
+ * See core/include/openpete_moby_queue.h. */
+void     openpete_moby_queue_push(uint32_t moby_vaddr);
+uint32_t openpete_moby_queue_pop(void);
+void     openpete_moby_queue_clear(void);
+
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *
  * Lets renderer-side code register a host buffer at any PSX vaddr above
