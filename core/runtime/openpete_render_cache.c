@@ -44,6 +44,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Day 4 Phase 1.3 / 2.5: per-game perspective-eligibility classifier.
+ * NULL = default (canonical-only). games/<game>/ registers an override
+ * at boot to filter on PC. */
+int (*openpete_pgxp_classify_fn)(uint32_t gte_pc, int is_canonical) = NULL;
+
 /* Day 4 Phase 1.0 instrumentation: dump unique (h, ofx, ofy) tuples
  * seen at vertex emit. Resolves the cyclorama question — does
  * func_8004EBA8 swap projection-context mid-frame, or does it use the
@@ -385,7 +390,46 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
     const int32_t k_canonical_ofy_q16 = (int32_t)(120u << 16);
     const int is_canonical = (e.ofx == k_canonical_ofx_q16 &&
                               e.ofy == k_canonical_ofy_q16);
-    out->scr_h = is_canonical ? fsz : 0.0f;
+    /* Phase 2.5: game-specific per-PC classifier decides whether each
+     * vertex should run perspective or stay on ortho. */
+    int wants_perspective = is_canonical;
+    if (openpete_pgxp_classify_fn) {
+        wants_perspective = openpete_pgxp_classify_fn(e.gte_pc, is_canonical);
+    }
+
+    /* Diagnostic: per-PC perspective vs ortho counters. Enabled by
+     * OPENPETE_PGXP_LOOKUP_DUMP=1. Helps verify the classifier
+     * actually runs on the PCs we expect (i.e., does this prim type
+     * even reach the lookup path?). */
+    {
+        static int s_dump_enabled = -1;
+        if (s_dump_enabled < 0) {
+            const char* v = getenv("OPENPETE_PGXP_LOOKUP_DUMP");
+            s_dump_enabled = (v && v[0] && v[0] != '0') ? 1 : 0;
+        }
+        if (s_dump_enabled) {
+            enum { N = 64 };
+            static uint32_t pc_seen[N];
+            static uint32_t pc_persp[N];
+            static uint32_t pc_ortho[N];
+            static unsigned n_seen = 0;
+            unsigned i;
+            for (i = 0; i < n_seen; ++i) if (pc_seen[i] == e.gte_pc) break;
+            if (i == n_seen && n_seen < N) {
+                pc_seen[n_seen] = e.gte_pc;
+                pc_persp[n_seen] = 0;
+                pc_ortho[n_seen] = 0;
+                n_seen++;
+                fprintf(stderr, "[PGXP-LOOKUP] new pc=0x%08x seen at lookup (canonical=%d)\n",
+                        e.gte_pc, is_canonical);
+            }
+            if (i < N) {
+                if (wants_perspective) pc_persp[i]++; else pc_ortho[i]++;
+            }
+        }
+    }
+
+    out->scr_h = wants_perspective ? fsz : 0.0f;
     return 1;
 }
 

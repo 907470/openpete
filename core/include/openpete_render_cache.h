@@ -78,6 +78,15 @@ typedef struct openpete_render_cache_entry {
  * emit. */
 void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src);
 
+/* Day 4 Phase 1.3 / Phase 2.5: per-game PC→perspective-eligibility
+ * classifier. Set by games/<game>/ at boot. Called by the cache shim
+ * on every lookup; returns nonzero if the vertex should use the
+ * perspective shader branch (real w for hyperbolic UV interp), zero
+ * for the ortho fallback. Default (NULL) behavior = canonical context
+ * alone decides. Games override to filter out functions that author
+ * affine vertex shading (cyclorama gradient, etc.). */
+extern int (*openpete_pgxp_classify_fn)(uint32_t gte_pc, int is_canonical);
+
 /* Consumer (called from PsyCross OT walker per vertex). Returns 1 on
  * hit (out filled), 0 on miss. */
 int openpete_render_cache_lookup_curr(uint32_t sxy_key,

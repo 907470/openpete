@@ -143,6 +143,69 @@ static void install_watch_from_env(CPUState* cpu) {
             g_watch.lo, g_watch.hi, g_watch.frame_max);
 }
 
+/* PGXP Day 4 Phase 1.3 / 2.5: Spyro-specific PC→perspective classifier.
+ *
+ * Prim-classes identified empirically (Phase 1.1 PC dump + Phase 0
+ * function survey):
+ *   tracer       : func_80017B48          0x80017B48..0x80017BFC
+ *   moby_proj    : func_8001F798/F158 + func_80022A2C
+ *                  0x8001F000..0x80023AC4 (covers both ranges contiguously)
+ *   spyro_mesh   : func_80023AC4 and its many leaf helpers
+ *                  0x80023AC4..0x80025000 (rough; helpers extend higher)
+ *   terrain      : func_800258F0          0x800258F0..0x800276A0
+ *   cyclorama    : func_8004EBA8          0x8004EBA8..0x8004F000
+ *   particles    : func_800573C8 + func_80058D64
+ *                  0x800573C8..0x80059474
+ *   shadow       : func_80059F8C          0x80059F8C..0x8005A470
+ *
+ * Phase 2.5 bisection: each class has its own env gate. By default ALL
+ * are off (= shipping Day 1c). Set OPENPETE_PGXP_<CLASS>=1 to opt in.
+ * Used to isolate which class causes the level-10 missing-geo
+ * regression. */
+static int s_pgxp_class_init = 0;
+static int s_persp_tracer = 0;
+static int s_persp_moby   = 0;
+static int s_persp_spyro  = 0;
+static int s_persp_terr   = 0;
+static int s_persp_cyc    = 0;
+static int s_persp_part   = 0;
+static int s_persp_shad   = 0;
+static int s_persp_other  = 0;  /* PCs that don't match any known range */
+
+static int env_on(const char* name) {
+    const char* v = getenv(name);
+    return (v && v[0] && v[0] != '0') ? 1 : 0;
+}
+
+static void spyro_pgxp_init_classes(void) {
+    if (s_pgxp_class_init) return;
+    s_persp_tracer = env_on("OPENPETE_PGXP_TRACER");
+    s_persp_moby   = env_on("OPENPETE_PGXP_MOBY");
+    s_persp_spyro  = env_on("OPENPETE_PGXP_SPYRO");
+    s_persp_terr   = env_on("OPENPETE_PGXP_TERRAIN");
+    s_persp_cyc    = env_on("OPENPETE_PGXP_CYCLORAMA");
+    s_persp_part   = env_on("OPENPETE_PGXP_PARTICLES");
+    s_persp_shad   = env_on("OPENPETE_PGXP_SHADOW");
+    s_persp_other  = env_on("OPENPETE_PGXP_OTHER");
+    s_pgxp_class_init = 1;
+    fprintf(stderr, "[PGXP-CLASS] tracer=%d moby=%d spyro=%d terrain=%d cyclorama=%d particles=%d shadow=%d other=%d\n",
+            s_persp_tracer, s_persp_moby, s_persp_spyro, s_persp_terr,
+            s_persp_cyc, s_persp_part, s_persp_shad, s_persp_other);
+}
+
+static int spyro_pgxp_classify(uint32_t pc, int is_canonical) {
+    spyro_pgxp_init_classes();
+    if (!is_canonical) return 0;
+    if (pc >= 0x80017B48u && pc < 0x80017BFCu)  return s_persp_tracer;
+    if (pc >= 0x8001F000u && pc < 0x80023AC4u)  return s_persp_moby;
+    if (pc >= 0x80023AC4u && pc < 0x80025000u)  return s_persp_spyro;
+    if (pc >= 0x800258F0u && pc < 0x800276A0u)  return s_persp_terr;
+    if (pc >= 0x8004EBA8u && pc < 0x8004F000u)  return s_persp_cyc;
+    if (pc >= 0x800573C8u && pc < 0x80059474u)  return s_persp_part;
+    if (pc >= 0x80059F8Cu && pc < 0x8005A470u)  return s_persp_shad;
+    return s_persp_other;
+}
+
 void game_apply_runtime_quirks(CPUState* cpu) {
     (void)cpu;
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
@@ -414,6 +477,10 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     static int s_watch_init_done = 0;
     if (!s_watch_init_done) {
         s_watch_init_done = 1;
+        /* Register the PGXP per-prim-class classifier here — first
+         * non-trivial frame hook that fires (game_apply_runtime_quirks
+         * is declared but unwired). */
+        openpete_pgxp_classify_fn = spyro_pgxp_classify;
         install_watch_from_env(cpu);
         /* Register the static UI-moby range. g_Hud.m_Mobys[12] lives
          * at PSX vaddr 0x80077FEC (g_Hud at 0x80077FA8 + offset 0x44),
