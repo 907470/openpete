@@ -123,20 +123,30 @@ Per-moby UI classification + transform-interp identity hook.
 r_moby.s has three render functions, each iterating its moby pool;
 each gets the same hook at its per-moby loop iteration boundary:
 
-  0x80022B08  func_80022A2C (shaded   moby loop) lw $s8,0($ra) → set_current($fp)
-  0x8001F800  func_8001F798 (regular  moby loop) lw $ra,4($gp) → set_current($ra)
-  0x80020F9C  func_80020F34 (specular moby loop) lw $ra,4($gp) → set_current($ra)
-  0x80023B0C  func_80023AC4 (Spyro)              lw $fp,0($fp) → set_current($ra=g_Spyro)
-  0x8004F088  func_8004F000 (cyclorama)          lw $t3,4($at) → set_current($at=g_Cyclorama)
+  0x80022B08  func_80022A2C (shaded moby loop) lw $s8,0($ra) → set_current($fp)
+  0x80023B0C  func_80023AC4 (Spyro)            lw $fp,0($fp) → set_current($ra=g_Spyro)
+  0x8004F088  func_8004F000 (cyclorama)        lw $t3,4($at) → set_current($at=g_Cyclorama)
 
-The moby hooks pass the loaded-into register (the moby vaddr written
-by the lw itself); the Spyro and cyclorama hooks pass the *source*
-address register — the lw is read-from-singleton-struct, and that
-singleton's vaddr is what we want as identity. (g_Spyro is loaded
-into $ra by the prologue addiu at 0x80023B00; g_Cyclorama is loaded
-into $at by the addiu at 0x8004F078. Both registers are still live
-at the hook PC because the lw reads from them rather than into
-them.)
+The shaded-moby hook passes the loaded-into register (the moby
+vaddr written by the lw itself); the Spyro and cyclorama hooks pass
+the *source* address register — the lw is read-from-singleton-
+struct, and that singleton's vaddr is what we want as identity.
+(g_Spyro is loaded into $ra by the prologue addiu at 0x80023B00;
+g_Cyclorama is loaded into $at by the addiu at 0x8004F078. Both
+registers are still live at the hook PC because the lw reads from
+them rather than into them.)
+
+Regular (func_8001F798) and specular (func_80020F34) renderers were
+briefly hooked at their loop heads (0x8001F800, 0x80020F9C in an
+intermediate commit) on the assumption that the lw's destination
+register was the per-instance moby vaddr. It turned out to be a
+*class-shared* pointer (likely m_Props / model template), so every
+instance of the same class collapsed onto one obj_tag and the
+matcher's ordinal-pairing-within-bucket produced visible "blending
+across the screen" between two instances of the same class whenever
+cull order shifted. Reverted; deferred follow-up is to plumb the
+cull-pass moby instance pointer through a host-side queue so the
+render pass can tag with the real per-instance vaddr.
 
 The appended call stashes the moby vaddr host-side so
 `gte_rtps_internal` can:
@@ -164,8 +174,6 @@ moby-loop hook (not just the shaded one) so terrain strip tags from
 the prior renderer never bleed into moby cache entries."""
 substitution_sites = [
     0x80022B08,  # lw $s8, 0($ra)   — shaded   per-moby loop iter
-    0x8001F800,  # lw $ra, 4($gp)   — regular  per-moby loop iter
-    0x80020F9C,  # lw $ra, 4($gp)   — specular per-moby loop iter
     0x80023B0C,  # lw $fp, 0($fp)   — Spyro     renderer (passes $ra=g_Spyro)
     0x8004F088,  # lw $t3, 4($at)   — cyclorama renderer (passes $at=g_Cyclorama)
 ]

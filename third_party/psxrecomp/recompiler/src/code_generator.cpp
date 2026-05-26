@@ -1441,18 +1441,30 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
                     if (addr == 0x80022B08u
-                            || addr == 0x8001F800u
-                            || addr == 0x80020F9Cu
                             || addr == 0x80023B0Cu
                             || addr == 0x8004F088u) {
                         /* Per-renderer identity tag.
                          *
-                         * Per-moby loop iter boundaries (r_moby.s):
+                         * Per-moby loop iter boundary (r_moby.s):
                          *   0x80022B08  func_80022A2C (shaded)   $fp = *iter
-                         *   0x8001F800  func_8001F798 (regular)  $ra = *(gp+4)
-                         *   0x80020F9C  func_80020F34 (specular) $ra = *(gp+4)
-                         * After the lw, the named register (= lw's rt
-                         * field) holds the current moby's PSX vaddr.
+                         * After the lw, $fp holds the current shaded
+                         * moby's PSX vaddr.
+                         *
+                         * NOTE: regular (func_8001F798) and specular
+                         * (func_80020F34) renderers were briefly
+                         * hooked at their loop heads (0x8001F800,
+                         * 0x80020F9C) on the assumption that the lw's
+                         * destination was a per-instance moby vaddr.
+                         * That turned out to be a class-shared pointer
+                         * (likely m_Props / model template), so every
+                         * instance of the same class collapsed onto
+                         * one obj_tag → matcher ordinal-pairing
+                         * within the bucket → visible "blending across
+                         * the screen" between two instances of the
+                         * same class whenever cull order shifted.
+                         * Reverted; the proper fix is to plumb the
+                         * cull-pass moby instance pointer through a
+                         * host-side queue (deferred sub-project).
                          *
                          * Per-singleton renderer tags (r_pete.s,
                          * r_cyclorama.s) — the lw at the hook PC reads
