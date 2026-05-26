@@ -40,7 +40,72 @@
 #include "openpete_render_cache.h"
 #include "openpete_time.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* Day 4 Phase 1.0 instrumentation: dump unique (h, ofx, ofy) tuples
+ * seen at vertex emit. Resolves the cyclorama question — does
+ * func_8004EBA8 swap projection-context mid-frame, or does it use the
+ * global frustum set at InitGeom() boot. Enabled by env
+ * OPENPETE_PGXP_PROJCTX_DUMP=1. */
+static int proj_ctx_dump_check_env(void) {
+    static int s_state = -1;
+    if (s_state < 0) {
+        const char* v = getenv("OPENPETE_PGXP_PROJCTX_DUMP");
+        s_state = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return s_state;
+}
+
+static void proj_ctx_observe(uint16_t h, int32_t ofx, int32_t ofy) {
+    if (!proj_ctx_dump_check_env()) return;
+
+    /* Independent always-on h-watcher: any h != canonical 341 is the
+     * cyclorama smoking gun we're hunting. Print first 8 distinct h
+     * values regardless of unique-tuple table state. */
+    {
+        enum { H_TABLE_SZ = 8 };
+        static uint16_t s_h_seen[H_TABLE_SZ];
+        static unsigned s_h_seen_count = 0;
+        int known = 0;
+        for (unsigned i = 0; i < s_h_seen_count; ++i)
+            if (s_h_seen[i] == h) { known = 1; break; }
+        if (!known && s_h_seen_count < H_TABLE_SZ) {
+            s_h_seen[s_h_seen_count++] = h;
+            fprintf(stderr, "[PGXP-PROJCTX-H] new h=%u (distinct h's seen so far: %u)\n",
+                    (unsigned)h, s_h_seen_count);
+        }
+    }
+
+    enum { TABLE_SZ = 64 };
+    static struct { uint16_t h; int32_t ofx; int32_t ofy; uint32_t count; } s_seen[TABLE_SZ];
+    static unsigned s_seen_count = 0;
+    static int s_table_full_warned = 0;
+
+    for (unsigned i = 0; i < s_seen_count; ++i) {
+        if (s_seen[i].h == h && s_seen[i].ofx == ofx && s_seen[i].ofy == ofy) {
+            s_seen[i].count++;
+            return;
+        }
+    }
+    if (s_seen_count < TABLE_SZ) {
+        s_seen[s_seen_count].h = h;
+        s_seen[s_seen_count].ofx = ofx;
+        s_seen[s_seen_count].ofy = ofy;
+        s_seen[s_seen_count].count = 1;
+        s_seen_count++;
+        /* OFX/OFY are q16 fixed-point as stored in COP2; print decoded float
+         * for readability. */
+        fprintf(stderr, "[PGXP-PROJCTX] new tuple #%u: h=%u ofx=%d (%.2f) ofy=%d (%.2f)\n",
+                s_seen_count, (unsigned)h, ofx, (double)ofx / 65536.0,
+                ofy, (double)ofy / 65536.0);
+    } else if (!s_table_full_warned) {
+        fprintf(stderr, "[PGXP-PROJCTX] tuple table full at %u entries; uniques suppressed (h-watcher still active)\n",
+                TABLE_SZ);
+        s_table_full_warned = 1;
+    }
+}
 
 typedef struct {
     uint32_t                       seq;
@@ -127,6 +192,8 @@ extern void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3
 void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src) {
     /* First-emit-per-yield rotate. No-op if not armed. */
     consume_pending_rotate();
+
+    proj_ctx_observe(src->h, src->ofx, src->ofy);
 
     /* Per-vertex stability trace (no-op unless OPENPETE_VERT_STABILITY_LOG
      * env is set). Called BEFORE span detection so vert_idx accounting
