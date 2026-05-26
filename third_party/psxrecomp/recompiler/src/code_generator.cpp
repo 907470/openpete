@@ -1456,14 +1456,76 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * the loaded value to 0 so the following beqz
                          * exits the loop immediately — disables ground-
                          * plane (LP-walk → HQ atlas) rendering for
-                         * visual identification of which cells use it. */
+                         * visual identification of which cells use it.
+                         *
+                         * Also one of the 7 §7.5-R3 PHASE-C strip-list
+                         * loop heads: stamps a stable per-strip identity
+                         * into openpete_world_geo so gte_rtps_internal
+                         * can tag terrain verts produced by the four
+                         * non-dominant RTPS variants (0x80027A64 +
+                         * 0x80028180) inside this strip's inner unrolled
+                         * vertex loops. When the LP-kill knob fires the
+                         * loaded value is 0 and the strip-loop exits
+                         * immediately, so the stale tag is harmless. */
                         uint32_t rs = get_rs(instr);
                         uint32_t rt = get_rt(instr);
                         int16_t off = get_imm16(instr);
                         code = fmt::format(
                             "{} = psx_runtime_dbg_kill_env_lp_walk ? 0u : "
-                            "cpu->read_word({} + {});  /* LP-walk kill knob */",
-                            reg_name(rt), reg_name(rs), off);
+                            "cpu->read_word({} + {});"
+                            " openpete_world_geo_set_current({});"
+                            "  /* LP-walk kill knob + world strip tag */",
+                            reg_name(rt), reg_name(rs), off,
+                            reg_name(rt));
+                    } else if (addr == 0x800267E4u
+                            || addr == 0x80027720u
+                            || addr == 0x80028590u
+                            || addr == 0x800285FCu
+                            || addr == 0x80029500u
+                            || addr == 0x8002956Cu) {
+                        /* §7.5-R3 PHASE-C — strip-list loop heads in
+                         * r_environment.s func_800258F0. The function
+                         * has 5 strip-list iterations chained through
+                         * $ra (used here as a regular register, not a
+                         * return address). Each iteration loads the
+                         * next strip-list entry; the per-iteration value
+                         * is a stable cross-frame per-strip identity for
+                         * static level geometry. The dominant entry at
+                         * 0x80026238 (xor $t7,$t7,$s1) is hooked
+                         * separately; this block covers the remaining
+                         * six loop heads, which together cover the
+                         * 8 non-dominant RTPS sites:
+                         *
+                         *   0x800267E4: lw $t9,0($ra)  → 4 RTPS
+                         *               (0x800268C8/930/9CC/A84)
+                         *   0x800276B4: lw $s3,0($ra)  → 2 RTPS (above)
+                         *   0x80027720: lw $s3,0($ra)  → 2 RTPS
+                         *               (inner nested, 0x80027A64 +
+                         *                0x80028180)
+                         *   0x80028590: lw $s3,0($ra)  → 1 RTPS
+                         *   0x800285FC: lw $s3,0($ra)  → 1 RTPS
+                         *               (inner nested, 0x80028C54)
+                         *   0x80029500: lw $s3,0($ra)  → 1 RTPS
+                         *   0x8002956C: lw $s3,0($ra)  → 1 RTPS
+                         *               (inner nested, 0x800299B0)
+                         *
+                         * Hooking on the raw `lw` (rather than the post-
+                         * alignment `xor`/`sll`) keeps the rule uniform
+                         * across the differently-decoded variants; the
+                         * low flag bits of the loaded value are stable
+                         * per-strip across frames, so the eff_span mix
+                         * still yields a stable cross-frame strip key.
+                         *
+                         * Cleared at the per-moby loop (0x80022B08) so
+                         * moby verts fall back to the moby-vaddr tag.
+                         * READ-ONLY: the appended call only stashes a
+                         * host-side pointer consumed by the render
+                         * cache + matcher; no PSX RAM, cpu state, or
+                         * gameplay-readable byte is written. */
+                        uint32_t rt = get_rt(instr);
+                        code = fmt::format(
+                            "{} openpete_world_geo_set_current({});",
+                            translate_lw(instr), reg_name(rt));
                     } else if (addr == 0x800261E0u) {
                         /* DBG: env-renderer's read of g_SkipLowPolyWorld.
                          * When psx_runtime_dbg_kill_env_lp_walk is set,

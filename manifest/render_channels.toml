@@ -185,12 +185,27 @@ exact) but the cache carried no stable world key, and the no-hook
 v_world reconstruction was disproven (§7.5-R2: GTE input origin is
 sector-relative, not g_Camera.m_Position).
 
-The recompiler substitution at `0x80026238: xor $t7,$t7,$s1` (the
-dominant terrain strip-entry in r_environment.s func_800258F0
-`.L80026228`, whose RTPS at 0x800262C0 fills the render cache for
-terrain) appends `openpete_world_geo_set_current($t7)` AFTER the xor
-— $t7 then holds the aligned strip-base pointer, a stable per-strip
-address for static level geometry. gte_rtps_internal stamps
+func_800258F0 in r_environment.s walks 5 strip-list iterations
+chained through $ra (used as a regular register), each followed by
+unrolled vertex inner-loops that hit 1+ RTPS variants. Across the
+function there are 9 RTPS sites in total. The dominant strip-entry
+substitution at `0x80026238: xor $t7,$t7,$s1` (loop `.L80026228`,
+RTPS @ 0x800262C0) appends `openpete_world_geo_set_current($t7)`
+AFTER the xor — $t7 then holds the aligned strip-base pointer, a
+stable per-strip address for static level geometry. PHASE-C
+(2026-05-26) extends the hook to the remaining six strip-list loop
+heads (`lw $reg,0($ra)` at the top of each iteration) so all 8
+non-dominant RTPS sites also receive a stable per-strip tag:
+
+  0x800267E4 ($t9)  → RTPS 0x800268C8, 0x80026930, 0x800269CC, 0x80026A84
+  0x800276B4 ($s3)  → RTPS 0x80027A64, 0x80028180 (outer of nested pair)
+  0x80027720 ($s3)  → same (inner)
+  0x80028590 ($s3)  → RTPS 0x80028C54 (outer of nested pair)
+  0x800285FC ($s3)  → same (inner)
+  0x80029500 ($s3)  → RTPS 0x800299B0 (outer of nested pair)
+  0x8002956C ($s3)  → same (inner)
+
+gte_rtps_internal stamps
 `obj_tag = world_geo ? (world_geo | 0x40000000) : ui_moby`. Bit30 is
 free in 2 MB-RAM KSEG vaddrs, so the world tag never collides with a
 moby vaddr or 0. The companion clear is appended to the EXISTING
@@ -206,7 +221,17 @@ diag_cone / ui_moby / envvert precedent). Verified: aspect_determinism
 bit-identical with the substitutions present (gameplay log
 unchanged)."""
 substitution_sites = [
-    0x80026238,  # xor $t7,$t7,$s1 — terrain strip base ptr
+    0x80026238,  # xor $t7,$t7,$s1 — terrain strip base ptr (dominant)
+    0x800267E4,  # lw $t9,0($ra)   — strip-list head #2
+    # 0x800276B4 — strip-list head #3 outer; co-owned with
+    #              dbg_kill_env_lp_walk (the LP-kill knob channel
+    #              already lists this PC; world_geo only appends a
+    #              set_current call after that channel's load).
+    0x80027720,  # lw $s3,0($ra)   — strip-list head #3 inner
+    0x80028590,  # lw $s3,0($ra)   — strip-list head #4 outer
+    0x800285FC,  # lw $s3,0($ra)   — strip-list head #4 inner
+    0x80029500,  # lw $s3,0($ra)   — strip-list head #5 outer
+    0x8002956C,  # lw $s3,0($ra)   — strip-list head #5 inner
 ]
 verdict_fn       = "openpete_world_geo_set_current"
 verified_against = ["aspect_determinism"]
