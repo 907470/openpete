@@ -1442,16 +1442,57 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * registered by games/spyro-1/. */
                     if (addr == 0x80022B08u
                             || addr == 0x8001F800u
-                            || addr == 0x80020F9Cu) {
-                        uint32_t rt = get_rt(instr);
+                            || addr == 0x80020F9Cu
+                            || addr == 0x80023B0Cu
+                            || addr == 0x8004F088u) {
+                        /* Per-renderer identity tag.
+                         *
+                         * Per-moby loop iter boundaries (r_moby.s):
+                         *   0x80022B08  func_80022A2C (shaded)   $fp = *iter
+                         *   0x8001F800  func_8001F798 (regular)  $ra = *(gp+4)
+                         *   0x80020F9C  func_80020F34 (specular) $ra = *(gp+4)
+                         * After the lw, the named register (= lw's rt
+                         * field) holds the current moby's PSX vaddr.
+                         *
+                         * Per-singleton renderer tags (r_pete.s,
+                         * r_cyclorama.s) — the lw at the hook PC reads
+                         * from an *address register* that the prologue
+                         * loaded with the singleton's vaddr; that
+                         * register (not the lw's destination) is what
+                         * we want as identity:
+                         *   0x80023B0C  func_80023AC4 (Spyro)
+                         *               $ra was set to g_Spyro at the
+                         *               prologue addiu (0x80023B00);
+                         *               this lw is `lw $fp, 0($fp)`
+                         *               (reads g_Models), which leaves
+                         *               $ra untouched. Pass `cpu->ra`.
+                         *   0x8004F088  func_8004F000 (cyclorama)
+                         *               $at was set to g_Cyclorama at
+                         *               the prologue addiu (0x8004F078);
+                         *               this lw is `lw $t3, 4($at)`,
+                         *               which reads from $at but leaves
+                         *               it intact. Pass `cpu->at`.
+                         *
+                         * Each appended call stashes the vaddr host-
+                         * side so gte_rtps_internal can stamp the cache
+                         * entry's obj_tag with a stable cross-frame
+                         * per-object identity. */
+                        const char* tag_reg;
+                        if (addr == 0x80023B0Cu)      tag_reg = "cpu->ra";
+                        else if (addr == 0x8004F088u) tag_reg = "cpu->at";
+                        else                          tag_reg = nullptr;
+                        std::string reg_expr = tag_reg
+                            ? std::string(tag_reg)
+                            : reg_name(get_rt(instr));
                         /* Also clear the world-geo strip tag (§7.5-R3):
-                         * once per-moby rendering begins, world-strip
-                         * state is stale, so moby projections must fall
-                         * back to the moby-vaddr identity in gte. */
+                         * once per-moby/Spyro/cyclorama render begins,
+                         * world-strip state is stale, so projections
+                         * fall back to the per-renderer identity in
+                         * gte_rtps_internal. */
                         code = fmt::format(
                             "{} openpete_ui_moby_set_current({}); "
                             "openpete_world_geo_clear();",
-                            translate_lw(instr), reg_name(rt));
+                            translate_lw(instr), reg_expr);
                     } else if (addr == 0x80025A34u) {
                         /* §7.5 terrain-reproject validation probe.
                          * r_environment.s per-vertex transform:

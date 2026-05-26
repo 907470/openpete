@@ -123,13 +123,20 @@ Per-moby UI classification + transform-interp identity hook.
 r_moby.s has three render functions, each iterating its moby pool;
 each gets the same hook at its per-moby loop iteration boundary:
 
-  0x80022B08  func_80022A2C (shaded)   lw $s8,0($ra)   → set_current($fp)
-  0x8001F800  func_8001F798 (regular)  lw $ra,4($gp)   → set_current($ra)
-  0x80020F9C  func_80020F34 (specular) lw $ra,4($gp)   → set_current($ra)
+  0x80022B08  func_80022A2C (shaded   moby loop) lw $s8,0($ra) → set_current($fp)
+  0x8001F800  func_8001F798 (regular  moby loop) lw $ra,4($gp) → set_current($ra)
+  0x80020F9C  func_80020F34 (specular moby loop) lw $ra,4($gp) → set_current($ra)
+  0x80023B0C  func_80023AC4 (Spyro)              lw $fp,0($fp) → set_current($ra=g_Spyro)
+  0x8004F088  func_8004F000 (cyclorama)          lw $t3,4($at) → set_current($at=g_Cyclorama)
 
-(The post-lw register name differs because the recompiler emits the
-target per MIPS register; in all three cases the value is the
-current moby's PSX vaddr.)
+The moby hooks pass the loaded-into register (the moby vaddr written
+by the lw itself); the Spyro and cyclorama hooks pass the *source*
+address register — the lw is read-from-singleton-struct, and that
+singleton's vaddr is what we want as identity. (g_Spyro is loaded
+into $ra by the prologue addiu at 0x80023B00; g_Cyclorama is loaded
+into $at by the addiu at 0x8004F078. Both registers are still live
+at the hook PC because the lw reads from them rather than into
+them.)
 
 The appended call stashes the moby vaddr host-side so
 `gte_rtps_internal` can:
@@ -159,6 +166,8 @@ substitution_sites = [
     0x80022B08,  # lw $s8, 0($ra)   — shaded   per-moby loop iter
     0x8001F800,  # lw $ra, 4($gp)   — regular  per-moby loop iter
     0x80020F9C,  # lw $ra, 4($gp)   — specular per-moby loop iter
+    0x80023B0C,  # lw $fp, 0($fp)   — Spyro     renderer (passes $ra=g_Spyro)
+    0x8004F088,  # lw $t3, 4($at)   — cyclorama renderer (passes $at=g_Cyclorama)
 ]
 verdict_fn       = "openpete_ui_moby_set_current"
 verified_against = ["aspect_determinism"]
