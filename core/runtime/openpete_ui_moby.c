@@ -26,10 +26,13 @@ uint32_t openpete_ui_moby_get_current(void) {
     return s_current;
 }
 
-int openpete_ui_moby_is_current_ui(void) {
-    uint32_t a = s_current;
+int openpete_ui_moby_is_addr_ui(uint32_t a) {
     if (a == 0) return 0;
     if (a >= s_static_lo && a < s_static_hi) return 1;
     if (a >= s_text_lo   && a < s_text_hi  ) return 1;
     return 0;
+}
+
+int openpete_ui_moby_is_current_ui(void) {
+    return openpete_ui_moby_is_addr_ui(s_current);
 }

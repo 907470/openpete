@@ -39,10 +39,19 @@
 
 #include "openpete_render_cache.h"
 #include "openpete_time.h"
+#include "openpete_ui_moby.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Live Hor+ widescreen / FOV state, defined in core/features/widescreen.c
+ * and consumed by the GTE hot path (widescreen_gte_inline.h). The PGXP/
+ * interp reproject below must mirror the same widening the live
+ * projection applied, since vd.px is an ABSOLUTE screen position that
+ * the renderer uses verbatim. */
+extern float openpete_disp_w_factor;   /* 0 / 1.0 = no Hor+ widening */
+extern int   openpete_fov_h_override;  /* 0 = no --fov H override */
 
 /* Day 4 Phase 1.3 / 2.5: per-game perspective-eligibility classifier.
  * NULL = default (canonical-only). games/<game>/ registers an override
@@ -339,12 +348,38 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
      * the resulting projection is approximate but those verts are
      * clipped/culled by downstream stages anyway. */
     const float fsz = (fmac3 > 1.0f) ? fmac3 : 1.0f;
-    const float fH = (float)e.h;
+    /* Mirror the live GTE H override (widescreen_eff_h): --fov swaps H,
+     * --aspect leaves it native. The cache stores canonical H, so apply
+     * the override here too or PGXP'd verts under --fov project at the
+     * wrong scale. Identity (== e.h) when no override is set. */
+    const float fH = (openpete_fov_h_override != 0)
+                     ? (float)openpete_fov_h_override
+                     : (float)e.h;
     const float h_div_sz = fH / fsz;
     /* OFX/OFY are stored as raw Q16 ints in the cache; divide to get
      * pixel units, matching the integer projection's `>> 16`. */
-    const float fofx = (float)e.ofx * (1.0f / 65536.0f);
+    float fofx = (float)e.ofx * (1.0f / 65536.0f);
     const float fofy = (float)e.ofy * (1.0f / 65536.0f);
+
+    /* Mirror the live Hor+ OFX widening (widescreen_eff_ofx). The cache
+     * deliberately stores the CANONICAL (pre-Hor+) OFX (for the
+     * is_canonical discriminator + aspect-independent semantics), but
+     * out->px is an ABSOLUTE screen position the renderer writes to
+     * v->x verbatim — so it must match the widened live projection.
+     * Without this, every PGXP-hit vertex lands at the canonical 4:3
+     * origin (left-aligned under PsyCross's left-anchored widened ortho)
+     * while PGXP-miss verts keep the widened int16 SXY, so triangles
+     * spanning the two stretch toward the left edge. UI mobys get the
+     * constant centring shift; everything else gets the proportional
+     * widening — exactly as widescreen_eff_ofx does live. Identity when
+     * disp_w_factor <= 1.0 (no --aspect), so 4:3 is byte-unchanged. */
+    if (openpete_disp_w_factor > 1.0f) {
+        if (openpete_ui_moby_is_addr_ui(e.obj_tag)) {
+            fofx += (float)((openpete_disp_w_factor - 1.0f) * 256.0f);
+        } else {
+            fofx *= openpete_disp_w_factor;
+        }
+    }
 
     /* Float-precision SXY in PSX pixel space (same coord space the
      * int16 SXY path produces, just with sub-pixel detail preserved). */

@@ -45,6 +45,13 @@ void openpete_ui_moby_set_text_range(uint32_t lo, uint32_t hi);
  * func_80022A2C. */
 void openpete_ui_moby_set_current(uint32_t moby_addr);
 
+/* True iff `addr` falls in either UI range (static HUD or per-frame
+ * text-moby buffer). Used both by is_current_ui() and by the PGXP/
+ * interp reproject path, which must mirror the live Hor+ widening
+ * (centring shift for UI mobys, multiply for everything else) when
+ * reprojecting a cached vertex by its obj_tag. */
+int  openpete_ui_moby_is_addr_ui(uint32_t addr);
+
 /* True iff the most recently stashed moby pointer falls in either
  * UI range. Cheap two-comparison check on hot path. */
 int  openpete_ui_moby_is_current_ui(void);
