@@ -120,12 +120,31 @@ name        = "widescreen_ui_moby_tag"
 status      = "gated"
 description = """
 Per-moby UI classification + transform-interp identity hook.
-r_moby.s has three render functions, each iterating its moby pool;
-each gets the same hook at its per-moby loop iteration boundary:
 
-  0x80022B08  func_80022A2C (shaded moby loop) lw $s8,0($ra) → set_current($fp)
-  0x80023B0C  func_80023AC4 (Spyro)            lw $fp,0($fp) → set_current($ra=g_Spyro)
-  0x8004F088  func_8004F000 (cyclorama)        lw $t3,4($at) → set_current($at=g_Cyclorama)
+TWO SEPARATE host-side channels are fed from these sites — they
+answer two different questions and must never be conflated:
+  * openpete_ui_moby (s_current) — "is the object being projected a
+    HUD/UI element?" Narrow: only the shaded renderer carries HUD/
+    text mobys, so ONLY the shaded site feeds it. Consumed by
+    widescreen_eff_ofx (centring vs Hor+ widening).
+  * openpete_obj_id — "which logical object produced this span?"
+    Broad: every per-object render path feeds it. Consumed only by
+    the render-cache obj_tag emit (transform-interp matcher).
+(They were briefly merged onto s_current, which let g_Spyro /
+g_Cyclorama / popped gameplay-moby vaddrs get range-tested by
+is_current_ui() and mis-classified as UI — breaking Hor+ widening
+for any object whose address fell in the polybuf/HUD range. See
+core/include/openpete_obj_id.h.)
+
+r_moby.s has three render functions; the per-moby loop iteration
+boundary of each gets a hook:
+
+  0x80022B08  func_80022A2C (shaded moby loop) lw $s8,0($ra)
+              → ui_moby_set_current($fp) + obj_id_set($fp)   [BOTH]
+  0x80023B0C  func_80023AC4 (Spyro)            lw $fp,0($fp)
+              → obj_id_set($ra=g_Spyro)                      [identity only]
+  0x8004F088  func_8004F000 (cyclorama)        lw $t3,4($at)
+              → obj_id_set($at=g_Cyclorama)                  [identity only]
 
 The shaded-moby hook passes the loaded-into register (the moby
 vaddr written by the lw itself); the Spyro and cyclorama hooks pass
@@ -143,18 +162,15 @@ render-list slots only carry a class-shared m_Props ptr; the queue
 plumbs the real per-instance moby vaddr from func_8001F158's cull
 pass to each render-pass iter.)
 
-The appended call stashes the moby vaddr host-side so
-`gte_rtps_internal` can:
-  (a) classify the projection as UI (HUD icon, text overlay) or
-      gameplay for the widescreen centring shift, and
-  (b) stamp the cache entry's obj_tag with the moby vaddr so the
-      transform-interp matcher pairs by real per-object identity
-      across frames (instead of the heuristic world-ordinal fallback,
-      which broke once PHASE-C inflated the world-ordinal stream
-      2.7× and starved the regular/specular mobys of stable ordinal
-      slots).
+The obj_id stamp lets `gte_rtps_internal` write the cache entry's
+obj_tag with a stable per-object identity so the transform-interp
+matcher pairs by real per-object identity across frames (instead of
+the heuristic world-ordinal fallback, which broke once PHASE-C
+inflated the world-ordinal stream 2.7× and starved the regular/
+specular mobys of stable ordinal slots).
 
-UI mobys get a CONSTANT centring shift `eff_OFX = OFX + (factor-1)*256`
+The ui_moby stamp (shaded site only) lets widescreen_eff_ofx give UI
+mobys a CONSTANT centring shift `eff_OFX = OFX + (factor-1)*256`
 instead of the standard widening `eff_OFX = OFX * factor`. Spyro's
 HUD render writes EACH icon's screen-X into OFX directly via inline
 CTC2 — so the proportional widening spreads icons apart (measured:
@@ -168,10 +184,12 @@ The companion `openpete_world_geo_clear()` is appended to every
 moby-loop hook (not just the shaded one) so terrain strip tags from
 the prior renderer never bleed into moby cache entries."""
 substitution_sites = [
-    0x80022B08,  # lw $s8, 0($ra)   — shaded   per-moby loop iter
-    0x80023B0C,  # lw $fp, 0($fp)   — Spyro     renderer (passes $ra=g_Spyro)
-    0x8004F088,  # lw $t3, 4($at)   — cyclorama renderer (passes $at=g_Cyclorama)
+    0x80022B08,  # lw $s8, 0($ra)   — shaded per-moby loop (ui_moby + obj_id)
+    0x80023B0C,  # lw $fp, 0($fp)   — Spyro     renderer (obj_id only, $ra=g_Spyro)
+    0x8004F088,  # lw $t3, 4($at)   — cyclorama renderer (obj_id only, $at=g_Cyclorama)
 ]
+# 0x80022B08 feeds the widescreen UI classifier; all three feed the
+# transform-interp identity channel (openpete_obj_id_set).
 verdict_fn       = "openpete_ui_moby_set_current"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # render-side classification only
@@ -200,11 +218,15 @@ Plumbed via three recompiler substitution sites:
   0x8001F800  lw $ra, 4($gp)       func_8001F798 (regular render)
   0x80020F9C  lw $ra, 4($gp)       func_80020F34 (specular render)
               — Loop iter top. Appends
-                `openpete_ui_moby_set_current(openpete_moby_queue_pop());
+                `openpete_obj_id_set(openpete_moby_queue_pop());
                  openpete_world_geo_clear();`
                 replacing the lw's destination-register reasoning
                 with a FIFO pop that returns the real per-instance
-                moby vaddr.
+                moby vaddr. NOTE: feeds the transform-interp identity
+                channel (openpete_obj_id), NOT the widescreen UI
+                classifier — regular/specular mobys are never HUD/UI,
+                so they must not be range-tested by is_current_ui()
+                (doing so broke Hor+ widening; see openpete_obj_id.h).
 
 FIFO invariant: each cull pass fully populates the queue before its
 render pass begins (draw.c sequences them as separate function

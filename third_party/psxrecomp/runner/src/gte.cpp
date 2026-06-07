@@ -26,6 +26,7 @@
  * those paths look like "unknown caller" downstream. */
 extern "C" uint32_t openpete_gte_caller_pc = 0;
 #include "openpete_world_geo.h"
+#include "openpete_obj_id.h"
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
@@ -324,7 +325,11 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
                  * relative for terrain and useless as a key). */
                 e.world_vidx = openpete_world_geo_next_vidx();
             } else {
-                e.obj_tag    = openpete_ui_moby_get_current();
+                /* Per-object identity (regular/specular/shaded/Spyro/
+                 * cyclorama). Read the dedicated obj_id channel, NOT the
+                 * widescreen UI classifier (openpete_ui_moby), so the two
+                 * concerns stay decoupled. */
+                e.obj_tag    = openpete_obj_id_get();
                 e.world_vidx = 0;
             }
         }

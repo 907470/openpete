@@ -1426,15 +1426,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      *
                      * After the lw, the named register holds the fresh
                      * moby pointer; stash it host-side via
-                     * openpete_ui_moby_set_current so gte_rtps_internal
-                     * can stamp a stable per-moby obj_tag (matcher
-                     * pairs by real vaddr instead of falling back to
-                     * world-ordinal — fixes the visible jitter on
-                     * regular and specular mobys that the §7.2
-                     * Increment 1 "graceful fall-through" path produced
-                     * once PHASE-C inflated the world-ordinal stream
-                     * 2.7×). Also classifies UI mobys for the
-                     * widescreen centring shift.
+                     * openpete_obj_id_set so gte_rtps_internal can stamp
+                     * a stable per-moby obj_tag (matcher pairs by real
+                     * vaddr instead of falling back to world-ordinal —
+                     * fixes the visible jitter on regular and specular
+                     * mobys that the §7.2 Increment 1 "graceful
+                     * fall-through" path produced once PHASE-C inflated
+                     * the world-ordinal stream 2.7×).
+                     *
+                     * The identity channel (openpete_obj_id) is kept
+                     * SEPARATE from the widescreen UI classifier
+                     * (openpete_ui_moby): only the shaded loop
+                     * (0x80022B08), the one renderer HUD/UI mobys flow
+                     * through, additionally feeds the UI classifier. See
+                     * the per-PC handlers below and openpete_obj_id.h.
                      *
                      * Game-agnostic from core/'s perspective: the
                      * function names and addresses are Spyro-specific,
@@ -1465,9 +1470,19 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          *
                          * Also clears the world-geo strip tag so a
                          * stale terrain tag doesn't bleed into moby
-                         * projections. */
+                         * projections.
+                         *
+                         * Channel split: regular/specular mobys are never
+                         * HUD/UI elements, so they feed ONLY the
+                         * transform-interp identity channel
+                         * (openpete_obj_id) — NOT the widescreen UI
+                         * classifier (openpete_ui_moby). Feeding popped
+                         * gameplay-moby vaddrs into s_current let
+                         * is_current_ui() mis-classify any moby whose
+                         * address fell in the polybuf/HUD range as UI,
+                         * breaking Hor+ widening under --aspect. */
                         code = fmt::format(
-                            "{} openpete_ui_moby_set_current("
+                            "{} openpete_obj_id_set("
                             "openpete_moby_queue_pop()); "
                             "openpete_world_geo_clear();",
                             translate_lw(instr));
@@ -1518,11 +1533,29 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * once per-moby/Spyro/cyclorama render begins,
                          * world-strip state is stale, so projections
                          * fall back to the per-renderer identity in
-                         * gte_rtps_internal. */
-                        code = fmt::format(
-                            "{} openpete_ui_moby_set_current({}); "
-                            "openpete_world_geo_clear();",
-                            translate_lw(instr), reg_expr);
+                         * gte_rtps_internal.
+                         *
+                         * Channel split: the shaded loop (0x80022B08) is
+                         * the ONLY renderer HUD/UI mobys flow through, so
+                         * it alone feeds the widescreen UI classifier
+                         * (openpete_ui_moby) — in ADDITION to the
+                         * transform-interp identity channel
+                         * (openpete_obj_id). Spyro and cyclorama are never
+                         * UI, so they feed obj_id only; mixing their
+                         * vaddrs into s_current was the widescreen-
+                         * widening regression. */
+                        if (addr == 0x80022B08u) {
+                            code = fmt::format(
+                                "{0} openpete_ui_moby_set_current({1}); "
+                                "openpete_obj_id_set({1}); "
+                                "openpete_world_geo_clear();",
+                                translate_lw(instr), reg_expr);
+                        } else {
+                            code = fmt::format(
+                                "{} openpete_obj_id_set({}); "
+                                "openpete_world_geo_clear();",
+                                translate_lw(instr), reg_expr);
+                        }
                     } else if (addr == 0x80025A34u) {
                         /* §7.5 terrain-reproject validation probe.
                          * r_environment.s per-vertex transform:

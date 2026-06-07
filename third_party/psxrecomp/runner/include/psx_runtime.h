@@ -375,6 +375,15 @@ void     openpete_ui_moby_set_current(uint32_t moby_addr);
 int      openpete_ui_moby_is_current_ui(void);
 uint32_t openpete_ui_moby_get_current(void);
 
+/* Per-object render identity for transform-interp (SEPARATE from the
+ * UI classifier above — see core/include/openpete_obj_id.h). Written by
+ * every per-object render-loop iter (regular/specular via the moby
+ * queue, shaded, Spyro, cyclorama); read only by the render-cache
+ * obj_tag emit in gte_rtps_internal. Kept distinct from s_current so
+ * non-shaded objects can never be mis-classified as UI mobys. */
+void     openpete_obj_id_set(uint32_t obj_addr);
+uint32_t openpete_obj_id_get(void);
+
 /* Per-strip world-geometry identity (transform-interp §7.5-R3). The
  * recompiler emits openpete_world_geo_set_current at the dominant
  * terrain strip-entry of func_800258F0 (0x80026238, after the strip
