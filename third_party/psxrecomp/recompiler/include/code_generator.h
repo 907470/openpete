@@ -76,18 +76,27 @@ struct ChannelSite {
         ConstLoad,   // lui/addiu: emit `rt = <symbol>` at this PC+imm (replaces
                      //       a hardcoded constant load with a runtime knob)
         AppendCall,  // any op: emit the verbatim translation, then append
-                     //       `<symbol>(<operand>);` — a call to a named C hook
-                     //       function. Moves bespoke per-site logic out of the
-                     //       recompiler into a feature-module C function.
+                     //       `<symbol>(<operands...>);` — a call to a named C
+                     //       hook. Moves bespoke per-site SIDE-EFFECT logic out
+                     //       of the recompiler into a feature-module C fn.
+        ReplaceCall, // any op: REPLACE the translation with
+                     //       `<dest> = <symbol>(<operands...>);` — a hook that
+                     //       returns the substituted value. Moves bespoke
+                     //       value-computing logic (cone slope, canonical-SX,
+                     //       polybuf-canon, …) out of the recompiler.
     };
     Kind        kind;
     int32_t     imm;      // OffsetAdd/ConstLoad: opcode immediate to match
                           // (disambiguates a reused PC; -0x10000 = any)
-    std::string symbol;   // OffsetAdd/ConstLoad: knob symbol. AppendCall: the
-                          // hook function name. Emitted verbatim into the
-                          // generated C (resolved at that TU's compile time).
-    std::string operand;  // AppendCall only: register role to pass to the hook
-                          // ("rd"/"rs"/"rt"/"sp"). Empty for the knob kinds.
+    std::string symbol;   // OffsetAdd/ConstLoad: knob symbol. Append/Replace:
+                          // the hook function name. Emitted verbatim.
+    // Append/ReplaceCall: operand register-roles passed to the hook, in order.
+    // Roles: rd/rs/rt and named cpu fields (sp/a0..a3/v0/v1/t0..t9/s0..s7/...),
+    // "gte<N>" (cpu->gte_data[N]), "imm" (sign-extended opcode immediate),
+    // "off" (load/store offset), "cpu" (the CPUState*).
+    std::vector<std::string> operands;
+    std::string dest;     // ReplaceCall: dest register-role ("rd"/"rt"). Empty
+                          // for the other kinds.
 };
 
 class CodeGenerator {
@@ -181,11 +190,19 @@ private:
     std::map<uint32_t, ChannelSite> channel_sites_;  // from render_channels.toml
     bool skip_on_error_ = false;
 
-    // Emit the trailing ` <symbol>(<operand>);` for a ChannelSite::AppendCall,
-    // resolving the operand register-role against this instruction. Returns
-    // the snippet to concatenate after the verbatim translation.
+    // Resolve one operand register-role to its C expression for this insn.
+    std::string resolve_channel_operand(const std::string& role,
+                                        uint32_t instr) const;
+    // Build the comma-separated argument list for a channel hook call.
+    std::string channel_arg_list(const ChannelSite& cs, uint32_t instr) const;
+    // Emit ` <hook>(<args>);` to append after the verbatim translation
+    // (ChannelSite::AppendCall).
     std::string emit_channel_append_call(const ChannelSite& cs,
                                          uint32_t instr) const;
+    // Emit `<dest> = <hook>(<args>);` replacing the translation
+    // (ChannelSite::ReplaceCall).
+    std::string emit_channel_replace_call(const ChannelSite& cs,
+                                          uint32_t instr) const;
 
     const std::string* external_name_for(uint32_t addr) const {
         auto it = external_symbols_.find(addr);

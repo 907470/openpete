@@ -125,8 +125,20 @@ static bool parse_channel_sites(const std::string& path,
         uint32_t addr = (uint32_t)std::strtoul(addr_s.c_str(), nullptr, 0);
         PSXRecomp::ChannelSite site;
         // arg2/arg3 are interpreted per kind:
-        //   offset_add / const_load : a2 = opcode imm, a3 = knob symbol
-        //   append_call             : a2 = operand role, a3 = hook fn name
+        //   offset_add / const_load : a2 = opcode imm,      a3 = knob symbol
+        //   append_call             : a2 = "op1,op2,..."    a3 = hook fn name
+        //   replace_call            : a2 = "dest=op1,op2,…" a3 = hook fn name
+        auto split_csv = [](const std::string& s) {
+            std::vector<std::string> out_v;
+            size_t p = 0;
+            while (p < s.size()) {
+                size_t c = s.find(',', p);
+                if (c == std::string::npos) c = s.size();
+                if (c > p) out_v.push_back(s.substr(p, c - p));
+                p = c + 1;
+            }
+            return out_v;
+        };
         if (kind == "offset_add" || kind == "const_load") {
             site.kind = (kind == "offset_add")
                 ? PSXRecomp::ChannelSite::OffsetAdd
@@ -134,9 +146,21 @@ static bool parse_channel_sites(const std::string& path,
             site.imm    = (int32_t)std::strtol(a2.c_str(), nullptr, 0);
             site.symbol = a3;
         } else if (kind == "append_call") {
-            site.kind    = PSXRecomp::ChannelSite::AppendCall;
-            site.operand = a2;
-            site.symbol  = a3;
+            site.kind     = PSXRecomp::ChannelSite::AppendCall;
+            site.operands = split_csv(a2);
+            site.symbol   = a3;
+        } else if (kind == "replace_call") {
+            site.kind = PSXRecomp::ChannelSite::ReplaceCall;
+            // a2 = "dest=op1,op2,..."
+            size_t eq = a2.find('=');
+            if (eq == std::string::npos) {
+                err = fmt::format("{}:{}: replace_call needs `dest=ops`: {}",
+                                  path, lineno, a2);
+                return false;
+            }
+            site.dest     = a2.substr(0, eq);
+            site.operands = split_csv(a2.substr(eq + 1));
+            site.symbol   = a3;
         } else {
             err = fmt::format("{}:{}: unknown channel-site kind '{}'",
                               path, lineno, kind);

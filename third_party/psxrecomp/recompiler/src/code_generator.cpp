@@ -2,6 +2,7 @@
 #include "control_flow.h"
 #include <fmt/format.h>
 #include <algorithm>
+#include <cstdlib>
 #include <set>
 #include <vector>
 
@@ -25,17 +26,49 @@ std::string CodeGenerator::reg_name(int reg_num) {
     return fmt::format("cpu->gpr[{}]", reg_num);
 }
 
+std::string CodeGenerator::resolve_channel_operand(const std::string& role,
+                                                   uint32_t instr) const {
+    // Instruction-relative register roles.
+    if (role == "rd") return reg_name(get_rd(instr));
+    if (role == "rs") return reg_name(get_rs(instr));
+    if (role == "rt") return reg_name(get_rt(instr));
+    // The whole CPU state, for hooks that read several fixed fields.
+    if (role == "cpu") return "cpu";
+    // Sign-extended opcode immediate / load-store offset as an int literal.
+    if (role == "imm" || role == "off")
+        return fmt::format("{}", (int)(int16_t)get_imm16_u(instr));
+    // cpu->gte_data[N].
+    if (role.rfind("gte", 0) == 0 && role.size() > 3) {
+        int idx = std::atoi(role.c_str() + 3);
+        return fmt::format("cpu->gte_data[{}]", idx);
+    }
+    // Otherwise a named cpu GPR field (sp/a0..a3/v0/v1/t0..t9/s0..s7/...).
+    return fmt::format("cpu->{}", role);
+}
+
+std::string CodeGenerator::channel_arg_list(const ChannelSite& cs,
+                                            uint32_t instr) const {
+    std::string args;
+    for (size_t i = 0; i < cs.operands.size(); ++i) {
+        if (i) args += ", ";
+        args += resolve_channel_operand(cs.operands[i], instr);
+    }
+    return args;
+}
+
 std::string CodeGenerator::emit_channel_append_call(const ChannelSite& cs,
                                                     uint32_t instr) const {
-    // Resolve the operand register-role to the C lvalue passed to the hook.
-    std::string operand;
-    if (cs.operand == "rd")      operand = reg_name(get_rd(instr));
-    else if (cs.operand == "rs") operand = reg_name(get_rs(instr));
-    else if (cs.operand == "rt") operand = reg_name(get_rt(instr));
-    else if (cs.operand == "sp") operand = "cpu->sp";
-    else                         operand = reg_name(get_rd(instr));  // default
     return fmt::format("  {}({});  /* channel append_call */",
-                       cs.symbol, operand);
+                       cs.symbol, channel_arg_list(cs, instr));
+}
+
+std::string CodeGenerator::emit_channel_replace_call(const ChannelSite& cs,
+                                                     uint32_t instr) const {
+    std::string dest = (cs.dest == "rt") ? reg_name(get_rt(instr))
+                     : (cs.dest == "rs") ? reg_name(get_rs(instr))
+                     : reg_name(get_rd(instr));  // default rd
+    return fmt::format("{} = {}({});  /* channel replace_call */",
+                       dest, cs.symbol, channel_arg_list(cs, instr));
 }
 
 std::string CodeGenerator::translate_addiu(uint32_t instr) {
