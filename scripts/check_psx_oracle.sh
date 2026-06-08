@@ -13,7 +13,18 @@
 # See notes/plans/openpete-psx-oracle-ci.md.
 #
 # Usage:
-#   scripts/check_psx_oracle.sh [trace-path]
+#   scripts/check_psx_oracle.sh [trace-path] [-- <extra openpete flags>]
+#
+# Anything after `--` is forwarded verbatim to the openpete binary, so the
+# same golden can be used to prove a presentation feature is gameplay-
+# neutral — run openpete WITH the feature flag against the STOCK golden; a
+# PASS means the flag perturbed no gameplay-state region vs real hardware:
+#   scripts/check_psx_oracle.sh -- --no-lod
+#   scripts/check_psx_oracle.sh -- --aspect 16:9
+#   scripts/check_psx_oracle.sh -- --fov 90 --no-lod
+#   scripts/check_psx_oracle.sh custom.bin -- --aspect 16:9
+# (Flags with values need the `--` separator so the value isn't mistaken
+#  for the trace path.)
 #
 # Defaults:
 #   trace-path: tests/golden/spyro-1/psxtrace-demo-20k.bin (20k-tick
@@ -40,7 +51,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TRACE="${1:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
+# Split args at `--`: an optional [trace-path] before, openpete pass-through
+# flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag
+# against the default golden without naming the trace.
+PASSTHRU=()
+TRACE=""
+_sep=0
+for _a in "$@"; do
+    if   (( _sep ));          then PASSTHRU+=("$_a")
+    elif [[ "$_a" == "--" ]]; then _sep=1
+    elif [[ -z "$TRACE" ]];   then TRACE="$_a"
+    else                           PASSTHRU+=("$_a")
+    fi
+done
+TRACE="${TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
 BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-/home/$USER/code/spyro/spyro-1/build/SCUS-94228.cue}"
 
@@ -75,6 +99,9 @@ BK2="${TRACE}.bk2"
 [[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$BK2") && \
     echo "[psx-oracle] bk2:      $BK2"
 
+[[ ${#PASSTHRU[@]} -gt 0 ]] && \
+    echo "[psx-oracle] openpete flags: ${PASSTHRU[*]}"
+
 # Safety belt only — psxtrace-eof exits first. The 20k-tick demo reaches
 # EOF at ~37k openpete frames, so the default must clear that comfortably.
 LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
@@ -85,7 +112,8 @@ set +e
     --run-recomp 0x80012204 \
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \
-    "${EXTRA[@]}"
+    "${EXTRA[@]}" \
+    "${PASSTHRU[@]}"
 rc=$?
 set -e
 echo "[psx-oracle] exit code=$rc"
