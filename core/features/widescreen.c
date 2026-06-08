@@ -192,6 +192,34 @@ uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr) {
          | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);
 }
 
+/* === Flag-gated store hooks (void ReplaceCall) ======================== */
+/* The recompiler emits `hook(cpu, ea, val);` replacing the original sb. Each
+ * conditionally writes the gameplay-readable "drawn" byte so it reflects the
+ * CANONICAL 4:3 verdict regardless of presentation flags (an extra drawn
+ * moby/particle in widescreen/no-lod would leak into AI / rand()). */
+
+/* m_WasDrawn iter-start clear (per-bucket render walker): force-pass
+ * billboards / extended-radius mobys that bypass the cone test, then store. */
+void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr,
+                                       uint32_t val) {
+    psx_runtime_native_cone_pass = 1;
+    psx_runtime_native_dist_pass = 1;
+    cpu->write_byte(addr, (uint8_t)val);
+}
+/* m_WasDrawn=1 cull-pass write: gated on BOTH canonical box-cull halves
+ * (cone + distance), so the saturated --no-lod / widened cone verdicts can't
+ * set m_WasDrawn on a moby the canonical 4:3 cull would have dropped. */
+void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val) {
+    if (psx_runtime_native_cone_pass && psx_runtime_native_dist_pass)
+        cpu->write_byte(addr, (uint8_t)val);
+}
+/* Particle "drawn" flag (m_03): gated on the canonical screen-cull verdict
+ * so a widened-periphery particle doesn't drift psyq_rand_seed across aspects. */
+void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val) {
+    if (psx_runtime_native_part_pass)
+        cpu->write_byte(addr, (uint8_t)val);
+}
+
 /* Debug LP-kill + world-geo strip tag hybrid (the 7th strip-list loop head,
  * co-owned with world_geo_strip_tag): force the loaded value
  * to 0 when the LP-kill knob is set (exits the loop), else read normally;

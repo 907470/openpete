@@ -315,6 +315,12 @@ int32_t  psx_runtime_portal_clip_slt(int32_t v);
 uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr);
 uint32_t psx_runtime_dbg_lpwalk_strip(CPUState* cpu, uint32_t addr);
 
+/* Flag-gated store hooks (void ReplaceCall — emitted as `hook(cpu, ea, val);`
+ * replacing the original sb). Defined in core/features/widescreen.c. */
+void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t val);
+void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
+void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each

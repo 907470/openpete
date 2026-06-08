@@ -68,6 +68,12 @@ std::string CodeGenerator::emit_channel_append_call(const ChannelSite& cs,
 
 std::string CodeGenerator::emit_channel_replace_call(const ChannelSite& cs,
                                                      uint32_t instr) const {
+    // Empty dest => a VOID replace: the hook fully replaces the instruction
+    // (e.g. a flag-gated store), emitting just `hook(args);` with no assign.
+    if (cs.dest.empty()) {
+        return fmt::format("{}({});  /* channel replace_call (void) */",
+                           cs.symbol, channel_arg_list(cs, instr));
+    }
     std::string dest = (cs.dest == "rt") ? reg_name(get_rt(instr))
                      : (cs.dest == "rs") ? reg_name(get_rs(instr))
                      : reg_name(get_rd(instr));  // default rd
@@ -413,70 +419,12 @@ std::string CodeGenerator::translate_sb(uint32_t instr, uint32_t addr) {
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    /* m_WasDrawn iter-start clear sites in the per-bucket render walkers
-     * (0x8001F1FC regular, 0x800209A8 specular, 0x80022B28 shaded). Set
-     * `psx_runtime_native_cone_pass = 1` here so billboard / extended-
-     * radius mobys that bypass the cone-test substitution still get
-     * their m_WasDrawn=1 write through; the cone-test substitution
-     * (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) overrides to
-     * 0 when it culls at native cone. */
-    if (addr == 0x8001F1FCu || addr == 0x800209A8u || addr == 0x80022B28u) {
-        if (offset == 0) {
-            return fmt::format(
-                "psx_runtime_native_cone_pass = 1; psx_runtime_native_dist_pass = 1; cpu->write_byte({}, (uint8_t){});",
-                reg_name(rs), reg_name(rt));
-        } else {
-            return fmt::format(
-                "psx_runtime_native_cone_pass = 1; psx_runtime_native_dist_pass = 1; cpu->write_byte({} + {}, (uint8_t){});",
-                reg_name(rs), offset, reg_name(rt));
-        }
-    }
-
-    /* m_WasDrawn=1 cull-pass write sites: gate on the native cone AND
-     * native distance verdicts (the two halves of the canonical box-cull).
-     * native_dist_pass closes the --no-lod m_Distance-saturation leak. */
-    if (addr == 0x8001F4CCu || addr == 0x80020C7Cu || addr == 0x80022D98u) {
-        if (offset == 0) {
-            return fmt::format(
-                "if (psx_runtime_native_cone_pass && psx_runtime_native_dist_pass) cpu->write_byte({}, (uint8_t){});",
-                reg_name(rs), reg_name(rt));
-        } else {
-            return fmt::format(
-                "if (psx_runtime_native_cone_pass && psx_runtime_native_dist_pass) cpu->write_byte({} + {}, (uint8_t){});",
-                reg_name(rs), offset, reg_name(rt));
-        }
-    }
-
-    /* Particle "drawn" flag (m_03 of each Particle, written via the
-     * handwritten `sb $s2, -0x1D($ra)` idiom in r_particles.s — $ra
-     * is the iteration cursor pre-incremented by 0x20 to the next
-     * particle, so -0x1D reaches the *current* particle's m_03).
-     *
-     * Same shape as m_WasDrawn for mobys: render path emits prims
-     * for any particle that passes the *widened* screen cull (visual
-     * coverage extends beyond 4:3), but the gameplay-readable byte
-     * itself must reflect the canonical 4:3 verdict — class-specific
-     * particle update handlers in the level overlays read m_03 and
-     * gate expensive work (including rand() calls) on it; an extra
-     * "drawn" particle in 16:9 would call rand() more times and
-     * drift psyq_rand_seed across aspects.
-     *
-     * Verdict is computed at the preceding cull (substituted in
-     * translate_special / translate_sub: `sub $a0, $a0, $s6`); see
-     * psx_runtime.h `psx_runtime_native_part_pass`. */
-    if (addr == 0x80057720u || addr == 0x80057A10u
-     || addr == 0x80057B20u || addr == 0x80057CDCu
-     || addr == 0x80057F60u || addr == 0x80058028u) {
-        if (offset == 0) {
-            return fmt::format(
-                "if (psx_runtime_native_part_pass) cpu->write_byte({}, (uint8_t){});",
-                reg_name(rs), reg_name(rt));
-        } else {
-            return fmt::format(
-                "if (psx_runtime_native_part_pass) cpu->write_byte({} + {}, (uint8_t){});",
-                reg_name(rs), offset, reg_name(rt));
-        }
-    }
+    /* The m_WasDrawn iter-start clears, m_WasDrawn=1 cull-pass writes, and
+     * particle m_03 "drawn"-flag stores were here as flag-gated sb writes;
+     * they are now data-driven void ReplaceCall sites (channels m_WasDrawn /
+     * particle_drawn_flag), dispatched in the sb case before translate_sb is
+     * called. Their gating hooks (mwasdrawn_clear_store / mwasdrawn_store /
+     * part_drawn_store) live in core/features/widescreen.c. */
 
     if (offset == 0) {
         return fmt::format("cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
@@ -1629,7 +1577,17 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x26: code = translate_lwr(instr); break;    // lwr
-            case 0x28: code = translate_sb(instr, addr); break;     // sb
+            case 0x28:                                          // sb
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::ReplaceCall) {
+                    /* Flag-gated m_WasDrawn / particle-m_03 stores: void
+                     * ReplaceCall (`hook(cpu, ea, val);`) — see translate_sb. */
+                    code = emit_channel_replace_call(_cs->second, instr);
+                } else {
+                    code = translate_sb(instr, addr);
+                }
+                break;
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw

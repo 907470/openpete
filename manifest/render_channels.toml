@@ -63,8 +63,16 @@ regions; `OPENPETE_HASHTIME_MWD_DUMP` (game_extras_impl.c) gives a
 direct per-frame check that the m_WasDrawn byte itself matches
 across aspects."""
 substitution_sites = [
-    0x8001F1FC, 0x800209A8, 0x80022B28,  # iter-start clear (force-pass billboards) — still hardcoded
-    0x8001F4CC, 0x80020C7C, 0x80022D98,  # m_WasDrawn=1 cull-pass writes (gated) — still hardcoded
+    # iter-start clear (force-pass billboards) — GENERATED (void replace_call):
+    # `mwasdrawn_clear_store(cpu, ea, val)` sets the native flags to 1 then stores.
+    { addr = 0x8001F1FC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # regular
+    { addr = 0x800209A8, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # specular
+    { addr = 0x80022B28, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # shaded
+    # m_WasDrawn=1 cull-pass writes — GENERATED (void replace_call):
+    # `mwasdrawn_store(cpu, ea, val)` writes iff (native_cone_pass && native_dist_pass).
+    { addr = 0x8001F4CC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # regular
+    { addr = 0x80020C7C, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # specular
+    { addr = 0x80022D98, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # shaded
     # cone-test verdict-compute sites — GENERATED (replace_call): the hook
     # records native_cone_pass and returns the widened cull comparand. The
     # cone slope math now lives in core/features/widescreen.c.
@@ -646,8 +654,15 @@ Substitution PC for closure: 0x80057C10 (the t7-fp compute) or
 and can decide whether to take the early exit based on canonical
 state instead of actual buffer state."""
 substitution_sites = [
-    0x80057720, 0x80057A10, 0x80057B20, 0x80057CDC,  # sb $s2,-0x1D($ra) — m_03=1 stores (gated)
-    0x80057F60, 0x80058028,                          # ditto — extra two sb sites in r_particles.s
+    # m_03=1 "drawn"-flag stores — GENERATED (void replace_call):
+    # `part_drawn_store(cpu, ea, val)` writes iff native_part_pass.
+    { addr = 0x80057720, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    { addr = 0x80057A10, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    { addr = 0x80057B20, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    { addr = 0x80057CDC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    { addr = 0x80057F60, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    { addr = 0x80058028, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
+    # native_part_pass SETTERS (still hardcoded — canonical-SX verdict capture):
     0x80057A04, 0x80057B14, 0x80057CB4,              # single-vertex sub-by-$s6 verdict capture
     0x80057F28, 0x8005801C,                          # ditto — for the extra two sb sites
     0x800576EC,                                      # 4-vertex chain entry — canonical OR over $at,$v0,$v1,$a0
