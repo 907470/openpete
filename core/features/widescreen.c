@@ -7,6 +7,7 @@
 
 #include "openpete_fiber.h"   /* openpete_disp_w_factor, openpete_fov_h_override */
 #include "openpete_log.h"
+#include "openpete_world_geo.h" /* openpete_world_geo_set_current (dbg/world hybrid hook) */
 #include "psx_runtime.h"      /* psx_runtime_register_region, polybuf_size */
 
 #include <math.h>
@@ -154,6 +155,52 @@ int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3) {
     return mac1_abs - 102
          - (int32_t)(((int64_t)mac3p * psx_runtime_moby_cone_extra_q12) >> 12)
          - (int32_t)((102 * (int64_t)psx_runtime_moby_cone_bias_scale_q12) >> 12);
+}
+
+/* === Misc ReplaceCall hooks (moved out of the recompiler) ============== */
+
+/* --no-lod env HP-walk texture LOD: suppress the `addi $t5,$t5,8` HQ->LQ
+ * descriptor bump so every quad reads the HQ half. Identity at default. */
+int32_t psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump) {
+    return openpete_no_lod ? base : (base + bump);
+}
+
+/* --no-lod moby model LOD collapse: the LP-band face-list load reads
+ * m_LpFaces (offset 0x1C) by default; --no-lod swings the knob to 0x14
+ * (m_Faces, high-poly). The load itself stays here so the offset knob is
+ * the only moving part. */
+uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base) {
+    return cpu->read_word(base + psx_runtime_moby_lp_face_offset);
+}
+
+/* Widescreen env-cell lateral-bound cull, companion -0x200 site: lands at
+ * (X - bound) = base - 2*bound. Identity at default bound (256). */
+int32_t psx_runtime_env_cell_x_bound_neg(int32_t base) {
+    return base - 2 * (int32_t)psx_runtime_env_cell_x_bound;
+}
+
+/* Widescreen portal clip-rect X-upper test (`slti $r, 0x201`): widened to
+ * `r < portal_clip_x_max_plus_1`. Identity at default (513). */
+int32_t psx_runtime_portal_clip_slt(int32_t v) {
+    return v < (int32_t)psx_runtime_portal_clip_x_max_plus_1;
+}
+
+/* Debug-only (OPENPETE_DBG_KILL_LP): env-renderer g_SkipLowPolyWorld read —
+ * OR in 1 when the knob is set so the LP-walk pre-pass is skipped. */
+uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr) {
+    return cpu->read_word(addr)
+         | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);
+}
+
+/* Debug LP-kill + world-geo strip tag hybrid (the 7th strip-list loop head,
+ * co-owned with world_geo_strip_tag): force the loaded value
+ * to 0 when the LP-kill knob is set (exits the loop), else read normally;
+ * either way stamp the per-strip world-geo identity. Identity at default
+ * knob (reads normally). */
+uint32_t psx_runtime_dbg_lpwalk_strip(CPUState* cpu, uint32_t addr) {
+    uint32_t v = psx_runtime_dbg_kill_env_lp_walk ? 0u : cpu->read_word(addr);
+    openpete_world_geo_set_current(v);
+    return v;
 }
 
 /* Per-iteration scratch flag for r_particles.s screen-cull. */

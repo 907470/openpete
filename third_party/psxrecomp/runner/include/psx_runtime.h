@@ -306,6 +306,15 @@ int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
                                        int32_t mac3, int32_t a3);
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
 
+/* Misc ReplaceCall hooks (moved out of the recompiler; defined in
+ * core/features/widescreen.c). Each is identity at its default knob. */
+int32_t  psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump);
+uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base);
+int32_t  psx_runtime_env_cell_x_bound_neg(int32_t base);
+int32_t  psx_runtime_portal_clip_slt(int32_t v);
+uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr);
+uint32_t psx_runtime_dbg_lpwalk_strip(CPUState* cpu, uint32_t addr);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each

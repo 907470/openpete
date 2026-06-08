@@ -132,8 +132,10 @@ substitution_sites = [
     # addiu $s4,$zero,0x200 — GENERATED (kind=const_load, rt=knob)
     { addr = 0x80051804, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
     { addr = 0x80051E98, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
-    # slti $r,$r,0x201 — different shape (SetLessThan w/ knob), still hardcoded
-    0x800517F4, 0x80051E88,
+    # slti $r,$r,0x201 — GENERATED (replace_call): rt = psx_runtime_portal_clip_slt(rs)
+    # = `rs < portal_clip_x_max_plus_1` (the widened compare lives in widescreen.c).
+    { addr = 0x800517F4, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_portal_clip_slt" },
+    { addr = 0x80051E88, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_portal_clip_slt" },
 ]
 verdict_fn       = "psx_runtime_portal_clip_x_max"
 verified_against = ["aspect_determinism"]
@@ -413,9 +415,11 @@ gameplay-side GTE work outside the render pass sees the canonical
 ±256 bound. Y-axis is left untouched — vertical FOV is preserved.
 
 Default 0x100 == byte-identical 4:3."""
+# GENERATED: +0x100 is offset_add (rt = rs + bound); the companion -0x200
+# is replace_call -> env_cell_x_bound_neg (rt = rs - 2*bound, in widescreen.c).
 substitution_sites = [
-    0x80026A34,  # func_800258F0:  addi $a2, $a2, +0x100  (X+bound)
-    0x80026A3C,  # func_800258F0:  addi $a2, $a2, -0x200  (X-bound, after +bound)
+    { addr = 0x80026A34, imm = 0x100, kind = "offset_add", knob = "psx_runtime_env_cell_x_bound" },  # addi $a2,$a2,+0x100 (X+bound)
+    { addr = 0x80026A3C, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_env_cell_x_bound_neg" },  # addi $a2,$a2,-0x200 (X-bound)
 ]
 verdict_fn       = "psx_runtime_env_cell_x_bound"
 verified_against = ["aspect_determinism"]
@@ -944,9 +948,11 @@ behaviour when the debug knob is unset. Used during the Phase 3
 investigation (commit `8fa68ae`) to prove the LP-walk renders ground
 cells, not horizon backdrop. See plan
 `notes/plans/openpete-disable-lods.md` Phase 3 close-out section."""
+# GENERATED (replace_call): both read memory + apply the debug knob in C.
+# 0x800276B4 is the dbg/world-geo hybrid (LP-kill zero + world-geo stamp).
 substitution_sites = [
-    0x800261E0,  # env-renderer SkipLowPolyWorld read (debug OR with 1)
-    0x800276B4,  # LP-walk loop top (debug short-circuit to 0)
+    { addr = 0x800261E0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_dbg_skiplpworld" },  # SkipLowPolyWorld read (OR 1)
+    { addr = 0x800276B4, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_dbg_lpwalk_strip" },  # LP-walk loop top (zero + world-geo stamp)
 ]
 verdict_fn       = "psx_runtime_dbg_kill_env_lp_walk"
 verified_against = ["aspect_determinism"]
@@ -969,9 +975,11 @@ Substituted via runtime knob psx_runtime_moby_lp_face_offset, default
 Render-side only — the loaded value drives only the per-vertex face
 walk inside the same render-pass; nothing outside the renderer reads
 the chosen face pointer."""
+# GENERATED (replace_call): rt = psx_runtime_moby_lp_face_load(cpu, rs) —
+# read $ra + the knob offset (0x1C default / 0x14 under --no-lod) in C.
 substitution_sites = [
-    0x8001FE9C,  # lw $fp, 0x1C($ra) — LP-face load, first dispatch
-    0x80021674,  # lw $fp, 0x1C($ra) — LP-face load, second dispatch
+    { addr = 0x8001FE9C, dest = "rt", operand = "cpu,rs", kind = "replace_call", hook = "psx_runtime_moby_lp_face_load" },  # LP-face load, first dispatch
+    { addr = 0x80021674, dest = "rt", operand = "cpu,rs", kind = "replace_call", hook = "psx_runtime_moby_lp_face_load" },  # LP-face load, second dispatch
 ]
 verdict_fn       = "psx_runtime_moby_lp_face_offset"
 verified_against = ["aspect_determinism"]
@@ -1002,10 +1010,12 @@ intercept — m_HQ is a separate per-quad descriptor pool used only
 by the post-LP loop, with different stride and layout, so mirroring
 sent HP-walk indexing into garbage. The per-quad LOD decision is
 entirely intra-m_LQ, gated by the three +8 bumps targeted here."""
+# GENERATED (replace_call): rt = psx_runtime_no_lod_tier_bump(rs, imm) —
+# `openpete_no_lod ? rs : rs+8` (suppress the HQ->LQ bump), math in widescreen.c.
 substitution_sites = [
-    0x80026F94,  # addi $t5, $t5, 0x8 — first per-quad LQ-tier bump
-    0x80027064,  # addi $t5, $t5, 0x8 — second per-quad LQ-tier bump
-    0x80027484,  # addi $t5, $t5, 0x8 — third per-quad LQ-tier bump
+    { addr = 0x80026F94, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # first  per-quad LQ-tier bump
+    { addr = 0x80027064, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # second per-quad LQ-tier bump
+    { addr = 0x80027484, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # third  per-quad LQ-tier bump
 ]
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]

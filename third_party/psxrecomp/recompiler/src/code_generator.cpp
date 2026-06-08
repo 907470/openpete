@@ -1093,56 +1093,17 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "  /* channel offset_add: {} */",
                             reg_name(rt), reg_name(rs),
                             _cs->second.symbol, _cs->second.symbol);
-                    } else if (addr == 0x80026A34u && imm == 0x100) {
-                        /* r_environment.s func_800258F0 per-vertex
-                         * lateral-bound cull, +0x100 site (X axis).
-                         * See psx_runtime.h `psx_runtime_env_cell_x_bound`. */
-                        code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_env_cell_x_bound;",
-                            reg_name(rt), reg_name(rs));
-                    } else if (addr == 0x80026A3Cu && imm == -0x200) {
-                        /* Companion -0x200 site for the +0x100 above.
-                         * Subtract 2× bound to land at (X - bound). */
-                        code = fmt::format(
-                            "{} = (int32_t){} - 2 * (int32_t)psx_runtime_env_cell_x_bound;",
-                            reg_name(rt), reg_name(rs));
-                    } else if (addr == 0x80026F94u
-                            || addr == 0x80027064u
-                            || addr == 0x80027484u) {
-                        /* Phase 3 (texture LOD): force HQ tier in HP-walk.
-                         *
-                         * The env renderer's `m_LQTexturePointer` is
-                         * misnamed: each 16-byte entry packs *both* a
-                         * HQ descriptor (bytes 0..7) and an LQ
-                         * descriptor (bytes 8..15). HP-walk does a
-                         * per-quad screen-size test (`bgtz $t0` at PC
-                         * 0x80026F88 / 0x80027058 / 0x80027478); when
-                         * the polygon is below the threshold, it falls
-                         * through to one of these three identical
-                         *   addi $t5, $t5, 0x8
-                         * instructions, bumping $t5 from the HQ half
-                         * of the entry to the LQ half.
-                         *
-                         * Suppressing the +8 bump under --no-lod
-                         * forces every quad to read the HQ half,
-                         * regardless of screen size. Identity at
-                         * default. Pure renderer-side: $t5 is consumed
-                         * only by the GTE-side texture-descriptor
-                         * fetches that follow. */
-                        code = fmt::format(
-                            "{} = openpete_no_lod ? (int32_t){} : ((int32_t){} + ({}));"
-                            "  /* env HP-walk LQ-tier select (no-lod) */",
-                            reg_name(rt), reg_name(rs),
-                            reg_name(rs), (int)imm);
                     } else if (auto _cr = channel_sites_.find(addr);
                                _cr != channel_sites_.end()
                                && _cr->second.kind == ChannelSite::ReplaceCall) {
-                        /* Shaded-path cone-X cull at 0x80022C0C
-                         * (addi a1,a1,-0x66) → psx_runtime_cone_widen_shaded(
-                         * rs, gte27), which records native_cone_pass (read by
-                         * the m_WasDrawn=1 gate at 0x80022D98) and returns the
-                         * widened comparand. The cone slope math now lives in
-                         * core/features/widescreen.c. */
+                        /* Data-driven addi ReplaceCall sites (manifest +
+                         * --channel-sites), all `dest = hook(operands...)` with
+                         * the bespoke math in core/features/widescreen.c:
+                         *  - shaded cone-X cull 0x80022C0C → cone_widen_shaded
+                         *  - env HP-walk texture LQ-tier bump (0x80026F94/27064/
+                         *    27484) → no_lod_tier_bump (suppress +8 under no-lod)
+                         *  - env-cell lateral-bound companion 0x80026A3C →
+                         *    env_cell_x_bound_neg (base - 2*bound). */
                         code = emit_channel_replace_call(_cr->second, instr);
                     } else {
                         code = translate_addiu(instr);
@@ -1182,16 +1143,15 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 break;
             case 0x0A:                                         // slti
                 {
-                    /* Same func_80050BD0 portal clip-rect site, test
-                     * branch at 0x800517F4 / 0x80051E88. */
-                    uint32_t rs = get_rs(instr);
-                    uint32_t rt = get_rt(instr);
-                    int16_t imm = (int16_t)get_imm16_u(instr);
-                    if ((addr == 0x800517F4u || addr == 0x80051E88u)
-                        && imm == 0x201) {
-                        code = fmt::format(
-                            "{} = (int32_t){} < (int32_t)psx_runtime_portal_clip_x_max_plus_1;",
-                            reg_name(rt), reg_name(rs));
+                    /* func_80050BD0 portal clip-rect X-upper test (`slti $r,
+                     * 0x201`) at 0x800517F4 / 0x80051E88 → ReplaceCall
+                     * psx_runtime_portal_clip_slt(rs) = `rs < knob`. The
+                     * widened compare now lives in core/features/widescreen.c;
+                     * address + hook in manifest/render_channels.toml. */
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::ReplaceCall) {
+                        code = emit_channel_replace_call(_cs->second, instr);
                     } else {
                         code = translate_slti(instr);
                     }
@@ -1579,80 +1539,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "cpu->a0, cpu->s1, cpu->s7, cpu->t8, "
                             "cpu->t9);",
                             translate_lw(instr));
-                    } else if (addr == 0x800276B4u) {
-                        /* LP-walk loop top in r_environment.s. When the
-                         * OPENPETE_DBG_KILL_LP debug knob is set, force
-                         * the loaded value to 0 so the following beqz
-                         * exits the loop immediately — disables ground-
-                         * plane (LP-walk → HQ atlas) rendering for
-                         * visual identification of which cells use it.
-                         *
-                         * Also one of the 7 §7.5-R3 PHASE-C strip-list
-                         * loop heads: stamps a stable per-strip identity
-                         * into openpete_world_geo so gte_rtps_internal
-                         * can tag terrain verts produced by the four
-                         * non-dominant RTPS variants (0x80027A64 +
-                         * 0x80028180) inside this strip's inner unrolled
-                         * vertex loops. When the LP-kill knob fires the
-                         * loaded value is 0 and the strip-loop exits
-                         * immediately, so the stale tag is harmless. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{} = psx_runtime_dbg_kill_env_lp_walk ? 0u : "
-                            "cpu->read_word({} + {});"
-                            " openpete_world_geo_set_current({});"
-                            "  /* LP-walk kill knob + world strip tag */",
-                            reg_name(rt), reg_name(rs), off,
-                            reg_name(rt));
                     } else if (auto _cs = channel_sites_.find(addr);
                                _cs != channel_sites_.end()
                                && (_cs->second.kind == ChannelSite::AppendCall
                                 || _cs->second.kind == ChannelSite::ReplaceCall)) {
                         /* Data-driven lw-handler channel sites (manifest +
-                         * --channel-sites):
+                         * --channel-sites), all with the bespoke logic in
+                         * core/features/widescreen.c:
                          *  - AppendCall: world_geo_strip_tag — six strip-list
                          *    loop heads (0x800267E4/27720/28590/285FC/29500/
                          *    2956C) append openpete_world_geo_set_current(rt).
-                         *    (0x800276B4, a 7th head, is a hybrid with the dbg
-                         *    LP-kill knob and stays hardcoded above.)
                          *  - ReplaceCall: no_lod m_LodDistance (0x800259B0/
-                         *    26214/267B0) + m_CullingDistance (0x80026210)
-                         *    saturation — replaced with a hook that reads + (if
-                         *    --no-lod) returns INT32_MAX. */
+                         *    26214/267B0) + m_CullingDistance (0x80026210) ->
+                         *    no_lod_saturate32; moby LP-face load (0x8001FE9C/
+                         *    21674) -> moby_lp_face_load; dbg g_SkipLowPolyWorld
+                         *    read (0x800261E0) -> dbg_skiplpworld; and the
+                         *    dbg/world-geo hybrid 7th strip head (0x800276B4) ->
+                         *    dbg_lpwalk_strip (LP-kill zero + world-geo stamp). */
                         if (_cs->second.kind == ChannelSite::AppendCall)
                             code = translate_lw(instr)
                                  + emit_channel_append_call(_cs->second, instr);
                         else
                             code = emit_channel_replace_call(_cs->second, instr);
-                    } else if (addr == 0x800261E0u) {
-                        /* DBG: env-renderer's read of g_SkipLowPolyWorld.
-                         * When psx_runtime_dbg_kill_env_lp_walk is set,
-                         * OR in a 1 so the following bnez at 0x800261F8
-                         * always branches and the LP-walk is skipped.
-                         * Scoped to the env-renderer (not r_moby /
-                         * r_cyclorama, which read the same flag). */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{} = cpu->read_word({} + {}) | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);"
-                            "  /* env-renderer SkipLowPolyWorld (debug LP-kill) */",
-                            reg_name(rt), reg_name(rs), off);
-                    } else if (addr == 0x8001FE9Cu || addr == 0x80021674u) {
-                        /* Phase 4 moby model LOD collapse. r_moby.s LP-band
-                         * branch loads `lw $fp, 0x1C($ra)` — the AnimationHeader
-                         * .m_LpFaces field. Default knob 0x1C preserves
-                         * canonical behaviour; --no-lod swings to 0x14
-                         * so the LP path reads m_Faces (high-poly) instead.
-                         * Two sites: 0x8001FE9C and 0x80021674. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        code = fmt::format(
-                            "{} = cpu->read_word({} + psx_runtime_moby_lp_face_offset);"
-                            "  /* moby LP face load (no-lod knob) */",
-                            reg_name(rt), reg_name(rs));
                     } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
                         /* m_LowerPolyBuffer cursor-reset reads. When
                          * psx_runtime_polybuf_lower is non-zero (widescreen
