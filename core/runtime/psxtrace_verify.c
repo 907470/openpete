@@ -318,9 +318,14 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
 }
 
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
-    /* Any transient burst still open at EOF never re-converged → hard fail. */
+    /* A transient burst still open when the WHOLE trace was consumed never
+     * re-converged → hard fail. But if the run was cut short (frame-limit,
+     * crash, fast smoke) before the trace's end, an open burst is merely
+     * unverified, not a failure — only promote when we actually hit EOF. */
+    int eof_reached = (t->records_consumed >= t->frame_count);
     for (uint32_t r = 0; r < t->region_count; r++) {
-        if (t->transient_open_frame[r] >= 0) {
+        if (t->transient_open_frame[r] < 0) continue;
+        if (eof_reached) {
             OPL_ERROR_F("psxtrace",
                         "CD-load transient in region=%u (%s) opened at tick "
                         "%lld never re-converged before EOF",
@@ -332,6 +337,12 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
                 t->hard_fail_region = (int32_t)r;
                 t->hard_fail_reason = "unhealed-eof";
             }
+        } else {
+            OPL_INFO_F("psxtrace",
+                       "run ended early (%u/%u records) with region=%u (%s) "
+                       "mid-transient (opened tick %lld) — unverified, not a failure",
+                       t->records_consumed, t->frame_count, r, t->region_names[r],
+                       (long long)t->transient_open_frame[r]);
         }
     }
     OPL_INFO_F("psxtrace",
