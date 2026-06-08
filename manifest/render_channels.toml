@@ -1042,13 +1042,15 @@ in recomp doesn't reproduce it. The misdiagnosis spawned several
 dead-end exploration branches (routing-branch overrides + cull-
 defeat, surgical PC-keyed gates, etc.); see the git log between
 2f6416d and 483e586 for the cautionary record."""
+# GENERATED sites (kind=replace_call): `rt = psx_runtime_no_lod_saturate32(cpu, ea)`
+# — the read + --no-lod INT32_MAX conditional now lives in widescreen.c.
 substitution_sites = [
-    0x800259B0,  # lw $s6 — front-walk m_LodDistance load
-    0x80026214,  # lw $s3 — LP-walk m_LodDistance load
-    0x800267B0,  # lw $s5 — HP-walk m_LodDistance load
+    { addr = 0x800259B0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s6 — front-walk m_LodDistance
+    { addr = 0x80026214, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s3 — LP-walk m_LodDistance
+    { addr = 0x800267B0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s5 — HP-walk m_LodDistance
 ]
-verdict_fn       = "openpete_no_lod"
-verified_against = ["aspect_determinism"]
+verdict_fn       = "psx_runtime_no_lod_saturate32"
+verified_against = ["aspect_determinism", "psx_oracle_match"]
 doc              = "notes/plans/openpete-disable-lods.md"
 
 
@@ -1079,10 +1081,11 @@ seeing the canonical 0x14000 / 0x1C000 / 0x28000 values so
 collision results stay byte-identical to PSX hardware. Only the
 single renderer-side read at 0x80026210 is touched here."""
 substitution_sites = [
-    0x80026210,  # lw $s2 — LP-walk pre-pass m_CullingDistance load
+    # GENERATED (replace_call): rt = psx_runtime_no_lod_saturate32(cpu, ea)
+    { addr = 0x80026210, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s2 — LP-walk pre-pass m_CullingDistance
 ]
-verdict_fn       = "openpete_no_lod"
-verified_against = ["aspect_determinism"]
+verdict_fn       = "psx_runtime_no_lod_saturate32"
+verified_against = ["aspect_determinism", "psx_oracle_match"]
 doc              = "notes/plans/openpete-disable-lods.md"
 
 
@@ -1136,12 +1139,16 @@ bits we preserve (shiny + spec-color LSB) are essential for
 correct routing/bias math even under --no-lod, so the
 substitution is minimal-perturbation. Identity at default
 (openpete_no_lod==0)."""
+# GENERATED (replace_call): rt = psx_runtime_no_lod_moby_distance(cpu, ea) —
+# reads the m_Renderer half-word + the --no-lod m_Distance saturation (incl.
+# the mdist_thresh_delta record + the m_Distance==0 sentinel guard) now lives
+# in core/features/widescreen.c.
 substitution_sites = [
-    0x8001F1F4,  # lhu $a0 — regular  moby renderer m_Renderer load
-    0x800209A0,  # lhu $a0 — specular moby renderer m_Renderer load
-    0x80022B20,  # lhu $a0 — shaded   moby renderer m_Renderer load
+    { addr = 0x8001F1F4, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # regular  m_Renderer load
+    { addr = 0x800209A0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # specular m_Renderer load
+    { addr = 0x80022B20, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # shaded   m_Renderer load
 ]
-verdict_fn       = "openpete_no_lod"
+verdict_fn       = "psx_runtime_no_lod_moby_distance"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
 

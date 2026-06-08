@@ -281,6 +281,22 @@ extern int32_t psx_runtime_mdist_thresh_delta;
 void psx_runtime_dist_gate_lower(int32_t v);
 void psx_runtime_dist_gate_upper(int32_t v);
 
+/* --no-lod distance-saturation ReplaceCall hooks (channels
+ * no_lod_lod_distance_saturate / _culling_distance_saturate /
+ * _moby_render_distance_saturate). Each replaces a load + conditional that
+ * used to be inline in the recompiler:
+ *  _saturate32   : read a 32-bit env distance field; under --no-lod return
+ *                  INT32_MAX so the cull admits every cell. (m_LodDistance ×3,
+ *                  m_CullingDistance ×1.)
+ *  _moby_distance: read the packed m_Renderer half-word; under --no-lod
+ *                  saturate the low-7-bit m_Distance to 0x7F (only when
+ *                  non-zero — 0 is the uninit-slot sentinel), preserving the
+ *                  shiny bit + byte 0x51, and record the canonical-distance
+ *                  delta in mdist_thresh_delta for the dist-gate hooks.
+ * Identity when --no-lod is off. Defined in core/features/widescreen.c. */
+uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr);
+uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each

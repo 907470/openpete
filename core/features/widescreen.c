@@ -107,6 +107,24 @@ void psx_runtime_dist_gate_upper(int32_t v) {
         psx_runtime_native_dist_pass = 0;
 }
 
+/* --no-lod distance-saturation ReplaceCall hooks (moved out of the
+ * recompiler). The recompiler emits `rt = hook(cpu, ea)` where ea is the
+ * load's effective address; the hook does the read + the --no-lod
+ * conditional. Identity when openpete_no_lod == 0 (returns the raw load). */
+uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr) {
+    uint32_t v = cpu->read_word(addr);
+    return openpete_no_lod ? 0x7FFFFFFFu : v;
+}
+uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr) {
+    uint32_t v = cpu->read_half(addr);
+    if (openpete_no_lod && (v & 0x7Fu) != 0u) {
+        psx_runtime_mdist_thresh_delta = (int32_t)((0x7Fu - (v & 0x7Fu)) << 8);
+        return (v & 0xFF80u) | 0x7Fu;
+    }
+    psx_runtime_mdist_thresh_delta = 0;
+    return v;
+}
+
 /* Per-iteration scratch flag for r_particles.s screen-cull. */
 uint8_t psx_runtime_native_part_pass = 0;
 

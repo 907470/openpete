@@ -34,6 +34,10 @@ std::string CodeGenerator::resolve_channel_operand(const std::string& role,
     if (role == "rt") return reg_name(get_rt(instr));
     // The whole CPU state, for hooks that read several fixed fields.
     if (role == "cpu") return "cpu";
+    // Effective load/store address: base register + sign-extended offset.
+    if (role == "ea")
+        return fmt::format("({} + {})", reg_name(get_rs(instr)),
+                           (int)(int16_t)get_imm16_u(instr));
     // Sign-extended opcode immediate / load-store offset as an int literal.
     if (role == "imm" || role == "off")
         return fmt::format("{}", (int)(int16_t)get_imm16_u(instr));
@@ -1657,22 +1661,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             reg_name(rt));
                     } else if (auto _cs = channel_sites_.find(addr);
                                _cs != channel_sites_.end()
-                               && _cs->second.kind == ChannelSite::AppendCall) {
-                        /* §7.5-R3 PHASE-C — strip-list loop heads in
-                         * r_environment.s func_800258F0 (channel
-                         * world_geo_strip_tag): six `lw $reg,0($ra)` loop
-                         * heads (0x800267E4/27720/28590/285FC/29500/2956C),
-                         * each followed by openpete_world_geo_set_current(rt)
-                         * to stamp a stable cross-frame per-strip identity for
-                         * the non-dominant RTPS variants. Address + operand
-                         * (rt = the loaded value) + hook live in
-                         * manifest/render_channels.toml via --channel-sites.
-                         * READ-ONLY host-side stash; no gameplay byte touched.
-                         * (0x800276B4 — a 7th strip head — is NOT here: it is
-                         * a hybrid co-owned with the dbg_kill_env_lp_walk knob
-                         * and stays hardcoded above.) */
-                        code = translate_lw(instr)
-                             + emit_channel_append_call(_cs->second, instr);
+                               && (_cs->second.kind == ChannelSite::AppendCall
+                                || _cs->second.kind == ChannelSite::ReplaceCall)) {
+                        /* Data-driven lw-handler channel sites (manifest +
+                         * --channel-sites):
+                         *  - AppendCall: world_geo_strip_tag — six strip-list
+                         *    loop heads (0x800267E4/27720/28590/285FC/29500/
+                         *    2956C) append openpete_world_geo_set_current(rt).
+                         *    (0x800276B4, a 7th head, is a hybrid with the dbg
+                         *    LP-kill knob and stays hardcoded above.)
+                         *  - ReplaceCall: no_lod m_LodDistance (0x800259B0/
+                         *    26214/267B0) + m_CullingDistance (0x80026210)
+                         *    saturation — replaced with a hook that reads + (if
+                         *    --no-lod) returns INT32_MAX. */
+                        if (_cs->second.kind == ChannelSite::AppendCall)
+                            code = translate_lw(instr)
+                                 + emit_channel_append_call(_cs->second, instr);
+                        else
+                            code = emit_channel_replace_call(_cs->second, instr);
                     } else if (addr == 0x800261E0u) {
                         /* DBG: env-renderer's read of g_SkipLowPolyWorld.
                          * When psx_runtime_dbg_kill_env_lp_walk is set,
@@ -1700,51 +1706,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "{} = cpu->read_word({} + psx_runtime_moby_lp_face_offset);"
                             "  /* moby LP face load (no-lod knob) */",
                             reg_name(rt), reg_name(rs));
-                    } else if (addr == 0x80026210u) {
-                        /* --no-lod also saturates m_CullingDistance
-                         * (g_Environment offset 0x28) at this PC, the
-                         * LP-walk pre-pass's radial-distance gate. Cone-
-                         * admitted cells beyond the canonical 0x14000/
-                         * 0x1c000/0x28000 radius then survive and reach
-                         * HP-walk. Renderer-only — collision.s and math.s
-                         * also read offset 0x28 (10 PCs) and must keep
-                         * the canonical value so gameplay state is
-                         * unaffected. Identity when openpete_no_lod==0. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{{ uint32_t _v = cpu->read_word({} + {}); "
-                            "{} = openpete_no_lod ? 0x7FFFFFFFu : _v; }}"
-                            "  /* m_CullingDistance INT32_MAX (no-lod) */",
-                            reg_name(rs), off, reg_name(rt));
-                    } else if (addr == 0x800259B0u
-                            || addr == 0x80026214u
-                            || addr == 0x800267B0u) {
-                        /* Phase 6 (m_LodDistance doubler): r_environment.s
-                         * reads g_Environment.m_LodDistance (offset 0x24)
-                         * at three PCs:
-                         *   0x800259B0 → $s6 (front-walk routing gate)
-                         *   0x80026214 → $s3 (LP-walk screen margin)
-                         *   0x800267B0 → $s5 (HP-walk OT-slot + cull math)
-                         *
-                         * Under --no-lod, return INT32_MAX (0x7FFFFFFF).
-                         * Saturates the front-walk routing gate (admits
-                         * every cell), the LP-walk screen margin, and
-                         * HP-walk's screen-margin cull. Identity at
-                         * default. Earlier saturation experiment
-                         * (b3f17ee) regressed cyclorama Z because the
-                         * OT-slot math `srl $t5, $s5, 2` shifts env
-                         * cells into closer buckets than cyclorama's
-                         * authored slot — watch for that visually. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{{ uint32_t _v = cpu->read_word({} + {}); "
-                            "{} = openpete_no_lod ? 0x7FFFFFFFu : _v; }}"
-                            "  /* m_LodDistance INT32_MAX (no-lod) */",
-                            reg_name(rs), off, reg_name(rt));
                     } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
                         /* m_LowerPolyBuffer cursor-reset reads. When
                          * psx_runtime_polybuf_lower is non-zero (widescreen
@@ -1766,54 +1727,21 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25:                                         // lhu
                 {
-                    if (addr == 0x80022B20u
-                            || addr == 0x8001F1F4u
-                            || addr == 0x800209A0u) {
-                        /* Phase 8: per-moby render distance saturation.
-                         * r_moby.s reads the packed m_Renderer half-word
-                         * at moby offset 0x50 in three parallel paths:
-                         *   0x8001F1F4 → regular  (lhu $a0, 0x50($sp))
-                         *   0x800209A0 → specular (lhu $a0, 0x50($sp))
-                         *   0x80022B20 → shaded   (lhu $a0, 0x50($fp))
-                         * Low 7 bits: m_Distance, bit 7: m_ShinyRenderer;
-                         * byte 0x51: m_SpecularMetalColor[0], used as a
-                         * +0x200 cull bias via its LSB on non-shiny
-                         * mobys and cleared by the immediately following
-                         * sb $zero, 0x51. The shaded path bltz-routes
-                         * shiny mobys away before using $a0; the
-                         * regular/specular paths use the full low byte
-                         * as the distance (their moby lists are
-                         * authored so m_ShinyRenderer is clear).
-                         *
-                         * Box-cull at PCs 0x80022B48..0x80022B90 (and
-                         * the analogous PCs in the other two paths)
-                         * rejects mobys outside |delta/4| < (low_byte
-                         * << 8) + bias, so authored m_Distance=16
-                         * gives ~16 K-unit range. Under --no-lod,
-                         * force m_Distance to 0x7F (max 7-bit) so the
-                         * threshold rises to ~130 K units, matching the
-                         * saturated env cull radius (Phase 6.B).
-                         * Preserve the shiny bit and byte 0x51.
-                         *
-                         * CRITICAL: only bump mobys whose current
-                         * m_Distance is non-zero. m_Distance == 0 is
-                         * the "uninitialized / disabled moby slot"
-                         * sentinel — forcing it to 0x7F admits stale /
-                         * uninit moby memory into the renderer and
-                         * hangs during the post-level-load fade-in.
-                         * Identity when openpete_no_lod==0. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "{{ uint32_t _v = cpu->read_half({} + {}); "
-                            "if (openpete_no_lod && (_v & 0x7Fu) != 0u) {{ "
-                            "psx_runtime_mdist_thresh_delta = (int32_t)((0x7Fu - (_v & 0x7Fu)) << 8); "
-                            "_v = (_v & 0xFF80u) | 0x7Fu; }} "
-                            "else psx_runtime_mdist_thresh_delta = 0; "
-                            "{} = _v; }}"
-                            "  /* m_Distance saturate + canon-dist delta (no-lod) */",
-                            reg_name(rs), off, reg_name(rt));
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::ReplaceCall) {
+                        /* Phase 8: per-moby render distance saturation (channel
+                         * no_lod_moby_render_distance_saturate), three parallel
+                         * paths (regular 0x8001F1F4 / specular 0x800209A0 /
+                         * shaded 0x80022B20). Replaced with a hook
+                         * (psx_runtime_no_lod_moby_distance) that reads the
+                         * packed m_Renderer half-word and, under --no-lod,
+                         * saturates the low-7-bit m_Distance to 0x7F (only when
+                         * non-zero — m_Distance==0 is the uninit-slot sentinel)
+                         * while recording the canonical-distance delta. The
+                         * bespoke math now lives in core/features/widescreen.c,
+                         * not here. */
+                        code = emit_channel_replace_call(_cs->second, instr);
                     } else if (addr == 0x8001F268u) {
                         /* transform-interp moby-queue push.
                          * r_moby.s func_8001F158 (the cull pass) walks
