@@ -40,6 +40,7 @@
 #include "openpete_render_cache.h"
 #include "openpete_time.h"
 #include "openpete_ui_moby.h"
+#include "openpete_vertex_trace.h"  /* openpete_spanlog_enabled/record */
 
 #include <stdio.h>
 #include <stdlib.h>

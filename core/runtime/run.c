@@ -35,6 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>  /* _exit */
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>  /* emscripten_sleep (Asyncify) */
+#endif
 
 #define WIN_W 640
 /* Window default matches Spyro's visible 224-line viewport (DRAWENV.clip.h)
@@ -1795,6 +1798,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                              ? next_sim_ns : next_render_ns;
             op_sleep_until(next);
         }
+
+#if defined(__EMSCRIPTEN__)
+        /* Guarantee one browser event-loop turn per host iteration. The
+         * paced pacer branches already yielded inside op_sleep_until's
+         * Asyncify arm, but the unlock / fast-forward branch (and
+         * render-fps=0 no-tick iters) don't call it — without this the tab
+         * would freeze. emscripten_sleep(0) is a single Asyncify
+         * unwind/rewind; harmless after an already-yielded paced iter. */
+        emscripten_sleep(0);
+#endif
     }
 
     if (bk2_active) {

@@ -233,6 +233,58 @@ if(TARGET SDL3::SDL3main)
     target_link_libraries(openpete-spyro1 PRIVATE SDL3::SDL3main)
 endif()
 
+# Emscripten / WebAssembly browser link.
+#
+#  ASYNCIFY        — required twice over: (1) libco's emscripten backend
+#                    maps co_switch onto emscripten_fiber_swap, and (2) the
+#                    host loop yields to the browser via emscripten_sleep
+#                    inside op_sleep_until. Both are Asyncify operations.
+#  STACK_SIZE      — the primary (host) fiber runs on the main C stack; the
+#                    PsyCross render path is deep, so bump well past the
+#                    64 KiB default. The game fiber has its own 8 MiB stack
+#                    (see run.c co_create).
+#  MEMORY GROWTH   — the player's disc (~630 MiB) is streamed into MEMFS, so
+#                    we start modest and grow toward the wasm32 ceiling.
+#  INVOKE_RUN=0    — main() is launched from the shell's callMain() only
+#                    after the disc has been written into the FS.
+#  FULL_ES2        — PsyCross selects RENDERER_OGLES / OGLES_VERSION 2 under
+#                    __EMSCRIPTEN__ (WebGL via GLES2 emulation).
+if(EMSCRIPTEN)
+    target_link_options(openpete-spyro1 PRIVATE
+        "-sASYNCIFY=1"
+        "-sASYNCIFY_STACK_SIZE=1048576"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=268435456"      # 256 MiB
+        "-sMAXIMUM_MEMORY=2147483648"     # 2 GiB
+        "-sSTACK_SIZE=4194304"            # 4 MiB host/primary-fiber C stack
+        "-sFORCE_FILESYSTEM=1"
+        "-sINVOKE_RUN=0"
+        "-sEXIT_RUNTIME=0"
+        "-sEXPORTED_RUNTIME_METHODS=callMain,FS"
+        "-sFULL_ES3=1"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sGL_ENABLE_GET_PROC_ADDRESS=1"
+        "-sALLOW_BLOCKING_ON_MAIN_THREAD=1"
+        "-lopenal"
+    )
+    # Optional: keep WASM function names in the binary so browser stack
+    # traces are legible (negligible runtime cost, larger .wasm). Useful
+    # for diagnosing Asyncify / call_indirect signature issues.
+    option(OPENPETE_WASM_PROFILING "Emit named WASM functions for debugging" OFF)
+    if(OPENPETE_WASM_PROFILING)
+        target_link_options(openpete-spyro1 PRIVATE "--profiling-funcs")
+    endif()
+    # emcc emits openpete-spyro1.js + openpete-spyro1.wasm. Ship the
+    # hand-authored drag-and-drop shell alongside them — NO copyrighted
+    # disc data is bundled; the player supplies their own dump at runtime.
+    add_custom_command(TARGET openpete-spyro1 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
+            "$<TARGET_FILE_DIR:openpete-spyro1>/index.html"
+        VERBATIM)
+endif()
+
 set_target_properties(openpete-spyro1 PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON

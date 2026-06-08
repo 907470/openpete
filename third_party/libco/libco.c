@@ -16,6 +16,10 @@
    * CreateFiber/SwitchToFiber, which Windows updates correctly. */
   #if defined(_WIN32)
     #include "fiber.c"
+  #elif defined(__EMSCRIPTEN__)
+    /* WebAssembly: no raw stack/register access. Use Emscripten fibers
+     * (Asyncify). Requires linking with -sASYNCIFY. */
+    #include "emscripten.c"
   #elif defined(__i386__)
     #include "x86.c"
   #elif defined(__amd64__)

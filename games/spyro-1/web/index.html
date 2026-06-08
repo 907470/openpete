@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spyro the Dragon</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #0e0f13; color: #d7d9e0;
+    font: 14px/1.5 system-ui, sans-serif; display: flex;
+    flex-direction: column; align-items: center; min-height: 100vh;
+  }
+  h1 { font-weight: 600; font-size: 18px; margin: 18px 0 4px; }
+  #sub { color: #8a8d99; margin-bottom: 14px; }
+  #drop {
+    width: 640px; max-width: 90vw; padding: 40px 20px; margin-bottom: 16px;
+    border: 2px dashed #3a3d4a; border-radius: 12px; text-align: center;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #drop.hot { border-color: #6c7bff; background: #161826; }
+  #drop strong { color: #aeb4ff; }
+  canvas {
+    background: #000; border-radius: 8px; display: none;
+    image-rendering: pixelated; max-width: 95vw;
+  }
+  #log {
+    width: 640px; max-width: 90vw; height: 150px; margin-top: 14px;
+    overflow: auto; background: #07080b; border: 1px solid #20222c;
+    border-radius: 8px; padding: 8px 10px; font-family: ui-monospace, monospace;
+    font-size: 12px; color: #9aa0ad; white-space: pre-wrap;
+  }
+  #bar { width: 640px; max-width: 90vw; height: 6px; background: #20222c;
+    border-radius: 3px; overflow: hidden; display: none; margin-bottom: 8px; }
+  #bar > div { height: 100%; width: 0; background: #6c7bff; transition: width .1s; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+  <h1>Spyro the Dragon</h1>
+  <div id="drop">
+    Drop your <strong>SCUS-94228.cue</strong> and <strong>SCUS-94228.bin</strong> here<br>
+    <span style="color:#8a8d99">(or click to choose files — select both)</span>
+    <input id="file" type="file" multiple accept=".cue,.bin">
+  </div>
+
+  <div id="bar"><div></div></div>
+  <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="log"></div>
+
+<script>
+  const RUN_RECOMP_ADDR = "0x80012204";   // Spyro 1 main() entry
+  const DISC_DIR = "/disc";
+  const CHUNK = 16 * 1024 * 1024;          // 16 MiB streaming write granularity
+
+  const logEl = document.getElementById("log");
+  const dropEl = document.getElementById("drop");
+  const fileEl = document.getElementById("file");
+  const canvas = document.getElementById("canvas");
+  const barWrap = document.getElementById("bar");
+  const bar = barWrap.firstElementChild;
+
+  function log(s) { logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  function setProgress(f) { barWrap.style.display = "block"; bar.style.width = (f * 100).toFixed(1) + "%"; }
+
+  // Emscripten Module — runtime is loaded but main() is NOT auto-invoked
+  // (noInitialRun); we call it ourselves once the disc is in the FS.
+  var Module = {
+    canvas: canvas,
+    noInitialRun: true,
+    arguments: [],
+    print:    (t) => log(t),
+    printErr: (t) => log(t),
+    onRuntimeInitialized: () => log("[wasm] runtime ready — drop your disc to boot."),
+  };
+
+  // Stream a dropped File into MEMFS in chunks so we never hold the whole
+  // .bin twice. Pre-truncate by PATH to the final size so MEMFS allocates
+  // its backing store once instead of reallocating on every chunk write.
+  async function writeFileStreamed(path, file) {
+    const FS = Module.FS;
+    const dir = path.slice(0, path.lastIndexOf("/"));
+    try { FS.mkdirTree(dir); } catch (e) {}
+    FS.writeFile(path, new Uint8Array(0));     // create
+    FS.truncate(path, file.size);              // preallocate (path form)
+    const stream = FS.open(path, "r+");
+    let offset = 0;
+    while (offset < file.size) {
+      const end = Math.min(offset + CHUNK, file.size);
+      const buf = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+      FS.write(stream, buf, 0, buf.length, offset);
+      offset = end;
+      setProgress(offset / file.size);
+    }
+    FS.close(stream);
+    log(`[fs] wrote ${path} (${file.size} bytes)`);
+  }
+
+  let booted = false;
+  async function boot(files) {
+    if (booted) return;
+    let cue = null, bin = null;
+    for (const f of files) {
+      const n = f.name.toLowerCase();
+      if (n.endsWith(".cue")) cue = f;
+      else if (n.endsWith(".bin")) bin = f;
+    }
+    if (!cue || !bin) { log("[error] need BOTH a .cue and a .bin file."); return; }
+    booted = true;
+    dropEl.style.display = "none";
+
+    try {
+      log(`[fs] streaming ${bin.name} … this is large, please wait.`);
+      await writeFileStreamed(`${DISC_DIR}/${bin.name}`, bin);
+      await writeFileStreamed(`${DISC_DIR}/${cue.name}`, cue);
+      barWrap.style.display = "none";
+
+      canvas.style.display = "block";
+      canvas.focus();
+      log("[boot] launching…");
+      Module.callMain(["--disc", `${DISC_DIR}/${cue.name}`,
+                       "--run-recomp", RUN_RECOMP_ADDR]);
+    } catch (e) {
+      log("[error] boot failed: " + (e && e.message ? e.message : e));
+      console.error(e);
+    }
+  }
+
+  dropEl.addEventListener("click", () => fileEl.click());
+  fileEl.addEventListener("change", (e) => boot(e.target.files));
+  dropEl.addEventListener("dragover", (e) => { e.preventDefault(); dropEl.classList.add("hot"); });
+  dropEl.addEventListener("dragleave", () => dropEl.classList.remove("hot"));
+  dropEl.addEventListener("drop", (e) => {
+    e.preventDefault(); dropEl.classList.remove("hot");
+    boot(e.dataTransfer.files);
+  });
+</script>
+<script src="openpete-spyro1.js"></script>
+</body>
+</html>

@@ -41,6 +41,19 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_OSX_ARCHITECTURES": "x86_64;arm64"
       }
+    },
+    {
+      "name": "wasm",
+      "displayName": "WebAssembly via Emscripten (browser)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wasm",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENPETE_SKIP_DECOMP": "ON",
+        "OPENPETE_BUILD_PCSX_REDUX_GTE": "OFF",
+        "OPENPETE_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -48,6 +61,7 @@
     { "name": "linux-release",   "configurePreset": "linux-release" },
     { "name": "windows-mingw",   "configurePreset": "windows-mingw" },
     { "name": "windows-msvc",    "configurePreset": "windows-msvc" },
-    { "name": "macos-universal", "configurePreset": "macos-universal" }
+    { "name": "macos-universal", "configurePreset": "macos-universal" },
+    { "name": "wasm",            "configurePreset": "wasm" }
   ]
 }

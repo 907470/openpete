@@ -31,6 +31,10 @@
 #  endif
 #endif
 
+#if defined(__EMSCRIPTEN__)
+#  include <emscripten.h>  /* emscripten_sleep (Asyncify) */
+#endif
+
 /* ---------------------------------------------------------------- *
  * Lazy init                                                         *
  * ---------------------------------------------------------------- */
@@ -247,6 +251,24 @@ static void sleep_until_posix(op_time_t deadline_ns) {
 
 void op_sleep_until(op_time_t deadline_ns) {
     ensure_initialized();
+
+#if defined(__EMSCRIPTEN__)
+    /* The browser owns the frame clock. We can neither OS-sleep nor
+     * busy-spin: both freeze the tab (single-threaded WASM, no preempt).
+     * Instead yield to the event loop via Asyncify (emscripten_sleep
+     * unwinds the WASM stack, lets the browser render + dispatch events,
+     * then rewinds back here). Always yield at least one turn even when
+     * the deadline has passed (unlock / fast-forward re-anchors deadlines
+     * to now), so a tight host loop never starves the page. Sub-ms
+     * precision isn't available and isn't needed — requestAnimationFrame
+     * and the 60 Hz present cadence pace the actual frame output. */
+    op_time_t now_em = op_now();
+    int ms = (now_em < deadline_ns)
+                 ? (int)((deadline_ns - now_em) / OP_NS_PER_MS)
+                 : 0;
+    emscripten_sleep(ms > 0 ? (unsigned)ms : 0u);
+    return;
+#else
     op_time_t slack = s_slack_ns;
     op_time_t now = op_now();
     if (now >= deadline_ns) return;
@@ -271,4 +293,5 @@ void op_sleep_until(op_time_t deadline_ns) {
     while (op_now() < deadline_ns) {
         cpu_relax();
     }
+#endif  /* __EMSCRIPTEN__ */
 }

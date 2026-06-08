@@ -23,6 +23,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     unset(_OAL_ROOT)
 endif()
 
+# Emscripten ships an OpenAL implementation in its sysroot, linked via the
+# `-lopenal` flag rather than a discoverable .a archive. PsyCross calls
+# find_package(OpenAL REQUIRED), so seed the cache vars FindOpenAL's
+# FindPackageHandleStandardArgs checks (it only verifies they're set and
+# not -NOTFOUND). Headers live in the toolchain sysroot, found
+# automatically by emcc; OPENAL_INCLUDE_DIR just has to point somewhere
+# real for FPHSA. The -lopenal flag also gets appended on the final
+# browser target's link line (see games/spyro-1/CMakeLists.txt).
+if(EMSCRIPTEN)
+    set(OPENAL_INCLUDE_DIR "${CMAKE_SYSROOT}/include"
+        CACHE PATH "OpenAL include dir (Emscripten sysroot)" FORCE)
+    set(OPENAL_LIBRARY "-lopenal"
+        CACHE STRING "OpenAL link flag (Emscripten built-in)" FORCE)
+endif()
+
 # SDL3 is built from the third_party/SDL submodule, pinned to a recent
 # main commit for Steam Controller (2026) support. See
 # notes/plans/openpete-sdl3-upgrade.md. Static link, no shared lib, no

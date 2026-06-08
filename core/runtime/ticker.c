@@ -84,6 +84,14 @@ static int ticker_thread_fn(void* user) {
 }
 
 void openpete_ticker_start(void) {
+#if defined(__EMSCRIPTEN__)
+    /* Single-threaded WASM (no pthreads in this build): there is no
+     * background thread to pace from. The host loop instead yields to the
+     * browser event loop via op_sleep_until's Asyncify arm, and openpete_vbl
+     * is advanced synchronously by psyq_VSync — exactly the --headless
+     * pacing contract. Leave openpete_ticker_active = 0. */
+    return;
+#else
     if (s_ticker_thread != NULL) return; /* already running */
 
     /* Initialise the clock + Win32 timer-resolution boost up front so
@@ -115,6 +123,7 @@ void openpete_ticker_start(void) {
                (double)OPENPETE_TICKER_PERIOD_NS / 1e6,
                1e9 / (double)OPENPETE_TICKER_PERIOD_NS,
                (long long)(op_pacer_slack_ns() / OP_NS_PER_US));
+#endif  /* !__EMSCRIPTEN__ */
 }
 
 void openpete_ticker_stop(void) {

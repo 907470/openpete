@@ -215,6 +215,15 @@ static int build_text_quads(const char *text, int origin_x, int origin_y,
 
 extern "C" void openpete_fps_overlay_emit(void)
 {
+#if defined(__EMSCRIPTEN__)
+    /* The overlay draws through PsyCross's glad-loaded desktop-GL3.3
+     * function pointers, which are never initialised on the Emscripten
+     * (RENDERER_OGLES / WebGL2) path — calling them traps with a WASM
+     * call_indirect signature mismatch. It's a non-gameplay presentation
+     * feature; no-op it here until a WebGL2/GLES3 overlay path is written.
+     * (Disabling it cannot perturb gameplay-readable state.) */
+    return;
+#else
     /* 0.5-second rolling FPS window. Computed before we touch GL so the
      * counter still ticks even if the GL path bails out. */
     static Uint64 window_start = 0;
@@ -315,4 +324,5 @@ extern "C" void openpete_fps_overlay_emit(void)
         glEnable(GL_SCISSOR_TEST);
     else
         glDisable(GL_SCISSOR_TEST);
+#endif  /* !__EMSCRIPTEN__ */
 }
