@@ -526,6 +526,13 @@ void     openpete_moby_queue_push(uint32_t moby_vaddr);
 uint32_t openpete_moby_queue_pop(void);
 void     openpete_moby_queue_clear(void);
 
+/* Per-renderer identity-tag AppendCall wrappers (compose the primitives
+ * above so the recompiler emits one call). Defined in
+ * core/runtime/openpete_obj_id.c. READ-ONLY host-side identity tags. */
+void     openpete_moby_loop_tag(uint32_t moby_addr);     /* ui_moby + obj_id + clear */
+void     openpete_obj_loop_tag(uint32_t obj_addr);       /* obj_id + clear */
+void     openpete_moby_queue_pop_tag(void);              /* obj_id(pop()) + clear */
+
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *
  * Lets renderer-side code register a host buffer at any PSX vaddr above

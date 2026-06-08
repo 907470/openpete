@@ -147,7 +147,9 @@ static bool parse_channel_sites(const std::string& path,
             site.symbol = a3;
         } else if (kind == "append_call") {
             site.kind     = PSXRecomp::ChannelSite::AppendCall;
-            site.operands = split_csv(a2);
+            // "void" => a no-argument hook call (`hook();`).
+            site.operands = (a2 == "void") ? std::vector<std::string>{}
+                                           : split_csv(a2);
             site.symbol   = a3;
         } else if (kind == "replace_call") {
             site.kind = PSXRecomp::ChannelSite::ReplaceCall;

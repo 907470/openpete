@@ -218,13 +218,16 @@ produce identical eff_OFX, so determinism is unaffected.
 The companion `openpete_world_geo_clear()` is appended to every
 moby-loop hook (not just the shaded one) so terrain strip tags from
 the prior renderer never bleed into moby cache entries."""
+# GENERATED (append_call): the per-renderer identity-tag multi-call sequence
+# is composed into wrapper hooks in core/runtime/openpete_obj_id.c, so the
+# recompiler appends ONE call. moby_loop_tag = ui_moby + obj_id + clear (the
+# shaded loop is the only HUD/UI path, operand = the loaded moby vaddr);
+# obj_loop_tag = obj_id + clear (singletons pass their source-address reg).
 substitution_sites = [
-    0x80022B08,  # lw $s8, 0($ra)   — shaded per-moby loop (ui_moby + obj_id)
-    0x80023B0C,  # lw $fp, 0($fp)   — Spyro     renderer (obj_id only, $ra=g_Spyro)
-    0x8004F088,  # lw $t3, 4($at)   — cyclorama renderer (obj_id only, $at=g_Cyclorama)
+    { addr = 0x80022B08, operand = "rt", kind = "append_call", hook = "openpete_moby_loop_tag" },  # shaded per-moby loop (ui_moby + obj_id)
+    { addr = 0x80023B0C, operand = "ra", kind = "append_call", hook = "openpete_obj_loop_tag"  },  # Spyro     renderer ($ra=g_Spyro)
+    { addr = 0x8004F088, operand = "at", kind = "append_call", hook = "openpete_obj_loop_tag"  },  # cyclorama renderer ($at=g_Cyclorama)
 ]
-# 0x80022B08 feeds the widescreen UI classifier; all three feed the
-# transform-interp identity channel (openpete_obj_id_set).
 verdict_fn       = "openpete_ui_moby_set_current"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # render-side classification only
@@ -273,10 +276,13 @@ falls back to world-ordinal pairing (the pre-queue baseline).
 READ-ONLY w.r.t. gameplay: push stashes a PSX vaddr in a host-side
 ring; pop returns it. The canonical lhu/lw is emitted verbatim
 before the push/pop, same diag_cone / ui_moby precedent."""
+# GENERATED (append_call): push passes $sp (the cull-survivor moby vaddr);
+# pop uses the wrapper openpete_moby_queue_pop_tag (obj_id(pop()) + clear),
+# a no-argument call (operand="void").
 substitution_sites = [
-    0x8001F268,  # lhu $t7, 0x36($sp) — cull-pass-confirmed (push)
-    0x8001F800,  # lw  $ra, 4($gp)    — regular  render iter (pop)
-    0x80020F9C,  # lw  $ra, 4($gp)    — specular render iter (pop)
+    { addr = 0x8001F268, operand = "sp",   kind = "append_call", hook = "openpete_moby_queue_push" },     # cull-pass-confirmed (push)
+    { addr = 0x8001F800, operand = "void", kind = "append_call", hook = "openpete_moby_queue_pop_tag" },  # regular  render iter (pop)
+    { addr = 0x80020F9C, operand = "void", kind = "append_call", hook = "openpete_moby_queue_pop_tag" },  # specular render iter (pop)
 ]
 verdict_fn       = "openpete_moby_queue_push"
 verified_against = ["aspect_determinism"]
@@ -305,8 +311,10 @@ Verified: aspect_determinism bit-identical across 3000 frames with
 the substitution present (gameplay log unchanged); validated the
 camera-free property (100% of terrain verts constant per ptr across
 frames) used by the §7.5 PSX-RAM terrain-reproject path."""
+# GENERATED (append_call, multi-operand): the recompiler appends
+# openpete_envvert_probe(cpu, v0, a0, s1, s7, t8, t9) after the verbatim lw.
 substitution_sites = [
-    0x80025A34,  # lw $a0, 4($s1) — env per-vertex world load
+    { addr = 0x80025A34, operand = "cpu,v0,a0,s1,s7,t8,t9", kind = "append_call", hook = "openpete_envvert_probe" },  # env per-vertex world load
 ]
 verdict_fn       = "openpete_envvert_probe"
 verified_against = ["aspect_determinism"]

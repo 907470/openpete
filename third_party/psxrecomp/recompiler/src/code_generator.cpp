@@ -1351,134 +1351,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * function names and addresses are Spyro-specific,
                      * but the ranges that classify a moby as UI are
                      * registered by games/spyro-1/. */
-                    if (addr == 0x8001F800u || addr == 0x80020F9Cu) {
-                        /* Regular (func_8001F798) and specular
-                         * (func_80020F34) render passes: at the loop
-                         * iter top, POP the cull-pass queue and tag
-                         * with the popped per-instance moby vaddr.
-                         *
-                         * The lw at this PC loads a class-shared
-                         * pointer (m_Props / model template) from the
-                         * render-list slot, NOT a per-instance vaddr —
-                         * so we don't pass the lw's destination
-                         * register. Instead, the cull pass
-                         * (func_8001F158 at PC 0x8001F268, hooked in
-                         * case 0x25 below) pushed each cull-survivor's
-                         * Moby instance ptr ($sp) onto
-                         * openpete_moby_queue in cull-pass-confirmed
-                         * order. Pop here in render-pass order, which
-                         * must match by FIFO invariant (the cull pass
-                         * fully populates before the render pass
-                         * begins; draw.c sequences them as separate
-                         * function calls). Pop-on-empty returns 0 →
-                         * gte falls back to world-ordinal pairing
-                         * (same as the pre-queue baseline).
-                         *
-                         * Also clears the world-geo strip tag so a
-                         * stale terrain tag doesn't bleed into moby
-                         * projections.
-                         *
-                         * Channel split: regular/specular mobys are never
-                         * HUD/UI elements, so they feed ONLY the
-                         * transform-interp identity channel
-                         * (openpete_obj_id) — NOT the widescreen UI
-                         * classifier (openpete_ui_moby). Feeding popped
-                         * gameplay-moby vaddrs into s_current let
-                         * is_current_ui() mis-classify any moby whose
-                         * address fell in the polybuf/HUD range as UI,
-                         * breaking Hor+ widening under --aspect. */
-                        code = fmt::format(
-                            "{} openpete_obj_id_set("
-                            "openpete_moby_queue_pop()); "
-                            "openpete_world_geo_clear();",
-                            translate_lw(instr));
-                    } else if (addr == 0x80022B08u
-                            || addr == 0x80023B0Cu
-                            || addr == 0x8004F088u) {
-                        /* Per-renderer identity tag.
-                         *
-                         * Per-moby loop iter boundary (r_moby.s):
-                         *   0x80022B08  func_80022A2C (shaded)   $fp = *iter
-                         * After the lw, $fp holds the current shaded
-                         * moby's PSX vaddr (the shaded-moby array
-                         * stores instance ptrs directly, unlike the
-                         * regular/specular render-list slots — see
-                         * the 0x8001F800/0x80020F9C handler above).
-                         *
-                         * Per-singleton renderer tags (r_pete.s,
-                         * r_cyclorama.s) — the lw at the hook PC reads
-                         * from an *address register* that the prologue
-                         * loaded with the singleton's vaddr; that
-                         * register (not the lw's destination) is what
-                         * we want as identity:
-                         *   0x80023B0C  func_80023AC4 (Spyro)
-                         *               $ra was set to g_Spyro at the
-                         *               prologue addiu (0x80023B00);
-                         *               this lw is `lw $fp, 0($fp)`
-                         *               (reads g_Models), which leaves
-                         *               $ra untouched. Pass `cpu->ra`.
-                         *   0x8004F088  func_8004F000 (cyclorama)
-                         *               $at was set to g_Cyclorama at
-                         *               the prologue addiu (0x8004F078);
-                         *               this lw is `lw $t3, 4($at)`,
-                         *               which reads from $at but leaves
-                         *               it intact. Pass `cpu->at`.
-                         *
-                         * Each appended call stashes the vaddr host-
-                         * side so gte_rtps_internal can stamp the cache
-                         * entry's obj_tag with a stable cross-frame
-                         * per-object identity. */
-                        const char* tag_reg;
-                        if (addr == 0x80023B0Cu)      tag_reg = "cpu->ra";
-                        else if (addr == 0x8004F088u) tag_reg = "cpu->at";
-                        else                          tag_reg = nullptr;
-                        std::string reg_expr = tag_reg
-                            ? std::string(tag_reg)
-                            : reg_name(get_rt(instr));
-                        /* Also clear the world-geo strip tag (§7.5-R3):
-                         * once per-moby/Spyro/cyclorama render begins,
-                         * world-strip state is stale, so projections
-                         * fall back to the per-renderer identity in
-                         * gte_rtps_internal.
-                         *
-                         * Channel split: the shaded loop (0x80022B08) is
-                         * the ONLY renderer HUD/UI mobys flow through, so
-                         * it alone feeds the widescreen UI classifier
-                         * (openpete_ui_moby) — in ADDITION to the
-                         * transform-interp identity channel
-                         * (openpete_obj_id). Spyro and cyclorama are never
-                         * UI, so they feed obj_id only; mixing their
-                         * vaddrs into s_current was the widescreen-
-                         * widening regression. */
-                        if (addr == 0x80022B08u) {
-                            code = fmt::format(
-                                "{0} openpete_ui_moby_set_current({1}); "
-                                "openpete_obj_id_set({1}); "
-                                "openpete_world_geo_clear();",
-                                translate_lw(instr), reg_expr);
-                        } else {
-                            code = fmt::format(
-                                "{} openpete_obj_id_set({}); "
-                                "openpete_world_geo_clear();",
-                                translate_lw(instr), reg_expr);
-                        }
-                    } else if (addr == 0x80025A34u) {
-                        /* §7.5 terrain-reproject validation probe.
-                         * r_environment.s per-vertex transform:
-                         *   0x80025A30 lw $v0,0($s1)  ; word0 = X<<16|Y
-                         *   0x80025A34 lw $a0,4($s1)  ; word1 = Z<<16|.
-                         *   ... sub $s7/$t8/$t9 (scaled campos) → MVMVA.
-                         * After this lw, $v0/$a0 hold the CAMERA-FREE
-                         * world vertex, $s1 the vert ptr, $s7/$t8/$t9
-                         * the scaled camera position. Read-only dump
-                         * (OPENPETE_ENVVERT_LOG) to validate the
-                         * PSX-RAM camera-reproject forward model. */
-                        code = fmt::format(
-                            "{} openpete_envvert_probe(cpu, cpu->v0, "
-                            "cpu->a0, cpu->s1, cpu->s7, cpu->t8, "
-                            "cpu->t9);",
-                            translate_lw(instr));
-                    } else if (auto _cs = channel_sites_.find(addr);
+                    if (auto _cs = channel_sites_.find(addr);
                                _cs != channel_sites_.end()
                                && (_cs->second.kind == ChannelSite::AppendCall
                                 || _cs->second.kind == ChannelSite::ReplaceCall)) {
@@ -1507,51 +1380,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 break;
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25:                                         // lhu
-                {
-                    if (auto _cs = channel_sites_.find(addr);
-                        _cs != channel_sites_.end()
-                        && _cs->second.kind == ChannelSite::ReplaceCall) {
-                        /* Phase 8: per-moby render distance saturation (channel
-                         * no_lod_moby_render_distance_saturate), three parallel
-                         * paths (regular 0x8001F1F4 / specular 0x800209A0 /
-                         * shaded 0x80022B20). Replaced with a hook
-                         * (psx_runtime_no_lod_moby_distance) that reads the
-                         * packed m_Renderer half-word and, under --no-lod,
-                         * saturates the low-7-bit m_Distance to 0x7F (only when
-                         * non-zero — m_Distance==0 is the uninit-slot sentinel)
-                         * while recording the canonical-distance delta. The
-                         * bespoke math now lives in core/features/widescreen.c,
-                         * not here. */
+                /* Data-driven lhu channel sites (manifest + --channel-sites):
+                 *  - ReplaceCall: no_lod_moby_render_distance_saturate (regular
+                 *    / specular / shaded m_Renderer reads) -> no_lod_moby_distance.
+                 *  - AppendCall: transform_interp_moby_queue push (0x8001F268,
+                 *    the cull-pass-confirmed PC) -> openpete_moby_queue_push(sp). */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && (_cs->second.kind == ChannelSite::AppendCall
+                     || _cs->second.kind == ChannelSite::ReplaceCall)) {
+                    if (_cs->second.kind == ChannelSite::AppendCall)
+                        code = translate_lhu(instr)
+                             + emit_channel_append_call(_cs->second, instr);
+                    else
                         code = emit_channel_replace_call(_cs->second, instr);
-                    } else if (addr == 0x8001F268u) {
-                        /* transform-interp moby-queue push.
-                         * r_moby.s func_8001F158 (the cull pass) walks
-                         * mobys via `lw $sp, 0($ra)` at the loop top
-                         * (0x8001F1E8). The cascade of cull-skip
-                         * back-branches all jump back to the loop top;
-                         * the first instruction past the last back-
-                         * branch is `lhu $t7, 0x36($sp)` at 0x8001F268
-                         * — i.e. THIS PC is reached iff the moby
-                         * passed cull and is about to be added to the
-                         * render-list. At this point $sp still holds
-                         * the cull-survivor's Moby instance vaddr.
-                         *
-                         * Push $sp onto openpete_moby_queue; the
-                         * regular/specular render passes
-                         * (func_8001F798 at 0x8001F800,
-                         * func_80020F34 at 0x80020F9C) pop in the
-                         * same order to recover per-instance identity
-                         * (their render-list slots only carry a
-                         * class-shared m_Props ptr, not the moby
-                         * vaddr). READ-ONLY: stashes the vaddr in a
-                         * host-side ring; the canonical lhu is emitted
-                         * verbatim before the push. */
-                        code = fmt::format(
-                            "{} openpete_moby_queue_push(cpu->sp);",
-                            translate_lhu(instr));
-                    } else {
-                        code = translate_lhu(instr);
-                    }
+                } else {
+                    code = translate_lhu(instr);
                 }
                 break;
             case 0x26: code = translate_lwr(instr); break;    // lwr
