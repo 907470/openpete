@@ -1169,31 +1169,30 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 break;
             case 0x09:                                         // addiu
                 {
-                    /* Spyro r_cyclorama.s func_80050BD0 portal clip-rect
-                     * X-upper clamp at 0x80051804 / 0x80051E98:
-                     *   addiu $s4, $zero, 0x200
-                     * Substitute with psx_runtime_portal_clip_x_max so
-                     * widescreen widens the per-portal clip rect's
-                     * right edge. Default 512 = byte-identical 4:3. */
-                    uint32_t rs = get_rs(instr);
+                    /* `addiu $rt, $zero, 0x200` constant-load sites that load a
+                     * hardcoded 512 clip/clamp bound (cyclorama portal clip-
+                     * rect X-upper at func_80050BD0; 2D full-bleed prim X-width
+                     * for letterbox/fade at func_80018F30 / func_800190D4).
+                     * Same ConstLoad kind as the lui clip-threshold sites
+                     * (`rt = <knob>`); addresses + knob live in
+                     * manifest/render_channels.toml (channels
+                     * widescreen_portal_clip_rect / widescreen_2d_fullbleed_x_max),
+                     * loaded via --channel-sites. Identity at default knob (512). */
                     uint32_t rt = get_rt(instr);
                     uint16_t imm = get_imm16_u(instr);
-                    if ((addr == 0x80051804u || addr == 0x80051E98u)
-                        && rs == 0 && imm == 0x200) {
-                        code = fmt::format(
-                            "{} = (int32_t)psx_runtime_portal_clip_x_max;",
-                            reg_name(rt));
-                    } else if ((addr == 0x80019004u    /* func_80018F30 letterbox */
-                              || addr == 0x80019138u)  /* func_800190D4 fade */
-                              && rs == 0 && imm == 0x200) {
-                        /* 2D full-bleed prim X-width: see psx_runtime.h
-                         * `psx_runtime_fullbleed_x_max`. Default 512 ==
-                         * byte-identical; --aspect widens to 512*factor so
-                         * fade/letterbox cover the full Hor+-widened host
-                         * window instead of just the leftmost 4:3 inset. */
-                        code = fmt::format(
-                            "{} = (int32_t)psx_runtime_fullbleed_x_max;",
-                            reg_name(rt));
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::ConstLoad
+                        && (int32_t)imm == _cs->second.imm)
+                    {
+                        if (config_.optimize_zero_reg && rt == 0) {
+                            code = "/* nop: write to $zero */";
+                        } else {
+                            code = fmt::format(
+                                "{} = {};  /* channel const_load: {} */",
+                                reg_name(rt), _cs->second.symbol,
+                                _cs->second.symbol);
+                        }
                     } else {
                         code = translate_addiu(instr);
                     }

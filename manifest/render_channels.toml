@@ -124,8 +124,11 @@ func_80050BD0 portal clip-rect X-upper clamp (`addiu $r, $zero,
 psx_runtime_portal_clip_x_max so widescreen widens the per-portal
 clip rect's right edge. Default 512 == byte-identical 4:3."""
 substitution_sites = [
-    0x80051804, 0x80051E98,  # addiu $s4, $zero, 0x200
-    0x800517F4, 0x80051E88,  # slti $r, $r, 0x201
+    # addiu $s4,$zero,0x200 — GENERATED (kind=const_load, rt=knob)
+    { addr = 0x80051804, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
+    { addr = 0x80051E98, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
+    # slti $r,$r,0x201 — different shape (SetLessThan w/ knob), still hardcoded
+    0x800517F4, 0x80051E88,
 ]
 verdict_fn       = "psx_runtime_portal_clip_x_max"
 verified_against = ["aspect_determinism"]
@@ -372,9 +375,11 @@ only cover the leftmost 4:3 inset. Substituted with
 psx_runtime_fullbleed_x_max = 512 * openpete_disp_w_factor under
 --aspect so fades and cutscene bars span the full host window.
 Default 512 == byte-identical 4:3."""
+# GENERATED sites (kind=const_load): `li $r, 0x200` == addiu $r,$zero,0x200,
+# emitted as `rt = knob` from the manifest via --channel-sites.
 substitution_sites = [
-    0x80019004,  # func_80018F30 letterbox: li $s1, 0x200
-    0x80019138,  # func_800190D4 fade:      li $v1, 0x200
+    { addr = 0x80019004, imm = 0x0200, kind = "const_load", knob = "psx_runtime_fullbleed_x_max" },  # func_80018F30 letterbox: li $s1, 0x200
+    { addr = 0x80019138, imm = 0x0200, kind = "const_load", knob = "psx_runtime_fullbleed_x_max" },  # func_800190D4 fade:      li $v1, 0x200
 ]
 verdict_fn       = "psx_runtime_fullbleed_x_max"
 verified_against = ["aspect_determinism"]
