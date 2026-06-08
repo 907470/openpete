@@ -118,6 +118,17 @@ uint32_t    openpete_psxtrace_anchor_hit_target = 1u;
 static uint32_t openpete_psxtrace_anchor_hits = 0u;
 void      (*openpete_psxtrace_dispatch_hook)(uint32_t addr) = NULL;
 
+/* Set while a presentation-only re-render is in flight (e.g. the
+ * widescreen GamestateDraw bracket re-invokes func_8001ED5C with widened
+ * cull for display). Each generated function body opens with
+ * `if (psx_override_dispatch(cpu, ADDR)) return;`, so that re-invocation
+ * re-enters this dispatch at the SAME anchor PC and would fire the oracle
+ * anchor a second time per game frame — sampling the identical pre-draw
+ * RAM and consuming two golden records for one real frame (a measurement
+ * artifact, not a gameplay change). Suppress the anchor during the render
+ * pass so exactly one record is consumed per game frame. */
+extern int openpete_render_pass_active;
+
 /* Write a 528-byte 'CSv1' CPU dump matching the format produced by
  * scripts/pcsx-redux-ram-dump.lua (so a single diff helper can post-
  * process either side's dump). Layout:
@@ -308,7 +319,8 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     }
     if (openpete_psxtrace_dispatch_hook &&
         openpete_psxtrace_anchor_pc != 0u &&
-        addr == openpete_psxtrace_anchor_pc) {
+        addr == openpete_psxtrace_anchor_pc &&
+        !openpete_render_pass_active) {
         openpete_psxtrace_anchor_hits++;
         if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
             openpete_psxtrace_dispatch_hook(addr);

@@ -134,6 +134,29 @@ extern uint32_t psx_runtime_g_sony_image_base;
  * (LP-band branch in r_moby.s). Identity at default. */
 extern uint32_t psx_runtime_moby_lp_face_offset;
 
+/* Spyro r_moby.s regular/specular moby visible-queue relocation (Phase
+ * 8.5). The cull/queue-build func_8001F158 writes each cull-passing moby
+ * into a fixed-capacity output queue at g_SonyImage(0x8006FCF4)+0x1600,
+ * stride 0x38, hard limit base+0x2200 (~54 entries). When the queue
+ * fills the cull loop TERMINATES (early-exit), dropping every later moby
+ * in the list. Under --no-lod, m_Distance saturation makes far mobys
+ * pass the cull, overflowing the queue before late-list canonical mobys
+ * are reached → they're dropped → m_WasDrawn never set → AI despawn →
+ * g_MobyAllocPtr/g_Particles diverge from the oracle (the @2468 leak).
+ *
+ * Default 0x1600 (head) / 0x2200 (limit) == canonical (substitution is
+ * identity). --no-lod swings them to a relocated, grown host region so
+ * the queue never overflows and no canonical moby is dropped — drawing
+ * the extra distant mobys without perturbing any gameplay-readable byte
+ * (the 0x80071xxx queue is audited render-side, gameplay_state_regions
+ * .toml:160). The consumer func_8001F798 walks to NULL so only the head
+ * needs relocating there. Substituted at:
+ *   head  : F158 0x8001F19C (addi $fp,$at,0x1600), F798 0x8001F7E4
+ *   limit : F158 0x8001F730 (addi $v0,$v0,0x2200)
+ * See .claude/plans/openpete-disable-lods.md Phase 8.5. */
+extern uint32_t psx_runtime_moby_reg_queue_offset;       /* default 0x1600 */
+extern uint32_t psx_runtime_moby_reg_queue_limit_offset; /* default 0x2200 */
+
 /* --no-lod feature flag. Read by the recompiler-emitted lw substitution
  * at PC 0x80026214 (r_environment.s m_LodDistance load) to inject an
  * always-false LOD predicate without mutating g_Environment.m_LodDistance.
@@ -228,6 +251,22 @@ extern uint32_t psx_runtime_sxy_sat_bound;
  * render→gameplay channel (m_WasDrawn) stays 4:3-equivalent while
  * widescreen rendering still admits + emits edge mobys. */
 extern uint8_t psx_runtime_native_cone_pass;
+
+/* Companion to native_cone_pass for the DISTANCE half of the moby cull
+ * (the m_WasDrawn channel closure under --no-lod). The per-bucket walker
+ * box-cull compares |delta/4| against (m_Distance<<8)+bias; --no-lod
+ * saturates m_Distance so distant mobys pass and get m_WasDrawn=1, which
+ * leaks into gameplay AI / rand(). We replay the canonical box-cull at
+ * the six addu/subu comparison PCs (shaded path 0x80022B50/B58/B6C/B74/
+ * B84/B8C; analogous PCs in the regular/specular paths) using
+ * `mdist_thresh_delta` (= (saturated−canonical)·256, captured at the
+ * m_Distance lhu) to recover the canonical threshold, and clear
+ * native_dist_pass if the canonical cull would reject. The m_WasDrawn=1
+ * stores gate on (native_cone_pass && native_dist_pass). Identity when
+ * --no-lod is off (mdist_thresh_delta == 0). Reset to 1 at the
+ * iteration's m_WasDrawn clear (0x80022B28 etc.). */
+extern uint8_t psx_runtime_native_dist_pass;
+extern int32_t psx_runtime_mdist_thresh_delta;
 
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
@@ -346,6 +385,30 @@ extern uint32_t psx_runtime_polybuf_size;
  * redirected by the AllocateBuffers post-call hook, so it doesn't
  * need substitution. See core/features/widescreen.c. */
 extern uint32_t psx_runtime_polybuf_lower;
+
+/* Map a host-relocated poly-buffer address back to its canonical PSX
+ * vaddr, preserving the within-slot byte offset. Identity when the
+ * polybuf isn't relocated (4:3 default), so substituted sites stay
+ * byte-identical.
+ *
+ * The per-frame write cursor (D_800757B0 / db->m_PolyBuf) is redirected
+ * into the host-backed buffer for capacity. But gameplay-readable
+ * pointers the game DERIVES from that cursor must keep the value real
+ * hardware would hold — chiefly `g_HudMobys` (0x80075710, a hashed
+ * gameplay-state region) and its sibling `D_800756FC`. The recompiler
+ * wraps the stores at those derivation sites in this translator:
+ *   0x8001D760 / 0x8001D768 — func_8001D718 (Gamestate 11), the
+ *       `D_800756FC = g_HudMobys = D_800757B0 + 0x1BA00` reservation
+ *       (draw.c:2051/2054); offset 0x1BA00 is preserved by the map.
+ *   0x8001EDCC / 0x8001EDD4 — GamestateDraw frame-start reset
+ *       (draw.c:2666/2667). Here the value carries the *grown* end-cursor
+ *       size, so the substitution feeds `cursor_base = stored -
+ *       psx_runtime_polybuf_size` to this map and re-adds the canonical
+ *       0x1C000 slot stride.
+ * Implemented in core/features/widescreen.c; canonical bases captured by
+ * the AllocateBuffers post-call hook. See
+ * .claude/plans/openpete-polybuf-host-redirect.md. */
+uint32_t psx_runtime_polybuf_to_canon(uint32_t host_addr);
 
 /* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
  * games/spyro-1/game_extras_impl.c. Activated by env var

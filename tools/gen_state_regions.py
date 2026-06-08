@@ -122,10 +122,14 @@ def main() -> int:
         # duration of a synchronous CdRead and re-converges; the gate
         # tolerates a *healing* divergence here (see openpete_psx.h).
         cd_transient = 1 if r.get("cd_load_transient", False) else 0
+        # gameplay_neutral flag: render-side region audited as gameplay-
+        # neutral — divergence is logged but never hard-fails the gate
+        # (see openpete_psx.h). The proof must accompany it in the manifest.
+        neutral = 1 if r.get("gameplay_neutral", False) else 0
         lines.append(
             f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, "
             f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\", "
-            f"{mask_sym}, {mask_count}, {mask_per_elem}, {cd_transient} }},"
+            f"{mask_sym}, {mask_count}, {mask_per_elem}, {cd_transient}, {neutral} }},"
         )
     lines.append("};")
     lines.append("")

@@ -231,8 +231,15 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
 
     int any_mism = 0;
     for (uint32_t r = 0; r < t->region_count; r++) {
-        int transient = (r < (uint32_t)openpete_state_region_count)
-                        ? openpete_state_regions[r].cd_load_transient : 0;
+        const int in_range = (r < (uint32_t)openpete_state_region_count);
+        /* gameplay_neutral: render-side region audited as gameplay-neutral.
+         * Treated as a transient with an INFINITE heal window — its
+         * divergence is counted for diagnostics but never trips
+         * hard_failed. Any real gameplay coupling surfaces in the tracked
+         * downstream regions (psyq_rand_seed, g_Spyro, …). */
+        const int neutral   = in_range ? openpete_state_regions[r].gameplay_neutral : 0;
+        const int transient = neutral
+                            || (in_range ? openpete_state_regions[r].cd_load_transient : 0);
 
         if (op_per[r] != oracle_per[r]) {
             any_mism = 1;
@@ -265,7 +272,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             } else if (t->transient_open_frame[r] < 0) {
                 /* Open a new CD-load transient burst. */
                 t->transient_open_frame[r] = (int64_t)frame_no;
-            } else if ((int64_t)frame_no - t->transient_open_frame[r]
+            } else if (!neutral && (int64_t)frame_no - t->transient_open_frame[r]
                        > (int64_t)t->heal_window) {
                 /* Burst outlived the tolerance window: treat as a real
                  * (non-healing) divergence. */

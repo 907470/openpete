@@ -45,6 +45,15 @@ uint32_t psx_runtime_env_lp_queue_offset  = 0x2000u;
  * `lw $fp, 0x1C($ra)` sites in r_moby.s (PCs 0x8001FE9C, 0x80021674). */
 uint32_t psx_runtime_moby_lp_face_offset = 0x1Cu;
 
+/* Phase 8.5: regular/specular moby visible-queue head + limit offsets.
+ * Defaults match the canonical g_SonyImage layout (head 0x1600, limit
+ * 0x2200) so the substituted addi sites are identity when --no-lod off.
+ * --no-lod boot swings them into a relocated, grown host region (see
+ * MOBY_QUEUE_* below) so the cull loop never overflows its output queue
+ * and drops late-list canonical mobys. */
+uint32_t psx_runtime_moby_reg_queue_offset       = 0x1600u;
+uint32_t psx_runtime_moby_reg_queue_limit_offset = 0x2200u;
+
 /* Debug knob: when non-zero, force the env-renderer's
  * `g_SkipLowPolyWorld` read at PC 0x800261E0 to return 1, which makes
  * the env-renderer skip its LP-walk entirely (`bnez .L80026788`).
@@ -83,6 +92,23 @@ int psx_runtime_dbg_kill_env_lp_walk = 0;
 
 static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
 
+/* Phase 8.5: relocated + grown regular/specular moby visible-queue.
+ * Canonical capacity is ~54 entries (0x1600..0x2200, stride 0x38); under
+ * --no-lod the saturated cull admits far more mobys, overflowing it and
+ * early-exiting the cull loop. Grow to a fresh openpete-only region big
+ * enough that the queue can never overflow (0x10000 / 0x38 ≈ 1170
+ * entries — well above any level's live moby count). The queue head sits
+ * at the region base; the limit is region_base + size, so the producer's
+ * `(limit) - ($fp + 0x70) >= 0` check holds until the region is nearly
+ * full. The producer NULL-terminates and the consumer walks to NULL, so
+ * the grown region needs only to be zeroed once at setup. */
+#define MOBY_QUEUE_REGION_VADDR   0x80600000u
+#define MOBY_QUEUE_REGION_SIZE    0x10000u
+#define MOBY_REG_QUEUE_OFFSET       (MOBY_QUEUE_REGION_VADDR - G_SONY_IMAGE_VADDR)
+#define MOBY_REG_QUEUE_LIMIT_OFFSET (MOBY_QUEUE_REGION_VADDR - G_SONY_IMAGE_VADDR + MOBY_QUEUE_REGION_SIZE)
+
+static uint8_t s_moby_queue_region[MOBY_QUEUE_REGION_SIZE];
+
 /* === Setup hook =====================================================
  *
  * Called by core/features/no_lod.c's apply_options entry when
@@ -111,6 +137,23 @@ static int no_lod_setup(void) {
     psx_runtime_env_mid_queue_offset = NO_LOD_MID_QUEUE_OFFSET;
     psx_runtime_env_lp_queue_offset  = NO_LOD_LP_QUEUE_OFFSET;
     /* Leave psx_runtime_g_sony_image_base at canonical (0x8006FCF4). */
+
+    /* Phase 8.5: relocate + grow the regular/specular moby visible-queue
+     * so the cull loop never overflows and drops late-list canonical
+     * mobys (the @2468 g_MobyAllocPtr leak). The 0x80071xxx queue is
+     * audited render-side state, so this perturbs no gameplay-readable
+     * byte (gameplay_state_regions.toml:160). */
+    memset(s_moby_queue_region, 0, sizeof(s_moby_queue_region));
+    rc = psx_runtime_register_region(
+        MOBY_QUEUE_REGION_VADDR, MOBY_QUEUE_REGION_SIZE, s_moby_queue_region);
+    if (rc != 0) {
+        fprintf(stderr, "[no-lod] moby-queue register_region failed rc=%d "
+                "(base=0x%08X size=0x%X)\n", rc, MOBY_QUEUE_REGION_VADDR,
+                MOBY_QUEUE_REGION_SIZE);
+        return 1;
+    }
+    psx_runtime_moby_reg_queue_offset       = MOBY_REG_QUEUE_OFFSET;
+    psx_runtime_moby_reg_queue_limit_offset = MOBY_REG_QUEUE_LIMIT_OFFSET;
 
     /* Phase 4: redirect r_moby.s LP-face load to read m_Faces (HP). */
     psx_runtime_moby_lp_face_offset = 0x14u;

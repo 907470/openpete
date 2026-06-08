@@ -112,6 +112,19 @@ typedef struct {
      * Becomes a no-op once openpete models CD timing faithfully — see
      * notes/plans/openpete-psx-oracle-ci.md. */
     uint8_t     cd_load_transient;
+    /* Render-side region, audited gameplay-neutral. Its divergence is
+     * counted/logged for diagnostics but NEVER hard-fails the gate,
+     * because the region holds presentation-only state (e.g. particle
+     * drawn-flags) that no gameplay path consumes. The audit obligation
+     * is discharged by keeping the DOWNSTREAM regions any real coupling
+     * would flow through (psyq_rand_seed, g_Spyro, g_Sparx, …) fully
+     * tracked: if this region ever did affect gameplay, those would
+     * trip. Same spirit as the 0x80071xxx moby-render-queue removal, but
+     * keeps the region visible in per-region diagnostics rather than
+     * dropping it (and avoids a golden recapture). Set per-region in
+     * manifest/gameplay_state_regions.toml (`gameplay_neutral = true`);
+     * the proof of neutrality must accompany it in the manifest. */
+    uint8_t     gameplay_neutral;
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;

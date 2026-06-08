@@ -73,6 +73,21 @@ uint32_t psx_runtime_sxy_sat_bound = 0x400u;
  * iteration. */
 uint8_t psx_runtime_native_cone_pass = 0;
 
+/* Companion to native_cone_pass for the DISTANCE half of the moby cull.
+ * --no-lod saturates m_Distance (Phase 8) so distant mobys pass the
+ * box-cull and render; but the per-bucket walker also sets m_WasDrawn on
+ * them, and gameplay reads m_WasDrawn next frame to gate per-moby AI
+ * (including rand() calls) — so the saturated distance leaks into
+ * gameplay and cascades the RNG after the first level load. To close it
+ * we replay the CANONICAL (un-saturated) box-cull verdict here and gate
+ * m_WasDrawn on (native_cone_pass && native_dist_pass), exactly mirroring
+ * the cone-channel closure. `mdist_thresh_delta` = (saturated −
+ * canonical) m_Distance << 8, captured at the m_Distance lhu; it is 0
+ * when --no-lod is off or the moby wasn't saturated, making the gate an
+ * identity. Reset to 1 at each iteration's m_WasDrawn clear. */
+uint8_t psx_runtime_native_dist_pass = 1;
+int32_t psx_runtime_mdist_thresh_delta = 0;
+
 /* Per-iteration scratch flag for r_particles.s screen-cull. */
 uint8_t psx_runtime_native_part_pass = 0;
 
@@ -464,11 +479,42 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
 static int      s_polybuf_active   = 0;
 static uint32_t s_polybuf_psx_base = 0;   /* slot-0 vaddr inside region */
 static uint8_t* s_polybuf_host     = NULL;
+static uint32_t s_polybuf_canon_lo = 0;   /* canonical g_DB[0].m_PolyBuf */
+static uint32_t s_polybuf_canon_hi = 0;   /* canonical g_DB[1].m_PolyBuf */
 
 int      widescreen_polybuf_active(void)        { return s_polybuf_active; }
 uint32_t widescreen_polybuf_lower_vaddr(void)   { return s_polybuf_psx_base; }
 uint32_t widescreen_polybuf_higher_vaddr(void) {
     return s_polybuf_psx_base + psx_runtime_polybuf_size;
+}
+
+/* Record the canonical (un-relocated) per-slot poly-buffer base pointers
+ * AllocateBuffers computed, before the post-call hook overwrites
+ * g_DB[0/1].m_PolyBuf with the host-relocated ones. Needed so
+ * psx_runtime_polybuf_to_canon() can map a host-backed poly-buffer
+ * address back to the value real PSX hardware would hold. See the
+ * AllocateBuffers hook in games/spyro-1/game_extras_impl.c. */
+void widescreen_polybuf_set_canonical(uint32_t canon_lo, uint32_t canon_hi) {
+    s_polybuf_canon_lo = canon_lo;
+    s_polybuf_canon_hi = canon_hi;
+}
+
+/* Map a host-relocated poly-buffer address back to its canonical PSX
+ * vaddr, preserving the within-slot byte offset. The recompiler calls
+ * this at the sites where the game derives gameplay-readable pointers
+ * (g_HudMobys, D_800756FC) from the per-frame write cursor: those
+ * pointers must keep the value real hardware would hold even though the
+ * prim backing store is relocated to host memory for capacity (see
+ * notes/plans/openpete-polybuf-host-redirect.md). Identity when the
+ * polybuf isn't relocated (4:3 default) or the address falls outside the
+ * registered region, so substituted sites stay byte-identical. */
+uint32_t psx_runtime_polybuf_to_canon(uint32_t host_addr) {
+    if (!s_polybuf_active) return host_addr;
+    uint32_t size = psx_runtime_polybuf_size;
+    uint32_t off  = host_addr - s_polybuf_psx_base;
+    if (off < size)        return s_polybuf_canon_lo + off;          /* slot 0 */
+    if (off < size * 2u)   return s_polybuf_canon_hi + (off - size); /* slot 1 */
+    return host_addr;  /* outside the relocated region — leave as-is */
 }
 
 int widescreen_polybuf_setup(uint32_t size_per_slot, uint32_t psx_base) {

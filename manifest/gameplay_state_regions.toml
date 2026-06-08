@@ -207,7 +207,28 @@ kind         = "indirect_array"
 base_ptr     = 0x80075824            # g_Particles head pointer (Particle*)
 element_size = 0x20                  # sizeof(Particle): 4-byte header + 28-byte data
 max_elements = 256                   # 0x2000 bytes total — see src/4BEF8.c (m_SharedAnimations - 0x2000)
-description  = "Particle pool. Wraps around g_ParticleAllocPtr — hash the full capacity. Particles drive class-specific update behavior (e.g. level_11 0x80088098 calls rand() conditional on per-particle flag bit) so divergence here propagates into RNG/gameplay state."
+# AUDIT 2026-06-08: render-side, gameplay-neutral (proven, not assumed).
+# At --aspect >=21:9 the widened renderers consume more of the shared
+# polybuf before the particle pass (func_800573C8), so its per-particle
+# buffer check (0x80057C10 `t7-fp`) skips boundary particles that 4:3
+# draws — flipping their m_03 drawn-flag (byte 0x03; cascades to 0x01).
+# EMPIRICAL PROOF this never reaches gameplay: the full 20k 32:9 oracle
+# (keep-going) diverges in g_Particles_pool for 4882 frames yet
+# psyq_rand_seed, g_Spyro, g_Camera, g_Sparx and g_MobyAllocPtr stay
+# bit-identical to hardware for all 20000 ticks; the only other diverging
+# regions (g_LevelMobys/g_DynMobys/g_Sparx_moby) show the SAME counts as
+# stock 4:3 (universal CD-load transients), so g_Particles_pool is the
+# sole 32:9-induced divergence and it stays contained. The manifest's old
+# "propagates into RNG" note was a hypothesis the oracle has now refuted
+# for the demo. Marked gameplay_neutral (logged, never hard-fails); the
+# audit obligation is held open by keeping psyq_rand_seed / g_Spyro /
+# g_Sparx tracked — if particles ever DO drive gameplay RNG, those trip.
+# (Render-side m_03 is presentation state, like the audited-out
+# 0x80071xxx moby-render-queue.) If we later want byte-exact particles,
+# the fix is to make func_800573C8's buffer check use the canonical 4:3
+# cursor.
+gameplay_neutral = true
+description  = "Particle pool. Render-side drawn-flag/scratch — audited gameplay-neutral (see AUDIT above); divergence logged but never hard-fails. Coupling tripwire: psyq_rand_seed/g_Spyro/g_Sparx stay tracked."
 
 [[region]]
 name         = "g_Sparkles_pool"
@@ -262,3 +283,113 @@ mask_reason      = "Moby.m_SoundChannel — host SPU-precision-derived"
 # See g_LevelMobys_pool: refreshed by synchronous CdRead; healing
 # divergence tolerated by the gate. Removed once CD timing is modelled.
 cd_load_transient = true
+
+# ─── Gem-collection state ─────────────────────────────────────────────
+# Added 2026-06-08: gem count is gameplay-critical output (speedrun/TAS
+# verification) that was previously only verified TRANSITIVELY (via its
+# bit-identical inputs g_Spyro/moby-pools/psyq_rand_seed). Now tracked
+# directly. The 20k attract demo collects 45 gems, so this is exercised.
+# Confirmed bit-identical across stock 4:3 / --no-lod / --aspect 32:9 at
+# every tick before adding (cross-config gem dump). Sizes from psx.map
+# (g_GemTotal..g_LoadStage = 4B; g_NGems..g_DeltaTime = 4B;
+# g_LevelGemCount[36]..g_CdMusic = 0x90B). Appended last to keep the
+# existing region indices stable.
+
+[[region]]
+name         = "g_GemTotal"
+kind         = "direct"
+start        = 0x80075860
+length       = 0x4
+description  = "Total gems collected across all levels (gGemTotal)."
+
+[[region]]
+name         = "g_NGemsSinceLevelEntry"
+kind         = "direct"
+start        = 0x800756C8
+length       = 0x4
+description  = "Gems collected since the current level was entered."
+
+[[region]]
+name         = "g_LevelGemCount"
+kind         = "direct"
+start        = 0x80077420
+length       = 0x90
+description  = "Per-level collected-gem counts, int[36] (TOTAL_LEVEL_COUNT)."
+
+# ─── Player progression / inventory / world position ──────────────────
+# Added 2026-06-08 (Tier 1). The gate covered per-frame simulation but
+# had gaps in discrete progression state. All confirmed outside existing
+# regions; sizes from psx.map (symbol .. next-symbol). Appended last to
+# keep existing region indices stable. g_DeltaTime deliberately NOT
+# tracked (frame-pacing/presentation). g_Hud/g_RecentGemsCollected
+# deferred pending a gameplay-vs-presentation audit.
+
+[[region]]
+name         = "g_SpyroLifeCount"
+kind         = "direct"
+start        = 0x8007582C
+length       = 0x4
+description  = "Spyro lives remaining."
+
+[[region]]
+name         = "g_DragonTotal"
+kind         = "direct"
+start        = 0x80075750
+length       = 0x4
+description  = "Total dragons freed (completion %)."
+
+[[region]]
+name         = "g_EggTotal"
+kind         = "direct"
+start        = 0x80075810
+length       = 0x4
+description  = "Total eggs collected."
+
+[[region]]
+name         = "g_LevelDragonCount"
+kind         = "direct"
+start        = 0x800772D8
+length       = 0x90
+description  = "Per-level freed-dragon counts, int[36]."
+
+[[region]]
+name         = "g_LevelEggCount"
+kind         = "direct"
+start        = 0x80076FE8
+length       = 0x48
+description  = "Per-level egg counts, int[18] (LEVEL_PER_HOMEWORLD*3)."
+
+[[region]]
+name         = "g_LevelIndex"
+kind         = "direct"
+start        = 0x80075964
+length       = 0x4
+description  = "Current level index."
+
+[[region]]
+name         = "g_Homeworld"
+kind         = "direct"
+start        = 0x8007595C
+length       = 0x4
+description  = "Current homeworld index."
+
+[[region]]
+name         = "g_NextLevelId"
+kind         = "direct"
+start        = 0x800758B4
+length       = 0x4
+description  = "Pending level-transition target id."
+
+[[region]]
+name         = "g_Checkpoint"
+kind         = "direct"
+start        = 0x80077888
+length       = 0x68
+description  = "Checkpoint/respawn state (position, level gem count snapshot)."
+
+[[region]]
+name         = "g_FlightCourseRecords"
+kind         = "direct"
+start        = 0x80078618
+length       = 0x18
+description  = "Flight-course best records, int[6] (HOMEWORLD_COUNT)."

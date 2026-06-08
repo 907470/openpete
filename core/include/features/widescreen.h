@@ -63,6 +63,13 @@ int      widescreen_polybuf_active(void);
 uint32_t widescreen_polybuf_lower_vaddr(void);
 uint32_t widescreen_polybuf_higher_vaddr(void);
 
+/* Record the canonical (un-relocated) per-slot poly-buffer bases the
+ * game computed in AllocateBuffers, so psx_runtime_polybuf_to_canon()
+ * can map host-relocated derived pointers back to their hardware value.
+ * Called from the AllocateBuffers post-call hook before it overwrites
+ * g_DB[0/1].m_PolyBuf with the host-relocated bases. */
+void widescreen_polybuf_set_canonical(uint32_t canon_lo, uint32_t canon_hi);
+
 #ifdef __cplusplus
 }
 #endif

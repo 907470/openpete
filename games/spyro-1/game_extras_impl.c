@@ -938,6 +938,13 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         && !s_in_alloc_buffers) {
         s_in_alloc_buffers = 1;
         func_8005B6F8(cpu);
+        /* Capture the canonical per-slot poly-buffer bases AllocateBuffers
+         * just wrote, before we overwrite them with the host-relocated
+         * ones. psx_runtime_polybuf_to_canon() needs these to keep
+         * cursor-derived gameplay pointers (g_HudMobys, D_800756FC) at
+         * their hardware value. */
+        widescreen_polybuf_set_canonical(cpu->read_word(0x80076F50u),
+                                         cpu->read_word(0x80076FD4u));
         uint32_t lo = widescreen_polybuf_lower_vaddr();
         uint32_t hi = widescreen_polybuf_higher_vaddr();
         cpu->write_word(0x80076F50u, lo);  /* g_DB[0].m_PolyBuf           */

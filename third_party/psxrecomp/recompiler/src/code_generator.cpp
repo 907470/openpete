@@ -373,24 +373,26 @@ std::string CodeGenerator::translate_sb(uint32_t instr, uint32_t addr) {
     if (addr == 0x8001F1FCu || addr == 0x800209A8u || addr == 0x80022B28u) {
         if (offset == 0) {
             return fmt::format(
-                "psx_runtime_native_cone_pass = 1; cpu->write_byte({}, (uint8_t){});",
+                "psx_runtime_native_cone_pass = 1; psx_runtime_native_dist_pass = 1; cpu->write_byte({}, (uint8_t){});",
                 reg_name(rs), reg_name(rt));
         } else {
             return fmt::format(
-                "psx_runtime_native_cone_pass = 1; cpu->write_byte({} + {}, (uint8_t){});",
+                "psx_runtime_native_cone_pass = 1; psx_runtime_native_dist_pass = 1; cpu->write_byte({} + {}, (uint8_t){});",
                 reg_name(rs), offset, reg_name(rt));
         }
     }
 
-    /* m_WasDrawn=1 cull-pass write sites: gate on native cone pass. */
+    /* m_WasDrawn=1 cull-pass write sites: gate on the native cone AND
+     * native distance verdicts (the two halves of the canonical box-cull).
+     * native_dist_pass closes the --no-lod m_Distance-saturation leak. */
     if (addr == 0x8001F4CCu || addr == 0x80020C7Cu || addr == 0x80022D98u) {
         if (offset == 0) {
             return fmt::format(
-                "if (psx_runtime_native_cone_pass) cpu->write_byte({}, (uint8_t){});",
+                "if (psx_runtime_native_cone_pass && psx_runtime_native_dist_pass) cpu->write_byte({}, (uint8_t){});",
                 reg_name(rs), reg_name(rt));
         } else {
             return fmt::format(
-                "if (psx_runtime_native_cone_pass) cpu->write_byte({} + {}, (uint8_t){});",
+                "if (psx_runtime_native_cone_pass && psx_runtime_native_dist_pass) cpu->write_byte({} + {}, (uint8_t){});",
                 reg_name(rs), offset, reg_name(rt));
         }
     }
@@ -848,7 +850,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x19: code = translate_multu(instr); break;   // multu
             case 0x1A: code = translate_div(instr); break;     // div
             case 0x1B: code = translate_divu(instr); break;    // divu
-            case 0x20: code = translate_add(instr); break;     // add
+            case 0x20:                                          // add
+                /* m_WasDrawn distance-channel: shaded-path box-cull
+                 * lower-bound tests (a1 = delta/4 + threshold; cull if
+                 * <= 0). Replay with the canonical threshold (a0 minus
+                 * the saturated-vs-canonical delta) and clear
+                 * native_dist_pass if the 4:3 cull would reject. */
+                if (addr == 0x80022B50u || addr == 0x80022B6Cu || addr == 0x80022B84u   /* shaded */
+                 || addr == 0x8001F220u || addr == 0x8001F23Cu || addr == 0x8001F254u   /* regular */
+                 || addr == 0x800209CCu || addr == 0x800209E8u || addr == 0x80020A00u){ /* specular */
+                    code = translate_add(instr) +
+                        fmt::format(" if ((int32_t)({} - psx_runtime_mdist_thresh_delta) <= 0) psx_runtime_native_dist_pass = 0;",
+                                    reg_name(get_rd(instr)));
+                } else {
+                    code = translate_add(instr);
+                }
+                break;
             case 0x21: code = translate_addu(instr); break;    // addu
             case 0x22:                                          // sub
                 {
@@ -963,6 +980,36 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * at 0x800576EC computes the canonical OR over all
                      * 4 vertices unconditionally (see translate sll
                      * handler). */
+                    } else if (addr == 0x80022B58u || addr == 0x80022B74u   /* shaded */
+                            || addr == 0x80022B8Cu
+                            || addr == 0x8001F228u || addr == 0x8001F244u   /* regular */
+                            || addr == 0x8001F25Cu
+                            || addr == 0x800209D4u || addr == 0x800209F0u   /* specular */
+                            || addr == 0x80020A08u
+                            || addr == 0x80022BE4u   /* shaded   post-MVMVA proj-Z cull */
+                            || addr == 0x8001F2E8u   /* regular  post-MVMVA proj-Z cull */
+                            || addr == 0x80020A94u){ /* specular post-MVMVA proj-Z cull */
+                        /* m_WasDrawn distance-channel: box-cull upper-bound
+                         * tests (a1 = delta/4 - threshold; cull if >= 0).
+                         * Replay with the canonical threshold (a0 minus the
+                         * saturated-vs-canonical delta) and clear
+                         * native_dist_pass if the 4:3 cull rejects. Closes the
+                         * --no-lod m_Distance-saturation leak.
+                         *
+                         * The 0x80022BE4 / 0x8001F2E8 / 0x80020A94 trio are a
+                         * SECOND distance cull each path runs AFTER the cube
+                         * box-cull: post-MVMVA (gte cmd 0x12) it compares the
+                         * rotated projection coordinate `v1 = gte_data[27]`
+                         * against the SAME saturated threshold (`v1 - a0`/`v1
+                         * - t4`, cull if >= 0). fix #3 originally patched only
+                         * the cube box-cull, so under --no-lod the saturated
+                         * threshold widened this proj-Z cull too and admitted
+                         * a moby one tick early at the far boundary — the gem
+                         * then span (m_WasDrawn-gated) a tick early and leaked
+                         * into g_Sparkles. Same back-out closes it. */
+                        code = translate_sub(instr) +
+                            fmt::format(" if ((int32_t)({} + psx_runtime_mdist_thresh_delta) >= 0) psx_runtime_native_dist_pass = 0;",
+                                        reg_name(get_rd(instr)));
                     } else {
                         code = translate_sub(instr);
                     }
@@ -1056,6 +1103,35 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         code = fmt::format(
                             "{} = (int32_t){} + (int32_t)psx_runtime_env_lp_queue_offset;"
                             "  /* env LP-queue head */",
+                            reg_name(rt), reg_name(rs));
+                    } else if ((addr == 0x8001F19Cu && imm == 0x1600) ||
+                               (addr == 0x8001F7E4u && imm == 0x1600))
+                    {
+                        /* r_moby.s regular/specular moby visible-queue HEAD
+                         * (Phase 8.5). func_8001F158 producer 0x8001F19C
+                         * (`addi $fp,$at,0x1600`) and func_8001F798 consumer
+                         * 0x8001F7E4 (`addi $gp,$gp,0x1600`) both compute the
+                         * queue head = g_SonyImage base + 0x1600. --no-lod
+                         * swings the offset into a relocated grown host region
+                         * so the cull loop never overflows and drops late-list
+                         * canonical mobys (the @2468 g_MobyAllocPtr leak).
+                         * Identity at default (offset == 0x1600). PC-keyed
+                         * because `addi $r,$r,0x1600` recurs elsewhere. See
+                         * psx_runtime.h psx_runtime_moby_reg_queue_offset. */
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_moby_reg_queue_offset;"
+                            "  /* moby reg-queue head (Phase 8.5) */",
+                            reg_name(rt), reg_name(rs));
+                    } else if (addr == 0x8001F730u && imm == 0x2200) {
+                        /* r_moby.s regular moby visible-queue LIMIT (Phase
+                         * 8.5). func_8001F158 0x8001F730 (`addi $v0,$v0,0x2200`)
+                         * computes the queue-full bound = base + 0x2200; the
+                         * loop early-exits (terminates) when $fp+0x70 passes
+                         * it. --no-lod swings it to the grown host region end
+                         * so overflow never triggers. Identity at default. */
+                        code = fmt::format(
+                            "{} = (int32_t){} + (int32_t)psx_runtime_moby_reg_queue_limit_offset;"
+                            "  /* moby reg-queue limit (Phase 8.5) */",
                             reg_name(rt), reg_name(rs));
                     } else if (addr == 0x80026A34u && imm == 0x100) {
                         /* r_environment.s func_800258F0 per-vertex
@@ -1782,10 +1858,12 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                         int16_t off = get_imm16(instr);
                         code = fmt::format(
                             "{{ uint32_t _v = cpu->read_half({} + {}); "
-                            "if (openpete_no_lod && (_v & 0x7Fu) != 0u) "
-                            "_v = (_v & 0xFF80u) | 0x7Fu; "
+                            "if (openpete_no_lod && (_v & 0x7Fu) != 0u) {{ "
+                            "psx_runtime_mdist_thresh_delta = (int32_t)((0x7Fu - (_v & 0x7Fu)) << 8); "
+                            "_v = (_v & 0xFF80u) | 0x7Fu; }} "
+                            "else psx_runtime_mdist_thresh_delta = 0; "
                             "{} = _v; }}"
-                            "  /* m_Distance saturate (no-lod) */",
+                            "  /* m_Distance saturate + canon-dist delta (no-lod) */",
                             reg_name(rs), off, reg_name(rt));
                     } else if (addr == 0x8001F268u) {
                         /* transform-interp moby-queue push.
@@ -1822,7 +1900,55 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x28: code = translate_sb(instr, addr); break;     // sb
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
-            case 0x2B: code = translate_sw(instr); break;     // sw
+            case 0x2B:                                         // sw
+                {
+                    if (addr == 0x8001D760u || addr == 0x8001D768u) {
+                        /* Gamestate 11 (func_8001D718, draw.c:2051/2054):
+                         *   D_800756FC = g_HudMobys = D_800757B0 + 0x1BA00;
+                         * D_800757B0 is the per-frame write cursor, which is
+                         * redirected into the host-backed poly buffer when the
+                         * polybuf is relocated. g_HudMobys (0x80075710) is a
+                         * hashed gameplay-state pointer, so it must keep the
+                         * value real hardware holds. Map the stored host
+                         * address back to its canonical PSX vaddr (the 0x1BA00
+                         * within-slot offset is preserved by the translator).
+                         * This also repairs the `D_800756FC == m_HudOTStart`
+                         * predicate at draw.c:2049 — host vs canonical made it
+                         * always-false under relocation, silently breaking the
+                         * Gamestate-11 HUD. Identity at 4:3 default. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "cpu->write_word({} + {}, psx_runtime_polybuf_to_canon({}));"
+                            "  /* g_HudMobys/D_800756FC canonical (polybuf relocate) */",
+                            reg_name(rs), off, reg_name(rt));
+                    } else if (addr == 0x8001EDCCu || addr == 0x8001EDD4u) {
+                        /* GamestateDraw frame-start reset (draw.c:2666/2667):
+                         *   D_800756FC = g_HudMobys = D_800757B0 + 0x1C000;
+                         * The compiler reuses the end-cursor value
+                         * (D_800757B0 + size) for these stores. Under polybuf
+                         * relocation `size` is the *grown* host slot size
+                         * (psx_runtime_polybuf_size), which D_80075780 needs but
+                         * the HUD pointers must NOT inherit — the HUD-moby pool
+                         * stays one canonical 0x1C000 slot above the cursor, as
+                         * on hardware. So recover the cursor base (stored value
+                         * minus the grown size), map it back to canonical, and
+                         * re-add the canonical 0x1C000 slot stride. Identity at
+                         * 4:3 default (size == 0x1C000, translator is identity).
+                         * g_HudMobys (0x80075710) is hashed gameplay state. */
+                        uint32_t rs = get_rs(instr);
+                        uint32_t rt = get_rt(instr);
+                        int16_t off = get_imm16(instr);
+                        code = fmt::format(
+                            "cpu->write_word({} + {}, psx_runtime_polybuf_to_canon({} - psx_runtime_polybuf_size) + 0x1C000u);"
+                            "  /* g_HudMobys/D_800756FC canonical (polybuf relocate) */",
+                            reg_name(rs), off, reg_name(rt));
+                    } else {
+                        code = translate_sw(instr);
+                    }
+                }
+                break;
             case 0x2E: code = translate_swr(instr); break;    // swr
             case 0x32:                                         // LWC2 - load word to COP2
                 {
