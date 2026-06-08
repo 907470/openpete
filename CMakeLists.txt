@@ -149,11 +149,15 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
-    # PSX oracle gate — verify openpete RAM matches a PCSX-Redux baseline
-    # capture frame-for-frame. Skipped automatically if the baseline trace
-    # is missing (the asset is regenerated locally with
-    # scripts/pcsx-redux-trace.lua, see docs/ram-diff-vs-pcsxr.md). Phase 2
-    # of openpete-determinism-enforcement.md.
+    # PSX oracle gate — verify openpete gameplay-state RAM matches a
+    # DuckStation (real SCPH1001) baseline tick-for-tick over the 20k-tick
+    # attract-demo soak (4+ level loads + gameplay). The 3 CD-load pool
+    # regions are tolerated only while a load transient heals; every other
+    # region must match bit-exact (see check_psx_oracle.sh / the manifest's
+    # cd_load_transient flag). Skipped automatically if the baseline trace
+    # is missing (regenerate with scripts/capture_psx_oracle_ds.sh, see
+    # docs/duckstation-oracle.md). Phase 2 of
+    # openpete-determinism-enforcement.md + openpete-psx-oracle-ci.md.
     add_test(NAME psx_oracle_match
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_match PROPERTIES

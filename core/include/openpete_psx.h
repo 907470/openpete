@@ -101,7 +101,17 @@ typedef struct {
     const uint16_t* mask_offsets;
     uint16_t    mask_count;
     uint8_t     mask_per_element;
-    uint8_t     mask_pad;
+    /* CD-load transient region: its backing storage is refreshed by a
+     * synchronous psyq_CdRead while the oracle (real-hardware-timed CD)
+     * fills the same buffer gradually, so this region legitimately
+     * diverges for the duration of a load and then re-converges. The
+     * .psxtrace gate tolerates such a divergence ONLY if it heals within
+     * a bounded window (a permanent divergence here still fails); every
+     * other region must match bit-exact every tick. Set per-region in
+     * manifest/gameplay_state_regions.toml (`cd_load_transient = true`).
+     * Becomes a no-op once openpete models CD timing faithfully — see
+     * notes/plans/openpete-psx-oracle-ci.md. */
+    uint8_t     cd_load_transient;
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;

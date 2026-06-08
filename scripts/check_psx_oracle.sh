@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # scripts/check_psx_oracle.sh — run openpete --psxtrace-verify against a
-# PCSX-Redux baseline trace. The trace's per-frame oracle hashes (one per
-# gameplay-state region) are value-equality compared against openpete's
-# live hashes; first mismatch = first leak.
+# DuckStation (real SCPH1001 BIOS) baseline trace. The trace's per-tick
+# oracle hashes (one per gameplay-state region) are value-equality
+# compared against openpete's live hashes; first mismatch = first leak.
+#
+# The 3 CD-load pool regions (g_LevelMobys_pool / g_DynMobys_pool /
+# g_Sparx_moby) are flagged cd_load_transient in the manifest: they
+# legitimately diverge for the duration of a synchronous CdRead (openpete
+# drains instantly; the oracle is hardware-timed) and re-converge, so the
+# verifier tolerates a *healing* divergence there. A non-transient region
+# differing, or a transient that never re-converges, is a hard failure.
+# See notes/plans/openpete-psx-oracle-ci.md.
 #
 # Usage:
 #   scripts/check_psx_oracle.sh [trace-path]
 #
 # Defaults:
-#   trace-path: tests/golden/spyro-1/psxtrace-titlescreen-baseline.bin
+#   trace-path: tests/golden/spyro-1/psxtrace-demo-20k.bin (20k-tick
+#               attract-demo soak — 4+ level loads + gameplay)
 #   binary:     build/linux-release/games/spyro-1/openpete-spyro1
 #   disc:       env $OPENPETE_DISC or /home/$USER/code/spyro/spyro-1/build/SCUS-94228.cue
 #
@@ -31,14 +40,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TRACE="${1:-tests/golden/spyro-1/psxtrace-titlescreen-baseline.bin}"
+TRACE="${1:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
 BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-/home/$USER/code/spyro/spyro-1/build/SCUS-94228.cue}"
 
 if [[ ! -f "$TRACE" ]]; then
     echo "[psx-oracle] trace not found: $TRACE" >&2
-    echo "[psx-oracle] regenerate with scripts/pcsx-redux-trace.lua, see"   >&2
-    echo "             docs/ram-diff-vs-pcsxr.md for the workflow."         >&2
+    echo "[psx-oracle] regenerate with scripts/capture_psx_oracle_ds.sh "   >&2
+    echo "             --out $TRACE --frames 20000 (see docs/duckstation-oracle.md)" >&2
     exit 64
 fi
 if [[ ! -x "$BIN" ]]; then
@@ -66,7 +75,9 @@ BK2="${TRACE}.bk2"
 [[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$BK2") && \
     echo "[psx-oracle] bk2:      $BK2"
 
-LIMIT="${OPENPETE_FRAME_LIMIT:-8000}"
+# Safety belt only — psxtrace-eof exits first. The 20k-tick demo reaches
+# EOF at ~37k openpete frames, so the default must clear that comfortably.
+LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
 
 set +e
 "$BIN" --headless \

@@ -228,6 +228,11 @@ description       = "Static-level moby array, indexed via *g_LevelMobys."
 # repeats every element_size bytes throughout the live extent.
 mask_per_element  = [0x54]
 mask_reason       = "Moby.m_SoundChannel — host SPU-precision-derived"
+# Refreshed in-place by synchronous psyq_CdRead (level/streaming loads).
+# Diverges for the load's duration vs the hardware-timed oracle, then
+# re-converges — the gate tolerates a *healing* divergence here. See
+# notes/plans/openpete-psx-oracle-ci.md. Removed once CD timing is modelled.
+cd_load_transient = true
 
 [[region]]
 name             = "g_DynMobys_pool"
@@ -241,6 +246,9 @@ description      = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element st
 # at +0x18 within the 0x70-byte slot, so per-element offset is 0x6C.
 mask_per_element = [0x6C]
 mask_reason      = "Moby.m_SoundChannel (Moby starts at +0x18 in 0x70 stride)"
+# See g_LevelMobys_pool: refreshed by synchronous CdRead; healing
+# divergence tolerated by the gate. Removed once CD timing is modelled.
+cd_load_transient = true
 
 [[region]]
 name         = "g_Sparx_moby"
@@ -251,3 +259,6 @@ max_elements = 1
 description  = "Sparx companion: single Moby behind *g_Sparx."
 mask_per_element = [0x54]
 mask_reason      = "Moby.m_SoundChannel — host SPU-precision-derived"
+# See g_LevelMobys_pool: refreshed by synchronous CdRead; healing
+# divergence tolerated by the gate. Removed once CD timing is modelled.
+cd_load_transient = true

@@ -45,12 +45,34 @@ typedef struct {
     char region_names[OPENPETE_PSXTRACE_MAX_REGIONS]
                      [OPENPETE_PSXTRACE_REGION_NAME_MAX];
 
-    /* Latched on first divergence. */
+    /* Latched on first divergence of ANY kind (incl. tolerated CD-load
+     * transients). Kept for diagnostics / the per-region count summary. */
     int      diverged;
     uint32_t first_divergent_frame;
     int32_t  first_divergent_region;     /* -1 = total-only mismatch */
     uint64_t first_divergent_oracle;
     uint64_t first_divergent_op;
+
+    /* The gate verdict. Set when a region that is NOT cd_load_transient
+     * diverges, OR a cd_load_transient region diverges and fails to
+     * re-converge within `heal_window` ticks (or is still diverging at
+     * EOF). This — not `diverged` — drives the process exit code and the
+     * non-keep-going early abort. A run whose only divergences are
+     * healing CD-load transients leaves hard_failed == 0. */
+    int      hard_failed;
+    uint32_t hard_fail_frame;
+    int32_t  hard_fail_region;           /* -1 = none latched */
+    uint64_t hard_fail_oracle;
+    uint64_t hard_fail_op;
+    const char* hard_fail_reason;        /* "non-transient" | "unhealed" */
+
+    /* Per-region CD-load-transient heal tracking. transient_open_frame[r]
+     * is the tick at which the current unhealed transient burst in region
+     * r began, or -1 if r is currently matching. Tolerance window in
+     * ticks (default 600, env OPENPETE_PSXTRACE_HEAL_WINDOW). */
+    int64_t  transient_open_frame[OPENPETE_PSXTRACE_MAX_REGIONS];
+    uint64_t transient_healed_bursts;    /* count of absorbed (healed) bursts */
+    uint32_t heal_window;
 
     /* Counts since open. */
     uint64_t frames_compared;
@@ -78,6 +100,11 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);
  *   -1 - parse/IO error
  */
 int openpete_psxtrace_advance(openpete_psxtrace_t* t);
+
+/* Call once after the last advance() (EOF). Any cd_load_transient region
+ * still mid-burst (never re-converged before the trace ended) is promoted
+ * to a hard failure. Also logs a one-line tally of absorbed transients. */
+void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
 void openpete_psxtrace_close(openpete_psxtrace_t* t);
 

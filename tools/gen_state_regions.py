@@ -118,10 +118,14 @@ def main() -> int:
             mask_sym = "NULL"
             mask_count = 0
             mask_per_elem = 0
+        # CD-load-transient flag: region legitimately diverges for the
+        # duration of a synchronous CdRead and re-converges; the gate
+        # tolerates a *healing* divergence here (see openpete_psx.h).
+        cd_transient = 1 if r.get("cd_load_transient", False) else 0
         lines.append(
             f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, "
             f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\", "
-            f"{mask_sym}, {mask_count}, {mask_per_elem}, 0 }},"
+            f"{mask_sym}, {mask_count}, {mask_per_elem}, {cd_transient} }},"
         )
     lines.append("};")
     lines.append("")

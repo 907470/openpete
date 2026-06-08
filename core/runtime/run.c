@@ -62,13 +62,16 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
     /* EOF (1) and error (3) are terminal — stop advancing. Divergence (2)
      * is sticky for the host loop's exit-decision but the verifier keeps
      * comparing every subsequent frame so --psxtrace-keep-going can
-     * surface ALL leaks across the trace, not just the first. */
+     * surface ALL leaks across the trace, not just the first. Only a HARD
+     * failure (non-transient mismatch, or a CD-load transient that didn't
+     * heal in the window) trips status 2 — a healing CD-load transient
+     * leaves hard_failed clear so the run continues to EOF. */
     if (s_psxtrace_active->terminal_status == 1 ||
         s_psxtrace_active->terminal_status == 3) return;
     int rc = openpete_psxtrace_advance(s_psxtrace_active);
     if (rc < 0)      s_psxtrace_active->terminal_status = 3;
     else if (rc == 0) s_psxtrace_active->terminal_status = 1;
-    else if (s_psxtrace_active->diverged &&
+    else if (s_psxtrace_active->hard_failed &&
              s_psxtrace_active->terminal_status == 0) {
         s_psxtrace_active->terminal_status = 2;
     }
@@ -1646,17 +1649,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 quit = 1; exit_reason = "psxtrace-eof"; break;
             case 2:
                 if (!opts->psxtrace_keep_going) {
-                    int32_t r = psxtrace->first_divergent_region;
+                    int32_t r = psxtrace->hard_fail_region;
                     const char* rname = (r >= 0 &&
                         r < (int32_t)psxtrace->region_count)
                         ? psxtrace->region_names[r] : "<total>";
                     OPL_ERROR_F("psxtrace",
-                                "DIVERGED at frame=%u region=%d (%s) "
+                                "DIVERGED (%s) at frame=%u region=%d (%s) "
                                 "op=0x%016llx oracle=0x%016llx (record %u)",
-                                psxtrace->first_divergent_frame,
+                                psxtrace->hard_fail_reason
+                                    ? psxtrace->hard_fail_reason : "?",
+                                psxtrace->hard_fail_frame,
                                 (int)r, rname,
-                                (unsigned long long)psxtrace->first_divergent_op,
-                                (unsigned long long)psxtrace->first_divergent_oracle,
+                                (unsigned long long)psxtrace->hard_fail_op,
+                                (unsigned long long)psxtrace->hard_fail_oracle,
                                 psxtrace->records_consumed);
                     quit = 1; exit_reason = "psxtrace-divergence";
                 }
@@ -1850,7 +1855,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 }
             }
         }
-        if (psxtrace->diverged && exit_code == OPENPETE_EXIT_OK) {
+        /* Promote any EOF-pending CD-load transient to a hard failure and
+         * log the PASS/FAIL verdict + absorbed-transient tally. */
+        openpete_psxtrace_finalize(psxtrace);
+        if (psxtrace->hard_failed && exit_code == OPENPETE_EXIT_OK) {
             exit_code = OPENPETE_EXIT_DIVERGENCE;
         }
         openpete_psxtrace_close(psxtrace);
