@@ -72,10 +72,12 @@ struct GeneratedFunction {
 // .claude/plans/openpete-generic-hook-anchor-refactor.md (step 1).
 struct ChannelSite {
     enum Kind {
-        OffsetAdd,   // emit `rt = rs + <symbol>` for an addi at this PC+imm
+        OffsetAdd,   // addi: emit `rt = rs + <symbol>` at this PC+imm
+        ConstLoad,   // lui:  emit `rt = <symbol>` at this PC+imm (replaces a
+                     //       hardcoded constant load with a runtime knob)
     };
     Kind        kind;
-    int32_t     imm;     // immediate the addi must carry (disambiguates a PC
+    int32_t     imm;     // immediate the opcode must carry (disambiguates a PC
                          // whose opcode immediate is reused; -0x10000 = any)
     std::string symbol;  // C knob/verdict symbol emitted verbatim into the
                          // generated code (resolved at the generated TU's

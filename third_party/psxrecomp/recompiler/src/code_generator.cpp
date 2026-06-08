@@ -1329,37 +1329,29 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             }
                         }
                     }
-                    if (imm == 0x0200u && (
-                        addr == 0x8004ED8Cu ||  // r_cyclorama.s lui $t7
-                        addr == 0x8004F1A8u ||  // r_cyclorama.s lui $t7 (2nd)
-                        addr == 0x8001F9F4u ||  // r_moby.s lui $t9 (1st)
-                        addr == 0x80021190u ||  // r_moby.s lui $t9 (2nd)
-                        addr == 0x80022FF8u ||  // r_moby.s lui $s0 (3rd)
-                        addr == 0x800574BCu ||  // r_particles.s lui $s6
-                        /* r_environment.s — second per-vertex SX cull paths
-                         * (signed 11-bit right-edge threshold = 512). One
-                         * threshold per cell-render LOD path. */
-                        addr == 0x8002626Cu ||
-                        addr == 0x8002652Cu ||
-                        addr == 0x800266E0u ||
-                        addr == 0x8002684Cu ||
-                        addr == 0x80027924u ||
-                        addr == 0x80027A60u ||
-                        addr == 0x80028074u ||
-                        addr == 0x8002817Cu ||
-                        addr == 0x80028A40u ||
-                        addr == 0x80028C50u ||
-                        addr == 0x8002982Cu ||
-                        addr == 0x800299ACu ||
-                        addr == 0x8002A2F4u ||
-                        addr == 0x8002A4C0u))
+                    /* Per-vertex right-edge SX clip thresholds (`lui $tN,
+                     * 0x200` == 512<<16) across the cyclorama / moby /
+                     * particle / environment renderers. Their addresses + knob
+                     * live in manifest/render_channels.toml (channel
+                     * widescreen_clip_x_threshold), loaded via --channel-sites
+                     * — NOT hardcoded here. The ConstLoad kind emits
+                     * `rt = <knob>`, replacing the hardcoded constant with a
+                     * runtime-tunable threshold; identity at default knob
+                     * (0x02000000 == 512<<16). PC+imm keyed because
+                     * `lui $X, 0x200` recurs in unrelated contexts (color
+                     * packets, pointer math) that must NOT be widened. */
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::ConstLoad
+                        && (int32_t)imm == _cs->second.imm)
                     {
                         if (config_.optimize_zero_reg && rt == 0) {
                             code = "/* nop: write to $zero */";
                         } else {
                             code = fmt::format(
-                                "{} = psx_runtime_clip_x_threshold;",
-                                reg_name(rt));
+                                "{} = {};  /* channel const_load: {} */",
+                                reg_name(rt), _cs->second.symbol,
+                                _cs->second.symbol);
                         }
                     } else {
                         code = translate_lui(instr);

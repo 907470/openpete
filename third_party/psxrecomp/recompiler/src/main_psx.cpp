@@ -125,6 +125,8 @@ static bool parse_channel_sites(const std::string& path,
         PSXRecomp::ChannelSite site;
         if (kind == "offset_add") {
             site.kind = PSXRecomp::ChannelSite::OffsetAdd;
+        } else if (kind == "const_load") {
+            site.kind = PSXRecomp::ChannelSite::ConstLoad;
         } else {
             err = fmt::format("{}:{}: unknown channel-site kind '{}'",
                               path, lineno, kind);

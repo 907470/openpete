@@ -81,14 +81,31 @@ via `lui $r, 0x200` across the cyclorama / moby / particle /
 environment renderers. Substituted with psx_runtime_clip_x_threshold
 so widescreen widens the clip without altering native PSX
 behavior — default 0x02000000 == byte-identical 4:3."""
+# GENERATED sites (kind=const_load): the recompiler emits `rt = knob`
+# (replacing the hardcoded `lui $rt, 0x200`) from this table via
+# --channel-sites; no addresses hardcoded in code_generator.cpp. imm=0x0200
+# is the lui immediate (512<<16 threshold) the site must carry.
 substitution_sites = [
-    0x8004ED8C, 0x8004F1A8,                          # r_cyclorama.s
-    0x8001F9F4, 0x80021190, 0x80022FF8,              # r_moby.s
-    0x800574BC,                                      # r_particles.s
-    0x8002626C, 0x8002652C, 0x800266E0, 0x8002684C,  # r_environment.s
-    0x80027924, 0x80027A60, 0x80028074, 0x8002817C,
-    0x80028A40, 0x80028C50, 0x8002982C, 0x800299AC,
-    0x8002A2F4, 0x8002A4C0,
+    { addr = 0x8004ED8C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_cyclorama.s lui $t7
+    { addr = 0x8004F1A8, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_cyclorama.s lui $t7 (2nd)
+    { addr = 0x8001F9F4, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $t9 (1st)
+    { addr = 0x80021190, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $t9 (2nd)
+    { addr = 0x80022FF8, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $s0 (3rd)
+    { addr = 0x800574BC, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_particles.s lui $s6
+    { addr = 0x8002626C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_environment.s
+    { addr = 0x8002652C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x800266E0, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x8002684C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x80027924, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x80027A60, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x80028074, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x8002817C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x80028A40, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x80028C50, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x8002982C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x800299AC, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x8002A2F4, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
+    { addr = 0x8002A4C0, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
 ]
 verdict_fn       = "psx_runtime_clip_x_threshold"
 verified_against = ["aspect_determinism"]

@@ -32,7 +32,8 @@ except ImportError:
 
 # kind -> required keys (beyond addr/kind) for that emission shape.
 KIND_KEYS = {
-    "offset_add": ("imm", "knob"),
+    "offset_add": ("imm", "knob"),  # addi: rt = rs + knob
+    "const_load": ("imm", "knob"),  # lui:  rt = knob
 }
 
 
@@ -82,9 +83,9 @@ def main() -> int:
                       f"(channels {seen[addr]!r} and {name!r})", file=sys.stderr)
                 return 1
             seen[addr] = name
-            if kind == "offset_add":
+            if kind in ("offset_add", "const_load"):
                 lines.append(
-                    f"offset_add 0x{addr:08X} 0x{coerce_int(s['imm']):X} "
+                    f"{kind} 0x{addr:08X} 0x{coerce_int(s['imm']):X} "
                     f"{s['knob']}")
                 n += 1
 
