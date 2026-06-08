@@ -469,15 +469,14 @@ See notes/plans/openpete-polybuf-host-redirect.md.
 
 Render-side only; no gameplay-readable RAM is touched (the bytes
 written to the polybuf are P_TAGs that DrawOTag consumes)."""
+# GENERATED (const_load): `ori $X,$X,0xC000` end-cursor sites compose the
+# 0x1C000 slot size -> emitted as `rt = psx_runtime_polybuf_size`.
+# (AllocateBuffers ori-0x4000 negation was deliberately NOT substituted — it
+# shifted m_LowerPolyBuffer into CdRead level-data; canonical layout stays.)
 substitution_sites = [
-    0x8001A608,  # func_8001A40C, draw.c:947 path:   ori $a0, $a0, 0xC000
-    0x8001C6AC,  # func_8001C694, draw.c:1561 path:  ori $v1, $v1, 0xC000
-    0x8001ED90,  # func_8001ED5C, GamestateDraw:     ori $a1, $a1, 0xC000
-    # AllocateBuffers (0x8005B73C, ori 0x4000 negated) was originally substituted
-    # to widen canonical layout, but that pulled m_LowerPolyBuffer down by
-    # (size-0x1C000)*2 bytes — far enough in 21:9+ to land inside CdRead level-
-    # data destinations (e.g. 0x8016313C at level_10), corrupting gameplay
-    # state. Keep canonical 0x1C000 layout; widen only host-side end-cursor.
+    { addr = 0x8001A608, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # draw.c:947 pause-resume
+    { addr = 0x8001C6AC, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # draw.c:1561 Gamestate-10 entry
+    { addr = 0x8001ED90, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # GamestateDraw bracket
 ]
 verdict_fn       = "psx_runtime_polybuf_size"
 verified_against = ["aspect_determinism"]
@@ -512,9 +511,11 @@ Default sentinel 0u = byte-identical 4:3 (LW falls through). Set by
 widescreen_polybuf_setup() to the host region base.
 
 Render-side only; no gameplay-readable RAM is touched."""
+# GENERATED (replace_call): rt = psx_runtime_polybuf_lower_load(cpu, ea) —
+# load then return the host-backed base when relocated (knob != 0), in widescreen.c.
 substitution_sites = [
-    0x8001A618,  # func_8001A40C, draw.c:946: lw $v1, m_LowerPolyBuffer
-    0x8001C6A0,  # func_8001C694, draw.c:1559: lw $v0, m_LowerPolyBuffer
+    { addr = 0x8001A618, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_polybuf_lower_load" },  # draw.c:946 pause-resume
+    { addr = 0x8001C6A0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_polybuf_lower_load" },  # draw.c:1559 Gamestate-10 entry
 ]
 verdict_fn       = "psx_runtime_polybuf_lower"
 verified_against = ["aspect_determinism"]
@@ -1335,9 +1336,14 @@ widescreen_polybuf_size / widescreen_polybuf_lower (which redirect the
 cursor itself); this channel keeps the DERIVED gameplay pointer canonical —
 the exact invariant the hook-anchor plan calls out ("redirect the access,
 never change the pointer value the game stores")."""
+# GENERATED (void replace_call): map the host cursor back to canonical before
+# storing g_HudMobys. Two hooks (the reset pair recovers the cursor base from
+# the grown end-cursor). Math now in core/features/widescreen.c.
 substitution_sites = [
-    0x8001D760, 0x8001D768,  # func_8001D718 Gamestate-11 HUD ptr (+0x1BA00)
-    0x8001EDCC, 0x8001EDD4,  # GamestateDraw frame-start reset (+grown size)
+    { addr = 0x8001D760, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_store" },  # Gamestate-11 HUD ptr
+    { addr = 0x8001D768, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_store" },  # Gamestate-11 HUD ptr
+    { addr = 0x8001EDCC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
+    { addr = 0x8001EDD4, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
 ]
 verdict_fn       = "psx_runtime_polybuf_to_canon"
 verified_against = ["aspect_determinism", "psx_oracle_match"]

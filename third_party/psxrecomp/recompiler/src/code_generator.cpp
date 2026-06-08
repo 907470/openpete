@@ -1109,36 +1109,27 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x0C: code = translate_andi(instr); break;   // andi
             case 0x0D:                                         // ori
                 {
-                    /* Spyro polybuf slot size (0x1C000) appears at four
-                     * specific PCs as `ori $X, $X, 0xC000` (after a
-                     * preceding `lui $X, 0x1`) producing the positive
-                     * constant, or as `ori $X, $X, 0x4000` (after
-                     * `lui $X, 0xFFFE`) producing the two's-complement
-                     * negation `-0x1C000` used by AllocateBuffers.
-                     * Substitute with psx_runtime_polybuf_size so
-                     * widescreen builds can grow the relocated buffer
-                     * without re-recompiling. Default 0x1C000 = native
-                     * 4:3 byte-identical. See psx_runtime.h. */
+                    /* Polybuf slot-size end-cursor sites: `ori $X,$X,0xC000`
+                     * composing the 0x1C000 slot size → ConstLoad emitting
+                     * `rt = psx_runtime_polybuf_size` (channel
+                     * widescreen_polybuf_size), so widescreen can grow the
+                     * relocated buffer. Addresses + knob in the manifest via
+                     * --channel-sites; identity at default size (0x1C000). */
                     uint32_t rt = get_rt(instr);
                     uint16_t imm = get_imm16_u(instr);
-                    if (imm == 0xC000u && (
-                        addr == 0x8001A608u ||  /* func_8001A40C, draw.c:947 */
-                        addr == 0x8001C6ACu ||  /* func_8001C694, draw.c:1561 */
-                        addr == 0x8001ED90u))   /* func_8001ED5C, GamestateDraw */
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::ConstLoad
+                        && (int32_t)imm == _cs->second.imm)
                     {
-                        /* End-cursor sites only. The companion AllocateBuffers
-                         * substitution (0x8005B73C) was REMOVED — widening the
-                         * canonical layout via that site shifts m_LowerPolyBuffer
-                         * down by (size-0x1C000)*2 bytes, pulling the canonical
-                         * polybuf range into the area where the level loader's
-                         * CdRead destinations land (e.g. 0x8016313C in level_10).
-                         * Keep canonical 0x1C000 layout intact; widen only the
-                         * end-cursor in the host-redirected buffer. The cursor
-                         * BASE comes from psx_runtime_polybuf_lower at the LW
-                         * substitution sites, so D_80075780 = host_lower + size. */
-                        code = fmt::format(
-                            "{} = psx_runtime_polybuf_size;",
-                            reg_name(rt));
+                        if (config_.optimize_zero_reg && rt == 0) {
+                            code = "/* nop: write to $zero */";
+                        } else {
+                            code = fmt::format(
+                                "{} = {};  /* channel const_load: {} */",
+                                reg_name(rt), _cs->second.symbol,
+                                _cs->second.symbol);
+                        }
                     } else {
                         code = translate_ori(instr);
                     }
@@ -1509,19 +1500,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                                  + emit_channel_append_call(_cs->second, instr);
                         else
                             code = emit_channel_replace_call(_cs->second, instr);
-                    } else if (addr == 0x8001A618u || addr == 0x8001C6A0u) {
-                        /* m_LowerPolyBuffer cursor-reset reads. When
-                         * psx_runtime_polybuf_lower is non-zero (widescreen
-                         * polybuf relocated to a host-backed region), redirect
-                         * the loaded pointer so D_800757B0 = host_lower and
-                         * D_80075780 = host_lower + polybuf_size land in the
-                         * relocated buffer. Default 0 sentinel falls through
-                         * to the canonical LW for byte-identical 4:3.
-                         * See psx_runtime.h. */
-                        uint32_t rt = get_rt(instr);
-                        code = fmt::format(
-                            "{} if (psx_runtime_polybuf_lower != 0u) {{ {} = psx_runtime_polybuf_lower; }}",
-                            translate_lw(instr), reg_name(rt));
                     } else {
                         code = translate_lw(instr);
                     }
@@ -1591,52 +1569,18 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw
-                {
-                    if (addr == 0x8001D760u || addr == 0x8001D768u) {
-                        /* Gamestate 11 (func_8001D718, draw.c:2051/2054):
-                         *   D_800756FC = g_HudMobys = D_800757B0 + 0x1BA00;
-                         * D_800757B0 is the per-frame write cursor, which is
-                         * redirected into the host-backed poly buffer when the
-                         * polybuf is relocated. g_HudMobys (0x80075710) is a
-                         * hashed gameplay-state pointer, so it must keep the
-                         * value real hardware holds. Map the stored host
-                         * address back to its canonical PSX vaddr (the 0x1BA00
-                         * within-slot offset is preserved by the translator).
-                         * This also repairs the `D_800756FC == m_HudOTStart`
-                         * predicate at draw.c:2049 — host vs canonical made it
-                         * always-false under relocation, silently breaking the
-                         * Gamestate-11 HUD. Identity at 4:3 default. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "cpu->write_word({} + {}, psx_runtime_polybuf_to_canon({}));"
-                            "  /* g_HudMobys/D_800756FC canonical (polybuf relocate) */",
-                            reg_name(rs), off, reg_name(rt));
-                    } else if (addr == 0x8001EDCCu || addr == 0x8001EDD4u) {
-                        /* GamestateDraw frame-start reset (draw.c:2666/2667):
-                         *   D_800756FC = g_HudMobys = D_800757B0 + 0x1C000;
-                         * The compiler reuses the end-cursor value
-                         * (D_800757B0 + size) for these stores. Under polybuf
-                         * relocation `size` is the *grown* host slot size
-                         * (psx_runtime_polybuf_size), which D_80075780 needs but
-                         * the HUD pointers must NOT inherit — the HUD-moby pool
-                         * stays one canonical 0x1C000 slot above the cursor, as
-                         * on hardware. So recover the cursor base (stored value
-                         * minus the grown size), map it back to canonical, and
-                         * re-add the canonical 0x1C000 slot stride. Identity at
-                         * 4:3 default (size == 0x1C000, translator is identity).
-                         * g_HudMobys (0x80075710) is hashed gameplay state. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        int16_t off = get_imm16(instr);
-                        code = fmt::format(
-                            "cpu->write_word({} + {}, psx_runtime_polybuf_to_canon({} - psx_runtime_polybuf_size) + 0x1C000u);"
-                            "  /* g_HudMobys/D_800756FC canonical (polybuf relocate) */",
-                            reg_name(rs), off, reg_name(rt));
-                    } else {
-                        code = translate_sw(instr);
-                    }
+                /* g_HudMobys canonicalization (channel polybuf_hudmoby_canonical):
+                 * void ReplaceCall stores that map the host-relocated polybuf
+                 * cursor back to the canonical PSX vaddr before writing the
+                 * gameplay-readable g_HudMobys pointer. Two hooks
+                 * (hudmoby_store / hudmoby_reset_store) in widescreen.c; addresses
+                 * in the manifest. Identity at 4:3 default. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::ReplaceCall) {
+                    code = emit_channel_replace_call(_cs->second, instr);
+                } else {
+                    code = translate_sw(instr);
                 }
                 break;
             case 0x2E: code = translate_swr(instr); break;    // swr

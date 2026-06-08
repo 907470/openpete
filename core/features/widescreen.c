@@ -220,6 +220,31 @@ void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val) {
         cpu->write_byte(addr, (uint8_t)val);
 }
 
+/* === Polybuf host-redirect hooks (moved out of the recompiler) ======== */
+
+/* m_LowerPolyBuffer cursor-reset read: return the host-backed polybuf base
+ * when relocated (knob != 0), else the canonical load. Identity at default. */
+uint32_t psx_runtime_polybuf_lower_load(CPUState* cpu, uint32_t addr) {
+    uint32_t v = cpu->read_word(addr);
+    return psx_runtime_polybuf_lower != 0u ? psx_runtime_polybuf_lower : v;
+}
+/* g_HudMobys store (Gamestate-11): map the stored host cursor back to its
+ * canonical PSX vaddr so the gameplay-readable HUD-moby pointer matches
+ * hardware. Identity at 4:3 (polybuf_to_canon is the identity map). */
+void psx_runtime_polybuf_hudmoby_store(CPUState* cpu, uint32_t addr,
+                                       uint32_t val) {
+    cpu->write_word(addr, psx_runtime_polybuf_to_canon(val));
+}
+/* g_HudMobys store (GamestateDraw frame reset): the compiler reuses the
+ * grown end-cursor (cursor + grown size); recover the cursor base, map to
+ * canonical, then re-add the canonical 0x1C000 slot stride so the HUD pool
+ * stays one canonical slot above the cursor as on hardware. */
+void psx_runtime_polybuf_hudmoby_reset_store(CPUState* cpu, uint32_t addr,
+                                             uint32_t val) {
+    cpu->write_word(addr,
+        psx_runtime_polybuf_to_canon(val - psx_runtime_polybuf_size) + 0x1C000u);
+}
+
 /* Debug LP-kill + world-geo strip tag hybrid (the 7th strip-list loop head,
  * co-owned with world_geo_strip_tag): force the loaded value
  * to 0 when the LP-kill knob is set (exits the loop), else read normally;

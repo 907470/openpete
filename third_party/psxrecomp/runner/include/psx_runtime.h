@@ -321,6 +321,11 @@ void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t va
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
+/* Polybuf host-redirect hooks (defined in core/features/widescreen.c). */
+uint32_t psx_runtime_polybuf_lower_load(CPUState* cpu, uint32_t addr);
+void psx_runtime_polybuf_hudmoby_store(CPUState* cpu, uint32_t addr, uint32_t val);
+void psx_runtime_polybuf_hudmoby_reset_store(CPUState* cpu, uint32_t addr, uint32_t val);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each
