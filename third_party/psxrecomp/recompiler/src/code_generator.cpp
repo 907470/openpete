@@ -1020,23 +1020,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x24: code = translate_and(instr); break;     // and
             case 0x25: code = translate_or(instr); break;      // or
             case 0x26:                                          // xor
-                if (addr == 0x80026238u) {
-                    /* §7.5-R3 dominant-terrain world-geo tag hook.
-                     * r_environment.s func_800258F0 `.L80026228`:
-                     *   0x80026228 lw  $t7,0($ra)  ; strip list entry
-                     *   0x80026234 andi $s1,$t7,1  ; tag low bit
-                     *   0x80026238 xor $t7,$t7,$s1 ; $t7 = strip base
-                     *   ... vertex loop → RTPS @ 0x800262C0 (the path
-                     *   that fills the render cache for terrain).
-                     * After the xor, $t7 (= rd) holds the aligned
-                     * strip-base pointer — a stable per-strip address
-                     * for static level geometry. Stash it so gte_rtps_
-                     * internal can stamp a stable cross-frame WORLD
-                     * batch tag. Cleared at the per-moby loop
-                     * (0x80022B08). */
-                    code = fmt::format(
-                        "{} openpete_world_geo_set_current({});",
-                        translate_xor(instr), reg_name(get_rd(instr)));
+                /* §7.5-R3 dominant-terrain world-geo tag hook (channel
+                 * world_geo_strip_tag). r_environment.s 0x80026238
+                 * `xor $t7,$t7,$s1` yields the aligned strip-base pointer in
+                 * $t7 (= rd); the recompiler appends
+                 * openpete_world_geo_set_current(rd) so gte_rtps_internal can
+                 * stamp a stable cross-frame WORLD batch tag. Address +
+                 * operand + hook live in manifest/render_channels.toml via
+                 * --channel-sites (AppendCall, operand="rd"). READ-ONLY
+                 * host-side stash; no gameplay byte touched. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    code = translate_xor(instr)
+                         + emit_channel_append_call(_cs->second, instr);
                 } else {
                     code = translate_xor(instr);
                 }
@@ -1625,55 +1622,24 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                             "  /* LP-walk kill knob + world strip tag */",
                             reg_name(rt), reg_name(rs), off,
                             reg_name(rt));
-                    } else if (addr == 0x800267E4u
-                            || addr == 0x80027720u
-                            || addr == 0x80028590u
-                            || addr == 0x800285FCu
-                            || addr == 0x80029500u
-                            || addr == 0x8002956Cu) {
+                    } else if (auto _cs = channel_sites_.find(addr);
+                               _cs != channel_sites_.end()
+                               && _cs->second.kind == ChannelSite::AppendCall) {
                         /* §7.5-R3 PHASE-C — strip-list loop heads in
-                         * r_environment.s func_800258F0. The function
-                         * has 5 strip-list iterations chained through
-                         * $ra (used here as a regular register, not a
-                         * return address). Each iteration loads the
-                         * next strip-list entry; the per-iteration value
-                         * is a stable cross-frame per-strip identity for
-                         * static level geometry. The dominant entry at
-                         * 0x80026238 (xor $t7,$t7,$s1) is hooked
-                         * separately; this block covers the remaining
-                         * six loop heads, which together cover the
-                         * 8 non-dominant RTPS sites:
-                         *
-                         *   0x800267E4: lw $t9,0($ra)  → 4 RTPS
-                         *               (0x800268C8/930/9CC/A84)
-                         *   0x800276B4: lw $s3,0($ra)  → 2 RTPS (above)
-                         *   0x80027720: lw $s3,0($ra)  → 2 RTPS
-                         *               (inner nested, 0x80027A64 +
-                         *                0x80028180)
-                         *   0x80028590: lw $s3,0($ra)  → 1 RTPS
-                         *   0x800285FC: lw $s3,0($ra)  → 1 RTPS
-                         *               (inner nested, 0x80028C54)
-                         *   0x80029500: lw $s3,0($ra)  → 1 RTPS
-                         *   0x8002956C: lw $s3,0($ra)  → 1 RTPS
-                         *               (inner nested, 0x800299B0)
-                         *
-                         * Hooking on the raw `lw` (rather than the post-
-                         * alignment `xor`/`sll`) keeps the rule uniform
-                         * across the differently-decoded variants; the
-                         * low flag bits of the loaded value are stable
-                         * per-strip across frames, so the eff_span mix
-                         * still yields a stable cross-frame strip key.
-                         *
-                         * Cleared at the per-moby loop (0x80022B08) so
-                         * moby verts fall back to the moby-vaddr tag.
-                         * READ-ONLY: the appended call only stashes a
-                         * host-side pointer consumed by the render
-                         * cache + matcher; no PSX RAM, cpu state, or
-                         * gameplay-readable byte is written. */
-                        uint32_t rt = get_rt(instr);
-                        code = fmt::format(
-                            "{} openpete_world_geo_set_current({});",
-                            translate_lw(instr), reg_name(rt));
+                         * r_environment.s func_800258F0 (channel
+                         * world_geo_strip_tag): six `lw $reg,0($ra)` loop
+                         * heads (0x800267E4/27720/28590/285FC/29500/2956C),
+                         * each followed by openpete_world_geo_set_current(rt)
+                         * to stamp a stable cross-frame per-strip identity for
+                         * the non-dominant RTPS variants. Address + operand
+                         * (rt = the loaded value) + hook live in
+                         * manifest/render_channels.toml via --channel-sites.
+                         * READ-ONLY host-side stash; no gameplay byte touched.
+                         * (0x800276B4 — a 7th strip head — is NOT here: it is
+                         * a hybrid co-owned with the dbg_kill_env_lp_walk knob
+                         * and stays hardcoded above.) */
+                        code = translate_lw(instr)
+                             + emit_channel_append_call(_cs->second, instr);
                     } else if (addr == 0x800261E0u) {
                         /* DBG: env-renderer's read of g_SkipLowPolyWorld.
                          * When psx_runtime_dbg_kill_env_lp_walk is set,

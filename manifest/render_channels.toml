@@ -344,18 +344,21 @@ matcher; no PSX RAM, cpu state, or gameplay-readable byte is written
 diag_cone / ui_moby / envvert precedent). Verified: aspect_determinism
 bit-identical with the substitutions present (gameplay log
 unchanged)."""
+# GENERATED sites (kind=append_call): the recompiler appends
+# `openpete_world_geo_set_current(<operand>)` after the verbatim translation.
+# operand="rd" for the dominant xor (the strip-base result reg), "rt" for the
+# six lw loop heads (the loaded value). See gen_channel_sites.py.
+# 0x800276B4 — a 7th strip head — is NOT here: it's a hybrid co-owned with
+# dbg_kill_env_lp_walk (the LP-kill knob bakes a conditional into the load),
+# so it stays hardcoded in code_generator.cpp.
 substitution_sites = [
-    0x80026238,  # xor $t7,$t7,$s1 — terrain strip base ptr (dominant)
-    0x800267E4,  # lw $t9,0($ra)   — strip-list head #2
-    # 0x800276B4 — strip-list head #3 outer; co-owned with
-    #              dbg_kill_env_lp_walk (the LP-kill knob channel
-    #              already lists this PC; world_geo only appends a
-    #              set_current call after that channel's load).
-    0x80027720,  # lw $s3,0($ra)   — strip-list head #3 inner
-    0x80028590,  # lw $s3,0($ra)   — strip-list head #4 outer
-    0x800285FC,  # lw $s3,0($ra)   — strip-list head #4 inner
-    0x80029500,  # lw $s3,0($ra)   — strip-list head #5 outer
-    0x8002956C,  # lw $s3,0($ra)   — strip-list head #5 inner
+    { addr = 0x80026238, operand = "rd", kind = "append_call", hook = "openpete_world_geo_set_current" },  # xor $t7,$t7,$s1 — strip base ptr (dominant)
+    { addr = 0x800267E4, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $t9,0($ra) — strip-list head #2
+    { addr = 0x80027720, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #3 inner
+    { addr = 0x80028590, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 outer
+    { addr = 0x800285FC, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 inner
+    { addr = 0x80029500, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 outer
+    { addr = 0x8002956C, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 inner
 ]
 verdict_fn       = "openpete_world_geo_set_current"
 verified_against = ["aspect_determinism"]
