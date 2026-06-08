@@ -1068,71 +1068,29 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     uint32_t rs = get_rs(instr);
                     uint32_t rt = get_rt(instr);
                     int16_t imm = (int16_t)get_imm16_u(instr);
-                    /* r_environment.s env-renderer queue-head computations.
-                     * Each site is `addi $rt, $rs, +0x1C00 | +0x1E00 | +0x2000`
-                     * immediately after a `lui+addiu D_8006FCF4` that put
-                     * the pool base in $rs; the addi shifts to a queue
-                     * head. --no-lod swings the offset past the canonical
-                     * 0x31A0 struct to grow the queue past 256 entries.
-                     * Identity at default. PC-keyed (not value-keyed)
-                     * because `addi $r, $r, 0x2000` also appears in
-                     * non-pool integer arithmetic (Z-saturation chains
-                     * at 0x80026DEC / 0x80027340). */
-                    if ((addr == 0x800259BCu && imm == 0x1C00) ||
-                        (addr == 0x8002679Cu && imm == 0x1C00))
+                    /* env-renderer + moby queue-head/limit computations are
+                     * `addi $rt, $rs, +imm` sites where $rs holds a pool base
+                     * and the addi shifts to a queue head/limit. Their
+                     * addresses, immediates and knob symbols live in
+                     * manifest/render_channels.toml (channels
+                     * no_lod_env_queue_offsets / no_lod_moby_reg_queue),
+                     * loaded via --channel-sites — NOT hardcoded here, so this
+                     * shape carries zero Spyro addresses in the recompiler.
+                     * The OffsetAdd kind emits `rt = rs + <knob>`, identity at
+                     * default knob value. PC+imm keyed (the imm disambiguates a
+                     * PC whose `addi $r,$r,0x2000` recurs in non-pool integer
+                     * arithmetic — e.g. Z-saturation chains at 0x80026DEC). See
+                     * .claude/plans/openpete-generic-hook-anchor-refactor.md. */
+                    if (auto _cs = channel_sites_.find(addr);
+                        _cs != channel_sites_.end()
+                        && _cs->second.kind == ChannelSite::OffsetAdd
+                        && (int32_t)imm == _cs->second.imm)
                     {
                         code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_env_hp_queue_offset;"
-                            "  /* env HP-queue head */",
-                            reg_name(rt), reg_name(rs));
-                    } else if ((addr == 0x800267A0u && imm == 0x1E00) ||
-                               (addr == 0x80028584u && imm == 0x1E00) ||
-                               (addr == 0x800294FCu && imm == 0x1E00))
-                    {
-                        code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_env_mid_queue_offset;"
-                            "  /* env mid-queue head */",
-                            reg_name(rt), reg_name(rs));
-                    } else if ((addr == 0x800259C0u && imm == 0x2000) ||
-                               (addr == 0x800261ECu && imm == 0x2000) ||
-                               (addr == 0x800267A4u && imm == 0x2000) ||
-                               (addr == 0x80027698u && imm == 0x2000) ||
-                               (addr == 0x80028588u && imm == 0x2000) ||
-                               (addr == 0x8002A0ACu && imm == 0x2000))
-                    {
-                        code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_env_lp_queue_offset;"
-                            "  /* env LP-queue head */",
-                            reg_name(rt), reg_name(rs));
-                    } else if ((addr == 0x8001F19Cu && imm == 0x1600) ||
-                               (addr == 0x8001F7E4u && imm == 0x1600))
-                    {
-                        /* r_moby.s regular/specular moby visible-queue HEAD
-                         * (Phase 8.5). func_8001F158 producer 0x8001F19C
-                         * (`addi $fp,$at,0x1600`) and func_8001F798 consumer
-                         * 0x8001F7E4 (`addi $gp,$gp,0x1600`) both compute the
-                         * queue head = g_SonyImage base + 0x1600. --no-lod
-                         * swings the offset into a relocated grown host region
-                         * so the cull loop never overflows and drops late-list
-                         * canonical mobys (the @2468 g_MobyAllocPtr leak).
-                         * Identity at default (offset == 0x1600). PC-keyed
-                         * because `addi $r,$r,0x1600` recurs elsewhere. See
-                         * psx_runtime.h psx_runtime_moby_reg_queue_offset. */
-                        code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_moby_reg_queue_offset;"
-                            "  /* moby reg-queue head (Phase 8.5) */",
-                            reg_name(rt), reg_name(rs));
-                    } else if (addr == 0x8001F730u && imm == 0x2200) {
-                        /* r_moby.s regular moby visible-queue LIMIT (Phase
-                         * 8.5). func_8001F158 0x8001F730 (`addi $v0,$v0,0x2200`)
-                         * computes the queue-full bound = base + 0x2200; the
-                         * loop early-exits (terminates) when $fp+0x70 passes
-                         * it. --no-lod swings it to the grown host region end
-                         * so overflow never triggers. Identity at default. */
-                        code = fmt::format(
-                            "{} = (int32_t){} + (int32_t)psx_runtime_moby_reg_queue_limit_offset;"
-                            "  /* moby reg-queue limit (Phase 8.5) */",
-                            reg_name(rt), reg_name(rs));
+                            "{} = (int32_t){} + (int32_t){};"
+                            "  /* channel offset_add: {} */",
+                            reg_name(rt), reg_name(rs),
+                            _cs->second.symbol, _cs->second.symbol);
                     } else if (addr == 0x80026A34u && imm == 0x100) {
                         /* r_environment.s func_800258F0 per-vertex
                          * lateral-bound cull, +0x100 site (X axis).

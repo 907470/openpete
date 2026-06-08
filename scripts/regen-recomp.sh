@@ -53,8 +53,18 @@ JTBL_TOOL="tools/extract_jumptable_targets.py"
 FNPTR_TOOL="tools/extract_overlay_func_pointers.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
 ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
+CHANNEL_SITES="$OUT/channel_sites.txt"
 
 mkdir -p "$OUT"
+
+# Render-channel substitution table: generated from the single source of
+# truth, manifest/render_channels.toml, and passed to the recompiler via
+# --channel-sites so the env/moby queue-head substitutions are data-driven
+# (no Spyro addresses hardcoded in code_generator.cpp for that shape). See
+# notes/plans/openpete-generic-hook-anchor-refactor.md.
+echo "[regen] Generating $CHANNEL_SITES from manifest/render_channels.toml"
+python3 tools/gen_channel_sites.py \
+    --manifest manifest/render_channels.toml --out "$CHANNEL_SITES"
 
 # PSYQ stubs: weak-linked abort-on-call placeholders for every PSYQ symbol
 # in the manifest. The cmake build links these so any psyq_<name> the
@@ -326,6 +336,7 @@ common_psx_args=(
     --forced-entry=0x8005A7B0
     --forced-entry=0x8005A848
     --skip-on-error
+    --channel-sites="$CHANNEL_SITES"
     ${PCTRACK_FLAG:+$PCTRACK_FLAG}
 )
 pass1_dir="$OUT/_main_exe_pass1"

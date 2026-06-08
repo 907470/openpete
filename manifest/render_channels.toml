@@ -871,18 +871,21 @@ gameplay-readable channels that *share* sub-offsets with these
 queues (m_ShadedMobys at +0x2400, g_LevelTransGems at +0x2800)
 remain at canonical bytes via the value-keyed base redirect into a
 region that mirrors the canonical 0x31A0 layout 1:1."""
+# GENERATED sites (kind=offset_add): the recompiler emits `rt = rs + knob`
+# from this table via --channel-sites; no addresses are hardcoded in
+# code_generator.cpp for this shape. See gen_channel_sites.py.
 substitution_sites = [
-    0x800259BC,  # +0x1C00 HP-queue head, front-walk init
-    0x800259C0,  # +0x2000 LP-queue head, front-walk init
-    0x800261EC,  # +0x2000 LP-queue start / NULL terminator
-    0x8002679C,  # +0x1C00 HP-queue head, HP-walk init
-    0x800267A0,  # +0x1E00 mid-queue head, HP-walk init
-    0x800267A4,  # +0x2000 LP-queue head, HP-walk init
-    0x80027698,  # +0x2000 LP-queue head, second HP-walk
-    0x80028584,  # +0x1E00 mid-queue head, second HP-walk
-    0x80028588,  # +0x2000 LP-queue head, second HP-walk
-    0x800294FC,  # +0x1E00 mid-queue read, LP-walk
-    0x8002A0AC,  # +0x2000 LP-queue read, LP-walk
+    { addr = 0x800259BC, imm = 0x1C00, kind = "offset_add", knob = "psx_runtime_env_hp_queue_offset"  },  # HP-queue head, front-walk init
+    { addr = 0x800259C0, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, front-walk init
+    { addr = 0x800261EC, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue start / NULL terminator
+    { addr = 0x8002679C, imm = 0x1C00, kind = "offset_add", knob = "psx_runtime_env_hp_queue_offset"  },  # HP-queue head, HP-walk init
+    { addr = 0x800267A0, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue head, HP-walk init
+    { addr = 0x800267A4, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, HP-walk init
+    { addr = 0x80027698, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, second HP-walk
+    { addr = 0x80028584, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue head, second HP-walk
+    { addr = 0x80028588, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, second HP-walk
+    { addr = 0x800294FC, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue read, LP-walk
+    { addr = 0x8002A0AC, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue read, LP-walk
 ]
 verdict_fn       = "psx_runtime_env_{hp,mid,lp}_queue_offset"
 verified_against = ["aspect_determinism"]
@@ -1116,3 +1119,149 @@ substitution_sites = [
 verdict_fn       = "openpete_no_lod"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_moby_distance_cull_verdict"
+status      = "gated"
+description = """
+Gameplay-isolation closure PAIRED with no_lod_moby_render_distance_saturate
+(which forces the per-moby m_Distance field to 0x7F under --no-lod). That
+saturation widens the per-axis box-cull threshold so distant mobys render;
+left alone it would also flip the m_WasDrawn cull verdict, leaking an extra
+distant moby into gameplay-readable state (m_WasDrawn → gem spawn → a tick-
+early g_Sparkles allocation → moby-pool drift).
+
+These sites recompute the CANONICAL (un-saturated, 4:3) distance-cull
+verdict alongside the widened render path and clear
+psx_runtime_native_dist_pass when the canonical cull would reject. The
+m_WasDrawn=1 stores (owned by the m_WasDrawn channel) gate on
+(native_cone_pass && native_dist_pass), so saturating m_Distance for
+rendering perturbs no gameplay-readable byte. Identity when --no-lod is off
+(psx_runtime_mdist_thresh_delta == 0).
+
+Two test shapes, three render paths each (regular / specular / shaded):
+  * box-cull LOWER-bound (funct add, code_generator.cpp:859) — a1 =
+    delta/4 + threshold; cull if <= 0. Clears native_dist_pass when the
+    canonical (a1 - mdist_thresh_delta) would reject.
+  * box-cull UPPER-bound (funct sub, code_generator.cpp:983) — a1 =
+    delta/4 - threshold; cull if >= 0. Symmetric back-out.
+  * post-MVMVA proj-Z cull (the 0x...BE4 / 0x...2E8 / 0x...A94 trio) — a
+    SECOND distance cull each path runs after the box-cull, comparing the
+    rotated projection coordinate gte_data[27] against the same saturated
+    threshold. fix #3 patched only the box-cull; the proj-Z cull (fix #4)
+    leaked a far-boundary moby one tick early until this trio was added.
+
+state_regions intentionally empty (same precedent as the m_WasDrawn
+channel): closure is verified at substitution-site granularity + the PSX
+hardware oracle gate, not by hashing a whole moby pool (which carries
+hundreds of unrelated gameplay bytes). See no_lod_moby_render_distance_
+saturate for the saturation half and moby_pool_state for the pool catch-all."""
+substitution_sites = [
+    # box-cull lower-bound (a1 = delta/4 + threshold; cull if <= 0)
+    0x80022B50, 0x80022B6C, 0x80022B84,  # shaded
+    0x8001F220, 0x8001F23C, 0x8001F254,  # regular
+    0x800209CC, 0x800209E8, 0x80020A00,  # specular
+    # box-cull upper-bound (a1 = delta/4 - threshold; cull if >= 0)
+    0x80022B58, 0x80022B74, 0x80022B8C,  # shaded
+    0x8001F228, 0x8001F244, 0x8001F25C,  # regular
+    0x800209D4, 0x800209F0, 0x80020A08,  # specular
+    # post-MVMVA proj-Z cull (gte_data[27] vs saturated threshold)
+    0x80022BE4,  # shaded
+    0x8001F2E8,  # regular
+    0x80020A94,  # specular
+]
+verdict_fn       = "psx_runtime_native_dist_pass"
+verified_against = ["aspect_determinism", "psx_oracle_match"]
+state_regions    = []  # substitution-granularity + oracle verified; see note
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "no_lod_moby_reg_queue"
+status      = "gated"
+description = """
+Phase 8.5: regular/specular moby visible-queue HEAD + LIMIT relocation.
+r_moby.s func_8001F158 (producer) and func_8001F798 (consumer) compute the
+queue head = g_SonyImage base + 0x1600 and the queue-full LIMIT = base +
+0x2200 via three PC-keyed addi sites. The canonical queue holds only ~54
+entries (0x1600..0x2200, stride 0x38) and the cull loop TERMINATES on
+overflow.
+
+Under --no-lod the saturated distance/LOD culls admit far more mobys than
+54, overflowing the queue and early-exiting the cull loop — late-list
+canonical mobys never get queued (the @2468 g_MobyAllocPtr leak). This
+channel swings the head + limit offsets into a relocated, grown openpete-
+only host region (games/spyro-1/features/no_lod.c MOBY_QUEUE_REGION_*,
+0x10000 / 0x38 ≈ 1170 entries) so the queue can never overflow. Identity at
+default (offset == 0x1600, limit == 0x2200), so the recompiler output is
+byte-identical when --no-lod is off.
+
+Render-side only — the 0x80071xxx visible-queue is populated and consumed
+within a single render-pass invocation of r_moby.s; nothing outside the
+renderer reads it (audited render-side state, gameplay_state_regions.toml
+g_Particles/moby-queue note). Analogous to no_lod_env_queue_offsets but for
+the moby cull queue rather than the env queues.
+
+PC-keyed (not value-keyed) because addi $r,$r,0x1600 / 0x2200 recur
+elsewhere — the immediate is matched alongside the PC (imm == 0x1600 /
+0x2200) in code_generator.cpp:1107/1125."""
+# GENERATED sites (kind=offset_add) — see gen_channel_sites.py / --channel-sites.
+substitution_sites = [
+    { addr = 0x8001F19C, imm = 0x1600, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_offset"       },  # func_8001F158 producer queue head
+    { addr = 0x8001F7E4, imm = 0x1600, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_offset"       },  # func_8001F798 consumer queue head
+    { addr = 0x8001F730, imm = 0x2200, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_limit_offset" },  # func_8001F158 queue-full limit
+]
+verdict_fn       = "psx_runtime_moby_reg_queue_offset / _limit_offset"
+verified_against = ["aspect_determinism", "psx_oracle_match"]
+state_regions    = []  # render-side visible-queue; consumed within the pass
+doc              = "notes/plans/openpete-disable-lods.md"
+
+
+[[channel]]
+name        = "polybuf_hudmoby_canonical"
+status      = "gated"
+description = """
+g_HudMobys gameplay-state-pointer canonicalization under polybuf host
+relocation. This is the channel the PSX oracle gate caught (openpete
+project notes worked example): when the polygon buffer is host-backed and grown
+(widescreen >=21:9 or --no-lod), the per-frame write cursor D_800757B0 lives
+in openpete-only host vaddr space (0x80400000+). The game then derives
+g_HudMobys = cursor + slot_stride and STORES it to 0x80075710 — a hashed,
+gameplay-readable pointer (HUD-moby pool: gem counters, life icons). Stored
+verbatim, it would carry the host address into gameplay state and diverge
+from hardware.
+
+These four sw sites map the stored host address back to its canonical PSX
+vaddr (psx_runtime_polybuf_to_canon) so g_HudMobys holds the exact value
+real PSX hardware holds, regardless of presentation flags:
+
+  * 0x8001D760 / 0x8001D768  func_8001D718 (Gamestate-11, draw.c:2051/2054):
+        g_HudMobys = D_800757B0 + 0x1BA00. The within-slot offset is
+        preserved by the translator. Also repairs the
+        `D_800756FC == m_HudOTStart` predicate at draw.c:2049, which host-
+        vs-canonical made always-false, silently breaking the Gamestate-11
+        HUD under relocation.
+  * 0x8001EDCC / 0x8001EDD4  GamestateDraw frame-start reset (draw.c:
+        2666/2667): the compiler reuses the END-cursor value (cursor + size)
+        for these stores. Under relocation `size` is the GROWN host slot
+        size (psx_runtime_polybuf_size) which the end cursor D_80075780
+        needs but the HUD pointers must NOT inherit — the HUD-moby pool
+        stays one CANONICAL 0x1C000 slot above the cursor as on hardware.
+        So recover the cursor base (stored value - grown size), map to
+        canonical, re-add the canonical 0x1C000 slot stride.
+
+Identity at 4:3 default with no relocation (psx_runtime_polybuf_to_canon is
+the identity map and psx_runtime_polybuf_size == 0x1C000). Companion to
+widescreen_polybuf_size / widescreen_polybuf_lower (which redirect the
+cursor itself); this channel keeps the DERIVED gameplay pointer canonical —
+the exact invariant the hook-anchor plan calls out ("redirect the access,
+never change the pointer value the game stores")."""
+substitution_sites = [
+    0x8001D760, 0x8001D768,  # func_8001D718 Gamestate-11 HUD ptr (+0x1BA00)
+    0x8001EDCC, 0x8001EDD4,  # GamestateDraw frame-start reset (+grown size)
+]
+verdict_fn       = "psx_runtime_polybuf_to_canon"
+verified_against = ["aspect_determinism", "psx_oracle_match"]
+state_regions    = ["g_HudMobys"]
+doc              = "notes/plans/openpete-polybuf-host-redirect.md"

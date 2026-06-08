@@ -96,6 +96,52 @@ static bool parse_toml_manifest(const std::string& path, ExternalManifest& out, 
     return true;
 }
 
+// Parse the flat channel-sites table generated from render_channels.toml by
+// tools/gen_channel_sites.py. One site per non-comment line:
+//   <kind> <addr-hex> <imm-hex> <symbol>
+// e.g. `offset_add 0x800259BC 0x1C00 psx_runtime_env_hp_queue_offset`
+// This keeps Spyro addresses out of the recompiler source: the manifest is
+// the source of truth, this flat file is its build-time derivative (same
+// pattern as --extra-funcs). Unknown kinds are a hard error so a manifest
+// typo can't silently drop a substitution.
+static bool parse_channel_sites(const std::string& path,
+                                std::map<uint32_t, PSXRecomp::ChannelSite>& out,
+                                std::string& err) {
+    std::ifstream f(path);
+    if (!f.is_open()) { err = "cannot open " + path; return false; }
+    std::string line;
+    int lineno = 0;
+    while (std::getline(f, line)) {
+        ++lineno;
+        std::string t = strip(line);
+        if (t.empty() || t[0] == '#') continue;
+        std::istringstream is(t);
+        std::string kind, addr_s, imm_s, sym;
+        if (!(is >> kind >> addr_s >> imm_s >> sym)) {
+            err = fmt::format("{}:{}: expected `<kind> <addr> <imm> <symbol>`",
+                              path, lineno);
+            return false;
+        }
+        PSXRecomp::ChannelSite site;
+        if (kind == "offset_add") {
+            site.kind = PSXRecomp::ChannelSite::OffsetAdd;
+        } else {
+            err = fmt::format("{}:{}: unknown channel-site kind '{}'",
+                              path, lineno, kind);
+            return false;
+        }
+        uint32_t addr = (uint32_t)std::strtoul(addr_s.c_str(), nullptr, 0);
+        site.imm    = (int32_t)std::strtol(imm_s.c_str(), nullptr, 0);
+        site.symbol = sym;
+        if (!out.emplace(addr, site).second) {
+            err = fmt::format("{}:{}: duplicate channel site for 0x{:08X}",
+                              path, lineno, addr);
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -115,6 +161,7 @@ int main(int argc, char** argv) {
         fmt::print("  --emit-pc-tracking            Emit `cpu->pc = X;` before each insn (debug — for write-watchers)\n");
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
         fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
+        fmt::print("  --channel-sites=<file>        Render-channel substitution table (from render_channels.toml)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         return 0;
     }
@@ -130,6 +177,7 @@ int main(int argc, char** argv) {
     bool skip_on_error = false;
     std::vector<uint32_t> forced_entries;
     std::string emit_external_jals_path;
+    std::string channel_sites_path;
     bool emit_pc_tracking = false;
 
     auto take_value = [](const std::string& a, const char* prefix) -> std::string {
@@ -153,6 +201,8 @@ int main(int argc, char** argv) {
         else if (!(v = take_value(a, "--func-prefix")).empty())       func_prefix = v;
         else if (!(v = take_value(a, "--emit-external-jals")).empty()) emit_external_jals_path = v;
         else if (a == "--emit-external-jals" && i + 1 < argc)         emit_external_jals_path = argv[++i];
+        else if (!(v = take_value(a, "--channel-sites")).empty())     channel_sites_path = v;
+        else if (a == "--channel-sites" && i + 1 < argc)              channel_sites_path = argv[++i];
         else if (a == "--skip-on-error")                              skip_on_error = true;
         else if (a == "--emit-pc-tracking")                           emit_pc_tracking = true;
         // Legacy form: `--extra-funcs <file>` (space-separated).
@@ -513,6 +563,22 @@ int main(int argc, char** argv) {
     PSXRecomp::CodeGenerator codegen(*exe, codegen_config);
     codegen.set_annotations(&annotations);
     codegen.set_skip_on_error(skip_on_error);
+
+    // Load the render-channel substitution table (generated from
+    // manifest/render_channels.toml). Optional — without it the data-driven
+    // channel shapes simply aren't substituted (identity), so a recompile
+    // that forgets the flag is safe-degraded, not silently wrong.
+    if (!channel_sites_path.empty()) {
+        std::map<uint32_t, PSXRecomp::ChannelSite> channel_sites;
+        std::string err;
+        if (!parse_channel_sites(channel_sites_path, channel_sites, err)) {
+            fmt::print(stderr, "error: --channel-sites: {}\n", err);
+            return 1;
+        }
+        fmt::print("Channel sites: {} ({} substitution sites)\n",
+                   channel_sites_path, channel_sites.size());
+        codegen.set_channel_sites(std::move(channel_sites));
+    }
 
     // Load PSYQ external-symbol manifest. Targets in this map are NOT
     // translated by the recompiler — they're emitted as extern declarations

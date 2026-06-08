@@ -83,6 +83,12 @@ def main() -> int:
 
     # registry → address → list of channel names (catches duplicates)
     registry_addrs: dict[int, list[str]] = {}
+    # Sites expressed as inline tables with a `kind` are GENERATED into the
+    # recompiler from this manifest (tools/gen_channel_sites.py + the
+    # --channel-sites loader) rather than hardcoded as `addr == 0xNNN` arms in
+    # code_generator.cpp. They are therefore EXEMPT from the missing-in-cpp
+    # check below: the manifest is their source of truth, not the .cpp.
+    generated_addrs: set[int] = set()
     counts = {"open": 0, "gated": 0, "verified": 0, "audited_clean": 0}
     valid_status = set(counts.keys())
 
@@ -98,7 +104,16 @@ def main() -> int:
         counts[status] += 1
         sites = ch.get("substitution_sites") or []
         for s in sites:
-            addr = coerce_addr(s)
+            if isinstance(s, dict):
+                if "addr" not in s:
+                    errors.append(f"channel {name!r}: inline-table site "
+                                  f"missing `addr`: {s}")
+                    continue
+                addr = coerce_addr(s["addr"])
+                if "kind" in s:
+                    generated_addrs.add(addr)
+            else:
+                addr = coerce_addr(s)
             registry_addrs.setdefault(addr, []).append(name)
         # gated channels with no sites are usually a manifest mistake.
         # Exceptions:
@@ -140,8 +155,10 @@ def main() -> int:
                         f"{sr!r} but no such region in {state_regions_path}"
                     )
 
-    # 1. Missing: registry → recompiler.
-    missing = sorted(a for a in registry_addrs if a not in recompiler_sites)
+    # 1. Missing: registry → recompiler. Generated sites are exempt — they
+    #    are emitted from the manifest, not hardcoded in the .cpp.
+    missing = sorted(a for a in registry_addrs
+                     if a not in recompiler_sites and a not in generated_addrs)
     for a in missing:
         owners = ", ".join(registry_addrs[a])
         errors.append(

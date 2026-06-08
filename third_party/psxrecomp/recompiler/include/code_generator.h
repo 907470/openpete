@@ -64,6 +64,24 @@ struct GeneratedFunction {
     int line_count;               // Number of lines generated
 };
 
+// A render→gameplay channel substitution site, GENERATED from
+// manifest/render_channels.toml by tools/gen_channel_sites.py and loaded at
+// runtime via --channel-sites. This keeps Spyro-specific addresses out of the
+// recompiler source: the addresses + knob symbols live in the manifest, and
+// the recompiler only knows how to emit each generic `kind`. See
+// .claude/plans/openpete-generic-hook-anchor-refactor.md (step 1).
+struct ChannelSite {
+    enum Kind {
+        OffsetAdd,   // emit `rt = rs + <symbol>` for an addi at this PC+imm
+    };
+    Kind        kind;
+    int32_t     imm;     // immediate the addi must carry (disambiguates a PC
+                         // whose opcode immediate is reused; -0x10000 = any)
+    std::string symbol;  // C knob/verdict symbol emitted verbatim into the
+                         // generated code (resolved at the generated TU's
+                         // compile time, not here)
+};
+
 class CodeGenerator {
 public:
     explicit CodeGenerator(const PS1Executable& exe, const CodeGenConfig& config = CodeGenConfig());
@@ -117,6 +135,13 @@ public:
     // logs+aborts at runtime and continue translating.
     void set_skip_on_error(bool v) { skip_on_error_ = v; }
 
+    // Channel substitution sites (generated from render_channels.toml). The
+    // translate_* handlers consult this map by address so render→gameplay
+    // intercepts are data-driven instead of hardcoded. See ChannelSite.
+    void set_channel_sites(std::map<uint32_t, ChannelSite> sites) {
+        channel_sites_ = std::move(sites);
+    }
+
     // Inspectors used by main_psx.cpp when emitting the dispatch table.
     // An address is "external" only if it has an entry in the symbol map.
     // Addresses inside the PSYQ range but without an exported name are
@@ -145,6 +170,7 @@ private:
     uint32_t external_range_start_ = 0;
     uint32_t external_range_end_   = 0;
     std::map<uint32_t, std::string> manual_impls_;
+    std::map<uint32_t, ChannelSite> channel_sites_;  // from render_channels.toml
     bool skip_on_error_ = false;
 
     const std::string* external_name_for(uint32_t addr) const {
