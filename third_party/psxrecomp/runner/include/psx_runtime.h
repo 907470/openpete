@@ -297,6 +297,15 @@ void psx_runtime_dist_gate_upper(int32_t v);
 uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr);
 uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr);
 
+/* Moby cone-X cull ReplaceCall hooks (channel m_WasDrawn cone-compute sites).
+ * Record the canonical 4:3 cone verdict in native_cone_pass and return the
+ * widened cull comparand. _permoby(mac1,a2,mac3,a3) for regular/specular;
+ * _shaded(mac1,mac3) for the fixed-102/77 shaded path. Identity at default
+ * knobs. Defined in core/features/widescreen.c. */
+int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
+                                       int32_t mac3, int32_t a3);
+int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each

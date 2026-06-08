@@ -63,9 +63,14 @@ regions; `OPENPETE_HASHTIME_MWD_DUMP` (game_extras_impl.c) gives a
 direct per-frame check that the m_WasDrawn byte itself matches
 across aspects."""
 substitution_sites = [
-    0x8001F1FC, 0x800209A8, 0x80022B28,  # iter-start clear (force-pass billboards)
-    0x8001F4CC, 0x80020C7C, 0x80022D98,  # m_WasDrawn=1 cull-pass writes (gated)
-    0x8001F30C, 0x80020AB8, 0x80022C0C,  # cone-test verdict-compute sites
+    0x8001F1FC, 0x800209A8, 0x80022B28,  # iter-start clear (force-pass billboards) — still hardcoded
+    0x8001F4CC, 0x80020C7C, 0x80022D98,  # m_WasDrawn=1 cull-pass writes (gated) — still hardcoded
+    # cone-test verdict-compute sites — GENERATED (replace_call): the hook
+    # records native_cone_pass and returns the widened cull comparand. The
+    # cone slope math now lives in core/features/widescreen.c.
+    { addr = 0x8001F30C, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # regular
+    { addr = 0x80020AB8, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # specular
+    { addr = 0x80022C0C, dest = "rt", operand = "rs,gte27",    kind = "replace_call", hook = "psx_runtime_cone_widen_shaded"  },  # shaded
 ]
 verdict_fn       = "psx_runtime_native_cone_pass"
 verified_against = ["aspect_determinism"]

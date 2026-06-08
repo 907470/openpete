@@ -125,6 +125,37 @@ uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr) {
     return v;
 }
 
+/* Moby cone-X cull ReplaceCall hooks (moved out of the recompiler). Each
+ * records the CANONICAL (4:3) cone verdict in native_cone_pass (read by the
+ * m_WasDrawn=1 gate) and RETURNS the widened cull comparand: the same
+ * `4*(|MAC1|-radius) - (3 + 4*extra)*MAC3p` slope, with MAC3p clamped to
+ * mac3p_floor so a behind-camera moby (MAC3p<0) never sign-flips the widening
+ * and tightens the cone. Identity at default knobs (extra/bias 0 => the
+ * canonical 4:3 comparand). `_permoby` (regular/specular) uses the per-moby
+ * x-radius a2 and MAC3=v1, a3=a3; `_shaded` uses the fixed 102/77 constants
+ * and MAC3=gte_data[27]. */
+int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
+                                       int32_t mac3, int32_t a3) {
+    psx_runtime_native_cone_pass =
+        (uint8_t)((4 * (mac1_abs - a2) - 3 * (mac3 + a3)) < 0);
+    int32_t mac3p = mac3 + a3;
+    if (mac3p < psx_runtime_moby_cone_mac3p_floor)
+        mac3p = psx_runtime_moby_cone_mac3p_floor;
+    return mac1_abs - a2
+         - (int32_t)(((int64_t)mac3p * psx_runtime_moby_cone_extra_q12) >> 12)
+         - (int32_t)(((int64_t)a2 * psx_runtime_moby_cone_bias_scale_q12) >> 12);
+}
+int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3) {
+    psx_runtime_native_cone_pass =
+        (uint8_t)((4 * (mac1_abs - 102) - 3 * (mac3 + 77)) < 0);
+    int32_t mac3p = mac3 + 77;
+    if (mac3p < psx_runtime_moby_cone_mac3p_floor)
+        mac3p = psx_runtime_moby_cone_mac3p_floor;
+    return mac1_abs - 102
+         - (int32_t)(((int64_t)mac3p * psx_runtime_moby_cone_extra_q12) >> 12)
+         - (int32_t)((102 * (int64_t)psx_runtime_moby_cone_bias_scale_q12) >> 12);
+}
+
 /* Per-iteration scratch flag for r_particles.s screen-cull. */
 uint8_t psx_runtime_native_part_pass = 0;
 
