@@ -116,25 +116,32 @@ static bool parse_channel_sites(const std::string& path,
         std::string t = strip(line);
         if (t.empty() || t[0] == '#') continue;
         std::istringstream is(t);
-        std::string kind, addr_s, imm_s, sym;
-        if (!(is >> kind >> addr_s >> imm_s >> sym)) {
-            err = fmt::format("{}:{}: expected `<kind> <addr> <imm> <symbol>`",
+        std::string kind, addr_s, a2, a3;
+        if (!(is >> kind >> addr_s >> a2 >> a3)) {
+            err = fmt::format("{}:{}: expected `<kind> <addr> <arg2> <arg3>`",
                               path, lineno);
             return false;
         }
+        uint32_t addr = (uint32_t)std::strtoul(addr_s.c_str(), nullptr, 0);
         PSXRecomp::ChannelSite site;
-        if (kind == "offset_add") {
-            site.kind = PSXRecomp::ChannelSite::OffsetAdd;
-        } else if (kind == "const_load") {
-            site.kind = PSXRecomp::ChannelSite::ConstLoad;
+        // arg2/arg3 are interpreted per kind:
+        //   offset_add / const_load : a2 = opcode imm, a3 = knob symbol
+        //   append_call             : a2 = operand role, a3 = hook fn name
+        if (kind == "offset_add" || kind == "const_load") {
+            site.kind = (kind == "offset_add")
+                ? PSXRecomp::ChannelSite::OffsetAdd
+                : PSXRecomp::ChannelSite::ConstLoad;
+            site.imm    = (int32_t)std::strtol(a2.c_str(), nullptr, 0);
+            site.symbol = a3;
+        } else if (kind == "append_call") {
+            site.kind    = PSXRecomp::ChannelSite::AppendCall;
+            site.operand = a2;
+            site.symbol  = a3;
         } else {
             err = fmt::format("{}:{}: unknown channel-site kind '{}'",
                               path, lineno, kind);
             return false;
         }
-        uint32_t addr = (uint32_t)std::strtoul(addr_s.c_str(), nullptr, 0);
-        site.imm    = (int32_t)std::strtol(imm_s.c_str(), nullptr, 0);
-        site.symbol = sym;
         if (!out.emplace(addr, site).second) {
             err = fmt::format("{}:{}: duplicate channel site for 0x{:08X}",
                               path, lineno, addr);

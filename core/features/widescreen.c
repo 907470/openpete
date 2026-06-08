@@ -88,6 +88,25 @@ uint8_t psx_runtime_native_cone_pass = 0;
 uint8_t psx_runtime_native_dist_pass = 1;
 int32_t psx_runtime_mdist_thresh_delta = 0;
 
+/* Append-call hooks for the box-cull distance verdict (channel
+ * no_lod_moby_distance_cull_verdict). The recompiler emits a CALL to one of
+ * these AFTER the canonical box-cull add/sub, passing the dest-register
+ * comparand `v`; we clear native_dist_pass if the canonical (un-saturated)
+ * 4:3 cull would reject. This is the named-hook form of what was previously
+ * inline C in the vendored recompiler — moving the verdict math out of
+ * third_party and into this feature TU (no Spyro addresses, so core/ purity
+ * holds). Identity when --no-lod is off (mdist_thresh_delta == 0): _lower
+ * reduces to `v <= 0`, _upper to `v >= 0`, exactly the canonical box-cull
+ * boundary the recompiled add/sub already computed into `v`. */
+void psx_runtime_dist_gate_lower(int32_t v) {
+    if ((int32_t)(v - psx_runtime_mdist_thresh_delta) <= 0)
+        psx_runtime_native_dist_pass = 0;
+}
+void psx_runtime_dist_gate_upper(int32_t v) {
+    if ((int32_t)(v + psx_runtime_mdist_thresh_delta) >= 0)
+        psx_runtime_native_dist_pass = 0;
+}
+
 /* Per-iteration scratch flag for r_particles.s screen-cull. */
 uint8_t psx_runtime_native_part_pass = 0;
 

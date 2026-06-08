@@ -25,6 +25,19 @@ std::string CodeGenerator::reg_name(int reg_num) {
     return fmt::format("cpu->gpr[{}]", reg_num);
 }
 
+std::string CodeGenerator::emit_channel_append_call(const ChannelSite& cs,
+                                                    uint32_t instr) const {
+    // Resolve the operand register-role to the C lvalue passed to the hook.
+    std::string operand;
+    if (cs.operand == "rd")      operand = reg_name(get_rd(instr));
+    else if (cs.operand == "rs") operand = reg_name(get_rs(instr));
+    else if (cs.operand == "rt") operand = reg_name(get_rt(instr));
+    else if (cs.operand == "sp") operand = "cpu->sp";
+    else                         operand = reg_name(get_rd(instr));  // default
+    return fmt::format("  {}({});  /* channel append_call */",
+                       cs.symbol, operand);
+}
+
 std::string CodeGenerator::translate_addiu(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
@@ -851,17 +864,18 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x1A: code = translate_div(instr); break;     // div
             case 0x1B: code = translate_divu(instr); break;    // divu
             case 0x20:                                          // add
-                /* m_WasDrawn distance-channel: shaded-path box-cull
-                 * lower-bound tests (a1 = delta/4 + threshold; cull if
-                 * <= 0). Replay with the canonical threshold (a0 minus
-                 * the saturated-vs-canonical delta) and clear
-                 * native_dist_pass if the 4:3 cull would reject. */
-                if (addr == 0x80022B50u || addr == 0x80022B6Cu || addr == 0x80022B84u   /* shaded */
-                 || addr == 0x8001F220u || addr == 0x8001F23Cu || addr == 0x8001F254u   /* regular */
-                 || addr == 0x800209CCu || addr == 0x800209E8u || addr == 0x80020A00u){ /* specular */
-                    code = translate_add(instr) +
-                        fmt::format(" if ((int32_t)({} - psx_runtime_mdist_thresh_delta) <= 0) psx_runtime_native_dist_pass = 0;",
-                                    reg_name(get_rd(instr)));
+                /* m_WasDrawn distance-channel: box-cull lower-bound tests
+                 * (channel no_lod_moby_distance_cull_verdict). The recompiler
+                 * appends a CALL to psx_runtime_dist_gate_lower(rd) after the
+                 * canonical add; that hook (core/features/widescreen.c) clears
+                 * native_dist_pass if the canonical 4:3 cull would reject. The
+                 * verdict math lives in the hook, not here — addresses + hook
+                 * come from manifest/render_channels.toml via --channel-sites. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    code = translate_add(instr)
+                         + emit_channel_append_call(_cs->second, instr);
                 } else {
                     code = translate_add(instr);
                 }
@@ -980,36 +994,23 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * at 0x800576EC computes the canonical OR over all
                      * 4 vertices unconditionally (see translate sll
                      * handler). */
-                    } else if (addr == 0x80022B58u || addr == 0x80022B74u   /* shaded */
-                            || addr == 0x80022B8Cu
-                            || addr == 0x8001F228u || addr == 0x8001F244u   /* regular */
-                            || addr == 0x8001F25Cu
-                            || addr == 0x800209D4u || addr == 0x800209F0u   /* specular */
-                            || addr == 0x80020A08u
-                            || addr == 0x80022BE4u   /* shaded   post-MVMVA proj-Z cull */
-                            || addr == 0x8001F2E8u   /* regular  post-MVMVA proj-Z cull */
-                            || addr == 0x80020A94u){ /* specular post-MVMVA proj-Z cull */
-                        /* m_WasDrawn distance-channel: box-cull upper-bound
-                         * tests (a1 = delta/4 - threshold; cull if >= 0).
-                         * Replay with the canonical threshold (a0 minus the
-                         * saturated-vs-canonical delta) and clear
-                         * native_dist_pass if the 4:3 cull rejects. Closes the
-                         * --no-lod m_Distance-saturation leak.
-                         *
-                         * The 0x80022BE4 / 0x8001F2E8 / 0x80020A94 trio are a
-                         * SECOND distance cull each path runs AFTER the cube
-                         * box-cull: post-MVMVA (gte cmd 0x12) it compares the
-                         * rotated projection coordinate `v1 = gte_data[27]`
-                         * against the SAME saturated threshold (`v1 - a0`/`v1
-                         * - t4`, cull if >= 0). fix #3 originally patched only
-                         * the cube box-cull, so under --no-lod the saturated
-                         * threshold widened this proj-Z cull too and admitted
-                         * a moby one tick early at the far boundary — the gem
-                         * then span (m_WasDrawn-gated) a tick early and leaked
-                         * into g_Sparkles. Same back-out closes it. */
-                        code = translate_sub(instr) +
-                            fmt::format(" if ((int32_t)({} + psx_runtime_mdist_thresh_delta) >= 0) psx_runtime_native_dist_pass = 0;",
-                                        reg_name(get_rd(instr)));
+                    } else if (auto _cs = channel_sites_.find(addr);
+                               _cs != channel_sites_.end()
+                               && _cs->second.kind == ChannelSite::AppendCall) {
+                        /* m_WasDrawn distance-channel: box-cull upper-bound +
+                         * post-MVMVA proj-Z cull tests (channel
+                         * no_lod_moby_distance_cull_verdict). The recompiler
+                         * appends a CALL to psx_runtime_dist_gate_upper(rd)
+                         * after the canonical sub; the hook
+                         * (core/features/widescreen.c) clears native_dist_pass
+                         * if the canonical 4:3 cull rejects, closing the
+                         * --no-lod m_Distance-saturation leak (a saturated
+                         * far-boundary moby would otherwise spawn its gem a
+                         * tick early and leak into g_Sparkles). The verdict
+                         * math is in the hook; addresses + hook come from
+                         * manifest/render_channels.toml via --channel-sites. */
+                        code = translate_sub(instr)
+                             + emit_channel_append_call(_cs->second, instr);
                     } else {
                         code = translate_sub(instr);
                     }

@@ -268,6 +268,19 @@ extern uint8_t psx_runtime_native_cone_pass;
 extern uint8_t psx_runtime_native_dist_pass;
 extern int32_t psx_runtime_mdist_thresh_delta;
 
+/* Append-call hooks the recompiler emits AFTER the canonical box-cull
+ * add/sub at the distance-channel PCs (channel
+ * no_lod_moby_distance_cull_verdict), passing the dest-register comparand:
+ *   _lower : box-cull lower-bound (cull if v - delta <= 0)
+ *   _upper : box-cull upper-bound + post-MVMVA proj-Z (cull if v + delta >= 0)
+ * Each clears native_dist_pass when the canonical (un-saturated) 4:3 cull
+ * would reject. Defined in core/features/widescreen.c. Identity when
+ * --no-lod is off (mdist_thresh_delta == 0). This is the named-hook form of
+ * what used to be an inline `if (...) native_dist_pass = 0;` in the
+ * recompiler — the verdict math now lives host-side, not in third_party. */
+void psx_runtime_dist_gate_lower(int32_t v);
+void psx_runtime_dist_gate_upper(int32_t v);
+
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
  * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each

@@ -32,8 +32,9 @@ except ImportError:
 
 # kind -> required keys (beyond addr/kind) for that emission shape.
 KIND_KEYS = {
-    "offset_add": ("imm", "knob"),  # addi: rt = rs + knob
-    "const_load": ("imm", "knob"),  # lui:  rt = knob
+    "offset_add": ("imm", "knob"),       # addi: rt = rs + knob
+    "const_load": ("imm", "knob"),       # lui/addiu: rt = knob
+    "append_call": ("operand", "hook"),  # any op: <verbatim>; hook(operand);
 }
 
 
@@ -87,6 +88,10 @@ def main() -> int:
                 lines.append(
                     f"{kind} 0x{addr:08X} 0x{coerce_int(s['imm']):X} "
                     f"{s['knob']}")
+                n += 1
+            elif kind == "append_call":
+                lines.append(
+                    f"append_call 0x{addr:08X} {s['operand']} {s['hook']}")
                 n += 1
 
     out = Path(args.out)

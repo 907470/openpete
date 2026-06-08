@@ -1179,21 +1179,37 @@ channel): closure is verified at substitution-site granularity + the PSX
 hardware oracle gate, not by hashing a whole moby pool (which carries
 hundreds of unrelated gameplay bytes). See no_lod_moby_render_distance_
 saturate for the saturation half and moby_pool_state for the pool catch-all."""
+# GENERATED sites (kind=append_call): the recompiler emits the verbatim
+# add/sub then appends a CALL to the named hook passing the dest register
+# (operand="rd"). The verdict math lives in core/features/widescreen.c, not
+# the recompiler. See gen_channel_sites.py / --channel-sites.
 substitution_sites = [
-    # box-cull lower-bound (a1 = delta/4 + threshold; cull if <= 0)
-    0x80022B50, 0x80022B6C, 0x80022B84,  # shaded
-    0x8001F220, 0x8001F23C, 0x8001F254,  # regular
-    0x800209CC, 0x800209E8, 0x80020A00,  # specular
-    # box-cull upper-bound (a1 = delta/4 - threshold; cull if >= 0)
-    0x80022B58, 0x80022B74, 0x80022B8C,  # shaded
-    0x8001F228, 0x8001F244, 0x8001F25C,  # regular
-    0x800209D4, 0x800209F0, 0x80020A08,  # specular
-    # post-MVMVA proj-Z cull (gte_data[27] vs saturated threshold)
-    0x80022BE4,  # shaded
-    0x8001F2E8,  # regular
-    0x80020A94,  # specular
+    # box-cull lower-bound (add; cull if rd - delta <= 0) -> _lower hook
+    { addr = 0x80022B50, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # shaded
+    { addr = 0x80022B6C, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # shaded
+    { addr = 0x80022B84, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # shaded
+    { addr = 0x8001F220, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # regular
+    { addr = 0x8001F23C, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # regular
+    { addr = 0x8001F254, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # regular
+    { addr = 0x800209CC, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # specular
+    { addr = 0x800209E8, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # specular
+    { addr = 0x80020A00, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_lower" },  # specular
+    # box-cull upper-bound (sub; cull if rd + delta >= 0) -> _upper hook
+    { addr = 0x80022B58, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # shaded
+    { addr = 0x80022B74, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # shaded
+    { addr = 0x80022B8C, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # shaded
+    { addr = 0x8001F228, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # regular
+    { addr = 0x8001F244, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # regular
+    { addr = 0x8001F25C, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # regular
+    { addr = 0x800209D4, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # specular
+    { addr = 0x800209F0, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # specular
+    { addr = 0x80020A08, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # specular
+    # post-MVMVA proj-Z cull (sub; gte_data[27] vs saturated threshold) -> _upper
+    { addr = 0x80022BE4, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # shaded
+    { addr = 0x8001F2E8, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # regular
+    { addr = 0x80020A94, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # specular
 ]
-verdict_fn       = "psx_runtime_native_dist_pass"
+verdict_fn       = "psx_runtime_dist_gate_lower / _upper (-> psx_runtime_native_dist_pass)"
 verified_against = ["aspect_determinism", "psx_oracle_match"]
 state_regions    = []  # substitution-granularity + oracle verified; see note
 doc              = "notes/plans/openpete-disable-lods.md"

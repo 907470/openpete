@@ -73,15 +73,21 @@ struct GeneratedFunction {
 struct ChannelSite {
     enum Kind {
         OffsetAdd,   // addi: emit `rt = rs + <symbol>` at this PC+imm
-        ConstLoad,   // lui:  emit `rt = <symbol>` at this PC+imm (replaces a
-                     //       hardcoded constant load with a runtime knob)
+        ConstLoad,   // lui/addiu: emit `rt = <symbol>` at this PC+imm (replaces
+                     //       a hardcoded constant load with a runtime knob)
+        AppendCall,  // any op: emit the verbatim translation, then append
+                     //       `<symbol>(<operand>);` — a call to a named C hook
+                     //       function. Moves bespoke per-site logic out of the
+                     //       recompiler into a feature-module C function.
     };
     Kind        kind;
-    int32_t     imm;     // immediate the opcode must carry (disambiguates a PC
-                         // whose opcode immediate is reused; -0x10000 = any)
-    std::string symbol;  // C knob/verdict symbol emitted verbatim into the
-                         // generated code (resolved at the generated TU's
-                         // compile time, not here)
+    int32_t     imm;      // OffsetAdd/ConstLoad: opcode immediate to match
+                          // (disambiguates a reused PC; -0x10000 = any)
+    std::string symbol;   // OffsetAdd/ConstLoad: knob symbol. AppendCall: the
+                          // hook function name. Emitted verbatim into the
+                          // generated C (resolved at that TU's compile time).
+    std::string operand;  // AppendCall only: register role to pass to the hook
+                          // ("rd"/"rs"/"rt"/"sp"). Empty for the knob kinds.
 };
 
 class CodeGenerator {
@@ -174,6 +180,12 @@ private:
     std::map<uint32_t, std::string> manual_impls_;
     std::map<uint32_t, ChannelSite> channel_sites_;  // from render_channels.toml
     bool skip_on_error_ = false;
+
+    // Emit the trailing ` <symbol>(<operand>);` for a ChannelSite::AppendCall,
+    // resolving the operand register-role against this instruction. Returns
+    // the snippet to concatenate after the verbatim translation.
+    std::string emit_channel_append_call(const ChannelSite& cs,
+                                         uint32_t instr) const;
 
     const std::string* external_name_for(uint32_t addr) const {
         auto it = external_symbols_.find(addr);
