@@ -462,10 +462,20 @@ static int on_80022A2C_text_moby_range(CPUState* cpu, uint32_t addr) {
  *
  * Pass count and yaw deltas are picked to cover the FOV beyond the
  * canonical ±63° extent:
- *   factor <=1.6 (≤16:9): 1 pass — canonical only.
- *   factor 1.6..2.5 (~21:9..~30:9): 1 pass (canonical dome covers).
- *   factor 2.5..4.0 (~32:9..~48:9): 3 passes — canonical, +60°, -60°.
- *   factor >4.0 (extreme): 5 passes — canonical, ±60°, ±120°.
+ *   factor <=2.5 (≤~30:9): 1 pass — canonical dome covers.
+ *   factor >2.5  (32:9+):  3 passes — canonical, +60°, -60°.
+ *
+ * Why only ±60° (no ±120° tier): the canonical dome spans ±63°, so a
+ * +60° pass extends coverage to +123° and -60° to -123°. The widened
+ * half-FOV is atan(tan(native_half)*factor), which approaches but
+ * never reaches 90°, so ±60° passes already blanket any achievable
+ * aspect — even 128:9 (half-FOV ~85°) sits inside ±123°. A previous
+ * "extreme" tier added ±120° passes, but a yaw past ~90° rotates the
+ * dome's front sectors BEHIND the camera, where they project through
+ * near-zero/negative Z into degenerate prims that corrupt the OT and
+ * wipe the canonical pass — the whole sky collapsed to the flat
+ * background color at factor >4 (96:9). Yaw deltas are deliberately
+ * kept well under 90°.
  *
  * Each extra pass save+restores the m_ViewMatrix at *a1 (the first
  * matrix arg the renderer loads as RT into GTE control regs).
@@ -523,10 +533,10 @@ static int on_8004EBA8_cyclorama_360(CPUState* cpu, uint32_t addr) {
     uint32_t saved_a2 = cpu->a2;
 
     float factor = openpete_disp_w_factor;
-    int n_extra_passes;
-    if (factor <= 2.5f)      n_extra_passes = 0;  /* dome covers */
-    else if (factor <= 4.0f) n_extra_passes = 2;  /* +/-60° */
-    else                     n_extra_passes = 4;  /* +/-60°, +/-120° */
+    /* ±60° passes (2 extra) blanket every achievable aspect; never add
+     * a yaw past ~90° (degenerate behind-camera projection — see the
+     * header comment). */
+    int n_extra_passes = (factor <= 2.5f) ? 0 : 2;
     if (getenv("OPENPETE_CYC_PASSES")) {
         n_extra_passes = atoi(getenv("OPENPETE_CYC_PASSES"));
     }
@@ -565,6 +575,8 @@ static int on_8004EBA8_cyclorama_360(CPUState* cpu, uint32_t addr) {
         }
     }
 
+    const int n_yaws = (int)(sizeof(yaws) / sizeof(yaws[0]));
+    if (n_extra_passes > n_yaws) n_extra_passes = n_yaws;  /* yaws[] bound */
     for (int p = 0; p < n_extra_passes; p++) {
         rotate_view_matrix_y(cpu, vm_addr, yaws[p]);
         cpu->a0 = saved_a0;
