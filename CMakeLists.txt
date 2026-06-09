@@ -133,6 +133,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # --record video-capture smoke test. Boots the headless demo with
+    # --record and uses ffprobe to assert a playable VFR H.264 stream with
+    # even dimensions, the reported frame count, monotonic non-uniform PTS,
+    # and window-independent (bars-free) capture at 21:9. Skips cleanly
+    # (exit 64) if the disc/binary/ffprobe are absent. See
+    # notes/plans/openpete-record-video.md.
+    add_test(NAME record_smoke
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_record.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --frames=300)
+    set_tests_properties(record_smoke PROPERTIES
+        LABELS "slow;tooling"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Channel registry audit — fast static check (no PSX boot). Cross-
     # references manifest/render_channels.toml against the recompiler's
     # address-keyed substitution table; fails on missing or orphaned
