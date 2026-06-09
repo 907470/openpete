@@ -41,11 +41,18 @@
 #include <string.h>
 
 /* PsyCross present-FBO readers (declared in PsyX/PsyX_render.h, but that
- * header pulls in GL — forward-declare here to keep this TU GL-free). Both
- * return 0 when there is no present FBO. Pixel rows are bottom-up. */
+ * header pulls in GL — forward-declare here to keep this TU GL-free). All
+ * return 0/NULL when there is no present FBO. Pixel rows are bottom-up.
+ *
+ * Capture uses the async PBO ring (GR_PresentPBO_*) so the GPU->CPU readback
+ * overlaps rendering instead of stalling the GL thread; GR_GetPresentSceneSize
+ * is still used to learn the native dimensions. */
 extern int GR_GetPresentSceneSize(int* out_w, int* out_h);
-extern int GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h,
-                                   unsigned int gl_format);
+extern int GR_PresentPBO_RingDepth(void);
+extern int GR_PresentPBO_Pending(void);
+extern int GR_PresentPBO_Submit(unsigned int gl_format, int* out_w, int* out_h);
+extern unsigned char* GR_PresentPBO_Map(int* out_w, int* out_h);
+extern void GR_PresentPBO_Unmap(void);
 
 /* glReadPixels format token. Spelled out so this TU needn't include glad.h;
  * GL_RGBA is a stable GL enum. */
@@ -94,6 +101,16 @@ static struct {
     SDL_Condition* cond;
     SDL_Thread*  thread;
     int          stop;          /* set under mutex to wake + drain thread */
+
+    /* PTS FIFO parallel to the PsyCross PBO ring: capture timestamps of
+     * submitted-but-not-yet-retrieved frames, in submit order. Paired with
+     * pixels at Map time so each frame keeps its true draw timestamp despite
+     * the few-frame readback latency. Depth = GR_PresentPBO_RingDepth(). */
+#define REC_PBO_PTS_MAX 16
+    uint64_t     pbo_pts[REC_PBO_PTS_MAX];
+    int          pbo_pts_tail;
+    int          pbo_pts_count;
+    int          pbo_depth;
 
     /* Stats */
     uint64_t     start_us;      /* first capture timestamp (t=0) */
@@ -188,6 +205,10 @@ static void rec_teardown(void);  /* fwd */
 static int rec_lazy_init(int native_w, int native_h, uint64_t first_pts_us) {
     g_rec.native_w = native_w;
     g_rec.native_h = native_h;
+    g_rec.pbo_depth = GR_PresentPBO_RingDepth();
+    if (g_rec.pbo_depth > REC_PBO_PTS_MAX) g_rec.pbo_depth = REC_PBO_PTS_MAX;
+    g_rec.pbo_pts_tail = 0;
+    g_rec.pbo_pts_count = 0;
     /* yuv420p (and h264 generally) needs even dimensions; ultrawide widening
      * yields odd widths. Floor to even — drops at most one edge row/column. */
     const int w = native_w & ~1;
@@ -348,6 +369,50 @@ int openpete_record_init(const openpete_options_t* opts) {
     return 0;
 }
 
+/* Publish one RGBA frame (native_w x native_h, bottom-up) into the encoder
+ * slot ring with timestamp pts_us. Drops (and counts) if the ring is full. */
+static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
+    SDL_LockMutex(g_rec.mutex);
+    if (g_rec.count >= REC_RING_SLOTS) {
+        SDL_UnlockMutex(g_rec.mutex);
+        if (g_rec.dropped == 0)
+            OPL_WARN_F("record", "ring full; dropping frame(s) "
+                                 "(encoder can't keep up)");
+        g_rec.dropped++;
+        return;
+    }
+    const int idx = g_rec.write_idx;
+    SDL_UnlockMutex(g_rec.mutex);
+
+    memcpy(g_rec.slots[idx], rgba,
+           (size_t)g_rec.native_w * (size_t)g_rec.native_h * 4u);
+
+    SDL_LockMutex(g_rec.mutex);
+    g_rec.pts_us[idx] = pts_us;
+    g_rec.write_idx   = (idx + 1) % REC_RING_SLOTS;
+    g_rec.count++;
+    g_rec.captured++;
+    SDL_SignalCondition(g_rec.cond);
+    SDL_UnlockMutex(g_rec.mutex);
+}
+
+/* Retrieve the oldest completed PBO read and hand it to the encoder ring,
+ * paired with its submit-time PTS. No-op if nothing is in flight. */
+static void rec_drain_one(void) {
+    if (g_rec.pbo_pts_count <= 0)
+        return;
+    int mw = 0, mh = 0;
+    unsigned char* px = GR_PresentPBO_Map(&mw, &mh);
+    const uint64_t pts = g_rec.pbo_pts[g_rec.pbo_pts_tail];
+    g_rec.pbo_pts_tail = (g_rec.pbo_pts_tail + 1) % g_rec.pbo_depth;
+    g_rec.pbo_pts_count--;
+    if (px) {
+        if (mw == g_rec.native_w && mh == g_rec.native_h)
+            rec_publish(px, pts);
+        GR_PresentPBO_Unmap();
+    }
+}
+
 void openpete_record_capture_frame(uint64_t pts_us) {
     if (!g_rec.enabled || g_rec.failed)
         return;
@@ -363,10 +428,19 @@ void openpete_record_capture_frame(uint64_t pts_us) {
             rec_teardown();
             return;
         }
-    } else if (w != g_rec.native_w || h != g_rec.native_h) {
-        /* Window resized mid-record => native size changed. The encoder is
-         * locked to the initial dimensions; drop until resize-rescale lands
-         * (plan robustness phase). */
+    }
+
+    /* Make room: when the PBO ring is full, retrieve its oldest (now
+     * completed) read before issuing a new one. This is where the
+     * few-frame GPU->CPU readback latency is absorbed without a stall. */
+    if (GR_PresentPBO_Pending() >= g_rec.pbo_depth)
+        rec_drain_one();
+
+    if (w != g_rec.native_w || h != g_rec.native_h) {
+        /* Window resized mid-record => native size changed; the encoder is
+         * locked to the initial dims. Drop the new-size frame (don't submit),
+         * but keep draining in-flight frames so the pipeline stays
+         * consistent. (Resize-rescale is a plan robustness item.) */
         if (!g_rec.warned_resize) {
             OPL_WARN_F("record",
                        "native size changed %dx%d -> %dx%d mid-record; "
@@ -378,32 +452,13 @@ void openpete_record_capture_frame(uint64_t pts_us) {
         return;
     }
 
-    /* Reserve a slot (single producer => write_idx is ours until published). */
-    SDL_LockMutex(g_rec.mutex);
-    if (g_rec.count >= REC_RING_SLOTS) {
-        SDL_UnlockMutex(g_rec.mutex);
-        if (g_rec.dropped == 0)
-            OPL_WARN_F("record", "ring full; dropping frame(s) "
-                                 "(encoder can't keep up)");
-        g_rec.dropped++;
-        return;
+    /* Issue an async read of this frame and remember its timestamp; the
+     * pixels are retrieved a few frames later by rec_drain_one. */
+    if (GR_PresentPBO_Submit(OPENPETE_GL_RGBA, NULL, NULL)) {
+        const int slot = (g_rec.pbo_pts_tail + g_rec.pbo_pts_count) % g_rec.pbo_depth;
+        g_rec.pbo_pts[slot] = pts_us;
+        g_rec.pbo_pts_count++;
     }
-    const int idx = g_rec.write_idx;
-    SDL_UnlockMutex(g_rec.mutex);
-
-    if (!GR_ReadPresentSceneRGBA(g_rec.slots[idx], g_rec.native_w,
-                                 g_rec.native_h, OPENPETE_GL_RGBA)) {
-        /* Couldn't read this frame; abandon the slot (not published). */
-        return;
-    }
-
-    SDL_LockMutex(g_rec.mutex);
-    g_rec.pts_us[idx] = pts_us;
-    g_rec.write_idx   = (idx + 1) % REC_RING_SLOTS;
-    g_rec.count++;
-    g_rec.captured++;
-    SDL_SignalCondition(g_rec.cond);
-    SDL_UnlockMutex(g_rec.mutex);
 }
 
 /* Free everything (idempotent). Encoder thread must already be joined. */
@@ -431,7 +486,14 @@ void openpete_record_shutdown(void) {
         return;
 
     if (g_rec.initialized) {
-        /* Wake + join the encoder thread (drains the ring first). */
+        /* Drain any in-flight PBO reads into the encoder ring before stopping
+         * the encoder thread, so the last few frames aren't lost to the
+         * readback latency. Runs on the GL thread (this is called from the
+         * host fiber), which is required for the GL map/unmap. */
+        while (GR_PresentPBO_Pending() > 0)
+            rec_drain_one();
+
+        /* Wake + join the encoder thread (drains the slot ring first). */
         SDL_LockMutex(g_rec.mutex);
         g_rec.stop = 1;
         SDL_SignalCondition(g_rec.cond);
