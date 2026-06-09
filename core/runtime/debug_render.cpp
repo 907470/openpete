@@ -95,6 +95,15 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
 
     const char* out_path = path ? path : "SCREENSHOT.BMP";
     if (is_png) {
+        /* Force every pixel opaque before encoding. glReadPixels returns
+         * the framebuffer's blended scene alpha (typically 0x80..0xFF —
+         * only ~1/6 of pixels are fully opaque), which is meaningless for
+         * a flat screenshot but makes image viewers alpha-composite the
+         * PNG over their transparency checkerboard. The live window is
+         * opaque, so the saved PNG looked checkerboarded while the running
+         * exe did not. RGBA byte order: alpha is byte 3 of each pixel. */
+        for (size_t i = 0; i < (size_t)w * (size_t)h; ++i)
+            pixels[i * 4u + 3u] = 0xFFu;
         stbi_write_png(out_path, w, h, 4, pixels, (int)pitch);
     } else {
         /* glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE) stores bytes B,G,R,A —
