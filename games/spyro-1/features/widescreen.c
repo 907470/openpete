@@ -18,6 +18,7 @@
 #include "feature_registry.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
+#include "psx_runtime.h"   /* knobs read by the recompiler-called hooks below */
 
 #include <math.h>
 #include <stdint.h>
@@ -596,3 +597,20 @@ const feature_module_t widescreen_module = {
     .apply_options  = NULL,  /* two-stage; called explicitly from run.c */
     .dispatch_table = widescreen_dispatch,
 };
+
+/* === Recompiler-called widescreen presentation hooks =================
+ * Named-hook implementations the recompiler calls (channels
+ * widescreen_env_cell_x_bound / widescreen_portal_clip_rect). Identity at
+ * the default knob values. Moved out of core/features/widescreen.c so the
+ * Spyro-specific hooks live with the feature. */
+
+/* env-cell lateral-bound cull, companion -0x200 site: lands at (X - bound)
+ * = base - 2*bound. Identity at default bound (256). */
+int32_t psx_runtime_env_cell_x_bound_neg(int32_t base) {
+    return base - 2 * (int32_t)psx_runtime_env_cell_x_bound;
+}
+/* portal clip-rect X-upper test (`slti $r, 0x201`): widened to
+ * `r < portal_clip_x_max_plus_1`. Identity at default (513). */
+int32_t psx_runtime_portal_clip_slt(int32_t v) {
+    return v < (int32_t)psx_runtime_portal_clip_x_max_plus_1;
+}

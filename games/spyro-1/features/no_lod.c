@@ -13,6 +13,7 @@
 #include "feature_registry.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
+#include "openpete_world_geo.h"  /* openpete_world_geo_set_current (dbg hybrid) */
 #include "psx_runtime.h"
 
 #include <stdint.h>
@@ -215,3 +216,55 @@ const feature_module_t no_lod_module = {
     .apply_options  = no_lod_apply_options_module,
     .dispatch_table = NULL,
 };
+
+/* === Recompiler-called --no-lod hooks ================================
+ * Named-hook implementations the recompiler calls (generated from
+ * manifest/render_channels.toml, the no_lod_* + dbg_kill_env_lp_walk
+ * channels). The bespoke read+conditional math lives here, host-side,
+ * instead of in the vendored recompiler. Identity when --no-lod is off
+ * (openpete_no_lod == 0). Moved out of core/features/widescreen.c so the
+ * feature is siloed. */
+
+/* env distance-field saturate: under --no-lod return INT32_MAX so the cull
+ * admits every cell (m_LodDistance ×3, m_CullingDistance ×1). */
+uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr) {
+    return openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word(addr);
+}
+/* packed m_Renderer half-word: under --no-lod saturate the low-7-bit
+ * m_Distance to 0x7F (only when non-zero — 0 is the uninit-slot sentinel),
+ * preserving the shiny bit + byte 0x51, and record the canonical-distance
+ * delta for the dist-gate verdict (psx_runtime_mdist_thresh_delta). */
+uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr) {
+    uint32_t v = cpu->read_half(addr);
+    if (openpete_no_lod && (v & 0x7Fu) != 0u) {
+        psx_runtime_mdist_thresh_delta = (int32_t)((0x7Fu - (v & 0x7Fu)) << 8);
+        return (v & 0xFF80u) | 0x7Fu;
+    }
+    psx_runtime_mdist_thresh_delta = 0;
+    return v;
+}
+/* env HP-walk texture LOD: suppress the `addi $t5,$t5,8` HQ->LQ descriptor
+ * bump so every quad reads the HQ half. */
+int32_t psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump) {
+    return openpete_no_lod ? base : (base + bump);
+}
+/* moby model LOD collapse: the LP-band face-list load reads m_LpFaces (offset
+ * 0x1C) by default; --no-lod swings the knob to 0x14 (m_Faces, high-poly). */
+uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base) {
+    return cpu->read_word(base + psx_runtime_moby_lp_face_offset);
+}
+/* Debug-only (OPENPETE_DBG_KILL_LP): env-renderer g_SkipLowPolyWorld read —
+ * OR in 1 when the knob is set so the LP-walk pre-pass is skipped. */
+uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr) {
+    return cpu->read_word(addr)
+         | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);
+}
+/* Debug LP-kill + world-geo strip tag hybrid (7th strip-list loop head,
+ * co-owned with world_geo_strip_tag): force the loaded value to 0 when the
+ * LP-kill knob is set, else read normally; either way stamp the per-strip
+ * world-geo identity. Identity at default knob. */
+uint32_t psx_runtime_dbg_lpwalk_strip(CPUState* cpu, uint32_t addr) {
+    uint32_t v = psx_runtime_dbg_kill_env_lp_walk ? 0u : cpu->read_word(addr);
+    openpete_world_geo_set_current(v);
+    return v;
+}
