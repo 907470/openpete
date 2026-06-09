@@ -43,6 +43,14 @@ void     openpete_obj_id_set(uint32_t obj_addr);
 /* Read back the stashed object vaddr (for the obj_tag cache stamp). */
 uint32_t openpete_obj_id_get(void);
 
+/* #25: per-object vertex emission ordinal (post-incremented; reset
+ * by obj_id_set). Consumed by gte_rtps_internal as the moby-tagged
+ * cache entry's vkey so the matcher's per-vertex correspondence
+ * pairs the SAME logical vertex across animation poses (v_local
+ * churns under keyframe morphing). G1-validated stable emission
+ * order; the world_vidx template applied to mobys. */
+uint32_t openpete_obj_id_next_vidx(void);
+
 #ifdef __cplusplus
 }
 #endif

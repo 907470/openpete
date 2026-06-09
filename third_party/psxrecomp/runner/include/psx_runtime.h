@@ -512,6 +512,9 @@ uint32_t openpete_ui_moby_get_current(void);
  * non-shaded objects can never be mis-classified as UI mobys. */
 void     openpete_obj_id_set(uint32_t obj_addr);
 uint32_t openpete_obj_id_get(void);
+/* #25: per-object vertex emission ordinal (reset by obj_id_set) —
+ * the moby-tagged cache entry vkey for pose-to-pose animation lerp. */
+uint32_t openpete_obj_id_next_vidx(void);
 
 /* Per-strip world-geometry identity (transform-interp §7.5-R3). The
  * recompiler emits openpete_world_geo_set_current at the dominant

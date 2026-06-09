@@ -459,20 +459,27 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  * to-batch's (eff) span id followed by a per-vertex discriminator
  * that identifies the logical vertex within the matched batch pair:
  *
- *   - MOBY / untagged: the 3 model-local v_local shorts (stable
- *     because moby v_local is genuinely model-local).
- *   - WORLD-tagged: world_vkey — the vertex's SOURCE ADDRESS in strip
- *     data (PHASE-D, stream variants; drop-immune) or the per-strip
- *     emission ordinal (PHASE-B fallback, subdivided/LOD variants).
- *     Terrain v_local is camera-RELATIVE and churns every frame, so
- *     it's useless as a key.
+ *   - TAGGED (moby AND world): world_vkey.
+ *       world: the vertex's SOURCE ADDRESS in strip data (PHASE-D,
+ *       stream variants; drop-immune) or the per-strip emission
+ *       ordinal (PHASE-B fallback, subdivided/LOD variants). Terrain
+ *       v_local is camera-RELATIVE and churns every frame.
+ *       moby (#25): the per-object emission ordinal. Moby v_local is
+ *       model-local but ANIMATED meshes morph it every keyframe
+ *       sample — the old v_local key was exactly why animated mobys
+ *       (Spyro included) missed and froze at 30 Hz. Emission order
+ *       is the pose-invariant identity (G1: perm-cost ratio 0.005),
+ *       so (span, ordinal) pairs the same logical vertex across two
+ *       poses and the lerp morphs between them.
+ *   - UNTAGGED (obj_tag==0): the 3 v_local shorts (legacy world
+ *     path; the tomap isn't queried for these — §7.3 reproject).
  *
  * Including the span scopes the lookup to the matched batch pair. */
 static inline uint64_t tomap_key_e(uint32_t to_span_id,
                                     const openpete_render_cache_entry_t* e) {
     /* Fixed byte layout, NO struct (padding bytes would be
      * uninitialized → nondeterministic hash → every lookup misses). */
-    if (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) {
+    if (e->obj_tag != 0u) {
         uint8_t kb[8];
         memcpy(kb,     &to_span_id,    4);
         memcpy(kb + 4, &e->world_vkey, 4);
@@ -811,12 +818,16 @@ static int tagged_pair_sane(const matcher_batch_t* a,
             return 0;
         return 1;
     }
-    uint32_t vc_tol = a->vertex_count / 4u;
-    if (vc_tol < 4u) vc_tol = 4u;
-    uint32_t vc_diff = (a->vertex_count > b->vertex_count)
-        ? a->vertex_count - b->vertex_count
-        : b->vertex_count - a->vertex_count;
-    if (vc_diff > vc_tol) return 0;
+    /* MOBY arm (#25): with ordinal vkeys the shape guard tightens
+     * from the old 25% cached-count tolerance to EMITTED-count
+     * equality (vkey_max — assigned at RTPS time, immune to the
+     * sxy-collision cache eviction that perturbs vertex_count).
+     * Animation preserves a model's vertex count, so animated pairs
+     * sail through; an emitted-count change means a different vertex
+     * STREAM (moby LOD tier flip, slot reuse to another class) where
+     * ordinal pairing would morph between two different models —
+     * snap instead. */
+    if (a->vkey_max != b->vkey_max) return 0;
     const int cap = tagged_teleport_px();
     if (cap > 0) {
         const int32_t dx = b->sxy_centroid[0] - a->sxy_centroid[0];

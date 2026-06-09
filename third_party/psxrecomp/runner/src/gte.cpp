@@ -329,9 +329,12 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
                 /* Per-object identity (regular/specular/shaded/Spyro/
                  * cyclorama). Read the dedicated obj_id channel, NOT the
                  * widescreen UI classifier (openpete_ui_moby), so the two
-                 * concerns stay decoupled. */
+                 * concerns stay decoupled. #25: tagged objects also get a
+                 * per-object emission ordinal as their per-vertex key so
+                 * animated meshes pair pose-to-pose (v_local churns under
+                 * keyframe morphing — the old key froze them at 30 Hz). */
                 e.obj_tag    = openpete_obj_id_get();
-                e.world_vkey = 0;
+                e.world_vkey = e.obj_tag ? openpete_obj_id_next_vidx() : 0;
             }
         }
         openpete_render_cache_emit_vertex(&e);

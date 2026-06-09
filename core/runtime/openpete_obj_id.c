@@ -5,13 +5,27 @@
 #include "openpete_psx.h"         /* openpete_psx_to_host_ptr (read-only) */
 
 static uint32_t s_obj_id = 0;
+static uint32_t s_vidx   = 0;    /* per-object emission ordinal (#25) */
 
 void openpete_obj_id_set(uint32_t obj_addr) {
     s_obj_id = obj_addr;
+    s_vidx   = 0;                /* new object → restart ordinal */
 }
 
 uint32_t openpete_obj_id_get(void) {
     return s_obj_id;
+}
+
+/* #25 animation lerp: the Nth GTE-projected vertex of the current
+ * object gets ordinal N (G1: per-moby emission order is cross-frame
+ * stable, perm-cost ratio 0.005). Keying the matcher's per-vertex
+ * correspondence by (span, ordinal) instead of v_local makes the
+ * SAME logical vertex pair across two ANIMATION poses — v_local
+ * churns under morphing, which is exactly why animated mobys froze
+ * at 30 Hz. Called once per moby-tagged vertex from
+ * gte_rtps_internal's cache emit. */
+uint32_t openpete_obj_id_next_vidx(void) {
+    return s_vidx++;
 }
 
 /* === Per-renderer identity-tag wrappers (AppendCall hooks) ============
