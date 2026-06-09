@@ -192,6 +192,46 @@ uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr) {
          | (psx_runtime_dbg_kill_env_lp_walk ? 1u : 0u);
 }
 
+/* === Particle / sparkle canonical-SX cull hooks (ReplaceCall) ========= */
+/* The widened renderer projects to a widened SX, but the gameplay-readable
+ * "drawn"/alloc verdict must reflect the canonical 4:3 screen cull. These
+ * hooks read the canonical SX side channel (openpete_canonical_sx*_q16,
+ * stashed per-RTPS by the GTE) and set native_part_pass / return the
+ * canonical SX, replacing the inline math that lived in the recompiler. */
+
+/* Single-vertex particle cull: record the canonical 0<SX<512 verdict from
+ * the given FIFO slot, then return the original `a - b` the sll/sub chain
+ * would have computed. Two slots: sx1 (classes that mfc2 between two RTPSes)
+ * and sx2 (single-RTPS classes). */
+int32_t psx_runtime_part_cull_sx1(int32_t a, int32_t b) {
+    int32_t cs = (int32_t)(openpete_canonical_sx1_q16 >> 16);
+    psx_runtime_native_part_pass = (uint8_t)((cs > 0) & (cs < 512));
+    return a - b;
+}
+int32_t psx_runtime_part_cull_sx2(int32_t a, int32_t b) {
+    int32_t cs = (int32_t)(openpete_canonical_sx2_q16 >> 16);
+    psx_runtime_native_part_pass = (uint8_t)((cs > 0) & (cs < 512));
+    return a - b;
+}
+/* 4-vertex strip cull: OR the canonical verdict across the FIFO tail
+ * (vertices 1/2/3 -> sx0/sx1/sx2), then return `v << 16` (the original sll
+ * the widened cull chain still evaluates). */
+int32_t psx_runtime_part_cull_4vert(int32_t v) {
+    int32_t s0 = (int32_t)(openpete_canonical_sx0_q16 >> 16);
+    int32_t s1 = (int32_t)(openpete_canonical_sx1_q16 >> 16);
+    int32_t s2 = (int32_t)(openpete_canonical_sx2_q16 >> 16);
+    psx_runtime_native_part_pass = (uint8_t)(((s0 > 0) & (s0 < 512))
+                                           | ((s1 > 0) & (s1 < 512))
+                                           | ((s2 > 0) & (s2 < 512)));
+    return v << 16;
+}
+/* Sparkle render-cull left/right clip: substitute $a1 with the canonical
+ * SX (q16, re-shifted) so the blez/sub-bgez kill verdict matches canonical
+ * 4:3 — keeps the g_Sparkles alloc bookkeeping bit-identical across aspects. */
+int32_t psx_runtime_sparkle_canon_sx(void) {
+    return (int32_t)(openpete_canonical_sx2_q16 >> 16) << 16;
+}
+
 /* === Flag-gated store hooks (void ReplaceCall) ======================== */
 /* The recompiler emits `hook(cpu, ea, val);` replacing the original sb. Each
  * conditionally writes the gameplay-readable "drawn" byte so it reflects the

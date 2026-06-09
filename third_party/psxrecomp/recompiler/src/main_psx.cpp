@@ -161,7 +161,11 @@ static bool parse_channel_sites(const std::string& path,
                 return false;
             }
             site.dest     = a2.substr(0, eq);
-            site.operands = split_csv(a2.substr(eq + 1));
+            {
+                std::string ops = a2.substr(eq + 1);
+                site.operands = (ops == "void") ? std::vector<std::string>{}
+                                                : split_csv(ops);
+            }
             site.symbol   = a3;
         } else {
             err = fmt::format("{}:{}: unknown channel-site kind '{}'",

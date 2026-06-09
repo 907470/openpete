@@ -731,68 +731,16 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     if (opcode == 0x00) {
         switch (funct) {
             case 0x00:                                          // sll
-                if (addr == 0x800576ECu) {
-                    /* Entry to r_particles.s 4-vertex screen-cull chain
-                     * preceding `sb $s2, -0x1D($ra)` at 0x80057720. At
-                     * this PC, the four vertex SXs are in $at, $v0, $v1,
-                     * $a0 (low halves). The cull chain short-circuits on
-                     * widened pass (`bltz $a1, .L8005771C`) which would
-                     * skip later canonical tests; we instead compute the
-                     * full canonical OR here, unconditionally, using all
-                     * four vertices. The sb at 0x80057720 then gates on
-                     * `psx_runtime_native_part_pass`. The actual sll
-                     * (`$a1 = $at << 16`) still executes for the widened
-                     * cull chain to evaluate normally.
-                     *
-                     * Threshold note: OFX widening shifts SX uniformly by
-                     * (factor-1)*256, so the canonical 4:3 cull at SX<0x200
-                     * becomes SX_widened < (0x200 + delta_OFX) in widened
-                     * coords. That's psx_runtime_native_clip_x_in_widened_space. */
-                    /* Canonical 4:3 strip-pass over 4 vertices — read
-                     * the canonical-SX side channel populated by gte.cpp
-                     * for each RTPS/RTPT-internal call. The 4-vertex
-                     * sequence is: RTPT (v0/v1/v2 → SXY0/1/2 → canonical
-                     * sx0/1/2), then a separate RTPS for v3 (overwrites
-                     * SXY2, FIFO shifts so the v3 canonical sx is in
-                     * sx2 and v0's canonical sx falls off). Asm uses
-                     * mfc2 of SXY0/SXY1/SXY2_pre + SXY2_post — for the
-                     * canonical verdict we approximate with the FIFO
-                     * tail: any-of-3 = vertices 1, 2, 3 (skipping v0).
-                     * Per-vertex test: 0 < sx_q16 < 0x02000000. */
-                    code = fmt::format(
-                        "{{ int32_t s0 = (int32_t)(openpete_canonical_sx0_q16 >> 16); "
-                        "int32_t s1 = (int32_t)(openpete_canonical_sx1_q16 >> 16); "
-                        "int32_t s2 = (int32_t)(openpete_canonical_sx2_q16 >> 16); "
-                        "uint8_t pass = (uint8_t)( "
-                        "((s0 > 0) & (s0 < 512)) "
-                        "| ((s1 > 0) & (s1 < 512)) "
-                        "| ((s2 > 0) & (s2 < 512))); "
-                        "psx_runtime_native_part_pass = pass; "
-                        "cpu->a1 = (int32_t)cpu->at << 16; }}");
-                } else if (addr == 0x80058648u) {
-                    /* Sparkle render-cull SX-left-clip entry in
-                     * r_particles.s func_80058864. Original asm:
-                     *   sll $a1, $a3, 16    ; $a1 = SX_widened << 16
-                     *   blez $a1, .kill     ; canonical-style left-clip
-                     *   lui $t0, 0x0200
-                     *   sub $a1, $a1, $t0   ; right-clip
-                     *   bgez $a1, .kill
-                     *   ... else continue (sparkle stays alive)
-                     * .kill clears in_use byte → frees slot, leaks into
-                     * gameplay (allocator state cascades into next-frame
-                     * SpawnSparkleAt slot assignments which gate rotation
-                     * matrix updates via UPDATE_PROP_ROTMATRIX).
-                     *
-                     * Substitute $a1 with canonical SX_q16 (truncated to
-                     * int via >> 16, then re-shifted to match the asm's
-                     * shape). Both blez (left) and the subsequent sub-
-                     * then-bgez (right at 0x80058654) now test canonical
-                     * SX instead of widened, so the kill verdict matches
-                     * canonical 4:3 — visible periphery in widened mode
-                     * still renders for one frame (sparkle is on its
-                     * normal alive path), then dies the SAME frame
-                     * canonical would. */
-                    code = "{ int32_t cs_q16 = (int32_t)(openpete_canonical_sx2_q16 >> 16) << 16; cpu->a1 = cs_q16; }";
+                /* Particle 4-vertex strip cull (0x800576EC) + sparkle render-
+                 * cull (0x80058648): ReplaceCall sites whose canonical-SX
+                 * verdict math (channels particle_drawn_flag / sparkle_alloc_
+                 * state) now lives in core/features/widescreen.c
+                 * (part_cull_4vert / sparkle_canon_sx). Addresses in the
+                 * manifest via --channel-sites. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::ReplaceCall) {
+                    code = emit_channel_replace_call(_cs->second, instr);
                 } else {
                     code = translate_sll(instr);
                 }
@@ -914,55 +862,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                                  + emit_channel_append_call(_cs->second, instr);
                         else
                             code = emit_channel_replace_call(_cs->second, instr);
-                    } else if (addr == 0x80057A04u || addr == 0x80057B14u
-                            || addr == 0x80057CB4u || addr == 0x80057F28u
-                            || addr == 0x8005801Cu) {
-                        /* FIFO slot selector: class 4 (PC A04) and class 1
-                         * (PC F28) do TWO RTPSes per particle and capture
-                         * SXY2 BETWEEN them via mfc2, so the cull tests
-                         * the OLDER projection — read sx1 (which holds the
-                         * stash from RTPS#1 after RTPS#2 advanced the
-                         * FIFO). Other classes do a single RTPS and test
-                         * its SXY2 directly — read sx2. */
-                        const char* canonical_slot =
-                            (addr == 0x80057A04u || addr == 0x80057F28u)
-                            ? "openpete_canonical_sx1_q16"
-                            : "openpete_canonical_sx2_q16";
-                        /* r_particles.s screen-cull verdict (single-vertex
-                         * sites preceding `sb $s2, -0x1D($ra)` at
-                         * 0x80057A10 / 0x80057B20 / 0x80057CDC). $rs holds
-                         * (vertex_SX << 16); $rt is the widened
-                         * psx_runtime_clip_x_threshold. Record canonical
-                         * verdict against the unwidened threshold
-                         * (0x02000000 == 4:3 X-edge), then perform the
-                         * widened sub for the actual visual cull. The sb
-                         * substitution gates on
-                         * `psx_runtime_native_part_pass`. */
-                        uint32_t rs = get_rs(instr);
-                        uint32_t rt = get_rt(instr);
-                        uint32_t rd = get_rd(instr);
-                        code = fmt::format(
-                            /* Canonical 4:3 verdict from gte.cpp's
-                             * un-widened SX side channel. Replicate the
-                             * asm cull's int-truncation: native asm reads
-                             * `mfc2 C2_SXY2` which truncates to int16,
-                             * then `sll 16; blez/bgez` tests SX_int > 0
-                             * and SX_int < 512. Match by truncating
-                             * canonical_q16 to int via `>> 16`. */
-                            "{{ int32_t cs = (int32_t)({} >> 16); "
-                            "psx_runtime_native_part_pass = "
-                            "(uint8_t)((cs > 0) & (cs < 512)); }} "
-                            "{} = (int32_t){} - (int32_t){};",
-                            canonical_slot,
-                            reg_name(rd), reg_name(rs), reg_name(rt));
-                    /* Note: the 4-vertex OR chain leading to
-                     * sb at 0x80057720 (subs at 0x800576F0/FC/708/714)
-                     * is intentionally NOT substituted here — the chain
-                     * short-circuits on widened-pass which would skip
-                     * later canonical tests. Instead the entry `sll`
-                     * at 0x800576EC computes the canonical OR over all
-                     * 4 vertices unconditionally (see translate sll
-                     * handler). */
                     } else {
                         code = translate_sub(instr);
                     }

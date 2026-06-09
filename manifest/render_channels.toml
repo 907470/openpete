@@ -571,8 +571,11 @@ die (matches base game behavior at 4:3).
 
 Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000
 frames (hash + position log)."""
+# GENERATED (replace_call): rd = psx_runtime_sparkle_canon_sx() — substitute
+# $a1 with the canonical SX (q16) so the blez/sub-bgez kill verdict matches
+# canonical 4:3, keeping g_Sparkles alloc bookkeeping bit-identical. No-arg.
 substitution_sites = [
-    0x80058648,  # sll $a1, $a3, 16 — replaced with canonical_sx_q16 load
+    { addr = 0x80058648, dest = "rd", operand = "void", kind = "replace_call", hook = "psx_runtime_sparkle_canon_sx" },  # sll $a1,$a3,16
 ]
 verdict_fn       = "openpete_canonical_sx2_q16"
 verified_against = []
@@ -671,10 +674,17 @@ substitution_sites = [
     { addr = 0x80057CDC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     { addr = 0x80057F60, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     { addr = 0x80058028, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
-    # native_part_pass SETTERS (still hardcoded — canonical-SX verdict capture):
-    0x80057A04, 0x80057B14, 0x80057CB4,              # single-vertex sub-by-$s6 verdict capture
-    0x80057F28, 0x8005801C,                          # ditto — for the extra two sb sites
-    0x800576EC,                                      # 4-vertex chain entry — canonical OR over $at,$v0,$v1,$a0
+    # native_part_pass SETTERS — GENERATED (replace_call): record the canonical
+    # 0<SX<512 verdict from the canonical-SX side channel, return the original
+    # sub/sll value. Math now in core/features/widescreen.c. sx1 = classes that
+    # mfc2 between two RTPSes (A04/F28); sx2 = single-RTPS classes.
+    { addr = 0x80057A04, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx1" },  # class 4
+    { addr = 0x80057F28, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx1" },  # class 1
+    { addr = 0x80057B14, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx2" },  # class 3
+    { addr = 0x80057CB4, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx2" },  # class 2
+    { addr = 0x8005801C, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx2" },  # class 0
+    # 4-vertex strip cull entry sll: OR over the FIFO tail, return $at<<16.
+    { addr = 0x800576EC, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_part_cull_4vert" },  # 4-vertex chain entry
 ]
 verdict_fn       = "psx_runtime_native_part_pass"
 verified_against = []

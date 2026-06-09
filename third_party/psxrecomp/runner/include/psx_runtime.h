@@ -321,6 +321,14 @@ void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t va
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
+/* Particle / sparkle canonical-SX cull hooks (defined in
+ * core/features/widescreen.c). Set native_part_pass from the canonical SX
+ * side channel / return the canonical SX, replacing inline recompiler math. */
+int32_t psx_runtime_part_cull_sx1(int32_t a, int32_t b);
+int32_t psx_runtime_part_cull_sx2(int32_t a, int32_t b);
+int32_t psx_runtime_part_cull_4vert(int32_t v);
+int32_t psx_runtime_sparkle_canon_sx(void);
+
 /* Polybuf host-redirect hooks (defined in core/features/widescreen.c). */
 uint32_t psx_runtime_polybuf_lower_load(CPUState* cpu, uint32_t addr);
 void psx_runtime_polybuf_hudmoby_store(CPUState* cpu, uint32_t addr, uint32_t val);
