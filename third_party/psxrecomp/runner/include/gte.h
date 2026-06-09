@@ -120,8 +120,17 @@ struct GTEState {
         // full width. The widened bound is render-pass-only — gameplay-
         // side GTE work outside the render pass keeps native ±0x400 so
         // any gameplay code that reads SXY sees canonical 4:3 values.
-        const int32_t sat_lo = -(int32_t)::psx_runtime_sxy_sat_bound;
-        const int32_t sat_hi =  (int32_t)::psx_runtime_sxy_sat_bound - 1;
+        /* The SXY FIFO stores int16, so the saturation bound cannot exceed
+         * the int16 range. The Hor+ widened bound (0x400*factor) crosses
+         * 0x8000 at factor 32 (~384:9); past that, casting sat_hi to int16
+         * below wraps to a large NEGATIVE value, so a far-right vertex
+         * "saturates" to the far left — a degenerate coordinate that can
+         * spin downstream gameplay/camera math (observed as a hang at
+         * 512:9). Clamp to the representable int16 range. */
+        int32_t sat_lo = -(int32_t)::psx_runtime_sxy_sat_bound;
+        int32_t sat_hi =  (int32_t)::psx_runtime_sxy_sat_bound - 1;
+        if (sat_hi > 32767)  sat_hi = 32767;
+        if (sat_lo < -32768) sat_lo = -32768;
         int16_t sx_sat, sy_sat;
         if (sx < sat_lo)     { sx_sat = (int16_t)sat_lo; FLAG |= FLAG_SX2_SAT; }
         else if (sx > sat_hi){ sx_sat = (int16_t)sat_hi; FLAG |= FLAG_SX2_SAT; }
