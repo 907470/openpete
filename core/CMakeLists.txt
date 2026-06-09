@@ -137,14 +137,30 @@ set_target_properties(openpete_core PROPERTIES
 # third_party/SDL submodule (see top-level CMakeLists.txt).
 target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
 
-# libav* for --record gameplay video capture (runtime/record.c). Hard
-# dependency — see notes/plans/openpete-record-video.md ("hard-require"
-# decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev libavutil-dev
-# libswscale-dev. Min version libav* 58 (ffmpeg 4.0).
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-    libavformat libavcodec libavutil libswscale libswresample)
-target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
+# libav* for --record gameplay video capture (runtime/record.c). On a native
+# build this is a hard dependency — see notes/plans/openpete-record-video.md
+# ("hard-require" decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev
+# libavutil-dev libswscale-dev libswresample-dev. Min version libav* 58
+# (ffmpeg 4.0).
+#
+# Cross-compiles (e.g. the MinGW Windows preset) are the exception: host
+# pkg-config resolves the *host* (Linux) libav and injects host include paths
+# (-isystem /usr/include/x86_64-linux-gnu), which poison the cross compile —
+# pkg_check_modules does not honor CMAKE_FIND_ROOT_PATH. There is no target
+# libav to link anyway, so when cross-compiling we compile --record out
+# (record.c falls back to a stub that reports the feature unavailable).
+option(OPENPETE_ENABLE_RECORD "Build --record gameplay video capture (needs libav*)" ON)
+if(OPENPETE_ENABLE_RECORD AND NOT CMAKE_CROSSCOMPILING)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+        libavformat libavcodec libavutil libswscale libswresample)
+    target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
+    target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_LIBAV=1)
+else()
+    message(STATUS "openpete: --record video capture disabled "
+                   "(${CMAKE_CROSSCOMPILING}=cross / OPENPETE_ENABLE_RECORD=${OPENPETE_ENABLE_RECORD}); "
+                   "record.c builds as a stub")
+endif()
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by
 # PSYQ-targeted thunks. Phase 1c flips this default ON; downstream targets

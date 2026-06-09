@@ -40,7 +40,9 @@ sudo apt install libopenal-dev \
 cmake --preset linux-release
 cmake --build build/linux-release -j
 
-# 5. (Optional) cross-compile to Windows from WSL2.
+# 5. (Optional) cross-compile to Windows from WSL2. NOTE: --record video
+#    capture is compiled out of the Windows cross build (no MinGW libav);
+#    the rest of the game is unaffected. See "Recording gameplay video".
 sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 cmake --preset windows-mingw
 cmake --build build/windows-mingw -j
@@ -89,7 +91,10 @@ better), `--record-gop` (keyframe interval, default 120), `--record-pixfmt`
 is preferred (honest VFR, survives an interrupted run). Ctrl-C finalizes a
 playable file. Requires the libav* dev packages from step 4 above; linking
 `libx264` makes the resulting binary GPL — use `--record-encoder libopenh264`
-(BSD) if that matters for distribution.
+(BSD) if that matters for distribution. The MinGW Windows cross build has no
+target libav, so `--record` is compiled out there (it warns once and is
+otherwise a no-op); a native Windows (MSVC + vcpkg ffmpeg) build can re-enable
+it.
 
 > Note: the default `libx264` software encode is comfortable at normal frame
 > rates. Capture currently uses a synchronous GPU readback, so at very high

@@ -22,11 +22,17 @@
 // first captured frame; a later window resize that changes the native size is
 // dropped (counted + warned) for now — see the plan's robustness phase.
 //
-// libav* is a hard build dependency (the user opted into hard-require), so
-// there is no graceful no-op-when-absent path; missing libav fails the build.
+// libav* is a hard build dependency on native builds (the user opted into
+// hard-require). The one exception is cross-compiling (e.g. the MinGW Windows
+// preset), where no target libav exists and host pkg-config would poison the
+// build; there OPENPETE_HAS_LIBAV is undefined and this TU compiles to the
+// stub at the bottom of the file (the three public entry points become no-ops
+// that warn once if --record was requested). See core/CMakeLists.txt.
 
 #include "openpete_record.h"
 #include "openpete_log.h"
+
+#ifdef OPENPETE_HAS_LIBAV
 
 #include <SDL3/SDL.h>
 
@@ -687,3 +693,25 @@ void openpete_record_shutdown(void) {
     rec_teardown();
     memset(&g_rec, 0, sizeof(g_rec));
 }
+
+#else /* !OPENPETE_HAS_LIBAV */
+
+// libav unavailable for this target (cross-compile / OPENPETE_ENABLE_RECORD
+// off). Provide stubs so the runtime links and --record degrades gracefully:
+// it warns once at init and otherwise does nothing.
+
+int openpete_record_init(const openpete_options_t* opts)
+{
+    if (opts && opts->record_path) {
+        OPL_WARN_F("record", "--record %s ignored: this build has no video "
+                             "encoder (libav* not available for this target)",
+                   opts->record_path);
+    }
+    return 0;  /* not a fatal setup error — just unavailable */
+}
+
+void openpete_record_capture_frame(uint64_t pts_us) { (void)pts_us; }
+
+void openpete_record_shutdown(void) {}
+
+#endif /* OPENPETE_HAS_LIBAV */

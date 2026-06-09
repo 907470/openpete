@@ -81,8 +81,11 @@ add_test(NAME psx_region_test COMMAND psx_region_test)
 # libav* locally so the unit-test dir needn't depend on link order with
 # core/. The ctest floor is loose (a gross-regression catch); the real
 # number is printed in the RESULT line.
+# Native only: host pkg-config resolves host libav, which would poison a
+# cross compile (and there's no target libav to link). Mirrors the guard in
+# core/CMakeLists.txt.
 find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
+if(PkgConfig_FOUND AND NOT CMAKE_CROSSCOMPILING)
     pkg_check_modules(BENCH_LIBAV QUIET IMPORTED_TARGET
         libavformat libavcodec libavutil libswscale)
     if(BENCH_LIBAV_FOUND)
