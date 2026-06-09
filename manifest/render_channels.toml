@@ -298,6 +298,49 @@ state_regions    = []  # render-side identity tag; no state written
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
+name        = "untagged_renderer_clear"
+status      = "gated"
+description = """
+Identity-channel hygiene for the renderers that have no per-object
+tag yet (transform-interp §12.1 stragglers). The obj_id / world_geo
+side-channels are set by the tagged renderers' loop hooks and never
+expire, so shadows / flames / particles emitted their cache entries
+under whatever tag the PREVIOUS renderer left behind. Stale-tagged
+shadow batches then entered the matcher's authoritative obj_tag
+pairing — consuming (or failing) the real owner's pair — and
+flickered frozen-red / ordinal-blue in the F9 overlay.
+
+Appends `openpete_untagged_renderer_entry()` (obj_id(0) +
+world_geo_clear) to the first AppendCall-shaped instruction of each
+renderer entry:
+
+  0x80058D6C  sw  func_80058D64  r_flame.s    (flame renderer)
+  0x800573CC  sw  func_800573C8  r_particles.s
+  0x800580FC  sw  func_800580F4  r_particles.s
+  0x800584D0  lw  func_800584C4  r_particles.s
+  0x80059A60  lw  func_80059A48  r_shadows.s
+  0x80059F94  lw  func_80059F8C  r_shadows.s
+
+Their geometry intentionally falls back to obj_tag==0 (world-ordinal /
+centroid) pairing — the pre-tag baseline — until the §12.1 straggler
+pass gives each a true per-slot tag, at which point these clears are
+superseded by per-iteration tag hooks. READ-ONLY host-side; no
+gameplay byte touched."""
+# GENERATED (append_call): no-arg clear at each renderer entry.
+substitution_sites = [
+    { addr = 0x80058D6C, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # flame
+    { addr = 0x800573CC, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles A
+    { addr = 0x800580FC, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles B
+    { addr = 0x800584D0, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles C
+    { addr = 0x80059A60, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # shadows A
+    { addr = 0x80059F94, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # shadows B
+]
+verdict_fn       = "openpete_untagged_renderer_entry"
+verified_against = ["aspect_determinism"]
+state_regions    = []  # render-side identity hygiene; no state written
+doc              = "notes/plans/openpete-transform-interp.md"
+
+[[channel]]
 name        = "envvert_terrain_probe"
 status      = "audited_clean"
 description = """

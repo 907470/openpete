@@ -38,6 +38,20 @@ void openpete_obj_loop_tag(uint32_t obj_addr) {
     openpete_world_geo_clear();
 }
 
+/* Untagged renderers (shadows / flames / particles): clear BOTH identity
+ * side-channels at function entry so their cache entries emit as
+ * obj_tag==0 (the ordinal/heuristic fallback they were designed for)
+ * instead of inheriting whatever tag the PREVIOUS renderer left set.
+ * The stale bleed made shadow batches carry the last moby's vaddr —
+ * they then consumed (or failed) that moby's authoritative pairing and
+ * flickered between frozen-red and ordinal-blue in the overlay, while
+ * polluting the real owner's pair. Interim until these renderers get
+ * true per-slot tags (§12.1 straggler pass). */
+void openpete_untagged_renderer_entry(void) {
+    openpete_obj_id_set(0);
+    openpete_world_geo_clear();
+}
+
 /* Regular/specular render iter: read this iteration's moby instance vaddr
  * DIRECTLY from the render-queue entry under the loop cursor.
  *

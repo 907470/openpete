@@ -535,6 +535,7 @@ uint16_t openpete_world_geo_next_vidx(void);
 void     openpete_moby_loop_tag(uint32_t moby_addr);           /* ui_moby + obj_id + clear */
 void     openpete_obj_loop_tag(uint32_t obj_addr);             /* obj_id + clear */
 void     openpete_moby_render_entry_tag(uint32_t entry_vaddr); /* obj_id(*(entry+52)) + clear */
+void     openpete_untagged_renderer_entry(void);               /* obj_id(0) + world_geo clear */
 
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *
