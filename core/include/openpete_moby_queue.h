@@ -49,6 +49,13 @@ void     openpete_moby_queue_push(uint32_t moby_vaddr);
 uint32_t openpete_moby_queue_pop(void);   /* 0 when empty */
 void     openpete_moby_queue_clear(void); /* defensive reset */
 
+/* Per-tick balance diagnostic (OPENPETE_MOBYQ_DIAG=1, read-only
+ * stderr). Called once per canonical sim tick from the run loop;
+ * no-op when the env var is unset. Reports per-frame push/pop/empty
+ * counts and end-of-tick residue — the transform-interp §11 F0
+ * desync instrument. */
+void     openpete_moby_queue_diag_tick(unsigned frame);
+
 #ifdef __cplusplus
 }
 #endif
