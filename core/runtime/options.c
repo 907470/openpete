@@ -130,6 +130,10 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
     opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
     opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
+    opts->record_encoder      = "libx264";
+    opts->record_crf          = 23;
+    opts->record_gop          = 120;
+    opts->record_pixfmt       = "yuv420p";
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -305,6 +309,25 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--bk2-record") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_record_path = v; i++;
+        } else if (strcmp(a, "--record") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_path = v; i++;
+        } else if (strcmp(a, "--record-encoder") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_encoder = v; i++;
+        } else if (strcmp(a, "--record-crf") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_crf = atoi(v); i++;
+        } else if (strcmp(a, "--record-gop") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_gop = atoi(v); i++;
+            if (opts->record_gop < 0) {
+                fprintf(stderr, "openpete: --record-gop expects a non-negative integer\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+        } else if (strcmp(a, "--record-pixfmt") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_pixfmt = v; i++;
         } else if (strcmp(a, "--unlock-frames") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->unlock_frames_spec = v;
@@ -414,6 +437,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
+                "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
+                "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
+                "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
+                "  --record-gop N             keyframe interval in frames (default 120)\n"
+                "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
                 "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
                 "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
                 "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"

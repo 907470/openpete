@@ -52,9 +52,15 @@ typedef struct {
     int render_fps;
 
     /* SDL window size override. 0/0 = use the per-game default (640x480
-     * for Spyro). PsyCross still renders the PSX framebuffer at 512x240
-     * internal; this only controls the on-screen window dimensions GL
-     * stretches to. */
+     * for Spyro). The window *height* drives the internal render resolution:
+     * PsyCross sizes its present FBO from g_windowHeight (× the disp/clip
+     * overscan ratio) in GR_BeginScene and rasterizes the GTE-projected
+     * geometry directly into it with a real depth buffer — a taller window
+     * genuinely renders the scene at higher resolution, not an upscale
+     * (empirically ~5x the edge detail at 4x height; see
+     * notes/plans/openpete-record-video.md). Window width is decoupled:
+     * the FBO width is derived from height × aspect, so it only affects the
+     * letterbox/pillarbox margins of the final present-blit to the window. */
     int window_w;
     int window_h;
 
@@ -298,6 +304,20 @@ typedef struct {
      * of the interpolated OT on intermediate renders (presentation
      * isolation test). -1 unset / 0 off / 1 on. Live-toggle F10. */
     int debug_black_intermediates;
+
+    /* --record PATH: capture gameplay video. True VFR — one encoded frame
+     * per game-presented frame, PTS = wall-clock capture time, so playback
+     * matches real game cadence (frame drops show as fewer frames/sec).
+     * Frames are read from the present FBO at internal resolution (no
+     * letter/pillarbox bars). Links libav* in-process. NULL = disabled.
+     * Container auto-picked by extension (.mkv recommended; .mp4 supported).
+     * Written incrementally + trailer on shutdown, so Ctrl-C still yields a
+     * playable file. See notes/plans/openpete-record-video.md. */
+    const char* record_path;
+    const char* record_encoder;   /* libavcodec encoder name. Default libx264. */
+    int         record_crf;       /* x264/x265 quality. Default 23. */
+    int         record_gop;       /* keyframe interval, frames. Default 120. */
+    const char* record_pixfmt;    /* encoder pixfmt. Default yuv420p. */
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title

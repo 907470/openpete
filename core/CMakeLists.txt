@@ -13,6 +13,11 @@ add_library(openpete_core STATIC
     runtime/run.c
     runtime/psxtrace_verify.c
 
+    # True-VFR gameplay video capture (--record). Links libav* in-process;
+    # reads the present FBO so output is bars-free at internal resolution.
+    # See notes/plans/openpete-record-video.md.
+    runtime/record.c
+
     # BizHawk .bk2 movie replay (--bk2) + record (--bk2-record). See
     # plans/openpete-bk2-input.md.
     runtime/bk2_movie.c
@@ -131,6 +136,15 @@ set_target_properties(openpete_core PROPERTIES
 # SDL3 is required for window/render/screenshot. Built from the
 # third_party/SDL submodule (see top-level CMakeLists.txt).
 target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
+
+# libav* for --record gameplay video capture (runtime/record.c). Hard
+# dependency — see notes/plans/openpete-record-video.md ("hard-require"
+# decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev libavutil-dev
+# libswscale-dev. Min version libav* 58 (ffmpeg 4.0).
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+    libavformat libavcodec libavutil libswscale)
+target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by
 # PSYQ-targeted thunks. Phase 1c flips this default ON; downstream targets

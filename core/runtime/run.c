@@ -17,6 +17,7 @@
 #include "game_extras.h"
 #include "bk2_movie.h"
 #include "bk2_record.h"
+#include "openpete_record.h"
 #include "feature_registry.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
@@ -737,6 +738,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * itself doesn't touch GL — it just stores the callback). */
     g_psyx_postRenderOverlay = openpete_fps_overlay_emit;
 
+    /* --record: arm gameplay video capture. The encoder is built lazily on
+     * the first captured frame (once the present FBO's native dimensions are
+     * known); this only stashes the parameters. The FPS overlay is excluded
+     * from the recording — capture fires before PsyX_EndScene (which is where
+     * g_psyx_postRenderOverlay stamps), reading the present FBO directly. */
+    if (openpete_record_init(opts) != 0)
+        return OPENPETE_EXIT_SETUP_ERROR;
+
     /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
      * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
      * PsyX_Exit() → exit(0), which in WSL+GL+libco tends to hang on static
@@ -1453,6 +1462,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            path, openpete_frame, s_presents_captured);
                 s_presents_captured++;
             }
+            /* --record: capture this presented game frame before EndScene
+             * stamps the FPS overlay. PTS is the wall-clock capture instant
+             * in microseconds; the first frame anchors t=0. Reads the present
+             * FBO at internal resolution (bars-free). No-op when disabled. */
+            openpete_record_capture_frame((uint64_t)(op_now() / 1000));
             PsyX_EndScene();
             openpete_present_pending = 0;
             did_present_this_iter = true;
@@ -1822,6 +1836,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (bk2_recording) {
         bk2_record_finalize();
     }
+    /* --record: flush the encoder + write the container trailer. Safe to
+     * call unconditionally (no-op if recording was never armed). Reaching
+     * here on SIGTERM/Ctrl-C still produces a playable file. */
+    openpete_record_shutdown();
     if (position_log_fp) {
         fclose(position_log_fp);
         position_log_fp = NULL;
