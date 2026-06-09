@@ -128,6 +128,22 @@ typedef struct matcher_batch {
      * heuristic for pairing (real identity, no false-merge). */
     uint32_t obj_tag;
 
+    /* §11/#29 duplicate-tag disambiguation. One object can emit
+     * MULTIPLE batches sharing its obj_tag (Spyro's body segments each
+     * load their own RT/TR; near/far world-strip tiers reuse one strip
+     * tag). `real_span` is the RAW emission-order matrix-span counter
+     * of the batch's first vertex (eff_span() may replace the KEY with
+     * a synthetic hash for world strips, destroying order); `tag_rank`
+     * is this batch's 0-based position among same-tag batches ordered
+     * by real_span. Emission order within one object's render is a
+     * fixed code path, so rank is cross-frame stable — pairing by
+     * (obj_tag, tag_rank) makes segments pair segment-to-segment
+     * instead of first-unconsumed (which cross-paired under differing
+     * scan orders: Spyro solid red, still-camera yellow/green strip
+     * flicker, title-cyclorama cyan). */
+    uint32_t real_span;
+    uint32_t tag_rank;
+
     /* §12.2 overlay v2: why this batch is (not) interpolating, set
      * during the span-pairing pass. OPENPETE_DBGST_* in the header.
      * Purely diagnostic — read only by the F9 highlight overlay. */
@@ -614,6 +630,8 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         memcpy(b->rt, e->rt, sizeof(b->rt));
         b->tr[0] = e->tr[0]; b->tr[1] = e->tr[1]; b->tr[2] = e->tr[2];
         b->obj_tag = e->obj_tag;
+        /* #29: raw (pre-eff_span) emission-order span for tag_rank. */
+        b->real_span = e->matrix_span_id;
     }
     accumulate_vertex(b, e);
     /* For the "to" generation (gen_prev = G(N)) also record every
@@ -630,12 +648,22 @@ static int matrix_is_near_identity(const int16_t rt[3][3]);
  * Linear scan — frame batch counts are small (tens–hundreds), host-
  * side, once per game frame. Returns batch index or -1. obj_tag==0
  * (world/composite) is NOT identified this way; those keep the
- * centroid/ordinal path. */
-static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag) {
+ * centroid/ordinal path.
+ *
+ * #29: the rank parameter disambiguates duplicate tags — an object
+ * emitting several batches under one tag (Spyro's segments, near/far
+ * strip tiers) pairs k-th batch with k-th batch instead of first-
+ * unconsumed (whose scan-order dependence cross-paired segments).
+ * Rank missing in `f` (segment culled that frame) ⇒ -1 ⇒ the caller
+ * freezes the batch for one cycle — correct snap semantics. */
+static int find_unconsumed_by_obj_tag(matcher_frame_t* f, uint32_t tag,
+                                      uint32_t rank) {
     if (tag == 0u) return -1;
-    for (uint32_t i = 0; i < f->count; ++i)
-        if (f->batches[i].obj_tag == tag && !f->batches[i].consumed)
+    for (uint32_t i = 0; i < f->count; ++i) {
+        const matcher_batch_t* b = &f->batches[i];
+        if (b->obj_tag == tag && b->tag_rank == rank && !b->consumed)
             return (int)i;
+    }
     return -1;
 }
 
@@ -826,6 +854,27 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         if (b->obj_tag == 0u && !b->is_ui_opt_out)
             b->world_ord = wo++;
     }
+    /* #29: per-tag emission rank for duplicate-tag disambiguation.
+     * rank = #same-tag batches whose first vertex was emitted earlier
+     * (real_span is monotonic in emission order; equal real_span +
+     * equal tag would have merged into one batch, so the order is
+     * total — the index tie-break is belt-and-braces). O(n²) over the
+     * frame's batches: counts are hundreds, once per game frame,
+     * host-side. */
+    for (uint32_t i = 0; i < f->count; ++i) {
+        matcher_batch_t* b = &f->batches[i];
+        b->tag_rank = 0u;
+        if (b->vertex_count == 0 || b->obj_tag == 0u) continue;
+        uint32_t r = 0u;
+        for (uint32_t j = 0; j < f->count; ++j) {
+            const matcher_batch_t* o = &f->batches[j];
+            if (j == i || o->vertex_count == 0) continue;
+            if (o->obj_tag != b->obj_tag) continue;
+            if (o->real_span < b->real_span ||
+                (o->real_span == b->real_span && j < i)) r++;
+        }
+        b->tag_rank = r;
+    }
 }
 
 /* Open-addressed hash table over a frame's batches (slot = batch_idx+1,
@@ -903,7 +952,8 @@ void openpete_render_matcher_prepare_substitute(void) {
          * pair with a teleport-scale jump or a different shape is a
          * slot reuse / tag bug — issue a fresh id (snap) instead. */
         if (cb->obj_tag != 0u) {
-            int pi = find_unconsumed_by_obj_tag(s_prev, cb->obj_tag);
+            int pi = find_unconsumed_by_obj_tag(s_prev, cb->obj_tag,
+                                                cb->tag_rank);
             if (pi >= 0 && tagged_pair_sane(cb, &s_prev->batches[pi])) {
                 s_prev->batches[pi].consumed = 1;
                 cb->object_id = s_prev->batches[pi].object_id;
@@ -961,10 +1011,9 @@ void openpete_render_matcher_prepare_substitute(void) {
 
     /* --- Interpolation span (s_curr "from" ↔ s_to "to"). delta_sxy =
      * to.sxy_centroid - from.sxy_centroid is the KNOWN single-game-frame
-     * displacement; substitute lerps it by alpha. The velocity sanity
-     * cap rejects hash collisions between unrelated batches sharing a
-     * centroid bucket (a real object moves ≤ ~30 px / game frame). */
-    build_frame_hash_table(&s_to);
+     * displacement; substitute lerps it by alpha. Pairing is identity-
+     * only: (obj_tag, tag_rank) for tagged batches, world_ord for
+     * untagged — no centroid-hash fallback (§12.1, deleted below). */
     unsigned paired = 0u;
     unsigned velocity_capped = 0u;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
@@ -977,7 +1026,8 @@ void openpete_render_matcher_prepare_substitute(void) {
          * the batch freezes one frame instead of stretching. Downstream
          * per-vertex tomap lookup keyed by to_span_id is unchanged. */
         if (cb->obj_tag != 0u) {
-            int ti = find_unconsumed_by_obj_tag(&s_to, cb->obj_tag);
+            int ti = find_unconsumed_by_obj_tag(&s_to, cb->obj_tag,
+                                                cb->tag_rank);
             if (ti >= 0 && tagged_pair_sane(cb, &s_to.batches[ti])) {
                 matcher_batch_t* tb = &s_to.batches[ti];
                 tb->consumed = 1;
@@ -1025,63 +1075,21 @@ void openpete_render_matcher_prepare_substitute(void) {
                 continue;
             }
         }
-        uint64_t h = cb->hash;
-        uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
-        for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            uint16_t entry = s_to.hash_table[slot];
-            if (entry == 0u) break;
-            matcher_batch_t* tb = &s_to.batches[entry - 1u];
-            if (tb->hash == h && !tb->consumed) {
-                const int32_t dx = tb->sxy_centroid[0] - cb->sxy_centroid[0];
-                const int32_t dy = tb->sxy_centroid[1] - cb->sxy_centroid[1];
-                /* Cross-object mispair guards (release tb, probe on):
-                 *  - implausible screen-space jump (a real object moves
-                 *    ≤ ~30 px / game frame; cap is generous), and
-                 *  - very different vertex count (Spyro's ~tens-of-vert
-                 *    head batch colliding into a hundreds-of-vert wall
-                 *    in the same centroid bucket). vstab verified per-
-                 *    moby vertex_count is stable across consecutive
-                 *    frames, so a true pair has near-equal counts. */
-                uint32_t vc_tol = cb->vertex_count / 4u;
-                if (vc_tol < 4u) vc_tol = 4u;
-                uint32_t vc_diff = (cb->vertex_count > tb->vertex_count)
-                    ? cb->vertex_count - tb->vertex_count
-                    : tb->vertex_count - cb->vertex_count;
-                if (abs(dx) + abs(dy) > MATCHER_VELOCITY_CAP_PX ||
-                    vc_diff > vc_tol) {
-                    velocity_capped++;
-                    cb->vtrace_velocity_capped = 1;
-                    slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
-                    continue;
-                }
-                /* Paired. Consume so it can't re-pair elsewhere.
-                 * has_future_anchor only scopes the per-vertex
-                 * correspondence lookup to this to-batch's span — the
-                 * actual rigid/animated decision and the applied
-                 * motion are made PER VERTEX in substitute_query (a
-                 * vertex whose v_local exists one frame later gets its
-                 * true screen delta; an animated mesh churns v_local so
-                 * its verts simply miss and freeze at 30 Hz). No vfp
-                 * gate, no centroid shove — that's what caused both the
-                 * neck-stretch and the world jitter. delta_sxy is kept
-                 * only as a coarse trace/diagnostic indicator. */
-                tb->consumed = 1;
-                cb->dbg_state = OPENPETE_DBGST_HEUR_PAIRED;
-                cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
-                cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
-                cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
-                cb->delta_sxy[0] = dx;
-                cb->delta_sxy[1] = dy;
-                cb->to_span_id   = tb->matrix_span_id;
-                cb->has_future_anchor = 1;
-                paired++;
-                break;
-            }
-            slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
-        }
-        /* Unpaired "from" batch → delta_sxy stays {0,0}: the object
-         * despawned (or hash-collided away) between G(N-1) and G(N);
-         * it renders frozen at its lagged position for this cycle. */
+        /* §12.1 (first slice): the centroid-hash span-pairing fallback
+         * is DELETED. It only ever fired for untagged batches whose
+         * world-ordinal pairing failed (tagged batches already pair-or-
+         * freeze), and when it fired it was usually WRONG — the 64-unit
+         * centroid bucket cross-paired sky strips whose ordinal slipped
+         * with their neighbors, warping them on every intermediate
+         * present (the user-visible "flickers of magenta"). An unpaired
+         * batch now freezes at its lagged pose for one cycle — a brief
+         * 30 Hz patch, visually quiet, and the honest §12 fallback.
+         * (The overlay's magenta HEUR_PAIRED state is consequently
+         * never emitted; the enum stays for the legend's history.)
+         *
+         * Unpaired "from" batch → delta_sxy stays {0,0}: the object
+         * despawned / ordinal slipped between G(N-1) and G(N); it
+         * renders frozen at its lagged position for this cycle. */
     }
     g_openpete_render_substitute_pair_count = paired;
     g_openpete_render_substitute_velocity_capped_count = velocity_capped;

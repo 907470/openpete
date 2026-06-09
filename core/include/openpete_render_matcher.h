@@ -104,8 +104,9 @@ int openpete_render_matcher_is_smoothed(const int16_t* p);
  *                         (world count-shift / moby teleport-shape) → frozen
  *   CORR_FROZEN  orange   whole-batch corr-gate freeze (animating mesh /
  *                         partial strip correspondence)
- *   HEUR_PAIRED  magenta  centroid-hash pairing (untagged renderers
- *                         only post-F5c — particles/flames/shadows)
+ *   HEUR_PAIRED  magenta  RETIRED (§12.1 first slice): the centroid-
+ *                         hash fallback was deleted — ordinal-fail now
+ *                         freezes. Any magenta on screen is a bug.
  *   LEGACY_WORLD blue     obj_tag==0 world paired by emission ordinal
  *                         (§7.3 composite-reproject path)
  *   VERT_MISS    cyan     batch paired but THIS vertex has no tomap
