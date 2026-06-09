@@ -708,16 +708,37 @@ static int tagged_teleport_px(void) {
  * pair failing this is a wrong-identity pair (reuse swapped the slot
  * to a different class, or the tag itself is corrupt) — snap.
  *
- * MOBY tags only. bit30 WORLD strips also pair by obj_tag, but their
- * identity (the strip-list pointer) cannot alias the way a reused
- * moby slot can, and fast camera pans legitimately move strips
- * thousands of px/frame (PHASE-B measured 2724 px) — the teleport
- * bound would freeze the world exactly when smoothing matters most.
- * World keeps its own corr-gate; camera-cut snap is the §5 detector's
- * job (g_Camera.m_State), not a magnitude heuristic. */
+ * For bit30 WORLD strips the moby checks don't apply — strip identity
+ * (the strip-list pointer) cannot alias the way a reused moby slot
+ * can, and fast camera pans legitimately move strips thousands of
+ * px/frame (PHASE-B measured 2724 px), so the teleport bound would
+ * freeze the world exactly when smoothing matters most. World gets
+ * ONE check instead (§11 F5b, the "warble" fix): exact emitted-
+ * vertex-count equality. Spyro culls strip vertices BEFORE RTPS, so
+ * a strip that dropped/gained a vertex between the two endpoints has
+ * SHIFTED every later emission ordinal by one — the (eff_span,
+ * world_vidx) tomap then pairs each vertex with its NEIGHBOR, and the
+ * strip visibly warps on every intermediate present (a 1-of-50
+ * dropout still passes the 90% corr-gate with 49 mispaired verts).
+ * Count inequality ⇒ shift ⇒ freeze the strip this frame (clean
+ * 30 Hz, like the corr-gate). Equal-count add+drop swaps slip
+ * through — the complete fix is source-stable vertex keys (PHASE-D,
+ * the envvert_terrain_probe $s1-pointer approach, needs the 9 RTPS
+ * vertex-load hooks). Env OPENPETE_WORLD_COUNT_EQ=0 disables for
+ * visual A/B. */
+static int world_count_eq_gate(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_WORLD_COUNT_EQ");
+                 v = (e && *e) ? (atoi(e) != 0) : 1; }
+    return v;
+}
 static int tagged_pair_sane(const matcher_batch_t* a,
                             const matcher_batch_t* b) {
-    if (a->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) return 1;
+    if (a->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) {
+        if (world_count_eq_gate() && a->vertex_count != b->vertex_count)
+            return 0;
+        return 1;
+    }
     uint32_t vc_tol = a->vertex_count / 4u;
     if (vc_tol < 4u) vc_tol = 4u;
     uint32_t vc_diff = (a->vertex_count > b->vertex_count)
