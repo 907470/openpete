@@ -60,26 +60,45 @@ extern "C" void openpete_debug_triangle_init(void) {
  * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
  * flip. We re-implement here with an explicit row flip. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
-    int w = 0, h = 0;
-    PsyX_GetScreenSize(&w, &h);
-    if (w <= 0 || h <= 0) return;
-
-    const size_t pitch = (size_t)w * 4u;
-    unsigned char* pixels = (unsigned char*)std::malloc(pitch * (size_t)h);
-    if (!pixels) return;
-
     const int is_png = openpete_screenshot_path_is_png(path);
     /* PNG wants RGBA byte order; BMP path keeps the BGRA mask layout it
      * already used. Read in the format the destination needs to skip a
      * channel-swap. */
-    /* The screenshot fires before PsyX_EndScene, so the rendered scene
-     * still lives in the present FBO and the default backbuffer is stale.
-     * Run the cropped-present blit now to populate fb 0 — it's idempotent
-     * (PsyX_EndScene will run it again later) and ensures glReadPixels
-     * sees the same pixels the user is about to see. */
-    GR_PresentCroppedToWindow();
-    glReadPixels(0, 0, w, h, is_png ? GL_RGBA : GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+    const GLenum fmt = is_png ? GL_RGBA : GL_BGRA;
 
+    int w = 0, h = 0;
+    unsigned char* pixels = nullptr;
+
+    /* Capture the rendered scene at its native internal resolution, cropped
+     * to the canonical PSX visible region — read straight from the present
+     * FBO, NOT the window backbuffer. The backbuffer carries letter/pillarbox
+     * bars whenever the window aspect doesn't match the content, and the
+     * screenshot fires before PsyX_EndScene (when the scene still lives in
+     * the present FBO and fb 0 is stale). Reading the FBO makes the saved
+     * image independent of how the window happens to be sized. */
+    if (GR_GetPresentSceneSize(&w, &h) && w > 0 && h > 0) {
+        const size_t pitch = (size_t)w * 4u;
+        pixels = (unsigned char*)std::malloc(pitch * (size_t)h);
+        if (!pixels) return;
+        if (!GR_ReadPresentSceneRGBA(pixels, w, h, (unsigned int)fmt)) {
+            std::free(pixels);
+            pixels = nullptr;
+        }
+    }
+
+    if (!pixels) {
+        /* Fallback: no present FBO (no-FBO / headless path). Present the
+         * cropped scene to fb 0 and read the window backbuffer as before. */
+        PsyX_GetScreenSize(&w, &h);
+        if (w <= 0 || h <= 0) return;
+        const size_t pitch = (size_t)w * 4u;
+        pixels = (unsigned char*)std::malloc(pitch * (size_t)h);
+        if (!pixels) return;
+        GR_PresentCroppedToWindow();
+        glReadPixels(0, 0, w, h, fmt, GL_UNSIGNED_BYTE, pixels);
+    }
+
+    const size_t pitch = (size_t)w * 4u;
     /* In-place row flip: swap row i with row h-1-i. */
     unsigned char* tmp = (unsigned char*)std::malloc(pitch);
     if (tmp) {
