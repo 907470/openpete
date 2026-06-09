@@ -73,3 +73,29 @@ target_include_directories(psx_region_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
 add_test(NAME psx_region_test COMMAND psx_region_test)
+
+# record_encode_bench — encode-throughput validation for --record (plan
+# openpete-record-video.md Phase 7). Drives the swscale RGBA->yuv420p ->
+# libx264 path with synthetic frames as fast as the encoder allows and
+# reports the sustained fps (480 is the plan target). Self-contained: finds
+# libav* locally so the unit-test dir needn't depend on link order with
+# core/. The ctest floor is loose (a gross-regression catch); the real
+# number is printed in the RESULT line.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(BENCH_LIBAV QUIET IMPORTED_TARGET
+        libavformat libavcodec libavutil libswscale)
+    if(BENCH_LIBAV_FOUND)
+        add_executable(record_encode_bench
+            ${CMAKE_SOURCE_DIR}/tests/bench/record_encode_bench.c)
+        target_link_libraries(record_encode_bench PRIVATE PkgConfig::BENCH_LIBAV)
+        set_target_properties(record_encode_bench PROPERTIES C_STANDARD 11)
+        add_test(NAME record_encode_bench
+                 COMMAND record_encode_bench --width 854 --height 480
+                         --frames 1000 --fps 480 --min-fps 60
+                         --out ${CMAKE_CURRENT_BINARY_DIR}/encode-bench.mkv)
+        set_tests_properties(record_encode_bench PROPERTIES
+            LABELS "slow;tooling"
+            TIMEOUT 120)
+    endif()
+endif()
