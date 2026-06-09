@@ -128,6 +128,11 @@ typedef struct matcher_batch {
      * heuristic for pairing (real identity, no false-merge). */
     uint32_t obj_tag;
 
+    /* §12.2 overlay v2: why this batch is (not) interpolating, set
+     * during the span-pairing pass. OPENPETE_DBGST_* in the header.
+     * Purely diagnostic — read only by the F9 highlight overlay. */
+    uint8_t  dbg_state;
+
     /* transform-interp §7.2 / Option B: emission-ordinal among
      * obj_tag==0 (world/composite) batches this frame. G1 measured
      * span emission order 99.3% stable + vertex_count stable, so
@@ -805,6 +810,7 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         b->has_future_anchor = 0;
         b->delta_sxy[0] = b->delta_sxy[1] = 0;
         b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
+        b->dbg_state = 0;
         b->is_ui_opt_out = matrix_is_near_identity(b->rt);
         b->vtrace_velocity_capped = 0;
         b->consumed = 0;
@@ -994,6 +1000,9 @@ void openpete_render_matcher_prepare_substitute(void) {
              * paired count-rejected edge strips with adjacent strips,
              * and the cross-strip ordinal tomap flung their verts
              * across the screen (§11 F5c "spikes"). */
+            if (!cb->has_future_anchor)
+                cb->dbg_state = (ti < 0) ? OPENPETE_DBGST_TAG_ABSENT
+                                         : OPENPETE_DBGST_TAG_INSANE;
             continue;
         }
         /* World (untagged): ordinal+signature span pairing (Option B)
@@ -1003,6 +1012,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                                                   cb->vertex_count);
             if (ti >= 0) {
                 matcher_batch_t* tb = &s_to.batches[ti];
+                cb->dbg_state = OPENPETE_DBGST_LEGACY_WORLD;
                 tb->consumed = 1;
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
                 cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
@@ -1056,6 +1066,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                  * neck-stretch and the world jitter. delta_sxy is kept
                  * only as a coarse trace/diagnostic indicator. */
                 tb->consumed = 1;
+                cb->dbg_state = OPENPETE_DBGST_HEUR_PAIRED;
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];
                 cb->velocity[1] = tb->centroid[1] - cb->centroid[1];
                 cb->velocity[2] = tb->centroid[2] - cb->centroid[2];
@@ -1116,6 +1127,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                 if (b->corr_tot == 0u) continue;
                 if (b->corr_hit * 100u < (uint32_t)thr * b->corr_tot) {
                     b->has_future_anchor = 0;          /* whole-span freeze */
+                    b->dbg_state = OPENPETE_DBGST_CORR_FROZEN;
                     if (paired) paired--;
                 }
             }
@@ -1365,6 +1377,34 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
  * camera motion lights up; animated/culled-in/static verts don't.
  * Alpha-independent (uses raw screen delta, not alpha-scaled). No
  * side effects, no counters. */
+/* §12.2 overlay v2 — see header for the state table. Mirrors
+ * substitute_query's decision tree, side-effect-free. */
+int openpete_render_matcher_debug_state(const int16_t* p) {
+    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
+                   (((uint32_t)(uint16_t)p[1]) << 16);
+    openpete_render_cache_entry_t entry;
+    if (!openpete_render_cache_lookup_prev2(key, &entry))
+        return OPENPETE_DBGST_NONE;
+    for (uint32_t i = 0; i < s_curr->count; ++i) {
+        const matcher_batch_t* b = &s_curr->batches[i];
+        if (b->matrix_span_id != eff_span(&entry)) continue;
+        if (b->is_ui_opt_out) return OPENPETE_DBGST_NONE;
+        if (b->dbg_state != OPENPETE_DBGST_NONE &&
+            b->dbg_state != OPENPETE_DBGST_LEGACY_WORLD &&
+            b->dbg_state != OPENPETE_DBGST_HEUR_PAIRED)
+            return b->dbg_state;            /* frozen-batch causes */
+        if (!b->has_future_anchor) return OPENPETE_DBGST_NONE;
+        /* Paired batch: vertex-level outcome. obj_tag==0 legacy rides
+         * the §7.3 whole-span reproject (no per-vertex tomap). */
+        if (b->obj_tag == 0u) return b->dbg_state;
+        uint32_t to_sxy;
+        if (!tomap_lookup(b->to_span_id, &entry, &to_sxy))
+            return OPENPETE_DBGST_VERT_MISS;
+        return b->dbg_state;                /* HEUR_PAIRED or NONE */
+    }
+    return OPENPETE_DBGST_NONE;
+}
+
 int openpete_render_matcher_is_smoothed(const int16_t* p) {
     uint32_t key = ((uint32_t)(uint16_t)p[0]) |
                    (((uint32_t)(uint16_t)p[1]) << 16);

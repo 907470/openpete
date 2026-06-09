@@ -94,6 +94,35 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
  * vfp-matched / non-UI) this render. Alpha-independent. Drives the
  * OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED solid-red overlay. */
 int openpete_render_matcher_is_smoothed(const int16_t* p);
+
+/* §12.2 overlay v2 — per-vertex interpolation-state classifier for the
+ * F9 highlight. Every snap/fallback cause gets its own color so a
+ * visual artifact names its mechanism on sight:
+ *   TAG_ABSENT   red      tagged batch, no counterpart in "to"
+ *                         (despawned moby / strip culled out) → frozen
+ *   TAG_INSANE   yellow   counterpart rejected by tagged_pair_sane
+ *                         (world count-shift / moby teleport-shape) → frozen
+ *   CORR_FROZEN  orange   whole-batch corr-gate freeze (animating mesh /
+ *                         partial strip correspondence)
+ *   HEUR_PAIRED  magenta  centroid-hash pairing (untagged renderers
+ *                         only post-F5c — particles/flames/shadows)
+ *   LEGACY_WORLD blue     obj_tag==0 world paired by emission ordinal
+ *                         (§7.3 composite-reproject path)
+ *   VERT_MISS    cyan     batch paired but THIS vertex has no tomap
+ *                         counterpart (animated v_local churn /
+ *                         culled-in vert) → vertex frozen
+ * NONE (0) = healthy: interpolating or static. The overlay paints
+ * moving-and-healthy green from the applied-delta hook instead. */
+enum {
+    OPENPETE_DBGST_NONE = 0,
+    OPENPETE_DBGST_TAG_ABSENT,
+    OPENPETE_DBGST_TAG_INSANE,
+    OPENPETE_DBGST_CORR_FROZEN,
+    OPENPETE_DBGST_HEUR_PAIRED,
+    OPENPETE_DBGST_LEGACY_WORLD,
+    OPENPETE_DBGST_VERT_MISS
+};
+int openpete_render_matcher_debug_state(const int16_t* p);
 /* 0/1. Seeded from CLI/env in run.c, live-toggled by F9. */
 extern int g_openpete_dbg_highlight_smoothed;
 /* 0/1. Black-out the window on intermediate presents (presentation
