@@ -119,6 +119,43 @@ void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
      * override is requested. */
     if (opts->aspect_w_over_h > 0.0f) {
         openpete_disp_w_factor = opts->aspect_w_over_h / (4.0f / 3.0f);
+        /* Cap the widening factor.
+         *
+         * Hard math ceiling: the GTE stores screen-X as signed 16-bit, and
+         * a visible right-edge vertex projects to SX = 512*factor. So
+         * 512*factor <= 32767 -> factor <= 63.998 (~768:9, ~176.2 deg FOV)
+         * is the absolute representable maximum; beyond it visible geometry
+         * saturates. (FOV asymptotes to 180 deg only at factor = infinity.)
+         *
+         * Practical ceiling (lower): a render-time, factor-dependent prim
+         * buffer miscomputes its base at high factor and overruns the
+         * gameplay globals (g_Gamestate etc.), hanging main(). The overflow
+         * is prim-count-driven (more visible geometry at wide FOV) and
+         * LAYOUT-SENSITIVE / non-monotonic in factor: empirically factor 32
+         * (384:9) survives the whole demo deep, 38 hangs at vbl 1550, yet 40
+         * passed a shorter run — so the exact edge shifts with build and
+         * platform. We therefore default-cap conservatively at 16 (192:9,
+         * ~165 deg FOV — already 6x the widest real display and within ~11
+         * deg of the 176 deg int16 ceiling). On a tested config you can push
+         * via OPENPETE_MAX_ASPECT_FACTOR (32 cleared the demo here). The
+         * proper fix that unlocks the full 768:9 ceiling is to relocate the
+         * offending prim buffer into a virtualized region, so its overflow
+         * discards via mem_ptr instead of corrupting RAM. */
+        float max_factor = 16.0f;  /* conservative; int16 ceiling is 63.998 */
+        if (getenv("OPENPETE_MAX_ASPECT_FACTOR")) {
+            float v = (float)atof(getenv("OPENPETE_MAX_ASPECT_FACTOR"));
+            if (v > 0.0f) max_factor = v;
+        }
+        if (openpete_disp_w_factor > max_factor) {
+            OPL_WARN_F("aspect", "aspect %.4f -> factor %.2f exceeds cap "
+                       "%.2f; clamping (FOV is already ~%.0f deg; raise via "
+                       "OPENPETE_MAX_ASPECT_FACTOR, int16 ceiling 63.998)",
+                       (double)opts->aspect_w_over_h,
+                       (double)openpete_disp_w_factor, (double)max_factor,
+                       (double)(2.0 * atan(160.0 * max_factor / 341.0)
+                                * 180.0 / M_PI));
+            openpete_disp_w_factor = max_factor;
+        }
         OPL_INFO_F("aspect", "Hor+ widescreen: aspect=%.4f -> "
                    "disp_w_factor=%.4f (GTE offset 256 -> ~%d, GL ortho "
                    "widens via PsyCross g_psyx_render_aspect_factor; VRAM "
