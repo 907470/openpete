@@ -147,6 +147,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             LABELS "determinism"
             TIMEOUT 30
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+        # Channel signature anchors (hook-anchor plan step 2): calibrate +
+        # verify that every determinism-critical channel site is uniquely
+        # anchorable by an instruction-pattern signature (local or
+        # function-scoped) in the reference binary, and that the matcher
+        # relocates a spliced window (self-test). Skips cleanly if the regen
+        # artifacts (PSX.EXE / discovered_functions.log) aren't present.
+        add_test(NAME channel_signatures
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_channel_signatures.py
+                         --out ${CMAKE_CURRENT_BINARY_DIR}/channel_signatures.txt)
+        set_tests_properties(channel_signatures PROPERTIES
+            LABELS "determinism"
+            TIMEOUT 120
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
     # PSX oracle gate — verify openpete gameplay-state RAM matches a

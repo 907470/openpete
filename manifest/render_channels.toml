@@ -80,6 +80,7 @@ substitution_sites = [
     { addr = 0x80020AB8, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # specular
     { addr = 0x80022C0C, dest = "rt", operand = "rs,gte27",    kind = "replace_call", hook = "psx_runtime_cone_widen_shaded"  },  # shaded
 ]
+determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_native_cone_pass"
 verified_against = ["aspect_determinism"]
 state_regions    = []
@@ -577,6 +578,7 @@ frames (hash + position log)."""
 substitution_sites = [
     { addr = 0x80058648, dest = "rd", operand = "void", kind = "replace_call", hook = "psx_runtime_sparkle_canon_sx" },  # sll $a1,$a3,16
 ]
+determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "openpete_canonical_sx2_q16"
 verified_against = []
 state_regions    = ["g_Sparkles_pool"]
@@ -686,6 +688,7 @@ substitution_sites = [
     # 4-vertex strip cull entry sll: OR over the FIFO tail, return $at<<16.
     { addr = 0x800576EC, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_part_cull_4vert" },  # 4-vertex chain entry
 ]
+determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_native_part_pass"
 verified_against = []
 state_regions    = ["g_Particles_pool"]
@@ -1268,6 +1271,7 @@ substitution_sites = [
     { addr = 0x8001F2E8, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # regular
     { addr = 0x80020A94, operand = "rd", kind = "append_call", hook = "psx_runtime_dist_gate_upper" },  # specular
 ]
+determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_dist_gate_lower / _upper (-> psx_runtime_native_dist_pass)"
 verified_against = ["aspect_determinism", "psx_oracle_match"]
 state_regions    = []  # substitution-granularity + oracle verified; see note
@@ -1363,6 +1367,7 @@ substitution_sites = [
     { addr = 0x8001EDCC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
     { addr = 0x8001EDD4, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
 ]
+determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_polybuf_to_canon"
 verified_against = ["aspect_determinism", "psx_oracle_match"]
 state_regions    = ["g_HudMobys"]

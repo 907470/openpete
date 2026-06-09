@@ -392,4 +392,14 @@ echo "[regen] Generating $OUT/spyro_overlay_table.c (${#OVERLAY_NAMES[@]} overla
     echo "const size_t spyro_overlay_table_count = sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);"
 } > "$OUT/spyro_overlay_table.c"
 
+# Calibrate + verify signature anchors for the determinism-critical channels
+# from the freshly-recompiled reference binary (needs discovered_functions.log
+# for the function-scoped tier). Fails the regen if any determinism-critical
+# site can't be uniquely anchored — the Tier-3 (romhack) prerequisite.
+echo "[regen] Generating $OUT/channel_signatures.txt (determinism-critical anchors)"
+python3 tools/gen_channel_signatures.py \
+    --manifest manifest/render_channels.toml \
+    --exe games/spyro-1/spyro-1/build/PSX.EXE \
+    --out "$OUT/channel_signatures.txt"
+
 echo "[regen] Done — rebuild the project to pick up the new C output."
