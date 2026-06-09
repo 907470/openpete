@@ -868,7 +868,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x23: code = translate_subu(instr); break;    // subu
-            case 0x24: code = translate_and(instr); break;     // and
+            case 0x24:                                          // and
+                /* AppendCall: generic (canonical and emitted verbatim
+                 * first; the appended call is host-side only). Used by
+                 * channel world_geo_vertex_src's refine marker — the
+                 * near-clip re-RTPS path's `and $a3,$a3,$a2` mask at
+                 * 0x80026A74 is the last unconditionally-executed
+                 * non-cop2 instruction before the refinement RTPS. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    code = translate_and(instr)
+                         + emit_channel_append_call(_cs->second, instr);
+                } else {
+                    code = translate_and(instr);
+                }
+                break;
             case 0x25: code = translate_or(instr); break;      // or
             case 0x26:                                          // xor
                 /* §7.5-R3 dominant-terrain world-geo tag hook (channel

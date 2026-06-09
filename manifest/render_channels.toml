@@ -440,6 +440,72 @@ state_regions    = []  # render-side identity tag; no state written
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
+name        = "world_geo_vertex_src"
+status      = "audited_clean"
+description = """
+transform-interp PHASE-D: source-stable per-vertex WORLD keys. The
+PHASE-B per-strip emission ordinal shifts whenever a strip's emitted/
+cached vertex count varies (sxy-key cache eviction by animating mobys
+sharing a screen pixel; near-clip refinement extra entries) — every
+later vertex then pairs with its NEIGHBOR (spurious deltas, the
+"green flicker on a still camera") or the count-eq gate freezes the
+strip (the "yellow flicker"). The fix keys each terrain vertex by its
+SOURCE ADDRESS in strip data, which the §7.5 envvert probe validated
+as 100% camera-free and per-vertex stable.
+
+The stream-variant loops in func_800258F0 (dominant .L80026228 + the
+three-loop family entered at .L800267E4) software-pipeline one
+packed-vertex `lw $at,0($t7); addi $t7,4` per RTPS, prefetching one
+word ahead — at RTPS time the NEXT vertex's load already fired, so a
+"last load address" stash would be off by one. Each vertex-load site
+instead PUSHES its effective load address (operand="ea") into a small
+FIFO (openpete_world_geo_push_vsrc) and the GTE cache emit POPS the
+oldest (openpete_world_geo_take_vkey): the prologue primes two, each
+iteration pushes/pops one, so pop order equals vertex order exactly.
+The strip-head hooks (channel world_geo_strip_tag) reset the FIFO,
+discarding the final iteration's prefetch overrun.
+
+The near-clip refinement path (.L800269CC loop, 0x80026A58-26A84)
+re-reads V0 from the GTE, scales it x16 and RTPS's the SAME vertex
+again — that RTPS must NOT pop. The marker hook
+(openpete_world_geo_mark_refine, operand="void") on the refine path's
+`and $a3,$a3,$a2` mask (the last unconditionally-executed non-cop2
+instruction before the refinement RTPS) makes the next take_vkey
+reuse the previous key.
+
+The subdivided/LOD variants (RTPS 0x80027A64 / 0x80028180 /
+0x80028C54 / 0x800299B0) load corner verts indirectly through index
+words and synthesize scratchpad midpoints — no per-vertex source
+pointer exists, so they push nothing and take_vkey falls back to the
+PHASE-B counter. Key families are distinguished by bit31 (source keys
+are KSEG0 addresses): the matcher keeps the count-eq gate only for
+counter-keyed strips.
+
+READ-ONLY w.r.t. gameplay: the appended calls only stash host-side
+values consumed by the render cache + interpolation matcher; no PSX
+RAM, cpu state, or gameplay-readable byte is written (the original
+lw / and is emitted verbatim before the call — same
+world_geo_strip_tag precedent)."""
+# GENERATED (append_call): push sites pass the lw's effective address
+# (operand="ea" = base reg + sign-extended offset); the refine marker
+# passes nothing (operand="void").
+substitution_sites = [
+    { addr = 0x80026274, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant prologue word 0: lw $at,0($t7)
+    { addr = 0x800262B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant prologue word 1: lw $at,0($t7)
+    { addr = 0x800262D0, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant loop .L800262C0: lw $at,0($t7)
+    { addr = 0x80026864, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # family prologue word 0:   lw $at,0($t7)
+    { addr = 0x80026890, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # family prologue word 1:   lw $at,0($t7)
+    { addr = 0x800268D8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L800268C8 (no-clip):  lw $at,0($t7)
+    { addr = 0x80026940, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L80026930 (clip):     lw $at,0($t7)
+    { addr = 0x800269DC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L800269CC (nearclip): lw $at,0($t7)
+    { addr = 0x80026A74, operand = "void", kind = "append_call", hook = "openpete_world_geo_mark_refine" }, # refine path: and $a3,$a3,$a2 before re-RTPS
+]
+verdict_fn       = "openpete_world_geo_push_vsrc"
+verified_against = ["aspect_determinism", "psx_oracle_20k"]
+state_regions    = []  # render-side identity key; no state written
+doc              = "notes/plans/openpete-transform-interp.md"
+
+[[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
 status      = "gated"
 description = """

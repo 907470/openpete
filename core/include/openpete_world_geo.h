@@ -38,6 +38,12 @@ extern "C" {
  * Free in 2 MB-RAM KSEG vaddrs ⇒ disjoint from moby vaddrs and 0. */
 #define OPENPETE_WORLD_GEO_TAG_BIT 0x40000000u
 
+/* PHASE-D key-family discriminator: world_vkey values with this bit
+ * set are vertex SOURCE ADDRESSES (KSEG0 pointers); clear means the
+ * PHASE-B per-strip emission ordinal (small int). Not an artificial
+ * marker — KSEG0 addresses simply have bit31 set. */
+#define OPENPETE_WORLD_VKEY_SRC_BIT 0x80000000u
+
 /* Stash the strip-base pointer the GTE will project next. Called
  * from the recompiler-emitted prologue of the dominant terrain
  * strip loop in func_800258F0. */
@@ -53,13 +59,37 @@ void openpete_world_geo_clear(void);
  * `strip ? (strip | OPENPETE_WORLD_GEO_TAG_BIT) : 0`. */
 uint32_t openpete_world_geo_get_current(void);
 
-/* PHASE-B: return the current strip's emission ordinal and post-
- * increment it. set_current resets the counter to 0, so the Nth
- * vertex GTE-projected within a strip gets ordinal N. G1-stable
- * emission order ⇒ (strip, ordinal) is an exact cross-frame
- * per-vertex world key. Called once per world vertex from
- * gte_rtps_internal's cache emit. */
-uint16_t openpete_world_geo_next_vidx(void);
+/* PHASE-D: source-stable per-vertex world keys.
+ *
+ * The stream-variant terrain loops (dominant + the 3-loop family)
+ * load one packed vertex word per RTPS through a software-pipelined
+ * `lw; addi +4` stream — at RTPS time the NEXT vertex's load already
+ * fired, so a "last load address" stash would be off by one. Instead
+ * each vertex-load site pushes its effective load address into a
+ * small FIFO and the GTE cache emit pops the OLDEST: pipelining
+ * keeps the queue depth constant (prologue primes 2, each iteration
+ * push 1 / pop 1) so pop order equals vertex order exactly.
+ *
+ * The near-clip refinement path (one of the family loops re-reads V0
+ * from the GTE, scales it x16 and RTPS's the SAME vertex again) must
+ * NOT pop — a recompiler marker on a refine-path-only instruction
+ * arms `mark_refine`, and the next take reuses the last key.
+ *
+ * The subdivided/LOD variants (indexed corner loads + synthesized
+ * scratchpad midpoints) have no per-vertex source pointer; they push
+ * nothing and fall back to the PHASE-B per-strip emission counter.
+ * The two key families are distinguishable by bit31: source keys are
+ * KSEG0 addresses (bit31 set), counter keys are small ints (clear) —
+ * the matcher uses this to retire the count-eq gate exactly where
+ * source keys make it redundant. */
+void openpete_world_geo_push_vsrc(uint32_t src_addr);
+void openpete_world_geo_mark_refine(void);
+
+/* Per-world-vertex key, called once per world vertex from
+ * gte_rtps_internal's cache emit: refine-reuse > FIFO pop (source
+ * key) > per-strip counter (PHASE-B fallback). set_current resets
+ * FIFO + counter + refine state. */
+uint32_t openpete_world_geo_take_vkey(void);
 
 #ifdef __cplusplus
 }

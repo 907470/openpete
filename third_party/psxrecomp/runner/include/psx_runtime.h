@@ -522,7 +522,14 @@ uint32_t openpete_obj_id_get(void);
 void     openpete_world_geo_set_current(uint32_t strip_addr);
 void     openpete_world_geo_clear(void);
 uint32_t openpete_world_geo_get_current(void);
-uint16_t openpete_world_geo_next_vidx(void);
+/* PHASE-D source-stable vertex keys: the vertex-load AppendCall hooks
+ * push effective load addresses (channel world_geo_vertex_src), the
+ * refine marker makes the near-clip re-RTPS reuse the same key, and
+ * take_vkey is the per-world-vertex consumer in gte_rtps_internal
+ * (source address, or PHASE-B per-strip ordinal fallback). */
+void     openpete_world_geo_push_vsrc(uint32_t src_addr);
+void     openpete_world_geo_mark_refine(void);
+uint32_t openpete_world_geo_take_vkey(void);
 
 /* Per-renderer identity-tag AppendCall wrappers (defined in
  * core/runtime/openpete_obj_id.c). READ-ONLY host-side identity tags.

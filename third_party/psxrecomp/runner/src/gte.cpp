@@ -320,17 +320,18 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
             uint32_t wg = openpete_world_geo_get_current();
             if (wg) {
                 e.obj_tag = wg | OPENPETE_WORLD_GEO_TAG_BIT;
-                /* PHASE-B: per-strip emission ordinal — exact cross-
-                 * frame per-vertex world key (v_local is camera-
+                /* PHASE-D source address (stream variants) or PHASE-B
+                 * per-strip ordinal (LOD-variant fallback) — exact
+                 * cross-frame per-vertex world key (v_local is camera-
                  * relative for terrain and useless as a key). */
-                e.world_vidx = openpete_world_geo_next_vidx();
+                e.world_vkey = openpete_world_geo_take_vkey();
             } else {
                 /* Per-object identity (regular/specular/shaded/Spyro/
                  * cyclorama). Read the dedicated obj_id channel, NOT the
                  * widescreen UI classifier (openpete_ui_moby), so the two
                  * concerns stay decoupled. */
                 e.obj_tag    = openpete_obj_id_get();
-                e.world_vidx = 0;
+                e.world_vkey = 0;
             }
         }
         openpete_render_cache_emit_vertex(&e);

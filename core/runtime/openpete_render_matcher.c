@@ -144,6 +144,12 @@ typedef struct matcher_batch {
     uint32_t real_span;
     uint32_t tag_rank;
 
+    /* PHASE-D: 1 if this world strip's vertices carry SOURCE-ADDRESS
+     * keys (world_vkey bit31 — KSEG0 addresses) rather than PHASE-B
+     * emission ordinals. Source keys are immune to emission-count
+     * variation, so the F5b count-eq gate is skipped for these. */
+    int world_src_keyed;
+
     /* §12.2 overlay v2: why this batch is (not) interpolating, set
      * during the span-pairing pass. OPENPETE_DBGST_* in the header.
      * Purely diagnostic — read only by the F9 highlight overlay. */
@@ -444,10 +450,11 @@ static uint64_t fnv1a64(const void* data, size_t len) {
  *
  *   - MOBY / untagged: the 3 model-local v_local shorts (stable
  *     because moby v_local is genuinely model-local).
- *   - WORLD-tagged (§7.5-R3 PHASE-B): the per-strip emission ordinal
- *     world_vidx. Terrain v_local is camera-RELATIVE and churns
- *     every frame, so it's useless as a key; G1-stable emission
- *     order makes (span, world_vidx) an exact cross-frame key.
+ *   - WORLD-tagged: world_vkey — the vertex's SOURCE ADDRESS in strip
+ *     data (PHASE-D, stream variants; drop-immune) or the per-strip
+ *     emission ordinal (PHASE-B fallback, subdivided/LOD variants).
+ *     Terrain v_local is camera-RELATIVE and churns every frame, so
+ *     it's useless as a key.
  *
  * Including the span scopes the lookup to the matched batch pair. */
 static inline uint64_t tomap_key_e(uint32_t to_span_id,
@@ -455,9 +462,9 @@ static inline uint64_t tomap_key_e(uint32_t to_span_id,
     /* Fixed byte layout, NO struct (padding bytes would be
      * uninitialized → nondeterministic hash → every lookup misses). */
     if (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) {
-        uint8_t kb[6];
-        memcpy(kb,     &to_span_id,   4);
-        memcpy(kb + 4, &e->world_vidx, 2);
+        uint8_t kb[8];
+        memcpy(kb,     &to_span_id,    4);
+        memcpy(kb + 4, &e->world_vkey, 4);
         return fnv1a64(kb, sizeof(kb));
     }
     uint8_t kb[10];
@@ -632,6 +639,11 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         b->obj_tag = e->obj_tag;
         /* #29: raw (pre-eff_span) emission-order span for tag_rank. */
         b->real_span = e->matrix_span_id;
+        /* PHASE-D: key family — a strip is rendered wholly by one
+         * loop variant, so the first vertex speaks for the batch. */
+        b->world_src_keyed =
+            (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u &&
+            (e->world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) != 0u;
     }
     accumulate_vertex(b, e);
     /* For the "to" generation (gen_prev = G(N)) also record every
@@ -768,6 +780,14 @@ static int world_count_eq_gate(void) {
 static int tagged_pair_sane(const matcher_batch_t* a,
                             const matcher_batch_t* b) {
     if (a->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) {
+        /* PHASE-D: source-keyed strips are immune to the ordinal-
+         * shift failure the count-eq gate exists for — a dropped/
+         * evicted vertex just misses its own key while every other
+         * vertex keeps its exact correspondence. Gating them on
+         * count equality would only re-create the yellow still-
+         * camera flicker (cache-eviction churn from animating mobys
+         * sharing a screen pixel perturbs counts every frame). */
+        if (a->world_src_keyed && b->world_src_keyed) return 1;
         if (world_count_eq_gate() && a->vertex_count != b->vertex_count)
             return 0;
         return 1;

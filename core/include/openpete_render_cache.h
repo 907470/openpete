@@ -40,16 +40,20 @@ typedef struct openpete_render_cache_entry {
     int32_t  ofx;            /* canonical projection state (pre-Hor+) */
     int32_t  ofy;
     uint16_t h;
-    /* transform-interp §7.5-R3 PHASE-B: per-strip emission ordinal for
-     * WORLD-tagged geometry (obj_tag has the world bit). Assigned by
-     * the world-geo side-channel: reset to 0 at each strip-entry
-     * substitution, post-incremented per projected vertex. G1 proved
-     * emission order is cross-frame stable, so (eff_span, world_vidx)
-     * is an exact per-vertex world key — unlike v_local which is
-     * camera-relative for terrain and churns every frame. Meaningless
-     * (0) for moby / untagged geometry. Reuses the old _pad1 slot —
-     * no struct-size change. */
-    uint16_t world_vidx;
+    /* transform-interp §7.5-R3 per-vertex world key for WORLD-tagged
+     * geometry (obj_tag has the world bit), from the world-geo side-
+     * channel. Two families, distinguished by bit31:
+     *   - PHASE-D (bit31 set): the vertex's SOURCE ADDRESS in strip
+     *     data, pushed by the recompiler's vertex-load hooks in the
+     *     stream-variant terrain loops. Stable under emission-count
+     *     variation (a dropped vertex just misses; neighbors keep
+     *     their own keys).
+     *   - PHASE-B (bit31 clear): per-strip emission ordinal, the
+     *     fallback for the subdivided/LOD variants whose midpoint
+     *     vertices are synthesized (no source pointer). Exact only
+     *     while per-strip emission counts hold.
+     * Meaningless (0) for moby / untagged geometry. */
+    uint32_t world_vkey;
     /* transform-interp §4: PSX vaddr of the moby that produced this
      * vertex (from the recompiler's per-moby ui-moby capture), or 0
      * for world / non-moby geometry. Real cross-frame identity,
