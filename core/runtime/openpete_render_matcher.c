@@ -903,6 +903,12 @@ void openpete_render_matcher_prepare_substitute(void) {
                 cb->object_id = s_prev->batches[pi].object_id;
                 continue;
             }
+            /* Authoritative identity found no sane prior incarnation —
+             * issue a fresh id. Falling through to the centroid-hash
+             * heuristic would re-pair a KNOWN-identity batch with
+             * whatever neighbor shares its bucket (§11 F5c spikes). */
+            cb->object_id = s_next_object_id++;
+            continue;
         }
         /* World (untagged): deterministic ordinal+signature identity
          * (G1-backed) before the centroid heuristic. */
@@ -977,8 +983,18 @@ void openpete_render_matcher_prepare_substitute(void) {
                 cb->to_span_id   = tb->matrix_span_id;
                 cb->has_future_anchor = 1;
                 paired++;
-                continue;
             }
+            /* Tagged batches NEVER fall through to the centroid-hash
+             * heuristic. If the authoritative tag has no sane
+             * counterpart in "to" (despawned moby / culled-out strip /
+             * count-shifted strip), the right outcome is UNPAIRED →
+             * the batch freezes at its lagged pose this cycle. The
+             * heuristic would instead pair it with whatever neighbor
+             * shares its centroid bucket — under camera rotation that
+             * paired count-rejected edge strips with adjacent strips,
+             * and the cross-strip ordinal tomap flung their verts
+             * across the screen (§11 F5c "spikes"). */
+            continue;
         }
         /* World (untagged): ordinal+signature span pairing (Option B)
          * before centroid-hash. Same downstream per-vertex tomap. */
