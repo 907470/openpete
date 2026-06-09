@@ -186,13 +186,13 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         /* Widen psxrecomp's per-vertex clip mask so the env renderer's
          * `andi SXY2, 0xFE00` cull (r_environment.s:714, 1145, 1255)
          * doesn't drop widescreen-extra primitives whose SX legitimately
-         * exceeds 512. 0xF800 admits SX in [-2048, 2047], plenty for
-         * 21:9 (max ~853). Off-screen primitives still get GPU-clipped
-         * to drawenv [0,512]; this just keeps them out of the early-out
-         * AND-fold. See third_party/psxrecomp/runner/include/psx_runtime.h. */
+         * exceeds 512. The mask is set below, after thresh_factor is
+         * known, because it must track the widened framebuffer edge:
+         * a fixed 0xF800 only admits |SX| < 2048 = 512*4, so it culled
+         * the outer half of env geometry at factors above 4 (e.g. 96:9
+         * = factor 8, edge SX 4096). See psx_runtime.h. */
         extern uint32_t psx_runtime_clip_x_mask;
         extern uint32_t psx_runtime_clip_x_threshold;
-        psx_runtime_clip_x_mask      = 0xF800u;
         /* Edge = 512 * factor (visible right edge in PSX coords). Capped at
          * 1.5: above that, the original Spyro poly buffer (0x1c000 bytes
          * per slot in src/4BEF8.c) overflows when env emits the extra
@@ -262,6 +262,32 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         }
         uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
         psx_runtime_clip_x_threshold = edge << 16;
+
+        /* Per-vertex SX-overflow mask, scaled to the widened edge. The
+         * env cull is `(SX & mask) != 0 -> drop`; native 0xFE00 admits
+         * SX in [0, 512), and each power-of-two doubling of the edge
+         * frees one more low bit (0xFC00 <1024, 0xF800 <2048, 0xF000
+         * <4096, 0xE000 <8192). Pick the smallest power-of-two admit
+         * bound >= 512*thresh_factor so every vertex up to the rendered
+         * right edge survives the AND-fold while off-screen verts (and
+         * negatives) are still rejected. Without this the mask would
+         * cull the outer half of env geometry beyond factor 4. Capped
+         * at 0x4000 (mask 0xC000) so the cull stays meaningful even at
+         * absurd factors; the GTE SXY saturation bound (0x400*factor)
+         * is the real off-screen limit. */
+        {
+            uint32_t admit = (uint32_t)ceilf(512.0f * thresh_factor);
+            uint32_t pow2  = 0x200u;
+            while (pow2 < admit && pow2 < 0x4000u) pow2 <<= 1;
+            psx_runtime_clip_x_mask = (~(pow2 - 1u)) & 0xFFFFu;
+            /* Diagnostic override for A/B (e.g. 0xF800 = the old fixed
+             * factor-4 ceiling) — env-gated, default off. */
+            if (getenv("OPENPETE_CLIP_X_MASK")) {
+                psx_runtime_clip_x_mask =
+                    (uint32_t)strtoul(getenv("OPENPETE_CLIP_X_MASK"), NULL, 0)
+                    & 0xFFFFu;
+            }
+        }
         /* Canonical 4:3 right-edge in widened-SX coords: native edge
          * 0x200 plus the OFX delta-shift `(factor - 1) * 256`. The
          * particle screen-cull substitution gates m_03 stores against
@@ -290,9 +316,10 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
                    (unsigned)delta_ofx_q16,
                    (double)delta_ofx_q16 / 65536.0);
         OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "
-                   "0xFE00 -> 0xF800 (env SX-overflow), clip_x_threshold "
+                   "0xFE00 -> 0x%04X (env SX-overflow), clip_x_threshold "
                    "0x02000000 -> %u<<16 (env+cyclorama+moby+particles "
                    "right-edge cull, factor=%.3f)",
+                   (unsigned)psx_runtime_clip_x_mask,
                    (unsigned)edge,
                    (double)(thresh_factor));
 
