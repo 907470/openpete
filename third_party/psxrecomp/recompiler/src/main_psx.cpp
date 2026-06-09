@@ -181,6 +181,60 @@ static bool parse_channel_sites(const std::string& path,
     return true;
 }
 
+// Anchor-resolution / fail-safe pass (hook-anchor plan step 1 + the cached-
+// address verification tier of the per-binary anchor model). For every
+// channel site that falls within THIS binary's range, decode the instruction
+// at its cached address and verify it matches the site's kind: OffsetAdd must
+// be an `addi` with the recorded immediate; ConstLoad must be a lui/addiu/ori
+// with the recorded immediate. Append/ReplaceCall are opcode-agnostic (they
+// attach to many opcodes), so in-range is the only check. Sites out of this
+// binary's range belong to another binary (overlay) and are skipped.
+//
+// A mismatch means the cached address no longer resolves to its anchored
+// instruction — i.e. the binary differs from the one the manifest was
+// calibrated against (a romhack / custom build, or a stale manifest). The
+// substitution would then silently NOT fire; we WARN loudly instead of
+// corrupting an unrelated instruction (graceful degradation / fail-safe).
+// For the retail SCUS-94228 main EXE every in-range anchor must verify clean.
+static void verify_channel_anchors(
+    const PSXRecomp::PS1Executable& exe,
+    const std::map<uint32_t, PSXRecomp::ChannelSite>& sites,
+    int& in_range, int& mismatched) {
+    in_range = 0;
+    mismatched = 0;
+    for (const auto& kv : sites) {
+        uint32_t addr = kv.first;
+        const PSXRecomp::ChannelSite& site = kv.second;
+        auto w = exe.read_word(addr);
+        if (!w.has_value()) continue;  // belongs to another binary (overlay)
+        ++in_range;
+        uint32_t instr = *w;
+        uint32_t op = (instr >> 26) & 0x3F;
+        uint16_t imm = (uint16_t)(instr & 0xFFFFu);
+        bool ok = true;
+        const char* why = "";
+        if (site.kind == PSXRecomp::ChannelSite::OffsetAdd) {
+            if (op != 0x08u) { ok = false; why = "expected addi (op 0x08)"; }
+            else if (imm != (uint16_t)site.imm) { ok = false; why = "immediate mismatch"; }
+        } else if (site.kind == PSXRecomp::ChannelSite::ConstLoad) {
+            if (op != 0x0Fu && op != 0x09u && op != 0x0Du) {
+                ok = false; why = "expected lui/addiu/ori";
+            } else if (imm != (uint16_t)site.imm) {
+                ok = false; why = "immediate mismatch";
+            }
+        }
+        // AppendCall / ReplaceCall: opcode-agnostic; in-range is sufficient.
+        if (!ok) {
+            ++mismatched;
+            fmt::print(stderr,
+                "  WARN: channel anchor 0x{:08X} ({}) {} — cached address does "
+                "not resolve to its anchored instruction (instr=0x{:08X}); "
+                "substitution will NOT fire (binary differs from manifest)\n",
+                addr, site.symbol, why, instr);
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -614,8 +668,21 @@ int main(int argc, char** argv) {
             fmt::print(stderr, "error: --channel-sites: {}\n", err);
             return 1;
         }
-        fmt::print("Channel sites: {} ({} substitution sites)\n",
-                   channel_sites_path, channel_sites.size());
+        // Anchor-resolution / fail-safe verification against THIS binary.
+        int anchors_in_range = 0, anchors_mismatched = 0;
+        verify_channel_anchors(*exe, channel_sites,
+                               anchors_in_range, anchors_mismatched);
+        fmt::print("Channel sites: {} ({} total, {} in-range anchors verified, "
+                   "{} mismatched)\n",
+                   channel_sites_path, channel_sites.size(),
+                   anchors_in_range - anchors_mismatched, anchors_mismatched);
+        if (anchors_mismatched > 0) {
+            fmt::print(stderr,
+                "warning: {} channel anchor(s) did not resolve to their "
+                "cached instruction — those substitutions are disabled "
+                "(see WARN lines above). For retail SCUS-94228 this must be 0.\n",
+                anchors_mismatched);
+        }
         codegen.set_channel_sites(std::move(channel_sites));
     }
 
