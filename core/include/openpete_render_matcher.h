@@ -82,6 +82,14 @@ typedef struct {
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
     const int16_t* p, float alpha);
 
+/* PGXP-aware variant. pgxp_base != 0 means the caller float-positioned
+ * this vertex's GL base via ApplyVertexPGXP, so the delta is computed
+ * float-endpoint-to-float-endpoint (sub-pixel consistent) instead of
+ * int16-to-int16; falls back to the int delta if either endpoint can't
+ * be float-projected. The legacy query above ≡ pgxp_base=0. */
+openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
+    const int16_t* p, float alpha, int pgxp_base);
+
 /* Debug viz: 1 iff this vertex's batch is being smoothed (rigid /
  * vfp-matched / non-UI) this render. Alpha-independent. Drives the
  * OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED solid-red overlay. */

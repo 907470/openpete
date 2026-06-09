@@ -1156,6 +1156,19 @@ static int world_reproject(const int16_t rt[3][3], const int32_t tr[3],
 
 openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha) {
+    return openpete_render_matcher_substitute_query_px(p, alpha, 0);
+}
+
+/* pgxp_base != 0 ⇒ the caller (ApplyVertexPGXP) float-positioned this
+ * vertex's GL base at the cache entry's sub-pixel projection. The delta
+ * must then be float-endpoint-to-float-endpoint: an int16-SXY delta on
+ * a float base lands every intermediate present at
+ * float(K-1) + α·(int(K)−int(K-1)) = float(K) + (frac(K-1)−frac(K)),
+ * a per-vertex ±1px error that changes every sim tick — re-adding at
+ * 30 Hz exactly the quantization wobble PGXP exists to remove
+ * (transform-interp plan §11 F5). */
+openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
+        const int16_t* p, float alpha, int pgxp_base) {
     openpete_substitute_delta_t out = { 0.0f, 0.0f };
     if (!g_openpete_interp_enabled) return out;  /* 'I' kill switch */
     if (alpha <= 0.0f) return out;
@@ -1270,8 +1283,25 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query(
             if (mg >= 4u) s_wd_q_ge4++;
             if (mg > s_wd_q_maxmag) s_wd_q_maxmag = mg;
         }
-        float dx = (float)((int)to_sx - (int)from_sx) * alpha;
-        float dy = (float)((int)to_sy - (int)from_sy) * alpha;
+        float dx, dy;
+        openpete_pgxp_lookup_t pf_from, pf_to;
+        if (pgxp_base &&
+            openpete_render_cache_pgxp_project(&entry, &pf_from) &&
+            openpete_render_cache_lookup_pgxp_to(to_sxy, &pf_to)) {
+            /* PGXP-consistent: both endpoints at float sub-pixel
+             * precision, and the delta is relative to the same float
+             * "from" the GL base was set to — α=1 lands exactly on
+             * float(K), α=0 exactly on the base. The base offset
+             * (pf_from − int p[]) is already in the GL vertex; only
+             * the motion is added here. */
+            dx = (pf_to.px - pf_from.px) * alpha;
+            dy = (pf_to.py - pf_from.py) * alpha;
+        } else {
+            /* Int path (PGXP off / miss): base is the int16 SXY, so an
+             * int-endpoint delta is self-consistent. */
+            dx = (float)((int)to_sx - (int)from_sx) * alpha;
+            dy = (float)((int)to_sy - (int)from_sy) * alpha;
+        }
         /* Applied-delta clamp — catastrophic safety / kill switch only.
          * True per-vertex motion is already bounded by one game frame;
          * cap=0 disables substitute entirely ("30 Hz look"). */

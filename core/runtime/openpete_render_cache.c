@@ -324,10 +324,12 @@ int openpete_render_cache_lookup_curr_raw(uint32_t sxy_key) {
     return lookup_frame(gen_prev(), sxy_key, NULL);
 }
 
-int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
-                                      openpete_pgxp_lookup_t* out) {
-    openpete_render_cache_entry_t e;
-    if (!openpete_render_cache_lookup_prev(sxy_key, &e)) return 0;
+/* Float-project one cache entry (PGXP core math, factored out of the
+ * keyed lookups so the matcher can project the interpolation "to"
+ * endpoint from an entry it already resolved via the tomap). */
+int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
+                                       openpete_pgxp_lookup_t* out) {
+    const openpete_render_cache_entry_t e = *ep;
 
     /* Compute float-precision SX/SY in PSX pixel space by mirroring
      * the PSX integer projection (gte_rtps_internal lines 247-256)
@@ -467,6 +469,42 @@ int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
 
     out->scr_h = wants_perspective ? fsz : 0.0f;
     return 1;
+}
+
+/* Keyed PGXP lookup for the OT-walker (ApplyVertexPGXP). MUST search
+ * the generation the walked OT was emitted from, or moving vertices
+ * miss (fall back to int16 wobble) — or worse, collide with a
+ * DIFFERENT vertex that landed on the same int SXY in the newer
+ * generation, float-positioning the vertex somewhere wrong entirely.
+ * With frame-gen ON the displayed OT is the LAGGED one (OT#(N-1),
+ * psyq_thunks openpete_render_walk_lagged_ot) → its keys live in
+ * gen_prev2; with the 'I' kill switch OFF the current OT is walked →
+ * gen_prev. Searching gen_prev unconditionally (the pre-2026-06-09
+ * behavior, written before the lagged walk existed) was the "world
+ * geometry unstable under camera motion with PGXP on" bug —
+ * transform-interp plan §11 F5. */
+int openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
+                                      openpete_pgxp_lookup_t* out) {
+    extern int g_openpete_interp_enabled;
+    openpete_render_cache_entry_t e;
+    const int hit = g_openpete_interp_enabled
+        ? openpete_render_cache_lookup_prev2(sxy_key, &e)
+        : openpete_render_cache_lookup_prev(sxy_key, &e);
+    if (!hit) return 0;
+    return openpete_render_cache_pgxp_project(&e, out);
+}
+
+/* Interpolation "to"-endpoint projection: the matcher resolves a lagged
+ * vertex's K-frame int SXY via the tomap, then float-projects the
+ * matching gen_prev (G(N)) entry here so the substitute delta can be
+ * computed float-endpoint-to-float-endpoint (PGXP-consistent) instead
+ * of int-to-int on a float base (which re-quantized every intermediate
+ * present to ±1px of the float path — 30 Hz subpixel oscillation). */
+int openpete_render_cache_lookup_pgxp_to(uint32_t sxy_key,
+                                         openpete_pgxp_lookup_t* out) {
+    openpete_render_cache_entry_t e;
+    if (!openpete_render_cache_lookup_prev(sxy_key, &e)) return 0;
+    return openpete_render_cache_pgxp_project(&e, out);
 }
 
 void openpete_render_cache_for_each_curr_entry(
