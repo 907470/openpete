@@ -1259,7 +1259,11 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          * core/features/widescreen.c:
                          *  - AppendCall: world_geo_strip_tag — six strip-list
                          *    loop heads (0x800267E4/27720/28590/285FC/29500/
-                         *    2956C) append openpete_world_geo_set_current(rt).
+                         *    2956C) append openpete_world_geo_set_current(rt);
+                         *    transform_interp_moby_queue — regular/specular
+                         *    render iter tops (0x8001F800/0x80020F9C) append
+                         *    openpete_moby_render_entry_tag(gp) (identity from
+                         *    the 56-byte render-queue entry at *(gp+52)).
                          *  - ReplaceCall: no_lod m_LodDistance (0x800259B0/
                          *    26214/267B0) + m_CullingDistance (0x80026210) ->
                          *    no_lod_saturate32; moby LP-face load (0x8001FE9C/
@@ -1282,8 +1286,10 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 /* Data-driven lhu channel sites (manifest + --channel-sites):
                  *  - ReplaceCall: no_lod_moby_render_distance_saturate (regular
                  *    / specular / shaded m_Renderer reads) -> no_lod_moby_distance.
-                 *  - AppendCall: transform_interp_moby_queue push (0x8001F268,
-                 *    the cull-pass-confirmed PC) -> openpete_moby_queue_push(sp). */
+                 *  - AppendCall: generic — no lhu AppendCall sites at present
+                 *    (the former transform_interp_moby_queue push at 0x8001F268
+                 *    was retired with the FIFO; identity now comes from the
+                 *    render-queue entry itself — see the lw arm). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
                     && (_cs->second.kind == ChannelSite::AppendCall
@@ -1312,16 +1318,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x29: code = translate_sh(instr); break;     // sh
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw
-                /* g_HudMobys canonicalization (channel polybuf_hudmoby_canonical):
-                 * void ReplaceCall stores that map the host-relocated polybuf
-                 * cursor back to the canonical PSX vaddr before writing the
-                 * gameplay-readable g_HudMobys pointer. Two hooks
-                 * (hudmoby_store / hudmoby_reset_store) in widescreen.c; addresses
-                 * in the manifest. Identity at 4:3 default. */
+                /* Data-driven sw channel sites (manifest + --channel-sites):
+                 *  - ReplaceCall: g_HudMobys canonicalization (channel
+                 *    polybuf_hudmoby_canonical) — void ReplaceCall stores that
+                 *    map the host-relocated polybuf cursor back to the
+                 *    canonical PSX vaddr before writing the gameplay-readable
+                 *    g_HudMobys pointer. Two hooks (hudmoby_store /
+                 *    hudmoby_reset_store) in widescreen.c. Identity at 4:3.
+                 *  - AppendCall: generic (canonical sw emitted verbatim first;
+                 *    the appended call is host-side only). No sw AppendCall
+                 *    sites at present — the short-lived moby-queue clear/push
+                 *    sw sites were retired the same day they landed in favor
+                 *    of reading identity from the render-queue entry (lw arm,
+                 *    transform_interp_moby_queue channel). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
-                    && _cs->second.kind == ChannelSite::ReplaceCall) {
-                    code = emit_channel_replace_call(_cs->second, instr);
+                    && (_cs->second.kind == ChannelSite::AppendCall
+                     || _cs->second.kind == ChannelSite::ReplaceCall)) {
+                    if (_cs->second.kind == ChannelSite::AppendCall)
+                        code = translate_sw(instr)
+                             + emit_channel_append_call(_cs->second, instr);
+                    else
+                        code = emit_channel_replace_call(_cs->second, instr);
                 } else {
                     code = translate_sw(instr);
                 }

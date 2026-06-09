@@ -13,7 +13,6 @@
 #include "openpete_time.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_interp.h"
-#include "openpete_moby_queue.h"
 #include "screenshot.h"
 #include "game_extras.h"
 #include "bk2_movie.h"
@@ -1378,10 +1377,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * is still yielded (consistent RAM). No-op unless
                  * --render-fps > sim rate. */
                 openpete_interp_capture(openpete_frame, op_now());
-
-                /* transform-interp §11 F0: moby-queue push/pop balance
-                 * diagnostic. No-op unless OPENPETE_MOBYQ_DIAG=1. */
-                openpete_moby_queue_diag_tick(openpete_frame);
             }
         }
 

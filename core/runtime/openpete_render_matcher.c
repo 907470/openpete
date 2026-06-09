@@ -683,6 +683,56 @@ static int world_corr_min_pct(void) {
     return v;
 }
 
+/* §5 / §11 F0 defense-in-depth for TAGGED pairs. Real-vaddr identity
+ * pairing deliberately bypasses the centroid-bucket velocity cap (a
+ * fast-moving moby must keep its id), but that left NO guard when the
+ * identity itself is wrong — slot/address reuse (G2: ~18 silent
+ * position-teleports per 543k pairs) or any future tag-plumbing bug
+ * (the moby-queue FIFO desync shuffled ALL tags and stretched
+ * same-class mobys into each other). A same-vaddr pair whose screen
+ * displacement exceeds this bound in one game frame is treated as a
+ * discontinuity: do not pair → the batch freezes one frame (§5 snap
+ * semantics) instead of lerping across the screen. Generous default —
+ * real same-object motion measures ≤ ~30 px/frame; reuse/desync jumps
+ * are typically hundreds. Env-tunable; 0 disables. */
+static int tagged_teleport_px(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TAGGED_TELEPORT_PX");
+                 v = (e && *e) ? atoi(e) : 192;
+                 if (v < 0) v = 0; }
+    return v;
+}
+
+/* Companion shape guard: same instance ⇒ same model ⇒ near-equal
+ * vertex counts across consecutive frames (vstab-verified). A tagged
+ * pair failing this is a wrong-identity pair (reuse swapped the slot
+ * to a different class, or the tag itself is corrupt) — snap.
+ *
+ * MOBY tags only. bit30 WORLD strips also pair by obj_tag, but their
+ * identity (the strip-list pointer) cannot alias the way a reused
+ * moby slot can, and fast camera pans legitimately move strips
+ * thousands of px/frame (PHASE-B measured 2724 px) — the teleport
+ * bound would freeze the world exactly when smoothing matters most.
+ * World keeps its own corr-gate; camera-cut snap is the §5 detector's
+ * job (g_Camera.m_State), not a magnitude heuristic. */
+static int tagged_pair_sane(const matcher_batch_t* a,
+                            const matcher_batch_t* b) {
+    if (a->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) return 1;
+    uint32_t vc_tol = a->vertex_count / 4u;
+    if (vc_tol < 4u) vc_tol = 4u;
+    uint32_t vc_diff = (a->vertex_count > b->vertex_count)
+        ? a->vertex_count - b->vertex_count
+        : b->vertex_count - a->vertex_count;
+    if (vc_diff > vc_tol) return 0;
+    const int cap = tagged_teleport_px();
+    if (cap > 0) {
+        const int32_t dx = b->sxy_centroid[0] - a->sxy_centroid[0];
+        const int32_t dy = b->sxy_centroid[1] - a->sxy_centroid[1];
+        if (abs(dx) + abs(dy) > cap) return 0;
+    }
+    return 1;
+}
+
 /* find-only (batches already exist from sub_scan_cb's prev2 pass). */
 static matcher_batch_t* find_span(matcher_frame_t* f, uint32_t span) {
     for (uint32_t i = 0; i < f->count; ++i)
@@ -821,10 +871,13 @@ void openpete_render_matcher_prepare_substitute(void) {
         /* Authoritative identity first: a tagged moby inherits its
          * prior object_id by real vaddr — no centroid bucket, no
          * velocity cap (a fast-moving moby kept its id wrongly only
-         * because the cap rejected it). World (tag 0) → heuristic. */
+         * because the cap rejected it). World (tag 0) → heuristic.
+         * tagged_pair_sane is the §5 discontinuity guard: a same-vaddr
+         * pair with a teleport-scale jump or a different shape is a
+         * slot reuse / tag bug — issue a fresh id (snap) instead. */
         if (cb->obj_tag != 0u) {
             int pi = find_unconsumed_by_obj_tag(s_prev, cb->obj_tag);
-            if (pi >= 0) {
+            if (pi >= 0 && tagged_pair_sane(cb, &s_prev->batches[pi])) {
                 s_prev->batches[pi].consumed = 1;
                 cb->object_id = s_prev->batches[pi].object_id;
                 continue;
@@ -884,13 +937,15 @@ void openpete_render_matcher_prepare_substitute(void) {
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
         /* Authoritative span pairing for tagged mobys: pair "from"↔
-         * "to" by real vaddr, bypassing centroid hash + velocity/
-         * vertex-count caps (which exist only to reject heuristic
-         * mispairs — real identity needs neither). Downstream per-
-         * vertex tomap lookup keyed by to_span_id is unchanged. */
+         * "to" by real vaddr, bypassing the centroid hash (which exists
+         * only to reject heuristic mispairs — real identity needs no
+         * bucket). tagged_pair_sane (§5 / §11 F0) still applies: on a
+         * teleport-scale jump or shape mismatch the pair is dropped and
+         * the batch freezes one frame instead of stretching. Downstream
+         * per-vertex tomap lookup keyed by to_span_id is unchanged. */
         if (cb->obj_tag != 0u) {
             int ti = find_unconsumed_by_obj_tag(&s_to, cb->obj_tag);
-            if (ti >= 0) {
+            if (ti >= 0 && tagged_pair_sane(cb, &s_to.batches[ti])) {
                 matcher_batch_t* tb = &s_to.batches[ti];
                 tb->consumed = 1;
                 cb->velocity[0] = tb->centroid[0] - cb->centroid[0];

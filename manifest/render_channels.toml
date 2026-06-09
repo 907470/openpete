@@ -245,47 +245,54 @@ tagging cache entries with that made the matcher collapse all same-
 class instances onto one obj_tag → ordinal-pairing-within-bucket →
 visible "blending across the screen" when cull order shifted.
 
-Plumbed via three recompiler substitution sites:
-
-  0x8001F268  lhu $t7, 0x36($sp)   func_8001F158 (cull pass)
-              — PC reached iff the moby just passed cull (the first
-                instruction past every cull-skip back-branch in the
-                cascade at PCs 0x8001F224..0x8001F260). At this PC
-                $sp holds the cull-survivor's Moby instance vaddr.
-                Appends `openpete_moby_queue_push(cpu->sp)`.
+Plumbed via two recompiler substitution sites (3rd layout, 2026-06-09,
+transform-interp plan §11 F0 — both prior layouts misassigned):
 
   0x8001F800  lw $ra, 4($gp)       func_8001F798 (regular render)
   0x80020F9C  lw $ra, 4($gp)       func_80020F34 (specular render)
-              — Loop iter top. Appends
-                `openpete_obj_id_set(openpete_moby_queue_pop());
-                 openpete_world_geo_clear();`
-                replacing the lw's destination-register reasoning
-                with a FIFO pop that returns the real per-instance
-                moby vaddr. NOTE: feeds the transform-interp identity
-                channel (openpete_obj_id), NOT the widescreen UI
-                classifier — regular/specular mobys are never HUD/UI,
-                so they must not be range-tested by is_current_ui()
-                (doing so broke Hor+ widening; see openpete_obj_id.h).
+              — Loop iter top; $gp is the cursor over the 56-byte
+                render-queue entries the cull pass committed. Appends
+                `openpete_moby_render_entry_tag(cpu->gp)`, which
+                reads the per-instance moby vaddr the cull pass
+                stored at entry+52 (`sw $sp, 52($fp)` @ 0x8001F4F0 /
+                0x80020CA4 — written before the entry's variant
+                branches, so EVERY committed entry carries it), tags
+                obj_id with it, and clears the world-geo strip tag.
+                NOTE: feeds the transform-interp identity channel
+                (openpete_obj_id), NOT the widescreen UI classifier —
+                regular/specular mobys are never HUD/UI, so they must
+                not be range-tested by is_current_ui() (doing so
+                broke Hor+ widening; see openpete_obj_id.h).
 
-FIFO invariant: each cull pass fully populates the queue before its
-render pass begins (draw.c sequences them as separate function
-calls). The two cull→render cycles per frame (regular + specular)
-are serialised, so a single shared queue works: cycle pushes, cycle
-pops to empty, next cycle pushes, etc. Pop-on-empty returns 0 — gte
-falls back to world-ordinal pairing (the pre-queue baseline).
+Identity comes from the very entry being rendered — desync-proof by
+construction. History (why two prior layouts failed):
+ 1. Class-shared ptr at entry+4 (reverted ee78276): collapsed all
+    same-class instances onto one tag.
+ 2. Host-side FIFO (f94e167, retired 2026-06-09): pushed at the
+    cull-cascade join (0x8001F268), which also fires for mobys that
+    pass distance/frustum but are never appended to the list — a
+    chronic push>pop deficit with no resync (clear() had zero
+    callers) saturated the 1024-ring by ~4000 ticks and shuffled
+    every tag → the "same-class polys stretching between instances"
+    bug. The specular cull had no push at all; its render pops
+    consumed the regular pass's stale leftovers.
+The lesson is recorded here so nobody rebuilds a side-channel for
+data the game already carries per-entry.
 
-READ-ONLY w.r.t. gameplay: push stashes a PSX vaddr in a host-side
-ring; pop returns it. The canonical lhu/lw is emitted verbatim
-before the push/pop, same diag_cone / ui_moby precedent."""
-# GENERATED (append_call): push passes $sp (the cull-survivor moby vaddr);
-# pop uses the wrapper openpete_moby_queue_pop_tag (obj_id(pop()) + clear),
-# a no-argument call (operand="void").
+READ-ONLY w.r.t. gameplay: the hook reads one PSX RAM word
+(entry+52) via the host accessor and stashes it host-side; nothing
+is written. The canonical lw is emitted verbatim before the call,
+same diag_cone / ui_moby precedent. Implausible values (terminator
+slot garbage; anything outside KSEG0) degrade to tag 0 = the
+world-ordinal fallback."""
+# GENERATED (append_call): operand="gp" passes the render-queue entry
+# cursor; the wrapper openpete_moby_render_entry_tag does
+# obj_id(*(entry+52)) + world_geo_clear (openpete_obj_id.c).
 substitution_sites = [
-    { addr = 0x8001F268, operand = "sp",   kind = "append_call", hook = "openpete_moby_queue_push" },     # cull-pass-confirmed (push)
-    { addr = 0x8001F800, operand = "void", kind = "append_call", hook = "openpete_moby_queue_pop_tag" },  # regular  render iter (pop)
-    { addr = 0x80020F9C, operand = "void", kind = "append_call", hook = "openpete_moby_queue_pop_tag" },  # specular render iter (pop)
+    { addr = 0x8001F800, operand = "gp", kind = "append_call", hook = "openpete_moby_render_entry_tag" },  # regular  render iter
+    { addr = 0x80020F9C, operand = "gp", kind = "append_call", hook = "openpete_moby_render_entry_tag" },  # specular render iter
 ]
-verdict_fn       = "openpete_moby_queue_push"
+verdict_fn       = "openpete_moby_render_entry_tag"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # render-side identity tag; no state written
 doc              = "notes/plans/openpete-transform-interp.md"

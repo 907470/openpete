@@ -524,22 +524,17 @@ void     openpete_world_geo_clear(void);
 uint32_t openpete_world_geo_get_current(void);
 uint16_t openpete_world_geo_next_vidx(void);
 
-/* Per-instance moby vaddr FIFO. Recompiler emits push at the cull-pass-
- * confirmed PC in func_8001F158 (0x8001F268), and pop+set_current at
- * the regular/specular render-pass loop iters (0x8001F800 / 0x80020F9C)
- * so the matcher pairs each instance by real PSX vaddr instead of the
- * class-shared m_Props ptr that the render-list slot carries.
- * See core/include/openpete_moby_queue.h. */
-void     openpete_moby_queue_push(uint32_t moby_vaddr);
-uint32_t openpete_moby_queue_pop(void);
-void     openpete_moby_queue_clear(void);
-
-/* Per-renderer identity-tag AppendCall wrappers (compose the primitives
- * above so the recompiler emits one call). Defined in
- * core/runtime/openpete_obj_id.c. READ-ONLY host-side identity tags. */
-void     openpete_moby_loop_tag(uint32_t moby_addr);     /* ui_moby + obj_id + clear */
-void     openpete_obj_loop_tag(uint32_t obj_addr);       /* obj_id + clear */
-void     openpete_moby_queue_pop_tag(void);              /* obj_id(pop()) + clear */
+/* Per-renderer identity-tag AppendCall wrappers (defined in
+ * core/runtime/openpete_obj_id.c). READ-ONLY host-side identity tags.
+ * entry_tag receives $gp — the regular/specular render loop's 56-byte
+ * render-queue entry cursor — and reads the per-instance moby vaddr the
+ * cull pass stored at entry+52 (sw $sp,52($fp) @ 0x8001F4F0/0x80020CA4).
+ * Replaces the retired moby-queue FIFO, whose push/pop-balance invariant
+ * the game did not honor (transform-interp plan §11 F0: chronic deficit
+ * saturated the ring and shuffled all identity tags). */
+void     openpete_moby_loop_tag(uint32_t moby_addr);           /* ui_moby + obj_id + clear */
+void     openpete_obj_loop_tag(uint32_t obj_addr);             /* obj_id + clear */
+void     openpete_moby_render_entry_tag(uint32_t entry_vaddr); /* obj_id(*(entry+52)) + clear */
 
 /* --- PSX RAM virtualization (presentation-side region table) ------------
  *

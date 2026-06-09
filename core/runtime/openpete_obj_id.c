@@ -2,7 +2,7 @@
 
 #include "openpete_obj_id.h"
 #include "openpete_world_geo.h"   /* openpete_world_geo_clear */
-#include "openpete_moby_queue.h"  /* openpete_moby_queue_pop */
+#include "openpete_psx.h"         /* openpete_psx_to_host_ptr (read-only) */
 
 static uint32_t s_obj_id = 0;
 
@@ -38,10 +38,41 @@ void openpete_obj_loop_tag(uint32_t obj_addr) {
     openpete_world_geo_clear();
 }
 
-/* Regular/specular render iter: pop the cull-pass queue for this instance's
- * real moby vaddr (0 on empty -> world-ordinal fallback in gte), tag it, and
- * clear the world-geo strip tag. */
-void openpete_moby_queue_pop_tag(void) {
-    openpete_obj_id_set(openpete_moby_queue_pop());
+/* Regular/specular render iter: read this iteration's moby instance vaddr
+ * DIRECTLY from the render-queue entry under the loop cursor.
+ *
+ * The cull passes build 56-byte queue entries and store the surviving
+ * moby's instance pointer at entry+52 (`sw $sp, 52($fp)`) before
+ * committing the entry (fp += 56). The render loops walk those entries
+ * with $gp as the cursor, so at the iter-top hook $gp+52 IS the
+ * per-instance identity — no side-channel bookkeeping required. (Exact
+ * game PCs live in manifest/render_channels.toml, channel
+ * transform_interp_moby_queue — core/ stays address-free.)
+ *
+ * This replaces the f94e167 host-side FIFO, which assumed push/pop
+ * balance that the game does not guarantee: the cull-join push site
+ * fired for mobys that passed the distance/frustum cascade but were
+ * never appended to the render list, producing a chronic push>pop
+ * deficit that saturated the ring by ~4000 ticks and shuffled all
+ * identity tags (the "same-class polys stretching between instances"
+ * bug — transform-interp plan §11 F0). Reading the entry itself is
+ * desync-proof by construction.
+ *
+ * The terminator iteration (entry word 0 == 0 -> loop exit) reads
+ * whatever stale bytes sit at +52 past the live list; the plausibility
+ * mask degrades that to tag 0 only if implausible, and no GTE verts are
+ * emitted between the terminator read and the loop exit, so a stale-
+ * but-plausible value is never consumed. READ-ONLY w.r.t. gameplay. */
+void openpete_moby_render_entry_tag(uint32_t entry_vaddr) {
+    uint32_t moby = 0;
+    const uint32_t* p =
+        (const uint32_t*)openpete_psx_to_host_ptr(entry_vaddr + 52u);
+    if (p) moby = *p;
+    /* Moby instances live in KSEG0 RAM. Anything else is an
+     * uninitialised/terminator slot -> tag 0 (world-ordinal fallback,
+     * the pre-queue baseline). */
+    if (moby < OPENPETE_PSX_KSEG0_BASE || moby >= OPENPETE_PSX_KSEG0_END)
+        moby = 0;
+    openpete_obj_id_set(moby);
     openpete_world_geo_clear();
 }
