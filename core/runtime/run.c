@@ -685,6 +685,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         return OPENPETE_EXIT_SETUP_ERROR;
     }
 
+    /* Arm audio capture before any SPU init: when recording (and audio not
+     * disabled), PsyX_SPUAL_InitSound opens an OpenAL loopback device so the
+     * mixed PCM can be pulled into the recording. Set before PsyX_Initialise
+     * so it's in place regardless of when SpuInit fires. Default 0 leaves
+     * normal playback untouched. */
+    extern int g_psyx_audioCaptureMode;
+    g_psyx_audioCaptureMode =
+        (opts->record_path && !opts->record_no_audio) ? 1 : 0;
+
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window (headless=%d)",
                win_w, win_h, (int)opts->headless);
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver

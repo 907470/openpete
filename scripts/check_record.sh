@@ -62,7 +62,7 @@ OUT1="$OUT_DIR/plain.mkv"
 rm -f "$OUT1"
 LOG1="$OUT_DIR/plain.log"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
-       --frame-limit "$FRAMES" --record "$OUT1" >"$LOG1" 2>&1
+       --frame-limit "$FRAMES" --mute off --record "$OUT1" >"$LOG1" 2>&1
 
 [[ -s "$OUT1" ]] || { bad "no output file written ($OUT1)"; }
 
@@ -105,6 +105,33 @@ PY
         if (( $? != 0 )); then bad "PTS not strictly-increasing-VFR"; else note "plain: PTS monotonic + VFR"; fi
     else
         bad "too few frames to check PTS (${#PTS[@]})"
+    fi
+fi
+
+# ---- Audio: a second (AAC) stream carrying non-silent SPU mix -------------
+if [[ -s "$OUT1" ]]; then
+    acodec="$(probe -select_streams a -show_entries stream=codec_name -of csv=p=0 "$OUT1")"
+    achan="$(probe -select_streams a -show_entries stream=channels -of csv=p=0 "$OUT1")"
+    if [[ -z "$acodec" ]]; then
+        bad "no audio stream (expected aac); loopback capture may have failed"
+    else
+        note "audio: $acodec ${achan}ch"
+        # Non-silence check needs ffmpeg's volumedetect; skip if absent.
+        if command -v ffmpeg >/dev/null; then
+            # volumedetect logs its summary at info level, so -v info (not
+            # -v error) is required to capture mean_volume.
+            mean="$(ffmpeg -v info -hide_banner -i "$OUT1" -af volumedetect -f null - 2>&1 \
+                    | grep -oE 'mean_volume: -?[0-9.]+ dB' | grep -oE '\-?[0-9.]+' | head -1)"
+            if [[ -n "$mean" ]]; then
+                # Silence is ~ -91 dB (s16) / -inf. Real game audio sits well
+                # above; require louder than -60 dB.
+                if awk -v m="$mean" 'BEGIN{exit !(m > -60)}'; then
+                    note "audio: mean_volume ${mean} dB (non-silent)"
+                else
+                    bad "audio mean_volume ${mean} dB looks like silence (capture produced no signal)"
+                fi
+            fi
+        fi
     fi
 fi
 

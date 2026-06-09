@@ -63,6 +63,12 @@ is **bars-free** and independent of window size (a 21:9 scene records the
 same internal-res frame whether the window is 640 or 1280 wide; window
 *height* sets the internal render resolution).
 
+Recordings include **audio** by default: the mixed SPU output is captured via
+an OpenAL loopback device (active only while recording — normal playback is
+unchanged) and encoded as a second AAC stream. Pass `--mute off` to actually
+hear/record sound (audio is muted by default). Use `--no-record-audio` for
+video only, or `--record-audio-encoder NAME` to pick a different encoder.
+
 ```bash
 # Record the attract demo to an .mkv (recommended container).
 ./build/linux-release/games/spyro-1/openpete-spyro1 \

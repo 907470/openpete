@@ -143,7 +143,7 @@ target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
 # libswscale-dev. Min version libav* 58 (ffmpeg 4.0).
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-    libavformat libavcodec libavutil libswscale)
+    libavformat libavcodec libavutil libswscale libswresample)
 target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by

@@ -314,10 +314,17 @@ typedef struct {
      * Written incrementally + trailer on shutdown, so Ctrl-C still yields a
      * playable file. See notes/plans/openpete-record-video.md. */
     const char* record_path;
-    const char* record_encoder;   /* libavcodec encoder name. Default libx264. */
+    const char* record_encoder;   /* libavcodec video encoder. Default libx264. */
     int         record_crf;       /* x264/x265 quality. Default 23. */
     int         record_gop;       /* keyframe interval, frames. Default 120. */
     const char* record_pixfmt;    /* encoder pixfmt. Default yuv420p. */
+
+    /* Audio capture into the recording. The mixed SPU PCM is pulled via an
+     * OpenAL loopback device (only while recording; normal playback is
+     * unaffected) and encoded as a second stream. See
+     * notes/plans/openpete-record-audio.md. */
+    bool        record_no_audio;     /* --no-record-audio: video-only */
+    const char* record_audio_encoder; /* libavcodec audio encoder. Default aac. */
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title

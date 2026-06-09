@@ -34,7 +34,10 @@
 #include <libavformat/avformat.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/audio_fifo.h>
+#include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,6 +56,12 @@ extern int GR_PresentPBO_Pending(void);
 extern int GR_PresentPBO_Submit(unsigned int gl_format, int* out_w, int* out_h);
 extern unsigned char* GR_PresentPBO_Map(int* out_w, int* out_h);
 extern void GR_PresentPBO_Unmap(void);
+
+/* PsyCross loopback audio capture (PsyX_SPUAL.h). CaptureActive is non-zero
+ * when the loopback device is live (host arms it via g_psyx_audioCaptureMode
+ * before SPU init); CaptureDrain pulls mixed stereo s16 @ 44100 frames. */
+extern int PsyX_SPUAL_CaptureActive(void);
+extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
 
 /* glReadPixels format token. Spelled out so this TU needn't include glad.h;
  * GL_RGBA is a stable GL enum. */
@@ -74,6 +83,17 @@ static struct {
     const char*  pixfmt_name;
     int          crf;
     int          gop;
+
+    /* Audio (loopback SPU capture -> AAC second stream). */
+    int          audio_requested;    /* not --no-record-audio */
+    int          audio_enabled;      /* requested + loopback active + set up */
+    const char*  audio_encoder_name;
+    AVStream*    astream;
+    AVCodecContext* acodec;
+    struct SwrContext* swr;          /* s16 interleaved -> encoder sample fmt */
+    AVAudioFifo* afifo;              /* buffers captured s16 until frame_size */
+    AVFrame*     aframe;             /* one encoder frame (acodec->frame_size) */
+    int64_t      a_next_pts;         /* cumulative samples encoded */
 
     /* Locked dimensions. native_{w,h} is the present-FBO size we read each
      * frame; {w,h} is the encoder geometry, the native size floored to even
@@ -170,6 +190,128 @@ static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
     }
 }
 
+/* ---- audio (loopback SPU capture -> second stream) ---- */
+
+/* Build the audio encoder + resampler + sample FIFO. Called from lazy_init
+ * BEFORE write_header (all streams must exist first). Audio failure is
+ * non-fatal: logs, leaves audio_enabled=0, and recording continues
+ * video-only. Returns 0 always (success or graceful video-only fallback). */
+static int rec_setup_audio(void) {
+    if (!g_rec.audio_requested || !PsyX_SPUAL_CaptureActive())
+        return 0;  /* not requested, or loopback not active -> video only */
+
+    const AVCodec* ac = avcodec_find_encoder_by_name(g_rec.audio_encoder_name);
+    if (!ac) {
+        OPL_WARN_F("record", "audio: unknown encoder '%s'; recording video only",
+                   g_rec.audio_encoder_name);
+        return 0;
+    }
+    g_rec.astream = avformat_new_stream(g_rec.fmt, NULL);
+    g_rec.acodec  = avcodec_alloc_context3(ac);
+    if (!g_rec.astream || !g_rec.acodec) {
+        OPL_WARN_F("record", "audio: stream/ctx alloc failed; video only");
+        return 0;
+    }
+    g_rec.acodec->sample_rate    = 44100;
+    g_rec.acodec->channels       = 2;
+    g_rec.acodec->channel_layout = AV_CH_LAYOUT_STEREO;  /* legacy (ffmpeg<5.1) */
+    g_rec.acodec->sample_fmt  = ac->sample_fmts ? ac->sample_fmts[0]
+                                                : AV_SAMPLE_FMT_FLTP;
+    g_rec.acodec->bit_rate    = 160000;
+    g_rec.acodec->time_base   = (AVRational){ 1, 44100 };
+    if (g_rec.fmt->oformat->flags & AVFMT_GLOBALHEADER)
+        g_rec.acodec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    if (avcodec_open2(g_rec.acodec, ac, NULL) < 0) {
+        OPL_WARN_F("record", "audio: avcodec_open2(%s) failed; video only",
+                   g_rec.audio_encoder_name);
+        return 0;
+    }
+    avcodec_parameters_from_context(g_rec.astream->codecpar, g_rec.acodec);
+    g_rec.astream->time_base = g_rec.acodec->time_base;
+
+    /* Resampler: captured s16 interleaved stereo @44100 -> encoder fmt.
+     * Legacy swr_alloc_set_opts (ffmpeg < 5.1 lacks the AVChannelLayout API). */
+    g_rec.swr = swr_alloc_set_opts(NULL,
+            AV_CH_LAYOUT_STEREO, g_rec.acodec->sample_fmt, 44100,
+            AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, 44100, 0, NULL);
+    if (!g_rec.swr || swr_init(g_rec.swr) < 0) {
+        OPL_WARN_F("record", "audio: resampler init failed; video only");
+        return 0;
+    }
+
+    const int fsz = g_rec.acodec->frame_size > 0 ? g_rec.acodec->frame_size : 1024;
+    g_rec.afifo  = av_audio_fifo_alloc(AV_SAMPLE_FMT_S16, 2, 44100);
+    g_rec.aframe = av_frame_alloc();
+    if (!g_rec.afifo || !g_rec.aframe) {
+        OPL_WARN_F("record", "audio: fifo/frame alloc failed; video only");
+        return 0;
+    }
+    g_rec.aframe->nb_samples     = fsz;
+    g_rec.aframe->format         = g_rec.acodec->sample_fmt;
+    g_rec.aframe->sample_rate    = 44100;
+    g_rec.aframe->channels       = 2;
+    g_rec.aframe->channel_layout = AV_CH_LAYOUT_STEREO;
+    if (av_frame_get_buffer(g_rec.aframe, 0) < 0) {
+        OPL_WARN_F("record", "audio: frame buffer alloc failed; video only");
+        return 0;
+    }
+
+    /* Discard whatever the loopback accumulated before recording started so
+     * audio sample 0 ~aligns with video frame 0. */
+    { short scratch[2048 * 2]; while (PsyX_SPUAL_CaptureDrain(scratch, 2048) > 0) {} }
+
+    g_rec.a_next_pts   = 0;
+    g_rec.audio_enabled = 1;
+    OPL_INFO_F("record", "audio: %s 44100 Hz stereo", g_rec.audio_encoder_name);
+    return 0;
+}
+
+/* Send one audio frame (or NULL to flush) and mux produced packets. Same
+ * single-writer discipline as rec_encode_one (encoder thread during the run,
+ * main thread after join). Returns 0 ok, -1 fatal. */
+static int rec_encode_audio_frame(AVFrame* af) {
+    int ret = avcodec_send_frame(g_rec.acodec, af);
+    if (ret < 0) return -1;
+    AVPacket* pkt = g_rec.pkt;  /* reuse the video packet object (same thread) */
+    for (;;) {
+        ret = avcodec_receive_packet(g_rec.acodec, pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) return 0;
+        if (ret < 0) return -1;
+        av_packet_rescale_ts(pkt, g_rec.acodec->time_base, g_rec.astream->time_base);
+        pkt->stream_index = g_rec.astream->index;
+        ret = av_interleaved_write_frame(g_rec.fmt, pkt);
+        av_packet_unref(pkt);
+        if (ret < 0) return -1;
+    }
+}
+
+/* Drain captured PCM into the FIFO and encode every full frame available.
+ * Runs on the encoder thread (and on the main thread at shutdown). */
+static void rec_pump_audio(void) {
+    if (!g_rec.audio_enabled) return;
+    short buf[4096 * 2];
+    int n;
+    while ((n = PsyX_SPUAL_CaptureDrain(buf, 4096)) > 0) {
+        void* in[1] = { buf };
+        if (av_audio_fifo_write(g_rec.afifo, in, n) < 0) break;
+        if (n < 4096) break;  /* drained everything available */
+    }
+    const int fsz = g_rec.aframe->nb_samples;  /* AAC: 1024 */
+    short pull[8192 * 2];                       /* >= any sane frame_size */
+    while (av_audio_fifo_size(g_rec.afifo) >= fsz) {
+        void* out[1] = { pull };
+        if (av_audio_fifo_read(g_rec.afifo, out, fsz) < fsz)
+            break;
+        if (av_frame_make_writable(g_rec.aframe) < 0) break;
+        const uint8_t* src[1] = { (const uint8_t*)pull };
+        if (swr_convert(g_rec.swr, g_rec.aframe->data, fsz, src, fsz) < 0) break;
+        g_rec.aframe->pts = g_rec.a_next_pts;
+        g_rec.a_next_pts += fsz;
+        if (rec_encode_audio_frame(g_rec.aframe) < 0) { g_rec.audio_enabled = 0; break; }
+    }
+}
+
 static int rec_thread_main(void* unused) {
     (void)unused;
     for (;;) {
@@ -189,6 +331,11 @@ static int rec_thread_main(void* unused) {
          * below — so encoding from `buf` outside the lock is safe. */
         if (rec_encode_one(buf, pts) < 0)
             g_rec.failed = 1;
+
+        /* Pump audio at the video-frame cadence (every ~16-33 ms): plenty
+         * frequent vs the ~1 s capture ring, and keeps all muxing on this
+         * one thread. */
+        rec_pump_audio();
 
         SDL_LockMutex(g_rec.mutex);
         g_rec.read_idx = (idx + 1) % REC_RING_SLOTS;
@@ -285,6 +432,10 @@ static int rec_lazy_init(int native_w, int native_h, uint64_t first_pts_us) {
     }
     g_rec.st->time_base = g_rec.codec->time_base;
 
+    /* Add the audio stream (if capture is active) BEFORE write_header — all
+     * streams must exist first. Non-fatal: falls back to video-only. */
+    rec_setup_audio();
+
     if (!(g_rec.fmt->oformat->flags & AVFMT_NOFILE)) {
         ret = avio_open(&g_rec.fmt->pb, g_rec.path, AVIO_FLAG_WRITE);
         if (ret < 0) {
@@ -366,6 +517,9 @@ int openpete_record_init(const openpete_options_t* opts) {
     g_rec.pixfmt_name  = opts->record_pixfmt  ? opts->record_pixfmt  : "yuv420p";
     g_rec.crf          = opts->record_crf;
     g_rec.gop          = opts->record_gop;
+    g_rec.audio_requested    = !opts->record_no_audio;
+    g_rec.audio_encoder_name = opts->record_audio_encoder
+                               ? opts->record_audio_encoder : "aac";
     return 0;
 }
 
@@ -463,6 +617,10 @@ void openpete_record_capture_frame(uint64_t pts_us) {
 
 /* Free everything (idempotent). Encoder thread must already be joined. */
 static void rec_teardown(void) {
+    if (g_rec.afifo) { av_audio_fifo_free(g_rec.afifo); g_rec.afifo = NULL; }
+    if (g_rec.aframe){ av_frame_free(&g_rec.aframe); }
+    if (g_rec.swr)   { swr_free(&g_rec.swr); }
+    if (g_rec.acodec){ avcodec_free_context(&g_rec.acodec); }
     if (g_rec.sws)   { sws_freeContext(g_rec.sws);   g_rec.sws = NULL; }
     if (g_rec.frame) { av_frame_free(&g_rec.frame); }
     if (g_rec.pkt)   { av_packet_free(&g_rec.pkt); }
@@ -501,20 +659,26 @@ void openpete_record_shutdown(void) {
         SDL_WaitThread(g_rec.thread, NULL);
         g_rec.thread = NULL;
 
-        /* Flush the encoder (drain delayed frames) and finalize the file,
-         * unless an earlier error already poisoned the stream. */
+        /* Flush video + audio encoders and finalize, unless an earlier
+         * error poisoned the stream. Thread is joined, so this thread is the
+         * sole writer. */
         if (!g_rec.failed) {
             rec_encode_one(NULL, 0);
+            if (g_rec.audio_enabled) {
+                rec_pump_audio();                  /* encode any whole frames left */
+                rec_encode_audio_frame(NULL);      /* flush the AAC encoder */
+            }
             int ret = av_write_trailer(g_rec.fmt);
             if (ret < 0)
                 OPL_ERROR_F("record", "av_write_trailer failed: %s",
                             av_err2str(ret));
         }
         OPL_INFO_F("record", "finalized %s: %llu frame(s) captured, "
-                             "%llu dropped",
+                             "%llu dropped, audio=%s",
                    g_rec.path,
                    (unsigned long long)g_rec.captured,
-                   (unsigned long long)g_rec.dropped);
+                   (unsigned long long)g_rec.dropped,
+                   g_rec.audio_enabled ? "yes" : "no");
     } else if (!g_rec.failed) {
         OPL_WARN_F("record", "no frames captured (present FBO never ready?); "
                              "no file written");

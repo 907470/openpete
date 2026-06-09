@@ -134,6 +134,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_crf          = 23;
     opts->record_gop          = 120;
     opts->record_pixfmt       = "yuv420p";
+    opts->record_audio_encoder = "aac";
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -328,6 +329,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--record-pixfmt") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->record_pixfmt = v; i++;
+        } else if (strcmp(a, "--no-record-audio") == 0) {
+            opts->record_no_audio = true;
+        } else if (strcmp(a, "--record-audio-encoder") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_audio_encoder = v; i++;
         } else if (strcmp(a, "--unlock-frames") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->unlock_frames_spec = v;
@@ -442,6 +448,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
                 "  --record-gop N             keyframe interval in frames (default 120)\n"
                 "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
+                "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
+                "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
                 "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
                 "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
                 "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
