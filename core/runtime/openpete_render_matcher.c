@@ -150,6 +150,16 @@ typedef struct matcher_batch {
      * variation, so the F5b count-eq gate is skipped for these. */
     int world_src_keyed;
 
+    /* Max world_vkey seen in this batch. For COUNTER-keyed strips
+     * (vkey = 0..N-1 emission ordinals) max+1 is the EMITTED vertex
+     * count — unlike vertex_count (cached entries), it is immune to
+     * sxy-collision eviction, because ordinals are assigned at RTPS
+     * time and eviction only removes entries afterwards. The world
+     * pair gate compares THIS, so eviction noise can't freeze a
+     * strip whose keys are all still valid. (Meaningless for
+     * source-keyed strips, which skip the gate entirely.) */
+    uint32_t vkey_max;
+
     /* §12.2 overlay v2: why this batch is (not) interpolating, set
      * during the span-pairing pass. OPENPETE_DBGST_* in the header.
      * Purely diagnostic — read only by the F9 highlight overlay. */
@@ -367,6 +377,7 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     b->vloc_sum[0] += (int64_t)e->v_local[0];
     b->vloc_sum[1] += (int64_t)e->v_local[1];
     b->vloc_sum[2] += (int64_t)e->v_local[2];
+    if (e->world_vkey > b->vkey_max) b->vkey_max = e->world_vkey;
     b->vertex_count++;
 }
 
@@ -757,20 +768,21 @@ static int tagged_teleport_px(void) {
  * (the strip-list pointer) cannot alias the way a reused moby slot
  * can, and fast camera pans legitimately move strips thousands of
  * px/frame (PHASE-B measured 2724 px), so the teleport bound would
- * freeze the world exactly when smoothing matters most. World gets
- * ONE check instead (§11 F5b, the "warble" fix): exact emitted-
- * vertex-count equality. Spyro culls strip vertices BEFORE RTPS, so
- * a strip that dropped/gained a vertex between the two endpoints has
- * SHIFTED every later emission ordinal by one — the (eff_span,
- * world_vidx) tomap then pairs each vertex with its NEIGHBOR, and the
- * strip visibly warps on every intermediate present (a 1-of-50
- * dropout still passes the 90% corr-gate with 49 mispaired verts).
- * Count inequality ⇒ shift ⇒ freeze the strip this frame (clean
- * 30 Hz, like the corr-gate). Equal-count add+drop swaps slip
- * through — the complete fix is source-stable vertex keys (PHASE-D,
- * the envvert_terrain_probe $s1-pointer approach, needs the 9 RTPS
- * vertex-load hooks). Env OPENPETE_WORLD_COUNT_EQ=0 disables for
- * visual A/B. */
+ * freeze the world exactly when smoothing matters most. World gating
+ * (§11 F5b, the "warble" fix) instead protects against EMISSION
+ * ordinal shifts: a strip that emitted a different vertex sequence
+ * between the two endpoints would pair counter-keyed verts with
+ * their NEIGHBORS through the ordinal tomap, visibly warping on
+ * every intermediate present. PHASE-D resolution per key family:
+ * source-keyed strips need no gate at all (each vertex carries its
+ * own drop-immune key); counter-keyed strips gate on EMITTED-count
+ * equality via vkey_max (assigned at RTPS time — immune to the
+ * sxy-collision cache eviction that perturbs the cached
+ * vertex_count whenever an animating moby overlaps the strip).
+ * Equal-emitted-count add+drop swaps still slip through for counter
+ * strips — closing that needs per-quad source keys for the
+ * subdivided variants (#28 scope). Env OPENPETE_WORLD_COUNT_EQ=0
+ * disables for visual A/B. */
 static int world_count_eq_gate(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_WORLD_COUNT_EQ");
@@ -783,12 +795,19 @@ static int tagged_pair_sane(const matcher_batch_t* a,
         /* PHASE-D: source-keyed strips are immune to the ordinal-
          * shift failure the count-eq gate exists for — a dropped/
          * evicted vertex just misses its own key while every other
-         * vertex keeps its exact correspondence. Gating them on
-         * count equality would only re-create the yellow still-
-         * camera flicker (cache-eviction churn from animating mobys
-         * sharing a screen pixel perturbs counts every frame). */
+         * vertex keeps its exact correspondence. */
         if (a->world_src_keyed && b->world_src_keyed) return 1;
-        if (world_count_eq_gate() && a->vertex_count != b->vertex_count)
+        /* COUNTER-keyed strips (LOD/subdivided variants): gate on the
+         * EMITTED count (vkey_max — ordinals are assigned at RTPS
+         * time, so eviction can't change it), not the CACHED
+         * vertex_count, which sxy-collision eviction perturbs every
+         * frame an animating moby overlaps the strip (the residual
+         * yellow still-camera flicker after the stream variants went
+         * source-keyed). A real emission change (LOD tier flip, clip
+         * differences) still freezes — and a mixed src/counter pair
+         * (tier flip across the endpoints) freezes automatically
+         * because an address never equals an ordinal. */
+        if (world_count_eq_gate() && a->vkey_max != b->vkey_max)
             return 0;
         return 1;
     }
