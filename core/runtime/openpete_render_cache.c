@@ -615,9 +615,24 @@ void openpete_render_sim_tick_mark_now(void) {
     g_openpete_substitute_alpha_snapshot = 0.0f;
 }
 
+/* §5 / #24 camera-cut snap. Armed per sim tick by the game-side
+ * discontinuity detector (game_on_frame — the g_Camera layout is
+ * game-specific, so the PSX-RAM read lives there, not in core/).
+ * While armed, every intermediate render of the current display
+ * cycle pins alpha to 0: the lagged OT presents unchanged instead of
+ * lerping toward a post-cut frame — a clean snap, not a full-screen
+ * smear. Re-evaluated (set or cleared) every tick, so the flag's
+ * lifetime is exactly the one display cycle that spans the cut. */
+static int s_interp_snap_cycle = 0;
+
+void openpete_render_interp_snap_set(int snap) {
+    s_interp_snap_cycle = snap ? 1 : 0;
+}
+
 void openpete_render_substitute_alpha_snapshot_intermediate(void) {
-    g_openpete_substitute_alpha_snapshot =
-        openpete_render_compute_alpha(op_now());
+    g_openpete_substitute_alpha_snapshot = s_interp_snap_cycle
+        ? 0.0f
+        : openpete_render_compute_alpha(op_now());
 }
 
 float openpete_render_compute_alpha(openpete_op_time_t now_ns) {

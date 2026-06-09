@@ -642,6 +642,55 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
         }
     }
 
+    /* --- §5 / #24 camera-cut snap detector (transform-interp).
+     * Compares g_Camera.m_Position (+0x28, 3×i32) tick-over-tick and
+     * arms the core-side snap flag when the L1 jump exceeds the
+     * threshold, so the display cycle spanning a hard cut presents
+     * the lagged OT unchanged instead of lerping the whole screen
+     * toward the post-cut viewpoint.
+     *
+     * Threshold calibrated on the 20k attract-demo camera log
+     * (OPENPETE_CAM_LOG): continuous motion maxes at 1,218 units/tick
+     * (fastest pans, every demo loop) while genuine cuts (level
+     * transitions, demo vantage jumps) all measure ≥140,095 — a >100×
+     * separation; 5000 sits mid-gap. Rotation deliberately does NOT
+     * trigger: the demo's level fly-in spirals spin at ~4,100
+     * BAMS/tick sustained, which is exactly the smooth fast motion
+     * the lerp exists to smooth. READ-ONLY against PSX RAM; writes
+     * only a host-side render flag. Env: OPENPETE_SNAP_POS_L1
+     * (default 5000, 0 disables), OPENPETE_SNAP_LOG=1 logs snaps. */
+    {
+        static int     s_cut_init = 0;
+        static int32_t s_cut_prev[3];
+        static int64_t s_cut_thresh = -1;
+        static int     s_cut_log = -1;
+        if (s_cut_thresh < 0) {
+            const char* t = getenv("OPENPETE_SNAP_POS_L1");
+            s_cut_thresh = (t && *t) ? atoll(t) : 5000;
+            const char* l = getenv("OPENPETE_SNAP_LOG");
+            s_cut_log = (l && *l && atoi(l) != 0) ? 1 : 0;
+        }
+        const uint32_t C = 0x80076DD0u;  /* g_Camera */
+        int32_t p[3];
+        int k, snap = 0;
+        for (k = 0; k < 3; k++)
+            p[k] = (int32_t)cpu->read_word(C + 0x28u + (uint32_t)k * 4u);
+        if (s_cut_init && s_cut_thresh > 0) {
+            int64_t l1 = 0;
+            for (k = 0; k < 3; k++) {
+                int64_t d = (int64_t)p[k] - (int64_t)s_cut_prev[k];
+                l1 += (d < 0) ? -d : d;
+            }
+            snap = (l1 > s_cut_thresh);
+            if (snap && s_cut_log)
+                fprintf(stderr, "[interp-snap] tick=%u dpos_l1=%lld\n",
+                        openpete_frame, (long long)l1);
+        }
+        for (k = 0; k < 3; k++) s_cut_prev[k] = p[k];
+        s_cut_init = 1;
+        openpete_render_interp_snap_set(snap);
+    }
+
     /* --- §7.5 re-validation: world render-cache RT/TR/mac dump.
      * Read-only. Iterates the curr render-cache generation and writes
      * one 64B record per world (obj_tag==0) entry, capped per frame.

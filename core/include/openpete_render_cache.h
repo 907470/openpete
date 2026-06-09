@@ -185,6 +185,14 @@ float openpete_render_compute_alpha(openpete_op_time_t now_ns);
 extern float g_openpete_substitute_alpha_snapshot;
 void openpete_render_substitute_alpha_snapshot_intermediate(void);
 
+/* §5 / #24 camera-cut snap. The game-side per-tick discontinuity
+ * detector (game_on_frame — owns the game-specific g_Camera layout)
+ * arms/clears this every sim tick; while armed,
+ * snapshot_intermediate pins alpha to 0 so the display cycle that
+ * spans the cut presents the lagged OT unchanged (clean snap, no
+ * full-screen lerp smear toward the post-cut viewpoint). */
+void openpete_render_interp_snap_set(int snap);
+
 /* Iterate every populated slot in s_curr (the "next-visible" buffer just
  * emitted by the game fiber's GTE pass). Used by Phase 2's
  * future-anchor scan to build FRAME-N batches from the in-flight cache
