@@ -71,10 +71,13 @@ typedef struct openpete_render_cache_entry {
     uint32_t gte_pc;
 } openpete_render_cache_entry_t;
 
-/* 8192 slots × ~64 B ≈ 512 KB per frame × 2 frames = 1 MB. Comfortably
- * fits in L2 on any host CPU. Load factor at 1945 verts ≈ 24 %. */
-#define OPENPETE_RENDER_CACHE_SLOTS     8192u
-#define OPENPETE_RENDER_CACHE_PROBE_MAX 16u
+/* Sized from live load: gameplay emits ~4.9k verts/game-frame; at the
+ * old 8192 slots (59% load) hash clustering still dropped ~100-145
+ * verts/frame on probe overflow -- each a vert with NO cache entry,
+ * frozen mid-motion. 32768 slots (~15% load) + probe 24 measures
+ * zero overflow. ~80B/entry x 32768 x 3 generations ~ 8 MB host-side. */
+#define OPENPETE_RENDER_CACHE_SLOTS     32768u
+#define OPENPETE_RENDER_CACHE_PROBE_MAX 24u
 
 /* Producer (called from gte_rtps_internal). Fills sxy_key/seq/matrix_span_id
  * from current state; caller fills the rest (mac/v_local/rt/tr/ofx/ofy/h).

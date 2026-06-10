@@ -246,7 +246,11 @@ static matcher_frame_t  s_to;
  *
  * Open-addressed, seq-stamped so it clears in O(1) per prepare (same
  * trick as the render cache). 32768 slots × 16 B = 512 KB static. */
-#define TOMAP_SLOTS 32768u            /* power of two */
+/* Sized for ~30k world+moby verts/frame: the old 32768 slots ran at
+ * ~91% load where the 24-probe insert silently DROPS the vertex
+ * ("just won't smooth"). 131072 ~ 23% load, drops ~zero. 16B/slot
+ * x 131072 = 2 MB static. */
+#define TOMAP_SLOTS 131072u           /* power of two */
 #define TOMAP_PROBE 24u
 typedef struct {
     uint64_t key;   /* fnv1a64(to_span_id, v_local[3]) */
@@ -977,7 +981,7 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
  * itself → spurious err=0). Output: 48-byte LE records, one per
  * (batch, game frame), consumed by interp-verify.py.
  * Zero overhead when the env var is unset. */
-#define IVMAP_SLOTS 65536u
+#define IVMAP_SLOTS 131072u           /* match tomap headroom */
 #define IVMAP_PROBE 24u
 typedef struct { uint64_t key; uint32_t seq; int16_t dx, dy; } iv_ent_t;
 static iv_ent_t  s_iv_map_a[IVMAP_SLOTS], s_iv_map_b[IVMAP_SLOTS];

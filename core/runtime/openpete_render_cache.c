@@ -170,6 +170,11 @@ unsigned g_openpete_render_cache_emit_count            = 0u;
 unsigned g_openpete_render_cache_lookup_count          = 0u;
 unsigned g_openpete_render_cache_hit_count             = 0u;
 unsigned g_openpete_render_cache_probe_overflow_count  = 0u;
+/* Same-pixel collision census (see emit_vertex): live same-key entry
+ * evicted by a different object (harmful) / same object, different
+ * vertex (benign neighbor). */
+unsigned g_openpete_render_cache_collide_xobj           = 0u;
+unsigned g_openpete_render_cache_collide_samobj         = 0u;
 unsigned g_openpete_render_cache_matrix_span_id        = 0u;
 
 /* Linker force-pull anchor for the renderer-foundation matcher.
@@ -274,6 +279,17 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
         /* Empty (stale seq) OR same-key overwrite. Most-recent-writer
          * wins (matches the FIFO-top semantics of push_sxy). */
         if (slot->seq != curr_seq || slot->sxy_key == key) {
+            /* Same-pixel collision census: a live same-key entry from
+             * another producer is about to be evicted. Cross-object
+             * (obj_tag differs) is the harmful class — the surviving
+             * entry makes the other vert ride the wrong object's
+             * motion; same-object is a neighbor vert (benign-ish). */
+            if (slot->seq == curr_seq && slot->sxy_key == key) {
+                if (slot->obj_tag != src->obj_tag)
+                    g_openpete_render_cache_collide_xobj++;
+                else if (slot->world_vkey != src->world_vkey)
+                    g_openpete_render_cache_collide_samobj++;
+            }
             *slot = *src;
             slot->seq = curr_seq;
             slot->matrix_span_id = g_openpete_render_cache_matrix_span_id;
