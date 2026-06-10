@@ -516,6 +516,11 @@ uint32_t openpete_obj_id_get(void);
  * the moby-tagged cache entry vkey for pose-to-pose animation lerp. */
 uint32_t openpete_obj_id_next_vidx(void);
 
+/* Drop-shadow sub-tag: OR bit29 into the current obj_id and restart
+ * the ordinal counter, so per-moby shadow passes pair in their own
+ * stable rank group (see openpete_obj_id.c rationale). */
+void openpete_obj_id_shadow_subtag(void);
+
 /* Per-strip world-geometry identity (transform-interp §7.5-R3). The
  * recompiler emits openpete_world_geo_set_current at the dominant
  * terrain strip-entry of func_800258F0 (0x80026238, after the strip

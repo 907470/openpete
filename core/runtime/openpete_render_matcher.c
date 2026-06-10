@@ -256,6 +256,9 @@ static unsigned s_wd_pc_n;
 /* Sample ring of rejected-pair shapes (a=from, b=to). */
 static struct { uint32_t pc, amax, bmax, avc, bvc; } s_wd_smp[8];
 static unsigned s_wd_smp_n;
+/* Sample ring of ABSENT batch identities (tag/rank/shape). */
+static struct { uint32_t pc, tag, rank, vmax, vc; } s_wd_abs[8];
+static unsigned s_wd_abs_n;
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
     for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
@@ -1025,9 +1028,34 @@ void openpete_render_matcher_prepare_substitute(void) {
             if (!cb->has_future_anchor) {
                 cb->dbg_state = (ti < 0) ? OPENPETE_DBGST_TAG_ABSENT
                                          : OPENPETE_DBGST_TAG_INSANE;
-                if (world_diag() &&
-                    (cb->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) {
+                if (world_diag()) {
+                    /* Tally ALL tagged batches (world AND moby) — moby
+                     * rows attribute e.g. a solid-red shadow to its
+                     * emitting PC. */
                     wd_pc_tally(cb->gte_pc, cb->world_src_keyed, ti < 0);
+                    if (ti < 0 && s_wd_abs_n < 8u) {
+                        s_wd_abs[s_wd_abs_n].pc   = cb->gte_pc;
+                        s_wd_abs[s_wd_abs_n].tag  = cb->obj_tag;
+                        s_wd_abs[s_wd_abs_n].rank = cb->tag_rank;
+                        s_wd_abs[s_wd_abs_n].vmax = cb->vkey_max;
+                        /* vc repurposed: to-side census for this tag —
+                         * low byte = count of same-tag batches in s_to,
+                         * bit8 = first one consumed, bits16+ = its rank. */
+                        {
+                            uint32_t n = 0, fr = 0, fc = 0;
+                            for (uint32_t k = 0; k < s_to.count; ++k) {
+                                if (s_to.batches[k].obj_tag != cb->obj_tag)
+                                    continue;
+                                if (!n) { fr = s_to.batches[k].tag_rank;
+                                          fc = s_to.batches[k].consumed; }
+                                n++;
+                            }
+                            s_wd_abs[s_wd_abs_n].vc =
+                                (n & 0xFFu) | (fc ? 0x100u : 0u) |
+                                (fr << 16);
+                        }
+                        s_wd_abs_n++;
+                    }
                     if (ti >= 0 && !cb->world_src_keyed &&
                         s_wd_smp_n < 8u) {
                         const matcher_batch_t* tb2 = &s_to.batches[ti];
@@ -1162,6 +1190,44 @@ void openpete_render_matcher_prepare_substitute(void) {
                             s_wd_pc[i].insane_ctr, s_wd_pc[i].absent);
                 fprintf(stderr, "\n");
                 memset(s_wd_pc, 0, sizeof(s_wd_pc)); s_wd_pc_n = 0;
+            }
+            {
+                /* bit29 (shadow-subtag) batch census per endpoint. */
+                unsigned cs = 0, ts = 0;
+                for (uint32_t k = 0; k < s_curr->count; ++k)
+                    if ((s_curr->batches[k].obj_tag & 0x20000000u) &&
+                        !(s_curr->batches[k].obj_tag &
+                          OPENPETE_WORLD_GEO_TAG_BIT)) cs++;
+                for (uint32_t k = 0; k < s_to.count; ++k)
+                    if ((s_to.batches[k].obj_tag & 0x20000000u) &&
+                        !(s_to.batches[k].obj_tag &
+                          OPENPETE_WORLD_GEO_TAG_BIT)) ts++;
+                fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
+                { unsigned pr = 0;
+                  for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
+                      if ((s_curr->batches[k].obj_tag & 0x20000000u) &&
+                          !(s_curr->batches[k].obj_tag &
+                            OPENPETE_WORLD_GEO_TAG_BIT)) {
+                          fprintf(stderr, " f:%08X",
+                                  s_curr->batches[k].obj_tag); pr++; }
+                  pr = 0;
+                  for (uint32_t k = 0; k < s_to.count && pr < 3; ++k)
+                      if ((s_to.batches[k].obj_tag & 0x20000000u) &&
+                          !(s_to.batches[k].obj_tag &
+                            OPENPETE_WORLD_GEO_TAG_BIT)) {
+                          fprintf(stderr, " t:%08X",
+                                  s_to.batches[k].obj_tag); pr++; } }
+                fprintf(stderr, "\n");
+            }
+            if (s_wd_abs_n) {
+                fprintf(stderr, "[absent-smp]");
+                for (unsigned i = 0; i < s_wd_abs_n; ++i)
+                    fprintf(stderr, " %08X:tag=%08X r=%u max=%u vc=%u",
+                            s_wd_abs[i].pc, s_wd_abs[i].tag,
+                            s_wd_abs[i].rank, s_wd_abs[i].vmax,
+                            s_wd_abs[i].vc);
+                fprintf(stderr, "\n");
+                s_wd_abs_n = 0;
             }
             if (s_wd_smp_n) {
                 fprintf(stderr, "[yellow-smp]");

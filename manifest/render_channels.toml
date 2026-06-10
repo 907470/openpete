@@ -534,6 +534,37 @@ state_regions    = []  # render-side identity key; no state written
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
+name        = "moby_shadow_subtag"
+status      = "audited_clean"
+description = """
+transform-interp: per-moby drop-shadow rank isolation. The shaded
+renderer's secondary pass (three gated ground-projection matrix
+derivations converging at .L80022FEC, RTPS loop at 0x80023040)
+emits the moby's shadow under the moby's own obj_tag. As the LAST
+batch of the tag group, its rank shifted whenever animation
+merged/split the body segments' matrix spans — diag measured the
+shadow batch TAG_ABSENT ~8-15×/tick (solid-red 30 Hz shadows under
+60 fps mobys, the third overlay-session-4 finding). The appended
+hook ORs bit29 into the current obj_id (free in KSEG0 vaddrs;
+bit30 stays clear so the tag remains moby-class) and restarts the
+per-object ordinal counter: shadow batches form their own rank
+group (typically rank 0, stable) and pair shadow-to-shadow with a
+fresh 0..N vkey stream. Anchored at the convergence instruction so
+all three derivation variants are covered, once per pass (loop
+backedges target the inner RTPS, not the convergence).
+
+READ-ONLY w.r.t. gameplay: host-side identity side-channel only
+(same class as the other obj_id/world_geo tag hooks)."""
+# GENERATED (append_call, void operand): hook after the verbatim lw.
+substitution_sites = [
+    { addr = 0x80022FEC, operand = "void", kind = "append_call", hook = "openpete_obj_id_shadow_subtag" },  # lw $s5,4($s6) — shadow-pass loop entry (.L80022FEC)
+]
+verdict_fn       = "openpete_obj_id_shadow_subtag"
+verified_against = ["aspect_determinism", "psx_oracle_20k"]
+state_regions    = []  # render-side identity tag; no state written
+doc              = "notes/plans/openpete-transform-interp.md"
+
+[[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
 status      = "gated"
 description = """

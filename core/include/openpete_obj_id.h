@@ -51,6 +51,11 @@ uint32_t openpete_obj_id_get(void);
  * order; the world_vidx template applied to mobys. */
 uint32_t openpete_obj_id_next_vidx(void);
 
+/* Drop-shadow sub-tag: OR bit29 into the current obj_id and restart
+ * the ordinal counter, so per-moby shadow passes pair in their own
+ * stable rank group (see openpete_obj_id.c rationale). */
+void openpete_obj_id_shadow_subtag(void);
+
 #ifdef __cplusplus
 }
 #endif

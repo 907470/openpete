@@ -16,6 +16,24 @@ uint32_t openpete_obj_id_get(void) {
     return s_obj_id;
 }
 
+/* Drop-shadow sub-tag. The shaded renderer's per-moby SHADOW pass
+ * (ground-projection matrix derivations converging on one RTPS loop;
+ * exact PCs in manifest channel moby_shadow_subtag) emits under the
+ * moby's tag.
+ * As the LAST batch of the tag group its rank shifted whenever
+ * animation merged/split the body segments' matrix spans — the
+ * shadow batch was rank-absent nearly every tick (solid-red 30 Hz
+ * shadows under 60 fps mobys). OR-ing bit29 (free in KSEG0 vaddrs;
+ * stays moby-class, bit30 clear) moves shadows into their own rank
+ * group — typically a single batch at rank 0, stable. The ordinal
+ * counter restarts so shadow verts get a fresh 0..N key stream. */
+void openpete_obj_id_shadow_subtag(void) {
+    if (s_obj_id) {
+        s_obj_id |= 0x20000000u;
+        s_vidx = 0;
+    }
+}
+
 /* #25 animation lerp: the Nth GTE-projected vertex of the current
  * object gets ordinal N (G1: per-moby emission order is cross-frame
  * stable, perm-cost ratio 0.005). Keying the matcher's per-vertex
