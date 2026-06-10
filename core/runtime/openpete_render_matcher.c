@@ -297,8 +297,48 @@ static unsigned long s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero;
 /* Rigid-fallback engagement: gate trips that rigid-followed vs froze,
  * and per-vert tomap misses filled with the batch mean. */
 static unsigned long s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill;
+/* §13.10 coincident-twin welds (world VERT_MISS resolved through a
+ * same-pixel twin's correspondence instead of the batch mean). */
+static unsigned long s_wd_weld;
 /* §13.6 spread-gate trips (incoherent moby batches frozen). */
 static unsigned long s_wd_spread_froze;
+/* World VERT_MISS (cyan) key-family attribution: which world_vkey
+ * namespace produces per-vert tomap misses inside paired batches.
+ * ctr = PHASE-B emission counter, ref = REFINE bit, t1..t4 = §13.7
+ * subdiv-tier slot keys, src = stream source addresses. Tier decode
+ * is heuristic (a real KSEG0 addr with bits16-19=0 and low16<0x400
+ * would alias) — the raw-key sample ring disambiguates. */
+static struct { uint32_t pc;
+                unsigned long ctr, ref, tier[5], src; } s_wd_vm[16];
+static unsigned s_wd_vm_n;
+static struct { uint32_t pc, vkey, tag; } s_wd_vm_smp[8];
+static unsigned s_wd_vm_smp_n;
+static void wd_vm_tally(uint32_t pc, uint32_t vkey, uint32_t tag) {
+    unsigned i;
+    for (i = 0; i < s_wd_vm_n; ++i) if (s_wd_vm[i].pc == pc) break;
+    if (i == s_wd_vm_n) {
+        if (s_wd_vm_n >= 16u) return;
+        memset(&s_wd_vm[i], 0, sizeof(s_wd_vm[i]));
+        s_wd_vm[i].pc = pc;
+        s_wd_vm_n++;
+    }
+    if (vkey & OPENPETE_WORLD_VKEY_REFINE_BIT) s_wd_vm[i].ref++;
+    else if (!(vkey & OPENPETE_WORLD_VKEY_SRC_BIT)) s_wd_vm[i].ctr++;
+    else {
+        uint32_t tier = (vkey >> 20) & 0xFu;
+        if (tier >= 1u && tier <= 4u && (vkey & 0x000F0000u) == 0u &&
+            (vkey & 0xFFFFu) < 0x400u)
+            s_wd_vm[i].tier[tier]++;
+        else
+            s_wd_vm[i].src++;
+    }
+    if (s_wd_vm_smp_n < 8u) {
+        s_wd_vm_smp[s_wd_vm_smp_n].pc   = pc;
+        s_wd_vm_smp[s_wd_vm_smp_n].vkey = vkey;
+        s_wd_vm_smp[s_wd_vm_smp_n].tag  = tag;
+        s_wd_vm_smp_n++;
+    }
+}
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
     for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
@@ -656,6 +696,60 @@ static inline int tomap_lookup(uint32_t to_span_id,
     return 0;
 }
 
+/* §13.10 coincident-twin weld. A paired world batch's vert that lost
+ * its own tomap counterpart (subdiv-tier flip, loop-variant flip,
+ * endpoint cull) used to ride the batch-mean rigid fill — but terrain
+ * deltas vary across the screen (parallax), so a mean-filled vert
+ * sitting on a shared quad edge cracks away from its exactly-lerped
+ * coincident twin in the neighboring quad: the visible world seams
+ * (cyan VERT_MISS flicker under F9).
+ *
+ * The twin, when on screen, is ALREADY in the render cache: shared
+ * terrain edge verts rasterize to the same pixel, and the §13.8
+ * multi-entry bucket keeps up to 4 coexisting identities per pixel.
+ * So on a world miss, scan this pixel's other candidates for a
+ * world-tagged entry with IDENTICAL v_local — same GTE input vector
+ * in the same frame ⇒ the same world-space point — whose own batch
+ * paired and whose own correspondence exists, and adopt that twin's
+ * motion. Coincident verts then move identically by construction and
+ * the shared edge stays welded, regardless of which key namespace
+ * caused the miss. Verts with no twin (quad interiors, true edge
+ * culls) still ride the batch mean — distortion bounded inside one
+ * quad, no inter-quad crack. Host-side matcher only. */
+static int world_weld_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_WORLD_WELD");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+static int world_weld_twin(const int16_t* p,
+                           const openpete_render_cache_entry_t* primary,
+                           openpete_render_cache_entry_t* out_alt,
+                           uint32_t* out_to_sxy) {
+    openpete_render_cache_entry_t c[PRIM_CAND_MAX];
+    int n;
+    if (!world_weld_on()) return 0;
+    n = openpete_render_cache_lookup_prev2_multi(
+                sxy_key_from_pair(p), c, PRIM_CAND_MAX);
+    for (int i = 0; i < n; ++i) {
+        const matcher_batch_t* b2;
+        uint32_t to_sxy;
+        if (!(c[i].obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) continue;
+        if (c[i].obj_tag == primary->obj_tag &&
+            c[i].world_vkey == primary->world_vkey) continue;  /* self */
+        if (c[i].v_local[0] != primary->v_local[0] ||
+            c[i].v_local[1] != primary->v_local[1] ||
+            c[i].v_local[2] != primary->v_local[2]) continue;
+        b2 = find_batch_by_span(eff_span(&c[i]));
+        if (!b2 || !b2->has_future_anchor || b2->is_ui_opt_out ||
+            b2->rigid_only) continue;
+        if (!tomap_lookup(b2->to_span_id, &c[i], &to_sxy)) continue;
+        *out_alt    = c[i];
+        *out_to_sxy = to_sxy;
+        return 1;
+    }
+    return 0;
+}
 
 
 /* Applied-delta clamp (per-axis, per-vertex, per-render) — now an
@@ -1722,13 +1816,14 @@ iv_done:        ;
                           OPENPETE_WORLD_GEO_TAG_BIT)) ts++;
                 fprintf(stderr,
                   "[orange] mig=%lu same=%lu zerocorr=%lu | "
-                  "rigid: span=%lu froze=%lu fill=%lu | spread=%lu\n",
+                  "rigid: span=%lu froze=%lu fill=%lu | spread=%lu | "
+                  "weld=%lu\n",
                   s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
                   s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill,
-                  s_wd_spread_froze);
+                  s_wd_spread_froze, s_wd_weld);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
-                s_wd_spread_froze = 0;
+                s_wd_spread_froze = 0; s_wd_weld = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
@@ -1745,6 +1840,27 @@ iv_done:        ;
                           fprintf(stderr, " t:%08X",
                                   s_to.batches[k].obj_tag); pr++; } }
                 fprintf(stderr, "\n");
+            }
+            if (s_wd_vm_n) {
+                fprintf(stderr, "[vert-miss]");
+                for (unsigned i = 0; i < s_wd_vm_n; ++i)
+                    fprintf(stderr,
+                            " %08X:ctr=%lu ref=%lu t=%lu/%lu/%lu/%lu src=%lu",
+                            s_wd_vm[i].pc, s_wd_vm[i].ctr, s_wd_vm[i].ref,
+                            s_wd_vm[i].tier[1], s_wd_vm[i].tier[2],
+                            s_wd_vm[i].tier[3], s_wd_vm[i].tier[4],
+                            s_wd_vm[i].src);
+                fprintf(stderr, "\n");
+                memset(s_wd_vm, 0, sizeof(s_wd_vm)); s_wd_vm_n = 0;
+            }
+            if (s_wd_vm_smp_n) {
+                fprintf(stderr, "[vert-miss-smp]");
+                for (unsigned i = 0; i < s_wd_vm_smp_n; ++i)
+                    fprintf(stderr, " %08X:vk=%08X tag=%08X",
+                            s_wd_vm_smp[i].pc, s_wd_vm_smp[i].vkey,
+                            s_wd_vm_smp[i].tag);
+                fprintf(stderr, "\n");
+                s_wd_vm_smp_n = 0;
             }
             if (s_wd_abs_n) {
                 fprintf(stderr, "[absent-smp]");
@@ -1940,8 +2056,23 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
         uint32_t to_sxy;
         if (wtag) s_wd_q_total++;
         if (!tomap_lookup(b->to_span_id, &entry, &to_sxy)) {
-            if (wtag) s_wd_q_no_tb++;
-            if (b->rigid_valid) {
+            int welded = 0;
+            if (wtag) {
+                s_wd_q_no_tb++;
+                if (world_diag())
+                    wd_vm_tally(b->gte_pc, entry.world_vkey, b->obj_tag);
+                /* §13.10: prefer the coincident twin's exact motion
+                 * over the batch mean — welds shared quad edges. */
+                openpete_render_cache_entry_t alt;
+                uint32_t weld_sxy;
+                if (world_weld_twin(p, &entry, &alt, &weld_sxy)) {
+                    entry  = alt;
+                    to_sxy = weld_sxy;
+                    s_wd_weld++;
+                    welded = 1;
+                }
+            }
+            if (!welded && b->rigid_valid) {
                 /* No exact counterpart (evicted / culled across the
                  * endpoints) — ride the batch's mean corresponded
                  * delta instead of holding at the lagged base. A
@@ -1959,8 +2090,12 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
                 g_openpete_render_substitute_vert_hit_count++;
                 return out;
             }
-            g_openpete_render_substitute_vert_miss_count++;
-            return out;
+            if (!welded) {
+                g_openpete_render_substitute_vert_miss_count++;
+                return out;
+            }
+            /* welded: fall through to the exact-delta path below with
+             * entry/to_sxy swapped to the twin's correspondence. */
         }
         int16_t from_sx = (int16_t)p[0];
         int16_t from_sy = (int16_t)p[1];
@@ -2038,8 +2173,17 @@ int openpete_render_matcher_debug_state(const int16_t* p) {
          * the §7.3 whole-span reproject (no per-vertex tomap). */
         if (b->obj_tag == 0u) return b->dbg_state;
         uint32_t to_sxy;
-        if (!tomap_lookup(b->to_span_id, &entry, &to_sxy))
+        if (!tomap_lookup(b->to_span_id, &entry, &to_sxy)) {
+            /* §13.10 mirror: a weldable miss is healthy (the vert
+             * rides its twin's exact delta), so don't tint it cyan. */
+            if ((b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u) {
+                openpete_render_cache_entry_t alt;
+                uint32_t ws;
+                if (world_weld_twin(p, &entry, &alt, &ws))
+                    return b->dbg_state;
+            }
             return OPENPETE_DBGST_VERT_MISS;
+        }
         return b->dbg_state;                /* HEUR_PAIRED or NONE */
     }
     return OPENPETE_DBGST_NONE;
