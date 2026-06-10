@@ -480,10 +480,14 @@ instruction before the refinement RTPS) makes the next take_vkey
 reuse the previous key.
 
 The subdivided/LOD variants (RTPS 0x80027A64 / 0x80028180 /
-0x80028C54 / 0x800299B0) load corner verts indirectly through index
-words and synthesize scratchpad midpoints — no per-vertex source
-pointer exists, so they push nothing and take_vkey falls back to the
-PHASE-B counter. Key families are distinguished by bit31 (source keys
+0x80028C54 / 0x800299B0 = subdivision tiers 1-4) load corner verts
+indirectly through index words and synthesize scratchpad midpoints;
+their per-vertex identity is the scratchpad SLOT offset, namespaced
+PER TIER (push_vsrc_t1..t4, §13.7) because the tiers overlap slot
+addresses while a surviving slot names a different logical vertex on
+the other tier — un-namespaced, a quad's camera-distance tier flip
+cross-paired two representations (midpoint-harness spikes to
+1327 px). A tier flip now misses cleanly into the rigid fill. Key families are distinguished by bit31 (source keys
 are KSEG0 addresses): the matcher keeps the count-eq gate only for
 counter-keyed strips.
 
@@ -519,14 +523,14 @@ substitution_sites = [
     # bit explicitly since 0x1F8000xx lacks bit31). Heads fire per quad,
     # so the FIFO resets between quads and the final prefetch overrun is
     # dropped. Push only the first (X, offset+0) lh of each slot.
-    { addr = 0x800279EC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-A prime: lh $at,0($t0)
-    { addr = 0x80027A6C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-A loop .L80027A64
-    { addr = 0x80028108, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-B prime: lh $at,0($t0)
-    { addr = 0x80028188, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-B loop .L80028180
-    { addr = 0x80028BDC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-C prime: lh $at,0($t0)
-    { addr = 0x80028C5C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-C loop .L80028C54
-    { addr = 0x80029938, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-D prime: lh $at,0($t0)
-    { addr = 0x800299B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-D loop .L800299B0
+    { addr = 0x800279EC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t1" }, # quad-A (tier 1) prime: lh $at,0($t0)
+    { addr = 0x80027A6C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t1" }, # quad-A (tier 1) loop .L80027A64
+    { addr = 0x80028108, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t2" }, # quad-B (tier 2) prime: lh $at,0($t0)
+    { addr = 0x80028188, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t2" }, # quad-B (tier 2) loop .L80028180
+    { addr = 0x80028BDC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t3" }, # quad-C (tier 3) prime: lh $at,0($t0)
+    { addr = 0x80028C5C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t3" }, # quad-C (tier 3) loop .L80028C54
+    { addr = 0x80029938, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t4" }, # quad-D (tier 4) prime: lh $at,0($t0)
+    { addr = 0x800299B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t4" }, # quad-D (tier 4) loop .L800299B0
 ]
 verdict_fn       = "openpete_world_geo_push_vsrc"
 verified_against = ["aspect_determinism", "psx_oracle_20k"]

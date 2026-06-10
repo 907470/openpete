@@ -43,6 +43,28 @@ void openpete_world_geo_push_vsrc(uint32_t src_addr) {
     s_vsrc_head++;
 }
 
+/* §13.7 subdivided-quad SUBDIV-TIER key namespaces. The four quad
+ * variants (A–D = subdivision tiers) share each quad's strip tag AND
+ * overlap scratchpad slot addresses, so when a quad flips tier with
+ * camera distance, a surviving slot key (e.g. 0x1F800118) names a
+ * DIFFERENT logical vertex on the other tier — the per-vertex tomap
+ * then pairs across the two representations (midpoint harness: the
+ * tier-3 RTPS measured mean 3.4 px with 1327 px spikes). Namespacing
+ * the slot keys per tier makes a tier flip MISS cleanly (→ rigid
+ * fill / snap) instead of cross-pairing, exactly the
+ * REFINE-bit precedent. Slot offsets fit in 16 bits; the tier tag
+ * sits at bits 20-21 (clear of SRC bit31 / REFINE bit30). */
+static void push_vsrc_tier(uint32_t tier, uint32_t src_addr) {
+    if (!s_current) return;
+    s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] =
+        OPENPETE_WORLD_VKEY_SRC_BIT | (tier << 20) | (src_addr & 0xFFFFu);
+    s_vsrc_head++;
+}
+void openpete_world_geo_push_vsrc_t1(uint32_t a) { push_vsrc_tier(1u, a); }
+void openpete_world_geo_push_vsrc_t2(uint32_t a) { push_vsrc_tier(2u, a); }
+void openpete_world_geo_push_vsrc_t3(uint32_t a) { push_vsrc_tier(3u, a); }
+void openpete_world_geo_push_vsrc_t4(uint32_t a) { push_vsrc_tier(4u, a); }
+
 /* Visibility-probe variant of set_current: tags the probe RTPS with
  * a tag DISJOINT from the same piece's render batches (bit29 — free
  * in KSEG0 vaddrs) so the 1-vert probe batch never shares a rank

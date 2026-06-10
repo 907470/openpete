@@ -96,6 +96,15 @@ uint32_t openpete_world_geo_get_current(void);
 void openpete_world_geo_push_vsrc(uint32_t src_addr);
 void openpete_world_geo_mark_refine(void);
 
+/* §13.7 per-subdivision-tier slot-key namespaces for the four
+ * subdivided-quad variants (see .c rationale): same push semantics,
+ * key = SRC_BIT | tier<<20 | slot-offset, so a quad flipping tiers
+ * misses cleanly instead of cross-pairing two representations. */
+void openpete_world_geo_push_vsrc_t1(uint32_t src_addr);
+void openpete_world_geo_push_vsrc_t2(uint32_t src_addr);
+void openpete_world_geo_push_vsrc_t3(uint32_t src_addr);
+void openpete_world_geo_push_vsrc_t4(uint32_t src_addr);
+
 /* Probe-tag variant: same stash, tag OR'd with bit29 so visibility-
  * probe RTPS batches (1 vert, never drawn) occupy a rank group
  * disjoint from the piece's render batches. See the .c rationale. */

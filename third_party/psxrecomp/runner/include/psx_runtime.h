@@ -541,6 +541,12 @@ uint32_t openpete_world_geo_get_current(void);
  * take_vkey is the per-world-vertex consumer in gte_rtps_internal
  * (source address, or PHASE-B per-strip ordinal fallback). */
 void     openpete_world_geo_push_vsrc(uint32_t src_addr);
+/* Per-subdivision-tier slot-key namespaces for the subdivided-quad
+ * variants (channel world_geo_vertex_src, tier sites). */
+void     openpete_world_geo_push_vsrc_t1(uint32_t src_addr);
+void     openpete_world_geo_push_vsrc_t2(uint32_t src_addr);
+void     openpete_world_geo_push_vsrc_t3(uint32_t src_addr);
+void     openpete_world_geo_push_vsrc_t4(uint32_t src_addr);
 void     openpete_world_geo_mark_refine(void);
 uint32_t openpete_world_geo_take_vkey(void);
 void     openpete_world_geo_set_current_probe(uint32_t strip_addr);
