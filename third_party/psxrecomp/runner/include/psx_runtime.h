@@ -533,6 +533,7 @@ uint32_t openpete_world_geo_get_current(void);
 void     openpete_world_geo_push_vsrc(uint32_t src_addr);
 void     openpete_world_geo_mark_refine(void);
 uint32_t openpete_world_geo_take_vkey(void);
+void     openpete_world_geo_set_current_probe(uint32_t strip_addr);
 
 /* Per-renderer identity-tag AppendCall wrappers (defined in
  * core/runtime/openpete_obj_id.c). READ-ONLY host-side identity tags.

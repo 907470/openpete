@@ -70,11 +70,8 @@ static inline uint32_t eff_span(const openpete_render_cache_entry_t* e) {
  * terrain + mobys with headroom; ~matcher_batch_t·4096·3 frames is a
  * few MB, trivial host-side. */
 #define MATCHER_MAX_BATCHES 4096u
-#define MATCHER_HASH_SLOTS  8192u  /* power-of-two, >2× max batches */
-#define MATCHER_PROBE_MAX   32u
 
 typedef struct matcher_batch {
-    uint64_t hash;
     uint32_t matrix_span_id;
     uint32_t object_id;
     uint32_t prim_count;
@@ -150,6 +147,10 @@ typedef struct matcher_batch {
      * variation, so the F5b count-eq gate is skipped for these. */
     int world_src_keyed;
 
+    /* First-entry gte_pc — RTPS caller attribution for diagnostics
+     * (which renderer produced this batch). Diag-only. */
+    uint32_t gte_pc;
+
     /* Max world_vkey seen in this batch. For COUNTER-keyed strips
      * (vkey = 0..N-1 emission ordinals) max+1 is the EMITTED vertex
      * count — unlike vertex_count (cached entries), it is immune to
@@ -189,9 +190,6 @@ typedef struct matcher_batch {
 typedef struct matcher_frame {
     matcher_batch_t batches[MATCHER_MAX_BATCHES];
     uint32_t        count;
-    /* hash_table[slot] = batch_index + 1 (0 = empty). Open-addressed
-     * with linear probe. Rebuilt over prev frame at finalize. */
-    uint16_t        hash_table[MATCHER_HASH_SLOTS];
 } matcher_frame_t;
 
 static matcher_frame_t  s_frame_a;
@@ -249,6 +247,29 @@ static unsigned long s_wd_batches, s_wd_uiopt, s_wd_anchored,
      * legacy (obj_tag==0) so the post-hook-expansion shrinkage of the
      * legacy `world_reproject` path is directly measurable. */
     s_wd_batches_tagged, s_wd_batches_legacy;
+/* #28 residual-yellow attribution: histogram world-batch sane-gate
+ * REJECTIONS (TAG_INSANE) and missing-counterpart (TAG_ABSENT) by
+ * first-entry gte_pc + key family. Diag-only (OPENPETE_WORLD_DIAG). */
+static struct { uint32_t pc; unsigned long insane_src, insane_ctr,
+                absent; } s_wd_pc[24];
+static unsigned s_wd_pc_n;
+/* Sample ring of rejected-pair shapes (a=from, b=to). */
+static struct { uint32_t pc, amax, bmax, avc, bvc; } s_wd_smp[8];
+static unsigned s_wd_smp_n;
+static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
+    unsigned i;
+    for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
+    if (i == s_wd_pc_n) {
+        if (s_wd_pc_n >= 24u) return;
+        s_wd_pc[s_wd_pc_n].pc = pc;
+        s_wd_pc[s_wd_pc_n].insane_src = s_wd_pc[s_wd_pc_n].insane_ctr = 0;
+        s_wd_pc[s_wd_pc_n].absent = 0;
+        s_wd_pc_n++;
+    }
+    if (absent)          s_wd_pc[i].absent++;
+    else if (src_keyed)  s_wd_pc[i].insane_src++;
+    else                 s_wd_pc[i].insane_ctr++;
+}
 static int world_diag(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_WORLD_DIAG");
@@ -520,28 +541,7 @@ static inline int tomap_lookup(uint32_t to_span_id,
     return 0;
 }
 
-/* Centroid quantization shift. MAC is q12 (world * 4096). Shifting
- * right 18 = world / 64, so each bucket is 64 world units across —
- * big enough that single-frame motion stays in the same bucket
- * (~3-30 world units of motion at 30 Hz), small enough that distinct
- * objects in different parts of the level don't collide.
- *
- * Tuning history (level_10 f2200):
- *   shift=16 (16-unit buckets) + bbox_size_log2 + vc → 40 % match
- *   shift=18 (64-unit buckets), centroid only        → 100 % match
- *     in active gameplay, but moving mobys can collide with unrelated
- *     stationary batches sharing the bucket → nonsense velocity →
- *     visible flicker. Mitigated by adding bbox-size and vertex-count
- *     to the hash (this file) AND a per-batch velocity sanity cap. */
-#define MATCHER_CENTROID_SHIFT 18
 
-/* Velocity sanity cap (screen-space pixels, Manhattan). A legitimate
- * moby moves at most ~30 px between game frames; anything beyond this
- * is almost certainly a mispair via hash collision. Capped matches
- * are released (pb->consumed=0) so a legitimate curr batch can still
- * pair with that prev, and the curr batch probes the next hash slot
- * for a better candidate. */
-#define MATCHER_VELOCITY_CAP_PX 128
 
 /* Applied-delta clamp (per-axis, per-vertex, per-render) — now an
  * emergency bound / kill switch, not the primary safety mechanism.
@@ -584,25 +584,6 @@ int g_openpete_dbg_black_present = 0;
  * If it looks identical either way, interpolation is contributing
  * nothing perceptible (the thing we're chasing). */
 int g_openpete_interp_enabled = 1;
-
-/* Shared hash function so the future-anchor scan produces identical
- * hashes for the same logical batch as the OT-walker observe pass.
- *
- * Centroid-only hashing was retained after a brief experiment with
- * (centroid + bbox-log2 + vert-count): adding bbox-log2 caused ~50 %
- * of legitimate matches to fail because the log2-ceil bucket flipped
- * across power-of-two boundaries under small frame-to-frame noise.
- * Hash collisions between unrelated batches in the same centroid
- * bucket are now caught downstream by the velocity sanity cap — see
- * MATCHER_VELOCITY_CAP_PX. */
-static uint64_t batch_centroid_hash(int32_t cx, int32_t cy, int32_t cz) {
-    int32_t cq[3] = {
-        cx >> MATCHER_CENTROID_SHIFT,
-        cy >> MATCHER_CENTROID_SHIFT,
-        cz >> MATCHER_CENTROID_SHIFT,
-    };
-    return fnv1a64(cq, sizeof(cq));
-}
 
 /* ----------------------------------------------------------------------
  * Substitute pipeline — 1-frame-lag INTERPOLATION model.
@@ -662,6 +643,7 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         b->world_src_keyed =
             (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u &&
             (e->world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) != 0u;
+        b->gte_pc = e->gte_pc;
     }
     accumulate_vertex(b, e);
     /* For the "to" generation (gen_prev = G(N)) also record every
@@ -870,21 +852,6 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         for (int axis = 0; axis < 3; ++axis)
             b->vloc_centroid[axis] =
                 (int32_t)(b->vloc_sum[axis] / (int64_t)b->vertex_count);
-        /* World/composite spans (obj_tag==0): hash on the CAMERA-
-         * INDEPENDENT v_local centroid. G3 proved mac/centroid is
-         * camera-baked, so a mac-centroid hash bucket drifts every
-         * frame the camera moves and world spans never re-pair
-         * (= "level geo rarely blue"). v_local is sector-local and
-         * stable for static terrain. Tagged mobys pair by obj_tag
-         * (hash unused on that path) so keep their mac hash. */
-        if (b->obj_tag == 0u)
-            b->hash = batch_centroid_hash(b->vloc_centroid[0],
-                                          b->vloc_centroid[1],
-                                          b->vloc_centroid[2]);
-        else
-            b->hash = batch_centroid_hash(b->centroid[0],
-                                          b->centroid[1],
-                                          b->centroid[2]);
         b->has_future_anchor = 0;
         b->delta_sxy[0] = b->delta_sxy[1] = 0;
         b->velocity[0] = b->velocity[1] = b->velocity[2] = 0;
@@ -927,23 +894,6 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
     }
 }
 
-/* Open-addressed hash table over a frame's batches (slot = batch_idx+1,
- * 0 = empty). Used for both object-id continuity (vs s_prev) and span
- * pairing (vs s_to). */
-static void build_frame_hash_table(matcher_frame_t* f) {
-    memset(f->hash_table, 0, sizeof(f->hash_table));
-    for (uint32_t i = 0; i < f->count; ++i) {
-        uint64_t h = f->batches[i].hash;
-        uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
-        for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            if (f->hash_table[slot] == 0u) {
-                f->hash_table[slot] = (uint16_t)(i + 1u);
-                break;
-            }
-            slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
-        }
-    }
-}
 
 /* Phase 3 — UI/HUD detection. PSX matrices are s3.12 fixed (1.0 =
  * 0x1000 = 4096). Identity is diag=4096 with off-diag=0. Real HUD
@@ -991,16 +941,15 @@ void openpete_render_matcher_prepare_substitute(void) {
      * own prior incarnation, and across cycles the centroid bucket
      * persists for objects that stayed in roughly the same place. The
      * trace harness groups trajectories by object_id. */
-    build_frame_hash_table(s_prev);
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         matcher_batch_t* cb = &s_curr->batches[i];
         /* Authoritative identity first: a tagged moby inherits its
          * prior object_id by real vaddr — no centroid bucket, no
          * velocity cap (a fast-moving moby kept its id wrongly only
-         * because the cap rejected it). World (tag 0) → heuristic.
-         * tagged_pair_sane is the §5 discontinuity guard: a same-vaddr
-         * pair with a teleport-scale jump or a different shape is a
-         * slot reuse / tag bug — issue a fresh id (snap) instead. */
+         * because the cap rejected it). tagged_pair_sane is the §5
+         * discontinuity guard: a same-vaddr pair with a teleport-
+         * scale jump or a different shape is a slot reuse / tag bug —
+         * issue a fresh id (snap) instead. */
         if (cb->obj_tag != 0u) {
             int pi = find_unconsumed_by_obj_tag(s_prev, cb->obj_tag,
                                                 cb->tag_rank);
@@ -1009,16 +958,18 @@ void openpete_render_matcher_prepare_substitute(void) {
                 cb->object_id = s_prev->batches[pi].object_id;
                 continue;
             }
-            /* Authoritative identity found no sane prior incarnation —
-             * issue a fresh id. Falling through to the centroid-hash
-             * heuristic would re-pair a KNOWN-identity batch with
-             * whatever neighbor shares its bucket (§11 F5c spikes). */
             cb->object_id = s_next_object_id++;
             continue;
         }
-        /* World (untagged): deterministic ordinal+signature identity
-         * (G1-backed) before the centroid heuristic. */
-        if (cb->obj_tag == 0u && cb->world_ord != 0xFFFFFFFFu) {
+        /* Untagged (legacy world / particles / shadows): deterministic
+         * ordinal+signature identity (G1-backed). §12.1 FINAL SLICE:
+         * the centroid-hash fallback that used to follow is DELETED —
+         * it was object_id-only (trace grouping, no motion), and a
+         * 64-unit centroid bucket inheriting ids across physically
+         * different batches was exactly the phantom-jump noise the
+         * velocity cap existed to patch. Identity pairs exactly or
+         * the batch gets a fresh id. No hashes, no caps, anywhere. */
+        if (cb->world_ord != 0xFFFFFFFFu) {
             int pi = find_unconsumed_by_world_ord(s_prev, cb->world_ord,
                                                   cb->vertex_count);
             if (pi >= 0) {
@@ -1027,36 +978,7 @@ void openpete_render_matcher_prepare_substitute(void) {
                 continue;
             }
         }
-        uint64_t h = cb->hash;
-        uint32_t slot = (uint32_t)(h & (MATCHER_HASH_SLOTS - 1u));
-        int got_id = 0;
-        for (uint32_t p = 0; p < MATCHER_PROBE_MAX; ++p) {
-            uint16_t entry = s_prev->hash_table[slot];
-            if (entry == 0u) break;
-            matcher_batch_t* pb = &s_prev->batches[entry - 1u];
-            if (pb->hash == h && !pb->consumed) {
-                /* Same velocity sanity cap as the span pass. The
-                 * centroid bucket (64-unit) collides unrelated batches;
-                 * without this, a moving moby inherits a stationary
-                 * batch's object_id and the trace harness reads a giant
-                 * phantom "jump" between two physically different
-                 * batches sharing an id. Within a display cycle the
-                 * scan content is identical (delta 0 → always passes);
-                 * across a cycle a real same-object move is ≤ ~30 px. */
-                const int32_t idx = cb->sxy_centroid[0] - pb->sxy_centroid[0];
-                const int32_t idy = cb->sxy_centroid[1] - pb->sxy_centroid[1];
-                if (abs(idx) + abs(idy) > MATCHER_VELOCITY_CAP_PX) {
-                    slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
-                    continue;
-                }
-                pb->consumed   = 1;
-                cb->object_id  = pb->object_id;
-                got_id = 1;
-                break;
-            }
-            slot = (slot + 1u) & (MATCHER_HASH_SLOTS - 1u);
-        }
-        if (!got_id) cb->object_id = s_next_object_id++;
+        cb->object_id = s_next_object_id++;
     }
 
     /* --- Interpolation span (s_curr "from" ↔ s_to "to"). delta_sxy =
@@ -1100,9 +1022,24 @@ void openpete_render_matcher_prepare_substitute(void) {
              * paired count-rejected edge strips with adjacent strips,
              * and the cross-strip ordinal tomap flung their verts
              * across the screen (§11 F5c "spikes"). */
-            if (!cb->has_future_anchor)
+            if (!cb->has_future_anchor) {
                 cb->dbg_state = (ti < 0) ? OPENPETE_DBGST_TAG_ABSENT
                                          : OPENPETE_DBGST_TAG_INSANE;
+                if (world_diag() &&
+                    (cb->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) {
+                    wd_pc_tally(cb->gte_pc, cb->world_src_keyed, ti < 0);
+                    if (ti >= 0 && !cb->world_src_keyed &&
+                        s_wd_smp_n < 8u) {
+                        const matcher_batch_t* tb2 = &s_to.batches[ti];
+                        s_wd_smp[s_wd_smp_n].pc   = cb->gte_pc;
+                        s_wd_smp[s_wd_smp_n].amax = cb->vkey_max;
+                        s_wd_smp[s_wd_smp_n].bmax = tb2->vkey_max;
+                        s_wd_smp[s_wd_smp_n].avc  = cb->vertex_count;
+                        s_wd_smp[s_wd_smp_n].bvc  = tb2->vertex_count;
+                        s_wd_smp_n++;
+                    }
+                }
+            }
             continue;
         }
         /* World (untagged): ordinal+signature span pairing (Option B)
@@ -1217,6 +1154,25 @@ void openpete_render_matcher_prepare_substitute(void) {
               s_wd_q_calls, s_wd_q_prev2miss, s_wd_q_world_entry,
               s_wd_q_total, s_wd_q_no_tb, s_wd_q_reproj_fail,
               s_wd_q_applied, s_wd_q_ge1, s_wd_q_ge4, s_wd_q_maxmag, s_wd_q_samemtx);
+            if (s_wd_pc_n) {
+                fprintf(stderr, "[world-yellow]");
+                for (unsigned i = 0; i < s_wd_pc_n; ++i)
+                    fprintf(stderr, " %08X:is=%lu ic=%lu ab=%lu",
+                            s_wd_pc[i].pc, s_wd_pc[i].insane_src,
+                            s_wd_pc[i].insane_ctr, s_wd_pc[i].absent);
+                fprintf(stderr, "\n");
+                memset(s_wd_pc, 0, sizeof(s_wd_pc)); s_wd_pc_n = 0;
+            }
+            if (s_wd_smp_n) {
+                fprintf(stderr, "[yellow-smp]");
+                for (unsigned i = 0; i < s_wd_smp_n; ++i)
+                    fprintf(stderr, " %08X:max%u/%u vc%u/%u",
+                            s_wd_smp[i].pc, s_wd_smp[i].amax,
+                            s_wd_smp[i].bmax, s_wd_smp[i].avc,
+                            s_wd_smp[i].bvc);
+                fprintf(stderr, "\n");
+                s_wd_smp_n = 0;
+            }
         }
     }
 

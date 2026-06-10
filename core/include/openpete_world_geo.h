@@ -85,6 +85,11 @@ uint32_t openpete_world_geo_get_current(void);
 void openpete_world_geo_push_vsrc(uint32_t src_addr);
 void openpete_world_geo_mark_refine(void);
 
+/* Probe-tag variant: same stash, tag OR'd with bit29 so visibility-
+ * probe RTPS batches (1 vert, never drawn) occupy a rank group
+ * disjoint from the piece's render batches. See the .c rationale. */
+void openpete_world_geo_set_current_probe(uint32_t strip_addr);
+
 /* Per-world-vertex key, called once per world vertex from
  * gte_rtps_internal's cache emit: refine-reuse > FIFO pop (source
  * key) > per-strip counter (PHASE-B fallback). set_current resets

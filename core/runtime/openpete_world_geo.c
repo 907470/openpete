@@ -33,8 +33,27 @@ uint32_t openpete_world_geo_get_current(void) {
 
 void openpete_world_geo_push_vsrc(uint32_t src_addr) {
     if (!s_current) return;      /* not in a tagged strip — ignore */
-    s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] = src_addr;
+    /* Stamp the source-key class bit explicitly: KSEG0 addresses
+     * carry it for free, but the subdivided-quad variants push
+     * SCRATCHPAD slot addresses (0x1F8000xx, bit31 clear) — equally
+     * stable per-vertex identities that must classify as source
+     * keys (gate-exempt), not counter keys. */
+    s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] =
+        src_addr | OPENPETE_WORLD_VKEY_SRC_BIT;
     s_vsrc_head++;
+}
+
+/* Visibility-probe variant of set_current: tags the probe RTPS with
+ * a tag DISJOINT from the same piece's render batches (bit29 — free
+ * in KSEG0 vaddrs) so the 1-vert probe batch never shares a rank
+ * group with the real geometry. Without this, a probe entry evicted
+ * from the sxy-keyed cache shifted the render batch's rank 0↔1
+ * frame to frame: the probe cross-paired into the render batch
+ * (sane-gate reject) and the render batch went rank-absent — a
+ * 1-frame whole-piece freeze per eviction (sky stutter). */
+void openpete_world_geo_set_current_probe(uint32_t strip_addr) {
+    openpete_world_geo_set_current(strip_addr
+                                   ? (strip_addr | 0x20000000u) : 0u);
 }
 
 void openpete_world_geo_mark_refine(void) {

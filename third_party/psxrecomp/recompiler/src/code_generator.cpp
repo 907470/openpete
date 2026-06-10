@@ -1220,7 +1220,22 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x20: code = translate_lb(instr); break;     // lb
-            case 0x21: code = translate_lh(instr); break;     // lh
+            case 0x21:                                         // lh
+                /* AppendCall: generic (canonical lh emitted verbatim
+                 * first; the appended call is host-side only). Used by
+                 * channel world_geo_vertex_src's subdivided-quad slot
+                 * pushes — the scratchpad slot address (operand="ea")
+                 * is the stable per-vertex source key for synthesized
+                 * midpoint vertices. */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    code = translate_lh(instr)
+                         + emit_channel_append_call(_cs->second, instr);
+                } else {
+                    code = translate_lh(instr);
+                }
+                break;
             case 0x22: code = translate_lwl(instr); break;    // lwl
             case 0x23:                                         // lw
                 {

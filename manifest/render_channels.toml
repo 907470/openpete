@@ -437,7 +437,7 @@ substitution_sites = [
     # attribution probe measured its two RTPS sites as ~90% of all untagged
     # cache entries. Same packed-word strip-stream pattern as the env
     # renderer: per-PIECE pointer = the stable strip identity.
-    { addr = 0x8004EC8C, operand = "rs", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $at,0($t6) — visibility-probe piece head ($t6=piece ptr)
+    { addr = 0x8004EC8C, operand = "rs", kind = "append_call", hook = "openpete_world_geo_set_current_probe" },  # lw $at,0($t6) — visibility-probe piece head ($t6=piece ptr; bit29 probe-tag space, disjoint rank group from the render batches)
     { addr = 0x8004ED44, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — render-pass visible-piece head
 ]
 verdict_fn       = "openpete_world_geo_set_current"
@@ -512,6 +512,21 @@ substitution_sites = [
     { addr = 0x8004ED94, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 0: lw $at,0($s1)
     { addr = 0x8004EDC8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 1: lw $at,0($s1)
     { addr = 0x8004EDF8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky loop .L8004EDD0: lw $at,0($s1)
+    # #28b subdivided/LOD quad variants: the synthesized midpoint grid is
+    # RTPS'd from a fixed scratchpad slot walk (lh X/Y/Z shorts per slot,
+    # stride 0x10, one-deep pipeline like the streams). The SLOT ADDRESS
+    # is the stable per-vertex source key (push_vsrc stamps the source
+    # bit explicitly since 0x1F8000xx lacks bit31). Heads fire per quad,
+    # so the FIFO resets between quads and the final prefetch overrun is
+    # dropped. Push only the first (X, offset+0) lh of each slot.
+    { addr = 0x800279EC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-A prime: lh $at,0($t0)
+    { addr = 0x80027A6C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-A loop .L80027A64
+    { addr = 0x80028108, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-B prime: lh $at,0($t0)
+    { addr = 0x80028188, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-B loop .L80028180
+    { addr = 0x80028BDC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-C prime: lh $at,0($t0)
+    { addr = 0x80028C5C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-C loop .L80028C54
+    { addr = 0x80029938, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-D prime: lh $at,0($t0)
+    { addr = 0x800299B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # quad-D loop .L800299B0
 ]
 verdict_fn       = "openpete_world_geo_push_vsrc"
 verified_against = ["aspect_determinism", "psx_oracle_20k"]
