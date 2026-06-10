@@ -585,6 +585,22 @@ static uint32_t s_g2_tick_cap  = 3000;
 static uint32_t s_g2_ticks     = 0;
 static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
 
+/* #28 attribution probe state + callback (see game_on_frame). */
+static struct { uint32_t pc; uint32_t n; } s_tag0_h[32];
+static uint32_t s_tag0_hn = 0, s_tag0_ticks = 0;
+static void tag0_pc_histo_cb(const openpete_render_cache_entry_t* e,
+                             void* ud) {
+    (void)ud;
+    if (e->obj_tag != 0u) return;
+    for (uint32_t i = 0; i < s_tag0_hn; i++)
+        if (s_tag0_h[i].pc == e->gte_pc) { s_tag0_h[i].n++; return; }
+    if (s_tag0_hn < 32) {
+        s_tag0_h[s_tag0_hn].pc = e->gte_pc;
+        s_tag0_h[s_tag0_hn].n  = 1;
+        s_tag0_hn++;
+    }
+}
+
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
 
@@ -689,6 +705,21 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
         for (k = 0; k < 3; k++) s_cut_prev[k] = p[k];
         s_cut_init = 1;
         openpete_render_interp_snap_set(snap);
+    }
+
+    /* --- #28 attribution probe: histogram UNTAGGED (obj_tag==0)
+     * render-cache entries by gte_pc to name the straggler renderers
+     * still on the legacy path (the F9 "blue" geometry). Read-only,
+     * env OPENPETE_TAG0_PC_HISTO=1, prints every 300 ticks. */
+    if (getenv("OPENPETE_TAG0_PC_HISTO")) {
+        openpete_render_cache_for_each_prev_entry(tag0_pc_histo_cb, NULL);
+        if (++s_tag0_ticks % 300u == 0u) {
+            fprintf(stderr, "[tag0-pc] tick=%u:", openpete_frame);
+            for (uint32_t i = 0; i < s_tag0_hn; i++)
+                fprintf(stderr, " %08X=%u", s_tag0_h[i].pc, s_tag0_h[i].n);
+            fprintf(stderr, "\n");
+            memset(s_tag0_h, 0, sizeof(s_tag0_h)); s_tag0_hn = 0;
+        }
     }
 
     /* --- §7.5 re-validation: world render-cache RT/TR/mac dump.

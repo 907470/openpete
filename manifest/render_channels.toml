@@ -433,6 +433,12 @@ substitution_sites = [
     { addr = 0x800285FC, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 inner
     { addr = 0x80029500, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 outer
     { addr = 0x8002956C, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 inner
+    # #28a gameplay-sky dome (func_8004EBA8, r_cyclorama.s): the gte_pc
+    # attribution probe measured its two RTPS sites as ~90% of all untagged
+    # cache entries. Same packed-word strip-stream pattern as the env
+    # renderer: per-PIECE pointer = the stable strip identity.
+    { addr = 0x8004EC8C, operand = "rs", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $at,0($t6) — visibility-probe piece head ($t6=piece ptr)
+    { addr = 0x8004ED44, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — render-pass visible-piece head
 ]
 verdict_fn       = "openpete_world_geo_set_current"
 verified_against = ["aspect_determinism"]
@@ -499,6 +505,13 @@ substitution_sites = [
     { addr = 0x80026940, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L80026930 (clip):     lw $at,0($t7)
     { addr = 0x800269DC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L800269CC (nearclip): lw $at,0($t7)
     { addr = 0x80026A74, operand = "void", kind = "append_call", hook = "openpete_world_geo_mark_refine" }, # refine path: and $a3,$a3,$a2 before re-RTPS
+    # #28a gameplay-sky dome (func_8004EBA8): same pipelined stream, base
+    # $s1, one load per RTPS, no refine path; backedges re-enter via the
+    # hooked piece heads (FIFO reset). The phase-1 visibility probe emits
+    # one un-pushed RTPS per piece -> counter-key 0, a stable 1-vert batch.
+    { addr = 0x8004ED94, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 0: lw $at,0($s1)
+    { addr = 0x8004EDC8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 1: lw $at,0($s1)
+    { addr = 0x8004EDF8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky loop .L8004EDD0: lw $at,0($s1)
 ]
 verdict_fn       = "openpete_world_geo_push_vsrc"
 verified_against = ["aspect_determinism", "psx_oracle_20k"]
