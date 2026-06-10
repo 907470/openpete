@@ -1501,6 +1501,18 @@ void openpete_render_matcher_prepare_substitute(void) {
                      * rows attribute e.g. a solid-red shadow to its
                      * emitting PC. */
                     wd_pc_tally(cb->gte_pc, cb->world_src_keyed, ti < 0);
+                    /* OPENPETE_ABS_STREAM=1: one line per LARGE absent
+                     * world batch per frame — finds pieces that are
+                     * absent EVERY frame (persistently 30Hz-frozen)
+                     * vs one-cycle cull transients. */
+                    if (ti < 0 && cb->vertex_count >= 32u &&
+                        (cb->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) &&
+                        getenv("OPENPETE_ABS_STREAM"))
+                        fprintf(stderr,
+                            "[abs-stream] f=%lu tag=%08X pc=%08X vc=%u "
+                            "vmax=%08X\n",
+                            s_wd_frames, cb->obj_tag, cb->gte_pc,
+                            cb->vertex_count, cb->vkey_max);
                     /* OPENPETE_ABS_MOBY_ONLY=1 restricts the absent
                      * sampler to moby-class tags (world edge-cull
                      * floods the 8-slot window otherwise). */
