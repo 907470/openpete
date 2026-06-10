@@ -429,7 +429,11 @@ static inline void accumulate_vertex(matcher_batch_t* b,
     b->vloc_sum[0] += (int64_t)e->v_local[0];
     b->vloc_sum[1] += (int64_t)e->v_local[1];
     b->vloc_sum[2] += (int64_t)e->v_local[2];
-    if (e->world_vkey > b->vkey_max) b->vkey_max = e->world_vkey;
+    /* Refine-keyed re-projections sit in their own key namespace
+     * (bit30) — excluded from vkey_max so they can't poison the
+     * counter-family emitted-count gate. */
+    if (!(e->world_vkey & OPENPETE_WORLD_VKEY_REFINE_BIT) &&
+        e->world_vkey > b->vkey_max) b->vkey_max = e->world_vkey;
     b->vertex_count++;
 }
 
@@ -908,6 +912,135 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     }
 }
 
+/* ---- Midpoint-verification harness (OPENPETE_INTERP_VERIFY=path) ----
+ *
+ * §13.5: the empirical interpolation metric. Sub-frame ground truth
+ * does not exist (the sim is the only truth and it is 30 Hz), so the
+ * strongest available empiricism is leave-one-out midpoint
+ * reconstruction: for a vertex alive in G(N-1), G(N), G(N+1),
+ *
+ *   err = |(pos(N-1)+pos(N+1))/2 − pos(N)| = |Δ2 − Δ1| / 2
+ *
+ * — the trajectory's second difference, where Δ1/Δ2 are the
+ * PRODUCTION per-vertex tomap deltas of two consecutive display
+ * cycles. Zero iff screen motion is locally linear AND both pairings
+ * hit the same logical vertex. Signatures: mispair = tens-to-
+ * hundreds-px outlier; curvature = small + smooth (and production
+ * spans HALF this chain, so curvature error here ~4× upper-bounds
+ * production — second differences scale quadratically with step);
+ * freeze cost = |Δ1| (the hold-last-frame baseline, reported as
+ * "gain" = err/hold); rigid-fill cost = |Δ2 − batch mean|.
+ *
+ * Chaining works because a vertex's identity WITHIN one generation —
+ * (eff_span, world_vkey), the tomap key — is unchanged when that
+ * generation moves from the "to" role (cycle K-1) to the "from" role
+ * (cycle K): entries are immutable after their GTE pass. Cycle K
+ * stores Δ2 keyed by the FROM-side identity; cycle K+1 reads it as
+ * Δ1. Two seq-stamped maps ping-pong. Runs once per cache ROTATION
+ * (prepare is per-render; within one display cycle the generation
+ * pair is unchanged and a re-run would chain a generation against
+ * itself → spurious err=0). Output: 48-byte LE records, one per
+ * (batch, game frame), consumed by interp-verify.py.
+ * Zero overhead when the env var is unset. */
+#define IVMAP_SLOTS 65536u
+#define IVMAP_PROBE 24u
+typedef struct { uint64_t key; uint32_t seq; int16_t dx, dy; } iv_ent_t;
+static iv_ent_t  s_iv_map_a[IVMAP_SLOTS], s_iv_map_b[IVMAP_SLOTS];
+static iv_ent_t* s_iv_rd = s_iv_map_a;  /* last cycle's Δ (read as Δ1) */
+static iv_ent_t* s_iv_wr = s_iv_map_b;  /* this cycle's Δ2 (next Δ1)  */
+static uint32_t  s_iv_rd_seq, s_iv_wr_seq, s_iv_seq_ctr;
+typedef struct { float esum, e2sum, emax, hsum, rsum;
+                 uint16_t nc, nb, nrig, h[4]; } iv_stat_t;
+static iv_stat_t s_iv_stat[MATCHER_MAX_BATCHES];
+static FILE*     s_iv_fp;
+static int       s_iv_fp_init;
+static uint32_t  s_iv_cycle, s_iv_last_rot;
+
+static void iv_insert(uint64_t key, int16_t dx, int16_t dy) {
+    uint32_t slot = (uint32_t)(key & (IVMAP_SLOTS - 1u));
+    uint32_t p;
+    for (p = 0; p < IVMAP_PROBE; ++p) {
+        iv_ent_t* te = &s_iv_wr[slot];
+        if (te->seq != s_iv_wr_seq || te->key == key) {
+            te->key = key; te->seq = s_iv_wr_seq;
+            te->dx = dx; te->dy = dy;
+            return;
+        }
+        slot = (slot + 1u) & (IVMAP_SLOTS - 1u);
+    }
+}
+static int iv_lookup(uint64_t key, int16_t* dx, int16_t* dy) {
+    uint32_t slot = (uint32_t)(key & (IVMAP_SLOTS - 1u));
+    uint32_t p;
+    for (p = 0; p < IVMAP_PROBE; ++p) {
+        const iv_ent_t* te = &s_iv_rd[slot];
+        if (te->seq != s_iv_rd_seq) return 0;
+        if (te->key == key) { *dx = te->dx; *dy = te->dy; return 1; }
+        slot = (slot + 1u) & (IVMAP_SLOTS - 1u);
+    }
+    return 0;
+}
+
+static void iv_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
+    matcher_batch_t* b = find_span(s_curr, eff_span(e));
+    uint32_t to_sxy;
+    (void)ud;
+    /* Tagged, paired, per-vertex-corresponded verts only: untagged
+     * legacy rides the §7.3 composite path (no per-vert truth), UI is
+     * opted out of motion entirely, unpaired batches have no Δ2 (the
+     * chain just breaks and restarts when the batch re-pairs). Note
+     * rigid_only batches ARE included — verification wants the exact
+     * trajectory even where production chose whole-span rigid. */
+    if (!b || b->is_ui_opt_out || b->obj_tag == 0u) return;
+    if (!b->has_future_anchor) return;
+    if (!tomap_lookup(b->to_span_id, e, &to_sxy)) return;
+    {
+        iv_stat_t* st = &s_iv_stat[(uint32_t)(b - s_curr->batches)];
+        int16_t fx = (int16_t)(uint16_t)(e->sxy_key & 0xFFFFu);
+        int16_t fy = (int16_t)(uint16_t)(e->sxy_key >> 16);
+        int16_t tx = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);
+        int16_t ty = (int16_t)(uint16_t)(to_sxy >> 16);
+        int d2x = (int)tx - (int)fx, d2y = (int)ty - (int)fy;
+        /* Lookup key: this vert's identity in the CURRENT from-
+         * generation (where last cycle's insert filed it). Insert
+         * key: its identity in the to-generation — which is what
+         * eff_span will evaluate to when that generation becomes
+         * prev2 next cycle. Span ids are generation-local; vkey is
+         * the cross-frame part. */
+        int16_t d1x, d1y;
+        int have1 = iv_lookup(tomap_key_e(eff_span(e), e), &d1x, &d1y);
+        iv_insert(tomap_key_e(b->to_span_id, e),
+                  (int16_t)d2x, (int16_t)d2y);
+        if (!have1) {
+            if (st->nb < 0xFFFFu) st->nb++;
+            return;
+        }
+        if (st->nc >= 0xFFFFu) return;
+        {
+            float ex = 0.5f * ((float)d2x - (float)d1x);
+            float ey = 0.5f * ((float)d2y - (float)d1y);
+            float err  = sqrtf(ex * ex + ey * ey);
+            float hold = sqrtf((float)d1x * (float)d1x +
+                               (float)d1y * (float)d1y);
+            st->nc++;
+            st->esum  += err;
+            st->e2sum += err * err;
+            if (err > st->emax) st->emax = err;
+            st->hsum  += hold;
+            if      (err <= 1.0f) st->h[0]++;
+            else if (err <= 2.0f) st->h[1]++;
+            else if (err <= 4.0f) st->h[2]++;
+            else                  st->h[3]++;
+            if (b->rigid_valid && st->nrig < 0xFFFFu) {
+                float rx = (float)d2x - b->rigid_dx;
+                float ry = (float)d2y - b->rigid_dy;
+                st->rsum += sqrtf(rx * rx + ry * ry);
+                st->nrig++;
+            }
+        }
+    }
+}
+
 /* Finalize a freshly-scanned frame: per-batch centroid, sxy_centroid,
  * geometric hash, reset span/match state. */
 static void finalize_scanned_frame(matcher_frame_t* f) {
@@ -1300,6 +1433,65 @@ void openpete_render_matcher_prepare_substitute(void) {
                 }
             }
             g_openpete_render_substitute_pair_count = paired;
+        }
+    }
+
+    /* Midpoint-verification capture — see the harness block above
+     * corr_scan_cb for the methodology. Gated on the env var; runs
+     * the chain pass only when the cache ring actually rotated. */
+    {
+        if (!s_iv_fp_init) {
+            const char* p_ = getenv("OPENPETE_INTERP_VERIFY");
+            s_iv_fp_init = 1;
+            if (p_ && *p_) s_iv_fp = fopen(p_, "wb");
+        }
+        if (s_iv_fp) {
+            uint32_t rot = openpete_render_cache_rotation_count();
+            if (rot != s_iv_last_rot) {
+                s_iv_last_rot = rot;
+                { iv_ent_t* t = s_iv_rd; s_iv_rd = s_iv_wr; s_iv_wr = t; }
+                s_iv_rd_seq = s_iv_wr_seq;
+                s_iv_wr_seq = ++s_iv_seq_ctr;
+                /* Camera-cut cycle (§5/#24): the trajectory is
+                 * GENUINELY discontinuous — perfect pairing would
+                 * still register a huge second difference. Skip the
+                 * scan, leave the write map empty so chains restart
+                 * cleanly after the cut (next cycle = all breaks). */
+                if (openpete_render_interp_snap_get()) {
+                    s_iv_cycle++;
+                    goto iv_done;
+                }
+                openpete_render_cache_for_each_prev2_entry(iv_scan_cb, NULL);
+                for (uint32_t i = 0; i < s_curr->count; ++i) {
+                    iv_stat_t* st = &s_iv_stat[i];
+                    if (!st->nc && !st->nb) continue;
+                    {
+                        const matcher_batch_t* b = &s_curr->batches[i];
+                        uint8_t rec[48];
+                        uint16_t zpad = 0;
+                        memcpy(rec + 0,  &b->obj_tag, 4);
+                        memcpy(rec + 4,  &b->gte_pc,  4);
+                        memcpy(rec + 8,  &st->nc,     2);
+                        memcpy(rec + 10, &st->nb,     2);
+                        memcpy(rec + 12, &st->h[0],   2);
+                        memcpy(rec + 14, &st->h[1],   2);
+                        memcpy(rec + 16, &st->h[2],   2);
+                        memcpy(rec + 18, &st->h[3],   2);
+                        memcpy(rec + 20, &st->esum,   4);
+                        memcpy(rec + 24, &st->e2sum,  4);
+                        memcpy(rec + 28, &st->emax,   4);
+                        memcpy(rec + 32, &st->hsum,   4);
+                        memcpy(rec + 36, &st->rsum,   4);
+                        memcpy(rec + 40, &st->nrig,   2);
+                        memcpy(rec + 42, &zpad,       2);
+                        memcpy(rec + 44, &s_iv_cycle, 4);
+                        fwrite(rec, 1, 48, s_iv_fp);
+                    }
+                    memset(st, 0, sizeof(*st));
+                }
+                s_iv_cycle++;
+iv_done:        ;
+            }
         }
     }
 

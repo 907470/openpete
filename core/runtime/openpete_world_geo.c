@@ -62,8 +62,18 @@ void openpete_world_geo_mark_refine(void) {
 
 uint32_t openpete_world_geo_take_vkey(void) {
     if (s_refine) {              /* re-RTPS of the SAME vertex */
+        /* Refined projections get their OWN key namespace (REFINE
+         * bit). Sharing the original's key made the two projection
+         * spaces alias in the per-vertex tomap: when the near-clip
+         * refinement fired on only one of two consecutive frames,
+         * the matcher paired original↔refined and lerped across the
+         * projection difference (midpoint harness measured mean
+         * 33 px at the refine RTPS — its worst systematic offender).
+         * Segregated, refined verts pair refined↔refined when both
+         * frames refine, and miss (→ rigid fill) when the status
+         * flips. */
         s_refine = 0;
-        return s_last_vkey;
+        return s_last_vkey | OPENPETE_WORLD_VKEY_REFINE_BIT;
     }
     if (s_vsrc_head != s_vsrc_tail) {
         s_last_vkey = s_vsrc[s_vsrc_tail & (VSRC_RING - 1u)];

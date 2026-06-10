@@ -141,6 +141,13 @@ void openpete_render_cache_begin_frame(void);
  * fiber. See openpete_render_cache.c header comment for rationale. */
 void openpete_render_cache_arm_rotate(void);
 
+/* Monotonic count of consumed generation-ring rotations (== game
+ * frames whose GTE pass has begun). Lets once-per-game-frame
+ * consumers (e.g. the matcher's midpoint-verification pass) detect
+ * whether a per-render call is the first one since the ring
+ * advanced, vs a repeat within the same display cycle. */
+uint32_t openpete_render_cache_rotation_count(void);
+
 /* Phase 2.1 — sim-tick boundary, split into two calls:
  *
  *   advance_time: update the "this sim tick started at T" timestamp +
@@ -192,6 +199,10 @@ void openpete_render_substitute_alpha_snapshot_intermediate(void);
  * spans the cut presents the lagged OT unchanged (clean snap, no
  * full-screen lerp smear toward the post-cut viewpoint). */
 void openpete_render_interp_snap_set(int snap);
+/* Read the armed state (the matcher's midpoint-verification pass
+ * excludes cut-spanning cycles — the trajectory is GENUINELY
+ * discontinuous there and would register as huge phantom error). */
+int openpete_render_interp_snap_get(void);
 
 /* Iterate every populated slot in s_curr (the "next-visible" buffer just
  * emitted by the game fiber's GTE pass). Used by Phase 2's

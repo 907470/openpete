@@ -201,9 +201,16 @@ static inline openpete_render_cache_frame_t* gen_prev2(void) {
     return &s_gens[gen_idx_prev2()];
 }
 
+/* Monotonic rotation count — see header. */
+static uint32_t s_rotation_count = 0u;
+uint32_t openpete_render_cache_rotation_count(void) {
+    return s_rotation_count;
+}
+
 static void consume_pending_rotate(void) {
     if (!s_rotate_pending) return;
     s_rotate_pending = 0;
+    s_rotation_count++;
     s_current_idx = (s_current_idx + 1) % NUM_GENS;
     /* Logical clear of the newly-rotated-in slot (which holds gen[F-2]
      * data and is about to be overwritten with gen[F] writes). The
@@ -624,6 +631,10 @@ void openpete_render_sim_tick_mark_now(void) {
  * smear. Re-evaluated (set or cleared) every tick, so the flag's
  * lifetime is exactly the one display cycle that spans the cut. */
 static int s_interp_snap_cycle = 0;
+
+int openpete_render_interp_snap_get(void) {
+    return s_interp_snap_cycle;
+}
 
 void openpete_render_interp_snap_set(int snap) {
     s_interp_snap_cycle = snap ? 1 : 0;

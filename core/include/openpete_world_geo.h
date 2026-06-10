@@ -44,6 +44,17 @@ extern "C" {
  * marker — KSEG0 addresses simply have bit31 set. */
 #define OPENPETE_WORLD_VKEY_SRC_BIT 0x80000000u
 
+/* Near-clip refinement keys: the refine path re-projects the SAME
+ * vertex, and its emit reuses the original's key OR'd with this bit
+ * so the two projection spaces never alias in the per-vertex
+ * correspondence map (they differ by tens of px when refinement
+ * fires on only one of two consecutive frames). Free in both key
+ * families: KSEG0 source addrs (0x80xxxxxx) and scratchpad slots
+ * (0x1F8000xx) have bit30 clear, counters are small ints. The
+ * matcher excludes refine keys from vkey_max (the counter-family
+ * emitted-count gate). */
+#define OPENPETE_WORLD_VKEY_REFINE_BIT 0x40000000u
+
 /* Stash the strip-base pointer the GTE will project next. Called
  * from the recompiler-emitted prologue of the dominant terrain
  * strip loop in func_800258F0. */
