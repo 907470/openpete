@@ -13,6 +13,16 @@ static uint32_t s_vsrc_head = 0, s_vsrc_tail = 0;
 static int      s_refine    = 0;
 static uint32_t s_last_vkey = 0;
 
+/* §13.7c content-derived quad identity: FALSIFIED 2026-06-10. A
+ * gather-entry hook fed hash(strip, packed corner-index word) tags
+ * for the subdivided tri/quad variants (theory: positional list-
+ * entry tags mispair whole quads on visible-set churn — the tier-3/4
+ * harness tail). Tags demonstrably changed (capture md5 differed)
+ * yet every midpoint-harness metric was identical to 4 digits over
+ * 29M vert-frames: positional tags are already frame-stable in
+ * practice, and the tier tail is legitimate near-geometry curvature.
+ * Hook removed; see the plan §13.7c record. */
+
 void openpete_world_geo_set_current(uint32_t strip_addr) {
     s_current   = strip_addr;
     s_vidx      = 0;             /* new strip → restart ordinal */

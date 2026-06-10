@@ -741,11 +741,33 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     _cs != channel_sites_.end()
                     && _cs->second.kind == ChannelSite::ReplaceCall) {
                     code = emit_channel_replace_call(_cs->second, instr);
+                } else if (auto _ca = channel_sites_.find(addr);
+                    _ca != channel_sites_.end()
+                    && _ca->second.kind == ChannelSite::AppendCall) {
+                    /* AppendCall: generic (canonical sll emitted verbatim
+                     * first; the appended call is host-side only). Used by
+                     * the §13.7c quad-identity gather sites — the tri
+                     * variants' `sll $v1,$at,2` entry holds the packed
+                     * corner-index word in rt ($at). */
+                    code = translate_sll(instr)
+                         + emit_channel_append_call(_ca->second, instr);
                 } else {
                     code = translate_sll(instr);
                 }
                 break;
-            case 0x02: code = translate_srl(instr); break;     // srl
+            case 0x02:                                          // srl
+                /* AppendCall: same generic shape as sll above — the quad
+                 * variants' gather entry is `srl $a0,$at,6` (rt=$at =
+                 * packed corner-index word). */
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    code = translate_srl(instr)
+                         + emit_channel_append_call(_cs->second, instr);
+                } else {
+                    code = translate_srl(instr);
+                }
+                break;
             case 0x03: code = translate_sra(instr); break;     // sra
             case 0x04: code = translate_sllv(instr); break;    // sllv
             case 0x06: code = translate_srlv(instr); break;    // srlv

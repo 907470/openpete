@@ -439,6 +439,19 @@ substitution_sites = [
     # renderer: per-PIECE pointer = the stable strip identity.
     { addr = 0x8004EC8C, operand = "rs", kind = "append_call", hook = "openpete_world_geo_set_current_probe" },  # lw $at,0($t6) — visibility-probe piece head ($t6=piece ptr; bit29 probe-tag space, disjoint rank group from the render batches)
     { addr = 0x8004ED44, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — render-pass visible-piece head
+    # §13.7c content-derived quad identity: FALSIFIED 2026-06-10. The
+    # theory was that the positional list-entry tags above mispair
+    # whole quads when the visible set churns (tier-3/4 harness
+    # tail). Four gather-entry sites (0x8002792C / 0x8002807C /
+    # 0x80028A48 / 0x80029834, rt=$at = the quad's packed corner-
+    # index word) fed hash(strip, word) tags — tags demonstrably
+    # changed (capture md5 differed) yet EVERY harness metric was
+    # identical to 4 digits over 29M vert-frames: positional tags
+    # are already frame-stable in practice, and the tier-3/4 tail is
+    # legitimate near-geometry curvature (chain-metric inflated ~4x;
+    # err-vs-speed r=+0.70). Sites removed; the recompiler's sll/srl
+    # AppendCall dispatch added for this probe is kept (generic
+    # capability, oracle PASS).
 ]
 verdict_fn       = "openpete_world_geo_set_current"
 verified_against = ["aspect_determinism"]
