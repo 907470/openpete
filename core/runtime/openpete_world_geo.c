@@ -2,6 +2,8 @@
 
 #include "openpete_world_geo.h"
 
+#include <stdlib.h>   /* getenv — §13.12 A/B kill switch */
+
 static uint32_t s_current = 0;
 static uint32_t s_vidx    = 0;   /* per-strip emission ordinal (fallback) */
 
@@ -62,23 +64,74 @@ void openpete_world_geo_push_vsrc(uint32_t src_addr) {
  * tier-3 RTPS measured mean 3.4 px with 1327 px spikes). Namespacing
  * the slot keys per tier makes a tier flip MISS cleanly (→ rigid
  * fill / snap) instead of cross-pairing, exactly the
- * REFINE-bit precedent. Slot offsets fit in 16 bits; the tier tag
- * sits at bits 20-22 (clear of SRC bit31 / REFINE bit30).
+ * REFINE-bit precedent. (§13.7b intra-strip slot-aliasing hypothesis
+ * was FALSIFIED 2026-06-10: per-tier push-seq keys gave a
+ * bit-identical 29M-vert harness capture both on and off — slot keys
+ * are already unique within a matrix span; heads fire per quad.)
  *
- * §13.7b intra-strip slot ALIASING: hypothesis FALSIFIED
- * 2026-06-10. Suspected that quads within one strip collide on the
- * shared scratchpad slot offsets (tomap most-recent-wins → wrong
- * deltas = the tier-3 1327 px spikes). A per-tier push-sequence key
- * scheme produced a bit-identical 29M-vert midpoint-harness capture
- * (md5-equal) BOTH with the scheme on and with its kill switch off —
- * slot keys are already unique within a matrix span (the strip-entry
- * hook fires at quad granularity), no aliasing exists. The tier-3
- * tail is the documented intra-tier PATTERN RESHUFFLE across frames;
- * the real fix remains grid-coordinate identity (parked). */
+ * §13.12 TIER-INDEPENDENT LATTICE KEYS (supersedes the per-tier slot
+ * namespaces). The four variants are fixed serializations of one
+ * quarter-unit lattice over the quad/tri (derived from the
+ * r_environment.s synthesis chains; corner fields map identically
+ * across tiers: srl22→(0,0), srl14→(0,4), sll2→(4,0), srl6→(4,4)):
+ *   t1 quad 3x3:  k → (2(k/3), 2(k%3))     (even sublattice of t3)
+ *   t3 quad 5x5:  k → (k/5, k%5)
+ *   t2 tri ord-2: k → {(0,0),(0,2),(0,4),(2,0),(2,2),(4,0)}
+ *   t4 tri ord-4: decreasing-row-major, row starts {0,5,9,12,14}
+ * Keying by (i<<4)|j quarters instead of (tier, slot) makes a quad's
+ * camera-distance TIER FLIP pair its shared lattice points EXACTLY
+ * (a t1↔t3 flip pairs all 9 coarse points; only the fine-only points
+ * miss into the weld/mean) — previously every vert missed for a
+ * frame and the nearest ground quad (which flips constantly) rode
+ * the batch mean: the user-visible bottom-screen cyan patch + seam
+ * that survived the §13.11 gate retirement. Also makes the key
+ * independent of the emission pattern, retiring the intra-tier
+ * pattern-reshuffle residual. bit22 marks the lattice namespace —
+ * a real stream source address with bit31+bit22 set would be
+ * ≥0x8040xxxx, outside the 2MB PSX RAM, so the families can't
+ * collide. The terminator slot's prefetch push (dropped at the next
+ * head's FIFO reset, never consumed) gets a per-tier sentinel.
+ * Env OPENPETE_QUAD_LATTICE=0 restores (tier, slot) keys for A/B. */
+static int quad_lattice_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_QUAD_LATTICE");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+static uint32_t lattice_ij(uint32_t tier, uint32_t k) {
+    switch (tier) {
+    case 1u: return k < 9u
+        ? ((2u * (k / 3u)) << 4) | (2u * (k % 3u)) : 0x100u;
+    case 3u: return k < 25u
+        ? ((k / 5u) << 4) | (k % 5u) : 0x100u;
+    case 2u: {
+        static const uint8_t t2[6] = {0x00,0x02,0x04,0x20,0x22,0x40};
+        return k < 6u ? t2[k] : 0x100u;
+    }
+    case 4u: {
+        static const uint8_t row_start[5] = {0,5,9,12,14};
+        uint32_t i;
+        if (k >= 15u) return 0x100u;
+        for (i = 4u; row_start[i] > k; --i) {}
+        return (i << 4) | (k - row_start[i]);
+    }
+    default: return 0x100u;
+    }
+}
 static void push_vsrc_tier(uint32_t tier, uint32_t src_addr) {
+    uint32_t key;
     if (!s_current) return;
-    s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] =
-        OPENPETE_WORLD_VKEY_SRC_BIT | (tier << 20) | (src_addr & 0xFFFFu);
+    if (quad_lattice_on()) {
+        uint32_t k  = (src_addr & 0xFFFFu) >> 4;
+        uint32_t ij = lattice_ij(tier, k);
+        key = (ij <= 0xFFu)
+            ? OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22) | ij
+            : OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22) | 0x3F00u | tier;
+    } else {
+        key = OPENPETE_WORLD_VKEY_SRC_BIT | (tier << 20)
+            | (src_addr & 0xFFFFu);
+    }
+    s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] = key;
     s_vsrc_head++;
 }
 void openpete_world_geo_push_vsrc_t1(uint32_t a) { push_vsrc_tier(1u, a); }

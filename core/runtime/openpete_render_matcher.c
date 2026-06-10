@@ -1702,9 +1702,23 @@ void openpete_render_matcher_prepare_substitute(void) {
                                  - mx * mx - my * my;
                     double lim = (double)moby_spread_max();
                     if (var > lim * lim) {
-                        b->has_future_anchor = 0;   /* incoherent: freeze */
+                        /* §13.13: incoherent batch → rigid-FOLLOW the
+                         * mean (whole-span, one delta — streak-free,
+                         * since the §13.6 streaks came from per-vert
+                         * DIFFERING wild deltas) instead of freezing.
+                         * A frozen segment sat a full game frame
+                         * behind its exactly-lerping neighbor
+                         * segments at pan speed — a visible joint
+                         * crack on segmented mobys (Spyro). Freeze
+                         * only when the mean itself is untrustworthy
+                         * (corr_hit < RIGID_MIN_HITS). */
+                        if (b->rigid_valid) {
+                            b->rigid_only = 1;
+                        } else {
+                            b->has_future_anchor = 0;
+                            if (paired) paired--;
+                        }
                         b->dbg_state = OPENPETE_DBGST_CORR_FROZEN;
-                        if (paired) paired--;
                         s_wd_spread_froze++;
                         continue;
                     }
