@@ -631,11 +631,26 @@ static uint16_t s_norm_cls_id[NORM_CLS_SLOTS];
 static uint16_t s_norm_cls_cnt[NORM_CLS_SLOTS];
 static uint32_t s_norm_cls_seq[NORM_CLS_SLOTS];
 static uint32_t s_norm_pass_seq = 1u;
+
+/* 0x800E5xxx "transition-text staging area": theory FALSIFIED
+ * 2026-06-10. The 4-slot array at 0x800E5A0C (stride 0x58, EXE
+ * static data, mapped via OPENPETE_NORM_WINDOW=2) is NOT a staged-
+ * copy pool — the emitting PCs are the regular moby render queue,
+ * and the slots are four persistent text-line moby instances
+ * (m_Class = 1..4 = line index, stable; whole-string models of
+ * 117–237 verts). Their address tags were ALREADY stable: a
+ * class-occurrence normalizer branch produced byte-identical absent
+ * counts (tags renamed, pairing unchanged) and was removed. The
+ * absents have vc=0 — the object is entirely missing from the next
+ * generation — i.e. the lines BLINK by design (flashing text);
+ * freeze-snap is the correct rendering and the F9 red at blink
+ * edges is honest classification, not an artifact. */
 static int      s_ordc_on = 0;
 static uint32_t s_ordc_addr[16];
 static uint16_t s_ordc_class[16];
 static uint32_t s_ordc_n;
 static uint32_t spyro_obj_id_normalize(uint32_t addr) {
+    {
     const uint32_t* pb0p =
         (const uint32_t*)openpete_psx_to_host_ptr(0x80076EE0u + 0x70u);
     const uint32_t* pb1p =
@@ -665,15 +680,32 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
             static uint32_t s_nw_hi[24]; static unsigned s_nw_cnt[24];
             static unsigned s_nw_n = 0, s_nw_t = 0;
             uint32_t hi = addr >> 16, i;
-            if (s_nw < 8u &&
-                (span > 0x00100000u || addr < lo ||
+            /* =1: first-8 out-of-window verdicts + cluster histo.
+             * =2: log each UNIQUE out-of-window addr once (cap 400
+             * uniques) — maps the full staging structure (slot
+             * arrays, strides) of e.g. the 0x800E5xxx
+             * transition-text area across the whole run. */
+            int uniq_mode = getenv("OPENPETE_NORM_WINDOW")[0] == '2';
+            if ((span > 0x00100000u || addr < lo ||
                  addr - lo >= 2u * span)) {
-                s_nw++;
-                fprintf(stderr, "[norm-window] pb0=%08X pb1=%08X "
-                        "span=%X addr=%08X verdict=%s\n",
-                        pb0, pb1, span, addr,
-                        span > 0x00100000u ? "span-bail" :
-                        addr < lo ? "below" : "above");
+                static uint32_t s_nw_seen[400];
+                int log_it = 0;
+                if (uniq_mode) {
+                    unsigned k;
+                    for (k = 0; k < s_nw && k < 400u; ++k)
+                        if (s_nw_seen[k] == addr) break;
+                    if (k == s_nw && s_nw < 400u) {
+                        s_nw_seen[s_nw] = addr; log_it = 1;
+                    }
+                } else if (s_nw < 8u) log_it = 1;
+                if (log_it) {
+                    s_nw++;
+                    fprintf(stderr, "[norm-window] pb0=%08X pb1=%08X "
+                            "span=%X addr=%08X verdict=%s\n",
+                            pb0, pb1, span, addr,
+                            span > 0x00100000u ? "span-bail" :
+                            addr < lo ? "below" : "above");
+                }
             }
             for (i = 0; i < s_nw_n; ++i)
                 if (s_nw_hi[i] == hi) { s_nw_cnt[i]++; break; }
@@ -747,6 +779,7 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
             return 0x10000000u | (((uint32_t)cls & 0x7FFu) << 9)
                               | (occ & 0x1FFu);
         }
+    }
     }
 }
 
