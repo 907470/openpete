@@ -974,10 +974,22 @@ static int corr_min_pct(void) {
  * any tear-weight â¤ ~6 and the 70â80 basin is flat within 0.5%).
  * Env-tunable; 0 disables (per-vertex partial, the flickery
  * PHASE-B-initial behavior). */
+/* §13.11 GATE RETIRED for world (default 75 → 0, 2026-06-10). The
+ * tear this gate prevented — a missing vert frozen at ZERO delta
+ * inside a moving tri — no longer exists: world misses ride the
+ * §13.10 coincident-twin weld (exact) or the batch-mean rigid fill,
+ * never zero. Its only remaining effect was forcing whole spans
+ * onto the batch mean while neighbors lerped exact deltas; at the
+ * bottom of the screen (nearest geometry = steepest parallax
+ * gradient, near-clip churn constantly tripping the threshold) the
+ * mean-vs-exact gap is largest — the user-visible "seams at the
+ * bottom of the screen corresponding with orange flickers". Mobys
+ * keep their gate (animated meshes genuinely morph). Env restores
+ * any threshold for A/B. */
 static int world_corr_min_pct(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_WORLD_CORR_MIN_PCT");
-                 v = (e && *e) ? atoi(e) : 75;
+                 v = (e && *e) ? atoi(e) : 0;
                  if (v < 0) v = 0; if (v > 100) v = 100; }
     return v;
 }
