@@ -607,7 +607,16 @@ static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
  * prim allocations change — the canonical tag then changes for one
  * frame and the batch snaps (clean, gated). READ-ONLY w.r.t.
  * gameplay: pure address arithmetic on two loads. */
-static uint32_t s_norm_ord;
+static uint32_t s_norm_ord, s_norm_half = 2u; /* 2 = unset */
+#define NORM_CLS_SLOTS 64u
+static uint16_t s_norm_cls_id[NORM_CLS_SLOTS];
+static uint16_t s_norm_cls_cnt[NORM_CLS_SLOTS];
+static uint32_t s_norm_cls_seq[NORM_CLS_SLOTS];
+static uint32_t s_norm_pass_seq = 1u;
+static int      s_ordc_on = 0;
+static uint32_t s_ordc_addr[16];
+static uint16_t s_ordc_class[16];
+static uint32_t s_ordc_n;
 static uint32_t spyro_obj_id_normalize(uint32_t addr) {
     const uint32_t* pb0p =
         (const uint32_t*)openpete_psx_to_host_ptr(0x80076EE0u + 0x70u);
@@ -623,22 +632,63 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
         span = (pb0 < pb1) ? (pb1 - pb0) : (pb0 - pb1);
         if (span > 0x00100000u) return addr;   /* implausible layout */
         if (addr < lo || addr - lo >= 2u * span) return addr;
-        /* §13.9 staging ORDINAL, replacing the offset modulo. Offset
-         * tags required every upstream packet allocation to be
-         * size-stable: any churn (the title letters rotate, so their
-         * prim sizes change EVERY frame) shifted all subsequent
-         * offsets and the tags never matched across frames — the
-         * letters were TAG_ABSENT (red) every cycle, and the modulo
-         * also folded distinct copies onto colliding tags (measured
-         * 47 same-tag batches). The k-th DB-window copy normalized
-         * each game frame instead gets ordinal k: stable iff the
-         * staging ORDER is stable (queue/list order — packet sizes
-         * are irrelevant), unique per copy by construction. */
-        /* Counter reset happens in game_on_frame (tick boundary,
-         * BEFORE this frame's GTE pass) — NOT on the cache rotation
-         * count, which is consumed lazily by the first emit and
-         * would hand the first copy of each frame a stale ordinal. */
-        return 0x10000000u | (s_norm_ord++ & 0x000FFFFFu);
+        /* §13.9 DB-window copy identity = (m_Class, per-class
+         * occurrence index in staging order), replacing first the #30
+         * offset modulo (fragile to packet-size churn: rotating title
+         * letters re-tagged every frame = always-red text; modulo
+         * also folded distinct copies onto colliding tags — measured
+         * 47 same-tag batches) and then a pass-wide staging ordinal
+         * (fragile to ANY set-composition change: one blinking HUD
+         * element shifted every later copy's tag = a wandering absent
+         * per frame). Class-scoped occurrence isolates cross-class
+         * churn completely — a class-327 despawn cannot shift the
+         * class-430 letters — and within a class the staging order
+         * (e.g. left-to-right glyphs) is stable. Pass boundary = the
+         * DB-half flip (each staging pass uses one buffer half,
+         * alternating per VBL — census-verified; independent of
+         * tick/rotation timing). m_Class is read from the live copy
+         * (+0x36, render-time content — probe-verified valid). */
+        {
+            uint32_t half = (addr - lo) >= span ? 1u : 0u;
+            uint16_t cls = 0xFFFFu;
+            const uint8_t* m =
+                (const uint8_t*)openpete_psx_to_host_ptr(addr);
+            uint32_t slot, occ = 0u;
+            if (half != s_norm_half) {
+                s_norm_half = half;
+                s_norm_pass_seq++;
+                s_norm_ord = 0u;
+            }
+            if (m) memcpy(&cls, m + 0x36, 2);
+            slot = (uint32_t)cls & (NORM_CLS_SLOTS - 1u);
+            /* tiny per-pass class→count open hash, seq-stamped */
+            {
+                uint32_t i;
+                for (i = 0; i < NORM_CLS_SLOTS; ++i) {
+                    uint32_t idx = (slot + i) & (NORM_CLS_SLOTS - 1u);
+                    if (s_norm_cls_seq[idx] != s_norm_pass_seq) {
+                        s_norm_cls_id[idx]  = cls;
+                        s_norm_cls_seq[idx] = s_norm_pass_seq;
+                        s_norm_cls_cnt[idx] = 1u;
+                        occ = 0u;
+                        break;
+                    }
+                    if (s_norm_cls_id[idx] == cls) {
+                        occ = s_norm_cls_cnt[idx]++;
+                        break;
+                    }
+                }
+            }
+            /* OPENPETE_ORD_CLASSES diag census (staging index). */
+            if (s_ordc_on && s_norm_ord < 16u) {
+                s_ordc_addr[s_norm_ord] = addr;
+                s_ordc_class[s_norm_ord] = cls;
+                if (s_norm_ord >= s_ordc_n) s_ordc_n = s_norm_ord + 1u;
+            }
+            s_norm_ord++;
+            return 0x10000000u | (((uint32_t)cls & 0x7FFu) << 9)
+                              | (occ & 0x1FFu);
+        }
     }
 }
 
@@ -661,8 +711,25 @@ static void tag0_pc_histo_cb(const openpete_render_cache_entry_t* e,
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
 
-    /* §13.9: per-game-frame staging-ordinal reset (see normalizer). */
-    s_norm_ord = 0u;
+    /* §13.9 diag: ordinal→class census dump (the counter itself
+     * resets on the DB-half flip inside the normalizer — see there). */
+    {
+        static int init = 0;
+        if (!init) {
+            init = 1;
+            s_ordc_on = getenv("OPENPETE_ORD_CLASSES") != NULL;
+        }
+        if (s_ordc_on && (frame_counter % 600u < 8u)) {
+            uint32_t k;
+            fprintf(stderr, "[ord-classes] f=%u n=%u |", frame_counter,
+                    s_ordc_n);
+            for (k = 0; k < s_ordc_n && k < 16u; ++k)
+                fprintf(stderr, " %u:cls=%u@%08X", k,
+                        (unsigned)s_ordc_class[k], s_ordc_addr[k]);
+            fprintf(stderr, "\n");
+        }
+        s_ordc_n = 0u;
+    }
 
     /* #30: register the obj_id tag normalizer once. */
     {

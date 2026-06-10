@@ -1342,6 +1342,31 @@ void openpete_render_matcher_prepare_substitute(void) {
             if (!cb->has_future_anchor) {
                 cb->dbg_state = (ti < 0) ? OPENPETE_DBGST_TAG_ABSENT
                                          : OPENPETE_DBGST_TAG_INSANE;
+                /* TEMP: on an ordinal-tag absent, dump the full
+                 * to-side moby tag list at the failing instant. */
+                if (ti < 0 && getenv("OPENPETE_ORD_ABSENT_DUMP") &&
+                    (cb->obj_tag & 0xF0000000u) == 0x30000000u) {
+                    static unsigned s_oad_last = 0;
+                    static unsigned s_oad_n = 0;
+                    if (s_oad_n < 6u || ++s_oad_last >= 18000u) {
+                        uint32_t k;
+                        s_oad_last = 0; s_oad_n++;
+                        fprintf(stderr,
+                            "[ord-absent] from tag=%08X r=%u vc=%u "
+                            "vmax=%u | to-moby:", cb->obj_tag,
+                            cb->tag_rank, cb->vertex_count, cb->vkey_max);
+                        for (k = 0; k < s_to.count; ++k) {
+                            uint32_t t = s_to.batches[k].obj_tag;
+                            if (t != 0u &&
+                                !(t & OPENPETE_WORLD_GEO_TAG_BIT) &&
+                                (t & 0x30000000u))
+                                fprintf(stderr, " %08X/r%u/c%d", t,
+                                    s_to.batches[k].tag_rank,
+                                    s_to.batches[k].consumed);
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                }
                 if (world_diag()) {
                     /* Tally ALL tagged batches (world AND moby) — moby
                      * rows attribute e.g. a solid-red shadow to its
@@ -1624,6 +1649,30 @@ void openpete_render_matcher_prepare_substitute(void) {
                 s_iv_cycle++;
 iv_done:        ;
             }
+        }
+    }
+
+    /* TEMP: OPENPETE_ORD_CENSUS=1 — dump ordinal-class (0x1xxxxxxx)
+     * tags on both sides every 300 prepares. */
+    if (getenv("OPENPETE_ORD_CENSUS")) {
+        static unsigned s_oc_n = 0;
+        if (++s_oc_n % 300u == 0u) {
+            uint32_t i;
+            fprintf(stderr, "[ord-census] from:");
+            for (i = 0; i < s_curr->count; ++i) {
+                uint32_t t = s_curr->batches[i].obj_tag;
+                if ((t & 0xD0000000u) == 0x10000000u)
+                    fprintf(stderr, " %08X/r%u", t,
+                            s_curr->batches[i].tag_rank);
+            }
+            fprintf(stderr, "\n[ord-census] to  :");
+            for (i = 0; i < s_to.count; ++i) {
+                uint32_t t = s_to.batches[i].obj_tag;
+                if ((t & 0xD0000000u) == 0x10000000u)
+                    fprintf(stderr, " %08X/r%u", t,
+                            s_to.batches[i].tag_rank);
+            }
+            fprintf(stderr, "\n");
         }
     }
 
