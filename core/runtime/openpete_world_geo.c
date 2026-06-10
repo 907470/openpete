@@ -53,7 +53,18 @@ void openpete_world_geo_push_vsrc(uint32_t src_addr) {
  * the slot keys per tier makes a tier flip MISS cleanly (→ rigid
  * fill / snap) instead of cross-pairing, exactly the
  * REFINE-bit precedent. Slot offsets fit in 16 bits; the tier tag
- * sits at bits 20-21 (clear of SRC bit31 / REFINE bit30). */
+ * sits at bits 20-22 (clear of SRC bit31 / REFINE bit30).
+ *
+ * §13.7b intra-strip slot ALIASING: hypothesis FALSIFIED
+ * 2026-06-10. Suspected that quads within one strip collide on the
+ * shared scratchpad slot offsets (tomap most-recent-wins → wrong
+ * deltas = the tier-3 1327 px spikes). A per-tier push-sequence key
+ * scheme produced a bit-identical 29M-vert midpoint-harness capture
+ * (md5-equal) BOTH with the scheme on and with its kill switch off —
+ * slot keys are already unique within a matrix span (the strip-entry
+ * hook fires at quad granularity), no aliasing exists. The tier-3
+ * tail is the documented intra-tier PATTERN RESHUFFLE across frames;
+ * the real fix remains grid-coordinate identity (parked). */
 static void push_vsrc_tier(uint32_t tier, uint32_t src_addr) {
     if (!s_current) return;
     s_vsrc[s_vsrc_head & (VSRC_RING - 1u)] =
