@@ -607,6 +607,7 @@ static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
  * prim allocations change — the canonical tag then changes for one
  * frame and the batch snaps (clean, gated). READ-ONLY w.r.t.
  * gameplay: pure address arithmetic on two loads. */
+static uint32_t s_norm_ord;
 static uint32_t spyro_obj_id_normalize(uint32_t addr) {
     const uint32_t* pb0p =
         (const uint32_t*)openpete_psx_to_host_ptr(0x80076EE0u + 0x70u);
@@ -622,7 +623,22 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
         span = (pb0 < pb1) ? (pb1 - pb0) : (pb0 - pb1);
         if (span > 0x00100000u) return addr;   /* implausible layout */
         if (addr < lo || addr - lo >= 2u * span) return addr;
-        return 0x10000000u | ((addr - lo) % span);
+        /* §13.9 staging ORDINAL, replacing the offset modulo. Offset
+         * tags required every upstream packet allocation to be
+         * size-stable: any churn (the title letters rotate, so their
+         * prim sizes change EVERY frame) shifted all subsequent
+         * offsets and the tags never matched across frames — the
+         * letters were TAG_ABSENT (red) every cycle, and the modulo
+         * also folded distinct copies onto colliding tags (measured
+         * 47 same-tag batches). The k-th DB-window copy normalized
+         * each game frame instead gets ordinal k: stable iff the
+         * staging ORDER is stable (queue/list order — packet sizes
+         * are irrelevant), unique per copy by construction. */
+        /* Counter reset happens in game_on_frame (tick boundary,
+         * BEFORE this frame's GTE pass) — NOT on the cache rotation
+         * count, which is consumed lazily by the first emit and
+         * would hand the first copy of each frame a stale ordinal. */
+        return 0x10000000u | (s_norm_ord++ & 0x000FFFFFu);
     }
 }
 
@@ -644,6 +660,9 @@ static void tag0_pc_histo_cb(const openpete_render_cache_entry_t* e,
 
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* §13.9: per-game-frame staging-ordinal reset (see normalizer). */
+    s_norm_ord = 0u;
 
     /* #30: register the obj_id tag normalizer once. */
     {

@@ -1347,7 +1347,12 @@ void openpete_render_matcher_prepare_substitute(void) {
                      * rows attribute e.g. a solid-red shadow to its
                      * emitting PC. */
                     wd_pc_tally(cb->gte_pc, cb->world_src_keyed, ti < 0);
-                    if (ti < 0 && s_wd_abs_n < 8u) {
+                    /* OPENPETE_ABS_MOBY_ONLY=1 restricts the absent
+                     * sampler to moby-class tags (world edge-cull
+                     * floods the 8-slot window otherwise). */
+                    if (ti < 0 && s_wd_abs_n < 8u &&
+                        !(getenv("OPENPETE_ABS_MOBY_ONLY") &&
+                          (cb->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT))) {
                         s_wd_abs[s_wd_abs_n].pc   = cb->gte_pc;
                         s_wd_abs[s_wd_abs_n].tag  = cb->obj_tag;
                         s_wd_abs[s_wd_abs_n].rank = cb->tag_rank;
