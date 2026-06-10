@@ -624,12 +624,52 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
         (const uint32_t*)openpete_psx_to_host_ptr(0x80076F64u + 0x70u);
     if (!pb0p || !pb1p) return addr;
     {
-        uint32_t pb0 = *pb0p, pb1 = *pb1p;
+        /* CANON-MAP the live pb values: under --no-lod/widescreen the
+         * polybuf is host-relocated (pb reads 0x804xxxxx/0x805xxxxx)
+         * but the staged-copy area stays at its CANONICAL PSX
+         * addresses (measured 0x801Axxxx/0x801Bxxxx alternating under
+         * no-lod) — the raw-pb window only ever bracketed it
+         * coincidentally, and broke under relocation (DEMO MODE solid
+         * red with --no-lod, plain flags fine). to_canon is identity
+         * when not relocated. */
+        uint32_t pb0 = psx_runtime_polybuf_to_canon(*pb0p);
+        uint32_t pb1 = psx_runtime_polybuf_to_canon(*pb1p);
         uint32_t lo, span;
         if (!(pb0 & 0x80000000u) || !(pb1 & 0x80000000u) || pb0 == pb1)
             return addr;          /* DBs not initialised yet */
         lo   = (pb0 < pb1) ? pb0 : pb1;
         span = (pb0 < pb1) ? (pb1 - pb0) : (pb0 - pb1);
+        /* OPENPETE_NORM_WINDOW=1: one-shot dump of the live window
+         * geometry + first out-of-window addrs (flag-dependent
+         * layouts: --no-lod grows/relocates the polybuf). */
+        if (getenv("OPENPETE_NORM_WINDOW")) {
+            static unsigned s_nw = 0;
+            static uint32_t s_nw_hi[24]; static unsigned s_nw_cnt[24];
+            static unsigned s_nw_n = 0, s_nw_t = 0;
+            uint32_t hi = addr >> 16, i;
+            if (s_nw < 8u &&
+                (span > 0x00100000u || addr < lo ||
+                 addr - lo >= 2u * span)) {
+                s_nw++;
+                fprintf(stderr, "[norm-window] pb0=%08X pb1=%08X "
+                        "span=%X addr=%08X verdict=%s\n",
+                        pb0, pb1, span, addr,
+                        span > 0x00100000u ? "span-bail" :
+                        addr < lo ? "below" : "above");
+            }
+            for (i = 0; i < s_nw_n; ++i)
+                if (s_nw_hi[i] == hi) { s_nw_cnt[i]++; break; }
+            if (i == s_nw_n && s_nw_n < 24u) {
+                s_nw_hi[s_nw_n] = hi; s_nw_cnt[s_nw_n] = 1; s_nw_n++;
+            }
+            if (++s_nw_t % 50000u == 0u) {
+                fprintf(stderr, "[norm-clusters]");
+                for (i = 0; i < s_nw_n; ++i)
+                    fprintf(stderr, " %04Xxxxx:%u", s_nw_hi[i],
+                            s_nw_cnt[i]);
+                fprintf(stderr, "\n");
+            }
+        }
         if (span > 0x00100000u) return addr;   /* implausible layout */
         if (addr < lo || addr - lo >= 2u * span) return addr;
         /* §13.9 DB-window copy identity = (m_Class, per-class
