@@ -201,6 +201,12 @@ typedef struct matcher_batch {
      * the before/after frame": at pan speed the lagged pose sits
      * tens-to-hundreds of px from the interpolating neighbors. */
     int64_t  corr_dx_sum, corr_dy_sum;
+    /* Σ(dx²+dy²) over corresponded verts — with the signed sums this
+     * gives the per-vert motion VARIANCE around the rigid mean. High
+     * spread = the batch's motion is incoherent (e.g. a flattened
+     * shadow pass amplifying animation into floor streaks) — per-vert
+     * lerp can't represent it; the spread gate freezes the batch. */
+    uint64_t corr_d2_sum;
     float    rigid_dx, rigid_dy;
     int      rigid_valid;  /* corr_hit >= RIGID_MIN_HITS */
     int      rigid_only;   /* sub-threshold: ALL verts ride rigid */
@@ -287,6 +293,8 @@ static unsigned long s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero;
 /* Rigid-fallback engagement: gate trips that rigid-followed vs froze,
  * and per-vert tomap misses filled with the batch mean. */
 static unsigned long s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill;
+/* §13.6 spread-gate trips (incoherent moby batches frozen). */
+static unsigned long s_wd_spread_froze;
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
     for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
@@ -773,6 +781,28 @@ static int world_corr_min_pct(void) {
     return v;
 }
 
+/* §13.6 motion-coherence (spread) gate for MOBY batches. The
+ * midpoint harness caught batches whose pairing is correct yet whose
+ * per-vert motion is violently INCOHERENT — the canonical case is a
+ * cutscene model's flattened drop-shadow pass, where small animation
+ * becomes 25–90 px floor streaks on some verts while others sit
+ * still (measured: 64% of the whole shadow >4px tail from three such
+ * batches). Per-vert lerp can't represent that and the rigid mean is
+ * equally wrong for most verts, so when the standard deviation of
+ * the corresponded deltas exceeds this bound the batch FREEZES at
+ * its lagged pose (honest 30 Hz — the animated-mesh fallback).
+ * Spyro/mobys are unaffected: body segments are separate batches
+ * with low within-segment spread (animation moves a segment's verts
+ * together). World strips are exempt (rigid terrain; partial-cull
+ * handled by the corr ratio + source keys). Env-tunable; 0 disables. */
+static int moby_spread_max(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SPREAD_MAX");
+                 v = (e && *e) ? atoi(e) : 16;
+                 if (v < 0) v = 0; }
+    return v;
+}
+
 /* Rigid-fallback (camera-rotation smear fix). When a paired batch
  * has enough corresponded verts to trust their mean signed delta,
  * that mean substitutes for (a) the whole batch when the corr gate
@@ -909,6 +939,11 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
          * invariant (same reason the gate ratio tolerates it). */
         b->corr_dx_sum += (int64_t)((int)tx - (int)fx);
         b->corr_dy_sum += (int64_t)((int)ty - (int)fy);
+        {
+            int64_t ddx = (int64_t)((int)tx - (int)fx);
+            int64_t ddy = (int64_t)((int)ty - (int)fy);
+            b->corr_d2_sum += (uint64_t)(ddx * ddx + ddy * ddy);
+        }
     }
 }
 
@@ -1066,6 +1101,7 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         b->world_ord = 0xFFFFFFFFu;
         b->corr_hit = b->corr_tot = 0u;
         b->corr_dpx_sum = 0u;
+        b->corr_d2_sum = 0u;
         b->corr_dx_sum = b->corr_dy_sum = 0;
         b->rigid_dx = b->rigid_dy = 0.0f;
         b->rigid_valid = 0;
@@ -1399,6 +1435,25 @@ void openpete_render_matcher_prepare_substitute(void) {
                  * keep the v_local-churn animation threshold. The
                  * corr_tot<8 noise guard is bypassed for world —
                  * small terrain strips tear too. */
+                /* §13.6 spread gate (mobys only, see moby_spread_max
+                 * rationale). Variance of the corresponded deltas
+                 * around their mean; double-tally under CORR_LOG
+                 * cancels (all sums and hit double together). */
+                if (!is_w && b->corr_hit >= 8u && moby_spread_max() > 0) {
+                    double n  = (double)b->corr_hit;
+                    double mx = (double)b->corr_dx_sum / n;
+                    double my = (double)b->corr_dy_sum / n;
+                    double var = (double)b->corr_d2_sum / n
+                                 - mx * mx - my * my;
+                    double lim = (double)moby_spread_max();
+                    if (var > lim * lim) {
+                        b->has_future_anchor = 0;   /* incoherent: freeze */
+                        b->dbg_state = OPENPETE_DBGST_CORR_FROZEN;
+                        if (paired) paired--;
+                        s_wd_spread_froze++;
+                        continue;
+                    }
+                }
                 int thr = is_w ? world_corr_min_pct() : min_pct;
                 if (thr <= 0) continue;
                 if (!is_w && b->corr_tot < 8u) continue;
@@ -1541,11 +1596,13 @@ iv_done:        ;
                           OPENPETE_WORLD_GEO_TAG_BIT)) ts++;
                 fprintf(stderr,
                   "[orange] mig=%lu same=%lu zerocorr=%lu | "
-                  "rigid: span=%lu froze=%lu fill=%lu\n",
+                  "rigid: span=%lu froze=%lu fill=%lu | spread=%lu\n",
                   s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
-                  s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill);
+                  s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill,
+                  s_wd_spread_froze);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
+                s_wd_spread_froze = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
