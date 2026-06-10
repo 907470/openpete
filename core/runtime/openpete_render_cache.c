@@ -59,6 +59,10 @@ extern int   openpete_fov_h_override;  /* 0 = no --fov H override */
  * at boot to filter on PC. */
 int (*openpete_pgxp_classify_fn)(uint32_t gte_pc, int is_canonical) = NULL;
 
+/* Seeded by run.c from the resolved --pgxp state; -1 until boot. The
+ * perspective-W branch follows it by default (env-overridable). */
+int g_openpete_pgxp_perspective = -1;
+
 /* Day 4 Phase 1.0 instrumentation: dump unique (h, ofx, ofy) tuples
  * seen at vertex emit. Resolves the cyclorama question — does
  * func_8004EBA8 swap projection-context mid-frame, or does it use the
@@ -506,8 +510,13 @@ int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
      * depth bias). */
     static int s_enable_persp = -1;
     if (s_enable_persp < 0) {
+        /* Default: follow --pgxp (seeded by run.c). The env remains an
+         * override in either direction (the old experiment gate,
+         * promoted 2026-06-10 after the level-10 missing-geo
+         * regression failed to reproduce — see openpete-pgxp.md). */
         const char* v = getenv("OPENPETE_PGXP_ENABLE_PERSPECTIVE");
-        s_enable_persp = (v && v[0] && v[0] != '0') ? 1 : 0;
+        if (v && v[0]) s_enable_persp = (v[0] != '0') ? 1 : 0;
+        else s_enable_persp = (g_openpete_pgxp_perspective > 0) ? 1 : 0;
     }
     if (!s_enable_persp) {
         out->scr_h = 0.0f;

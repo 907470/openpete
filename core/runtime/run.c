@@ -665,6 +665,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         int want_pgxp = (opts->pgxp_enable >= 0) ? opts->pgxp_enable : 1;
         g_cfg_pgxpTextureCorrection = want_pgxp;
         g_cfg_pgxpZBuffer = want_pgxp;
+        {
+            extern int g_openpete_pgxp_perspective;
+            g_openpete_pgxp_perspective = want_pgxp;
+        }
         OPL_INFO_F("pgxp", "consumer flags texture_correction=%d zbuffer=%d "
                    "(--pgxp %s)", want_pgxp, want_pgxp,
                    (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 1");

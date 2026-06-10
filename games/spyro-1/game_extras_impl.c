@@ -172,21 +172,31 @@ static int s_persp_part   = 0;
 static int s_persp_shad   = 0;
 static int s_persp_other  = 0;  /* PCs that don't match any known range */
 
-static int env_on(const char* name) {
+static int env_tri(const char* name, int dflt) {
     const char* v = getenv(name);
-    return (v && v[0] && v[0] != '0') ? 1 : 0;
+    if (!v || !v[0]) return dflt;
+    return (v[0] != '0') ? 1 : 0;
 }
 
+/* Defaults promoted 2026-06-10 (perspective evaluation): the 3D
+ * prim classes (moby/spyro/terrain) run perspective whenever the
+ * master allows (= --pgxp). The level-10 missing-geo regression the
+ * bisection gates were built for no longer reproduces (identical-
+ * frame screenshot diff over the full demo: changes confined to
+ * texture interpolation on large oblique polys; zero geometry
+ * deltas). 2D/affine-authored classes stay OFF by design: cyclorama
+ * gradient is affine-authored, tracer/particles/shadow are flat.
+ * All remain env-overridable in both directions. */
 static void spyro_pgxp_init_classes(void) {
     if (s_pgxp_class_init) return;
-    s_persp_tracer = env_on("OPENPETE_PGXP_TRACER");
-    s_persp_moby   = env_on("OPENPETE_PGXP_MOBY");
-    s_persp_spyro  = env_on("OPENPETE_PGXP_SPYRO");
-    s_persp_terr   = env_on("OPENPETE_PGXP_TERRAIN");
-    s_persp_cyc    = env_on("OPENPETE_PGXP_CYCLORAMA");
-    s_persp_part   = env_on("OPENPETE_PGXP_PARTICLES");
-    s_persp_shad   = env_on("OPENPETE_PGXP_SHADOW");
-    s_persp_other  = env_on("OPENPETE_PGXP_OTHER");
+    s_persp_tracer = env_tri("OPENPETE_PGXP_TRACER",    0);
+    s_persp_moby   = env_tri("OPENPETE_PGXP_MOBY",      1);
+    s_persp_spyro  = env_tri("OPENPETE_PGXP_SPYRO",     1);
+    s_persp_terr   = env_tri("OPENPETE_PGXP_TERRAIN",   1);
+    s_persp_cyc    = env_tri("OPENPETE_PGXP_CYCLORAMA", 0);
+    s_persp_part   = env_tri("OPENPETE_PGXP_PARTICLES", 0);
+    s_persp_shad   = env_tri("OPENPETE_PGXP_SHADOW",    0);
+    s_persp_other  = env_tri("OPENPETE_PGXP_OTHER",     0);
     s_pgxp_class_init = 1;
     fprintf(stderr, "[PGXP-CLASS] tracer=%d moby=%d spyro=%d terrain=%d cyclorama=%d particles=%d shadow=%d other=%d\n",
             s_persp_tracer, s_persp_moby, s_persp_spyro, s_persp_terr,
