@@ -259,6 +259,8 @@ static unsigned s_wd_smp_n;
 /* Sample ring of ABSENT batch identities (tag/rank/shape). */
 static struct { uint32_t pc, tag, rank, vmax, vc; } s_wd_abs[8];
 static unsigned s_wd_abs_n;
+/* Orange (corr-freeze) attribution tallies. */
+static unsigned long s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero;
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
     for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
@@ -1152,6 +1154,16 @@ void openpete_render_matcher_prepare_substitute(void) {
                     b->has_future_anchor = 0;          /* whole-span freeze */
                     b->dbg_state = OPENPETE_DBGST_CORR_FROZEN;
                     if (paired) paired--;
+                    /* Orange attribution: same-variant freeze (eviction
+                     * / partial cull) vs cross-variant freeze (LOD tier
+                     * migration — from/to RTPS PCs differ). */
+                    if (world_diag() && is_w) {
+                        const matcher_batch_t* tb =
+                            find_span(&s_to, b->to_span_id);
+                        if (tb && tb->gte_pc != b->gte_pc) s_wd_orange_mig++;
+                        else                               s_wd_orange_same++;
+                        if (b->corr_hit == 0u) s_wd_orange_zero++;
+                    }
                 }
             }
             g_openpete_render_substitute_pair_count = paired;
@@ -1202,6 +1214,10 @@ void openpete_render_matcher_prepare_substitute(void) {
                     if ((s_to.batches[k].obj_tag & 0x20000000u) &&
                         !(s_to.batches[k].obj_tag &
                           OPENPETE_WORLD_GEO_TAG_BIT)) ts++;
+                fprintf(stderr,
+                  "[orange] mig=%lu same=%lu zerocorr=%lu\n",
+                  s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero);
+                s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
