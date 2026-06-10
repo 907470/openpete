@@ -192,7 +192,15 @@ static void spyro_pgxp_init_classes(void) {
     s_persp_tracer = env_tri("OPENPETE_PGXP_TRACER",    0);
     s_persp_moby   = env_tri("OPENPETE_PGXP_MOBY",      1);
     s_persp_spyro  = env_tri("OPENPETE_PGXP_SPYRO",     1);
-    s_persp_terr   = env_tri("OPENPETE_PGXP_TERRAIN",   1);
+    /* Terrain demoted back to default-OFF (2026-06-10, user report:
+     * "pretty broken with world geo"). Static-frame evaluation missed
+     * the failure mode: at ~80% cache-hit rates the per-prim
+     * coherence demote leaves NEIGHBORING terrain prims on different
+     * interpolation paths (hyperbolic vs affine), and the patchwork
+     * re-rolls per frame as hit patterns shift — invisible in single
+     * screenshots, visible swimming in motion. Re-enable only after
+     * a region-coherent demote (or ~100% hit coverage) exists. */
+    s_persp_terr   = env_tri("OPENPETE_PGXP_TERRAIN",   0);
     s_persp_cyc    = env_tri("OPENPETE_PGXP_CYCLORAMA", 0);
     s_persp_part   = env_tri("OPENPETE_PGXP_PARTICLES", 0);
     s_persp_shad   = env_tri("OPENPETE_PGXP_SHADOW",    0);
