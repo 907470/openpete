@@ -300,6 +300,8 @@ static unsigned long s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill;
 /* §13.10 coincident-twin welds (world VERT_MISS resolved through a
  * same-pixel twin's correspondence instead of the batch mean). */
 static unsigned long s_wd_weld;
+/* tomap_insert probe-run-exhaustion drops (see tomap_insert). */
+static unsigned long s_tomap_drops;
 /* §13.6 spread-gate trips (incoherent moby batches frozen). */
 static unsigned long s_wd_spread_froze;
 /* World VERT_MISS (cyan) key-family attribution: which world_vkey
@@ -311,13 +313,18 @@ static unsigned long s_wd_spread_froze;
 static struct { uint32_t pc;
                 unsigned long ctr, ref, tier[5], src; } s_wd_vm[16];
 static unsigned s_wd_vm_n;
-static struct { uint32_t pc, vkey, tag; } s_wd_vm_smp[8];
+/* found_tag: deep-probe result for this sample — the to-side batch
+ * tag the missing key WAS found under (0 = found nowhere). Filled at
+ * the call site (needs tomap/s_to, defined later). */
+static struct { uint32_t pc, vkey, tag, found_tag; } s_wd_vm_smp[8];
 static unsigned s_wd_vm_smp_n;
-static void wd_vm_tally(uint32_t pc, uint32_t vkey, uint32_t tag) {
+/* Returns the claimed sample-ring slot (caller fills found_tag via
+ * the deep probe) or -1 when the ring is full / PC table saturated. */
+static int wd_vm_tally(uint32_t pc, uint32_t vkey, uint32_t tag) {
     unsigned i;
     for (i = 0; i < s_wd_vm_n; ++i) if (s_wd_vm[i].pc == pc) break;
     if (i == s_wd_vm_n) {
-        if (s_wd_vm_n >= 16u) return;
+        if (s_wd_vm_n >= 16u) return -1;
         memset(&s_wd_vm[i], 0, sizeof(s_wd_vm[i]));
         s_wd_vm[i].pc = pc;
         s_wd_vm_n++;
@@ -333,11 +340,13 @@ static void wd_vm_tally(uint32_t pc, uint32_t vkey, uint32_t tag) {
             s_wd_vm[i].src++;
     }
     if (s_wd_vm_smp_n < 8u) {
-        s_wd_vm_smp[s_wd_vm_smp_n].pc   = pc;
-        s_wd_vm_smp[s_wd_vm_smp_n].vkey = vkey;
-        s_wd_vm_smp[s_wd_vm_smp_n].tag  = tag;
-        s_wd_vm_smp_n++;
+        s_wd_vm_smp[s_wd_vm_smp_n].pc        = pc;
+        s_wd_vm_smp[s_wd_vm_smp_n].vkey      = vkey;
+        s_wd_vm_smp[s_wd_vm_smp_n].tag       = tag;
+        s_wd_vm_smp[s_wd_vm_smp_n].found_tag = 0u;
+        return (int)s_wd_vm_smp_n++;
     }
+    return -1;
 }
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
@@ -680,7 +689,11 @@ static inline void tomap_insert(uint32_t to_span_id,
         }
         slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
     }
-    /* table full along the probe run — drop (vertex just won't smooth) */
+    /* table full along the probe run — drop (vertex just won't smooth).
+     * Deterministic insert order ⇒ the SAME keys lose every frame, so
+     * drops here manifest as PERSISTENT vert misses. Counted for the
+     * world diag. */
+    s_tomap_drops++;
 }
 static inline int tomap_lookup(uint32_t to_span_id,
                                const openpete_render_cache_entry_t* e,
@@ -722,6 +735,13 @@ static int world_weld_on(void) {
                  v = (e && *e) ? (e[0] != '0') : 1; }
     return v;
 }
+
+/* §13.10b cross-rank recovery: FALSIFIED 2026-06-10. Hypothesis was
+ * that the persistent src-keyed sky misses (8004EDD0) sat under a
+ * sibling rank's to-span (chunk-boundary migration); a same-tag
+ * all-rank lookup recovered exactly 0 over the full diag window —
+ * the key isn't in the tomap under ANY same-tag span. Probe code
+ * removed; see the plan §13.10 for the falsification record. */
 static int world_weld_twin(const int16_t* p,
                            const openpete_render_cache_entry_t* primary,
                            openpete_render_cache_entry_t* out_alt,
@@ -834,8 +854,23 @@ int g_openpete_interp_enabled = 1;
 
 /* Scan one cache generation into a matcher frame, one batch per
  * matrix_span_id. `ud` is the target matcher_frame_t*. */
+/* OPENPETE_VM_TRACK=<hex vkey>: per-generation presence trace for one
+ * world vkey — names the persistent-miss mechanism (alternating
+ * emission vs span/tag drift vs true absence). Diag only. */
+static uint32_t vm_track_key(void) {
+    static uint32_t v; static int init = 0;
+    if (!init) { const char* e = getenv("OPENPETE_VM_TRACK");
+                 v = e ? (uint32_t)strtoul(e, NULL, 16) : 0u; init = 1; }
+    return v;
+}
+
 static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
     matcher_frame_t* f = (matcher_frame_t*)ud;
+    if (vm_track_key() && e->world_vkey == vm_track_key() &&
+        (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT))
+        fprintf(stderr, "[vmtrack] side=%s tag=%08X span=%08X sxy=%08X\n",
+                f == &s_to ? "to" : "from", e->obj_tag,
+                eff_span(e), e->sxy_key);
     matcher_batch_t* b = find_or_create_batch_in(f, eff_span(e));
     if (!b) return;
     if (b->vertex_count == 0) {
@@ -1817,13 +1852,13 @@ iv_done:        ;
                 fprintf(stderr,
                   "[orange] mig=%lu same=%lu zerocorr=%lu | "
                   "rigid: span=%lu froze=%lu fill=%lu | spread=%lu | "
-                  "weld=%lu\n",
+                  "weld=%lu tomap_drops=%lu\n",
                   s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
                   s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill,
-                  s_wd_spread_froze, s_wd_weld);
+                  s_wd_spread_froze, s_wd_weld, s_tomap_drops);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
-                s_wd_spread_froze = 0; s_wd_weld = 0;
+                s_wd_spread_froze = 0; s_wd_weld = 0; s_tomap_drops = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
@@ -1856,9 +1891,9 @@ iv_done:        ;
             if (s_wd_vm_smp_n) {
                 fprintf(stderr, "[vert-miss-smp]");
                 for (unsigned i = 0; i < s_wd_vm_smp_n; ++i)
-                    fprintf(stderr, " %08X:vk=%08X tag=%08X",
+                    fprintf(stderr, " %08X:vk=%08X tag=%08X fnd=%08X",
                             s_wd_vm_smp[i].pc, s_wd_vm_smp[i].vkey,
-                            s_wd_vm_smp[i].tag);
+                            s_wd_vm_smp[i].tag, s_wd_vm_smp[i].found_tag);
                 fprintf(stderr, "\n");
                 s_wd_vm_smp_n = 0;
             }
@@ -2059,10 +2094,28 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
             int welded = 0;
             if (wtag) {
                 s_wd_q_no_tb++;
-                if (world_diag())
-                    wd_vm_tally(b->gte_pc, entry.world_vkey, b->obj_tag);
-                /* §13.10: prefer the coincident twin's exact motion
-                 * over the batch mean — welds shared quad edges. */
+                if (world_diag()) {
+                    int si = wd_vm_tally(b->gte_pc, entry.world_vkey,
+                                         b->obj_tag);
+                    if (si >= 0) {
+                        /* Deep probe: is the key in the tomap under
+                         * ANY to-side world span? Names where the
+                         * vert actually landed (0 = nowhere — never
+                         * emitted / insert-dropped). */
+                        for (uint32_t j = 0; j < s_to.count; ++j) {
+                            const matcher_batch_t* tb = &s_to.batches[j];
+                            uint32_t tsxy;
+                            if (!is_world_obj_tag(tb->obj_tag)) continue;
+                            if (tomap_lookup(tb->matrix_span_id, &entry,
+                                             &tsxy)) {
+                                s_wd_vm_smp[si].found_tag = tb->obj_tag;
+                                break;
+                            }
+                        }
+                    }
+                }
+                /* §13.10: the coincident twin's exact motion over
+                 * the batch mean — welds shared quad edges. */
                 openpete_render_cache_entry_t alt;
                 uint32_t weld_sxy;
                 if (world_weld_twin(p, &entry, &alt, &weld_sxy)) {
