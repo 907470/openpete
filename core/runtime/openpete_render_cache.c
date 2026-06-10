@@ -274,27 +274,53 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
     uint32_t idx = hash_sxy(key);
     const uint32_t curr_seq = curr->seq;
 
+    /* Same-pixel multi-entry policy: ~36% of gameplay emits land on a
+     * pixel that already holds a live entry (census 2026-06-10:
+     * ~840/frame cross-OBJECT + ~925 same-object). The old
+     * most-recent-wins overwrite made the evicted vert resolve the
+     * survivor at lookup — riding another object's motion (the
+     * harmful class) or a neighbor's. Distinct identities
+     * (obj_tag, world_vkey) now COEXIST along the probe run (capped
+     * at SAME_KEY_MAX so a distant-terrain pinch pixel can't flood
+     * its neighborhood); consumers disambiguate per prim (the OT
+     * walker's consensus-tag pass) via lookup_*_multi. */
+    enum { SAME_KEY_MAX = 4 };
+    openpete_render_cache_entry_t* last_same_key = NULL;
+    unsigned same_key_n = 0;
     for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_PROBE_MAX; ++i) {
         openpete_render_cache_entry_t* slot = &curr->slots[idx];
-        /* Empty (stale seq) OR same-key overwrite. Most-recent-writer
-         * wins (matches the FIFO-top semantics of push_sxy). */
-        if (slot->seq != curr_seq || slot->sxy_key == key) {
-            /* Same-pixel collision census: a live same-key entry from
-             * another producer is about to be evicted. Cross-object
-             * (obj_tag differs) is the harmful class — the surviving
-             * entry makes the other vert ride the wrong object's
-             * motion; same-object is a neighbor vert (benign-ish). */
-            if (slot->seq == curr_seq && slot->sxy_key == key) {
-                if (slot->obj_tag != src->obj_tag)
-                    g_openpete_render_cache_collide_xobj++;
-                else if (slot->world_vkey != src->world_vkey)
-                    g_openpete_render_cache_collide_samobj++;
-            }
+        if (slot->seq != curr_seq) {
             *slot = *src;
             slot->seq = curr_seq;
             slot->matrix_span_id = g_openpete_render_cache_matrix_span_id;
             g_openpete_render_cache_emit_count++;
             return;
+        }
+        if (slot->sxy_key == key) {
+            if (slot->obj_tag == src->obj_tag &&
+                slot->world_vkey == src->world_vkey) {
+                /* Same logical vertex re-emitted — most-recent wins. */
+                *slot = *src;
+                slot->seq = curr_seq;
+                slot->matrix_span_id = g_openpete_render_cache_matrix_span_id;
+                g_openpete_render_cache_emit_count++;
+                return;
+            }
+            /* Different identity on the same pixel: census + coexist. */
+            if (slot->obj_tag != src->obj_tag)
+                g_openpete_render_cache_collide_xobj++;
+            else
+                g_openpete_render_cache_collide_samobj++;
+            last_same_key = slot;
+            if (++same_key_n >= (unsigned)SAME_KEY_MAX) {
+                /* Cap reached — replace the most recent same-key. */
+                *last_same_key = *src;
+                last_same_key->seq = curr_seq;
+                last_same_key->matrix_span_id =
+                    g_openpete_render_cache_matrix_span_id;
+                g_openpete_render_cache_emit_count++;
+                return;
+            }
         }
         idx = (idx + 1u) & (OPENPETE_RENDER_CACHE_SLOTS - 1u);
     }
@@ -318,6 +344,35 @@ static int lookup_frame(const openpete_render_cache_frame_t* frame,
         idx = (idx + 1u) & (OPENPETE_RENDER_CACHE_SLOTS - 1u);
     }
     return 0;
+}
+
+/* Multi-entry variant: collect every live same-key entry along the
+ * probe run (same-pixel coexistence, see emit_vertex). Returns the
+ * count; out[0] is the first-inserted (oldest) candidate. */
+static int lookup_frame_multi(const openpete_render_cache_frame_t* frame,
+                              uint32_t sxy_key,
+                              openpete_render_cache_entry_t* out,
+                              int max) {
+    int n = 0;
+    uint32_t idx = hash_sxy(sxy_key);
+    const uint32_t frame_seq = frame->seq;
+    g_openpete_render_cache_lookup_count++;
+    for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_PROBE_MAX; ++i) {
+        const openpete_render_cache_entry_t* slot = &frame->slots[idx];
+        if (slot->seq != frame_seq) break;
+        if (slot->sxy_key == sxy_key && n < max) {
+            out[n++] = *slot;
+        }
+        idx = (idx + 1u) & (OPENPETE_RENDER_CACHE_SLOTS - 1u);
+    }
+    if (n) g_openpete_render_cache_hit_count++;
+    return n;
+}
+
+int openpete_render_cache_lookup_prev2_multi(uint32_t sxy_key,
+                                             openpete_render_cache_entry_t* out,
+                                             int max) {
+    return lookup_frame_multi(gen_prev2(), sxy_key, out, max);
 }
 
 int openpete_render_cache_lookup_curr(uint32_t sxy_key,

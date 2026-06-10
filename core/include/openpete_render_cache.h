@@ -131,6 +131,12 @@ int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
  * frame-gen.md. */
 int openpete_render_cache_lookup_prev2(uint32_t sxy_key,
                                        openpete_render_cache_entry_t* out);
+/* Same-pixel multi-entry variant (coexisting identities, see
+ * emit_vertex policy): fills up to `max` candidates, returns the
+ * count. Consumers disambiguate per prim (matcher consensus tag). */
+int openpete_render_cache_lookup_prev2_multi(uint32_t sxy_key,
+                                             openpete_render_cache_entry_t* out,
+                                             int max);
 
 /* Legacy immediate rotate — advances the 3-generation ring one step
  * synchronously. Retained for tests; production callers use the

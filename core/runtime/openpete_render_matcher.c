@@ -459,12 +459,80 @@ static int observe_vertex(const int16_t* p, openpete_render_cache_entry_t* out) 
     return 0;
 }
 
+/* §13.8 same-pixel disambiguation. The render cache now keeps up to
+ * 4 COEXISTING entries per pixel (census: ~36% of gameplay emits
+ * collide; ~840/frame cross-object). A displayed vertex's lookup is
+ * inherently ambiguous at pixel granularity — but a PRIM belongs to
+ * exactly one object, so the observe hooks (called per prim, before
+ * the per-vert substitute queries) vote a consensus obj_tag across
+ * the prim's candidate lists, and the per-vert selection prefers the
+ * candidate matching it. A vert whose pixel was previously won by
+ * another object now resolves ITS OWN object's entry and motion.
+ * Consensus needs >=2 verts agreeing; otherwise selection falls back
+ * to the oldest candidate (the pre-§13.8 single-entry semantics). */
+#define PRIM_CAND_MAX 4
+static uint32_t s_prim_tag;
+static int      s_prim_tag_valid;
+
+static int select_prev2_entry(const int16_t* p,
+                              openpete_render_cache_entry_t* out) {
+    openpete_render_cache_entry_t c[PRIM_CAND_MAX];
+    int n = openpete_render_cache_lookup_prev2_multi(
+                sxy_key_from_pair(p), c, PRIM_CAND_MAX);
+    int i;
+    if (!n) return 0;
+    if (s_prim_tag_valid) {
+        for (i = 0; i < n; ++i)
+            if (c[i].obj_tag == s_prim_tag) { *out = c[i]; return 1; }
+    }
+    *out = c[0];
+    return 1;
+}
+
+static void prim_consensus(const int16_t* p0, const int16_t* p1,
+                           const int16_t* p2, const int16_t* p3) {
+    uint32_t tag[12]; unsigned cnt[12]; unsigned ntag = 0;
+    const int16_t* ps[4];
+    int v;
+    ps[0] = p0; ps[1] = p1; ps[2] = p2; ps[3] = p3;
+    s_prim_tag_valid = 0;
+    for (v = 0; v < 4; ++v) {
+        openpete_render_cache_entry_t c[PRIM_CAND_MAX];
+        uint32_t seen[PRIM_CAND_MAX]; unsigned nseen = 0;
+        int n, i;
+        if (!ps[v]) continue;
+        n = openpete_render_cache_lookup_prev2_multi(
+                sxy_key_from_pair(ps[v]), c, PRIM_CAND_MAX);
+        for (i = 0; i < n; ++i) {
+            uint32_t t = c[i].obj_tag;
+            unsigned k, j;
+            int dup = 0;
+            for (k = 0; k < nseen; ++k)
+                if (seen[k] == t) { dup = 1; break; }
+            if (dup) continue;           /* one vote per vert per tag */
+            if (nseen < PRIM_CAND_MAX) seen[nseen++] = t;
+            for (j = 0; j < ntag; ++j)
+                if (tag[j] == t) { cnt[j]++; break; }
+            if (j == ntag && ntag < 12) { tag[ntag] = t; cnt[ntag] = 1; ntag++; }
+        }
+    }
+    {
+        unsigned best = 0, bi = 0, j;
+        for (j = 0; j < ntag; ++j)
+            if (cnt[j] > best) { best = cnt[j]; bi = j; }
+        if (best >= 2u) { s_prim_tag = tag[bi]; s_prim_tag_valid = 1; }
+    }
+}
+
 /* Observe hooks are RETAINED in the API for source compatibility with
  * Phase 1's plumbing in PsyX_GPU.cpp, but no longer drive matcher state
  * — Phase 2 builds matcher.curr eagerly via cache scan in
  * openpete_render_matcher_prepare_substitute(). The observe hooks
  * only bump prim_count on the batch (used for per-batch stats), since
- * eager scan is vertex-level and doesn't know prim boundaries. */
+ * eager scan is vertex-level and doesn't know prim boundaries.
+ * §13.8: they additionally run the prim-consensus vote above, being
+ * the only per-PRIM call the walker makes before the per-vert
+ * substitute queries. */
 static matcher_batch_t* find_batch_by_span(uint32_t matrix_span_id) {
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         if (s_curr->batches[i].matrix_span_id == matrix_span_id)
@@ -476,8 +544,8 @@ static matcher_batch_t* find_batch_by_span(uint32_t matrix_span_id) {
 void openpete_render_matcher_observe_tri(const int16_t* p0,
                                           const int16_t* p1,
                                           const int16_t* p2) {
-    (void)p1; (void)p2;
     openpete_render_cache_entry_t e;
+    prim_consensus(p0, p1, p2, NULL);
     uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
                    (((uint32_t)(uint16_t)p0[1]) << 16);
     if (!openpete_render_cache_lookup_prev2(key, &e)) {
@@ -492,8 +560,8 @@ void openpete_render_matcher_observe_quad(const int16_t* p0,
                                            const int16_t* p1,
                                            const int16_t* p2,
                                            const int16_t* p3) {
-    (void)p1; (void)p2; (void)p3;
     openpete_render_cache_entry_t e;
+    prim_consensus(p0, p1, p2, p3);
     uint32_t key = ((uint32_t)(uint16_t)p0[0]) |
                    (((uint32_t)(uint16_t)p0[1]) << 16);
     if (!openpete_render_cache_lookup_prev2(key, &e)) {
@@ -1708,13 +1776,12 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
     if (alpha <= 0.0f) return out;
     s_wd_q_calls++;
 
-    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
-                   (((uint32_t)(uint16_t)p[1]) << 16);
     openpete_render_cache_entry_t entry;
     /* The vertex belongs to the lagged OT (OT#(N-1)) → its SXY resolves
      * in gen_prev2 (= "from" = G(N-1)), the same generation s_curr was
-     * scanned from. */
-    if (!openpete_render_cache_lookup_prev2(key, &entry)) {
+     * scanned from. §13.8: consensus-tag selection over the pixel's
+     * coexisting candidates. */
+    if (!select_prev2_entry(p, &entry)) {
         s_wd_q_prev2miss++;
         g_openpete_render_substitute_vert_miss_count++;
         return out;
@@ -1901,10 +1968,8 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
 /* §12.2 overlay v2 — see header for the state table. Mirrors
  * substitute_query's decision tree, side-effect-free. */
 int openpete_render_matcher_debug_state(const int16_t* p) {
-    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
-                   (((uint32_t)(uint16_t)p[1]) << 16);
     openpete_render_cache_entry_t entry;
-    if (!openpete_render_cache_lookup_prev2(key, &entry))
+    if (!select_prev2_entry(p, &entry))
         return OPENPETE_DBGST_NONE;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         const matcher_batch_t* b = &s_curr->batches[i];
@@ -1927,10 +1992,8 @@ int openpete_render_matcher_debug_state(const int16_t* p) {
 }
 
 int openpete_render_matcher_is_smoothed(const int16_t* p) {
-    uint32_t key = ((uint32_t)(uint16_t)p[0]) |
-                   (((uint32_t)(uint16_t)p[1]) << 16);
     openpete_render_cache_entry_t entry;
-    if (!openpete_render_cache_lookup_prev2(key, &entry)) return 0;
+    if (!select_prev2_entry(p, &entry)) return 0;
     for (uint32_t i = 0; i < s_curr->count; ++i) {
         const matcher_batch_t* b = &s_curr->batches[i];
         if (b->matrix_span_id != eff_span(&entry)) continue;
