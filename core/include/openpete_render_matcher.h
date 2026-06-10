@@ -102,16 +102,24 @@ int openpete_render_matcher_is_smoothed(const int16_t* p);
  *                         (despawned moby / strip culled out) → frozen
  *   TAG_INSANE   yellow   counterpart rejected by tagged_pair_sane
  *                         (world count-shift / moby teleport-shape) → frozen
- *   CORR_FROZEN  orange   whole-batch corr-gate freeze (animating mesh /
- *                         partial strip correspondence)
+ *   CORR_FROZEN  orange   whole-batch corr-gate trip (partial strip /
+ *                         mesh correspondence). Since the rigid
+ *                         fallback landed this means RIGID-FOLLOW
+ *                         (whole span rides the mean corresponded
+ *                         delta), not a freeze — unless the mean had
+ *                         too few hits (RIGID_MIN_HITS) or
+ *                         OPENPETE_RIGID_FALLBACK=0, where it still
+ *                         freezes at the lagged pose.
  *   HEUR_PAIRED  magenta  RETIRED (§12.1 first slice): the centroid-
  *                         hash fallback was deleted — ordinal-fail now
  *                         freezes. Any magenta on screen is a bug.
  *   LEGACY_WORLD blue     obj_tag==0 world paired by emission ordinal
  *                         (§7.3 composite-reproject path)
  *   VERT_MISS    cyan     batch paired but THIS vertex has no tomap
- *                         counterpart (animated v_local churn /
- *                         culled-in vert) → vertex frozen
+ *                         counterpart (evicted / culled across the
+ *                         endpoints) → vertex rides the batch's mean
+ *                         corresponded delta (rigid fill); frozen at
+ *                         base only if the mean is unavailable
  * NONE (0) = healthy: interpolating or static. The overlay paints
  * moving-and-healthy green from the applied-delta hook instead. */
 enum {

@@ -188,6 +188,23 @@ typedef struct matcher_batch {
      * single instrumented run sweeps every candidate offline). */
     uint64_t corr_dpx_sum;
 
+    /* Rigid-fallback motion: mean SIGNED screen delta over this
+     * batch's CORRESPONDED from-verts. The tomap is keyed by unique
+     * per-vertex ids (source addrs / emission ordinals), so a lookup
+     * is exact-or-miss — never wrong — which makes this mean
+     * trustworthy even at low coverage. Two consumers:
+     *   (a) sub-threshold corr-gate batches RIGID-FOLLOW it instead
+     *       of freezing a full game frame behind their neighbors;
+     *   (b) per-vert tomap misses inside interpolating batches ride
+     *       it instead of holding at the lagged base.
+     * Both freeze flavors were the camera-rotation "smear between
+     * the before/after frame": at pan speed the lagged pose sits
+     * tens-to-hundreds of px from the interpolating neighbors. */
+    int64_t  corr_dx_sum, corr_dy_sum;
+    float    rigid_dx, rigid_dy;
+    int      rigid_valid;  /* corr_hit >= RIGID_MIN_HITS */
+    int      rigid_only;   /* sub-threshold: ALL verts ride rigid */
+
     /* Camera-independent v_local centroid (Option-B world key). */
     int64_t  vloc_sum[3];
     int32_t  vloc_centroid[3];
@@ -267,6 +284,9 @@ static struct { uint32_t pc, tag, rank, vmax, vc; } s_wd_abs[8];
 static unsigned s_wd_abs_n;
 /* Orange (corr-freeze) attribution tallies. */
 static unsigned long s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero;
+/* Rigid-fallback engagement: gate trips that rigid-followed vs froze,
+ * and per-vert tomap misses filled with the batch mean. */
+static unsigned long s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill;
 static void wd_pc_tally(uint32_t pc, int src_keyed, int absent) {
     unsigned i;
     for (i = 0; i < s_wd_pc_n; ++i) if (s_wd_pc[i].pc == pc) break;
@@ -749,6 +769,22 @@ static int world_corr_min_pct(void) {
     return v;
 }
 
+/* Rigid-fallback (camera-rotation smear fix). When a paired batch
+ * has enough corresponded verts to trust their mean signed delta,
+ * that mean substitutes for (a) the whole batch when the corr gate
+ * trips (rigid-follow instead of a one-frame freeze) and (b) any
+ * individual vert whose tomap lookup misses (instead of a zero
+ * delta that stretches its polys at pan speed). RIGID_MIN_HITS
+ * guards the mean against being built from a handful of verts.
+ * Env OPENPETE_RIGID_FALLBACK=0 restores freeze semantics for A/B. */
+#define RIGID_MIN_HITS 4u
+static int rigid_fallback_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_RIGID_FALLBACK");
+                 v = (e && *e) ? (atoi(e) != 0) : 1; }
+    return v;
+}
+
 /* §5 / §11 F0 defense-in-depth for TAGGED pairs. Real-vaddr identity
  * pairing deliberately bypasses the centroid-bucket velocity cap (a
  * fast-moving moby must keep its id), but that left NO guard when the
@@ -863,6 +899,12 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         int32_t d  = abs((int)tx - (int)fx) + abs((int)ty - (int)fy);
         b->corr_hit++;
         b->corr_dpx_sum += (uint64_t)d;
+        /* Signed sums for the rigid-fallback mean. Note the
+         * OPENPETE_CORR_LOG capture path runs this scan a second
+         * time; hit and sums double together, so the mean is
+         * invariant (same reason the gate ratio tolerates it). */
+        b->corr_dx_sum += (int64_t)((int)tx - (int)fx);
+        b->corr_dy_sum += (int64_t)((int)ty - (int)fy);
     }
 }
 
@@ -891,6 +933,10 @@ static void finalize_scanned_frame(matcher_frame_t* f) {
         b->world_ord = 0xFFFFFFFFu;
         b->corr_hit = b->corr_tot = 0u;
         b->corr_dpx_sum = 0u;
+        b->corr_dx_sum = b->corr_dy_sum = 0;
+        b->rigid_dx = b->rigid_dy = 0.0f;
+        b->rigid_valid = 0;
+        b->rigid_only  = 0;
     }
     /* Assign world ordinal in batch (≈emission) order to untagged
      * spans — the deterministic Option-B cross-frame key. */
@@ -1203,12 +1249,20 @@ void openpete_render_matcher_prepare_substitute(void) {
                  * ~0 by construction — freezing it was the round-2
                  * "zero blue on world". */
                 if (b->obj_tag == 0u) continue;
+                /* Rigid-fallback mean for EVERY paired tagged batch
+                 * (consumed below for sub-threshold rigid-follow and
+                 * by substitute_query for per-vert miss fill). */
+                if (rigid_fallback_on() && b->corr_hit >= RIGID_MIN_HITS) {
+                    b->rigid_dx = (float)b->corr_dx_sum / (float)b->corr_hit;
+                    b->rigid_dy = (float)b->corr_dy_sum / (float)b->corr_hit;
+                    b->rigid_valid = 1;
+                }
                 int is_w = (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) != 0u;
                 /* §7.5-R3 PHASE-B: bit30 WORLD strips use the
                  * per-vertex (eff_span,world_vidx) tomap. corr_hit/
                  * corr_tot is now the real vidx coverage K-1↔K. A
-                 * partially-culled strip MUST freeze whole (stricter
-                 * world threshold) or its triangles tear/pop. Mobys
+                 * partially-corresponded strip must not lerp per-vert
+                 * (moved + held verts in one tri tear/pop). Mobys
                  * keep the v_local-churn animation threshold. The
                  * corr_tot<8 noise guard is bypassed for world —
                  * small terrain strips tear too. */
@@ -1217,12 +1271,25 @@ void openpete_render_matcher_prepare_substitute(void) {
                 if (!is_w && b->corr_tot < 8u) continue;
                 if (b->corr_tot == 0u) continue;
                 if (b->corr_hit * 100u < (uint32_t)thr * b->corr_tot) {
-                    b->has_future_anchor = 0;          /* whole-span freeze */
+                    /* Sub-threshold: rigid-follow when the mean is
+                     * trustworthy (whole-span consistent — no tear —
+                     * and motion-true to first order), else the old
+                     * whole-span freeze. Freezing was the camera-
+                     * rotation smear: at pan speed the frozen span
+                     * sat a full game frame (tens-to-hundreds of px)
+                     * behind its interpolating neighbors. */
+                    if (b->rigid_valid) {
+                        b->rigid_only = 1;
+                        s_wd_rigid_span++;
+                    } else {
+                        b->has_future_anchor = 0;      /* whole-span freeze */
+                        if (paired) paired--;
+                        s_wd_rigid_froze++;
+                    }
                     b->dbg_state = OPENPETE_DBGST_CORR_FROZEN;
-                    if (paired) paired--;
-                    /* Orange attribution: same-variant freeze (eviction
-                     * / partial cull) vs cross-variant freeze (LOD tier
-                     * migration — from/to RTPS PCs differ). */
+                    /* Orange attribution: same-variant gate trip
+                     * (eviction / partial cull) vs cross-variant (LOD
+                     * tier migration — from/to RTPS PCs differ). */
                     if (world_diag() && is_w) {
                         const matcher_batch_t* tb =
                             find_span(&s_to, b->to_span_id);
@@ -1281,9 +1348,12 @@ void openpete_render_matcher_prepare_substitute(void) {
                         !(s_to.batches[k].obj_tag &
                           OPENPETE_WORLD_GEO_TAG_BIT)) ts++;
                 fprintf(stderr,
-                  "[orange] mig=%lu same=%lu zerocorr=%lu\n",
-                  s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero);
+                  "[orange] mig=%lu same=%lu zerocorr=%lu | "
+                  "rigid: span=%lu froze=%lu fill=%lu\n",
+                  s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
+                  s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
+                s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
@@ -1409,6 +1479,24 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
+        if (b->rigid_only) {
+            /* Sub-threshold corr gate: the whole span rides the mean
+             * corresponded delta rigidly — consistent (no tear) and
+             * motion-true to first order, instead of holding a full
+             * game frame behind its neighbors (the camera-rotation
+             * smear). Per-vert exactness is forfeited deliberately:
+             * mixing exact and fallback verts at low coverage is the
+             * tear the gate exists to prevent. */
+            float dx = b->rigid_dx * alpha;
+            float dy = b->rigid_dy * alpha;
+            const float rcap = g_openpete_substitute_clamp_px;
+            if (rcap <= 0.0f) return out;
+            if (dx >  rcap) dx =  rcap; if (dx < -rcap) dx = -rcap;
+            if (dy >  rcap) dy =  rcap; if (dy < -rcap) dy = -rcap;
+            out.dx = dx; out.dy = dy;
+            g_openpete_render_substitute_vert_hit_count++;
+            return out;
+        }
         /* §7.3 — LEGACY untagged world (obj_tag==0): the terrain
          * RTPS variants NOT yet covered by the §7.5-R3 strip-tag
          * recompiler hook. Composite per-span reprojection: reproject
@@ -1479,6 +1567,24 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
         if (wtag) s_wd_q_total++;
         if (!tomap_lookup(b->to_span_id, &entry, &to_sxy)) {
             if (wtag) s_wd_q_no_tb++;
+            if (b->rigid_valid) {
+                /* No exact counterpart (evicted / culled across the
+                 * endpoints) — ride the batch's mean corresponded
+                 * delta instead of holding at the lagged base. A
+                 * zero-delta vert inside an interpolating batch
+                 * stretches its polys by the full frame-to-frame
+                 * displacement at pan speed (the moby smear). */
+                float dx = b->rigid_dx * alpha;
+                float dy = b->rigid_dy * alpha;
+                const float mcap = g_openpete_substitute_clamp_px;
+                if (mcap <= 0.0f) return out;
+                if (dx >  mcap) dx =  mcap; if (dx < -mcap) dx = -mcap;
+                if (dy >  mcap) dy =  mcap; if (dy < -mcap) dy = -mcap;
+                out.dx = dx; out.dy = dy;
+                s_wd_rigid_fill++;
+                g_openpete_render_substitute_vert_hit_count++;
+                return out;
+            }
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }
