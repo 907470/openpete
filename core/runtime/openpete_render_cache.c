@@ -161,9 +161,16 @@ static int s_current_idx = 0;
  * arm carries over harmlessly. */
 static int s_rotate_pending = 0;
 
-/* Matrix-span detector state, scoped to the producer side. */
+/* Matrix-span detector state, scoped to the producer side. OFX/OFY
+ * are part of the span key: HUD/text mobys position per-glyph via
+ * OFX (not TR), so two adjacent wobbling letters with momentarily
+ * identical rotation matrices would otherwise MERGE into one span —
+ * the second letter's batch (and obj tag) vanished from that
+ * generation, a wandering one-frame TAG_ABSENT per letter (the
+ * F9 red letter flicker on DEMO MODE / menu text). */
 static int16_t  s_last_rt[3][3];
 static int32_t  s_last_tr[3];
+static int32_t  s_last_ofx, s_last_ofy;
 static int      s_matrix_state_initialized = 0;
 
 unsigned g_openpete_render_cache_emit_count            = 0u;
@@ -250,17 +257,21 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
         openpete_vstab_record_vertex(vl, src->mac);
     }
 
-    /* Detect matrix change against last-emitted RT/TR. */
+    /* Detect transform change against last-emitted RT/TR/OFX/OFY. */
     if (!s_matrix_state_initialized ||
         memcmp(s_last_rt, src->rt, sizeof(s_last_rt)) != 0 ||
         s_last_tr[0] != src->tr[0] ||
         s_last_tr[1] != src->tr[1] ||
-        s_last_tr[2] != src->tr[2]) {
+        s_last_tr[2] != src->tr[2] ||
+        s_last_ofx != src->ofx ||
+        s_last_ofy != src->ofy) {
         g_openpete_render_cache_matrix_span_id++;
         memcpy(s_last_rt, src->rt, sizeof(s_last_rt));
         s_last_tr[0] = src->tr[0];
         s_last_tr[1] = src->tr[1];
         s_last_tr[2] = src->tr[2];
+        s_last_ofx = src->ofx;
+        s_last_ofy = src->ofy;
         s_matrix_state_initialized = 1;
         /* G3: one RT/TR record per span bump (no-op unless
          * OPENPETE_SPAN_LOG set). id already incremented above. */
