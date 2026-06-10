@@ -7,8 +7,22 @@
 static uint32_t s_obj_id = 0;
 static uint32_t s_vidx   = 0;    /* per-object emission ordinal (#25) */
 
+/* Game-registered tag normalizer (NULL = identity). Some renderers
+ * iterate per-frame COPIES of their objects living in double-buffered
+ * frame packet memory — the copy's address aliases between two
+ * buffers frame to frame, so it can never pair across consecutive
+ * generations (the "solid red shadow": shaded-moby copies alternate
+ * between polybuf halves 0x1C000 apart). The game side knows the
+ * buffer layout (g_CurDB / g_DB[].m_PolyBuf for Spyro) and maps such
+ * addresses to a buffer-relative canonical form; everything else
+ * passes through unchanged. Same registration pattern as
+ * openpete_pgxp_classify_fn. */
+uint32_t (*openpete_obj_id_normalize_fn)(uint32_t obj_addr) = 0;
+
 void openpete_obj_id_set(uint32_t obj_addr) {
-    s_obj_id = obj_addr;
+    s_obj_id = (obj_addr && openpete_obj_id_normalize_fn)
+                   ? openpete_obj_id_normalize_fn(obj_addr)
+                   : obj_addr;
     s_vidx   = 0;                /* new object → restart ordinal */
 }
 

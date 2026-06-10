@@ -521,6 +521,11 @@ uint32_t openpete_obj_id_next_vidx(void);
  * stable rank group (see openpete_obj_id.c rationale). */
 void openpete_obj_id_shadow_subtag(void);
 
+/* Game-registered tag normalizer (NULL = identity), applied inside
+ * obj_id_set — maps double-buffer-aliased object-copy addresses to a
+ * buffer-relative canonical form (see openpete_obj_id.c). */
+extern uint32_t (*openpete_obj_id_normalize_fn)(uint32_t obj_addr);
+
 /* Per-strip world-geometry identity (transform-interp §7.5-R3). The
  * recompiler emits openpete_world_geo_set_current at the dominant
  * terrain strip-entry of func_800258F0 (0x80026238, after the strip

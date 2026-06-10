@@ -56,6 +56,12 @@ uint32_t openpete_obj_id_next_vidx(void);
  * stable rank group (see openpete_obj_id.c rationale). */
 void openpete_obj_id_shadow_subtag(void);
 
+/* Game-registered tag normalizer (NULL = identity), applied inside
+ * obj_id_set. Maps frame-aliased object-copy addresses (double-
+ * buffered packet memory) to a buffer-relative canonical form so
+ * they pair across generations. See openpete_obj_id.c rationale. */
+extern uint32_t (*openpete_obj_id_normalize_fn)(uint32_t obj_addr);
+
 #ifdef __cplusplus
 }
 #endif

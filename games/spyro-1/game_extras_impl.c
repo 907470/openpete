@@ -585,6 +585,47 @@ static uint32_t s_g2_tick_cap  = 3000;
 static uint32_t s_g2_ticks     = 0;
 static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
 
+/* #30 shadow normalizer — Spyro's obj_id tag normalizer.
+ *
+ * The shaded renderer iterates per-frame MOBY COPIES bump-allocated
+ * into the current DB's poly buffer; the two DBs' buffers sit
+ * 0x1C000 apart and alternate per frame, so a copy's ADDRESS aliases
+ * between buffers and can never pair across consecutive generations
+ * (the diagnosed "solid red shadow", transform-interp session 4).
+ * Addresses inside the double-buffer window are rebased to a
+ * buffer-relative canonical form: marker bit28 keeps the tag
+ * nonzero, moby-class (bit30 clear) and disjoint from real KSEG0
+ * vaddrs (bit31 clear). Everything else (real moby instances,
+ * singletons, static-RAM shaded mobys) passes through unchanged.
+ *
+ * Layout: g_DB[2] @ 0x80076EE0, sizeof(DB)=0x84, m_PolyBuf @ +0x70
+ * (DRAWENV 0x5C + DISPENV 0x14); g_CurDB ptr @ 0x80075888 (unused —
+ * reading BOTH bases makes the mapping frame-symmetric). Reads are
+ * via the live DB structs, so --no-lod's polybuf relocation (which
+ * keeps PSX vaddrs) is handled automatically. Residual: a copy's
+ * OFFSET within its buffer can drift when the frame's preceding
+ * prim allocations change — the canonical tag then changes for one
+ * frame and the batch snaps (clean, gated). READ-ONLY w.r.t.
+ * gameplay: pure address arithmetic on two loads. */
+static uint32_t spyro_obj_id_normalize(uint32_t addr) {
+    const uint32_t* pb0p =
+        (const uint32_t*)openpete_psx_to_host_ptr(0x80076EE0u + 0x70u);
+    const uint32_t* pb1p =
+        (const uint32_t*)openpete_psx_to_host_ptr(0x80076F64u + 0x70u);
+    if (!pb0p || !pb1p) return addr;
+    {
+        uint32_t pb0 = *pb0p, pb1 = *pb1p;
+        uint32_t lo, span;
+        if (!(pb0 & 0x80000000u) || !(pb1 & 0x80000000u) || pb0 == pb1)
+            return addr;          /* DBs not initialised yet */
+        lo   = (pb0 < pb1) ? pb0 : pb1;
+        span = (pb0 < pb1) ? (pb1 - pb0) : (pb0 - pb1);
+        if (span > 0x00100000u) return addr;   /* implausible layout */
+        if (addr < lo || addr - lo >= 2u * span) return addr;
+        return 0x10000000u | ((addr - lo) % span);
+    }
+}
+
 /* #28 attribution probe state + callback (see game_on_frame). */
 static struct { uint32_t pc; uint32_t n; } s_tag0_h[32];
 static uint32_t s_tag0_hn = 0, s_tag0_ticks = 0;
@@ -603,6 +644,15 @@ static void tag0_pc_histo_cb(const openpete_render_cache_entry_t* e,
 
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    /* #30: register the obj_id tag normalizer once. */
+    {
+        static int s_norm_reg = 0;
+        if (!s_norm_reg) {
+            s_norm_reg = 1;
+            openpete_obj_id_normalize_fn = spyro_obj_id_normalize;
+        }
+    }
 
     /* --- G3: per-tick g_Camera log (independent of G2; must run
      * BEFORE any G2 early-return). g_Camera @ 0x80076DD0 (camera.h,
