@@ -1,0 +1,75 @@
+# openpete music override manifest — Spyro the Dragon
+# ====================================================
+#
+# Drop PCM WAV files in this directory and they play in place of the
+# disc's XA-ADPCM music. Two ways to name them:
+#
+#   1. Filename convention (no manifest needed): track_NN.wav, where
+#      NN is the zero-padded track index from the table below.
+#   2. A manifest entry here: `<track-index>  <file.wav>` (path is
+#      relative to this directory). Manifest entries take precedence
+#      over track_NN.wav.
+#
+# Lines starting with '#' are ignored. If a referenced file is
+# missing, that track quietly falls back to the disc's original XA
+# audio — partial coverage is fine, and you don't need to remove or
+# comment entries whose files don't exist yet.
+#
+# Supported WAV format: PCM int16, mono or stereo, at 11025 / 22050 /
+# 32000 / 44100 / 48000 Hz. Convert anything with ffmpeg:
+#
+#   ffmpeg -i input.flac -ac 2 -ar 44100 -sample_fmt s16 track_00.wav
+#
+# The disc image is still required — this only replaces music.
+#
+# Track table (uncomment an entry to point it at a different file;
+# as written each line just restates the track_NN.wav default):
+#
+# 0   track_00.wav   # Artisans (homeworld)
+# 1   track_01.wav   # Metalhead
+# 2   track_02.wav   # Stone Hill
+# 3   track_03.wav   # Dry Canyon
+# 4   track_04.wav   # Haunted Towers
+# 5   track_05.wav   # Gnorc Cove
+# 6   track_06.wav   # Toasty
+# 7   track_07.wav   # Terrace Village
+# 8   track_08.wav   # Night Flight
+# 9   track_09.wav   # Wizard Peak
+# 10  track_10.wav   # Jacques
+# 11  track_11.wav   # Doctor Shemp
+# 12  track_12.wav   # Dark Passage
+# 13  track_13.wav   # Ice Cavern
+# 14  track_14.wav   # Lofty Castle
+# 15  track_15.wav   # Beast Makers (homeworld)
+# 16  track_16.wav   # Crystal Flight
+# 17  track_17.wav   # Peace Keepers (homeworld)
+# 18  track_18.wav   # Blowhard
+# 19  track_19.wav   # Gnasty's Loot
+# 20  track_20.wav   # Title screen
+# 21  track_21.wav   # Misty Bog
+# 22  track_22.wav   # Alpine Ridge
+# 23  track_23.wav   # Wild Flight
+# 24  track_24.wav   # Twilight Harbour
+# 25  track_25.wav   # Gnasty Gnorc
+# 26  track_26.wav   # Town Square
+# 27  track_27.wav   # Cliff Town
+# 28  track_28.wav   # Icy Flight
+# 29  track_29.wav   # Tree Tops
+# 30  track_30.wav   # (not referenced by the level table)
+# 31  track_31.wav   # Magic Crafters (homeworld)
+# 32  track_32.wav   # Dark Hollow
+# 33  track_33.wav   # Sunny Flight / Gnasty's World (homeworld)
+# 34  track_34.wav   # Dream Weavers (homeworld)
+# 35  track_35.wav   # (not referenced by the level table)
+# 36  track_36.wav   # Easter egg 1 (long-idle alternate rotation)
+# 37  track_37.wav   # Easter egg 2
+# 38  track_38.wav   # Easter egg 3
+# 39  track_39.wav   # Easter egg 4
+# 40  track_40.wav   # Easter egg 5
+# 41  track_41.wav   # Easter egg 6
+# 42  track_42.wav   # Easter egg 7
+# 43  track_43.wav   # Easter egg 8
+# 44  track_44.wav   # Easter egg 9
+# 45  track_45.wav   # Easter egg 10
+# 46  track_46.wav   # Easter egg 11 / High Caves
+# 47  track_47.wav   # Easter egg 12

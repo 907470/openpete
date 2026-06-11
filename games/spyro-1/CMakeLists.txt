@@ -287,6 +287,20 @@ if(EMSCRIPTEN)
         VERBATIM)
 endif()
 
+# Stage the music WAV override directory next to the executable so users
+# have a ready-made drop point, and seed it with the template manifest
+# (full track table + instructions). copy_if_missing never clobbers a
+# user-edited manifest on rebuild. See
+# notes/plans/openpete-music-wav-override.md.
+add_custom_command(TARGET openpete-spyro1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:openpete-spyro1>/assets/music"
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/assets/music/manifest.txt
+        -DDST=$<TARGET_FILE_DIR:openpete-spyro1>/assets/music/manifest.txt
+        -P ${CMAKE_SOURCE_DIR}/cmake/copy_if_missing.cmake
+    VERBATIM)
+
 set_target_properties(openpete-spyro1 PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON

@@ -117,13 +117,16 @@ See `notes/plans/openpete-pc-port.md` §3. Briefly:
 ## Custom music (WAV override)
 
 Drop PCM WAV files into `assets/music/` **next to the executable** and
-they play in place of the disc's XA-ADPCM music streams:
+they play in place of the disc's XA-ADPCM music streams. The build
+stages the directory for you, seeded with a template `manifest.txt`
+that lists all 48 tracks and their in-game usage (your edits to it are
+never overwritten by a rebuild):
 
 ```
 assets/music/track_00.wav     # NN = in-game track index, zero-padded 00..47
 assets/music/track_01.wav
 ...
-assets/music/manifest.txt     # optional: descriptive filenames
+assets/music/manifest.txt     # template with the full track table
 ```
 
 `manifest.txt` maps track indices to arbitrary relative paths, one entry
