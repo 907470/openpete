@@ -114,6 +114,42 @@ See `notes/plans/openpete-pc-port.md` §3. Briefly:
   submodules (PsyCross, SDL, cubeb).
 - `tools/` — codegen + image diff scripts.
 
+## Custom music (WAV override)
+
+Drop PCM WAV files into `assets/music/` **next to the executable** and
+they play in place of the disc's XA-ADPCM music streams:
+
+```
+assets/music/track_00.wav     # NN = in-game track index, zero-padded 00..47
+assets/music/track_01.wav
+...
+assets/music/manifest.txt     # optional: descriptive filenames
+```
+
+`manifest.txt` maps track indices to arbitrary relative paths, one entry
+per line (`#` starts a comment); manifest entries take precedence over
+`track_NN.wav`:
+
+```
+# index  path-relative-to-assets/music/
+0  artisans_home.wav
+1  town_square.wav
+```
+
+Supported format: PCM int16, mono or stereo, at 11025/22050/32000/44100/
+48000 Hz (e.g. `ffmpeg -i in.flac -ac 2 -ar 44100 -sample_fmt s16 out.wav`).
+Anything else is rejected with a log warning and that track falls back to
+the disc's XA audio. Tracks without an override file also fall back —
+partial coverage is fine.
+
+Track looping and the long-idle easter-egg track rotation are driven by
+the game itself and keep working; if a WAV is shorter than the original
+track's window there is silence until the game loops it, and if longer it
+is cut at the loop point.
+
+The disc image is still required — the override only replaces music
+playback; level data, SFX, and everything else still come from the disc.
+
 ## Disc requirement
 
 Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair. The .bin's

@@ -24,6 +24,7 @@
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
 #include "openpete_psxtrace.h"
+#include "music_override.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -843,11 +844,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     }
 
     /* Engine-level mute: clamp the SPU AL sources and the XA stream's AL
-     * gain. Bypasses the game's volume sliders entirely. */
+     * gain. Bypasses the game's volume sliders entirely. The music WAV
+     * override mirrors the XA forced gain so --mute covers it too. */
     extern int  PsyX_SPUAL_SetMute(int on_off);
     extern void PsyX_XA_ForceGain(float linear_gain);
     PsyX_SPUAL_SetMute(opts->mute ? 1 : 0);
     PsyX_XA_ForceGain(opts->mute ? 0.0f : -1.0f);
+    music_override_init();  /* logs the assets/music/ search path */
+    music_override_set_forced_gain(opts->mute ? 0.0f : -1.0f);
 
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */

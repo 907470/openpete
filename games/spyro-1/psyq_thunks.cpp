@@ -191,6 +191,11 @@ extern "C" {
     void PsyX_XA_SetVolume(float linear_gain);
 }
 
+/* Music WAV override (core/host/) — plays assets/music/track_NN.wav in
+ * place of the XA stream when present. See
+ * notes/plans/openpete-music-wav-override.md. */
+#include "music_override.h"
+
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
 extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
@@ -1218,6 +1223,30 @@ void psyq_CdInit(CPUState* cpu) {
  * already host pointers). Avoids the host_to_psx round-trip that breaks
  * when native callers pass a stack-local u_char/CdlLOC buffer (see plan
  * §"Pass 5e" — this is the canonical example). */
+
+/* g_CdMusic.m_CurrentTrack (first field) — psx.map 0x800774B0. The
+ * CdlSetfilter args can't identify a music track (file is always 1;
+ * chan is only track-within-XA-file), so read the game's own index.
+ * All play paths write m_CurrentTrack before issuing CdlReadS
+ * (music.c:28, music.c:51-68, loaders.c:776). */
+static int spyro_current_music_track(void) {
+    int32_t track = 0;
+    memcpy(&track, openpete_psx_get_ram() + 0x774B0, sizeof(track));
+    return (track >= 0 && track < 48) ? (int)track : -1;
+}
+
+/* Route an armed CdlReadS to the WAV override if one exists for the
+ * current track, else to the XA decoder. Exactly one of the two owns
+ * playback; starting either stops the other. */
+static void start_music_stream(int sector) {
+    if (music_override_try_start(spyro_current_music_track(), sector)) {
+        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+        return;
+    }
+    music_override_stop();
+    PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
+}
+
 static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
     if (com == CdlSetfilter) {
         CdlFILTER* f = (CdlFILTER*)param;
@@ -1227,11 +1256,12 @@ static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
         }
     } else if (com == CdlReadS && s_xa_armed && param) {
         CdlLOC* loc = (CdlLOC*)param;
-        PsyX_XA_Start(CdPosToInt(loc), s_xa_filter_file, s_xa_filter_chan);
+        start_music_stream(CdPosToInt(loc));
         g_CD_com = com;
         return 1;
-    } else if ((com == CdlPause || com == CdlStop) && PsyX_XA_IsActive()) {
-        PsyX_XA_Stop();
+    } else if (com == CdlPause || com == CdlStop) {
+        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+        music_override_stop();
     }
     return CdControl(com, param, result);
 }
@@ -1281,7 +1311,7 @@ void psyq_CdControlB(CPUState* cpu) {
             if (s_xa_armed && param) {
                 CdlLOC* loc = (CdlLOC*)param;
                 int sector = CdPosToInt(loc);
-                PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
+                start_music_stream(sector);
                 /* Skip PsyCross's CdControlB body — it would flip readMode
                  * to RM_DATA and seek g_imageFile, which our XA pump owns
                  * for the duration of the stream. We still set g_CD_com so
@@ -1296,6 +1326,7 @@ void psyq_CdControlB(CPUState* cpu) {
         case CdlStop:
         case CdlReadN:
             if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+            music_override_stop();
             break;
         default: break;
     }
@@ -1406,6 +1437,7 @@ void psyq_CdSync(CPUState* cpu) {
 
     /* Pump XA every CdSync — this is Spyro's per-frame music tick. */
     PsyX_XA_Pump(0);
+    music_override_pump();
 
     int rc = CdSync(mode, result);
 
@@ -1439,12 +1471,16 @@ void psyq_CdSync(CPUState* cpu) {
         }
     }
 
-    /* Override PsyCross's GetlocP fake-position with the real XA
-     * playhead so Spyro's track-end detection (compares position to
-     * m_MusicTable.end) actually fires. result[5..7] = absolute MSF. */
-    if (PsyX_XA_IsActive() && g_CD_com == CdlGetlocP && mode == 1) {
+    /* Override PsyCross's GetlocP fake-position with the real XA (or
+     * WAV-override synthetic) playhead so Spyro's track-end detection
+     * (compares position to m_MusicTable.end) actually fires.
+     * result[5..7] = absolute MSF. */
+    if ((PsyX_XA_IsActive() || music_override_is_active())
+        && g_CD_com == CdlGetlocP && mode == 1) {
         CdlLOC abs;
-        CdIntToPos(PsyX_XA_GetCurrentSector(), &abs);
+        CdIntToPos(music_override_is_active() ? music_override_get_sector()
+                                              : PsyX_XA_GetCurrentSector(),
+                   &abs);
         result[5] = abs.minute;
         result[6] = abs.second;
         result[7] = abs.sector;
@@ -1514,13 +1550,16 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     SpuSetCommonAttr(attr);
     /* Spyro's music fader writes mask=SPU_COMMON_CDVOLL|SPU_COMMON_CDVOLR
      * with values in 0..0x3FFF. Route that to the XA streaming source's
-     * gain (avg the two channels for a single mono gain). */
+     * gain (avg the two channels for a single mono gain). The WAV
+     * override gets the same value so the in-game music slider and
+     * track-transition fades cover both paths. */
     if (attr && (attr->mask & (SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR))) {
         int l = attr->cd.volume.left;
         int r = attr->cd.volume.right;
         if (l < 0) l = 0; if (r < 0) r = 0;
         float g = (float)((l + r) / 2) / (float)0x3FFF;
         PsyX_XA_SetVolume(g);
+        music_override_set_gain(g);
     }
 }
 

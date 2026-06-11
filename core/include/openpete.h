@@ -217,10 +217,11 @@ typedef struct {
      * input forever. */
     bool bk2_stop_on_end;
 
-    /* Force-mute all audio (SPU SFX + XA CD music) at the OpenAL layer
-     * via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain. Engine-level, so no
-     * game-specific globals or per-frame stamping is needed. Defaults
-     * to true so headless / CI runs are silent unless --mute off. */
+    /* Force-mute all audio (SPU SFX + XA CD music + music WAV override)
+     * at the OpenAL layer via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain +
+     * music_override_set_forced_gain. Engine-level, so no game-specific
+     * globals or per-frame stamping is needed. Defaults to true so
+     * headless / CI runs are silent unless --mute off. */
     bool mute;
 
     /* Record live pad input (keyboard + gamepad, merged by PsyCross) into

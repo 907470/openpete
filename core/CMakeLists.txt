@@ -75,6 +75,11 @@ add_library(openpete_core STATIC
     features/no_lod.c
     features/widescreen.c
 
+    # Music WAV override: play user PCM WAVs from assets/music/ in place
+    # of XA music. See notes/plans/openpete-music-wav-override.md.
+    host/music_override.c
+    host/wav_loader.c
+
     runtime/crash.c
     runtime/exe_loader.cpp
 
@@ -116,12 +121,20 @@ target_sources(openpete_core PRIVATE
 target_include_directories(openpete_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/host
         ${PSXRECOMP_RUNNER}/include
         ${CMAKE_SOURCE_DIR}/third_party/libco
     PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/stb
         ${CMAKE_SOURCE_DIR}/third_party/miniz
 )
+
+# OpenAL for the music WAV override's streaming source. Same discovery
+# PsyCross uses (the MinGW preset seeds the OPENAL_* cache vars; native
+# Linux finds the system OpenAL).
+find_package(OpenAL REQUIRED)
+target_link_libraries(openpete_core PUBLIC ${OPENAL_LIBRARY})
+target_include_directories(openpete_core PRIVATE ${OPENAL_INCLUDE_DIR})
 
 set_target_properties(openpete_core PROPERTIES
     C_STANDARD 99
