@@ -89,6 +89,13 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
  * relevant globals don't exist until the game's own init has run). */
 void game_set_skip_to_level(int level_id); /* 0 = disabled */
 
+/* Resolve a --skip-to-level argument to a level id. Accepts the game's
+ * numeric ids verbatim ("11") and per-game lower_snake_case level names
+ * ("stone_hill", "doctor_shemp"). Returns the level id, or -1 if the
+ * name is unknown (impl prints the valid names to stderr — this runs in
+ * CLI-parse context). */
+int game_resolve_level_arg(const char* arg);
+
 /* --no-lod setup is now a feature module — see
  * core/features/no_lod.h + games/<game>/features/no_lod.c. */
 

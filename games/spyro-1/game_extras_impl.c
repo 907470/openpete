@@ -17,6 +17,7 @@
 #include "openpete_render_cache.h"
 #include "features/widescreen.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -414,6 +415,80 @@ static int s_skip_applied     = 0;
 void game_set_skip_to_level(int level_id) {
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
+}
+
+/* Level id table for --skip-to-level by name. Names are g_LevelNames
+ * (decomp strings.c) lower_snake_cased; ids follow the game's scheme:
+ * tens digit = homeworld, units = HOME(0), levels(1-3), boss(4),
+ * flight(5). Two alias rows cover common alternate spellings. */
+static const struct { const char* name; int id; } s_level_ids[] = {
+    { "artisans",         10 },
+    { "stone_hill",       11 },
+    { "dark_hollow",      12 },
+    { "town_square",      13 },
+    { "toasty",           14 },
+    { "sunny_flight",     15 },
+    { "peace_keepers",    20 },
+    { "dry_canyon",       21 },
+    { "cliff_town",       22 },
+    { "ice_cavern",       23 },
+    { "doctor_shemp",     24 },
+    { "night_flight",     25 },
+    { "magic_crafters",   30 },
+    { "alpine_ridge",     31 },
+    { "high_caves",       32 },
+    { "wizard_peak",      33 },
+    { "blowhard",         34 },
+    { "crystal_flight",   35 },
+    { "beast_makers",     40 },
+    { "terrace_village",  41 },
+    { "misty_bog",        42 },
+    { "tree_tops",        43 },
+    { "metalhead",        44 },
+    { "wild_flight",      45 },
+    { "dream_weavers",    50 },
+    { "dark_passage",     51 },
+    { "lofty_castle",     52 },
+    { "haunted_towers",   53 },
+    { "jacques",          54 },
+    { "icy_flight",       55 },
+    { "gnorc_gnexus",     60 },
+    { "gnastys_world",    60 },  /* alias */
+    { "gnorc_cove",       61 },
+    { "twilight_harbor",  62 },
+    { "twilight_harbour", 62 },  /* alias */
+    { "gnasty_gnorc",     63 },
+    { "gnastys_loot",     64 },
+};
+
+int game_resolve_level_arg(const char* arg) {
+    size_t i, n;
+    char norm[32];
+
+    if (!arg || !arg[0]) return -1;
+
+    /* All-digits → numeric level id, passed through as before. */
+    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
+    if (!arg[i]) return atoi(arg);
+
+    /* Normalise: lowercase, '-' → '_'. */
+    for (n = 0; arg[n] && n < sizeof(norm) - 1; n++) {
+        char c = (char)tolower((unsigned char)arg[n]);
+        norm[n] = (c == '-') ? '_' : c;
+    }
+    norm[n] = '\0';
+
+    for (i = 0; i < sizeof(s_level_ids) / sizeof(s_level_ids[0]); i++) {
+        if (strcmp(norm, s_level_ids[i].name) == 0)
+            return s_level_ids[i].id;
+    }
+
+    fprintf(stderr, "valid --skip-to-level names:\n");
+    for (i = 0; i < sizeof(s_level_ids) / sizeof(s_level_ids[0]); i++) {
+        fprintf(stderr, "  %-18s (%d)\n",
+                s_level_ids[i].name, s_level_ids[i].id);
+    }
+    return -1;
 }
 
 void game_on_hash_emit(uint32_t frame) {

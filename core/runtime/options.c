@@ -5,6 +5,7 @@
 
 #include "openpete.h"
 #include "openpete_log.h"
+#include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -296,7 +297,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->debug_triangle = true;
         } else if (strcmp(a, "--skip-to-level") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->skip_to_level = atoi(v); i++;
+            opts->skip_to_level = game_resolve_level_arg(v);
+            if (opts->skip_to_level < 0) {
+                fprintf(stderr, "openpete: --skip-to-level: unknown level '%s'\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--bk2") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_path = v; i++;
@@ -450,7 +456,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
                 "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
                 "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
-                "  --skip-to-level N          load directly into level N (e.g. 10=Artisans, 20=PeaceKeepers, 63=Gnasty)\n"
+                "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
+                "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
+                "                             an unknown name prints the full list\n"
                 "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
                 "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
                 "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
