@@ -304,6 +304,23 @@ static unsigned long s_wd_weld;
 static unsigned long s_tomap_drops;
 /* §13.6 spread-gate trips (incoherent moby batches frozen). */
 static unsigned long s_wd_spread_froze;
+static unsigned long s_wd_abs_follow;   /* §13.14 absent-follow donors found */
+
+/* §13.14 env gates. Follow is on by default (same posture as
+ * rigid_fallback); max donor distance keeps a far batch's motion
+ * from misrepresenting a screen-distant absent strip. */
+static int absent_follow_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_ABSENT_FOLLOW");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+static int32_t absent_follow_max_px(void) {
+    static int32_t v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_ABSENT_FOLLOW_MAX_PX");
+                 v = (e && *e) ? atoi(e) : 320; }
+    return v;
+}
 /* World VERT_MISS (cyan) key-family attribution: which world_vkey
  * namespace produces per-vert tomap misses inside paired batches.
  * ctr = PHASE-B emission counter, ref = REFINE bit, t1..t4 = §13.7
@@ -1519,12 +1536,25 @@ void openpete_render_matcher_prepare_substitute(void) {
                      * vs one-cycle cull transients. */
                     if (ti < 0 && cb->vertex_count >= 32u &&
                         (cb->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT) &&
-                        getenv("OPENPETE_ABS_STREAM"))
+                        getenv("OPENPETE_ABS_STREAM")) {
+                        /* to-side census: same-tag batch count + the
+                         * first one's rank/consumed — splits true cull
+                         * absence (to=0) from rank-pairing failure. */
+                        uint32_t tn = 0, tr = 0, tc = 0;
+                        for (uint32_t k = 0; k < s_to.count; ++k) {
+                            if (s_to.batches[k].obj_tag != cb->obj_tag)
+                                continue;
+                            if (!tn) { tr = s_to.batches[k].tag_rank;
+                                       tc = s_to.batches[k].consumed; }
+                            tn++;
+                        }
                         fprintf(stderr,
                             "[abs-stream] f=%lu tag=%08X pc=%08X vc=%u "
-                            "vmax=%08X\n",
+                            "vmax=%08X r=%u to_n=%u to_r=%u to_c=%u\n",
                             s_wd_frames, cb->obj_tag, cb->gte_pc,
-                            cb->vertex_count, cb->vkey_max);
+                            cb->vertex_count, cb->vkey_max,
+                            cb->tag_rank, tn, tr, tc);
+                    }
                     /* OPENPETE_ABS_MOBY_ONLY=1 restricts the absent
                      * sampler to moby-class tags (world edge-cull
                      * floods the 8-slot window otherwise). */
@@ -1757,6 +1787,50 @@ void openpete_render_matcher_prepare_substitute(void) {
                 }
             }
             g_openpete_render_substitute_pair_count = paired;
+
+            /* §13.14 ABSENT-FOLLOW: a tag-absent WORLD batch is a true
+             * one-frame cull-boundary transient (abs-stream census:
+             * to_n=0 for 100% of titlescreen-flythrough absences) —
+             * the game's own visibility set drops the strip for
+             * exactly one frame. Freezing it left it a full game
+             * frame behind its panning neighbors: the round-4 red-
+             * flicker mountain seams. Borrow the rigid mean of the
+             * nearest (SXY centroid, L1) paired batch from the same
+             * renderer family (gte_pc upper half: sky follows sky,
+             * env follows env — sky has no parallax translation so a
+             * terrain donor would misrepresent it). Donor must carry
+             * REAL correspondence evidence (corr_hit gate) so a
+             * borrowed mean never chains off another borrower.
+             * OPENPETE_ABSENT_FOLLOW=0 restores the freeze. */
+            if (rigid_fallback_on() && absent_follow_on()) {
+                for (uint32_t i = 0; i < s_curr->count; ++i) {
+                    matcher_batch_t* b = &s_curr->batches[i];
+                    int32_t bestd = absent_follow_max_px();
+                    int32_t bi = -1;
+                    if (b->dbg_state != OPENPETE_DBGST_TAG_ABSENT) continue;
+                    if (!(b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) continue;
+                    if (b->is_ui_opt_out || b->vertex_count == 0) continue;
+                    for (uint32_t j = 0; j < s_curr->count; ++j) {
+                        const matcher_batch_t* d = &s_curr->batches[j];
+                        int32_t dd;
+                        if (!d->rigid_valid || !d->has_future_anchor) continue;
+                        if (d->corr_hit < RIGID_MIN_HITS) continue;
+                        if (!(d->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) continue;
+                        if ((d->gte_pc ^ b->gte_pc) & 0xFFFF0000u) continue;
+                        dd = abs(d->sxy_centroid[0] - b->sxy_centroid[0])
+                           + abs(d->sxy_centroid[1] - b->sxy_centroid[1]);
+                        if (dd < bestd) { bestd = dd; bi = (int32_t)j; }
+                    }
+                    if (bi >= 0) {
+                        b->rigid_dx    = s_curr->batches[bi].rigid_dx;
+                        b->rigid_dy    = s_curr->batches[bi].rigid_dy;
+                        b->rigid_valid = 1;
+                        b->rigid_only  = 1;
+                        b->dbg_state   = OPENPETE_DBGST_ABS_FOLLOW;
+                        s_wd_abs_follow++;
+                    }
+                }
+            }
         }
     }
 
@@ -1890,13 +1964,15 @@ iv_done:        ;
                 fprintf(stderr,
                   "[orange] mig=%lu same=%lu zerocorr=%lu | "
                   "rigid: span=%lu froze=%lu fill=%lu | spread=%lu | "
-                  "weld=%lu tomap_drops=%lu\n",
+                  "weld=%lu tomap_drops=%lu absfollow=%lu\n",
                   s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
                   s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill,
-                  s_wd_spread_froze, s_wd_weld, s_tomap_drops);
+                  s_wd_spread_froze, s_wd_weld, s_tomap_drops,
+                  s_wd_abs_follow);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
                 s_wd_spread_froze = 0; s_wd_weld = 0; s_tomap_drops = 0;
+                s_wd_abs_follow = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
                   for (uint32_t k = 0; k < s_curr->count && pr < 3; ++k)
@@ -2038,7 +2114,12 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
              * world matrix; a delta would smear the 2D overlay. */
             return out;
         }
-        if (!b->has_future_anchor) {           /* batch didn't pair */
+        /* §13.14: rigid_only is checked BEFORE the anchor early-out —
+         * an absent-follow batch has NO future anchor (the strip is
+         * genuinely missing from the to-frame) yet rides a borrowed
+         * rigid mean. Gated batches that set rigid_only all carry an
+         * anchor, so the reorder is behavior-neutral for them. */
+        if (!b->has_future_anchor && !b->rigid_only) {  /* didn't pair */
             g_openpete_render_substitute_vert_miss_count++;
             return out;
         }

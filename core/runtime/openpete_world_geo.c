@@ -25,7 +25,48 @@ static uint32_t s_last_vkey = 0;
  * practice, and the tier tail is legitimate near-geometry curvature.
  * Hook removed; see the plan §13.7c record. */
 
+/* §13.14 CANONICAL STRIP IDENTITY (titlescreen red-flicker seams).
+ * The six lw strip-list-head hook sites stamp the RAW list word, but
+ * r_environment.s packs per-frame LOD/variant FLAGS into that word:
+ *   bit31 SET  → word is the strip header ADDRESS with the low 2 bits
+ *                selecting the RTPS variant (walk #2: andi $s1,$t9,3 /
+ *                xor; walks #3/#4/#5 bit31-paths: andi 1 + andi 2 then
+ *                srl 2; sll 2) — the game itself discards them to
+ *                form the pointer.
+ *   bit31 CLEAR→ word is ptr>>2 (walk #4/#5 fall-through: sll $at,2
+ *                then lw 8($at)) — every low bit is an address bit,
+ *                NO flags.
+ * The flags flip with camera distance, so the same strip changed tags
+ * frame-to-frame → tag ABSENT in the to-frame → whole-strip freeze
+ * (red under F9) seaming against moving neighbors; worst on the
+ * titlescreen mountain flythrough (abs-stream showed C00958A1@26930 ↔
+ * C00958A3@269CC pairs with identical vkey_max). Mirroring the game's
+ * own pointer extraction makes a variant flip pair exactly: the
+ * source-keyed verts bypass the count-eq gate and carry identical
+ * source/lattice keys on both sides. Masking is format-aware: only
+ * address-format words (bit31) have flag bits; packed words pass
+ * through untouched. OPENPETE_STRIP_CANON=0 restores raw tags.
+ *
+ * Packed words unify to the SAME identity by reconstructing the
+ * address the game computes (sll $at,$word,2): a strip migrating
+ * between an address-format list section and a packed-format one
+ * (LOD walk change) otherwise flips its tag 0xC009xxxx ↔ 0x6002xxxx
+ * and still goes absent — the residual 269CC absences after the
+ * flag-mask landed (abs-stream 166 → 64/run, survivors all
+ * format-migration or sky-cull). */
+static int strip_canon_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_STRIP_CANON");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+
 void openpete_world_geo_set_current(uint32_t strip_addr) {
+    if (strip_addr && strip_canon_on()) {
+        if (!(strip_addr & (1u << 31)))
+            strip_addr <<= 2;        /* packed ptr>>2 → full address */
+        strip_addr &= ~3u;           /* low 2 = per-frame variant flags */
+    }
     s_current   = strip_addr;
     s_vidx      = 0;             /* new strip → restart ordinal */
     s_vsrc_head = s_vsrc_tail = 0;   /* drop any prefetch overhang */

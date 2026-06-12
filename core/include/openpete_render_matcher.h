@@ -129,7 +129,12 @@ enum {
     OPENPETE_DBGST_CORR_FROZEN,
     OPENPETE_DBGST_HEUR_PAIRED,
     OPENPETE_DBGST_LEGACY_WORLD,
-    OPENPETE_DBGST_VERT_MISS
+    OPENPETE_DBGST_VERT_MISS,
+    /* §13.14: tag-absent WORLD batch (true one-frame cull-boundary
+     * transient) riding a borrowed rigid mean from the nearest
+     * same-renderer paired batch instead of freezing at pan speed.
+     * WHITE in the F9 overlay. */
+    OPENPETE_DBGST_ABS_FOLLOW
 };
 int openpete_render_matcher_debug_state(const int16_t* p);
 /* 0/1. Seeded from CLI/env in run.c, live-toggled by F9. */
