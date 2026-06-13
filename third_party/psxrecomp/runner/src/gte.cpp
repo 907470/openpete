@@ -147,6 +147,49 @@ static void light_color(GTEState* gte) {
 }
 
 // Multiply IR by RGBC color and push to RGB FIFO (step 3 of color output)
+/* §13.16 audit (OPENPETE_OFX_CENSUS=1): full-trace census of RTPS calls
+ * whose native OFX ≠ canonical 256. The widescreen fix treats
+ * non-canonical OFX as the authoritative UI signal — this census proves
+ * (or breaks) the converse claim that no WORLD projection anywhere in a
+ * run carries OFX≠256. Keyed per caller PC; [ofx-census] NEW on first
+ * sight per PC, full table at process exit. */
+namespace {
+struct OfxCensusEnt { uint32_t pc; int32_t lo, hi; uint64_t n_rp, n_off; };
+OfxCensusEnt g_ofx_census_tab[64];
+unsigned     g_ofx_census_n = 0;
+
+void ofx_census_dump() {
+    for (unsigned k = 0; k < g_ofx_census_n; k++)
+        fprintf(stderr,
+                "[ofx-census] pc=%08X ofx=[%d..%d] rp=%llu off=%llu\n",
+                g_ofx_census_tab[k].pc,
+                (int)(g_ofx_census_tab[k].lo >> 16),
+                (int)(g_ofx_census_tab[k].hi >> 16),
+                (unsigned long long)g_ofx_census_tab[k].n_rp,
+                (unsigned long long)g_ofx_census_tab[k].n_off);
+}
+
+void ofx_census_record(uint32_t pc, int32_t ofx, int rp, unsigned rot) {
+    unsigned i;
+    for (i = 0; i < g_ofx_census_n; i++)
+        if (g_ofx_census_tab[i].pc == pc) break;
+    if (i == g_ofx_census_n) {
+        if (g_ofx_census_n >= 64) return;   /* overflow: keep first 64 PCs */
+        if (g_ofx_census_n == 0) atexit(ofx_census_dump);
+        g_ofx_census_tab[i].pc = pc;
+        g_ofx_census_tab[i].lo = g_ofx_census_tab[i].hi = ofx;
+        g_ofx_census_tab[i].n_rp = g_ofx_census_tab[i].n_off = 0;
+        g_ofx_census_n++;
+        fprintf(stderr, "[ofx-census] NEW pc=%08X ofx=%d rp=%d rot=%u\n",
+                pc, (int)(ofx >> 16), rp, rot);
+    }
+    if (ofx < g_ofx_census_tab[i].lo) g_ofx_census_tab[i].lo = ofx;
+    if (ofx > g_ofx_census_tab[i].hi) g_ofx_census_tab[i].hi = ofx;
+    if (rp) g_ofx_census_tab[i].n_rp++;
+    else    g_ofx_census_tab[i].n_off++;
+}
+} // namespace
+
 static void color_output(GTEState* gte) {
     uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
     uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
@@ -288,6 +331,17 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         }
     }
 
+
+    /* §13.16 audit — see ofx_census_record above. */
+    {
+        static int s_ofxc = -1;
+        if (s_ofxc < 0) { const char* e = getenv("OPENPETE_OFX_CENSUS");
+                          s_ofxc = (e && *e) ? 1 : 0; }
+        if (s_ofxc && gte->OFX != (256 << 16))
+            ofx_census_record(openpete_gte_caller_pc, (int32_t)gte->OFX,
+                              openpete_render_pass_active,
+                              openpete_render_cache_rotation_count());
+    }
 
     /* Side-channel canonical SX for openpete render→gameplay channel
      * decoupling. The mfc2 read of C2_SXY2 in handwritten asm truncates

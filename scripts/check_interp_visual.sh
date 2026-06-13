@@ -38,6 +38,11 @@ COUNT=${2:-8}
 OUT=${3:-/tmp/interp_visual}
 FRAME_LIMIT=$((START + COUNT + 100))
 
+# Extra binary flags (e.g. "--aspect 16:9 --no-lod") so the canonical
+# byte-identity gate can run under the exact presentation config a user
+# plays with — the widescreen OFX paths are active only at non-4:3.
+EXTRA_FLAGS=${OPENPETE_INTERP_VISUAL_EXTRA:-}
+
 mkdir -p "$OUT"
 rm -f "$OUT"/fps*.png
 
