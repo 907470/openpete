@@ -297,15 +297,37 @@ static int lat_extrap_on(void) {
  * the delta field's curvature across the quad in motion.) */
 static int lat_probe2(uint32_t from_span_id, uint32_t to_span_id,
                       int i, int j, int* dx, int* dy);
-/* Recover the DELTA of missed lattice key (i,j): find two paired
- * points on a line through it (row, column, diagonals) and
- * extrapolate/interpolate their deltas along the line. */
+/* Recover the DELTA of missed lattice key (i,j). Tier 1:
+ * PARALLELOGRAM completion D(i,j) = D(i+a,j) + D(i,j+b) − D(i+a,j+b)
+ * — exact for bilinear delta fields and built from nearby INTERIOR
+ * points, which suits the dominant corner misses better than
+ * extrapolating outward along an edge. Tier 2 fallback: line
+ * extrapolation/interpolation along row/column/diagonals. */
 static int lat_extrapolate(uint32_t from_span_id, uint32_t to_span_id,
                            uint32_t miss_ij, float* out_dx,
                            float* out_dy) {
     static const int8_t dirs[4][2] = {{0,1},{1,0},{1,1},{1,-1}};
     const int mi = (int)((miss_ij >> 4) & 0xFu);
     const int mj = (int)(miss_ij & 0xFu);
+    {
+        static const int8_t pg[8][2] = {
+            {1,1},{-1,1},{1,-1},{-1,-1},{2,2},{-2,2},{2,-2},{-2,-2}};
+        for (int k = 0; k < 8; ++k) {
+            const int a = pg[k][0], b2 = pg[k][1];
+            int d1x, d1y, d2x, d2y, d3x, d3y;
+            if (mi + a < 0 || mi + a > 4 || mj + b2 < 0 || mj + b2 > 4)
+                continue;
+            if (!lat_probe2(from_span_id, to_span_id, mi + a, mj,
+                            &d1x, &d1y)) continue;
+            if (!lat_probe2(from_span_id, to_span_id, mi, mj + b2,
+                            &d2x, &d2y)) continue;
+            if (!lat_probe2(from_span_id, to_span_id, mi + a, mj + b2,
+                            &d3x, &d3y)) continue;
+            *out_dx = (float)(d1x + d2x - d3x);
+            *out_dy = (float)(d1y + d2y - d3y);
+            return 1;
+        }
+    }
     for (int d = 0; d < 4; ++d) {
         const int di = dirs[d][0], dj = dirs[d][1];
         int ta = 0, tb = 0, ax = 0, ay = 0, bx = 0, by = 0, nf = 0;
@@ -1357,6 +1379,10 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
             if (s_loo < 0) { const char* le = getenv("OPENPETE_RECOVERY_LOO");
                              s_loo = (le && *le) ? (le[0] != '0') : 0; }
             if (s_loo &&
+                !openpete_render_interp_snap_get() &&  /* cuts excluded
+                 * like the midpoint harness — a genuine discontinuity
+                 * defeats every estimator equally and only obscures
+                 * the comparison. */
                 (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) {
                 const uint32_t vk = e->world_vkey;
                 if ((vk & (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
