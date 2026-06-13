@@ -289,46 +289,44 @@ static int lat_extrap_on(void) {
                  v = (e && *e) ? (e[0] != '0') : 1; }
     return v;
 }
-/* tomap probe with a synthetic lattice key (i,j) in the given span. */
-static int lat_probe(uint32_t to_span_id, int i, int j, int* sx, int* sy);
-/* Recover to-position of missed lattice key (i,j): find two OTHER
- * present points on a line through (i,j) (row, column, then the two
- * diagonals) and extrapolate/interpolate along it. Works in quarter
- * units: P(i,j) = P(a) + t·(P(b)−P(a)), t = dist(a→ij)/dist(a→b). */
-static int lat_extrapolate(uint32_t to_span_id, uint32_t miss_ij,
-                           uint32_t* out_sxy) {
+/* fmap+tomap probe for lattice point (i,j): BOTH endpoints, so the
+ * recovery works in DELTA space. (§13.15c LOO falsified position-
+ * space extrapolation: 11.47px mean error on STILL frames — equal
+ * world spacing is not equal screen spacing under perspective. Delta
+ * space is exact on still frames by construction and errs only by
+ * the delta field's curvature across the quad in motion.) */
+static int lat_probe2(uint32_t from_span_id, uint32_t to_span_id,
+                      int i, int j, int* dx, int* dy);
+/* Recover the DELTA of missed lattice key (i,j): find two paired
+ * points on a line through it (row, column, diagonals) and
+ * extrapolate/interpolate their deltas along the line. */
+static int lat_extrapolate(uint32_t from_span_id, uint32_t to_span_id,
+                           uint32_t miss_ij, float* out_dx,
+                           float* out_dy) {
     static const int8_t dirs[4][2] = {{0,1},{1,0},{1,1},{1,-1}};
     const int mi = (int)((miss_ij >> 4) & 0xFu);
     const int mj = (int)(miss_ij & 0xFu);
     for (int d = 0; d < 4; ++d) {
         const int di = dirs[d][0], dj = dirs[d][1];
-        /* Collect up to 2 present points at offsets t=-4..4 (t!=0)
-         * along the line, nearest-first. */
         int ta = 0, tb = 0, ax = 0, ay = 0, bx = 0, by = 0, nf = 0;
         static const int8_t order[8] = {1,-1,2,-2,3,-3,4,-4};
         for (int k = 0; k < 8 && nf < 2; ++k) {
             const int t = order[k];
             const int i2 = mi + di * t, j2 = mj + dj * t;
-            int sx, sy;
+            int dx2, dy2;
             if (i2 < 0 || i2 > 4 || j2 < 0 || j2 > 4) continue;
-            if (!lat_probe(to_span_id, i2, j2, &sx, &sy)) continue;
-            if (!nf) { ta = t; ax = sx; ay = sy; }
-            else     { tb = t; bx = sx; by = sy; }
+            if (!lat_probe2(from_span_id, to_span_id, i2, j2,
+                            &dx2, &dy2)) continue;
+            if (!nf) { ta = t; ax = dx2; ay = dy2; }
+            else     { tb = t; bx = dx2; by = dy2; }
             nf++;
         }
         if (nf < 2) continue;
-        /* P(0) = A + (0−ta)/(tb−ta) · (B−A), in 1/8-px fixed point. */
+        /* D(0) = A + (0−ta)/(tb−ta) · (B−A). */
         {
-            const int den = tb - ta;
-            const int num = -ta;
-            const int px = ax * 8 + ((bx - ax) * 8 * num) / den;
-            const int py = ay * 8 + ((by - ay) * 8 * num) / den;
-            const int rx = (px + (px >= 0 ? 4 : -4)) / 8;
-            const int ry = (py + (py >= 0 ? 4 : -4)) / 8;
-            if (rx < -32768 || rx > 32767 || ry < -32768 || ry > 32767)
-                return 0;
-            *out_sxy = ((uint32_t)(uint16_t)(int16_t)rx) |
-                       (((uint32_t)(uint16_t)(int16_t)ry) << 16);
+            const float tt = (float)(-ta) / (float)(tb - ta);
+            *out_dx = (float)ax + tt * (float)(bx - ax);
+            *out_dy = (float)ay + tt * (float)(by - ay);
             return 1;
         }
     }
@@ -382,6 +380,12 @@ static unsigned long s_wd_spread_froze;
 static unsigned long s_wd_abs_follow;   /* §13.14 absent-follow donors found */
 static unsigned long s_wd_vlrec;        /* §13.15 lattice extrapolations */
 static unsigned long s_wd_nbrec;        /* §13.15b neighbor-delta rides  */
+/* §13.15c leave-one-out estimator validation (px L1 error vs truth);
+ * _base = |truth delta| sum for the same verts = FREEZE baseline. */
+static unsigned long s_loo_lat_n, s_loo_lat_sum, s_loo_lat_max;
+static unsigned long s_loo_lat_base, s_loo_nb_base;
+static unsigned long s_loo_nb_n;
+static double        s_loo_nb_sum, s_loo_nb_max;
 
 /* §13.14 env gates. Follow is on by default (same posture as
  * rigid_fallback); max donor distance keeps a far batch's motion
@@ -882,17 +886,22 @@ static int nb_delta_recover(uint32_t from_span, uint32_t to_span,
     return 0;
 }
 
-/* §13.15: synthetic-key tomap probe for lattice point (i,j). */
-static int lat_probe(uint32_t to_span_id, int i, int j, int* sx, int* sy) {
+/* §13.15: synthetic-key fmap+tomap probe for lattice point (i,j) —
+ * returns its (to − from) screen DELTA when paired on both ends. */
+static int lat_probe2(uint32_t from_span_id, uint32_t to_span_id,
+                      int i, int j, int* dx, int* dy) {
     openpete_render_cache_entry_t fk;
-    uint32_t sxy;
+    uint32_t fs, ts;
     memset(&fk, 0, sizeof(fk));
     fk.obj_tag    = OPENPETE_WORLD_GEO_TAG_BIT;   /* nonzero → vkey form */
     fk.world_vkey = OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22) |
                     (((uint32_t)i) << 4) | (uint32_t)j;
-    if (!tomap_lookup(to_span_id, &fk, &sxy)) return 0;
-    *sx = (int)(int16_t)(uint16_t)(sxy & 0xFFFFu);
-    *sy = (int)(int16_t)(uint16_t)(sxy >> 16);
+    if (!fmap_lookup(from_span_id, &fk, &fs)) return 0;
+    if (!tomap_lookup(to_span_id, &fk, &ts)) return 0;
+    *dx = (int)(int16_t)(uint16_t)(ts & 0xFFFFu)
+        - (int)(int16_t)(uint16_t)(fs & 0xFFFFu);
+    *dy = (int)(int16_t)(uint16_t)(ts >> 16)
+        - (int)(int16_t)(uint16_t)(fs >> 16);
     return 1;
 }
 
@@ -1334,6 +1343,57 @@ static void corr_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
         int16_t tx = (int16_t)(uint16_t)(to_sxy & 0xFFFFu);
         int16_t ty = (int16_t)(uint16_t)(to_sxy >> 16);
         int32_t d  = abs((int)tx - (int)fx) + abs((int)ty - (int)fy);
+        /* §13.15c LEAVE-ONE-OUT recovery validation
+         * (OPENPETE_RECOVERY_LOO=1, sim-side → works headless +
+         * deterministic). For verts with an EXACT correspondence,
+         * also run the §13.15 recovery estimators as if this vert
+         * had missed, and accumulate |prediction − truth|. Proves
+         * the estimators' accuracy on ground truth the production
+         * miss path never has. Caveat: lat_probe/nb lookups see the
+         * REAL tomap (this vert included) — the lattice/neighbor
+         * probes never query the vert's own key, so no leakage. */
+        {
+            static int s_loo = -1;
+            if (s_loo < 0) { const char* le = getenv("OPENPETE_RECOVERY_LOO");
+                             s_loo = (le && *le) ? (le[0] != '0') : 0; }
+            if (s_loo &&
+                (b->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT)) {
+                const uint32_t vk = e->world_vkey;
+                if ((vk & (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
+                        (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22)) &&
+                    (vk & 0x3FFFFFu) <= 0xFFu) {
+                    float ldx, ldy;
+                    if (lat_extrapolate(b->matrix_span_id,
+                                        b->to_span_id, vk & 0xFFu,
+                                        &ldx, &ldy)) {
+                        float ex = ldx - (float)((int)tx - (int)fx);
+                        float ey = ldy - (float)((int)ty - (int)fy);
+                        float err = (ex < 0 ? -ex : ex) +
+                                    (ey < 0 ? -ey : ey);
+                        s_loo_lat_n++;
+                        s_loo_lat_sum += (unsigned long)(err + 0.5f);
+                        if ((unsigned long)(err + 0.5f) > s_loo_lat_max)
+                            s_loo_lat_max = (unsigned long)(err + 0.5f);
+                        s_loo_lat_base += (unsigned long)d; /* freeze */
+                    }
+                } else if ((vk & OPENPETE_WORLD_VKEY_SRC_BIT) &&
+                           !(vk & (1u << 22)) &&
+                           !(vk & OPENPETE_WORLD_VKEY_REFINE_BIT)) {
+                    float ndx, ndy;
+                    if (nb_delta_recover(b->matrix_span_id,
+                                         b->to_span_id, e, &ndx, &ndy)) {
+                        float ex = ndx - (float)((int)tx - (int)fx);
+                        float ey = ndy - (float)((int)ty - (int)fy);
+                        float err = (ex < 0 ? -ex : ex) +
+                                    (ey < 0 ? -ey : ey);
+                        s_loo_nb_n++;
+                        s_loo_nb_sum += (double)err;
+                        if (err > s_loo_nb_max) s_loo_nb_max = err;
+                        s_loo_nb_base += (unsigned long)d;  /* freeze */
+                    }
+                }
+            }
+        }
         b->corr_hit++;
         b->corr_dpx_sum += (uint64_t)d;
         /* Signed sums for the rigid-fallback mean. Note the
@@ -2148,6 +2208,26 @@ iv_done:        ;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
                 s_wd_spread_froze = 0; s_wd_weld = 0; s_tomap_drops = 0;
                 s_wd_vlrec = 0; s_wd_nbrec = 0;
+                if (s_loo_lat_n || s_loo_nb_n) {
+                    fprintf(stderr,
+                        "[loo] lat n=%lu mean=%.3f max=%lu frz=%.3f | "
+                        "nb n=%lu mean=%.3f max=%.1f frz=%.3f\n",
+                        s_loo_lat_n,
+                        s_loo_lat_n ? (double)s_loo_lat_sum /
+                                      (double)s_loo_lat_n : 0.0,
+                        s_loo_lat_max,
+                        s_loo_lat_n ? (double)s_loo_lat_base /
+                                      (double)s_loo_lat_n : 0.0,
+                        s_loo_nb_n,
+                        s_loo_nb_n ? s_loo_nb_sum /
+                                     (double)s_loo_nb_n : 0.0,
+                        s_loo_nb_max,
+                        s_loo_nb_n ? (double)s_loo_nb_base /
+                                     (double)s_loo_nb_n : 0.0);
+                    s_loo_lat_n = s_loo_lat_sum = s_loo_lat_max = 0;
+                    s_loo_lat_base = s_loo_nb_base = 0;
+                    s_loo_nb_n = 0; s_loo_nb_sum = s_loo_nb_max = 0.0;
+                }
                 s_wd_abs_follow = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
@@ -2496,18 +2576,33 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
                     s_wd_weld++;
                     welded = 1;
                 }
-                /* §13.15: a missed LATTICE point is an affine combo
-                 * of two same-span neighbors — extrapolate its
-                 * to-position instead of riding the batch mean. */
+                /* §13.15: a missed LATTICE point rides the affine
+                 * combination of two same-span neighbors' DELTAS
+                 * (delta space — exact on still frames; position-
+                 * space extrapolation was falsified by LOO). */
                 if (!welded && lat_extrap_on() &&
                     (entry.world_vkey &
                      (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
                         (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22)) &&
-                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu &&
-                    lat_extrapolate(b->to_span_id,
-                                    entry.world_vkey & 0xFFu, &to_sxy)) {
-                    s_wd_vlrec++;
-                    welded = 1;
+                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu) {
+                    float ldx, ldy;
+                    if (lat_extrapolate(b->matrix_span_id,
+                                        b->to_span_id,
+                                        entry.world_vkey & 0xFFu,
+                                        &ldx, &ldy)) {
+                        float dx = ldx * alpha;
+                        float dy = ldy * alpha;
+                        const float lcap = g_openpete_substitute_clamp_px;
+                        if (lcap <= 0.0f) return out;
+                        if (dx >  lcap) dx =  lcap;
+                        if (dx < -lcap) dx = -lcap;
+                        if (dy >  lcap) dy =  lcap;
+                        if (dy < -lcap) dy = -lcap;
+                        out.dx = dx; out.dy = dy;
+                        s_wd_vlrec++;
+                        g_openpete_render_substitute_vert_hit_count++;
+                        return out;
+                    }
                 }
             }
             /* §13.15b: stream-keyed vert churned out for one frame
@@ -2642,15 +2737,19 @@ int openpete_render_matcher_debug_state(const int16_t* p) {
                 uint32_t ws;
                 if (world_weld_twin(p, &entry, &alt, &ws))
                     return b->dbg_state;
-                /* §13.15 mirror: lattice extrapolation recovers too. */
+                /* §13.15 mirror: lattice delta-extrapolation recovers. */
                 if (lat_extrap_on() &&
                     (entry.world_vkey &
                      (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
                         (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22)) &&
-                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu &&
-                    lat_extrapolate(b->to_span_id,
-                                    entry.world_vkey & 0xFFu, &ws))
-                    return b->dbg_state;
+                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu) {
+                    float ldx, ldy;
+                    if (lat_extrapolate(b->matrix_span_id,
+                                        b->to_span_id,
+                                        entry.world_vkey & 0xFFu,
+                                        &ldx, &ldy))
+                        return b->dbg_state;
+                }
                 /* §13.15b mirror: neighbor-delta ride is local-exact. */
                 if (nb_delta_on() &&
                     (entry.world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) &&
