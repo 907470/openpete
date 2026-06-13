@@ -50,7 +50,18 @@ static inline int32_t widescreen_eff_h(int32_t native_h) {
  * UI-moby paths. Returns the widened OFX in q16 to feed projection. */
 static inline int64_t widescreen_eff_ofx(int64_t native_ofx_q16) {
     if (openpete_disp_w_factor > 0.0f && openpete_render_pass_active) {
-        if (openpete_ui_moby_is_current_ui()) {
+        /* §13.16: NON-CANONICAL OFX is the PSYQ 2D-via-GTE glyph-emit
+         * idiom (gte.cpp Phase 1.0 finding) — Spyro's HUD writes each
+         * icon/glyph's screen-X into OFX via inline CTC2, while every
+         * gameplay 3D projection uses the canonical 256. The in-level
+         * HUD renders inside func_80023AC4 (the Spyro renderer) under
+         * the constant g_Spyro identity, so no per-moby UI classifier
+         * can see those glyphs — the OFX value itself is the
+         * authoritative UI signal. Canonical-OFX projections are
+         * byte-unchanged (both formulas coincide at OFX=256 only for
+         * factor terms; the explicit test keeps world widening exact). */
+        if (native_ofx_q16 != ((int64_t)256 << 16) ||
+            openpete_ui_moby_is_current_ui()) {
             const int64_t centring_shift_q16 = (int64_t)(
                 ((double)openpete_disp_w_factor - 1.0) * 256.0 * 65536.0);
             return native_ofx_q16 + centring_shift_q16;

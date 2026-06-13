@@ -491,7 +491,12 @@ int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
          * or PGXP-hit glyph verts land at the WIDENED position while
          * the int16 path stays centred (the two-position HUD
          * flicker). */
-        if (openpete_ui_moby_is_addr_ui(e.obj_tag) ||
+        /* §13.16: non-canonical OFX = glyph-emit idiom → centring,
+         * mirroring widescreen_eff_ofx (the in-level HUD projects
+         * inside the Spyro renderer where no per-moby classifier
+         * fires; the OFX value is the authoritative UI signal). */
+        if (e.ofx != (256 << 16) ||
+            openpete_ui_moby_is_addr_ui(e.obj_tag) ||
             (e.obj_tag & 0x18000000u) == 0x18000000u) {
             fofx += (float)((openpete_disp_w_factor - 1.0f) * 256.0f);
         } else {
