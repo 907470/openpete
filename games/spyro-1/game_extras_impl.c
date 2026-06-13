@@ -844,6 +844,25 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
                     }
                 }
             }
+            /* §13.16 diag: per-copy census — class, occurrence, and
+             * m_Position (+0x0C) — to design a position-stable text
+             * identity (the class-occurrence form cross-pairs the
+             * HUD counters' digits when staging composition shifts). */
+            if (m && getenv("OPENPETE_TEXT_TAG_LOG")) {
+                static unsigned s_tt_n = 0;
+                if (s_tt_n < 3000u) {
+                    int32_t px2, py2, pz2;
+                    s_tt_n++;
+                    memcpy(&px2, m + 0x0C, 4);
+                    memcpy(&py2, m + 0x10, 4);
+                    memcpy(&pz2, m + 0x14, 4);
+                    fprintf(stderr,
+                        "[text-tag] a=%08X cls=%u occ=%u half=%u "
+                        "pos=%d,%d,%d\n",
+                        addr, (unsigned)cls, (unsigned)occ,
+                        (unsigned)half, px2, py2, pz2);
+                }
+            }
             /* OPENPETE_ORD_CLASSES diag census (staging index). */
             if (s_ordc_on && s_norm_ord < 16u) {
                 s_ordc_addr[s_norm_ord] = addr;
@@ -851,6 +870,57 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
                 if (s_norm_ord >= s_ordc_n) s_ordc_n = s_norm_ord + 1u;
             }
             s_norm_ord++;
+            /* §13.16: SCREEN-ANCHORED text copies (HUD counters,
+             * level-name/menu text) get a POSITION-keyed identity
+             * instead of the per-class occurrence index. The same
+             * glyph class appears at several screen positions (census:
+             * cls=439 at x=108 AND x=380), and when the staging
+             * composition shifts (counter fading in/out, digits
+             * changing) the occurrence indices SWAP between instances
+             * — the matcher then pairs a glyph with its sibling at
+             * another screen position and the intermediate presents
+             * sweep it across the screen at 30 Hz (the round-6 HUD
+             * reposition flicker; measured: gem-counter digits leave
+             * their position on every intermediate present). A glyph's
+             * screen position IS its stable identity: x-bucket 8px
+             * (7 bits) + y-bucket 32px (2 bits) fills the 9-bit field
+             * the occurrence used. y excluded at fine grain so the
+             * title's sine-wave letters (±~10px y animation) keep
+             * their tag and continue to lerp (§ #35 behavior).
+             * World-space copies (shadows — coords far outside the
+             * screen window) keep the occurrence scheme untouched.
+             * OPENPETE_TEXT_POS_TAG=0 restores occurrence-only. */
+            {
+                static int s_pt = -1;
+                int32_t px3 = 0, py3 = 0, pz3 = 0;
+                if (s_pt < 0) {
+                    const char* e = getenv("OPENPETE_TEXT_POS_TAG");
+                    s_pt = (e && *e) ? (e[0] != '0') : 1;
+                }
+                if (s_pt && m) {
+                    memcpy(&px3, m + 0x0C, 4);
+                    memcpy(&py3, m + 0x10, 4);
+                    memcpy(&pz3, m + 0x14, 4);
+                    if (px3 >= 0 && px3 < 1024 &&
+                        py3 >= 0 && py3 < 512 &&
+                        pz3 >= 0 && pz3 < 65536) {
+                        /* bit27 = UI marker: screen-anchored text.
+                         * The render-cache PGXP mirror must apply
+                         * the UI CENTRING (not the world widening)
+                         * to these — it can only see the tag, and a
+                         * normalized tag is not an address the
+                         * is_addr_ui ranges can match (§13.16: the
+                         * widened PGXP path vs centred RTPS path was
+                         * the two-position HUD flicker). Free bit:
+                         * occurrence/position fields stay below
+                         * bit20, cls<<9 tops at bit19. */
+                        return 0x18000000u
+                             | (((uint32_t)cls & 0x7FFu) << 9)
+                             | ((uint32_t)(py3 >> 5) & 0x3u) << 7
+                             | ((uint32_t)(px3 >> 3) & 0x7Fu);
+                    }
+                }
+            }
             return 0x10000000u | (((uint32_t)cls & 0x7FFu) << 9)
                               | (occ & 0x1FFu);
         }

@@ -485,7 +485,14 @@ int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
      * widening — exactly as widescreen_eff_ofx does live. Identity when
      * disp_w_factor <= 1.0 (no --aspect), so 4:3 is byte-unchanged. */
     if (openpete_disp_w_factor > 1.0f) {
-        if (openpete_ui_moby_is_addr_ui(e.obj_tag)) {
+        /* §13.16: normalized screen-anchored text tags carry the UI
+         * marker (bit28|bit27) instead of an address — the live RTPS
+         * centred them via is_current_ui, and the mirror must agree
+         * or PGXP-hit glyph verts land at the WIDENED position while
+         * the int16 path stays centred (the two-position HUD
+         * flicker). */
+        if (openpete_ui_moby_is_addr_ui(e.obj_tag) ||
+            (e.obj_tag & 0x18000000u) == 0x18000000u) {
             fofx += (float)((openpete_disp_w_factor - 1.0f) * 256.0f);
         } else {
             fofx *= openpete_disp_w_factor;

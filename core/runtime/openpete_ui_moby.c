@@ -2,6 +2,9 @@
 
 #include "openpete_ui_moby.h"
 
+#include <stdio.h>   /* §13.16 diag logging */
+#include <stdlib.h>
+
 static uint32_t s_static_lo = 0;
 static uint32_t s_static_hi = 0;
 static uint32_t s_text_lo   = 0;
@@ -20,6 +23,30 @@ void openpete_ui_moby_set_text_range(uint32_t lo, uint32_t hi) {
 
 void openpete_ui_moby_set_current(uint32_t moby_addr) {
     s_current = moby_addr;
+    /* §13.16 diag: log every UNIQUE moby addr that reaches the UI
+     * classifier, with its verdict and the live text range — names
+     * the address-space mismatch behind the HUD reposition flicker. */
+    if (moby_addr) {
+        static int s_log = -1;
+        if (s_log < 0) { const char* e = getenv("OPENPETE_UI_CLASS_LOG");
+                         s_log = (e && *e) ? 1 : 0; }
+        if (s_log) {
+            /* Every sighting (no dedupe), canonical-polybuf region
+             * only (low 29 bits >= 0x140000 — above static globals,
+             * below the 2MB top) — verdict FLIPS across sightings of
+             * one addr are the flicker. */
+            static unsigned s_n = 0;
+            if (((moby_addr & 0x1FFFFFFFu) >= 0x00140000u) &&
+                s_n < 400000u) {
+                s_n++;
+                fprintf(stderr,
+                        "[ui-class] a=%08X ui=%d txt=[%08X,%08X)\n",
+                        moby_addr,
+                        openpete_ui_moby_is_addr_ui(moby_addr),
+                        s_text_lo, s_text_hi);
+            }
+        }
+    }
 }
 
 uint32_t openpete_ui_moby_get_current(void) {

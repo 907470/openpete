@@ -263,6 +263,31 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     int64_t sy = (gte->OFY + (int64_t)gte->IR2 * h_div_sz) >> 16;
     gte->push_sxy(sx, sy);
 
+    /* §13.16 diag (OPENPETE_HUD_ROW_LOG=1): identity + UI verdict of
+     * every projection landing in the HUD rows under widescreen —
+     * names the renderer/identity of the in-level HUD digits that
+     * never reach the UI classifier. */
+    if (openpete_render_pass_active && sy >= 0 && sy < 40 &&
+        sx >= -64 && sx < 1024) {
+        static int s_hrl = -1;
+        if (s_hrl < 0) { const char* e = getenv("OPENPETE_HUD_ROW_LOG");
+                         s_hrl = (e && *e) ? 1 : 0; }
+        if (s_hrl) {
+            static unsigned s_hrl_n = 0;
+            unsigned rot = openpete_render_cache_rotation_count();
+            uint32_t cur = openpete_ui_moby_get_current();
+            if (cur != 0u && rot >= 1040u && s_hrl_n < 30000u) {
+                s_hrl_n++;
+                fprintf(stderr,
+                        "[hud-row] r=%u cur=%08X ui=%d pc=%08X sx=%d "
+                        "sy=%d ofx=%d\n", rot, cur,
+                        openpete_ui_moby_is_current_ui(),
+                        openpete_gte_caller_pc, (int)sx, (int)sy,
+                        (int)(gte->OFX >> 16));
+            }
+        }
+    }
+
 
     /* Side-channel canonical SX for openpete render→gameplay channel
      * decoupling. The mfc2 read of C2_SXY2 in handwritten asm truncates

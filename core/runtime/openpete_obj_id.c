@@ -1,6 +1,7 @@
 /* openpete_obj_id.c — see openpete_obj_id.h. */
 
 #include "openpete_obj_id.h"
+#include "openpete_ui_moby.h"     /* §13.16 queue-path UI classification */
 #include "openpete_world_geo.h"   /* openpete_world_geo_clear */
 #include "openpete_psx.h"         /* openpete_psx_to_host_ptr (read-only) */
 
@@ -134,5 +135,15 @@ void openpete_moby_render_entry_tag(uint32_t entry_vaddr) {
     if (moby < OPENPETE_PSX_KSEG0_BASE || moby >= OPENPETE_PSX_KSEG0_END)
         moby = 0;
     openpete_obj_id_set(moby);
+    /* §13.16: the regular queue ALSO renders the in-level HUD text
+     * copies (probe-verified: gameplay HUD glyphs project at regular-
+     * renderer PCs with no ui_moby current → is_current_ui()=0 →
+     * world OFX widening → counters at the screen edges under
+     * --aspect). The historical exclusion ("regular mobys are never
+     * HUD/UI") predates the precise canonical UI ranges — with the
+     * g_Hud statics + canonical polybuf-slot ranges registered,
+     * gameplay mobys classify 0 exactly as before and only true HUD
+     * copies pick up the centring. */
+    openpete_ui_moby_set_current(moby);
     openpete_world_geo_clear();
 }

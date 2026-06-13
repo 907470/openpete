@@ -16,6 +16,7 @@
 // per-vaddr dispatch flows through the registry.
 
 #include "feature_registry.h"
+#include "features/widescreen.h"  /* widescreen_polybuf_active (§13.16) */
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 #include "psx_runtime.h"   /* knobs read by the recompiler-called hooks below */
@@ -434,11 +435,39 @@ static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
 static int on_80022A2C_text_moby_range(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (openpete_disp_w_factor > 1.0f) {
-        uint32_t poly_top = cpu->read_word(0x80075780u);
-        if (poly_top >= 0x1C000u) {
-            openpete_ui_moby_set_text_range(poly_top - 0x1C000u, poly_top);
+        /* §13.16: the text/UI range must live in the SAME canonical
+         * address space as the moby pointers the shaded loop projects
+         * (the #13 channel keeps g_HudMobys-derived pointers
+         * canonical; D_80075780 reads back the RAW host cursor under
+         * polybuf relocation — registering that range made every HUD
+         * digit classify ui=0 and take the world OFX widening: the
+         * round-6 edge flicker). Derive it exactly as the #30
+         * normalizer derives its copy window: BOTH live DB cursors
+         * (g_DB[0/1].m_PolyBuf) mapped through to_canon, each slot
+         * [base, base+0x1C000) — the union covers both DB halves so
+         * the per-frame allocate/project slot skew can't declassify
+         * either half. to_canon is identity when not relocated. */
+        uint32_t pb0 = psx_runtime_polybuf_to_canon(
+                           cpu->read_word(0x80076EE0u + 0x70u));
+        uint32_t pb1 = psx_runtime_polybuf_to_canon(
+                           cpu->read_word(0x80076F64u + 0x70u));
+        if ((pb0 & 0x80000000u) && (pb1 & 0x80000000u)) {
+            uint32_t lo = (pb0 < pb1) ? pb0 : pb1;
+            uint32_t hi = (pb0 < pb1) ? pb1 : pb0;
+            openpete_ui_moby_set_text_range(lo, hi + 0x1C000u);
         } else {
             openpete_ui_moby_set_text_range(0, 0);
+        }
+        /* §13.16 diag: HUD reposition flicker — log the per-frame
+         * text-range registration so slot parity vs the projected
+         * moby addrs is visible. */
+        if (getenv("OPENPETE_UI_CLASS_LOG")) {
+            static unsigned s_n = 0;
+            if (s_n < 6000u) {
+                s_n++;
+                fprintf(stderr, "[ui-range] pb0=%08X pb1=%08X\n",
+                        pb0, pb1);
+            }
         }
     }
     return 0;  /* fall through so the recompiled body runs */
