@@ -260,6 +260,81 @@ typedef struct {
 static tomap_ent_t s_tomap[TOMAP_SLOTS];
 static uint32_t    s_tomap_seq = 0u;  /* bumped each prepare; stale = empty */
 
+/* §13.15 v_local-fallback FALSIFIED (2026-06-12): a span-free
+ * (v_local → to-sxy) map recovered exactly ZERO Stone Hill misses —
+ * vlnohit was 100% (9k/window), vlcap 0. The subdivided env walks
+ * compute their GTE inputs as header_field ± (RBK/GBK/BBK), i.e.
+ * CAMERA-BAKED coordinates (the §7.5 "render-cache world is
+ * camera-baked" finding applies to v_local here): the same world
+ * point has a different v_local every frame the camera moves, so no
+ * content lookup keyed on v_local can ever match. (The §13.10 weld
+ * is unaffected — it compares v_local of twins WITHIN one frame.)
+ * Map removed; the surviving recovery is lattice extrapolation below. */
+
+/* §13.15 LATTICE LINE EXTRAPOLATION. The quarter-unit lattice is
+ * built by midpoint subdivision — (0,2) is BY CONSTRUCTION the
+ * world-space midpoint of (0,0) and (0,4) — so any lattice point is
+ * an affine combination of two other points on its row/column/
+ * diagonal, and its to-frame screen position is recoverable from
+ * SAME-SPAN tomap neighbors to within perspective error (~(size/Z)²,
+ * sub-pixel for ground quads). This covers the residual ground cyan:
+ * per-frame vert-emission shifts inside a quad (vc 9→8: the game
+ * row-caches grid points, so which span RTPSes a shared point can
+ * change) AND the §13.12-accepted fine-only misses on tier flips —
+ * with a position that is exact-to-first-order instead of the batch
+ * mean. OPENPETE_LAT_EXTRAP=0 kills for A/B. */
+static int lat_extrap_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_LAT_EXTRAP");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+/* tomap probe with a synthetic lattice key (i,j) in the given span. */
+static int lat_probe(uint32_t to_span_id, int i, int j, int* sx, int* sy);
+/* Recover to-position of missed lattice key (i,j): find two OTHER
+ * present points on a line through (i,j) (row, column, then the two
+ * diagonals) and extrapolate/interpolate along it. Works in quarter
+ * units: P(i,j) = P(a) + t·(P(b)−P(a)), t = dist(a→ij)/dist(a→b). */
+static int lat_extrapolate(uint32_t to_span_id, uint32_t miss_ij,
+                           uint32_t* out_sxy) {
+    static const int8_t dirs[4][2] = {{0,1},{1,0},{1,1},{1,-1}};
+    const int mi = (int)((miss_ij >> 4) & 0xFu);
+    const int mj = (int)(miss_ij & 0xFu);
+    for (int d = 0; d < 4; ++d) {
+        const int di = dirs[d][0], dj = dirs[d][1];
+        /* Collect up to 2 present points at offsets t=-4..4 (t!=0)
+         * along the line, nearest-first. */
+        int ta = 0, tb = 0, ax = 0, ay = 0, bx = 0, by = 0, nf = 0;
+        static const int8_t order[8] = {1,-1,2,-2,3,-3,4,-4};
+        for (int k = 0; k < 8 && nf < 2; ++k) {
+            const int t = order[k];
+            const int i2 = mi + di * t, j2 = mj + dj * t;
+            int sx, sy;
+            if (i2 < 0 || i2 > 4 || j2 < 0 || j2 > 4) continue;
+            if (!lat_probe(to_span_id, i2, j2, &sx, &sy)) continue;
+            if (!nf) { ta = t; ax = sx; ay = sy; }
+            else     { tb = t; bx = sx; by = sy; }
+            nf++;
+        }
+        if (nf < 2) continue;
+        /* P(0) = A + (0−ta)/(tb−ta) · (B−A), in 1/8-px fixed point. */
+        {
+            const int den = tb - ta;
+            const int num = -ta;
+            const int px = ax * 8 + ((bx - ax) * 8 * num) / den;
+            const int py = ay * 8 + ((by - ay) * 8 * num) / den;
+            const int rx = (px + (px >= 0 ? 4 : -4)) / 8;
+            const int ry = (py + (py >= 0 ? 4 : -4)) / 8;
+            if (rx < -32768 || rx > 32767 || ry < -32768 || ry > 32767)
+                return 0;
+            *out_sxy = ((uint32_t)(uint16_t)(int16_t)rx) |
+                       (((uint32_t)(uint16_t)(int16_t)ry) << 16);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static uint32_t s_next_object_id = 1u;
 
 unsigned g_openpete_render_matcher_batch_count             = 0u;
@@ -305,6 +380,8 @@ static unsigned long s_tomap_drops;
 /* §13.6 spread-gate trips (incoherent moby batches frozen). */
 static unsigned long s_wd_spread_froze;
 static unsigned long s_wd_abs_follow;   /* §13.14 absent-follow donors found */
+static unsigned long s_wd_vlrec;        /* §13.15 lattice extrapolations */
+static unsigned long s_wd_nbrec;        /* §13.15b neighbor-delta rides  */
 
 /* §13.14 env gates. Follow is on by default (same posture as
  * rigid_fallback); max donor distance keeps a far batch's motion
@@ -536,7 +613,10 @@ static int observe_vertex(const int16_t* p, openpete_render_cache_entry_t* out) 
  * another object now resolves ITS OWN object's entry and motion.
  * Consensus needs >=2 verts agreeing; otherwise selection falls back
  * to the oldest candidate (the pre-§13.8 single-entry semantics). */
-#define PRIM_CAND_MAX 4
+/* §13.15: covers the cache's same-pixel bucket depth (default 4, env
+ * OPENPETE_SAME_KEY_MAX up to 16) with headroom so the consensus/weld
+ * scans don't truncate when the knob is raised for A/B. */
+#define PRIM_CAND_MAX 8
 static uint32_t s_prim_tag;
 static int      s_prim_tag_valid;
 
@@ -726,6 +806,96 @@ static inline int tomap_lookup(uint32_t to_span_id,
     return 0;
 }
 
+/* §13.15b FROM-side mirror of the tomap ("fmap"): (from_span, vkey) →
+ * from-sxy. The pixel cache can't answer "where was vert X" by key,
+ * but neighbor-delta recovery needs both endpoints of the neighbors.
+ * Same table shape/seq discipline as the tomap. */
+static tomap_ent_t s_fmap[TOMAP_SLOTS];
+static inline void fmap_insert(uint32_t span_id,
+                               const openpete_render_cache_entry_t* e) {
+    uint64_t key = tomap_key_e(span_id, e);
+    uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
+    for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
+        tomap_ent_t* te = &s_fmap[slot];
+        if (te->seq != s_tomap_seq || te->key == key) {
+            te->key = key; te->sxy = e->sxy_key; te->seq = s_tomap_seq;
+            return;
+        }
+        slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
+    }
+}
+static inline int fmap_lookup(uint32_t span_id,
+                              const openpete_render_cache_entry_t* e,
+                              uint32_t* out_sxy) {
+    uint64_t key = tomap_key_e(span_id, e);
+    uint32_t slot = (uint32_t)(key & (TOMAP_SLOTS - 1u));
+    for (uint32_t p = 0; p < TOMAP_PROBE; ++p) {
+        const tomap_ent_t* te = &s_fmap[slot];
+        if (te->seq != s_tomap_seq) return 0;
+        if (te->key == key) { *out_sxy = te->sxy; return 1; }
+        slot = (slot + 1u) & (TOMAP_SLOTS - 1u);
+    }
+    return 0;
+}
+
+/* §13.15b neighbor-delta recovery for STREAM-keyed world verts. The
+ * env strips emit a varying vert subset per frame ([nb-mask]: all 8
+ * address neighbors live in the to-span while the missed vert churns
+ * out for one frame). The missed vert rides the AVERAGE DELTA of its
+ * two stride-0x10 address neighbors — grid-adjacent terrain points
+ * whose local motion is parallax-correct — instead of the whole-batch
+ * mean. Needs the symmetric pair (X−k, X+k) exactly paired on both
+ * endpoints; tries k=0x10 then 0x20. OPENPETE_NB_DELTA=0 kills. */
+static int nb_delta_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_NB_DELTA");
+                 v = (e && *e) ? (e[0] != '0') : 1; }
+    return v;
+}
+static int nb_delta_recover(uint32_t from_span, uint32_t to_span,
+                            const openpete_render_cache_entry_t* e,
+                            float* out_dx, float* out_dy) {
+    static const uint32_t strides[2] = {0x10u, 0x20u};
+    openpete_render_cache_entry_t fk = *e;
+    for (int s = 0; s < 2; ++s) {
+        uint32_t fa, ta, fb, tb;
+        fk.world_vkey = e->world_vkey - strides[s];
+        if (!fmap_lookup(from_span, &fk, &fa)) continue;
+        if (!tomap_lookup(to_span,   &fk, &ta)) continue;
+        fk.world_vkey = e->world_vkey + strides[s];
+        if (!fmap_lookup(from_span, &fk, &fb)) continue;
+        if (!tomap_lookup(to_span,   &fk, &tb)) continue;
+        {
+            const int dax = (int)(int16_t)(uint16_t)(ta & 0xFFFFu)
+                          - (int)(int16_t)(uint16_t)(fa & 0xFFFFu);
+            const int day = (int)(int16_t)(uint16_t)(ta >> 16)
+                          - (int)(int16_t)(uint16_t)(fa >> 16);
+            const int dbx = (int)(int16_t)(uint16_t)(tb & 0xFFFFu)
+                          - (int)(int16_t)(uint16_t)(fb & 0xFFFFu);
+            const int dby = (int)(int16_t)(uint16_t)(tb >> 16)
+                          - (int)(int16_t)(uint16_t)(fb >> 16);
+            *out_dx = 0.5f * (float)(dax + dbx);
+            *out_dy = 0.5f * (float)(day + dby);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* §13.15: synthetic-key tomap probe for lattice point (i,j). */
+static int lat_probe(uint32_t to_span_id, int i, int j, int* sx, int* sy) {
+    openpete_render_cache_entry_t fk;
+    uint32_t sxy;
+    memset(&fk, 0, sizeof(fk));
+    fk.obj_tag    = OPENPETE_WORLD_GEO_TAG_BIT;   /* nonzero → vkey form */
+    fk.world_vkey = OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22) |
+                    (((uint32_t)i) << 4) | (uint32_t)j;
+    if (!tomap_lookup(to_span_id, &fk, &sxy)) return 0;
+    *sx = (int)(int16_t)(uint16_t)(sxy & 0xFFFFu);
+    *sy = (int)(int16_t)(uint16_t)(sxy >> 16);
+    return 1;
+}
+
 /* §13.10 coincident-twin weld. A paired world batch's vert that lost
  * its own tomap counterpart (subdiv-tier flip, loop-variant flip,
  * endpoint cull) used to ride the batch-mean rigid fill — but terrain
@@ -913,6 +1083,9 @@ static void sub_scan_cb(const openpete_render_cache_entry_t* e, void* ud) {
      * vertex ended up one game frame later. */
     if (f == &s_to)
         tomap_insert(eff_span(e), e, e->sxy_key);
+    /* §13.15b: from-side mirror for neighbor-delta recovery. */
+    else if (f == s_curr && (e->obj_tag & OPENPETE_WORLD_GEO_TAG_BIT))
+        fmap_insert(eff_span(e), e);
 }
 
 static int matrix_is_near_identity(const int16_t rt[3][3]);
@@ -1964,14 +2137,17 @@ iv_done:        ;
                 fprintf(stderr,
                   "[orange] mig=%lu same=%lu zerocorr=%lu | "
                   "rigid: span=%lu froze=%lu fill=%lu | spread=%lu | "
-                  "weld=%lu tomap_drops=%lu absfollow=%lu\n",
+                  "weld=%lu tomap_drops=%lu absfollow=%lu latrec=%lu "
+                  "nbrec=%lu povf=%u\n",
                   s_wd_orange_mig, s_wd_orange_same, s_wd_orange_zero,
                   s_wd_rigid_span, s_wd_rigid_froze, s_wd_rigid_fill,
                   s_wd_spread_froze, s_wd_weld, s_tomap_drops,
-                  s_wd_abs_follow);
+                  s_wd_abs_follow, s_wd_vlrec, s_wd_nbrec,
+                  g_openpete_render_cache_probe_overflow_count);
                 s_wd_orange_mig = s_wd_orange_same = s_wd_orange_zero = 0;
                 s_wd_rigid_span = s_wd_rigid_froze = s_wd_rigid_fill = 0;
                 s_wd_spread_froze = 0; s_wd_weld = 0; s_tomap_drops = 0;
+                s_wd_vlrec = 0; s_wd_nbrec = 0;
                 s_wd_abs_follow = 0;
                 fprintf(stderr, "[b29] from=%u to=%u |", cs, ts);
                 { unsigned pr = 0;
@@ -2231,6 +2407,83 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
                                 break;
                             }
                         }
+                        /* §13.15b stream-neighbor probe: on a STREAM-
+                         * key (source-address) miss, check which of
+                         * the ±1..±4 address neighbors (stride 0x10)
+                         * exist in the paired to-span. nb mask bit k =
+                         * vkey + (k-4)*0x10 present (k≠4). Dense
+                         * neighbors ⇒ per-vert churn inside a live
+                         * strip (interpolatable); empty ⇒ block cull. */
+                        if ((entry.world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) &&
+                            !(entry.world_vkey & 0x00400000u) &&
+                            !(entry.world_vkey &
+                              OPENPETE_WORLD_VKEY_REFINE_BIT) &&
+                            getenv("OPENPETE_VM_LATMASK")) {
+                            static unsigned s_nb_n = 0;
+                            if (s_nb_n < 24u) {
+                                openpete_render_cache_entry_t fk;
+                                uint32_t msk = 0, dmy;
+                                int k;
+                                s_nb_n++;
+                                fk = entry;
+                                for (k = 0; k < 9; ++k) {
+                                    if (k == 4) continue;
+                                    fk.world_vkey = entry.world_vkey +
+                                        (uint32_t)((k - 4) * 0x10);
+                                    if (tomap_lookup(b->to_span_id, &fk,
+                                                     &dmy))
+                                        msk |= 1u << k;
+                                }
+                                fprintf(stderr,
+                                    "[nb-mask] pc=%08X tag=%08X vc=%u "
+                                    "miss_vk=%08X nb=%03X\n",
+                                    b->gte_pc, b->obj_tag,
+                                    b->vertex_count, entry.world_vkey,
+                                    msk);
+                            }
+                        }
+                        /* §13.15 lattice-mask probe: on a LATTICE-key
+                         * miss, dump the paired to-span's full lattice
+                         * occupancy (25 ij bits + 4 sentinel-tier
+                         * bits) and the from-batch's pc/rank/count.
+                         * The mask SHAPE names the mechanism: a tier's
+                         * complete point set minus this key = map
+                         * slot bug; shifted set = FIFO slip; empty =
+                         * quad absent from the to-span. */
+                        if ((entry.world_vkey & 0x00400000u) &&
+                            getenv("OPENPETE_VM_LATMASK")) {
+                            static unsigned s_lm_n = 0;
+                            if (s_lm_n < 24u) {
+                                openpete_render_cache_entry_t fk;
+                                uint32_t msk = 0, snt = 0, ti2, dmy;
+                                s_lm_n++;
+                                fk = entry;
+                                for (ti2 = 0; ti2 < 25u; ++ti2) {
+                                    fk.world_vkey =
+                                        OPENPETE_WORLD_VKEY_SRC_BIT |
+                                        (1u << 22) |
+                                        ((ti2 / 5u) << 4) | (ti2 % 5u);
+                                    if (tomap_lookup(b->to_span_id, &fk,
+                                                     &dmy))
+                                        msk |= 1u << ti2;
+                                }
+                                for (ti2 = 1; ti2 <= 4u; ++ti2) {
+                                    fk.world_vkey =
+                                        OPENPETE_WORLD_VKEY_SRC_BIT |
+                                        (1u << 22) | 0x3F00u | ti2;
+                                    if (tomap_lookup(b->to_span_id, &fk,
+                                                     &dmy))
+                                        snt |= 1u << ti2;
+                                }
+                                fprintf(stderr,
+                                    "[lat-mask] pc=%08X tag=%08X r=%u "
+                                    "vc=%u vmax=%08X miss_vk=%08X "
+                                    "to_mask=%07X snt=%X\n",
+                                    b->gte_pc, b->obj_tag, b->tag_rank,
+                                    b->vertex_count, b->vkey_max,
+                                    entry.world_vkey, msk, snt);
+                            }
+                        }
                     }
                 }
                 /* §13.10: the coincident twin's exact motion over
@@ -2242,6 +2495,42 @@ openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
                     to_sxy = weld_sxy;
                     s_wd_weld++;
                     welded = 1;
+                }
+                /* §13.15: a missed LATTICE point is an affine combo
+                 * of two same-span neighbors — extrapolate its
+                 * to-position instead of riding the batch mean. */
+                if (!welded && lat_extrap_on() &&
+                    (entry.world_vkey &
+                     (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
+                        (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22)) &&
+                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu &&
+                    lat_extrapolate(b->to_span_id,
+                                    entry.world_vkey & 0xFFu, &to_sxy)) {
+                    s_wd_vlrec++;
+                    welded = 1;
+                }
+            }
+            /* §13.15b: stream-keyed vert churned out for one frame
+             * inside a live strip — ride the average delta of its
+             * stride-address neighbors (local, parallax-correct)
+             * before falling back to the whole-batch mean. */
+            if (!welded && wtag && nb_delta_on() &&
+                (entry.world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) &&
+                !(entry.world_vkey & (1u << 22)) &&
+                !(entry.world_vkey & OPENPETE_WORLD_VKEY_REFINE_BIT)) {
+                float ndx, ndy;
+                if (nb_delta_recover(b->matrix_span_id, b->to_span_id,
+                                     &entry, &ndx, &ndy)) {
+                    float dx = ndx * alpha;
+                    float dy = ndy * alpha;
+                    const float ncap = g_openpete_substitute_clamp_px;
+                    if (ncap <= 0.0f) return out;
+                    if (dx >  ncap) dx =  ncap; if (dx < -ncap) dx = -ncap;
+                    if (dy >  ncap) dy =  ncap; if (dy < -ncap) dy = -ncap;
+                    out.dx = dx; out.dy = dy;
+                    s_wd_nbrec++;
+                    g_openpete_render_substitute_vert_hit_count++;
+                    return out;
                 }
             }
             if (!welded && b->rigid_valid) {
@@ -2353,6 +2642,26 @@ int openpete_render_matcher_debug_state(const int16_t* p) {
                 uint32_t ws;
                 if (world_weld_twin(p, &entry, &alt, &ws))
                     return b->dbg_state;
+                /* §13.15 mirror: lattice extrapolation recovers too. */
+                if (lat_extrap_on() &&
+                    (entry.world_vkey &
+                     (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22))) ==
+                        (OPENPETE_WORLD_VKEY_SRC_BIT | (1u << 22)) &&
+                    (entry.world_vkey & 0x3FFFFFu) <= 0xFFu &&
+                    lat_extrapolate(b->to_span_id,
+                                    entry.world_vkey & 0xFFu, &ws))
+                    return b->dbg_state;
+                /* §13.15b mirror: neighbor-delta ride is local-exact. */
+                if (nb_delta_on() &&
+                    (entry.world_vkey & OPENPETE_WORLD_VKEY_SRC_BIT) &&
+                    !(entry.world_vkey & (1u << 22)) &&
+                    !(entry.world_vkey & OPENPETE_WORLD_VKEY_REFINE_BIT)) {
+                    float ndx, ndy;
+                    if (nb_delta_recover(b->matrix_span_id,
+                                         b->to_span_id, &entry,
+                                         &ndx, &ndy))
+                        return b->dbg_state;
+                }
             }
             return OPENPETE_DBGST_VERT_MISS;
         }

@@ -74,8 +74,12 @@ typedef struct openpete_render_cache_entry {
 /* Sized from live load: gameplay emits ~4.9k verts/game-frame; at the
  * old 8192 slots (59% load) hash clustering still dropped ~100-145
  * verts/frame on probe overflow -- each a vert with NO cache entry,
- * frozen mid-motion. 32768 slots (~15% load) + probe 24 measures
- * zero overflow. ~80B/entry x 32768 x 3 generations ~ 8 MB host-side. */
+ * frozen mid-motion. 32768 slots (~15% load) + probe 24 measured
+ * zero overflow. ~112B/entry x 32768 x 3 generations ≈ 11 MB host-
+ * side. (§13.15 falsification note: povf ≈ 8k/run accumulates in
+ * level/title TRANSITION bursts, +6/window steady-state; doubling to
+ * 65536 did NOT reduce it and didn't move ground cyan — the §13.15
+ * corner misses were emission migration, not capacity. Kept at 32k.) */
 #define OPENPETE_RENDER_CACHE_SLOTS     32768u
 #define OPENPETE_RENDER_CACHE_PROBE_MAX 24u
 

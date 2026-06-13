@@ -299,7 +299,22 @@ void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src)
      * at SAME_KEY_MAX so a distant-terrain pinch pixel can't flood
      * its neighborhood); consumers disambiguate per prim (the OT
      * walker's consensus-tag pass) via lookup_*_multi. */
-    enum { SAME_KEY_MAX = 4 };
+    /* §13.15 bucket-depth hypothesis FALSIFIED (2026-06-12): depth
+     * 4→8 (and table 32k→64k) left Stone Hill ground cyan unchanged
+     * and grew probe-overflow — the missing corner verts were never
+     * EMITTED under the missing span (the game routes a shared quad
+     * corner through exactly one adjacent quad per frame, and which
+     * one migrates), so no cache depth can retain what never arrived.
+     * The real fix is the matcher's span-free v_local fallback map.
+     * Env knob retained for future A/B; default = the original 4. */
+    static int s_same_key_max = -1;
+    if (s_same_key_max < 0) {
+        const char* e = getenv("OPENPETE_SAME_KEY_MAX");
+        s_same_key_max = (e && *e) ? atoi(e) : 4;
+        if (s_same_key_max < 1)  s_same_key_max = 1;
+        if (s_same_key_max > 16) s_same_key_max = 16;
+    }
+    const unsigned SAME_KEY_MAX = (unsigned)s_same_key_max;
     openpete_render_cache_entry_t* last_same_key = NULL;
     unsigned same_key_n = 0;
     for (unsigned i = 0; i < OPENPETE_RENDER_CACHE_PROBE_MAX; ++i) {
