@@ -49,6 +49,31 @@ bool openpete_native_render_enabled(void);
 void openpete_native_set_display_rect(int x, int y, int w, int h);
 void openpete_native_set_draw_clip(int x, int y, int w, int h);
 
+/* ---- native 3D scene (Phase 2: cyclorama/sky from gamestate) --------
+ *
+ * The game-specific layer (games/<game>/) re-derives 3D geometry from
+ * gamestate in float and pushes screen-space triangles here; core draws
+ * them natively into panel 0 (the "native render", replacing the
+ * re-displayed PsyCross framebuffer). Coordinates are PSX screen pixels
+ * (the same space the GTE projects into: x in [0,disp_w], y in [0,disp_h],
+ * OFX/OFY-centred); core maps them into the panel, cropping the overscan
+ * band like the reference. rgba is byte order R,G,B,A.
+ *
+ * Determinism-safe: this is host-side display state only; the game's push
+ * reads gamestate but writes nothing PSX-readable. Inert unless the native
+ * path is live. */
+typedef struct { float sx, sy; uint32_t rgba; } openpete_scene_vert;
+typedef struct { openpete_scene_vert v[3]; }     openpete_scene_tri;
+
+/* Begin a fresh native-scene frame (clears the triangle list). Called by
+ * the game at the start of its scene extraction. */
+void openpete_native_scene_begin(void);
+/* Append one screen-space triangle to the current native scene. */
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
+/* True when the native display is live (so the game only does the extra
+ * extraction work when it will actually be shown). */
+/* (openpete_native_render_enabled, above, serves this gate.) */
+
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does
  * NOT pump SDL events — the host loop owns the event queue, which PsyCross's

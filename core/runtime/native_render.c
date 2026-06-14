@@ -63,6 +63,19 @@ typedef struct {
 /* How many panels the window shows (1c.3a: VRAM + reference). */
 #define NR_PANELS 2
 
+/* Native 3D scene (Phase 2): screen-space triangles the game pushes in
+ * (cyclorama/sky from gamestate). Double-buffered isn't needed — the game
+ * fills it during its render pass (before openpete_native_render_frame reads
+ * it). begin() clears; add_tri() appends. */
+#define MAX_SCENE_TRIS 16384
+static openpete_scene_tri s_scene[MAX_SCENE_TRIS];
+static int                s_scene_n;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; }
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
+    if (tri && s_scene_n < MAX_SCENE_TRIS) s_scene[s_scene_n++] = *tri;
+}
+
 /* Single native renderer instance (one window per process). */
 static struct {
     bool          enabled;
@@ -82,6 +95,13 @@ static struct {
     rhi_pipeline *vram_pipe;
     rhi_texture  *vram_tex;
     uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
+
+    /* Native 3D render (Phase 2): gouraud triangles (quad.vert/quad.frag) for
+     * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
+     * in panel 0 when a scene is present. */
+    rhi_pipeline *gouraud_pipe;
+    rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
+    float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
     /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
      * PutDispEnv thunk. The full disp is 512x240 double-buffered (origin flips
@@ -179,18 +199,30 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
-    rhi_pipeline *blit_pipe = rhi_create_pipeline(dev, &blit_desc);
-    rhi_pipeline *vram_pipe = rhi_create_pipeline(dev, &vram_desc);
+    /* Gouraud pipeline for the native 3D scene: vertex-coloured, untextured
+     * (quad.vert/quad.frag from 1b.1) — exactly the cyclorama dome's shading. */
+    rhi_pipeline_desc gouraud_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
+    rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
+    rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
+    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * MAX_SCENE_TRIS * 3);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !panels_vb || !vram_tex || !mirror) {
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native A/B");
         free(mirror);
-        if (vram_tex)  rhi_destroy_texture(dev, vram_tex);
-        if (panels_vb) rhi_destroy_buffer(dev, panels_vb);
-        if (vram_pipe) rhi_destroy_pipeline(dev, vram_pipe);
-        if (blit_pipe) rhi_destroy_pipeline(dev, blit_pipe);
+        if (vram_tex)     rhi_destroy_texture(dev, vram_tex);
+        if (scene_vb)     rhi_destroy_buffer(dev, scene_vb);
+        if (panels_vb)    rhi_destroy_buffer(dev, panels_vb);
+        if (gouraud_pipe) rhi_destroy_pipeline(dev, gouraud_pipe);
+        if (vram_pipe)    rhi_destroy_pipeline(dev, vram_pipe);
+        if (blit_pipe)    rhi_destroy_pipeline(dev, blit_pipe);
         rhi_destroy(dev);
         SDL_DestroyWindow(win);
         return 1;
@@ -201,11 +233,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.dev         = dev;
     s_nr.win_w       = w;
     s_nr.win_h       = h;
-    s_nr.blit_pipe   = blit_pipe;
-    s_nr.vram_pipe   = vram_pipe;
-    s_nr.panels_vb   = panels_vb;
-    s_nr.vram_tex    = vram_tex;
-    s_nr.vram_mirror = mirror;
+    s_nr.blit_pipe    = blit_pipe;
+    s_nr.vram_pipe    = vram_pipe;
+    s_nr.gouraud_pipe = gouraud_pipe;
+    s_nr.panels_vb    = panels_vb;
+    s_nr.scene_vb     = scene_vb;
+    s_nr.vram_tex     = vram_tex;
+    s_nr.vram_mirror  = mirror;
     OPL_INFO_F("native", "Vulkan A/B window up (%dx%d, device='%s'); PsyCross hidden",
                w, h, rhi_device_name(dev));
     return 0;
@@ -314,6 +348,7 @@ static void update_layout(void)
         float cx = -1.0f + chx, hx, hy;
         fit_cell(cx, 0.0f, chx, 1.0f, fit_w, fit_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
         build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
+        s_nr.p0_cx = cx; s_nr.p0_hx = hx; s_nr.p0_hy = hy; /* for the native scene map */
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
      * normalized (blit uses texture()). */
@@ -330,6 +365,46 @@ static void update_layout(void)
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
     s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_clip_h = s_nr.clip_h;
+}
+
+/* Map a PSX screen-space point (x in [0,disp_w], y in [0,disp_h]) into panel
+ * 0's fitted clip-space rect, cropping the symmetric overscan band so the
+ * native scene lines up with the overscan-cropped reference. */
+static void scene_to_clip(float sx, float sy, float *cx, float *cy)
+{
+    float disp_w = s_nr.disp_w > 0 ? (float)s_nr.disp_w : 512.0f;
+    float disp_h = s_nr.disp_h > 0 ? (float)s_nr.disp_h : 240.0f;
+    float clip_h = s_nr.clip_h > 0 ? (float)s_nr.clip_h : 224.0f;
+    float band   = (disp_h - clip_h) * 0.5f;
+    float nx = sx / disp_w;             /* 0..1 across the frame width */
+    float ny = (sy - band) / clip_h;    /* 0..1 down the visible band  */
+    *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
+    *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy); /* screen y down -> clip y up */
+}
+
+/* Build + draw the native 3D scene (cyclorama) into panel 0 with the gouraud
+ * pipeline. Returns true if anything was drawn. */
+static bool draw_native_scene(void)
+{
+    if (s_scene_n <= 0) return false;
+    int nverts = s_scene_n * 3;
+    if (nverts > MAX_SCENE_TRIS * 3) nverts = MAX_SCENE_TRIS * 3;
+
+    static rhi_vertex buf[MAX_SCENE_TRIS * 3];
+    for (int t = 0; t < s_scene_n; t++) {
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[t * 3 + k];
+            o->x = cx; o->y = cy; o->z = 0.0f; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
+        }
+    }
+    rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)nverts);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)nverts, 0);
+    return true;
 }
 
 void openpete_native_render_frame(void)
@@ -377,12 +452,17 @@ void openpete_native_render_frame(void)
             tx = s_nr.disp_x;
             ty = s_nr.disp_y + dy;
         }
-        const psx_material nd_mat = { tx, ty, 0, 0, 16 };
-        rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
-        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-        rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
-        rhi_draw(s_nr.dev, 6, 0);
+        /* Panel 0 — the native 3D render (Phase 2: cyclorama from gamestate)
+         * when the game pushed a scene; otherwise fall back to re-displaying
+         * the PSX framebuffer region from the VRAM mirror (pre-Phase-2). */
+        if (!draw_native_scene()) {
+            const psx_material nd_mat = { tx, ty, 0, 0, 16 };
+            rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
+            rhi_draw(s_nr.dev, 6, 0);
+        }
 
         /* Panel 1 — reference. */
         if (have_ref) {
@@ -403,11 +483,13 @@ void openpete_native_render_shutdown(void)
     if (!s_nr.enabled)
         return;
     rhi_wait_idle(s_nr.dev);
-    if (s_nr.ref_tex)   rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
-    if (s_nr.vram_tex)  rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
-    if (s_nr.panels_vb) rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
-    if (s_nr.vram_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
-    if (s_nr.blit_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);
+    if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
+    if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
+    if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
+    if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.gouraud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+    if (s_nr.vram_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
+    if (s_nr.blit_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);
     rhi_destroy(s_nr.dev);
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
