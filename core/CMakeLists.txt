@@ -71,6 +71,11 @@ add_library(openpete_core STATIC
     # scripts/analyze-vtrace.py.
     runtime/openpete_vertex_trace.c
 
+    # Native Vulkan renderer A/B harness (--native-ab). Host-side display
+    # consumer built on core/rhi; never writes PSX RAM. Phase 1c of
+    # notes/plans/openpete-native-renderer.md.
+    runtime/native_render.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c
@@ -148,6 +153,13 @@ set_target_properties(openpete_core PROPERTIES
 # SDL3 is required for window/render/screenshot. Built from the
 # third_party/SDL submodule (see top-level CMakeLists.txt).
 target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
+
+# Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
+# Always available (added unconditionally by the top-level CMakeLists);
+# runtime/native_render.c is the only consumer for now and is inert unless
+# --native-ab is passed. PUBLIC so the RHI's RHI_SHADER_DIR define + headers
+# reach any downstream renderer TUs. See openpete-native-renderer.md.
+target_link_libraries(openpete_core PUBLIC openpete_rhi)
 
 # libav* for --record gameplay video capture (runtime/record.c). On a native
 # build this is a hard dependency — see notes/plans/openpete-record-video.md

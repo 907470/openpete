@@ -287,6 +287,18 @@ if(EMSCRIPTEN)
         VERBATIM)
 endif()
 
+# Stage the native renderer's compiled SPIR-V shaders next to the exe so the
+# RHI finds them via SDL_GetBasePath() ("shaders/" beside the binary) on a
+# relocated/Windows install. Dev runs from the build tree also resolve via
+# the RHI's baked RHI_SHADER_DIR fallback, but the beside-exe copy is the
+# shipped path. openpete_rhi_shaders (built by core/rhi) produces the .spv.
+add_custom_command(TARGET openpete-spyro1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_BINARY_DIR}/core/rhi/shaders"
+        "$<TARGET_FILE_DIR:openpete-spyro1>/shaders"
+    COMMENT "Staging RHI shaders next to openpete-spyro1"
+    VERBATIM)
+
 # Stage the music WAV override directory next to the executable so users
 # have a ready-made drop point, and seed it with the template manifest
 # (full track table + instructions). copy_if_missing never clobbers a

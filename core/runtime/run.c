@@ -18,6 +18,7 @@
 #include "bk2_movie.h"
 #include "bk2_record.h"
 #include "openpete_record.h"
+#include "openpete_native_render.h"
 #include "feature_registry.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
@@ -760,6 +761,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
+    /* --native-ab: bring up the native Vulkan renderer's A/B window beside
+     * PsyCross's GL window. SDL is already initialized by PsyX_Initialise. A
+     * bring-up failure is non-fatal — we log and run PsyCross-only. The
+     * native path is a pure display consumer; it never touches PSX RAM, so
+     * the oracle gate / determinism are unaffected. */
+    (void)openpete_native_render_init(opts);
+
     /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
      * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
      * PsyX_Exit() → exit(0), which in WSL+GL+libco tends to hang on static
@@ -1488,6 +1496,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_present_pending = 0;
             did_present_this_iter = true;
 
+            /* Native renderer A/B: present one frame to the Vulkan window now
+             * that PsyCross's present FBO is freshly rendered (1c.2 will read
+             * it back here as the reference). No-op unless --native-ab. */
+            openpete_native_render_frame();
+
             /* Cache rotate moved to "right before next yield's GTE"
              * (see the yield_now block above) so intermediate renders
              * between sim ticks see the correct cache.s_prev for the
@@ -1930,6 +1943,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         openpete_game_fiber = NULL;
     }
 
+    openpete_native_render_shutdown();
     PsyX_Shutdown();
 
     fprintf(stdout,

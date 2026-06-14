@@ -161,6 +161,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->max_runtime_seconds = atoi(v); i++;
         } else if (strcmp(a, "--headless") == 0) {
             opts->headless = true;
+        } else if (strcmp(a, "--native-ab") == 0) {
+            opts->native_ab = true;
         } else if (strcmp(a, "--render-fps") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_fps = atoi(v); i++;
@@ -413,6 +415,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
+                "  --native-ab                open the native Vulkan renderer A/B window (dev; ignored with --headless)\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"

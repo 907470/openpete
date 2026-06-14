@@ -199,6 +199,12 @@ typedef struct {
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
 
+    /* Native Vulkan renderer A/B harness. Opens a second (Vulkan) window
+     * alongside PsyCross's GL window as the development view for the native
+     * renderer. Pure display consumer — never perturbs gameplay state. No-op
+     * under --headless. See notes/plans/openpete-native-renderer.md. */
+    bool native_ab;
+
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */
