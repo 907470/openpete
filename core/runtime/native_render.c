@@ -59,23 +59,29 @@ static struct {
     int           ref_w, ref_h;
     unsigned char *readback;    /* CPU readback scratch, ref_w*ref_h*4 */
     size_t        readback_cap;
+
+    /* Aspect-fit quad geometry: the window/ref sizes the current fs_vb was
+     * built for, so it's only rebuilt when the fit actually changes. */
+    int           quad_win_w, quad_win_h, quad_ref_w, quad_ref_h;
 } s_nr;
 
-/* A fullscreen quad in clip space with UVs flipped vertically: PsyCross's
- * readback is bottom-up (row 0 = image bottom), so the top screen vertices
- * sample V=1 and the bottom vertices V=0, displaying it upright. (Matches the
- * smoke test's +Y-up offscreen convention, inverted in V.) rgba is unused by
- * blit.frag. */
-static const rhi_vertex k_fs_quad[6] = {
-    { -1.0f,  1.0f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0 }, /* top-left     */
-    {  1.0f,  1.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFu, 0 }, /* top-right    */
-    {  1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0xFFFFFFFFu, 0 }, /* bottom-right */
-    { -1.0f,  1.0f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0 }, /* top-left     */
-    {  1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0xFFFFFFFFu, 0 }, /* bottom-right */
-    { -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu, 0 }, /* bottom-left  */
-};
+/* Fill a quad scaled to (sx,sy) in clip space, UVs flipped vertically:
+ * PsyCross's readback is bottom-up (row 0 = image bottom), so the top screen
+ * vertices sample V=1 and the bottom vertices V=0, displaying it upright.
+ * (Matches the smoke test's +Y-up offscreen convention, inverted in V.)
+ * sx<1 pillarboxes; sy<1 letterboxes; the offscreen clear fills the bars.
+ * rgba is unused by blit.frag. */
+static void build_fs_quad(rhi_vertex out[6], float sx, float sy)
+{
+    const rhi_vertex tl = { -sx,  sy, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0 };
+    const rhi_vertex tr = {  sx,  sy, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFu, 0 };
+    const rhi_vertex br = {  sx, -sy, 0.0f, 1.0f, 0.0f, 0xFFFFFFFFu, 0 };
+    const rhi_vertex bl = { -sx, -sy, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu, 0 };
+    out[0] = tl; out[1] = tr; out[2] = br;
+    out[3] = tl; out[4] = br; out[5] = bl;
+}
 
-int openpete_native_render_init(const openpete_options_t *opts)
+int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts || !opts->native_ab)
         return 0; /* not requested — inert no-op */
@@ -89,9 +95,10 @@ int openpete_native_render_init(const openpete_options_t *opts)
      * for the Vulkan surface: a single SDL window can't carry both PsyCross's
      * GL context and our Vulkan surface, so the native renderer owns its own.
      * PsyCross's GL window is started hidden (see run.c), so this Vulkan
-     * window is the single visible one. */
-    int w = (opts->window_w > 0) ? opts->window_w : NR_DEFAULT_W;
-    int h = (opts->window_h > 0) ? opts->window_h : NR_DEFAULT_H;
+     * window is the single visible one. Match the game's resolved window size
+     * so it isn't surprisingly larger than the PsyCross-only window. */
+    int w = (win_w > 0) ? win_w : NR_DEFAULT_W;
+    int h = (win_h > 0) ? win_h : NR_DEFAULT_H;
 
     SDL_Window *win = SDL_CreateWindow("openpete — native renderer (A/B)", w, h,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
@@ -119,7 +126,7 @@ int openpete_native_render_init(const openpete_options_t *opts)
         .push_const_size = 0,
     };
     rhi_pipeline *blit_pipe = rhi_create_pipeline(dev, &blit_desc);
-    rhi_buffer   *fs_vb     = rhi_create_vertex_buffer(dev, sizeof(k_fs_quad));
+    rhi_buffer   *fs_vb     = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     if (!blit_pipe || !fs_vb) {
         OPL_ERROR_F("native", "blit pipeline/buffer setup failed; no native A/B");
         if (fs_vb) rhi_destroy_buffer(dev, fs_vb);
@@ -128,7 +135,7 @@ int openpete_native_render_init(const openpete_options_t *opts)
         SDL_DestroyWindow(win);
         return 1;
     }
-    rhi_update_buffer(fs_vb, k_fs_quad, sizeof(k_fs_quad));
+    /* fs_vb is filled per the aspect fit on the first frame (update_aspect_quad). */
 
     s_nr.enabled   = true;
     s_nr.window    = win;
@@ -186,6 +193,33 @@ static bool sync_reference_texture(void)
     return true;
 }
 
+/* Rebuild the display quad to fit the reference's aspect inside the window
+ * (letterbox/pillarbox), so resizing never stretches the image. Cheap and
+ * only runs when the window or reference size actually changes. */
+static void update_aspect_quad(void)
+{
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0 || s_nr.win_w <= 0 || s_nr.win_h <= 0)
+        return;
+    if (s_nr.win_w == s_nr.quad_win_w && s_nr.win_h == s_nr.quad_win_h &&
+        s_nr.ref_w == s_nr.quad_ref_w && s_nr.ref_h == s_nr.quad_ref_h)
+        return; /* fit unchanged */
+
+    float content = (float)s_nr.ref_w / (float)s_nr.ref_h;
+    float window  = (float)s_nr.win_w / (float)s_nr.win_h;
+    float sx = 1.0f, sy = 1.0f;
+    if (window > content) sx = content / window; /* window wider  → pillarbox */
+    else                  sy = window / content; /* window taller → letterbox */
+
+    rhi_vertex q[6];
+    build_fs_quad(q, sx, sy);
+    /* The vertex buffer may still be read by an in-flight frame; geometry
+     * changes are rare (startup / resize), so fully sync before rewriting. */
+    rhi_wait_idle(s_nr.dev);
+    rhi_update_buffer(s_nr.fs_vb, q, sizeof(q));
+    s_nr.quad_win_w = s_nr.win_w; s_nr.quad_win_h = s_nr.win_h;
+    s_nr.quad_ref_w = s_nr.ref_w; s_nr.quad_ref_h = s_nr.ref_h;
+}
+
 void openpete_native_render_frame(void)
 {
     if (!s_nr.enabled)
@@ -206,6 +240,7 @@ void openpete_native_render_frame(void)
      * texture upload do their own one-shot GPU submits, kept clear of our
      * frame's render pass. */
     bool have_ref = sync_reference_texture();
+    update_aspect_quad();
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */

@@ -29,11 +29,13 @@ extern "C" {
 #endif
 
 /* Bring up the native Vulkan window + RHI device. Call AFTER PsyX_Initialise
- * (SDL_INIT_VIDEO must already be up). Returns 0 on success OR when the
- * native path is simply not requested; returns non-zero only on a real
- * bring-up failure (the caller logs and continues without the native path —
- * it is never fatal to the game). */
-int openpete_native_render_init(const openpete_options_t *opts);
+ * (SDL_INIT_VIDEO must already be up). `win_w`/`win_h` are the resolved
+ * window size (the same the caller hands PsyCross), so the native window
+ * matches the game's window rather than a fixed default. Returns 0 on success
+ * OR when the native path is simply not requested; returns non-zero only on a
+ * real bring-up failure (the caller logs and continues without the native
+ * path — it is never fatal to the game). */
+int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);

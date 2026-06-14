@@ -765,12 +765,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
-    /* --native-ab: bring up the native Vulkan renderer's A/B window beside
-     * PsyCross's GL window. SDL is already initialized by PsyX_Initialise. A
+    /* --native-ab: bring up the native Vulkan renderer's window. SDL is
+     * already initialized by PsyX_Initialise. Pass the same resolved window
+     * size handed to PsyCross so the native window matches the game's. A
      * bring-up failure is non-fatal — we log and run PsyCross-only. The
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
-    (void)openpete_native_render_init(opts);
+    (void)openpete_native_render_init(opts, win_w, win_h);
 
     /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
      * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
