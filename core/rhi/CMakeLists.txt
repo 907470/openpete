@@ -19,7 +19,7 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
-set(RHI_SHADERS quad.vert quad.frag psx_sample.vert psx_sample.frag)
+set(RHI_SHADERS quad.vert quad.frag psx_sample.vert psx_sample.frag blit.frag)
 set(RHI_SHADER_SPV "")
 foreach(s IN LISTS RHI_SHADERS)
     add_custom_command(

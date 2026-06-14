@@ -708,8 +708,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * WGL) must therefore be present; pure-console CI needs Xvfb. The window
      * is created unmapped via startHidden so it never flashes or steals
      * focus — GL/FBO rendering works fine without it ever being shown. */
+    /* Hide PsyCross's GL window when the native renderer owns the display
+     * (--native-ab): PsyCross renders to its FBO only and we read it back
+     * into the Vulkan window, which becomes the single visible one. Keyboard
+     * focus moves to the Vulkan window; gamepad input is focus-independent. */
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
-                    /*startHidden=*/opts->headless ? 1 : 0);
+                    /*startHidden=*/(opts->headless || opts->native_ab) ? 1 : 0);
 
     /* Hor+ post-PsyX knob population — see core/features/widescreen.c.
      * Sets g_psyx_render_aspect_factor + every psx_runtime_* knob the

@@ -108,6 +108,7 @@ struct rhi_texture {
     VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
     rhi_buffer     *staging;   /* host-visible upload buffer */
     uint32_t        width, height;
+    uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
 };
 
@@ -955,22 +956,27 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
 }
 
 /* ------------------------------------------------------------------ */
-/* VRAM texture (the native-res PSX VRAM model)                       */
+/* Sampled textures: the R16_UINT VRAM model + RGBA8 (frame readback)  */
 /* ------------------------------------------------------------------ */
 
-rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
+/* Create a sampled 2D image of `fmt` (bpp bytes/pixel) plus a host-visible
+ * staging buffer and a descriptor set bound to (view, shared NEAREST
+ * sampler). The descriptor layout is format-agnostic — one combined image
+ * sampler at set 0, binding 0 — so it serves both the VRAM (usampler2D) and
+ * the RGBA8 (sampler2D) shaders. */
+static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
+                                         uint32_t height, VkFormat fmt,
+                                         uint32_t bpp)
 {
     rhi_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
-    t->width = width; t->height = height;
+    t->width = width; t->height = height; t->bpp = bpp;
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    /* R16_UINT: one uint per PSX VRAM pixel, sampled via texelFetch (the PSX
-     * shader does its own integer indexing — no GPU filtering/normalization). */
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R16_UINT,
+        .format = fmt,
         .extent = { width, height, 1 },
         .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1000,7 +1006,7 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = t->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R16_UINT,
+        .format = fmt,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .levelCount = 1, .layerCount = 1,
@@ -1010,9 +1016,9 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
         RHI_LOG("vram vkCreateImageView failed\n"); goto fail;
     }
 
-    t->staging = create_host_buffer(dev, (size_t)width * height * sizeof(uint16_t),
+    t->staging = create_host_buffer(dev, (size_t)width * height * bpp,
                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-    if (!t->staging) { RHI_LOG("vram staging alloc failed\n"); goto fail; }
+    if (!t->staging) { RHI_LOG("staging alloc failed\n"); goto fail; }
 
     /* Allocate + point a descriptor set at (this view, the shared sampler). */
     VkDescriptorSetAllocateInfo dsi = {
@@ -1054,11 +1060,25 @@ fail:
     return NULL;
 }
 
-void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
+rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    /* R16_UINT: one uint per PSX VRAM pixel, sampled via texelFetch (the PSX
+     * shader does its own integer indexing — no GPU filtering/normalization). */
+    return create_sampled_image(dev, width, height, VK_FORMAT_R16_UINT, 2);
+}
+
+rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    /* R8G8B8A8_UNORM: bytes laid out R,G,B,A — matches a GL_RGBA readback;
+     * sampled as a normal sampler2D (e.g. another renderer's frame for A/B). */
+    return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
+}
+
+static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
     if (!tex || !tex->staging) return;
     memcpy(tex->staging->mapped, pixels,
-           (size_t)tex->width * tex->height * sizeof(uint16_t));
+           (size_t)tex->width * tex->height * tex->bpp);
 
     VkCommandBuffer cb = one_shot_begin(dev);
     image_barrier(cb, tex->image, tex->layout,
@@ -1079,6 +1099,16 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     one_shot_end(dev, cb);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
+{
+    update_image(dev, tex, pixels);
+}
+
+void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
+{
+    update_image(dev, tex, pixels);
 }
 
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)

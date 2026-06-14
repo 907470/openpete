@@ -121,13 +121,24 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
 /* Upload the whole CPU mirror (width*height uint16 PSX pixels). Sub-rect
  * uploads (for runtime LoadImage streaming) arrive with 1c. */
 void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
+
+/* An RGBA8 (R8G8B8A8_UNORM, bytes R,G,B,A) sampled image — e.g. a frame read
+ * back from another renderer for A/B display. Shares the VRAM texture's
+ * descriptor layout, so it binds via rhi_bind_vram and is drawn by a textured
+ * pipeline that samples a normal sampler2D (shaders/blit.frag). `pixels` is
+ * width*height*4 bytes. */
+rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
+void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
-/* Bind the VRAM texture for sampling by the current (uses_vram) pipeline;
- * call after rhi_bind_pipeline, before the draw. */
+/* Bind a texture's descriptor set to set 0 for the current (uses_vram)
+ * pipeline; call after rhi_bind_pipeline, before the draw. Works for any
+ * rhi_texture (the VRAM image or an RGBA8 image) — the set layout is the
+ * same; only the shader's sampler type differs. */
 void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
 /* Set the current pipeline's fragment push constants (size must match the
  * pipeline desc's push_const_size). */
