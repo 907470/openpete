@@ -1111,6 +1111,48 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
     update_image(dev, tex, pixels);
 }
 
+bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
+                        int *out_w, int *out_h)
+{
+    int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    size_t need = (size_t)w * (size_t)h * 4u;
+    if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
+
+    /* The offscreen target is in TRANSFER_SRC_OPTIMAL after a rendered frame
+     * (rhi_end_offscreen transitions it, the blit reads it as src). Wait for
+     * that frame's GPU work, then copy image -> host buffer. */
+    vkDeviceWaitIdle(dev->device);
+    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!rb) return false;
+
+    VkCommandBuffer cb = one_shot_begin(dev);
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           rb->buffer, 1, &region);
+    one_shot_end(dev, cb);
+
+    /* The swapchain/offscreen format is B8G8R8A8 (see the format pick); the
+     * caller wants R,G,B,A. Swizzle and force opaque alpha. */
+    const uint8_t *src = (const uint8_t *)rb->mapped;
+    uint8_t *dst = (uint8_t *)out;
+    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
+        dst[i*4+0] = swap_rb ? c2 : c0;
+        dst[i*4+1] = c1;
+        dst[i*4+2] = swap_rb ? c0 : c2;
+        dst[i*4+3] = 0xFF;
+    }
+    rhi_destroy_buffer(dev, rb);
+    return true;
+}
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 {
     if (!tex) return;
@@ -1341,4 +1383,25 @@ void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)
 {
     if (!dev->frame_active) return;
     vkCmdDraw(dev->cmd[dev->frame], vertex_count, 1, first_vertex, 0);
+}
+
+void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h)
+{
+    if (!dev->frame_active) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (w < 0) w = 0;
+    if (h < 0) h = 0;
+    if (x + w > (int)dev->sc_extent.width)  w = (int)dev->sc_extent.width  - x;
+    if (y + h > (int)dev->sc_extent.height) h = (int)dev->sc_extent.height - y;
+    VkRect2D s = { .offset = { x, y }, .extent = { (uint32_t)(w > 0 ? w : 0),
+                                                   (uint32_t)(h > 0 ? h : 0) } };
+    vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &s);
+}
+
+void rhi_reset_scissor(rhi_device *dev)
+{
+    if (!dev->frame_active) return;
+    VkRect2D s = { .offset = { 0, 0 }, .extent = dev->sc_extent };
+    vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &s);
 }

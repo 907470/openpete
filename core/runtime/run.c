@@ -1506,6 +1506,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * it back here as the reference). No-op unless --native-ab. */
             openpete_native_render_frame();
 
+            /* Native A/B screenshot: capture the just-rendered Vulkan window
+             * (both panels — native render + reference) to "<out>-ab.png" on
+             * the same --screenshot-on-frame targets, so the native view can
+             * be inspected like the PsyCross one. */
+            if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
+                static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
+                for (int si = 0; si < opts->screenshot_frame_count; ++si) {
+                    if (s_ab_shot[si]) continue;
+                    if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
+                    s_ab_shot[si] = true;
+                    char base[1024], path[1100];
+                    openpete_screenshot_format_path(opts->screenshot_output,
+                                                    opts->screenshot_frames[si],
+                                                    0, base, sizeof(base));
+                    const char* dot = strrchr(base, '.');
+                    if (dot) snprintf(path, sizeof(path), "%.*s-ab%s",
+                                      (int)(dot - base), base, dot);
+                    else     snprintf(path, sizeof(path), "%s-ab", base);
+                    openpete_native_render_screenshot(path);
+                }
+            }
+
             /* Cache rotate moved to "right before next yield's GTE"
              * (see the yield_now block above) so intermediate renders
              * between sim ticks see the correct cache.s_prev for the

@@ -137,6 +137,14 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
     std::free(pixels);
 }
 
+/* Raw RGBA8 (top-down) -> PNG. Used by the native renderer's A/B screenshot
+ * (its RHI readback already returns top-down R,G,B,A), so no flip/swizzle. */
+extern "C" int openpete_write_png_rgba(const char* path, const void* pixels,
+                                       int w, int h) {
+    if (!path || !pixels || w <= 0 || h <= 0) return 1;
+    return stbi_write_png(path, w, h, 4, pixels, w * 4) ? 0 : 1;
+}
+
 extern "C" void openpete_debug_triangle_emit(void) {
     if (!s_initialised) openpete_debug_triangle_init();
 

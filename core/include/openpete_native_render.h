@@ -70,6 +70,11 @@ typedef struct { openpete_scene_vert v[3]; }     openpete_scene_tri;
 void openpete_native_scene_begin(void);
 /* Append one screen-space triangle to the current native scene. */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
+/* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
+ * before the scene so uncovered areas show it instead of black, mirroring the
+ * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).
+ * Reset to 0 by openpete_native_scene_begin. */
+void openpete_native_scene_set_bg(uint32_t rgba);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */
@@ -80,6 +85,12 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
  * input path depends on; window-size changes are detected by polling. No-op
  * if the native path is disabled. */
 void openpete_native_render_frame(void);
+
+/* Capture the native A/B window (the offscreen target — both panels, the
+ * native render + the reference) to a PNG at `path`. Call after
+ * openpete_native_render_frame so the offscreen holds the latest frame.
+ * Returns 0 on success, nonzero if disabled or on failure. */
+int openpete_native_render_screenshot(const char *path);
 
 /* Tear down the device + window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);

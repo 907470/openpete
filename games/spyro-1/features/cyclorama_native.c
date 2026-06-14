@@ -178,13 +178,22 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
             uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
             uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
 
+            /* Near-plane reject: drop any triangle with a vertex at/behind the
+             * camera. Such verts sign-flip under the perspective divide (the
+             * GTE saturates them; the float doesn't), producing screen-spanning
+             * "streak" triangles. The sky dome is ~+-63deg but the screen only
+             * shows ~+-37deg, so the dropped triangles are all far off-screen
+             * (no visible gap); the panel scissor (native_render.c) clips the
+             * remaining legit off-screen extent. NEAR=1 view-unit (verts are
+             * ~1000s of units, so this is effectively z<=0). */
+            const double NEAR = 1.0;
+            if (pz[i0] <= NEAR || pz[i1] <= NEAR || pz[i2] <= NEAR) continue;
             /* trivial reject: all three verts off the same screen side. */
             int o0l = px[i0] < 0, o1l = px[i1] < 0, o2l = px[i2] < 0;
             int o0r = px[i0] > 512, o1r = px[i1] > 512, o2r = px[i2] > 512;
             int o0t = py[i0] < 0, o1t = py[i1] < 0, o2t = py[i2] < 0;
             int o0b = py[i0] > 240, o1b = py[i1] > 240, o2b = py[i2] > 240;
             if ((o0l&&o1l&&o2l) || (o0r&&o1r&&o2r) || (o0t&&o1t&&o2t) || (o0b&&o1b&&o2b)) continue;
-            if (pz[i0] <= 0 && pz[i1] <= 0 && pz[i2] <= 0) continue;
 
             if (s_native_n >= MAX_TRIS) break;
             cyc_tri* t = &s_native[s_native_n++];
@@ -361,7 +370,7 @@ static unsigned cyc_verify_frame(void) {
 /* Push the extracted native triangles into the core scene buffer (panel 0).
  * PSX prim colour low-24 is byte0=R,byte1=G,byte2=B — already the RHI rgba
  * byte order; add opaque alpha. */
-static void push_scene(void) {
+static void push_scene(CPUState* cpu) {
     static int s_logged = 0;
     if (!s_logged && s_native_n > 0) {
         s_logged = 1;
@@ -369,6 +378,12 @@ static void push_scene(void) {
                 s_native_n, openpete_frame);
     }
     openpete_native_scene_begin();
+    /* The PSX cyclorama clears the frame to g_Cyclorama.m_BackgroundColor
+     * (+0x10) before drawing the dome; mirror that so uncovered areas (below
+     * the dome / gaps) show it, not black. Same colour conversion as the dome
+     * (low 24 = R,G,B; opaque alpha). */
+    uint32_t bg = cpu->read_word(G_CYCLORAMA + 0x10) & 0xFFFFFF;
+    openpete_native_scene_set_bg(bg | 0xFF000000u);
     for (int i = 0; i < s_native_n; i++) {
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
@@ -395,7 +410,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
     cyc_extract(cpu, a0, a1, a2);           /* native scene from gamestate */
-    if (feed) push_scene();                 /* display it in panel 0 */
+    if (feed) push_scene(cpu);              /* display it in panel 0 */
 
     if (verify) {
         static int s_dumped = 0;

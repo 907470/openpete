@@ -25,6 +25,10 @@ void openpete_screenshot_format_path(const char* tmpl, int frame,
 /* True if `path`'s extension (case-insensitive) is `.png`. */
 int  openpete_screenshot_path_is_png(const char* path);
 
+/* Write a raw RGBA8 buffer (byte order R,G,B,A; `pixels` is w*h*4 bytes,
+ * top-down) to `path` as PNG via stb_image_write. Returns 0 on success. */
+int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h);
+
 #ifdef __cplusplus
 }
 #endif

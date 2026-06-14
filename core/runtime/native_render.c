@@ -24,6 +24,7 @@
 
 #include "openpete_log.h"
 #include "rhi.h"
+#include "screenshot.h"  /* openpete_write_png_rgba */
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -68,13 +69,16 @@ typedef struct {
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
 #define MAX_SCENE_TRIS 16384
+#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 6)  /* +6 = the bg-fill quad */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];
 static int                s_scene_n;
+static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; }
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; }
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
     if (tri && s_scene_n < MAX_SCENE_TRIS) s_scene[s_scene_n++] = *tri;
 }
+void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
 /* Single native renderer instance (one window per process). */
 static struct {
@@ -211,7 +215,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
-    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * MAX_SCENE_TRIS * 3);
+    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
@@ -387,23 +391,54 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
 static bool draw_native_scene(void)
 {
     if (s_scene_n <= 0) return false;
-    int nverts = s_scene_n * 3;
-    if (nverts > MAX_SCENE_TRIS * 3) nverts = MAX_SCENE_TRIS * 3;
 
-    static rhi_vertex buf[MAX_SCENE_TRIS * 3];
-    for (int t = 0; t < s_scene_n; t++) {
+    static rhi_vertex buf[SCENE_VB_VERTS];
+    int base = 0;
+    /* Background fill: the PSX cyclorama clears the frame to m_BackgroundColor
+     * before drawing the dome, so anything the dome (and, later, the world)
+     * doesn't cover shows that colour, not black. Emit it as the first quad
+     * covering panel 0's whole rect; the dome draws on top (no depth test, so
+     * later prims overwrite). */
+    if (s_scene_bg != 0) {
+        float l = s_nr.p0_cx - s_nr.p0_hx, r = s_nr.p0_cx + s_nr.p0_hx;
+        float t = s_nr.p0_hy, b = -s_nr.p0_hy;
+        const rhi_vertex tl = { l, t, 0, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex tr = { r, t, 0, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex br = { r, b, 0, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex bl = { l, b, 0, 0, 0, s_scene_bg, 0 };
+        buf[0] = tl; buf[1] = tr; buf[2] = br;
+        buf[3] = tl; buf[4] = br; buf[5] = bl;
+        base = 6;
+    }
+    int nverts = base + s_scene_n * 3;
+    if (nverts > SCENE_VB_VERTS) nverts = SCENE_VB_VERTS;
+
+    for (int t = 0; t < s_scene_n && base + t * 3 + 2 < SCENE_VB_VERTS; t++) {
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[t * 3 + k];
+            rhi_vertex *o = &buf[base + t * 3 + k];
             o->x = cx; o->y = cy; o->z = 0.0f; o->u = 0.0f; o->v = 0.0f;
             o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
         }
     }
     rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)nverts);
+
+    /* Confine the scene to panel 0's pixel rect so triangles that extend off
+     * the PSX screen (legitimately, after near-plane culling) are clipped to
+     * the panel instead of streaking across the window. Clip rect [p0_cx +-
+     * p0_hx] x [+-p0_hy] -> framebuffer pixels (top-left origin). */
+    int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+    int sw = (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
+    int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
+    int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
+    rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
+
     rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
     rhi_draw(s_nr.dev, (uint32_t)nverts, 0);
+
+    rhi_reset_scissor(s_nr.dev);
     return true;
 }
 
@@ -476,6 +511,22 @@ void openpete_native_render_frame(void)
     rhi_end_offscreen(s_nr.dev);
     rhi_blit_to_swapchain(s_nr.dev);
     rhi_end_frame(s_nr.dev);
+}
+
+int openpete_native_render_screenshot(const char *path)
+{
+    if (!s_nr.enabled || !path) return 1;
+    size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    if (cap == 0) return 1;
+    unsigned char *buf = malloc(cap);
+    if (!buf) return 1;
+    int w = 0, h = 0, rc = 1;
+    if (rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h))
+        rc = openpete_write_png_rgba(path, buf, w, h);
+    free(buf);
+    if (rc == 0)
+        OPL_INFO_F("native", "A/B screenshot %dx%d -> %s", w, h, path);
+    return rc;
 }
 
 void openpete_native_render_shutdown(void)

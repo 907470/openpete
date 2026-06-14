@@ -71,6 +71,14 @@ void rhi_notify_resize(rhi_device *dev);
 /* Diagnostics: the selected physical device name (valid until destroy). */
 const char *rhi_device_name(const rhi_device *dev);
 
+/* Read the offscreen color target into a host RGBA8 buffer (byte order
+ * R,G,B,A, alpha forced opaque), for screenshots. Call after a rendered
+ * frame (rhi_end_frame) — it reads the last frame's offscreen contents.
+ * `out` must hold >= (*out_w)*(*out_h)*4 bytes; the extent is written back.
+ * Returns false on failure (e.g. out too small). Blocks the GPU. */
+bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
+                        int *out_w, int *out_h);
+
 /* ---- buffers, pipelines, draws (milestone 1b) --------------------- */
 
 /* Native vertex format — one fixed layout for all renderer geometry, so a
@@ -140,6 +148,12 @@ void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
  * rhi_texture (the VRAM image or an RGBA8 image) — the set layout is the
  * same; only the shader's sampler type differs. */
 void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
+/* Restrict rasterization to a framebuffer-pixel rect (top-left origin, y
+ * down) for subsequent draws this frame — e.g. confine one panel's geometry
+ * to its region so off-panel triangles are clipped. rhi_reset_scissor
+ * restores the full target. Both must be called inside the offscreen pass. */
+void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h);
+void rhi_reset_scissor(rhi_device *dev);
 /* Set the current pipeline's fragment push constants (size must match the
  * pipeline desc's push_const_size). */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
