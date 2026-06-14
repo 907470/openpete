@@ -12,6 +12,7 @@
 extern const feature_module_t widescreen_module;
 extern const feature_module_t no_lod_module;
 extern const feature_module_t cyclorama_native_module;
+extern const feature_module_t moby_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -21,6 +22,10 @@ const feature_module_t* const openpete_features[] = {
      * inert fall-through. Registered after widescreen so its cyclorama-360
      * arm keeps first dibs at wide aspect (it defers at native 4:3). */
     &cyclorama_native_module,
+    /* Phase 3 native-renderer moby spike + A/B verify harness. Hooks the
+     * REGULAR material renderer 0x8001F798 only when OPENPETE_MOBY_VERIFY or
+     * --native-ab is set; inert fall-through otherwise. */
+    &moby_native_module,
 };
 
 const size_t openpete_feature_count =

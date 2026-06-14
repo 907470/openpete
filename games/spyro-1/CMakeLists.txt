@@ -91,6 +91,7 @@ add_executable(openpete-spyro1
     features/render_decouple.c
     features/polybuf.c
     features/cyclorama_native.c
+    features/moby_native.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
