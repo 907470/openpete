@@ -551,9 +551,15 @@ void psyq_MoveImage(CPUState* cpu) {
     cpu->v0 = (uint32_t)MoveImage(r, (int)cpu->a1, (int)cpu->a2);
 }
 
+/* The native renderer (--native-ab) draws the scanned-out framebuffer; feed
+ * it the active display region. Forward-declared (extern "C", core C TU) to
+ * avoid pulling the core header into this thunk file. No-op when disabled. */
+extern "C" void openpete_native_set_display_rect(int x, int y, int w, int h);
+
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
     PutDispEnv(env);
+    openpete_native_set_display_rect(env->disp.x, env->disp.y, env->disp.w, env->disp.h);
     /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
     PsxStackPush p[] = {
         {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2}, {28u, cpu->s3},

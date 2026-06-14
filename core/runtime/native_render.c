@@ -5,12 +5,16 @@
  *
  * 1c.1: RHI in the runtime, Vulkan window alongside PsyCross.
  * 1c.2: PsyCross hidden; its frame read back + shown in the single window.
- * 1c.3a (this step): also mirror PsyCross's VRAM into a native R16_UINT
- *   texture each present and show it (decoded by the ported PSX sampler) as a
- *   second panel — proving real game VRAM (textures + the rendered
- *   framebuffer) reaches the native GPU path. Layout is now a row of
- *   aspect-fit panels: [VRAM | reference]. 1c.3b adds a native render of the
- *   display region + a diff panel and validates against the logo screen.
+ * 1c.3a: mirror PsyCross's VRAM into a native R16_UINT texture each present
+ *   (proving real game VRAM reaches the native GPU path).
+ * 1c.3b-i (this step): panel 0 now renders the PSX DISPLAY REGION — the
+ *   DISPENV disp rect (captured via the PutDispEnv thunk), sampled from the
+ *   VRAM texture, with the front-buffer origin following the per-frame double-
+ *   buffer flip via the material tpage. Layout: [native-display | reference].
+ *   NOTE: the disp rect (e.g. 512x240) is wider/taller than the visible clip
+ *   (the reference is the bars-free crop) — the overscan letterbox is
+ *   accounted for in 1c.3b-ii, which adds the clip + a diff panel and
+ *   validates against the logo screen.
  *
  * Determinism: nothing here touches PSX RAM or the `.s` verdict producers.
  */
@@ -72,16 +76,25 @@ static struct {
     unsigned char *readback;    /* CPU readback scratch, ref_w*ref_h*4 */
     size_t        readback_cap;
 
-    /* VRAM panel: PsyCross's 1024x512 VRAM mirror (R16_UINT), decoded by the
-     * ported PSX sampler. */
+    /* The native-display panel samples the PSX VRAM mirror (R16_UINT) through
+     * the ported PSX sampler. */
     rhi_pipeline *vram_pipe;
     rhi_texture  *vram_tex;
     uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
 
+    /* Active PSX display region (DISPENV `disp` rect, VRAM px), set by the
+     * PutDispEnv thunk. 0 until the game sets it (panel 0 falls back to the
+     * whole VRAM). NOTE: this is the full disp rect; the visible area is a
+     * clip within it (overscan letterbox) — accounted for in the diff step. */
+    int           disp_x, disp_y, disp_w, disp_h;
+
     /* Panel geometry: one VB of NR_PANELS*6 verts, rebuilt only when the
-     * window or any panel's content size changes. */
+     * window or a panel's content SIZE changes. The disp origin flips every
+     * frame (double buffer) but doesn't change geometry — it rides the
+     * per-frame material (tpage), so layout keys on disp size only. */
     rhi_buffer   *panels_vb;
     int           layout_win_w, layout_win_h, layout_ref_w, layout_ref_h;
+    int           layout_disp_w, layout_disp_h;
 } s_nr;
 
 /* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
@@ -198,6 +211,14 @@ bool openpete_native_render_enabled(void)
     return s_nr.enabled;
 }
 
+void openpete_native_set_display_rect(int x, int y, int w, int h)
+{
+    /* Log size changes only; the origin flips every frame (double buffer). */
+    if (s_nr.enabled && (w != s_nr.disp_w || h != s_nr.disp_h))
+        OPL_INFO_F("native", "display region %dx%d [VRAM px]", w, h);
+    s_nr.disp_x = x; s_nr.disp_y = y; s_nr.disp_w = w; s_nr.disp_h = h;
+}
+
 /* Mirror PsyCross's whole VRAM (1024x512) into the native R16_UINT texture.
  * Full snapshot for now; 1c's dirty-rect sub-rect path (driven by hooking the
  * image ops) is a later efficiency step. Always available (reads PsyCross's
@@ -252,7 +273,8 @@ static void update_layout(void)
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return;
     if (s_nr.win_w == s_nr.layout_win_w && s_nr.win_h == s_nr.layout_win_h &&
-        s_nr.ref_w == s_nr.layout_ref_w && s_nr.ref_h == s_nr.layout_ref_h)
+        s_nr.ref_w == s_nr.layout_ref_w && s_nr.ref_h == s_nr.layout_ref_h &&
+        s_nr.disp_w == s_nr.layout_disp_w && s_nr.disp_h == s_nr.layout_disp_h)
         return;
 
     /* NR_PANELS cells across the window; cell i centered at cx_i, half-width
@@ -260,13 +282,16 @@ static void update_layout(void)
     const float chx = 1.0f / (float)NR_PANELS;
     rhi_vertex verts[NR_PANELS * 6];
 
-    /* Panel 0 — VRAM (R16_UINT, top-down: v0=0 top .. v1=H bottom), UVs in
-     * texel units (psx_sample uses texelFetch). */
+    /* Panel 0 — native render of the PSX display region (the DISPENV disp rect
+     * sampled from the VRAM texture). Falls back to the whole VRAM until the
+     * game sets DISPENV. Top-down (v0=0 top .. v1=H bottom); UVs in texel
+     * units relative to the source tpage (psx_sample uses texelFetch). */
     {
+        int sw = s_nr.disp_w > 0 ? s_nr.disp_w : NR_VRAM_W;
+        int sh = s_nr.disp_h > 0 ? s_nr.disp_h : NR_VRAM_H;
         float cx = -1.0f + chx, hx, hy;
-        fit_cell(cx, 0.0f, chx, 1.0f, NR_VRAM_W, NR_VRAM_H, s_nr.win_w, s_nr.win_h, &hx, &hy);
-        build_panel(&verts[0], cx, 0.0f, hx, hy,
-                    0.0f, 0.0f, (float)NR_VRAM_W, (float)NR_VRAM_H);
+        fit_cell(cx, 0.0f, chx, 1.0f, sw, sh, s_nr.win_w, s_nr.win_h, &hx, &hy);
+        build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)sw, (float)sh);
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
      * normalized (blit uses texture()). */
@@ -282,6 +307,7 @@ static void update_layout(void)
     rhi_update_buffer(s_nr.panels_vb, verts, sizeof(verts));
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
+    s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_disp_h = s_nr.disp_h;
 }
 
 void openpete_native_render_frame(void)
@@ -310,14 +336,18 @@ void openpete_native_render_frame(void)
 
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
 
-    /* Panel 0 — VRAM, decoded as 16bpp across the whole 1024x512 (the
-     * framebuffer region reads correctly; paletted texture regions look
-     * scrambled, which is expected for a raw 16bpp VRAM view). */
+    /* Panel 0 — native render of the PSX display region, decoded 16bpp from
+     * the VRAM mirror at the DISPENV disp origin (whole VRAM until the game
+     * sets DISPENV). The tpage matches the UVs baked into the layout. */
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
-        const psx_material vram_mat = { 0, 0, 0, 0, 16 };
+        /* tpage = the CURRENT front-buffer origin (flips per frame via the
+         * double buffer); the panel UVs are baked by size, so only this moves. */
+        int tx = s_nr.disp_w > 0 ? s_nr.disp_x : 0;
+        int ty = s_nr.disp_w > 0 ? s_nr.disp_y : 0;
+        const psx_material nd_mat = { tx, ty, 0, 0, 16 };
         rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-        rhi_push_constants(s_nr.dev, &vram_mat, sizeof(vram_mat));
+        rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
         rhi_draw(s_nr.dev, 6, 0);
 
