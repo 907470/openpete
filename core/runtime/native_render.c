@@ -3,15 +3,14 @@
  * Phase 1c of notes/plans/openpete-native-renderer.md. See
  * openpete_native_render.h for the contract + the two-window rationale.
  *
- * 1c.1: stood the RHI up inside the real runtime (Vulkan window presenting
- * alongside PsyCross) — proved GL and Vulkan coexist in one process.
- *
- * 1c.2 (this step): PsyCross's GL window is now HIDDEN (FBO-only) and the
- * Vulkan window is the single visible one. Each present we read PsyCross's
- * finished frame back from its FBO (GR_ReadPresentSceneRGBA), upload it to an
- * RGBA8 texture, and draw it fullscreen in the Vulkan window — the
- * "reference" the native render will sit beside in 1c.3. This proves the
- * GL->VK readback bridge end to end: the live game, displayed through Vulkan.
+ * 1c.1: RHI in the runtime, Vulkan window alongside PsyCross.
+ * 1c.2: PsyCross hidden; its frame read back + shown in the single window.
+ * 1c.3a (this step): also mirror PsyCross's VRAM into a native R16_UINT
+ *   texture each present and show it (decoded by the ported PSX sampler) as a
+ *   second panel — proving real game VRAM (textures + the rendered
+ *   framebuffer) reaches the native GPU path. Layout is now a row of
+ *   aspect-fit panels: [VRAM | reference]. 1c.3b adds a native render of the
+ *   display region + a diff panel and validates against the logo screen.
  *
  * Determinism: nothing here touches PSX RAM or the `.s` verdict producers.
  */
@@ -27,23 +26,37 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
-/* PsyCross present-FBO readback. These are `extern "C"` in PsyCross
- * (PsyX_render.cpp); forward-declared here so this C TU need not include the
- * C++-flavored PsyX_render.h. GR_ReadPresentSceneRGBA returns rows bottom-up
- * (GL origin); we correct that in the fullscreen quad's UVs, not on the CPU. */
-extern int GR_GetPresentSceneSize(int *out_w, int *out_h);
-extern int GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
-                                   unsigned int gl_format);
+/* PsyCross VRAM + present-FBO readback (extern "C" in PsyX_render.cpp);
+ * forward-declared so this C TU need not include the C++-flavored header.
+ * GR_ReadVRAM copies a rect of the 1024x512 CPU VRAM mirror tightly into dst;
+ * GR_ReadPresentSceneRGBA returns the present FBO bottom-up (GL origin). */
+extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
+extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
+                                    unsigned int gl_format);
+extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
 
-/* GL_RGBA enum value — byte order R,G,B,A, matching VK_FORMAT_R8G8B8A8_UNORM.
- * Spelled as a literal so we don't pull a GL header into a C core TU. */
+/* GL_RGBA enum — byte order R,G,B,A, matching VK_FORMAT_R8G8B8A8_UNORM. */
 #define NR_GL_RGBA 0x1908u
 
-/* Default A/B window size when the user didn't pin --window. Wide enough for
- * the native/reference/diff three-panel composite that lands in 1c.3. */
+#define NR_VRAM_W 1024
+#define NR_VRAM_H 512
+
+/* Default window size when the caller passes none. */
 #define NR_DEFAULT_W 1280
 #define NR_DEFAULT_H 720
+
+/* Per-draw PSX material — must match the push_constant block in
+ * shaders/psx_sample.frag (five tightly-packed 32-bit ints). */
+typedef struct {
+    int32_t tpage_x, tpage_y;
+    int32_t clut_x, clut_y;
+    int32_t bpp;
+} psx_material;
+
+/* How many panels the window shows (1c.3a: VRAM + reference). */
+#define NR_PANELS 2
 
 /* Single native renderer instance (one window per process). */
 static struct {
@@ -52,33 +65,55 @@ static struct {
     rhi_device   *dev;
     int           win_w, win_h; /* last-known pixel size, for resize detection */
 
-    /* Reference panel: PsyCross's read-back frame, drawn fullscreen. */
-    rhi_pipeline *blit_pipe;    /* samples an RGBA8 texture over a fullscreen quad */
-    rhi_buffer   *fs_vb;        /* the fullscreen quad (V flipped for GL bottom-up) */
-    rhi_texture  *ref_tex;      /* RGBA8, (re)created to the present-FBO size */
+    /* Reference panel: PsyCross's read-back frame (RGBA8). */
+    rhi_pipeline *blit_pipe;
+    rhi_texture  *ref_tex;
     int           ref_w, ref_h;
     unsigned char *readback;    /* CPU readback scratch, ref_w*ref_h*4 */
     size_t        readback_cap;
 
-    /* Aspect-fit quad geometry: the window/ref sizes the current fs_vb was
-     * built for, so it's only rebuilt when the fit actually changes. */
-    int           quad_win_w, quad_win_h, quad_ref_w, quad_ref_h;
+    /* VRAM panel: PsyCross's 1024x512 VRAM mirror (R16_UINT), decoded by the
+     * ported PSX sampler. */
+    rhi_pipeline *vram_pipe;
+    rhi_texture  *vram_tex;
+    uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
+
+    /* Panel geometry: one VB of NR_PANELS*6 verts, rebuilt only when the
+     * window or any panel's content size changes. */
+    rhi_buffer   *panels_vb;
+    int           layout_win_w, layout_win_h, layout_ref_w, layout_ref_h;
 } s_nr;
 
-/* Fill a quad scaled to (sx,sy) in clip space, UVs flipped vertically:
- * PsyCross's readback is bottom-up (row 0 = image bottom), so the top screen
- * vertices sample V=1 and the bottom vertices V=0, displaying it upright.
- * (Matches the smoke test's +Y-up offscreen convention, inverted in V.)
- * sx<1 pillarboxes; sy<1 letterboxes; the offscreen clear fills the bars.
- * rgba is unused by blit.frag. */
-static void build_fs_quad(rhi_vertex out[6], float sx, float sy)
+/* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
+ * (hx,hy); v0 is the UV-v at the TOP edge, v1 at the BOTTOM. (VRAM is uploaded
+ * top-down so it uses v0<v1; the GL readback is bottom-up so the reference
+ * uses v0>v1.) rgba is unused by the textured shaders. */
+static void build_panel(rhi_vertex out[6], float cx, float cy, float hx, float hy,
+                        float u0, float v0, float u1, float v1)
 {
-    const rhi_vertex tl = { -sx,  sy, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0 };
-    const rhi_vertex tr = {  sx,  sy, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFu, 0 };
-    const rhi_vertex br = {  sx, -sy, 0.0f, 1.0f, 0.0f, 0xFFFFFFFFu, 0 };
-    const rhi_vertex bl = { -sx, -sy, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu, 0 };
+    const rhi_vertex tl = { cx - hx, cy + hy, 0.0f, u0, v0, 0xFFFFFFFFu, 0 };
+    const rhi_vertex tr = { cx + hx, cy + hy, 0.0f, u1, v0, 0xFFFFFFFFu, 0 };
+    const rhi_vertex br = { cx + hx, cy - hy, 0.0f, u1, v1, 0xFFFFFFFFu, 0 };
+    const rhi_vertex bl = { cx - hx, cy - hy, 0.0f, u0, v1, 0xFFFFFFFFu, 0 };
     out[0] = tl; out[1] = tr; out[2] = br;
     out[3] = tl; out[4] = br; out[5] = bl;
+}
+
+/* Aspect-fit content (content_w x content_h px) inside a clip-space cell
+ * centered at (cx,cy) with clip half-extents (chx,chy), returning the fitted
+ * half-extents (letterbox/pillarbox; the clear fills the bars). */
+static void fit_cell(float cx, float cy, float chx, float chy,
+                     int content_w, int content_h, int win_w, int win_h,
+                     float *out_hx, float *out_hy)
+{
+    (void)cx; (void)cy;
+    float cell_w = chx * (float)win_w;  /* cell size in px (full clip = win px) */
+    float cell_h = chy * (float)win_h;
+    float s = cell_w / (float)content_w;
+    float sy = cell_h / (float)content_h;
+    if (sy < s) s = sy;
+    *out_hx = ((float)content_w * s) / (float)win_w;
+    *out_hy = ((float)content_h * s) / (float)win_h;
 }
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
@@ -114,36 +149,45 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         return 1;
     }
 
-    /* Pipeline + geometry for the reference blit. The reference texture is
-     * created lazily on the first readback (its size = PsyCross's present
-     * FBO, unknown until the game has rendered a scene). */
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
         .frag_spv = "blit.frag.spv",       /* sampler2D at set 0 */
-        .blend = RHI_BLEND_NONE,
-        .depth_test = false,
-        .uses_vram = true,                 /* set-0 combined-image-sampler layout */
-        .push_const_size = 0,
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
+    rhi_pipeline_desc vram_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_sample.frag.spv", /* usampler2D + material push const */
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     rhi_pipeline *blit_pipe = rhi_create_pipeline(dev, &blit_desc);
-    rhi_buffer   *fs_vb     = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
-    if (!blit_pipe || !fs_vb) {
-        OPL_ERROR_F("native", "blit pipeline/buffer setup failed; no native A/B");
-        if (fs_vb) rhi_destroy_buffer(dev, fs_vb);
+    rhi_pipeline *vram_pipe = rhi_create_pipeline(dev, &vram_desc);
+    rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
+    rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
+    uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
+    if (!blit_pipe || !vram_pipe || !panels_vb || !vram_tex || !mirror) {
+        OPL_ERROR_F("native", "RHI setup failed; continuing without native A/B");
+        free(mirror);
+        if (vram_tex)  rhi_destroy_texture(dev, vram_tex);
+        if (panels_vb) rhi_destroy_buffer(dev, panels_vb);
+        if (vram_pipe) rhi_destroy_pipeline(dev, vram_pipe);
         if (blit_pipe) rhi_destroy_pipeline(dev, blit_pipe);
         rhi_destroy(dev);
         SDL_DestroyWindow(win);
         return 1;
     }
-    /* fs_vb is filled per the aspect fit on the first frame (update_aspect_quad). */
 
-    s_nr.enabled   = true;
-    s_nr.window    = win;
-    s_nr.dev       = dev;
-    s_nr.win_w     = w;
-    s_nr.win_h     = h;
-    s_nr.blit_pipe = blit_pipe;
-    s_nr.fs_vb     = fs_vb;
+    s_nr.enabled     = true;
+    s_nr.window      = win;
+    s_nr.dev         = dev;
+    s_nr.win_w       = w;
+    s_nr.win_h       = h;
+    s_nr.blit_pipe   = blit_pipe;
+    s_nr.vram_pipe   = vram_pipe;
+    s_nr.panels_vb   = panels_vb;
+    s_nr.vram_tex    = vram_tex;
+    s_nr.vram_mirror = mirror;
     OPL_INFO_F("native", "Vulkan A/B window up (%dx%d, device='%s'); PsyCross hidden",
                w, h, rhi_device_name(dev));
     return 0;
@@ -152,6 +196,16 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 bool openpete_native_render_enabled(void)
 {
     return s_nr.enabled;
+}
+
+/* Mirror PsyCross's whole VRAM (1024x512) into the native R16_UINT texture.
+ * Full snapshot for now; 1c's dirty-rect sub-rect path (driven by hooking the
+ * image ops) is a later efficiency step. Always available (reads PsyCross's
+ * CPU mirror), even before the first scene. */
+static void sync_vram_texture(void)
+{
+    GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
+    rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
 }
 
 /* Pull PsyCross's finished frame from its present FBO into s_nr.ref_tex.
@@ -163,9 +217,6 @@ static bool sync_reference_texture(void)
         return false; /* PsyCross hasn't produced a scene yet */
 
     if (pw != s_nr.ref_w || ph != s_nr.ref_h) {
-        /* (Re)create the reference texture to match the present FBO size.
-         * Rare (effectively once) — wait the GPU idle before freeing the old
-         * one so no in-flight frame still references it. */
         if (s_nr.ref_tex) {
             rhi_wait_idle(s_nr.dev);
             rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
@@ -193,31 +244,44 @@ static bool sync_reference_texture(void)
     return true;
 }
 
-/* Rebuild the display quad to fit the reference's aspect inside the window
- * (letterbox/pillarbox), so resizing never stretches the image. Cheap and
- * only runs when the window or reference size actually changes. */
-static void update_aspect_quad(void)
+/* Rebuild the panel row (VRAM | reference), each aspect-fit into its cell, so
+ * resizing never stretches. Only runs when the window or reference size
+ * changes (the VRAM panel is a fixed 1024x512). */
+static void update_layout(void)
 {
-    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0 || s_nr.win_w <= 0 || s_nr.win_h <= 0)
+    if (s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return;
-    if (s_nr.win_w == s_nr.quad_win_w && s_nr.win_h == s_nr.quad_win_h &&
-        s_nr.ref_w == s_nr.quad_ref_w && s_nr.ref_h == s_nr.quad_ref_h)
-        return; /* fit unchanged */
+    if (s_nr.win_w == s_nr.layout_win_w && s_nr.win_h == s_nr.layout_win_h &&
+        s_nr.ref_w == s_nr.layout_ref_w && s_nr.ref_h == s_nr.layout_ref_h)
+        return;
 
-    float content = (float)s_nr.ref_w / (float)s_nr.ref_h;
-    float window  = (float)s_nr.win_w / (float)s_nr.win_h;
-    float sx = 1.0f, sy = 1.0f;
-    if (window > content) sx = content / window; /* window wider  → pillarbox */
-    else                  sy = window / content; /* window taller → letterbox */
+    /* NR_PANELS cells across the window; cell i centered at cx_i, half-width
+     * 1/NR_PANELS in clip space, full height. */
+    const float chx = 1.0f / (float)NR_PANELS;
+    rhi_vertex verts[NR_PANELS * 6];
 
-    rhi_vertex q[6];
-    build_fs_quad(q, sx, sy);
-    /* The vertex buffer may still be read by an in-flight frame; geometry
-     * changes are rare (startup / resize), so fully sync before rewriting. */
+    /* Panel 0 — VRAM (R16_UINT, top-down: v0=0 top .. v1=H bottom), UVs in
+     * texel units (psx_sample uses texelFetch). */
+    {
+        float cx = -1.0f + chx, hx, hy;
+        fit_cell(cx, 0.0f, chx, 1.0f, NR_VRAM_W, NR_VRAM_H, s_nr.win_w, s_nr.win_h, &hx, &hy);
+        build_panel(&verts[0], cx, 0.0f, hx, hy,
+                    0.0f, 0.0f, (float)NR_VRAM_W, (float)NR_VRAM_H);
+    }
+    /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
+     * normalized (blit uses texture()). */
+    {
+        float cx = -1.0f + 3.0f * chx, hx, hy;
+        fit_cell(cx, 0.0f, chx, 1.0f, s_nr.ref_w, s_nr.ref_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
+        build_panel(&verts[6], cx, 0.0f, hx, hy, 0.0f, 1.0f, 1.0f, 0.0f);
+    }
+
+    /* The VB may still be read by an in-flight frame; layout changes are rare
+     * (startup / resize), so fully sync before rewriting it. */
     rhi_wait_idle(s_nr.dev);
-    rhi_update_buffer(s_nr.fs_vb, q, sizeof(q));
-    s_nr.quad_win_w = s_nr.win_w; s_nr.quad_win_h = s_nr.win_h;
-    s_nr.quad_ref_w = s_nr.ref_w; s_nr.quad_ref_h = s_nr.ref_h;
+    rhi_update_buffer(s_nr.panels_vb, verts, sizeof(verts));
+    s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
+    s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
 }
 
 void openpete_native_render_frame(void)
@@ -226,8 +290,7 @@ void openpete_native_render_frame(void)
         return;
 
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
-     * owns the event queue, and stealing events would starve PsyCross's
-     * input). A per-frame size query is cheap. */
+     * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;
     if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
         (pw != s_nr.win_w || ph != s_nr.win_h)) {
@@ -236,22 +299,37 @@ void openpete_native_render_frame(void)
         rhi_notify_resize(s_nr.dev);
     }
 
-    /* Read PsyCross's frame back BEFORE opening our frame: the readback +
-     * texture upload do their own one-shot GPU submits, kept clear of our
-     * frame's render pass. */
+    /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
+     * their own one-shot GPU submits, kept clear of our render pass. */
+    sync_vram_texture();
     bool have_ref = sync_reference_texture();
-    update_aspect_quad();
+    update_layout();
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
 
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
-    if (have_ref) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
-        rhi_bind_vram(s_nr.dev, s_nr.ref_tex); /* bind RGBA8 ref to set 0 */
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_vb);
+
+    /* Panel 0 — VRAM, decoded as 16bpp across the whole 1024x512 (the
+     * framebuffer region reads correctly; paletted texture regions look
+     * scrambled, which is expected for a raw 16bpp VRAM view). */
+    if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
+        const psx_material vram_mat = { 0, 0, 0, 0, 16 };
+        rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_push_constants(s_nr.dev, &vram_mat, sizeof(vram_mat));
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
         rhi_draw(s_nr.dev, 6, 0);
+
+        /* Panel 1 — reference. */
+        if (have_ref) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.ref_tex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
+            rhi_draw(s_nr.dev, 6, 6);
+        }
     }
+
     rhi_end_offscreen(s_nr.dev);
     rhi_blit_to_swapchain(s_nr.dev);
     rhi_end_frame(s_nr.dev);
@@ -263,20 +341,15 @@ void openpete_native_render_shutdown(void)
         return;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.ref_tex)   rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
-    if (s_nr.fs_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.fs_vb);
+    if (s_nr.vram_tex)  rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
+    if (s_nr.panels_vb) rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.vram_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
     if (s_nr.blit_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);
     rhi_destroy(s_nr.dev);
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
+    free(s_nr.vram_mirror);
 
-    s_nr.dev       = NULL;
-    s_nr.window    = NULL;
-    s_nr.ref_tex   = NULL;
-    s_nr.fs_vb     = NULL;
-    s_nr.blit_pipe = NULL;
-    s_nr.readback  = NULL;
-    s_nr.readback_cap = 0;
-    s_nr.ref_w = s_nr.ref_h = 0;
-    s_nr.enabled = false;
+    memset(&s_nr, 0, sizeof(s_nr));
     OPL_INFO_F("native", "Vulkan A/B window shut down");
 }

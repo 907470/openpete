@@ -289,15 +289,26 @@ endif()
 
 # Stage the native renderer's compiled SPIR-V shaders next to the exe so the
 # RHI finds them via SDL_GetBasePath() ("shaders/" beside the binary) on a
-# relocated/Windows install. Dev runs from the build tree also resolve via
-# the RHI's baked RHI_SHADER_DIR fallback, but the beside-exe copy is the
-# shipped path. openpete_rhi_shaders (built by core/rhi) produces the .spv.
-add_custom_command(TARGET openpete-spyro1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_BINARY_DIR}/core/rhi/shaders"
-        "$<TARGET_FILE_DIR:openpete-spyro1>/shaders"
-    COMMENT "Staging RHI shaders next to openpete-spyro1"
-    VERBATIM)
+# relocated/Windows install. Dev runs from the build tree also resolve via the
+# RHI's baked RHI_SHADER_DIR fallback, but the beside-exe copy is the shipped
+# path. One copy command per .spv with a real DEPENDS, so a shader-only change
+# re-stages without needing the exe to relink (RHI_SHADER_SPV is exported by
+# core/rhi/CMakeLists.txt; the exe lands in this dir, so beside-exe ==
+# ${CMAKE_CURRENT_BINARY_DIR}/shaders).
+set(_spyro_staged_shaders "")
+foreach(_spv IN LISTS RHI_SHADER_SPV)
+    get_filename_component(_spv_name "${_spv}" NAME)
+    set(_spv_dst "${CMAKE_CURRENT_BINARY_DIR}/shaders/${_spv_name}")
+    add_custom_command(
+        OUTPUT  "${_spv_dst}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_spv}" "${_spv_dst}"
+        DEPENDS "${_spv}"
+        COMMENT "Staging shader ${_spv_name} next to openpete-spyro1"
+        VERBATIM)
+    list(APPEND _spyro_staged_shaders "${_spv_dst}")
+endforeach()
+add_custom_target(openpete_spyro1_stage_shaders DEPENDS ${_spyro_staged_shaders})
+add_dependencies(openpete-spyro1 openpete_spyro1_stage_shaders)
 
 # Stage the music WAV override directory next to the executable so users
 # have a ready-made drop point, and seed it with the template manifest

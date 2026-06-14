@@ -33,6 +33,12 @@ foreach(s IN LISTS RHI_SHADERS)
 endforeach()
 add_custom_target(openpete_rhi_shaders DEPENDS ${RHI_SHADER_SPV})
 
+# Export the compiled .spv paths so per-game targets can stage them next to
+# their executable with a proper dependency (re-stages on shader change, not
+# just on relink). PARENT_SCOPE writes into the top-level scope, which sibling
+# subdirectories added later (games/<game>/) inherit.
+set(RHI_SHADER_SPV "${RHI_SHADER_SPV}" PARENT_SCOPE)
+
 add_library(openpete_rhi STATIC
     rhi_vulkan.c
     ${VOLK_DIR}/volk.c
