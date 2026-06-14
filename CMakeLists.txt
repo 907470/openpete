@@ -88,6 +88,11 @@ if(OPENPETE_BUILD_PCSX_REDUX_GTE)
     add_subdirectory(third_party/pcsx_redux_gte)
 endif()
 
+# Native render foundation: RHI + Vulkan backend (game-agnostic, under
+# core/). Added before core/ so openpete_core can link openpete_rhi as the
+# renderer milestones land. See notes/plans/openpete-native-renderer.md.
+add_subdirectory(core/rhi)
+
 add_subdirectory(core)
 
 foreach(game IN LISTS OPENPETE_GAMES)
