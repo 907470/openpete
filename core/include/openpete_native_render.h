@@ -40,11 +40,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);
 
-/* Record the active PSX display region (DISPENV `disp` rect, in VRAM pixels)
- * so the native renderer can draw exactly the scanned-out framebuffer rather
- * than the whole VRAM. Called from the PutDispEnv thunk each frame; a cheap
- * stash that is inert when the native path is disabled. */
+/* Record the active PSX display framebuffer (DISPENV `disp` rect, VRAM px —
+ * the scanned-out double-buffer page) and the drawn region (DRAWENV `clip`
+ * rect). The native renderer crops the disp vertically to the clip so it
+ * drops the overscan letterbox and matches the bars-free reference. Called
+ * from the PutDispEnv / PutDrawEnv thunks each frame; cheap stashes that are
+ * inert when the native path is disabled. */
 void openpete_native_set_display_rect(int x, int y, int w, int h);
+void openpete_native_set_draw_clip(int x, int y, int w, int h);
 
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does

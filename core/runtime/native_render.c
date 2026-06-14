@@ -7,13 +7,14 @@
  * 1c.2: PsyCross hidden; its frame read back + shown in the single window.
  * 1c.3a: mirror PsyCross's VRAM into a native R16_UINT texture each present
  *   (proving real game VRAM reaches the native GPU path).
- * 1c.3b-i (this step): panel 0 now renders the PSX DISPLAY REGION — the
- *   DISPENV disp rect (captured via the PutDispEnv thunk), sampled from the
- *   VRAM texture, with the front-buffer origin following the per-frame double-
- *   buffer flip via the material tpage. Layout: [native-display | reference].
- *   NOTE: the disp rect (e.g. 512x240) is wider/taller than the visible clip
- *   (the reference is the bars-free crop) — the overscan letterbox is
- *   accounted for in 1c.3b-ii, which adds the clip + a diff panel and
+ * 1c.3b (this step): panel 0 renders the PSX DISPLAY REGION cropped to the
+ *   visible viewport. The DISPENV disp rect (512x240, from PutDispEnv) and the
+ *   DRAWENV clip rect (512x224, from PutDrawEnv) are captured; the panel
+ *   samples the full disp width but only clip.h rows, dropping the symmetric
+ *   8px overscan bands, and is fitted at the
+ *   reference aspect so it lines up with the reference panel. The front-buffer
+ *   origin follows the per-frame double-buffer flip via the material tpage.
+ *   Layout: [native-display | reference]. 1c.3b-ii adds the diff panel +
  *   validates against the logo screen.
  *
  * Determinism: nothing here touches PSX RAM or the `.s` verdict producers.
@@ -82,19 +83,23 @@ static struct {
     rhi_texture  *vram_tex;
     uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
 
-    /* Active PSX display region (DISPENV `disp` rect, VRAM px), set by the
-     * PutDispEnv thunk. 0 until the game sets it (panel 0 falls back to the
-     * whole VRAM). NOTE: this is the full disp rect; the visible area is a
-     * clip within it (overscan letterbox) — accounted for in the diff step. */
+    /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
+     * PutDispEnv thunk. The full disp is 512x240 double-buffered (origin flips
+     * per frame). */
     int           disp_x, disp_y, disp_w, disp_h;
+    /* DRAWENV `clip` rect (VRAM px), from the PutDrawEnv thunk: the actually-
+     * drawn region. The visible viewport is clip.h tall (224) within the
+     * 240-tall disp; the 8px bands top+bottom are garbage overscan. Used to
+     * crop the native-display vertically to match the bars-free reference. */
+    int           clip_x, clip_y, clip_w, clip_h;
 
-    /* Panel geometry: one VB of NR_PANELS*6 verts, rebuilt only when the
-     * window or a panel's content SIZE changes. The disp origin flips every
-     * frame (double buffer) but doesn't change geometry — it rides the
-     * per-frame material (tpage), so layout keys on disp size only. */
+    /* Panel geometry: one VB of NR_PANELS*6 verts, rebuilt only when a panel's
+     * content SIZE changes. The disp/clip origins flip every frame (double
+     * buffer) but don't change geometry — they ride the per-frame material
+     * (tpage), so layout keys on sizes only. */
     rhi_buffer   *panels_vb;
     int           layout_win_w, layout_win_h, layout_ref_w, layout_ref_h;
-    int           layout_disp_w, layout_disp_h;
+    int           layout_disp_w, layout_clip_h;
 } s_nr;
 
 /* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
@@ -213,10 +218,20 @@ bool openpete_native_render_enabled(void)
 
 void openpete_native_set_display_rect(int x, int y, int w, int h)
 {
-    /* Log size changes only; the origin flips every frame (double buffer). */
+    /* Log size changes only; the disp origin flips every frame (double buffer). */
     if (s_nr.enabled && (w != s_nr.disp_w || h != s_nr.disp_h))
-        OPL_INFO_F("native", "display region %dx%d [VRAM px]", w, h);
+        OPL_INFO_F("native", "disp %dx%d @ (%d,%d) [VRAM px]", w, h, x, y);
     s_nr.disp_x = x; s_nr.disp_y = y; s_nr.disp_w = w; s_nr.disp_h = h;
+}
+
+void openpete_native_set_draw_clip(int x, int y, int w, int h)
+{
+    /* Log on size change; the clip origin flips per frame like disp. The
+     * overscan band (per side) is derived from the sizes, not clip.y. */
+    if (s_nr.enabled && (w != s_nr.clip_w || h != s_nr.clip_h))
+        OPL_INFO_F("native", "draw clip %dx%d @ (%d,%d) [VRAM px] (overscan band=%d/side)",
+                   w, h, x, y, s_nr.disp_h > 0 ? (s_nr.disp_h - h) / 2 : 0);
+    s_nr.clip_x = x; s_nr.clip_y = y; s_nr.clip_w = w; s_nr.clip_h = h;
 }
 
 /* Mirror PsyCross's whole VRAM (1024x512) into the native R16_UINT texture.
@@ -274,7 +289,7 @@ static void update_layout(void)
         return;
     if (s_nr.win_w == s_nr.layout_win_w && s_nr.win_h == s_nr.layout_win_h &&
         s_nr.ref_w == s_nr.layout_ref_w && s_nr.ref_h == s_nr.layout_ref_h &&
-        s_nr.disp_w == s_nr.layout_disp_w && s_nr.disp_h == s_nr.layout_disp_h)
+        s_nr.disp_w == s_nr.layout_disp_w && s_nr.clip_h == s_nr.layout_clip_h)
         return;
 
     /* NR_PANELS cells across the window; cell i centered at cx_i, half-width
@@ -282,16 +297,23 @@ static void update_layout(void)
     const float chx = 1.0f / (float)NR_PANELS;
     rhi_vertex verts[NR_PANELS * 6];
 
-    /* Panel 0 — native render of the PSX display region (the DISPENV disp rect
-     * sampled from the VRAM texture). Falls back to the whole VRAM until the
-     * game sets DISPENV. Top-down (v0=0 top .. v1=H bottom); UVs in texel
-     * units relative to the source tpage (psx_sample uses texelFetch). */
+    /* Panel 0 — native render of the PSX display region, sampled from the VRAM
+     * texture and cropped to the visible viewport: full disp width, but only
+     * clip.h rows (the 8px overscan bands top+bottom are dropped). Fitted at
+     * the REFERENCE aspect so it lines up 1:1 with the reference panel (the
+     * 512-wide framebuffer is non-square; both panels show it at the same
+     * display shape). Falls back to the whole VRAM until DISPENV/DRAWENV are
+     * set. Top-down (v0=0 top .. v1=H bottom); UVs in texel units relative to
+     * the per-frame source tpage. */
     {
-        int sw = s_nr.disp_w > 0 ? s_nr.disp_w : NR_VRAM_W;
-        int sh = s_nr.disp_h > 0 ? s_nr.disp_h : NR_VRAM_H;
+        int have_clip = (s_nr.disp_w > 0 && s_nr.clip_h > 0);
+        int uv_w  = have_clip ? s_nr.disp_w : NR_VRAM_W;  /* sampled region size */
+        int uv_h  = have_clip ? s_nr.clip_h : NR_VRAM_H;
+        int fit_w = have_clip ? s_nr.ref_w  : NR_VRAM_W;  /* display shape */
+        int fit_h = have_clip ? s_nr.ref_h  : NR_VRAM_H;
         float cx = -1.0f + chx, hx, hy;
-        fit_cell(cx, 0.0f, chx, 1.0f, sw, sh, s_nr.win_w, s_nr.win_h, &hx, &hy);
-        build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)sw, (float)sh);
+        fit_cell(cx, 0.0f, chx, 1.0f, fit_w, fit_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
+        build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
      * normalized (blit uses texture()). */
@@ -307,7 +329,7 @@ static void update_layout(void)
     rhi_update_buffer(s_nr.panels_vb, verts, sizeof(verts));
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
-    s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_disp_h = s_nr.disp_h;
+    s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_clip_h = s_nr.clip_h;
 }
 
 void openpete_native_render_frame(void)
@@ -341,9 +363,20 @@ void openpete_native_render_frame(void)
      * sets DISPENV). The tpage matches the UVs baked into the layout. */
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
         /* tpage = the CURRENT front-buffer origin (flips per frame via the
-         * double buffer); the panel UVs are baked by size, so only this moves. */
-        int tx = s_nr.disp_w > 0 ? s_nr.disp_x : 0;
-        int ty = s_nr.disp_w > 0 ? s_nr.disp_y : 0;
+         * double buffer), plus the top overscan band dy so the sampled rows are
+         * the visible clip. The panel UVs are baked by size; only the origin
+         * moves per frame. */
+        int tx = 0, ty = 0;
+        if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
+            /* Overscan band, centered: clip.y − disp.y is unreliable here (at
+             * present time disp is the FRONT buffer while clip was last set for
+             * the BACK buffer — different double-buffer pages). The bands are
+             * symmetric (8px top+bottom on Spyro's 240→224), so derive the top
+             * band from the sizes instead. */
+            int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
+            tx = s_nr.disp_x;
+            ty = s_nr.disp_y + dy;
+        }
         const psx_material nd_mat = { tx, ty, 0, 0, 16 };
         rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
