@@ -74,18 +74,22 @@ const char *rhi_device_name(const rhi_device *dev);
 /* ---- buffers, pipelines, draws (milestone 1b) --------------------- */
 
 /* Native vertex format — one fixed layout for all renderer geometry, so a
- * single vertex buffer format feeds every pipeline. 1b.1 uses position +
- * color (+ uv plumbed); the packed `tex` descriptor and uv sampling come
- * online with the VRAM model in 1b.2. */
+ * single vertex buffer format feeds every pipeline. 1b.1 used position +
+ * color; 1b.2 brought uv online for the PSX sampler. The per-draw texture
+ * page / CLUT / bpp ride a push constant (one material per draw batch — a
+ * native renderer sorts by material), so the packed per-vertex `tex` field
+ * is currently unused/reserved (PSX-era per-vertex tpage packing would only
+ * return if mixed-material batching is ever needed). */
 typedef struct {
-    float    x, y, z;   /* position (clip space in 1b.1; world+proj later) */
-    float    u, v;      /* logical texture coords, 0..1 within the texture */
-    uint32_t rgba;      /* per-vertex color, byte order R,G,B,A            */
-    uint32_t tex;       /* packed texture descriptor (tpage|clut|mode)     */
+    float    x, y, z;   /* position (clip space in the smoke test; proj later) */
+    float    u, v;      /* texture coords in TEXEL units (PSX integer indexing) */
+    uint32_t rgba;      /* per-vertex color, byte order R,G,B,A                 */
+    uint32_t tex;       /* reserved (packed tpage|clut|mode), see note above    */
 } rhi_vertex;
 
 typedef struct rhi_buffer   rhi_buffer;
 typedef struct rhi_pipeline rhi_pipeline;
+typedef struct rhi_texture  rhi_texture;
 
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD } rhi_blend_mode;
 
@@ -94,6 +98,8 @@ typedef struct {
     const char    *frag_spv;
     rhi_blend_mode blend;
     bool           depth_test;  /* needs a depth attachment (added later) */
+    bool           uses_vram;   /* layout includes the VRAM sampler (set 0)   */
+    uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates). */
@@ -104,9 +110,28 @@ void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 
+/* ---- the native-res PSX VRAM model (milestone 1b.2) -------------- */
+
+/* A single 16-bit-per-texel image (R16_UINT) that mirrors PSX VRAM one
+ * uint per pixel — texture pages, CLUTs, and (later) the framebuffer
+ * regions all live here, sampled through the ported PSX 4/8/16bpp + CLUT
+ * decoder (shaders/psx_sample.frag). 1024x512 is the faithful PSX VRAM
+ * extent; the renderer keeps a CPU mirror and uploads from it. */
+rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
+/* Upload the whole CPU mirror (width*height uint16 PSX pixels). Sub-rect
+ * uploads (for runtime LoadImage streaming) arrive with 1c. */
+void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
+void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
+
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
+/* Bind the VRAM texture for sampling by the current (uses_vram) pipeline;
+ * call after rhi_bind_pipeline, before the draw. */
+void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
+/* Set the current pipeline's fragment push constants (size must match the
+ * pipeline desc's push_const_size). */
+void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
 
 #endif /* OPENPETE_RHI_H */

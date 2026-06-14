@@ -80,6 +80,13 @@ struct rhi_device {
     bool     frame_active;  /* between begin_frame and end_frame */
 
     float clear[4];
+
+    /* VRAM-sampler infrastructure (1b.2): one shared sampler + set layout +
+     * pool; each rhi_texture owns a descriptor set allocated from the pool. */
+    VkSampler             vram_sampler;
+    VkDescriptorSetLayout vram_set_layout;
+    VkDescriptorPool      desc_pool;
+    VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
 };
 
 struct rhi_buffer {
@@ -92,6 +99,16 @@ struct rhi_buffer {
 struct rhi_pipeline {
     VkPipeline       pipeline;
     VkPipelineLayout layout;
+};
+
+struct rhi_texture {
+    VkImage         image;
+    VkDeviceMemory  mem;
+    VkImageView     view;
+    VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
+    rhi_buffer     *staging;   /* host-visible upload buffer */
+    uint32_t        width, height;
+    VkImageLayout   layout;    /* current layout, for re-upload transitions */
 };
 
 /* ------------------------------------------------------------------ */
@@ -514,6 +531,84 @@ static bool create_sync_and_commands(rhi_device *dev)
     return true;
 }
 
+/* The VRAM sampler is NEAREST + integer format (R16_UINT): the PSX sampler
+ * does its own texelFetch indexing, so no GPU filtering. The set layout is a
+ * single combined-image-sampler at set 0 binding 0, shared by every
+ * VRAM-sampling pipeline; each texture gets its own set from the pool. */
+static bool create_descriptor_infra(rhi_device *dev)
+{
+    VkSamplerCreateInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .maxLod = 0.0f,
+    };
+    if (vkCreateSampler(dev->device, &si, NULL, &dev->vram_sampler) != VK_SUCCESS) {
+        RHI_LOG("vkCreateSampler failed\n"); return false;
+    }
+    VkDescriptorSetLayoutBinding b = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutCreateInfo li = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1, .pBindings = &b,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &li, NULL, &dev->vram_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout failed\n"); return false;
+    }
+    VkDescriptorPoolSize ps = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 16,
+    };
+    VkDescriptorPoolCreateInfo pi = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = 16, .poolSizeCount = 1, .pPoolSizes = &ps,
+    };
+    if (vkCreateDescriptorPool(dev->device, &pi, NULL, &dev->desc_pool) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorPool failed\n"); return false;
+    }
+    return true;
+}
+
+/* A transient command buffer for one-off transfers (VRAM uploads, initial
+ * image transitions). Submits and blocks; updates are occasional so the
+ * stall is acceptable — the per-frame path never touches this. */
+static VkCommandBuffer one_shot_begin(rhi_device *dev)
+{
+    VkCommandBufferAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = dev->pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(dev->device, &ai, &cb) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cb, &bi);
+    return cb;
+}
+
+static void one_shot_end(rhi_device *dev, VkCommandBuffer cb)
+{
+    vkEndCommandBuffer(cb);
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1, .pCommandBuffers = &cb,
+    };
+    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, VK_NULL_HANDLE));
+    vkQueueWaitIdle(dev->gfx_queue);
+    vkFreeCommandBuffers(dev->device, dev->pool, 1, &cb);
+}
+
 static void destroy_swapchain_resources(rhi_device *dev)
 {
     if (dev->off_fb)    { vkDestroyFramebuffer(dev->device, dev->off_fb, NULL); dev->off_fb = VK_NULL_HANDLE; }
@@ -571,6 +666,7 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
     if (!create_render_pass(dev))       goto fail;
     if (!create_offscreen(dev))         goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
+    if (!create_descriptor_infra(dev))  goto fail;
 
     RHI_LOG("device='%s' format=%d %ux%u images=%u\n",
             dev->device_name, (int)dev->sc_format,
@@ -589,6 +685,10 @@ void rhi_destroy(rhi_device *dev)
 
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
+
+    if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
+    if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
+    if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
 
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         if (dev->img_avail[i]) vkDestroySemaphore(dev->device, dev->img_avail[i], NULL);
@@ -791,7 +891,9 @@ const char *rhi_device_name(const rhi_device *dev)
 /* Buffers                                                            */
 /* ------------------------------------------------------------------ */
 
-rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
+/* Host-visible, coherent, persistently-mapped buffer with the given usage. */
+static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
+                                      VkBufferUsageFlags usage)
 {
     rhi_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
@@ -800,7 +902,7 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
     VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = bytes,
-        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     if (vkCreateBuffer(dev->device, &bi, NULL, &b->buffer) != VK_SUCCESS) {
@@ -829,6 +931,11 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
     return b;
 }
 
+rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
+{
+    return create_host_buffer(dev, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+}
+
 void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
 {
     if (!buf || !buf->mapped) return;
@@ -845,6 +952,144 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
     }
     if (buf->buffer) vkDestroyBuffer(dev->device, buf->buffer, NULL);
     free(buf);
+}
+
+/* ------------------------------------------------------------------ */
+/* VRAM texture (the native-res PSX VRAM model)                       */
+/* ------------------------------------------------------------------ */
+
+rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    rhi_texture *t = calloc(1, sizeof(*t));
+    if (!t) return NULL;
+    t->width = width; t->height = height;
+    t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    /* R16_UINT: one uint per PSX VRAM pixel, sampled via texelFetch (the PSX
+     * shader does its own integer indexing — no GPU filtering/normalization). */
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R16_UINT,
+        .extent = { width, height, 1 },
+        .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev->device, &ici, NULL, &t->image) != VK_SUCCESS) {
+        RHI_LOG("vram vkCreateImage failed\n"); goto fail;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(dev->device, t->image, &mr);
+    uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt == UINT32_MAX) { RHI_LOG("vram: no device-local memory\n"); goto fail; }
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mr.size, .memoryTypeIndex = mt,
+    };
+    if (vkAllocateMemory(dev->device, &mai, NULL, &t->mem) != VK_SUCCESS) {
+        RHI_LOG("vram vkAllocateMemory failed\n"); goto fail;
+    }
+    vkBindImageMemory(dev->device, t->image, t->mem, 0);
+
+    VkImageViewCreateInfo vci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = t->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R16_UINT,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1, .layerCount = 1,
+        },
+    };
+    if (vkCreateImageView(dev->device, &vci, NULL, &t->view) != VK_SUCCESS) {
+        RHI_LOG("vram vkCreateImageView failed\n"); goto fail;
+    }
+
+    t->staging = create_host_buffer(dev, (size_t)width * height * sizeof(uint16_t),
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    if (!t->staging) { RHI_LOG("vram staging alloc failed\n"); goto fail; }
+
+    /* Allocate + point a descriptor set at (this view, the shared sampler). */
+    VkDescriptorSetAllocateInfo dsi = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = dev->desc_pool,
+        .descriptorSetCount = 1, .pSetLayouts = &dev->vram_set_layout,
+    };
+    if (vkAllocateDescriptorSets(dev->device, &dsi, &t->set) != VK_SUCCESS) {
+        RHI_LOG("vram vkAllocateDescriptorSets failed\n"); goto fail;
+    }
+    VkDescriptorImageInfo dii = {
+        .sampler = dev->vram_sampler,
+        .imageView = t->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = t->set, .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &dii,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+
+    /* Transition to SHADER_READ_ONLY so the texture is always in a valid
+     * sampling layout, even before the first upload. */
+    VkCommandBuffer cb = one_shot_begin(dev);
+    image_barrier(cb, t->image, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  0, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    one_shot_end(dev, cb);
+    t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return t;
+
+fail:
+    rhi_destroy_texture(dev, t);
+    return NULL;
+}
+
+void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
+{
+    if (!tex || !tex->staging) return;
+    memcpy(tex->staging->mapped, pixels,
+           (size_t)tex->width * tex->height * sizeof(uint16_t));
+
+    VkCommandBuffer cb = one_shot_begin(dev);
+    image_barrier(cb, tex->image, tex->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { tex->width, tex->height, 1 },
+    };
+    vkCmdCopyBufferToImage(cb, tex->staging->buffer, tex->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    one_shot_end(dev, cb);
+    tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
+{
+    if (!tex) return;
+    if (tex->set)     vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
+    if (tex->staging) rhi_destroy_buffer(dev, tex->staging);
+    if (tex->view)    vkDestroyImageView(dev->device, tex->view, NULL);
+    if (tex->image)   vkDestroyImage(dev->device, tex->image, NULL);
+    if (tex->mem)     vkFreeMemory(dev->device, tex->mem, NULL);
+    free(tex);
 }
 
 /* ------------------------------------------------------------------ */
@@ -981,8 +1226,19 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2, .pDynamicStates = dyn,
     };
+    /* Optional VRAM sampler set (0) + a fragment-stage push-constant block
+     * (the per-draw PSX material: tpage/clut/bpp). The 1b.1 quad pipeline
+     * uses neither and keeps an empty layout. */
+    VkPushConstantRange pcr = {
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0, .size = desc->push_const_size,
+    };
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = desc->uses_vram ? 1u : 0u,
+        .pSetLayouts = desc->uses_vram ? &dev->vram_set_layout : NULL,
+        .pushConstantRangeCount = desc->push_const_size ? 1u : 0u,
+        .pPushConstantRanges = desc->push_const_size ? &pcr : NULL,
     };
     if (vkCreatePipelineLayout(dev->device, &plci, NULL, &p->layout) != VK_SUCCESS) {
         RHI_LOG("vkCreatePipelineLayout failed\n");
@@ -1026,6 +1282,7 @@ void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!dev->frame_active) return;
+    dev->cur_layout = pipe->layout; /* for bind_vram / push_constants */
     vkCmdBindPipeline(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
 }
 
@@ -1034,6 +1291,20 @@ void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
     if (!dev->frame_active) return;
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 1, &buf->buffer, &off);
+}
+
+void rhi_bind_vram(rhi_device *dev, rhi_texture *tex)
+{
+    if (!dev->frame_active) return;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, 0, 1, &tex->set, 0, NULL);
+}
+
+void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)
+{
+    if (!dev->frame_active) return;
+    vkCmdPushConstants(dev->cmd[dev->frame], dev->cur_layout,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
 }
 
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)
