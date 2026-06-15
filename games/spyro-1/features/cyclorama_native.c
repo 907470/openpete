@@ -389,6 +389,7 @@ static void push_scene(CPUState* cpu) {
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_native[i].v[k].sx;
             t.v[k].sy   = s_native[i].v[k].sy;
+            t.v[k].z    = 1.0f;   /* sky = the backdrop: always behind depth-tested actors */
             t.v[k].rgba = s_native[i].v[k].rgb | 0xFF000000u;
         }
         openpete_native_scene_add_tri(&t);

@@ -203,7 +203,7 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * 8001FCC8), and writes screen XY into out[]. Returns vertex count.
  * Static-pose (blend factor 0) only; the keyframe-INTPL blend path is a TODO.
  * The caller set-matches these against the emitted prim vertices. */
-typedef struct { float sx, sy; int sat; } proj_xy;
+typedef struct { float sx, sy, vz; int sat; } proj_xy;  /* vz = view-space Z (for depth) */
 
 static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
     uint32_t header = cpu->read_word(rec + 0x04);
@@ -241,8 +241,8 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
             flag = (int)((uint16_t)d & 1u);
         }
         double sx, sy; int sat;
-        project(M, TR, VX, VY, VZ, ofx, ofy, H, &sx, &sy, &sat);
-        out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].sat = sat;
+        double vz = project(M, TR, VX, VY, VZ, ofx, ofy, H, &sx, &sy, &sat);
+        out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].vz = (float)vz; out[i].sat = sat;
     }
     return count;
 }
@@ -275,7 +275,7 @@ static int project_all_records(CPUState* cpu) {
  * set, so the fed geometry is native (sub-pixel; widescreen/interp-ready),
  * just not yet topology-independent. Per-vertex colour is the prim's fogged
  * RGB (the .s's DPCS output; float DPCS is 3a.4). */
-typedef struct { float sx, sy; uint32_t rgb; } ntri_vert;
+typedef struct { float sx, sy, vz; uint32_t rgb; } ntri_vert;  /* vz for depth */
 typedef struct { ntri_vert v[3]; } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 static ntri_t s_ntri[MAX_NTRI]; static int s_ntri_n;
@@ -302,22 +302,22 @@ static int build_native_tris(void) {
     for (int g = 0; g < s_gte_n; g++) {
         prim_t* P = &s_gte[g];
         if (P->nv < 3) continue;
-        float fx[4], fy[4];
+        float fx[4], fy[4], fz[4];
         for (int k = 0; k < P->nv; k++) {
             int idx = nearest_native(P->x[k], P->y[k]);
-            if (idx >= 0) { fx[k] = s_proj[idx].sx; fy[k] = s_proj[idx].sy; }
-            else          { fx[k] = P->x[k];        fy[k] = P->y[k]; fallback++; }
+            if (idx >= 0) { fx[k] = s_proj[idx].sx; fy[k] = s_proj[idx].sy; fz[k] = s_proj[idx].vz; }
+            else          { fx[k] = P->x[k];        fy[k] = P->y[k]; fz[k] = 4096.0f; fallback++; }
         }
         if (s_ntri_n >= MAX_NTRI) break;
         ntri_t* t = &s_ntri[s_ntri_n++];
-        t->v[0] = (ntri_vert){ fx[0], fy[0], P->rgb[0] };
-        t->v[1] = (ntri_vert){ fx[1], fy[1], P->rgb[1] };
-        t->v[2] = (ntri_vert){ fx[2], fy[2], P->rgb[2] };
+        t->v[0] = (ntri_vert){ fx[0], fy[0], fz[0], P->rgb[0] };
+        t->v[1] = (ntri_vert){ fx[1], fy[1], fz[1], P->rgb[1] };
+        t->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->rgb[2] };
         if (P->nv == 4 && s_ntri_n < MAX_NTRI) {  /* PSX quad TL,TR,BL,BR -> tris (0,1,2)+(1,3,2) */
             ntri_t* q = &s_ntri[s_ntri_n++];
-            q->v[0] = (ntri_vert){ fx[1], fy[1], P->rgb[1] };
-            q->v[1] = (ntri_vert){ fx[3], fy[3], P->rgb[3] };
-            q->v[2] = (ntri_vert){ fx[2], fy[2], P->rgb[2] };
+            q->v[0] = (ntri_vert){ fx[1], fy[1], fz[1], P->rgb[1] };
+            q->v[1] = (ntri_vert){ fx[3], fy[3], fz[3], P->rgb[3] };
+            q->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->rgb[2] };
         }
     }
     return fallback;
@@ -340,6 +340,7 @@ static void push_scene_moby(void) {
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_ntri[i].v[k].sx;
             t.v[k].sy   = s_ntri[i].v[k].sy;
+            t.v[k].z    = openpete_native_depth_from_viewz(s_ntri[i].v[k].vz);
             t.v[k].rgba = s_ntri[i].v[k].rgb | 0xFF000000u;
         }
         openpete_native_scene_add_tri(&t);
@@ -354,35 +355,49 @@ static void push_scene_moby(void) {
 static void compare_and_report(int nrec) {
     if (!s_proj_n) { fprintf(stderr, "[moby-verify f=%u] no records\n", openpete_frame); return; }
 
-    int gv_n = 0, near_n = 0, floor_ok = 0;
-    double sum = 0, mx = 0, worst = -1;
+    int gv_n = 0, near_n = 0, floor_ok = 0, ambig = 0;
+    double sum = 0, mx = 0, worst = -1, max_tiejump = 0;
     float wgx=0,wgy=0,wnx=0,wny=0;
     for (int g = 0; g < s_gte_n; g++) {
         prim_t* P = &s_gte[g];
         for (int k = 0; k < P->nv; k++) {
             float gx = P->x[k], gy = P->y[k];
             gv_n++;
-            double best = 1e18; float bnx=0, bny=0;
+            double best = 1e18, best2 = 1e18; float bnx=0, bny=0, bnx2=0, bny2=0;
             for (int i = 0; i < s_proj_n; i++) {
                 if (s_proj[i].sat) continue;
                 double dx = s_proj[i].sx - gx, dy = s_proj[i].sy - gy;
                 double d = dx*dx + dy*dy;
-                if (d < best) { best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; }
+                if (d < best) { best2 = best; bnx2 = bnx; bny2 = bny;
+                                best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; }
+                else if (d < best2) { best2 = d; bnx2 = s_proj[i].sx; bny2 = s_proj[i].sy; }
             }
             double dist = sqrt(best);
             if (dist <= 4.0) {
                 near_n++; sum += dist; if (dist > mx) mx = dist;
                 if (fabs(floor((double)bnx) - gx) <= 1.0 && fabs(floor((double)bny) - gy) <= 1.0)
                     floor_ok++;
+                /* NN-ambiguity (jitter proxy): when the 2nd-nearest native vert
+                 * is within 1px of the nearest, NN can flip between them as the
+                 * moby moves frame-to-frame -> the scaffold's jitter. Record how
+                 * far such a vertex would jump (the 1st<->2nd vert separation).
+                 * 3a.2b's real index decode eliminates this entirely. */
+                if (best2 < 1e17 && sqrt(best2) - dist < 1.0) {
+                    ambig++;
+                    double jx = bnx2 - bnx, jy = bny2 - bny, jump = sqrt(jx*jx + jy*jy);
+                    if (jump > max_tiejump) max_tiejump = jump;
+                }
             }
             if (dist > worst && dist < 1e17) { worst = dist; wgx=gx; wgy=gy; wnx=bnx; wny=bny; }
         }
     }
     fprintf(stderr,
         "[moby-verify f=%u] recs=%d nativeVerts=%d primVerts=%d | matched(<=4px)=%d/%d(%.1f%%) "
-        "mean=%.3fpx max=%.3fpx floor(+-1)=%d | worst gte(%.0f,%.0f) near(%.1f,%.1f) d=%.1f | prims=%d\n",
+        "mean=%.3fpx max=%.3fpx floor(+-1)=%d | NN-ambiguous=%d/%d(%.1f%%) maxTieJump=%.1fpx | "
+        "worst gte(%.0f,%.0f) near(%.1f,%.1f) d=%.1f | prims=%d\n",
         openpete_frame, nrec, s_proj_n, gv_n, near_n, gv_n,
         gv_n?100.0*near_n/gv_n:0.0, near_n?sum/near_n:0.0, mx, floor_ok,
+        ambig, near_n, near_n?100.0*ambig/near_n:0.0, max_tiejump,
         wgx,wgy,wnx,wny, worst, s_gte_n);
 }
 

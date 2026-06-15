@@ -62,8 +62,22 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * Determinism-safe: this is host-side display state only; the game's push
  * reads gamestate but writes nothing PSX-readable. Inert unless the native
  * path is live. */
-typedef struct { float sx, sy; uint32_t rgba; } openpete_scene_vert;
-typedef struct { openpete_scene_vert v[3]; }     openpete_scene_tri;
+/* z is the depth used for the native depth buffer (3a.3): NDC [0,1], 0=near,
+ * 1=far. Actors map their view-space Z through openpete_native_depth_from_viewz;
+ * the cyclorama/sky passes 1.0 (always the backdrop). */
+typedef struct { float sx, sy, z; uint32_t rgba; } openpete_scene_vert;
+typedef struct { openpete_scene_vert v[3]; }        openpete_scene_tri;
+
+/* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
+ * 1.0 == 4096) to an NDC depth in [0,1) that is monotonic in distance, so the
+ * depth buffer sorts actors near→far. Not perspective-exact (the native render
+ * only needs correct ORDERING, not PSX-bit-identical Z); the 4096 scale spreads
+ * typical actor depths across the usable range. Shared by every feeder so their
+ * depths are mutually comparable. */
+static inline float openpete_native_depth_from_viewz(float vz) {
+    if (vz < 1.0f) vz = 1.0f;              /* near guard (behind-camera is culled) */
+    return vz / (vz + 4096.0f);            /* 0(near) .. ->1(far), never reaches 1 */
+}
 
 /* Begin a fresh native-scene frame (clears the triangle list). Called by
  * the game at the start of its scene extraction. */

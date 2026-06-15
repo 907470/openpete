@@ -218,7 +218,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc gouraud_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
         .uses_vram = false, .push_const_size = 0,
     };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
@@ -412,10 +412,11 @@ static bool draw_native_scene(void)
     if (s_scene_bg != 0) {
         float l = s_nr.p0_cx - s_nr.p0_hx, r = s_nr.p0_cx + s_nr.p0_hx;
         float t = s_nr.p0_hy, b = -s_nr.p0_hy;
-        const rhi_vertex tl = { l, t, 0, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex tr = { r, t, 0, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex br = { r, b, 0, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex bl = { l, b, 0, 0, 0, s_scene_bg, 0 };
+        /* z=1.0 = far plane: the bg fill sits behind every depth-tested actor. */
+        const rhi_vertex tl = { l, t, 1.0f, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex tr = { r, t, 1.0f, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex br = { r, b, 1.0f, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex bl = { l, b, 1.0f, 0, 0, s_scene_bg, 0 };
         buf[0] = tl; buf[1] = tr; buf[2] = br;
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         base = 6;
@@ -428,7 +429,7 @@ static bool draw_native_scene(void)
             float cx, cy;
             scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[base + t * 3 + k];
-            o->x = cx; o->y = cy; o->z = 0.0f; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = s_scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
             o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
         }
     }

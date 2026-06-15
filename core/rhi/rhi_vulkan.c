@@ -66,6 +66,13 @@ struct rhi_device {
     VkImageView    off_view;
     VkFramebuffer  off_fb;
 
+    /* Depth attachment for the offscreen target (3a.3 native-renderer depth):
+     * D32_SFLOAT, cleared to 1.0 each frame, store-discarded. Pipelines opt in
+     * via rhi_pipeline_desc.depth_test; the 2D panels leave it off. */
+    VkImage        off_depth_image;
+    VkDeviceMemory off_depth_mem;
+    VkImageView    off_depth_view;
+
     /* Commands + sync */
     VkCommandPool   pool;
     VkCommandBuffer cmd[RHI_FRAMES_IN_FLIGHT];
@@ -387,23 +394,41 @@ static bool create_render_pass(rhi_device *dev)
         /* Leave it ready for the blit that reads it after the pass. */
         .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
     };
+    VkAttachmentDescription depth = {
+        .format = VK_FORMAT_D32_SFLOAT,   /* required-supported depth format */
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, /* not read after the pass */
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
     VkAttachmentReference ref = {
         .attachment = 0,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference depth_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
     VkSubpassDescription sub = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &ref,
+        .pDepthStencilAttachment = &depth_ref,
     };
     VkSubpassDependency deps[2] = {
-        { /* external -> subpass: acquire color attachment */
+        { /* external -> subpass: acquire color + depth attachments */
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         },
         { /* subpass -> external: make color writes available to the blit */
             .srcSubpass = 0,
@@ -414,10 +439,11 @@ static bool create_render_pass(rhi_device *dev)
             .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         },
     };
+    VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color,
+        .attachmentCount = 2,
+        .pAttachments = atts,
         .subpassCount = 1,
         .pSubpasses = &sub,
         .dependencyCount = 2,
@@ -480,11 +506,60 @@ static bool create_offscreen(rhi_device *dev)
         RHI_LOG("offscreen vkCreateImageView failed\n");
         return false;
     }
+    /* Depth attachment (3a.3): D32_SFLOAT, device-local, depth-stencil usage. */
+    VkImageCreateInfo dici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev->device, &dici, NULL, &dev->off_depth_image) != VK_SUCCESS) {
+        RHI_LOG("offscreen depth vkCreateImage failed\n");
+        return false;
+    }
+    VkMemoryRequirements dmr;
+    vkGetImageMemoryRequirements(dev->device, dev->off_depth_image, &dmr);
+    uint32_t dmt = find_memtype(dev->phys, dmr.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (dmt == UINT32_MAX) { RHI_LOG("no device-local memory type (depth)\n"); return false; }
+    VkMemoryAllocateInfo dmai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = dmr.size,
+        .memoryTypeIndex = dmt,
+    };
+    if (vkAllocateMemory(dev->device, &dmai, NULL, &dev->off_depth_mem) != VK_SUCCESS) {
+        RHI_LOG("offscreen depth vkAllocateMemory failed\n");
+        return false;
+    }
+    vkBindImageMemory(dev->device, dev->off_depth_image, dev->off_depth_mem, 0);
+    VkImageViewCreateInfo dvci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = dev->off_depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1, .layerCount = 1,
+        },
+    };
+    if (vkCreateImageView(dev->device, &dvci, NULL, &dev->off_depth_view) != VK_SUCCESS) {
+        RHI_LOG("offscreen depth vkCreateImageView failed\n");
+        return false;
+    }
+
+    VkImageView fb_atts[2] = { dev->off_view, dev->off_depth_view };
     VkFramebufferCreateInfo fci = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = dev->off_rp,
-        .attachmentCount = 1,
-        .pAttachments = &dev->off_view,
+        .attachmentCount = 2,
+        .pAttachments = fb_atts,
         .width = dev->sc_extent.width,
         .height = dev->sc_extent.height,
         .layers = 1,
@@ -616,6 +691,9 @@ static void destroy_swapchain_resources(rhi_device *dev)
     if (dev->off_view)  { vkDestroyImageView(dev->device, dev->off_view, NULL); dev->off_view = VK_NULL_HANDLE; }
     if (dev->off_image) { vkDestroyImage(dev->device, dev->off_image, NULL); dev->off_image = VK_NULL_HANDLE; }
     if (dev->off_mem)   { vkFreeMemory(dev->device, dev->off_mem, NULL); dev->off_mem = VK_NULL_HANDLE; }
+    if (dev->off_depth_view)  { vkDestroyImageView(dev->device, dev->off_depth_view, NULL); dev->off_depth_view = VK_NULL_HANDLE; }
+    if (dev->off_depth_image) { vkDestroyImage(dev->device, dev->off_depth_image, NULL); dev->off_depth_image = VK_NULL_HANDLE; }
+    if (dev->off_depth_mem)   { vkFreeMemory(dev->device, dev->off_depth_mem, NULL); dev->off_depth_mem = VK_NULL_HANDLE; }
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++) {
         if (dev->render_done[i]) {
             vkDestroySemaphore(dev->device, dev->render_done[i], NULL);
@@ -755,16 +833,17 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
 {
     if (!dev->frame_active) return;
     dev->clear[0] = r; dev->clear[1] = g; dev->clear[2] = b; dev->clear[3] = a;
-    VkClearValue cv;
-    cv.color.float32[0] = r; cv.color.float32[1] = g;
-    cv.color.float32[2] = b; cv.color.float32[3] = a;
+    VkClearValue cv[2];
+    cv[0].color.float32[0] = r; cv[0].color.float32[1] = g;
+    cv[0].color.float32[2] = b; cv[0].color.float32[3] = a;
+    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0; /* far */
     VkRenderPassBeginInfo rp = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_rp,
         .framebuffer = dev->off_fb,
         .renderArea = { .offset = {0, 0}, .extent = dev->sc_extent },
-        .clearValueCount = 1,
-        .pClearValues = &cv,
+        .clearValueCount = 2,
+        .pClearValues = cv,
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1293,6 +1372,16 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1, .pAttachments = &cba,
     };
+    /* Depth: the offscreen target always carries a depth attachment (3a.3);
+     * a pipeline opts into testing/writing it via desc->depth_test. The 2D
+     * panels (depth_test=false) ignore it and never write it. LESS_OR_EQUAL so
+     * equal-depth later draws (e.g. coincident prims) still paint. */
+    VkPipelineDepthStencilStateCreateInfo dss = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable = desc->depth_test ? VK_TRUE : VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+    };
     VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPipelineDynamicStateCreateInfo ds = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -1326,6 +1415,7 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .pViewportState = &vp,
         .pRasterizationState = &rs,
         .pMultisampleState = &ms,
+        .pDepthStencilState = &dss,
         .pColorBlendState = &cb,
         .pDynamicState = &ds,
         .layout = p->layout,
