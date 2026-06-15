@@ -268,7 +268,10 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
  * vertex in MODEL space by blend/4096 before RTPS (the asm INTPLs IR(=A) toward
  * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
-typedef struct { float sx, sy, vz; int sat; int rec; } proj_xy;  /* vz=view-Z; rec=source record (diag) */
+typedef struct { float sx, sy, vz; int sat; int rec;
+                 float ex, ey, ez; } proj_xy;  /* vz=view-Z; rec=source record (diag);
+                 ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
+                 the input to the specular env-reflection UV map (#1). */
 
 static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
     uint32_t header = cpu->read_word(rec + 0x04);
@@ -315,6 +318,10 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
         double sx, sy; int sat;
         double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
         out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].vz = (float)vzz; out[i].sat = sat;
+        /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
+        out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
+        out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
+        out[i].ez = (float)((M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0);
     }
     return count;
 }
@@ -325,7 +332,8 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 /* Per-record metadata for the independent face-stream walk (3a.2b): where this
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
-typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0; } rec_meta;
+typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
+                 int metal; } rec_meta;  /* metal = m_SpecularMetalColor (rec+0x30) high byte (env flag) */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
@@ -347,7 +355,10 @@ static int project_all_records(CPUState* cpu) {
             uint32_t header = cpu->read_word(rec + 0x04);
             s_recs[nrec] = (rec_meta){ rec, off, got, header,
                 /* HP face stream base = AnimationHeader+0x14 (LP path TODO) */
-                (header >= 0x80000000u) ? cpu->read_word(header + 0x14) : 0u, w0 };
+                (header >= 0x80000000u) ? cpu->read_word(header + 0x14) : 0u, w0,
+                /* env metal flag = high byte of m_SpecularMetalColor @rec+0x30 (specular
+                 * cull pass copies it; @80020CA0 / read @8002176C srl 24, bnez .L800226F8) */
+                (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu) };
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -361,7 +372,8 @@ static int project_all_records(CPUState* cpu) {
  * nearest-neighbour prim scaffold it replaced was removed when the walk was
  * promoted (2026-06-15); the walk is jitter-free (exact word0 indices) where
  * the scaffold's screen-proximity matching jittered. */
-typedef struct { float sx, sy, vz; int u, v; uint32_t rgb; } ntri_vert;  /* vz=depth; u,v=texel */
+typedef struct { float sx, sy, vz; int u, v; uint32_t rgb;
+                 float ex, ey, ez; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input (#1) */
 typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
@@ -423,17 +435,25 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
     ntri_t* t = &s_wtri[s_wtri_n++];
-    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca};
-    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb};
-    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc};
+    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez};
+    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez};
+    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
     s_walkdiag.emitted++;
 }
+
+/* specular env-reflection UV (#1) -- definitions below (near recolor); forward-
+ * declared so the walk can derive metal-face UVs natively. s_env_* = the static
+ * metal Tiledef (D_800756F0, level-load asset), decoded to VRAM px by _load. */
+static void specular_env_load(CPUState* cpu);
+static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv);
+static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
 
 /* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
  * No backface cull yet (the winding sign is determined from the A/B's nclip
  * split first); quads emit both sub-tris when quad-enable is set. */
 static int build_walk_tris(CPUState* cpu) {
+    specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
     s_wtri_n = 0;
     memset(&s_walkdiag, 0, sizeof(s_walkdiag));
     for (int r = 0; r < s_nrecs; r++) {
@@ -540,6 +560,32 @@ static int build_walk_tris(CPUState* cpu) {
                 tpx=(int)(tp&0xFu)*64; tpy=(int)((tp>>4)&1u)*256;
                 int mode=(int)((tp>>7)&3u); bpp=(mode==0)?4:(mode==1)?8:16;
                 clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
+            }
+            /* #1 SPECULAR ENV-REFLECTION (metal faces): the .s replaces the baked
+             * Tiledef UV with a view-dependent reflection map (per-vertex
+             * metalMatrix.(viewPos-TR) -> spherical UV). Re-derived in float
+             * (byte-exact <=1 texel vs the prims); tpage/clut from the static metal
+             * Tiledef. Gated to the SPEC pass + metal records (rec+0x30 hi byte). */
+            if (textured && s_cur_mat[0]=='S' && R->metal) {
+                specular_env_uv(p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
+                specular_env_uv(p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
+                specular_env_uv(p2->ex,p2->ey,p2->ez, &u[2],&v[2]);
+                if (p3) specular_env_uv(p3->ex,p3->ey,p3->ez, &u[3],&v[3]);
+                /* SEAM UNWRAP: u is azimuth mod 128, so a face straddling the 0/128
+                 * seam would have e.g. u={120,9} and the GPU would interpolate the
+                 * whole texture backwards across it. The .s shifts the whole face to
+                 * stay contiguous (the 143-vs-15 prim case). Mirror it: pull u[1..3]
+                 * within +-64 of u[0], then keep all >=0. (v is bounded elevation, no
+                 * wrap.) Absolute 128-block may differ from the .s by one period on
+                 * seam faces -- harmless for a tiling reflection panorama. */
+                int nvtx = p3 ? 4 : 3, umin = u[0];
+                for (int q = 1; q < nvtx; q++) {
+                    while (u[q] - u[0] >  64) u[q] -= 128;
+                    while (u[q] - u[0] < -64) u[q] += 128;
+                    if (u[q] < umin) umin = u[q];
+                }
+                if (umin < 0) for (int q = 0; q < nvtx; q++) u[q] += 128;
+                tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
             }
             int blend = 0;   /* ABE bit not in word0; 3a.3 sets it from tpage */
 
@@ -798,6 +844,107 @@ static void recolor_walk_from_prims(void) {
     }
 }
 
+/* ---- specular env-reflection UV (#1), native float ---------------------
+ * The shiny-metal faces reflect the environment: the .s computes per-vertex UV
+ * from refl = metalMatrix . (viewPos-TR) mapped to spherical coords (atan2 + the
+ * D_8006D908/D_8006CBF8 tables), gated by m_SpecularMetalColor's high byte and
+ * offset per-moby by the camera heading (.L800226F8/.L800222C0). metalMatrix
+ * (D_800770C8+0x18) is the camera rotation with z negated (MetalBuildMatrix,
+ * update-side), so refl is already CAMERA-relative -> the reflection tracks the
+ * camera for free. We re-derive in FLOAT (design choice): a clean spherical map,
+ * HD-ready, the prim UV is a closeness/camera-tracking sanity check (not 100%).*/
+static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
+static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
+#define D_METAL_TILEDEF 0x800756F0u   /* static metal env-texture Tiledef (level-load) */
+static void specular_env_load(CPUState* cpu) {
+    read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
+    s_camHead = (int)cpu->read_word(G_CAMERA + 0x50u);
+    /* metal env texture page/CLUT: D_800756F0 word0 hi=clut, word1 hi=tpage
+     * (empirically clut=0x1C20 tpage=0x80AC; == the captured env prims). */
+    unsigned cl = cpu->read_word(D_METAL_TILEDEF) >> 16;
+    unsigned tp = cpu->read_word(D_METAL_TILEDEF + 4u) >> 16;
+    s_env_tpx = (int)(tp & 0xFu) * 64; s_env_tpy = (int)((tp >> 4) & 1u) * 256;
+    int mode = (int)((tp >> 7) & 3u); s_env_bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+    s_env_clx = (int)(cl & 0x3Fu) * 16; s_env_cly = (int)((cl >> 6) & 0x1FFu);
+}
+/* refl = metalMatrix . vec  (vec = the rotated vertex offset ex/ey/ez). */
+static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
+    r[0] = (s_metalM[0][0]*ex + s_metalM[0][1]*ey + s_metalM[0][2]*ez) / 4096.0f;
+    r[1] = (s_metalM[1][0]*ex + s_metalM[1][1]*ey + s_metalM[1][2]*ez) / 4096.0f;
+    r[2] = (s_metalM[2][0]*ex + s_metalM[2][1]*ey + s_metalM[2][2]*ez) / 4096.0f;
+}
+
+/* CALIBRATION (falsify-before-ship): for the metal/env textured walk faces,
+ * dump refl + several candidate spherical mappings alongside the captured prim
+ * U/V/tpage so the exact axis/scale/origin can be read off real data before the
+ * final mapping is wired in. Mirrors recolor's NN walk->prim match. */
+#define PI_F 3.14159265358979f
+static float wrap128(float x) { x = fmodf(x, 128.0f); return x < 0 ? x + 128.0f : x; }
+/* Native env-UV, fitted byte-exact (<=1 texel) to the prim-UV dump 2026-06-15:
+ *   refl = metalMatrix . (viewPos-TR)              [camera-relative pitch/roll]
+ *   u = (52.5 - (128/2pi)*atan2(rx,ry) - camHead/16) mod 128
+ *   v = 64 + (128/pi)*asin(rz/|r|)
+ * The metalMatrix (MetalBuildMatrix, z-negated camera rot) is NOT rebuilt every
+ * frame, so the .s tracks fine camera YAW with a per-frame camHead term
+ * (g_Camera+0x50, an 11-bit 2048/circle heading; 2048 -> the 128-texel azimuth
+ * wrap == camHead/16). This keeps the reflection WORLD-anchored: turning the
+ * camera slides the reflected environment across the metal. */
+static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
+    float r[3]; specular_env_refl(ex, ey, ez, r);
+    float len = sqrtf(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
+    float az = atan2f(r[0], r[1]);
+    float el = len > 0.001f ? asinf(r[2] / len) : 0.0f;
+    int u = (int)lrintf(wrap128(52.5f - (128.0f / (2.0f*PI_F)) * az - s_camHead / 16.0f));
+    int v = (int)lrintf(64.0f + (128.0f / PI_F) * el);
+    if (u < 0) u = 0; if (u > 255) u = 255;
+    if (v < 0) v = 0; if (v > 255) v = 255;
+    *pu = u; *pv = v;
+}
+static void specular_env_calibrate(CPUState* cpu) {
+    specular_env_load(cpu);
+    build_prim_tris();
+    fprintf(stderr, "[spec-env f=%u] metalM=[%d %d %d|%d %d %d|%d %d %d] camHead=%d nrecs=%d "
+        "D756F0=%08X %08X clutmix\n",
+        openpete_frame, s_metalM[0][0],s_metalM[0][1],s_metalM[0][2],
+        s_metalM[1][0],s_metalM[1][1],s_metalM[1][2], s_metalM[2][0],s_metalM[2][1],s_metalM[2][2],
+        s_camHead, s_nrecs, cpu->read_word(0x800756F0u), cpu->read_word(0x800756F4u));
+    int dumped = 0, nv = 0; double sumu = 0, sumv = 0, sgnu = 0; int maxu = 0, maxv = 0;
+    for (int wi = 0; wi < s_wtri_n && dumped < 16; wi++) {
+        ntri_t* w = &s_wtri[wi];
+        if (!w->textured) continue;
+        double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
+        double best=1e18; int bp=-1;
+        for (int pi=0; pi<s_ptri_n; pi++) {
+            double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
+            double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
+            if (fabs(pcx-wcx)>32.0 || fabs(pcy-wcy)>32.0) continue;
+            double c=tri_match_cost(w,&s_ptri[pi]); if (c<best){best=c;bp=pi;}
+        }
+        if (bp<0 || best>8.0) continue;
+        ptri* P=&s_ptri[bp];
+        for (int k=0;k<3;k++) {
+            double bd=1e18; int bj=0;
+            for (int j=0;j<3;j++){ double dx=w->v[k].sx-P->x[j], dy=w->v[k].sy-P->y[j];
+                double d=dx*dx+dy*dy; if(d<bd){bd=d;bj=j;} }
+            float r[3]; specular_env_refl(w->v[k].ex,w->v[k].ey,w->v[k].ez,r);
+            int nu, nv2; specular_env_uv(w->v[k].ex,w->v[k].ey,w->v[k].ez, &nu, &nv2);
+            int pu = P->u[bj], pv = P->v[bj];
+            int du = nu - (pu & 127); if (du > 64) du -= 128; if (du < -64) du += 128;
+            int dv = nv2 - pv;
+            if (pu || pv) {  /* skip the (0,0) untextured-prim matches */
+                nv++; sumu += fabs((double)du); sumv += fabs((double)dv); sgnu += du;
+                if (abs(du) > maxu) maxu = abs(du); if (abs(dv) > maxv) maxv = abs(dv);
+            }
+            fprintf(stderr, "  refl(%.0f %.0f %.0f) -> uv(%d,%d) prim(%d,%d) d(%d,%d) clut=%04X\n",
+                r[0],r[1],r[2], nu,nv2, pu,pv, du,dv, P->clut);
+        }
+        dumped++;
+    }
+    fprintf(stderr, "[spec-env f=%u] camHead=%d dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
+        "signedU=%.2f maxErr u=%d v=%d\n",
+        openpete_frame, s_camHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
+}
+
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
  * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
  * on top. Depth ordering is the real per-pixel Z-buffer (3a.3): each vertex
@@ -958,10 +1105,9 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
 
     if (feed) {
-        build_walk_tris(cpu);                 /* 3a.2b independent topology (promoted over the scaffold) */
-        if (mat && mat[0] == 'S' && mat[1] == 'P')   /* SPEC: env-metal colour from the .s's prims */
-            recolor_walk_from_prims();
-        push_scene_moby();
+        build_walk_tris(cpu);                 /* 3a.2b walk; SPEC env-reflection UV derived natively (#1) */
+        push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
+                                               * (walk +0x1100/base), env-UV now native (build_walk_tris) */
     }
 
     if (verify) {
@@ -976,6 +1122,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             build_walk_tris(cpu);             /* 3a.2b independent walk + topology A/B */
             compare_walk_vs_prims();
             if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
+                specular_env_calibrate(cpu);  /* #1 env-UV calibration dump (native refl vs prim UV) */
                 recolor_walk_from_prims();
                 compare_walk_vs_prims();      /* the post-recolor col= should jump high */
             }
@@ -1335,7 +1482,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
-            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat; n++;
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat;
+            out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
+            n++;
         }
         if (s_nshrecs < 256) {
             uint32_t scolor = cpu->read_word(m + 0x4Cu);   /* m_SpecularMetalColor */
