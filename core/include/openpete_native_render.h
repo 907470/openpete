@@ -65,8 +65,18 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
 /* z is the depth used for the native depth buffer (3a.3): NDC [0,1], 0=near,
  * 1=far. Actors map their view-space Z through openpete_native_depth_from_viewz;
  * the cyclorama/sky passes 1.0 (always the backdrop). */
-typedef struct { float sx, sy, z; uint32_t rgba; } openpete_scene_vert;
-typedef struct { openpete_scene_vert v[3]; }        openpete_scene_tri;
+/* u,v are texel coords within the texture page (PSX integer texel space, 0..255)
+ * — only meaningful when the tri is textured. */
+typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_vert;
+/* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
+ * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
+ * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
+ * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3. */
+typedef struct {
+    openpete_scene_vert v[3];
+    int textured;
+    int tpage_x, tpage_y, clut_x, clut_y, bpp;
+} openpete_scene_tri;
 
 /* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
  * 1.0 == 4096) to an NDC depth in [0,1) that is monotonic in distance, so the

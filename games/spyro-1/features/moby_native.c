@@ -336,8 +336,11 @@ static int project_all_records(CPUState* cpu) {
  * set, so the fed geometry is native (sub-pixel; widescreen/interp-ready),
  * just not yet topology-independent. Per-vertex colour is the prim's fogged
  * RGB (the .s's DPCS output; float DPCS is 3a.4). */
-typedef struct { float sx, sy, vz; uint32_t rgb; } ntri_vert;  /* vz for depth */
-typedef struct { ntri_vert v[3]; } ntri_t;
+typedef struct { float sx, sy, vz; int u, v; uint32_t rgb; } ntri_vert;  /* vz=depth; u,v=texel */
+typedef struct {
+    ntri_vert v[3];
+    int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
+} ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 static ntri_t s_ntri[MAX_NTRI]; static int s_ntri_n;
 
@@ -369,16 +372,37 @@ static int build_native_tris(void) {
             if (idx >= 0) { fx[k] = s_proj[idx].sx; fy[k] = s_proj[idx].sy; fz[k] = s_proj[idx].vz; }
             else          { fx[k] = P->x[k];        fy[k] = P->y[k]; fz[k] = 4096.0f; fallback++; }
         }
+        /* PSX material from the prim's Tiledef halfwords -> VRAM-pixel coords.
+         * tpage: X=bits0-3 *64, Y=bit4 *256, colour-mode=bits7-8 (0=4/1=8/2=16bpp).
+         * clut:  X=bits0-5 *16, Y=bits6-14. */
+        int tex = P->textured, tpx=0, tpy=0, clx=0, cly=0, bpp=16;
+        if (tex) {
+            unsigned tp = (unsigned)P->tpage, cl = (unsigned)P->clut;
+            tpx = (int)(tp & 0xFu) * 64;
+            tpy = (int)((tp >> 4) & 1u) * 256;
+            int mode = (int)((tp >> 7) & 3u);
+            bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+            clx = (int)(cl & 0x3Fu) * 16;
+            cly = (int)((cl >> 6) & 0x1FFu);
+            static int s_mat_logged = 0;
+            if (!s_mat_logged) { s_mat_logged = 1;
+                fprintf(stderr, "[moby-mat] first textured prim: tpage=%04X clut=%04X -> "
+                        "tpage(%d,%d) clut(%d,%d) bpp=%d uv0=(%d,%d)\n",
+                        (unsigned)P->tpage, (unsigned)P->clut, tpx, tpy, clx, cly, bpp,
+                        P->u[0], P->v[0]); }
+        }
         if (s_ntri_n >= MAX_NTRI) break;
         ntri_t* t = &s_ntri[s_ntri_n++];
-        t->v[0] = (ntri_vert){ fx[0], fy[0], fz[0], P->rgb[0] };
-        t->v[1] = (ntri_vert){ fx[1], fy[1], fz[1], P->rgb[1] };
-        t->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->rgb[2] };
+        t->v[0] = (ntri_vert){ fx[0], fy[0], fz[0], P->u[0], P->v[0], P->rgb[0] };
+        t->v[1] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
+        t->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
+        t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly; t->bpp=bpp;
         if (P->nv == 4 && s_ntri_n < MAX_NTRI) {  /* PSX quad TL,TR,BL,BR -> tris (0,1,2)+(1,3,2) */
             ntri_t* q = &s_ntri[s_ntri_n++];
-            q->v[0] = (ntri_vert){ fx[1], fy[1], fz[1], P->rgb[1] };
-            q->v[1] = (ntri_vert){ fx[3], fy[3], fz[3], P->rgb[3] };
-            q->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->rgb[2] };
+            q->v[0] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
+            q->v[1] = (ntri_vert){ fx[3], fy[3], fz[3], P->u[3], P->v[3], P->rgb[3] };
+            q->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
+            q->textured=tex; q->tpage_x=tpx; q->tpage_y=tpy; q->clut_x=clx; q->clut_y=cly; q->bpp=bpp;
         }
     }
     return fallback;
@@ -402,8 +426,14 @@ static void push_scene_moby(void) {
             t.v[k].sx   = s_ntri[i].v[k].sx;
             t.v[k].sy   = s_ntri[i].v[k].sy;
             t.v[k].z    = openpete_native_depth_from_viewz(s_ntri[i].v[k].vz);
+            t.v[k].u    = (float)s_ntri[i].v[k].u;
+            t.v[k].v    = (float)s_ntri[i].v[k].v;
             t.v[k].rgba = s_ntri[i].v[k].rgb | 0xFF000000u;
         }
+        t.textured = s_ntri[i].textured;
+        t.tpage_x  = s_ntri[i].tpage_x; t.tpage_y = s_ntri[i].tpage_y;
+        t.clut_x   = s_ntri[i].clut_x;  t.clut_y  = s_ntri[i].clut_y;
+        t.bpp      = s_ntri[i].bpp;
         openpete_native_scene_add_tri(&t);
     }
 }

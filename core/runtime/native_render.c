@@ -114,6 +114,7 @@ static struct {
      * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
+    rhi_pipeline *scene_tex_pipe; /* 3a.3: textured scene tris (VRAM sampler + psx material) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
@@ -221,22 +222,33 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
         .uses_vram = false, .push_const_size = 0,
     };
+    /* Textured scene pipeline (3a.3): samples the PSX VRAM mirror via the ported
+     * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
+     * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
+    rhi_pipeline_desc scene_tex_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
+    rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native A/B");
         free(mirror);
-        if (vram_tex)     rhi_destroy_texture(dev, vram_tex);
-        if (scene_vb)     rhi_destroy_buffer(dev, scene_vb);
-        if (panels_vb)    rhi_destroy_buffer(dev, panels_vb);
-        if (gouraud_pipe) rhi_destroy_pipeline(dev, gouraud_pipe);
-        if (vram_pipe)    rhi_destroy_pipeline(dev, vram_pipe);
-        if (blit_pipe)    rhi_destroy_pipeline(dev, blit_pipe);
+        if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
+        if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
+        if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
+        if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
+        if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
+        if (vram_pipe)     rhi_destroy_pipeline(dev, vram_pipe);
+        if (blit_pipe)     rhi_destroy_pipeline(dev, blit_pipe);
         rhi_destroy(dev);
         SDL_DestroyWindow(win);
         return 1;
@@ -250,6 +262,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.blit_pipe    = blit_pipe;
     s_nr.vram_pipe    = vram_pipe;
     s_nr.gouraud_pipe = gouraud_pipe;
+    s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.vram_tex     = vram_tex;
@@ -403,51 +416,82 @@ static bool draw_native_scene(void)
     if (s_scene_n <= 0) return false;
 
     static rhi_vertex buf[SCENE_VB_VERTS];
-    int base = 0;
-    /* Background fill: the PSX cyclorama clears the frame to m_BackgroundColor
-     * before drawing the dome, so anything the dome (and, later, the world)
-     * doesn't cover shows that colour, not black. Emit it as the first quad
-     * covering panel 0's whole rect; the dome draws on top (no depth test, so
-     * later prims overwrite). */
+    int n = 0;
+    /* Background fill (untextured, far plane), drawn first; depth-tested actors
+     * sit in front of it. */
     if (s_scene_bg != 0) {
         float l = s_nr.p0_cx - s_nr.p0_hx, r = s_nr.p0_cx + s_nr.p0_hx;
         float t = s_nr.p0_hy, b = -s_nr.p0_hy;
-        /* z=1.0 = far plane: the bg fill sits behind every depth-tested actor. */
         const rhi_vertex tl = { l, t, 1.0f, 0, 0, s_scene_bg, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 0, 0, s_scene_bg, 0 };
         const rhi_vertex br = { r, b, 1.0f, 0, 0, s_scene_bg, 0 };
         const rhi_vertex bl = { l, b, 1.0f, 0, 0, s_scene_bg, 0 };
         buf[0] = tl; buf[1] = tr; buf[2] = br;
         buf[3] = tl; buf[4] = br; buf[5] = bl;
-        base = 6;
+        n = 6;
     }
-    int nverts = base + s_scene_n * 3;
-    if (nverts > SCENE_VB_VERTS) nverts = SCENE_VB_VERTS;
-
-    for (int t = 0; t < s_scene_n && base + t * 3 + 2 < SCENE_VB_VERTS; t++) {
+    /* Two passes into one VB: untextured tris (bg + gouraud) in [0, ut_end),
+     * then textured tris in [tx_start, n). The depth buffer sorts the passes, so
+     * drawing them separately (gouraud pipe, then VRAM-sampler pipe) is correct
+     * regardless of inter-pass order. */
+    for (int t = 0; t < s_scene_n; t++) {
+        if (s_scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[base + t * 3 + k];
+            rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = s_scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
             o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
         }
+        n += 3;
     }
-    rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)nverts);
+    int ut_end = n, tx_start = n;
+    for (int t = 0; t < s_scene_n; t++) {
+        if (!s_scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = s_scene[t].v[k].z;
+            o->u = s_scene[t].v[k].u; o->v = s_scene[t].v[k].v;
+            o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
      * the PSX screen (legitimately, after near-plane culling) are clipped to
-     * the panel instead of streaking across the window. Clip rect [p0_cx +-
-     * p0_hx] x [+-p0_hy] -> framebuffer pixels (top-left origin). */
+     * the panel instead of streaking across the window. */
     int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
     int sw = (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
     int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
     int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
     rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
 
-    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-    rhi_draw(s_nr.dev, (uint32_t)nverts, 0);
+    /* Untextured pass (bg + gouraud tris). */
+    if (ut_end > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_end, 0);
+    }
+    /* Textured pass: per-tri PSX material (tpage/CLUT/bpp) -> the VRAM sampler.
+     * Per-tri push+draw for now; material-batched draws are a later optimisation
+     * (a native renderer sorts by material). */
+    if (n > tx_start && s_nr.scene_tex_pipe && s_nr.vram_tex) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        int off = tx_start;
+        for (int t = 0; t < s_scene_n && off + 3 <= n; t++) {
+            if (!s_scene[t].textured) continue;
+            const psx_material m = { s_scene[t].tpage_x, s_scene[t].tpage_y,
+                                     s_scene[t].clut_x, s_scene[t].clut_y, s_scene[t].bpp };
+            rhi_push_constants(s_nr.dev, &m, sizeof m);
+            rhi_draw(s_nr.dev, 3, (uint32_t)off);
+            off += 3;
+        }
+    }
 
     rhi_reset_scissor(s_nr.dev);
     return true;
@@ -549,6 +593,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
     if (s_nr.gouraud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     if (s_nr.vram_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
     if (s_nr.blit_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);

@@ -390,8 +390,11 @@ static void push_scene(CPUState* cpu) {
             t.v[k].sx   = s_native[i].v[k].sx;
             t.v[k].sy   = s_native[i].v[k].sy;
             t.v[k].z    = 1.0f;   /* sky = the backdrop: always behind depth-tested actors */
+            t.v[k].u    = 0.0f; t.v[k].v = 0.0f;
             t.v[k].rgba = s_native[i].v[k].rgb | 0xFF000000u;
         }
+        t.textured = 0;   /* cyclorama is gouraud-shaded (no texture) */
+        t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
         openpete_native_scene_add_tri(&t);
     }
 }
