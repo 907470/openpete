@@ -37,6 +37,7 @@
 
 extern void     func_8001F798(CPUState* cpu);  /* the real REGULAR moby renderer */
 extern void     func_80020F34(CPUState* cpu);  /* the real SPECULAR moby renderer (same +0x1600 geometry) */
+extern void     func_80022A2C(CPUState* cpu);  /* the real SHADED moby renderer (+0x2400 Moby* list) */
 extern unsigned openpete_frame;
 
 static const char* s_cur_mat = "REG";   /* material tag for the current pass (REG/SPEC) */
@@ -50,6 +51,7 @@ static const char* s_cur_mat = "REG";   /* material tag for the current pass (RE
 
 #define REC_STRIDE    0x38u
 #define MAX_RECORDS   512
+#define SHADED_BASE   (D_SONY + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
 
 /* ---- captured prim (ground truth, decoded from the polybuf) --------- */
 typedef struct {
@@ -891,9 +893,86 @@ static int on_80020F34_moby_native(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/* ---- SHADED material (func_80022A2C) -- layout-confirming dump (3a.4.3) ----
+ * Shaded is structurally different from regular/specular: it loops a flat
+ * Moby* array @ D_SONY+0x2400, decodes 3-signed-byte (×2) verts, and rebuilds
+ * R per-moby = ProjMatrix · Rz·Ry·Rx(m_Rotation). Before implementing that,
+ * dump the data layout to confirm the RE offsets empirically (falsify-first).
+ * func_80022A2C writes m_WasDrawn (verdict) -- we call it exactly once, like
+ * the other hooks, so determinism is unchanged. */
+static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
+    fprintf(stderr, "[shaded-dump f=%u] prims [%08X,%08X) %u bytes\n",
+            openpete_frame, start, end, end - start);
+    /* +0x2400 Moby* list */
+    fprintf(stderr, "  list@%08X:", SHADED_BASE);
+    int nm = 0;
+    for (int i = 0; i < 16; i++) {
+        uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)i*4);
+        fprintf(stderr, " %08X", m);
+        if (m == 0) break;
+        nm++;
+    }
+    fprintf(stderr, "  (%d mobys)\n", nm);
+    /* first 2 live mobys + their models */
+    for (int i = 0; i < 2; i++) {
+        uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)i*4);
+        if (m < 0x80000000u) break;
+        int32_t px = (int32_t)cpu->read_word(m + 0x0C);
+        int32_t py = (int32_t)cpu->read_word(m + 0x10);
+        int32_t pz = (int32_t)cpu->read_word(m + 0x14);
+        uint32_t cls = cpu->read_half(m + 0x36);
+        uint32_t rot = cpu->read_word(m + 0x44);
+        uint32_t rad = cpu->read_byte(m + 0x50);
+        uint32_t wasdrawn = cpu->read_byte(m + 0x51);
+        fprintf(stderr, "  moby%d @%08X pos=(%d,%d,%d) class=%u rot=%08X radius=%u wasDrawn=%u\n",
+                i, m, px,py,pz, cls, rot, rad, wasdrawn);
+        uint32_t model = cpu->read_word(G_MODELS + cls*4);
+        fprintf(stderr, "   model[%u]=%08X:", cls, model);
+        if (model >= 0x80000000u) for (int w = 0; w < 12; w++)
+            fprintf(stderr, " %08X", cpu->read_word(model + (uint32_t)w*4));
+        fprintf(stderr, "\n");
+    }
+    /* camera ProjMatrix (+0x00..0x10) + position (+0x28..0x30) */
+    fprintf(stderr, "  cam projM:");
+    for (int w = 0; w < 5; w++) fprintf(stderr, " %08X", cpu->read_word(G_CAMERA + (uint32_t)w*4));
+    fprintf(stderr, "  pos=(%d,%d,%d)\n",
+            (int32_t)cpu->read_word(G_CAMERA + 0x28), (int32_t)cpu->read_word(G_CAMERA + 0x2C),
+            (int32_t)cpu->read_word(G_CAMERA + 0x30));
+    /* captured shaded prims (codes 0x20/28/22/2A expected) */
+    int hist[256]; memset(hist, 0, sizeof(hist));
+    for (int g = 0; g < s_gte_n; g++) hist[s_gte[g].code]++;
+    fprintf(stderr, "  shaded prim codes:");
+    for (int c = 0; c < 256; c++) if (hist[c]) fprintf(stderr, " %02X=%d", c, hist[c]);
+    fprintf(stderr, " (total=%d)\n", s_gte_n);
+    for (int g = 0; g < 4 && g < s_gte_n; g++) {
+        prim_t* t = &s_gte[g];
+        fprintf(stderr, "  [sprim %d] code=%02X len=%u :", g, t->code, t->len);
+        for (int k = 0; k < t->nraw; k++) fprintf(stderr, " %08X", t->raw[k]);
+        fprintf(stderr, "\n");
+    }
+}
+
+static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (!moby_verify_enabled()) return 0;   /* dump-only for now; no feed yet */
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
+    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+    static int s_dumped = 0;
+    if (!s_dumped && openpete_frame >= moby_verify_frame() && endp > startp) {
+        capture_gte(cpu, startp, endp);
+        shaded_dump(cpu, startp, endp);
+        s_dumped = 1;
+    }
+    s_in = 0;
+    return 1;
+}
+
 static const feature_dispatch_entry_t moby_dispatch[] = {
     { 0x8001F798u, on_8001F798_moby_native },
     { 0x80020F34u, on_80020F34_moby_native },
+    { 0x80022A2Cu, on_80022A2C_moby_native },
     { 0u, NULL },
 };
 
