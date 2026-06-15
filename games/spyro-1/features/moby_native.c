@@ -259,7 +259,7 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
  * vertex in MODEL space by blend/4096 before RTPS (the asm INTPLs IR(=A) toward
  * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
-typedef struct { float sx, sy, vz; int sat; } proj_xy;  /* vz = view-space Z (for depth) */
+typedef struct { float sx, sy, vz; int sat; int rec; } proj_xy;  /* vz=view-Z; rec=source record (diag) */
 
 static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
     uint32_t header = cpu->read_word(rec + 0x04);
@@ -319,6 +319,7 @@ static int project_all_records(CPUState* cpu) {
         int bl = (int)((cpu->read_word(rec) & 0xFF00u) >> 2);  /* INTPL blend 0..4096 */
         if (bl > s_max_blend) s_max_blend = bl;
         int got = moby_project_record(cpu, rec, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
     }
@@ -419,6 +420,8 @@ static void compare_and_report(int nrec) {
     int tex_n = 0, tex_m = 0, flat_n = 0, flat_m = 0;  /* CLEAN (non-divergent) match split */
     double sum = 0, mx = 0, worst = -1, max_tiejump = 0;
     float wgx=0,wgy=0; int worst_code = 0;
+    int rmatch[16] = {0}, rnat[16] = {0};   /* per-record diag: which moby mis-projects */
+    for (int i = 0; i < s_proj_n; i++) if ((unsigned)s_proj[i].rec < 16) rnat[s_proj[i].rec]++;
     for (int g = 0; g < s_gte_n; g++) {
         prim_t* P = &s_gte[g];
         int it = P->textured;
@@ -430,12 +433,12 @@ static void compare_and_report(int nrec) {
              * two diverge; we then bin those out (sanctioned, exactly as the
              * cyclorama harness did) rather than score them as decode failures.
              * Near mobys (small view-Z, H>=2*SZ3) hit this a lot. */
-            double best = 1e18, best2 = 1e18; int bn_sat = 1; float bnx=0, bny=0, bnx2=0, bny2=0;
+            double best = 1e18, best2 = 1e18; int bn_sat = 1, bn_rec = 0; float bnx=0, bny=0, bnx2=0, bny2=0;
             for (int i = 0; i < s_proj_n; i++) {
                 double dx = s_proj[i].sx - gx, dy = s_proj[i].sy - gy;
                 double d = dx*dx + dy*dy;
                 if (d < best) { best2 = best; bnx2 = bnx; bny2 = bny;
-                                best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; bn_sat = s_proj[i].sat; }
+                                best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; bn_sat = s_proj[i].sat; bn_rec = s_proj[i].rec; }
                 else if (d < best2) { best2 = d; bnx2 = s_proj[i].sx; bny2 = s_proj[i].sy; }
             }
             double dist = sqrt(best);
@@ -444,6 +447,7 @@ static void compare_and_report(int nrec) {
             if (dist <= 4.0) {
                 near_n++; sum += dist; if (dist > mx) mx = dist;
                 if (it) tex_m++; else flat_m++;
+                if ((unsigned)bn_rec < 16) rmatch[bn_rec]++;
                 if (fabs(floor((double)bnx) - gx) <= 1.0 && fabs(floor((double)bny) - gy) <= 1.0)
                     floor_ok++;
                 /* NN-ambiguity (jitter proxy): 2nd-nearest within 1px of nearest
@@ -472,6 +476,15 @@ static void compare_and_report(int nrec) {
         flat_m, flat_n, flat_n?100.0*flat_m/flat_n:0.0,
         ambig, near_n?100.0*ambig/near_n:0.0, max_tiejump,
         wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat);
+    /* Per-record: native vert count + how many prim verts NN-matched to it.
+     * A record with many native verts but ~0 matches is mis-projected (the
+     * residual). w0 = the record flags word (LP/HP + per-axis sign). */
+    if (nrec <= 8) {
+        fprintf(stderr, "[moby-recs f=%u]", openpete_frame);
+        for (int r = 0; r < nrec && r < 16; r++)
+            fprintf(stderr, " rec%d{nat=%d hit=%d}", r, rnat[r], rmatch[r]);
+        fprintf(stderr, "\n");
+    }
 }
 
 /* ---- dispatch hook -------------------------------------------------- */
