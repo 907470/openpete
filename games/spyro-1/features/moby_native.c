@@ -545,7 +545,7 @@ static int build_walk_tris(CPUState* cpu) {
  * prim tri by order-independent vertex coincidence (<=2px), report precision
  * (walk tris that hit a prim) + recall (prims covered) + the nclip-sign split
  * of matched-vs-unmatched walk tris (to choose the backface-cull winding). */
-typedef struct { float x[3], y[3]; uint32_t rgb[3]; int u[3], v[3]; int tex; } ptri;
+typedef struct { float x[3], y[3]; uint32_t rgb[3]; int u[3], v[3]; int tex, clut, tpage; } ptri;
 #define MAX_PTRI (MAX_PRIMS*2)
 static ptri s_ptri[MAX_PTRI]; static int s_ptri_n;
 static void build_prim_tris(void) {
@@ -555,11 +555,11 @@ static void build_prim_tris(void) {
         if (P->nv < 3 || s_ptri_n >= MAX_PTRI) continue;
         ptri* a = &s_ptri[s_ptri_n++];
         for (int k=0;k<3;k++){a->x[k]=P->x[k];a->y[k]=P->y[k];a->rgb[k]=P->rgb[k];a->u[k]=P->u[k];a->v[k]=P->v[k];}
-        a->tex=P->textured;
+        a->tex=P->textured; a->clut=P->clut; a->tpage=P->tpage;
         if (P->nv==4 && s_ptri_n<MAX_PTRI) {            /* quad TL,TR,BL,BR -> (1,3,2) */
             ptri* b=&s_ptri[s_ptri_n++]; int idx[3]={1,3,2};
             for (int k=0;k<3;k++){int j=idx[k];b->x[k]=P->x[j];b->y[k]=P->y[j];b->rgb[k]=P->rgb[j];b->u[k]=P->u[j];b->v[k]=P->v[j];}
-            b->tex=P->textured;
+            b->tex=P->textured; b->clut=P->clut; b->tpage=P->tpage;
         }
     }
 }
@@ -585,7 +585,7 @@ static void compare_walk_vs_prims(void) {
     for(int g=0;g<s_gte_n;g++){ if(s_gte[g].nv==4)prim_quad++; else if(s_gte[g].nv==3)prim_tri++; }
     int wmatch=0, neg_m=0, pos_m=0, neg_u=0, pos_u=0;
     int mt_p=0,mt_n=0,mf_p=0,mf_n=0;  /* matched nclip split: textured/flat (winding rule) */
-    int colmatch=0, coln=0, uvmatch=0, uvn=0;
+    int colmatch=0, coln=0, uvmatch=0, uvn=0; double wluma_sum=0, pluma_sum=0;
     /* On-screen subset (centroid within the disp rect): the off-screen extras
      * the .s clip-rejects are scissored by panel 0 anyway, so the visually-
      * meaningful match is the on-screen one. */
@@ -614,6 +614,8 @@ static void compare_walk_vs_prims(void) {
             /* colour + uv match vs the matched prim tri (vertex 0, coarse) */
             uint32_t wc=w->v[0].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[0]&0xFFFFFFu;
             coln++; if (wc==pc) colmatch++;
+            wluma_sum += (wc&0xFF)+((wc>>8)&0xFF)+((wc>>16)&0xFF);   /* brightness: is my colour darker than the .s's? */
+            pluma_sum += (pc&0xFF)+((pc>>8)&0xFF)+((pc>>16)&0xFF);
             if (w->textured){ uvn++; if (w->v[0].u==s_ptri[bp].u[0] && w->v[0].v==s_ptri[bp].v[0]) uvmatch++; }
         } else {
             if(ncl<0)neg_u++;else pos_u++;
@@ -666,14 +668,63 @@ static void compare_walk_vs_prims(void) {
         "[moby-walk2 f=%u] "
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
-        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d\n",
+        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f\n",
         openpete_frame,
         s_walkdiag.fresh_g, s_walkdiag.fresh_t, s_walkdiag.strip, s_walkdiag.sprite,
         s_walkdiag.skip, s_walkdiag.quad, s_walkdiag.oor,
         s_walkdiag.align_lo, s_walkdiag.align_hi, s_walkdiag.desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
-        prim_quad, prim_tri, s_walkdiag.quad);
+        prim_quad, prim_tri, s_walkdiag.quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
     #undef ONSCR
+}
+
+/* Specular (shiny-metal) per-face colour is a GTE env-mapped reflection
+ * (.L800226F8: light matrix D_800770C8+0x18 · face normal, atan2 reflection,
+ * env lookup) gated by the metal flag in m_SpecularMetalColor's high byte. The
+ * regular per-vertex colour path produces only the near-black DPCS *base*
+ * (+0x1100), so specular metal rendered dark. Until the reflection is re-derived
+ * natively, reuse the .s's already-correct per-face colour from the captured
+ * prims (NN-matched to the walk geometry, per-vertex by nearest point) -- the
+ * same "reuse the game-computed colour" the regular path does with the +0x1100
+ * scratch, just per-face. Walk geometry (float, no wobble) is kept; only RGB is
+ * overwritten. Walk tris with no nearby prim (the game's distance-culled far
+ * mobys) keep their base colour. */
+static void recolor_walk_from_prims(void) {
+    build_prim_tris();
+    for (int wi = 0; wi < s_wtri_n; wi++) {
+        ntri_t* w = &s_wtri[wi];
+        double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
+        double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
+        double best = 1e18; int bp = -1;
+        for (int pi = 0; pi < s_ptri_n; pi++) {
+            double pcx = (s_ptri[pi].x[0] + s_ptri[pi].x[1] + s_ptri[pi].x[2]) / 3.0;
+            double pcy = (s_ptri[pi].y[0] + s_ptri[pi].y[1] + s_ptri[pi].y[2]) / 3.0;
+            if (fabs(pcx - wcx) > 32.0 || fabs(pcy - wcy) > 32.0) continue;
+            double c = tri_match_cost(w, &s_ptri[pi]);
+            if (c < best) { best = c; bp = pi; }
+        }
+        if (bp < 0 || best > 8.0) continue;            /* no nearby prim -> keep base */
+        ptri* P = &s_ptri[bp];
+        for (int k = 0; k < 3; k++) {                  /* per-vertex: nearest prim vertex */
+            double bd = 1e18; int bj = 0;
+            for (int j = 0; j < 3; j++) {
+                double dx = w->v[k].sx - P->x[j], dy = w->v[k].sy - P->y[j];
+                double d = dx * dx + dy * dy; if (d < bd) { bd = d; bj = j; }
+            }
+            w->v[k].rgb = P->rgb[bj];                   /* env-metal colour */
+            w->v[k].u = P->u[bj]; w->v[k].v = P->v[bj]; /* env-reflection UVs (the shine) */
+        }
+        /* texture page/CLUT: decode the prim's raw tpage/clut like the walk's Tiledef.
+         * The shiny metal is an env-mapped texture; the per-face reflection picks the
+         * tpage/UVs, which the static-Tiledef walk can't reproduce. */
+        if (P->tex) {
+            int tp = P->tpage, cl = P->clut;
+            w->textured = 1;
+            w->tpage_x = (tp & 0xF) * 64; w->tpage_y = ((tp >> 4) & 1) * 256;
+            int mode = (tp >> 7) & 3; w->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+            w->clut_x = (cl & 0x3F) * 16; w->clut_y = (cl >> 6) & 0x1FF;
+        }
+    }
 }
 
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
@@ -836,6 +887,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
 
     if (feed) {
         build_walk_tris(cpu);                 /* 3a.2b independent topology (promoted over the scaffold) */
+        if (mat && mat[0] == 'S' && mat[1] == 'P')   /* SPEC: env-metal colour from the .s's prims */
+            recolor_walk_from_prims();
         push_scene_moby();
     }
 
@@ -850,6 +903,10 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             compare_and_report(nrec);
             build_walk_tris(cpu);             /* 3a.2b independent walk + topology A/B */
             compare_walk_vs_prims();
+            if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
+                recolor_walk_from_prims();
+                compare_walk_vs_prims();      /* the post-recolor col= should jump high */
+            }
             s_reports++;
         }
         static unsigned s_codes_at = 0;
