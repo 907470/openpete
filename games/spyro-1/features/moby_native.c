@@ -352,16 +352,11 @@ static int project_all_records(CPUState* cpu) {
     return nrec;
 }
 
-/* ---- native triangles for the scene feed (3a.2) --------------------------
- * SCAFFOLD topology: the independent gamestate face-stream walk is the next
- * 3a.2 increment (built + A/B-verified against the prims while the .s is still
- * the oracle, then promoted here — NOT deferred to Phase 6). Until then the
- * triangle TOPOLOGY comes from the captured prims (the .s already walked the
- * pipelined, variable-stride stream) while the VERTEX POSITIONS are native
- * float: each prim vertex is nearest-neighbour matched to the verified s_proj
- * set, so the fed geometry is native (sub-pixel; widescreen/interp-ready),
- * just not yet topology-independent. Per-vertex colour is the prim's fogged
- * RGB (the .s's DPCS output; float DPCS is 3a.4). */
+/* ---- native scene triangle (fed to panel 0) ------------------------------
+ * Filled by the 3a.2b independent face-stream walk (below). The 3a.2a
+ * nearest-neighbour prim scaffold it replaced was removed when the walk was
+ * promoted (2026-06-15); the walk is jitter-free (exact word0 indices) where
+ * the scaffold's screen-proximity matching jittered. */
 typedef struct { float sx, sy, vz; int u, v; uint32_t rgb; } ntri_vert;  /* vz=depth; u,v=texel */
 typedef struct {
     ntri_vert v[3];
@@ -369,72 +364,6 @@ typedef struct {
     int blend;   /* 0 = opaque, 1 = semi-transparent (prim ABE bit) */
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
-static ntri_t s_ntri[MAX_NTRI]; static int s_ntri_n;
-
-/* Nearest non-saturated native vertex to a prim screen point; -1 if none. */
-static int nearest_native(float gx, float gy) {
-    double best = 1e18; int bi = -1;
-    for (int i = 0; i < s_proj_n; i++) {
-        if (s_proj[i].sat) continue;
-        double dx = s_proj[i].sx - gx, dy = s_proj[i].sy - gy;
-        double d = dx*dx + dy*dy;
-        if (d < best) { best = d; bi = i; }
-    }
-    return bi;
-}
-
-/* Build s_ntri[] from the captured prims (requires s_proj already filled).
- * Returns the count of prim vertices that found NO native match (fallback to
- * the prim's own GTE XY) — a headless health metric for the feed: 0 means every
- * fed vertex is genuinely native. */
-static int build_native_tris(void) {
-    s_ntri_n = 0;
-    int fallback = 0;
-    for (int g = 0; g < s_gte_n; g++) {
-        prim_t* P = &s_gte[g];
-        if (P->nv < 3) continue;
-        float fx[4], fy[4], fz[4];
-        for (int k = 0; k < P->nv; k++) {
-            int idx = nearest_native(P->x[k], P->y[k]);
-            if (idx >= 0) { fx[k] = s_proj[idx].sx; fy[k] = s_proj[idx].sy; fz[k] = s_proj[idx].vz; }
-            else          { fx[k] = P->x[k];        fy[k] = P->y[k]; fz[k] = 4096.0f; fallback++; }
-        }
-        /* PSX material from the prim's Tiledef halfwords -> VRAM-pixel coords.
-         * tpage: X=bits0-3 *64, Y=bit4 *256, colour-mode=bits7-8 (0=4/1=8/2=16bpp).
-         * clut:  X=bits0-5 *16, Y=bits6-14. */
-        int tex = P->textured, tpx=0, tpy=0, clx=0, cly=0, bpp=16;
-        if (tex) {
-            unsigned tp = (unsigned)P->tpage, cl = (unsigned)P->clut;
-            tpx = (int)(tp & 0xFu) * 64;
-            tpy = (int)((tp >> 4) & 1u) * 256;
-            int mode = (int)((tp >> 7) & 3u);
-            bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-            clx = (int)(cl & 0x3Fu) * 16;
-            cly = (int)((cl >> 6) & 0x1FFu);
-            static int s_mat_logged = 0;
-            if (!s_mat_logged) { s_mat_logged = 1;
-                fprintf(stderr, "[moby-mat] first textured prim: tpage=%04X clut=%04X -> "
-                        "tpage(%d,%d) clut(%d,%d) bpp=%d uv0=(%d,%d)\n",
-                        (unsigned)P->tpage, (unsigned)P->clut, tpx, tpy, clx, cly, bpp,
-                        P->u[0], P->v[0]); }
-        }
-        int blend = (P->code & 0x02) ? 1 : 0;   /* PSX ABE (semi-transparent) bit */
-        if (s_ntri_n >= MAX_NTRI) break;
-        ntri_t* t = &s_ntri[s_ntri_n++];
-        t->v[0] = (ntri_vert){ fx[0], fy[0], fz[0], P->u[0], P->v[0], P->rgb[0] };
-        t->v[1] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
-        t->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
-        t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly; t->bpp=bpp; t->blend=blend;
-        if (P->nv == 4 && s_ntri_n < MAX_NTRI) {  /* PSX quad TL,TR,BL,BR -> tris (0,1,2)+(1,3,2) */
-            ntri_t* q = &s_ntri[s_ntri_n++];
-            q->v[0] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
-            q->v[1] = (ntri_vert){ fx[3], fy[3], fz[3], P->u[3], P->v[3], P->rgb[3] };
-            q->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
-            q->textured=tex; q->tpage_x=tpx; q->tpage_y=tpy; q->clut_x=clx; q->clut_y=cly; q->bpp=bpp; q->blend=blend;
-        }
-    }
-    return fallback;
-}
 
 /* ---- 3a.2b: INDEPENDENT gamestate face-stream walk -----------------------
  * Derive triangle TOPOLOGY from the moby face stream itself (not the captured
@@ -460,6 +389,11 @@ static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
+}
+/* Same but on FLOORED coords, mirroring the GTE's int16 SXY NCLIP (op 0x06) so
+ * the quad/tri/skip sign decisions match the .s exactly at near-zero areas. */
+static double tri_nclip_i(const proj_xy* a, const proj_xy* b, const proj_xy* c) {
+    return tri_nclip(floorf(a->sx),floorf(a->sy), floorf(b->sx),floorf(b->sy), floorf(c->sx),floorf(c->sy));
 }
 
 static struct {   /* walk diagnostics (printed by compare_walk_vs_prims) */
@@ -511,7 +445,6 @@ static int build_walk_tris(CPUState* cpu) {
             int textured = (w0 & 0x2u) != 0;
             int sprite   = fresh && (w0 & 0x4u);
             int skip     = (w0 & 0x8u) != 0;
-            int quaden   = (w0 & 0x1u) != 0;
             uint32_t adv = sprite ? 0x14u
                          : fresh  ? (textured ? 0x18u : 0x0Cu)
                          :          (textured ? 0x14u : 0x08u);   /* strip */
@@ -525,31 +458,42 @@ static int build_walk_tris(CPUState* cpu) {
             uint32_t bo0 = (w0 >> 20) & 0x7FCu, bo1 = (w0 >> 11) & 0x7FCu, bo2 = (w0 >> 2) & 0x7FCu;
             int i0 = (int)bo0 >> 2, i1 = (int)bo1 >> 2, i2 = (int)bo2 >> 2;
             uint32_t v4w = cpu->read_word(fp + 8);
-            uint32_t bo3 = textured ? ((v4w >> 9) & 0x7FCu) : (v4w & 0x7FCu);
-            int i3 = (int)bo3 >> 2;
+            int i3 = (int)(v4w & 0x7FCu) >> 2;   /* 4th-vertex SXY index = (fp+8)&0x7FC (>>9 is the COLOUR idx, not SXY) */
             if (i0 >= vcount || i1 >= vcount || i2 >= vcount) { s_walkdiag.oor++; fp += adv; continue; }
             proj_xy* p0 = &s_proj[base+i0]; proj_xy* p1 = &s_proj[base+i1]; proj_xy* p2 = &s_proj[base+i2];
 
-            /* NCLIP backface cull (screen-XY sign = GTE op 0x06). tri1=(v0,v1,v2).
-             * A FRESH face may also be a quad -- tri2=(v1,v3,v2) per the PSX
-             * 4-point convention, emitted only when its own NCLIP is front-facing
-             * (this is the geometric quad determination; w0f&1 is NOT it). STRIPS
-             * are ALWAYS single triangles -- they never read a 4th vertex. */
-            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);
-            int keep1 = (ncl1 > 0.0);
-            int keep2 = 0; proj_xy* p3 = NULL;
-            if (fresh && quaden && i3 < vcount) {   /* fresh QUAD (w0f&1): emit both sub-tris */
-                p3 = &s_proj[base+i3];
-                keep2 = keep1;                      /* tri2 (v1,v3,v2) when the quad is front-facing */
+            /* FRESH faces run the .s's dual-NCLIP (block_8002008C): NCLIP1=(v0,v1,v2),
+             * then v3 is loaded into SXY0 so NCLIP2=(v3,v1,v2). bit0(=w0f&1) flips the
+             * sign test (the `neg` dance). Outcomes:
+             *   t6a>=0 && t6b>0  -> QUAD: emit (v0,v1,v2)+(v1,v3,v2)
+             *   t6a>=0 && t6b<=0 -> skip the whole face
+             *   t6a<0  && t6b>0  -> tri-2nd: emit (v3,v1,v2)   (.L80020158)
+             *   t6a<0  && t6b<=0 -> tri-1st: emit (v0,v1,v2)   (.L800203F4 s1=0)
+             * STRIPS (.L8002031C) are single triangles, keep if NCLIP>0. */
+            proj_xy* p3 = (i3 < vcount) ? &s_proj[base+i3] : NULL;
+            double ncl1 = tri_nclip_i(p0,p1,p2);
+            int emit_a = 0, emit_b = 0, b_is_v3tri = 0;
+            if (fresh) {
+                double ncl2 = p3 ? tri_nclip_i(p3,p1,p2) : -1.0;
+                int bit0 = (int)(w0 & 1u);
+                double t6a = (bit0 && ncl1 > 0.0) ? -ncl1 : ncl1;
+                double t6b = (bit0 && ncl2 >= 0.0) ? -ncl2 : ncl2;
+                if (t6a >= 0.0) { if (t6b > 0.0 && p3) { emit_a = emit_b = 1; s_walkdiag.quad++; } }
+                else            { if (t6b > 0.0 && p3) { emit_b = b_is_v3tri = 1; } else emit_a = 1; }
+            } else {
+                /* strip: single tri. bit0=0 keep NCLIP>0; bit0=1 keep NCLIP!=0
+                 * (.L800203B8 vs .L800203D0 -- bit0 strips carry either winding). */
+                int bit0 = (int)(w0 & 1u);
+                if (bit0 ? (ncl1 != 0.0) : (ncl1 > 0.0)) emit_a = 1;
             }
-            if (!keep1 && !keep2) { fp += adv; continue; }
+            if (!emit_a && !emit_b) { fp += adv; continue; }
 
             /* per-vertex colour: cbase indexed by w1f (NOT w0f). */
             uint32_t w1 = cpu->read_word(fp + 4);
             uint32_t c0 = cpu->read_word(cbase + ((w1 >> 17) & 0x7FCu)) & 0xFFFFFFu;
             uint32_t c1 = cpu->read_word(cbase + ((w1 >>  8) & 0x7FCu)) & 0xFFFFFFu;
             uint32_t c2 = cpu->read_word(cbase + ((w1 <<  1) & 0x7FCu)) & 0xFFFFFFu;
-            uint32_t c3 = c2;   /* quad 4th colour index unresolved; position is what matters */
+            uint32_t c3 = c2;   /* v3 colour approx; topology A/B measures position */
 
             int tpx=0,tpy=0,clx=0,cly=0,bpp=16, u[4]={0,0,0,0}, v[4]={0,0,0,0};
             if (textured) {
@@ -566,13 +510,16 @@ static int build_walk_tris(CPUState* cpu) {
             }
             int blend = 0;   /* ABE bit not in word0; 3a.3 sets it from tpage */
 
-            if (keep1)
+            if (emit_a)
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
-            if (keep2) {                                       /* PSX quad 2nd sub-tri (v1,v3,v2) */
-                emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
-                          textured,tpx,tpy,clx,cly,bpp,blend);
-                s_walkdiag.quad++;
+            if (emit_b) {
+                if (b_is_v3tri)          /* tri-2nd (v3,v1,v2) */
+                    emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
+                              textured,tpx,tpy,clx,cly,bpp,blend);
+                else                     /* quad 2nd half (v1,v3,v2) */
+                    emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
+                              textured,tpx,tpy,clx,cly,bpp,blend);
             }
             fp += adv;
         }
@@ -701,27 +648,27 @@ static void compare_walk_vs_prims(void) {
  * order: sky, then mobys. Determinism-safe: host-side display only. */
 static void push_scene_moby(void) {
     static int s_logged = 0;
-    if (!s_logged && s_ntri_n > 0) {
+    if (!s_logged && s_wtri_n > 0) {
         s_logged = 1;
         fprintf(stderr, "[moby-native] feeding panel 0: %d moby tris from gamestate "
-                "(native verts; prim topology scaffold) frame %u\n", s_ntri_n, openpete_frame);
+                "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
-    for (int i = 0; i < s_ntri_n; i++) {
+    for (int i = 0; i < s_wtri_n; i++) {
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
-            t.v[k].sx   = s_ntri[i].v[k].sx;
-            t.v[k].sy   = s_ntri[i].v[k].sy;
-            t.v[k].z    = openpete_native_depth_from_viewz(s_ntri[i].v[k].vz);
-            t.v[k].u    = (float)s_ntri[i].v[k].u;
-            t.v[k].v    = (float)s_ntri[i].v[k].v;
-            t.v[k].rgba = s_ntri[i].v[k].rgb | 0xFF000000u;
+            t.v[k].sx   = s_wtri[i].v[k].sx;
+            t.v[k].sy   = s_wtri[i].v[k].sy;
+            t.v[k].z    = openpete_native_depth_from_viewz(s_wtri[i].v[k].vz);
+            t.v[k].u    = (float)s_wtri[i].v[k].u;
+            t.v[k].v    = (float)s_wtri[i].v[k].v;
+            t.v[k].rgba = s_wtri[i].v[k].rgb | 0xFF000000u;
         }
-        t.textured = s_ntri[i].textured;
-        t.tpage_x  = s_ntri[i].tpage_x; t.tpage_y = s_ntri[i].tpage_y;
-        t.clut_x   = s_ntri[i].clut_x;  t.clut_y  = s_ntri[i].clut_y;
-        t.bpp      = s_ntri[i].bpp;
-        t.blend    = s_ntri[i].blend;
+        t.textured = s_wtri[i].textured;
+        t.tpage_x  = s_wtri[i].tpage_x; t.tpage_y = s_wtri[i].tpage_y;
+        t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
+        t.bpp      = s_wtri[i].bpp;
+        t.blend    = s_wtri[i].blend;
         openpete_native_scene_add_tri(&t);
     }
 }
@@ -854,7 +801,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
 
     if (feed) {
-        build_native_tris();                  /* scaffold feed (full coverage) until the walk validates */
+        build_walk_tris(cpu);                 /* 3a.2b independent topology (promoted over the scaffold) */
         push_scene_moby();
     }
 
