@@ -926,22 +926,33 @@ static void shaded_verify(CPUState* cpu) {
         uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
         uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
         int count = cpu->read_byte(model + 0x0u) & 0xFF;
-        uint32_t rot = cpu->read_word(m + 0x44u);
-        uint32_t idx0 = (rot >> 15) & 0x1FEu;
-        int s0 = (int16_t)cpu->read_half(SINCOS_TABLE + idx0);
-        int c0 = (int16_t)cpu->read_half(SINCOS_TABLE + 0x80u + idx0);
-        int Ry[3][3] = {{c0,0,s0},{0,4096,0},{-s0,0,c0}};
-        int M[3][3];
-        for (int i=0;i<3;i++) for (int j=0;j<3;j++)
-            M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
-        int32_t dx=(int32_t)cpu->read_word(m+0xC)-cx, dy=(int32_t)cpu->read_word(m+0x10)-cy, dz=(int32_t)cpu->read_word(m+0x14)-cz;
-        int TR[3]; for (int i=0;i<3;i++) TR[i] = (PM[i][0]*dx + PM[i][1]*dy + PM[i][2]*dz) >> 12;
+        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
+        /* billboard/2D vs 3D path: flag = bit7 of the low byte at m+0x50 (asm
+         * `lhu a0,0x50; sll a0,24; bltz -> .L80022D1C`). */
+        int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
+        int M[3][3], TR[3]; double mofx, mofy;
+        if (billboard) {                              /* .L80022D1C */
+            M[0][0]=4096;M[0][1]=0;M[0][2]=0; M[1][0]=0;M[1][1]=2560;M[1][2]=0; M[2][0]=0;M[2][1]=0;M[2][2]=4096;
+            TR[0]=0; TR[1]=0; TR[2]=pz>>1;            /* OFX/OFY = pos.x/y; TRZ = pos.z>>1 */
+            mofx=(double)px; mofy=(double)py;
+        } else {                                      /* 3D: R = ProjMatrix . Ry(axis0), TR = PM.(pos-cam) */
+            uint32_t rot = cpu->read_word(m + 0x44u);
+            uint32_t idx0 = (rot >> 15) & 0x1FEu;
+            int s0 = (int16_t)cpu->read_half(SINCOS_TABLE + idx0);
+            int c0 = (int16_t)cpu->read_half(SINCOS_TABLE + 0x80u + idx0);
+            int Ry[3][3] = {{c0,0,s0},{0,4096,0},{-s0,0,c0}};
+            for (int i=0;i<3;i++) for (int j=0;j<3;j++)
+                M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
+            int32_t dx=px-cx, dy=py-cy, dz=pz-cz;
+            for (int i=0;i<3;i++) TR[i] = (PM[i][0]*dx + PM[i][1]*dy + PM[i][2]*dz) >> 12;
+            mofx=ofx; mofy=ofy;
+        }
         for (int i=0;i<count && n<8192;i++) {
             uint32_t p = vbase + (uint32_t)i*3u;
             uint32_t w = cpu->read_byte(p) | (cpu->read_byte(p+1)<<8) | (cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
             double sx,sy; int sat;
-            project(M,TR,(double)VX,(double)VY,(double)VZ, ofx,ofy,H, &sx,&sy,&sat);
+            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             sv[n].sx=(float)sx; sv[n].sy=(float)sy; sv[n].sat=sat; n++;
         }
     }
