@@ -496,13 +496,6 @@ static int build_walk_tris(CPUState* cpu) {
                 int bit0 = (int)(w0 & 1u);
                 if (bit0 ? (ncl1 != 0.0) : (ncl1 > 0.0)) emit_a = 1;
             }
-            if (fresh) {   /* one-shot decision dump: which fresh faces emit what */
-                static int s_fd=0;
-                if (s_fd < 24) { s_fd++;
-                    fprintf(stderr,"  [fresh%s] i0=%d i1=%d i2=%d i3=%d vc=%d ncl1=%.0f ncl2=%.0f bit0=%d -> %s\n",
-                        textured?"T":"G", i0,i1,i2,i3,vcount,ncl1, p3?ncl2:-99999.0, (int)(w0&1u),
-                        (emit_a&&emit_b)?"QUAD":b_is_v3tri?"tri-v3":emit_a?"tri-v0":"SKIP"); }
-            }
             if (!emit_a && !emit_b) { fp += adv; continue; }
 
             /* per-vertex colour: cbase indexed by w1f (NOT w0f). */
