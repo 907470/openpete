@@ -72,10 +72,15 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
  * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3. */
+/* blend: 0 = opaque, 1 = PSX semi-transparent (ABE) -> alpha blend. The textured
+ * frag's per-texel STP-derived alpha (0.5 for STP texels, 1.0 otherwise) makes
+ * the alpha blend reproduce PSX ABR mode 0 ((B+F)/2) WITH per-texel STP gating.
+ * The other ABR modes (additive/subtract/quarter) + back-to-front sort are TODO. */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
+    int blend;
 } openpete_scene_tri;
 
 /* Map a GTE view-space Z (larger = farther; same units the GTE projects with,

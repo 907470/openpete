@@ -114,7 +114,8 @@ static struct {
      * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
-    rhi_pipeline *scene_tex_pipe; /* 3a.3: textured scene tris (VRAM sampler + psx material) */
+    rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
+    rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
@@ -231,20 +232,30 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
+     * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha. */
+    rhi_pipeline_desc scene_tex_blend_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
+    rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native A/B");
         free(mirror);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
+        if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
         if (vram_pipe)     rhi_destroy_pipeline(dev, vram_pipe);
@@ -263,6 +274,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.vram_pipe    = vram_pipe;
     s_nr.gouraud_pipe = gouraud_pipe;
     s_nr.scene_tex_pipe = scene_tex_pipe;
+    s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.vram_tex     = vram_tex;
@@ -475,21 +487,28 @@ static bool draw_native_scene(void)
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_end, 0);
     }
-    /* Textured pass: per-tri PSX material (tpage/CLUT/bpp) -> the VRAM sampler.
-     * Per-tri push+draw for now; material-batched draws are a later optimisation
-     * (a native renderer sorts by material). */
-    if (n > tx_start && s_nr.scene_tex_pipe && s_nr.vram_tex) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
-        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        int off = tx_start;
-        for (int t = 0; t < s_scene_n && off + 3 <= n; t++) {
-            if (!s_scene[t].textured) continue;
-            const psx_material m = { s_scene[t].tpage_x, s_scene[t].tpage_y,
-                                     s_scene[t].clut_x, s_scene[t].clut_y, s_scene[t].bpp };
-            rhi_push_constants(s_nr.dev, &m, sizeof m);
-            rhi_draw(s_nr.dev, 3, (uint32_t)off);
-            off += 3;
+    /* Textured passes: opaque (blend==0) first, then semi-transparent (blend==1)
+     * over it, so the transparent alpha blends against the opaque already drawn
+     * (and depth-tests against it). Per-tri material push+draw; material-batched
+     * draws + back-to-front transparent sort (3c) are later. */
+    if (n > tx_start && s_nr.vram_tex) {
+        for (int pass = 0; pass < 2; pass++) {
+            rhi_pipeline *pipe = (pass == 0) ? s_nr.scene_tex_pipe : s_nr.scene_tex_blend_pipe;
+            if (!pipe) continue;
+            rhi_bind_pipeline(s_nr.dev, pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            int off = tx_start;
+            for (int t = 0; t < s_scene_n && off + 3 <= n; t++) {
+                if (!s_scene[t].textured) continue;
+                if (((s_scene[t].blend != 0) ? 1 : 0) == pass) {
+                    const psx_material m = { s_scene[t].tpage_x, s_scene[t].tpage_y,
+                                             s_scene[t].clut_x, s_scene[t].clut_y, s_scene[t].bpp };
+                    rhi_push_constants(s_nr.dev, &m, sizeof m);
+                    rhi_draw(s_nr.dev, 3, (uint32_t)off);
+                }
+                off += 3;  /* advance for every textured tri (verts are contiguous) */
+            }
         }
     }
 
@@ -593,6 +612,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
     if (s_nr.gouraud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     if (s_nr.vram_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);

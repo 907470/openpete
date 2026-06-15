@@ -346,6 +346,7 @@ typedef struct { float sx, sy, vz; int u, v; uint32_t rgb; } ntri_vert;  /* vz=d
 typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
+    int blend;   /* 0 = opaque, 1 = semi-transparent (prim ABE bit) */
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 static ntri_t s_ntri[MAX_NTRI]; static int s_ntri_n;
@@ -397,18 +398,19 @@ static int build_native_tris(void) {
                         (unsigned)P->tpage, (unsigned)P->clut, tpx, tpy, clx, cly, bpp,
                         P->u[0], P->v[0]); }
         }
+        int blend = (P->code & 0x02) ? 1 : 0;   /* PSX ABE (semi-transparent) bit */
         if (s_ntri_n >= MAX_NTRI) break;
         ntri_t* t = &s_ntri[s_ntri_n++];
         t->v[0] = (ntri_vert){ fx[0], fy[0], fz[0], P->u[0], P->v[0], P->rgb[0] };
         t->v[1] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
         t->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
-        t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly; t->bpp=bpp;
+        t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly; t->bpp=bpp; t->blend=blend;
         if (P->nv == 4 && s_ntri_n < MAX_NTRI) {  /* PSX quad TL,TR,BL,BR -> tris (0,1,2)+(1,3,2) */
             ntri_t* q = &s_ntri[s_ntri_n++];
             q->v[0] = (ntri_vert){ fx[1], fy[1], fz[1], P->u[1], P->v[1], P->rgb[1] };
             q->v[1] = (ntri_vert){ fx[3], fy[3], fz[3], P->u[3], P->v[3], P->rgb[3] };
             q->v[2] = (ntri_vert){ fx[2], fy[2], fz[2], P->u[2], P->v[2], P->rgb[2] };
-            q->textured=tex; q->tpage_x=tpx; q->tpage_y=tpy; q->clut_x=clx; q->clut_y=cly; q->bpp=bpp;
+            q->textured=tex; q->tpage_x=tpx; q->tpage_y=tpy; q->clut_x=clx; q->clut_y=cly; q->bpp=bpp; q->blend=blend;
         }
     }
     return fallback;
@@ -440,6 +442,7 @@ static void push_scene_moby(void) {
         t.tpage_x  = s_ntri[i].tpage_x; t.tpage_y = s_ntri[i].tpage_y;
         t.clut_x   = s_ntri[i].clut_x;  t.clut_y  = s_ntri[i].clut_y;
         t.bpp      = s_ntri[i].bpp;
+        t.blend    = s_ntri[i].blend;
         openpete_native_scene_add_tri(&t);
     }
 }

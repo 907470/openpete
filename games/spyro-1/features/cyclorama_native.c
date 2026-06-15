@@ -395,6 +395,7 @@ static void push_scene(CPUState* cpu) {
         }
         t.textured = 0;   /* cyclorama is gouraud-shaded (no texture) */
         t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
+        t.blend = 0;      /* opaque */
         openpete_native_scene_add_tri(&t);
     }
 }
