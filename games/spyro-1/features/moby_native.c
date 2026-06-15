@@ -265,10 +265,16 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
     uint32_t header = cpu->read_word(rec + 0x04);
     uint32_t frameA = cpu->read_word(rec + 0x08);
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
+    /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
+     * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
+     * +0x05): 2 = identity (the common case), 1 = ×2 size, 3 = /2, etc. Without
+     * this, models whose m_Scale != 2 mis-project (the multi-moby A/B residual).
+     * (This is the a3 = w0&0xFF == 0 path; the rare a3!=0 GPF-TR path is a TODO.) */
+    int m_scale = cpu->read_byte(header + 5) & 0xFF;
     int TR[3];
-    TR[0] = (int32_t)cpu->read_word(rec + 0x10);
-    TR[1] = (int32_t)cpu->read_word(rec + 0x14);
-    TR[2] = (int32_t)cpu->read_word(rec + 0x18);
+    TR[0] = (((int32_t)cpu->read_word(rec + 0x10)) << 2) >> m_scale;
+    TR[1] = (((int32_t)cpu->read_word(rec + 0x14)) << 2) >> m_scale;
+    TR[2] = (((int32_t)cpu->read_word(rec + 0x18)) << 2) >> m_scale;
     int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
