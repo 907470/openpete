@@ -503,7 +503,14 @@ static int build_walk_tris(CPUState* cpu) {
             uint32_t c0 = cpu->read_word(cbase + ((w1 >> 17) & 0x7FCu)) & 0xFFFFFFu;
             uint32_t c1 = cpu->read_word(cbase + ((w1 >>  8) & 0x7FCu)) & 0xFFFFFFu;
             uint32_t c2 = cpu->read_word(cbase + ((w1 <<  1) & 0x7FCu)) & 0xFFFFFFu;
-            uint32_t c3 = c2;   /* v3 colour approx; topology A/B measures position */
+            /* v3 (4th-vertex) gouraud colour: its index is the HIGH field of the
+             * fp+8 word ((v4w>>9)&0x7FC), the sibling of the SXY index in the low
+             * field. Previously approximated as c2, which forced every quad's 2nd
+             * tri (v1,v3,v2) and every (v3,v1,v2) tri to colours (c1,c2,c2)/(c2,..)
+             * — a broken gouraud gradient that rendered as hard facets on ~all
+             * quad faces (51/face-stream here). Reading the real colour restores
+             * the smooth per-vertex shading. */
+            uint32_t c3 = cpu->read_word(cbase + ((v4w >> 9) & 0x7FCu)) & 0xFFFFFFu;
 
             int tpx=0,tpy=0,clx=0,cly=0,bpp=16, u[4]={0,0,0,0}, v[4]={0,0,0,0};
             if (textured) {
@@ -729,8 +736,9 @@ static void recolor_walk_from_prims(void) {
 
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
  * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
- * on top. No depth buffer yet (3a.3), so submission order is the painter's
- * order: sky, then mobys. Determinism-safe: host-side display only. */
+ * on top. Depth ordering is the real per-pixel Z-buffer (3a.3): each vertex
+ * carries its own view-space Z, so opaque faces sort correctly regardless of
+ * submission order. Determinism-safe: host-side display only. */
 static void push_scene_moby(void) {
     static int s_logged = 0;
     if (!s_logged && s_wtri_n > 0) {
@@ -1105,8 +1113,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
             double sx,sy; int sat;
-            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
-            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)TR[2]; out[n].sat=sat; n++;
+            /* TRUE per-vertex view-Z (project returns mac3). The old code threw this
+             * away and stamped the moby-constant TR[2] on every vertex, collapsing
+             * within-moby depth so the Z-buffer couldn't separate a moby's faces
+             * (interior/back faces would punch through the front). Per-vertex Z is
+             * what the real Z-buffer needs. */
+            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat; n++;
         }
     }
     return n;
