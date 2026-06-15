@@ -1221,6 +1221,7 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     if (feed) {                                 /* feed shaded mobys to the scene */
+        s_cur_mat = "SHD";
         capture_gte(cpu, startp, endp);         /* shaded prims for the interim colour */
         build_shaded_walk_tris(cpu);            /* NATIVE topology (#2a — identity slot map, verified) */
         shaded_recolor_pervert();               /* interim per-vertex prim colour (#2b: float MVMVA lighting) */
