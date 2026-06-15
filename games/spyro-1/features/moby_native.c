@@ -250,12 +250,9 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
 #define MAX_PROJ 8192
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
-/* ---- projection A/B: native decode+project vs the emitted prim verts --
- * Project EVERY record's vertices into s_proj[], then nearest-neighbour
- * match each captured GTE prim vertex against the native set (the Phase-2
- * instrument). The prims carry the authoritative final SXY; a close match
- * proves the decode + RTPS+TR projection reproduce the GTE. */
-static void compare_and_report(CPUState* cpu) {
+/* Project EVERY live record's vertices into s_proj[] (native float decode +
+ * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
+static int project_all_records(CPUState* cpu) {
     s_proj_n = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
@@ -265,6 +262,96 @@ static void compare_and_report(CPUState* cpu) {
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
     }
+    return nrec;
+}
+
+/* ---- native triangles for the scene feed (3a.2) --------------------------
+ * SCAFFOLD topology: the independent gamestate face-stream walk is the next
+ * 3a.2 increment (built + A/B-verified against the prims while the .s is still
+ * the oracle, then promoted here — NOT deferred to Phase 6). Until then the
+ * triangle TOPOLOGY comes from the captured prims (the .s already walked the
+ * pipelined, variable-stride stream) while the VERTEX POSITIONS are native
+ * float: each prim vertex is nearest-neighbour matched to the verified s_proj
+ * set, so the fed geometry is native (sub-pixel; widescreen/interp-ready),
+ * just not yet topology-independent. Per-vertex colour is the prim's fogged
+ * RGB (the .s's DPCS output; float DPCS is 3a.4). */
+typedef struct { float sx, sy; uint32_t rgb; } ntri_vert;
+typedef struct { ntri_vert v[3]; } ntri_t;
+#define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
+static ntri_t s_ntri[MAX_NTRI]; static int s_ntri_n;
+
+/* Nearest non-saturated native vertex to a prim screen point; -1 if none. */
+static int nearest_native(float gx, float gy) {
+    double best = 1e18; int bi = -1;
+    for (int i = 0; i < s_proj_n; i++) {
+        if (s_proj[i].sat) continue;
+        double dx = s_proj[i].sx - gx, dy = s_proj[i].sy - gy;
+        double d = dx*dx + dy*dy;
+        if (d < best) { best = d; bi = i; }
+    }
+    return bi;
+}
+
+/* Build s_ntri[] from the captured prims (requires s_proj already filled).
+ * Returns the count of prim vertices that found NO native match (fallback to
+ * the prim's own GTE XY) — a headless health metric for the feed: 0 means every
+ * fed vertex is genuinely native. */
+static int build_native_tris(void) {
+    s_ntri_n = 0;
+    int fallback = 0;
+    for (int g = 0; g < s_gte_n; g++) {
+        prim_t* P = &s_gte[g];
+        if (P->nv < 3) continue;
+        float fx[4], fy[4];
+        for (int k = 0; k < P->nv; k++) {
+            int idx = nearest_native(P->x[k], P->y[k]);
+            if (idx >= 0) { fx[k] = s_proj[idx].sx; fy[k] = s_proj[idx].sy; }
+            else          { fx[k] = P->x[k];        fy[k] = P->y[k]; fallback++; }
+        }
+        if (s_ntri_n >= MAX_NTRI) break;
+        ntri_t* t = &s_ntri[s_ntri_n++];
+        t->v[0] = (ntri_vert){ fx[0], fy[0], P->rgb[0] };
+        t->v[1] = (ntri_vert){ fx[1], fy[1], P->rgb[1] };
+        t->v[2] = (ntri_vert){ fx[2], fy[2], P->rgb[2] };
+        if (P->nv == 4 && s_ntri_n < MAX_NTRI) {  /* PSX quad TL,TR,BL,BR -> tris (0,1,2)+(1,3,2) */
+            ntri_t* q = &s_ntri[s_ntri_n++];
+            q->v[0] = (ntri_vert){ fx[1], fy[1], P->rgb[1] };
+            q->v[1] = (ntri_vert){ fx[3], fy[3], P->rgb[3] };
+            q->v[2] = (ntri_vert){ fx[2], fy[2], P->rgb[2] };
+        }
+    }
+    return fallback;
+}
+
+/* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
+ * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
+ * on top. No depth buffer yet (3a.3), so submission order is the painter's
+ * order: sky, then mobys. Determinism-safe: host-side display only. */
+static void push_scene_moby(void) {
+    static int s_logged = 0;
+    if (!s_logged && s_ntri_n > 0) {
+        s_logged = 1;
+        fprintf(stderr, "[moby-native] feeding panel 0: %d moby tris from gamestate "
+                "(native verts; prim topology scaffold) frame %u\n", s_ntri_n, openpete_frame);
+    }
+    openpete_native_scene_begin_frame(openpete_frame);
+    for (int i = 0; i < s_ntri_n; i++) {
+        openpete_scene_tri t;
+        for (int k = 0; k < 3; k++) {
+            t.v[k].sx   = s_ntri[i].v[k].sx;
+            t.v[k].sy   = s_ntri[i].v[k].sy;
+            t.v[k].rgba = s_ntri[i].v[k].rgb | 0xFF000000u;
+        }
+        openpete_native_scene_add_tri(&t);
+    }
+}
+
+/* ---- projection A/B: native decode+project vs the emitted prim verts --
+ * Nearest-neighbour match each captured GTE prim vertex against the native
+ * s_proj set (the Phase-2 instrument). The prims carry the authoritative final
+ * SXY; a close match proves the decode + RTPS+TR projection reproduce the GTE.
+ * Requires project_all_records() already called (s_proj filled). */
+static void compare_and_report(int nrec) {
     if (!s_proj_n) { fprintf(stderr, "[moby-verify f=%u] no records\n", openpete_frame); return; }
 
     int gv_n = 0, near_n = 0, floor_ok = 0;
@@ -325,12 +412,25 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
     capture_gte(cpu, start, end);
+    int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
+
+    if (feed) {
+        build_native_tris();
+        push_scene_moby();
+    }
 
     if (verify) {
         static int s_dumped = 0, s_reports = 0;
         int target = (openpete_frame >= moby_verify_frame() && s_gte_n > 0 && s_reports < 16);
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
-        if (target) { compare_and_report(cpu); s_reports++; }
+        if (target) {
+            compare_and_report(nrec);
+            int fb = build_native_tris();   /* exercise the feed build headless */
+            fprintf(stderr, "[moby-feed f=%u] tris=%d from prims=%d (nn-fallbacks=%d) "
+                    "-- 0 fallbacks => every fed vertex is native\n",
+                    openpete_frame, s_ntri_n, s_gte_n, fb);
+            s_reports++;
+        }
     }
     s_in = 0;
     return 1;

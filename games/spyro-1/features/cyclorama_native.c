@@ -377,7 +377,7 @@ static void push_scene(CPUState* cpu) {
         fprintf(stderr, "[cyc-native] feeding panel 0: %d cyclorama tris from gamestate (frame %u)\n",
                 s_native_n, openpete_frame);
     }
-    openpete_native_scene_begin();
+    openpete_native_scene_begin_frame(openpete_frame);
     /* The PSX cyclorama clears the frame to g_Cyclorama.m_BackgroundColor
      * (+0x10) before drawing the dome; mirror that so uncovered areas (below
      * the dome / gaps) show it, not black. Same colour conversion as the dome

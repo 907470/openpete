@@ -68,6 +68,14 @@ typedef struct { openpete_scene_vert v[3]; }     openpete_scene_tri;
 /* Begin a fresh native-scene frame (clears the triangle list). Called by
  * the game at the start of its scene extraction. */
 void openpete_native_scene_begin(void);
+/* Frame-keyed begin: clears the scene only when `frame` differs from the last
+ * begin_frame call, otherwise a no-op. This lets MULTIPLE independent feeders
+ * (cyclorama, then the world, then mobys — whatever order they hook in within
+ * one game frame) compose into a single scene without any one of them wiping
+ * the others: the first feeder of each frame clears, the rest append. Pass
+ * `openpete_frame` (the per-yield frame counter). Order-independent and robust
+ * to a feeder being absent on a given level. */
+void openpete_native_scene_begin_frame(unsigned frame);
 /* Append one screen-space triangle to the current native scene. */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn

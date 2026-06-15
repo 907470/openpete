@@ -75,6 +75,16 @@ static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; }
+
+/* Frame-keyed reset: the first feeder of each game frame clears; later feeders
+ * (in any order) append, so the cyclorama + world + mobys compose into one
+ * scene instead of clobbering each other. See the header for the rationale. */
+static unsigned s_scene_frame = 0xFFFFFFFFu;
+void openpete_native_scene_begin_frame(unsigned frame) {
+    if (frame != s_scene_frame) {
+        s_scene_n = 0; s_scene_bg = 0; s_scene_frame = frame;
+    }
+}
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
     if (tri && s_scene_n < MAX_SCENE_TRIS) s_scene[s_scene_n++] = *tri;
 }
