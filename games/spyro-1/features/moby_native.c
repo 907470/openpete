@@ -899,18 +899,87 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
+/* SHADED geometry A/B. Decode the moby's verts (3 signed bytes x2: byte0=Z,
+ * byte1=X, byte2=Y per .L80023010) from model[+0x4] (count=model[+0x0]) and
+ * project with the per-moby R+TR. The attract demo has exactly ONE shaded moby,
+ * so the GTE R+TR left after func_80022A2C ARE that moby's (RTPS doesn't modify
+ * them and the face loop doesn't touch them) -- read them post-hoc to validate
+ * the signed-byte decode + projection independent of the (harder) R-rebuild.
+ * Set-matches the decoded verts vs the captured shaded prims, like the regular
+ * vertex A/B. */
+#define SINCOS_TABLE 0x8006CBF8u   /* sin[idx], cos at [idx+0x80]; s16 1.12 */
+static void shaded_verify(CPUState* cpu) {
+    /* The +0x2400 list holds MULTIPLE live shaded mobys -- project EVERY one
+     * (each with its own R = ProjMatrix . Ry(m_Rotation axis0) and TR =
+     * ProjMatrix . (pos - cam)) and accumulate, then A/B vs all shaded prims.
+     * (axis0 = Y confirmed; axis1/2 euler TODO for fuller rotations.) */
+    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);
+    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
+    double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
+    static proj_xy sv[8192]; int n=0; int nmoby=0;
+    for (int r=0; r<256; r++) {
+        uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
+        if (m < 0x80000000u) break;
+        nmoby++;
+        uint32_t cls = cpu->read_half(m + 0x36);
+        uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
+        uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
+        int count = cpu->read_byte(model + 0x0u) & 0xFF;
+        uint32_t rot = cpu->read_word(m + 0x44u);
+        uint32_t idx0 = (rot >> 15) & 0x1FEu;
+        int s0 = (int16_t)cpu->read_half(SINCOS_TABLE + idx0);
+        int c0 = (int16_t)cpu->read_half(SINCOS_TABLE + 0x80u + idx0);
+        int Ry[3][3] = {{c0,0,s0},{0,4096,0},{-s0,0,c0}};
+        int M[3][3];
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++)
+            M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
+        int32_t dx=(int32_t)cpu->read_word(m+0xC)-cx, dy=(int32_t)cpu->read_word(m+0x10)-cy, dz=(int32_t)cpu->read_word(m+0x14)-cz;
+        int TR[3]; for (int i=0;i<3;i++) TR[i] = (PM[i][0]*dx + PM[i][1]*dy + PM[i][2]*dz) >> 12;
+        for (int i=0;i<count && n<8192;i++) {
+            uint32_t p = vbase + (uint32_t)i*3u;
+            uint32_t w = cpu->read_byte(p) | (cpu->read_byte(p+1)<<8) | (cpu->read_byte(p+2)<<16);
+            int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
+            double sx,sy; int sat;
+            project(M,TR,(double)VX,(double)VY,(double)VZ, ofx,ofy,H, &sx,&sy,&sat);
+            sv[n].sx=(float)sx; sv[n].sy=(float)sy; sv[n].sat=sat; n++;
+        }
+    }
+    /* set-match shaded prim verts vs sv + centroid offset (to characterize any
+     * constant projection-center error, e.g. a 3D-vs-billboard OFX mismatch). */
+    int gv=0,near=0,div=0; double sum=0,mx=0;
+    double mycx=0,mycy=0, pcx=0,pcy=0; int pcn=0;
+    for (int i=0;i<n;i++){ mycx+=sv[i].sx; mycy+=sv[i].sy; } if(n){mycx/=n;mycy/=n;}
+    for (int g=0; g<s_gte_n; g++) for (int k=0;k<s_gte[g].nv;k++) {
+        float gx=s_gte[g].x[k], gy=s_gte[g].y[k]; gv++; pcx+=gx; pcy+=gy; pcn++;
+        double best=1e18; int bs=1;
+        for (int i=0;i<n;i++){ double dx=sv[i].sx-gx,dy=sv[i].sy-gy,d=dx*dx+dy*dy; if(d<best){best=d;bs=sv[i].sat;} }
+        double dist=sqrt(best);
+        if (bs){div++;continue;}
+        if (dist<=4.0){near++;sum+=dist;if(dist>mx)mx=dist;}
+    }
+    if(pcn){pcx/=pcn;pcy/=pcn;}
+    int clean=gv-div;
+    fprintf(stderr,"[shaded-verify f=%u] mobys=%d nativeVerts=%d | "
+            "myCentroid=(%.0f,%.0f) primCentroid=(%.0f,%.0f) offset=(%.0f,%.0f) | "
+            "primVerts=%d match<=4px=%d/%d(%.1f%%) mean=%.2fpx\n",
+            openpete_frame, nmoby, n, mycx,mycy, pcx,pcy, mycx-pcx, mycy-pcy,
+            gv, near,clean, clean?100.0*near/clean:0.0, near?sum/near:0.0);
+}
+
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled()) return 0;   /* dump-only for now; no feed yet */
+    if (!moby_verify_enabled()) return 0;   /* verify-only; feed pending the R-rebuild */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-    static int s_dumped = 0;
-    if (!s_dumped && openpete_frame >= moby_verify_frame() && endp > startp) {
+    static int s_dumped = 0, s_sreports = 0;
+    if (openpete_frame >= moby_verify_frame() && endp > startp && s_sreports < 12) {
         capture_gte(cpu, startp, endp);
-        shaded_dump(cpu, startp, endp);
-        s_dumped = 1;
+        if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
+        shaded_verify(cpu);
+        s_sreports++;
     }
     s_in = 0;
     return 1;
