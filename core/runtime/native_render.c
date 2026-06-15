@@ -233,11 +233,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
-     * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha. */
+     * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
+     * depth_write_off: transparent tris Z-TEST against opaque but do NOT write
+     * depth, so they never occlude each other (correct ordering still needs the
+     * back-to-front sort, 3c; this is the prerequisite half). */
     rhi_pipeline_desc scene_tex_blend_desc = {
         .vert_spv = "psx_sample.vert.spv",
         .frag_spv = "psx_scene.frag.spv",
-        .blend = RHI_BLEND_ALPHA, .depth_test = true,
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);

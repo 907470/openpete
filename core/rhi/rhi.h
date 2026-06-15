@@ -106,6 +106,7 @@ typedef struct {
     const char    *frag_spv;
     rhi_blend_mode blend;
     bool           depth_test;  /* needs a depth attachment (added later) */
+    bool           depth_write_off; /* depth_test but NO depth write (transparent: test vs opaque, don't occlude) */
     bool           uses_vram;   /* layout includes the VRAM sampler (set 0)   */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
 } rhi_pipeline_desc;
