@@ -41,6 +41,8 @@ extern void     func_80022A2C(CPUState* cpu);  /* the real SHADED moby renderer 
 extern unsigned openpete_frame;
 
 static const char* s_cur_mat = "REG";   /* material tag for the current pass (REG/SPEC) */
+static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
+static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
 #define D_SONY        0x8006FCF4u   /* g_SonyImage — reused as moby render scratch */
 #define REC_BASE      (D_SONY + 0x1600u) /* cull/gather records, stride 0x38 */
@@ -52,6 +54,8 @@ static const char* s_cur_mat = "REG";   /* material tag for the current pass (RE
 #define REC_STRIDE    0x38u
 #define MAX_RECORDS   512
 #define SHADED_BASE   (D_SONY + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
+#define D_SPEC_LIGHT  0x800770C8u   /* SpecularAndMetal: +0/+4/+8 = directional light dir */
+#define D_SHADE_COLTAB 0x8006E3D8u  /* shaded base-colour table, indexed by m_SpecularMetalColor>>22 */
 
 /* ---- captured prim (ground truth, decoded from the polybuf) --------- */
 typedef struct {
@@ -385,6 +389,7 @@ typedef struct {
 #define COLOR_SCRATCH (D_SONY + 0x1100u)   /* per-vertex fogged RGB (.s DPCS output) */
 
 static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
+static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
@@ -683,6 +688,54 @@ static void compare_walk_vs_prims(void) {
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_walkdiag.quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
     #undef ONSCR
+}
+
+/* Within-matched-tri colour A/B for the native shaded lighting (#2b). Global
+ * position-NN is unreliable here — cliff_town packs ~58 shaded mobys into a
+ * small region, so a vertex's nearest prim point often belongs to a DIFFERENT
+ * moby. So: match each native walk tri to a prim tri by geometry (centroid
+ * prune + tri_match_cost, the same as compare_walk_vs_prims), then min-assign
+ * the 3 colour pairs (best of 6 permutations) and tally per-vertex exact match
+ * + mean per-channel error. Staying inside a geometry-matched face pair keeps
+ * the comparison within the same moby. On-screen tris only. */
+static void shaded_color_ab(void) {
+    build_prim_tris();
+    if (s_ptri_n <= 0 || s_wtri_n <= 0) return;
+    static const int pm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+    int n[3]={0,0,0}, exact[3]={0,0,0}; double cherr[3]={0,0,0};
+    for (int wi=0; wi<s_wtri_n; wi++) {
+        ntri_t* w=&s_wtri[wi]; int md=s_wtri_mode[wi]; if(md>2)md=0;
+        double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
+        if (!(wcx>=0&&wcx<=512&&wcy>=0&&wcy<=240)) continue;
+        double best=1e18; int bp=-1;
+        for (int pi=0; pi<s_ptri_n; pi++) {
+            double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
+            double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
+            if (fabs(pcx-wcx)>16.0||fabs(pcy-wcy)>16.0) continue;
+            double c=tri_match_cost(w,&s_ptri[pi]); if(c<best){best=c;bp=pi;}
+        }
+        if (best>1.0||bp<0) continue;   /* tight geom gate: kill cross-moby matches */
+        /* best assignment of my 3 colours to the prim's 3 (min total channel err) */
+        double bce=1e18; int bq=0;
+        for (int q=0;q<6;q++){ double e=0; for(int k=0;k<3;k++){
+            uint32_t wc=w->v[k].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[pm[q][k]]&0xFFFFFFu;
+            e += abs((int)(wc&0xFF)-(int)(pc&0xFF))+abs((int)((wc>>8)&0xFF)-(int)((pc>>8)&0xFF))
+               + abs((int)((wc>>16)&0xFF)-(int)((pc>>16)&0xFF)); }
+            if(e<bce){bce=e;bq=q;} }
+        for(int k=0;k<3;k++){
+            uint32_t wc=w->v[k].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[pm[bq][k]]&0xFFFFFFu;
+            n[md]++; if(wc==pc) exact[md]++;
+            cherr[md] += abs((int)(wc&0xFF)-(int)(pc&0xFF))+abs((int)((wc>>8)&0xFF)-(int)((pc>>8)&0xFF))
+                   + abs((int)((wc>>16)&0xFF)-(int)((pc>>16)&0xFF));
+        }
+    }
+    int N=n[0]+n[1]+n[2], E=exact[0]+exact[1]+exact[2]; double CE=cherr[0]+cherr[1]+cherr[2];
+    #define PMODE(i) n[i], n[i]?100.0*exact[i]/n[i]:0.0, n[i]?cherr[i]/(3.0*n[i]):0.0
+    fprintf(stderr,"[shaded-color f=%u] verts=%d exact=%d(%.1f%%) meanChErr=%.2f | "
+        "gouraud[v=%d %.0f%% e%.1f] flatBasic[v=%d %.0f%% e%.1f] flatMetal[v=%d %.0f%% e%.1f] nohl=%d\n",
+        openpete_frame, N, E, N?100.0*E/N:0.0, N?CE/(3.0*N):0.0,
+        PMODE(0), PMODE(1), PMODE(2), s_sh_nohl);
+    #undef PMODE
 }
 
 /* Specular (shiny-metal) per-face colour is a GTE env-mapped reflection
@@ -1009,6 +1062,33 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * Set-matches the decoded verts vs the captured shaded prims, like the regular
  * vertex A/B. */
 #define SINCOS_TABLE 0x8006CBF8u   /* sin[idx], cos at [idx+0x80]; s16 1.12 */
+
+static void mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++)
+        O[i][j] = (A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j]) >> 12;
+}
+
+/* Compose the moby's full euler rotation onto `start`, mirroring func_80022A2C's
+ * matrix build (block_80022DBC..80022F34): out = start·Ry·Rx·Rz, applied in that
+ * order. The per-axis rotation columns come straight from the .s's MVMVA inputs
+ * (Y@80022DE4, X@80022E90, Z@80022F40); the sin/cos table values go in verbatim
+ * (sin may be negative). VERIFIED bit-exact vs the live RT registers: base·Ry =
+ * gte_ctrl[0..4] for a billboard moby (cliff_town cls 0x3A). Euler indices:
+ * Y=(rot>>15)&0x1FE, X=(rot&0xFF00)>>7, Z=(rot&0xFF)<<1 (rot=m_Rotation@+0x44). */
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]) {
+    uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
+    int sy=(int16_t)cpu->read_half(SINCOS_TABLE+iy), cy=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iy);
+    int sx=(int16_t)cpu->read_half(SINCOS_TABLE+ix), cx=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+ix);
+    int sz=(int16_t)cpu->read_half(SINCOS_TABLE+iz), cz=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iz);
+    int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
+    int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
+    int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
+    int t1[3][3], t2[3][3];
+    mat_mul3(start, Ry, t1);
+    mat_mul3(t1, Rx, t2);
+    mat_mul3(t2, Rz, out);
+}
+
 static void shaded_verify(CPUState* cpu) {
     /* The +0x2400 list holds MULTIPLE live shaded mobys -- project EVERY one
      * (each with its own R = ProjMatrix . Ry(m_Rotation axis0) and TR =
@@ -1079,10 +1159,77 @@ static void shaded_verify(CPUState* cpu) {
             gv, near,clean, clean?100.0*near/clean:0.0, near?sum/near:0.0);
 }
 
+/* ---- shaded directional lighting (#2b) — faithful integer GTE mirror -------
+ * Reproduces func_80022A2C's per-normal lighting (gouraud block_80023148 /
+ * flat block_80023574) bit-for-bit so the native colour equals the .s
+ * renderer's, instead of NN-sampling the .s's emitted prims. Op chain:
+ *   IR = normal (3 signed bytes)
+ *   MVMVA(mx=RT, v=IR, sf=1, lm=0)   -> view-space normal  (gte_mvmva)
+ *   IR0 = (base>>23)&0x1E ; GPF(sf=0,lm=0): IR = IR0*IR     (gte_gpf)
+ *   BK  = base colour channels<<? ; LC = light dir broadcast
+ *   CC: light_color (BK + LC·IR) then color_output (white·IR) -> RGB
+ * Light dir is read fresh per frame (s_shL); base colour per moby. */
+static int s_shL[3];   /* int16-truncated directional-light dir (D_800770C8+0/4/8) */
+
+static int32_t sat_ir_lm(int64_t v, int lm) {   /* mirrors GTEState::saturate_ir */
+    int32_t mn = lm ? 0 : -0x8000;
+    if (v < mn) return mn;
+    if (v > 0x7FFF) return 0x7FFF;
+    return (int32_t)v;
+}
+static int32_t sat_col8(int64_t v) {            /* mirrors GTEState::saturate_color */
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (int32_t)v;
+}
+
+/* RT = model->view rotation (same matrix used to project this moby's verts).
+ * base = per-moby base-colour word. highlight=1 applies the gouraud spec boost
+ * (block_800231C4..80023250); the flat path omits it. Returns 0x00BBGGRR (the
+ * low 24 bits the .s stores, r in the low byte — matches s_gte/s_ptri rgb). */
+static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
+                                 uint32_t base, int highlight) {
+    int64_t m1 = ((int64_t)RT[0][0]*nx + (int64_t)RT[0][1]*ny + (int64_t)RT[0][2]*nz) >> 12;
+    int64_t m2 = ((int64_t)RT[1][0]*nx + (int64_t)RT[1][1]*ny + (int64_t)RT[1][2]*nz) >> 12;
+    int64_t m3 = ((int64_t)RT[2][0]*nx + (int64_t)RT[2][1]*ny + (int64_t)RT[2][2]*nz) >> 12;
+    int32_t ir1 = sat_ir_lm(m1,0), ir2 = sat_ir_lm(m2,0), ir3 = sat_ir_lm(m3,0);
+    int32_t ir0 = (int32_t)(((uint32_t)base >> 23) & 0x1Eu);
+    ir1 = sat_ir_lm((int64_t)ir0*ir1, 0);
+    ir2 = sat_ir_lm((int64_t)ir0*ir2, 0);
+    ir3 = sat_ir_lm((int64_t)ir0*ir3, 0);
+    int32_t rbk = (int32_t)(((uint32_t)base << 4) & 0xFF0u);
+    int32_t gbk = (int32_t)(((uint32_t)base >> 4) & 0xFF0u);
+    int32_t bbk = (int32_t)(((uint32_t)base >> 12) & 0xFF0u);
+    /* CC step 1 — light_color: LC matrix = light dir broadcast to all 3 rows */
+    int64_t lc = (int64_t)s_shL[0]*ir1 + (int64_t)s_shL[1]*ir2 + (int64_t)s_shL[2]*ir3;
+    ir1 = sat_ir_lm((((int64_t)rbk << 12) + lc) >> 12, 1);
+    ir2 = sat_ir_lm((((int64_t)gbk << 12) + lc) >> 12, 1);
+    ir3 = sat_ir_lm((((int64_t)bbk << 12) + lc) >> 12, 1);
+    /* CC step 2 — color_output: RGBC = white (0xFFFFFF). MAC = (255*IR<<4)>>12 */
+    int32_t M1 = (int32_t)(((int64_t)255*ir1) >> 8);
+    int32_t M2 = (int32_t)(((int64_t)255*ir2) >> 8);
+    int32_t M3 = (int32_t)(((int64_t)255*ir3) >> 8);
+    int32_t oir1 = sat_ir_lm(M1,1), oir2 = sat_ir_lm(M2,1), oir3 = sat_ir_lm(M3,1);
+    uint32_t a0 = (uint32_t)sat_col8(M1>>4) | ((uint32_t)sat_col8(M2>>4)<<8) | ((uint32_t)sat_col8(M3>>4)<<16);
+    if (!highlight) return a0;
+    /* gouraud spec boost */
+    int32_t s1 = (int32_t)(base & 0xFFFFFFu);
+    if ((int32_t)a0 - s1 < 0) return (uint32_t)s1;
+    int32_t hn = (int32_t)((uint32_t)base >> 28);
+    if (hn == 0) return a0;
+    int32_t d = oir1 - (hn << 7) - rbk;
+    if (d <= 0) return a0;
+    d <<= 1;
+    int32_t ch[3] = { oir1 + d, oir2 + d, oir3 + d };
+    for (int k = 0; k < 3; k++) ch[k] = (ch[k] < 4096) ? (ch[k] >> 4) : 0xFF;
+    return (uint32_t)ch[0] | ((uint32_t)ch[1]<<8) | ((uint32_t)ch[2]<<16);
+}
+
 /* Per-shaded-moby metadata recorded alongside the projected verts, so the
  * native face-stream walk (build_shaded_walk_tris) can index each moby's verts
- * in out[] and read its face stream. */
-typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls; } shaded_rec;
+ * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
+typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
+                 uint32_t model, base, moby; int RT[3][3]; } shaded_rec;
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
@@ -1093,6 +1240,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
     double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
     double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
+    /* directional light dir (int16-truncated on ctc2 into the LCM), refreshed
+     * each frame from D_800770C8+0/+4/+8 (block_80022AD0). */
+    s_shL[0]=(int16_t)cpu->read_word(D_SPEC_LIGHT+0); s_shL[1]=(int16_t)cpu->read_word(D_SPEC_LIGHT+4); s_shL[2]=(int16_t)cpu->read_word(D_SPEC_LIGHT+8);
     int n=0; s_nshrecs = 0;
     for (int r=0; r<256; r++) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
@@ -1106,15 +1256,18 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         int sv_off = n;
         int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
         int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
+        uint32_t rot = cpu->read_word(m + 0x44u);   /* m_Rotation (3 euler bytes) */
         int M[3][3], TR[3]; double mofx, mofy;
         if (billboard) {
-            M[0][0]=4096;M[0][1]=0;M[0][2]=0; M[1][0]=0;M[1][1]=2560;M[1][2]=0; M[2][0]=0;M[2][1]=0;M[2][2]=4096;
+            /* base = [4096 0 0/0 2560 0/0 0 4096] composed with the moby euler
+             * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
+            int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
+            shaded_compose_euler(cpu, base, rot, M);
             TR[0]=0; TR[1]=0; TR[2]=pz>>1; mofx=(double)px; mofy=(double)py;
         } else {
-            uint32_t rot = cpu->read_word(m + 0x44u); uint32_t idx0=(rot>>15)&0x1FEu;
-            int s0=(int16_t)cpu->read_half(SINCOS_TABLE+idx0), c0=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+idx0);
-            int Ry[3][3]={{c0,0,s0},{0,4096,0},{-s0,0,c0}};
-            for(int i=0;i<3;i++)for(int j=0;j<3;j++) M[i][j]=(PM[i][0]*Ry[0][j]+PM[i][1]*Ry[1][j]+PM[i][2]*Ry[2][j])>>12;
+            /* model->view = PM (camera ProjMatrix) composed with the full moby
+             * euler rotation (block_80022CE4 PM start, then the same chain). */
+            shaded_compose_euler(cpu, PM, rot, M);
             int32_t dx=px-cx,dy=py-cy,dz=pz-cz; for(int i=0;i<3;i++) TR[i]=(PM[i][0]*dx+PM[i][1]*dy+PM[i][2]*dz)>>12;
             mofx=ofx; mofy=ofy;
         }
@@ -1131,7 +1284,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat; n++;
         }
-        if (s_nshrecs < 256) s_shrecs[s_nshrecs++] = (shaded_rec){ sv_off, n - sv_off, faces, fcount, (int)cls };
+        if (s_nshrecs < 256) {
+            uint32_t scolor = cpu->read_word(m + 0x4Cu);   /* m_SpecularMetalColor */
+            uint32_t base = cpu->read_word(D_SHADE_COLTAB + (uint32_t)((int32_t)scolor >> 22));
+            shaded_rec* R = &s_shrecs[s_nshrecs++];
+            R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
+            R->model=model; R->base=base; R->moby=m;
+            for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
+        }
     }
     return n;
 }
@@ -1153,61 +1313,123 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
  * truncation) for every slot, and the topology A/B hit ~90% ONSCREEN precision.
  * The earlier "permutation / 33%" reading was a phantom of the attract demo's
  * degenerate-tiny shaded mobys (6-14px, verts ~2px apart), where NN matching and
- * the direct check both break down. Colour is INTERIM (shaded_recolor_pervert,
- * per-vertex prim NN) until the float MVMVA directional lighting lands (#2b). */
+ * the direct check both break down.
+ *
+ * COLOUR (#2b) is now native too — shaded_lit_color() reproduces the .s's
+ * directional-lighting GTE chain bit-for-bit (verified vs the +0x2A00 scratchpad:
+ * flat 100%, gouraud Y-only 61-64/64, err ~0.02). word0 bit0 selects the shading
+ * MODE: gouraud (per-vertex normals at model+0x10, colour-indexed by word1) vs
+ * flat (one colour from word1's 3-byte face normal). word0 bit1 on a flat face
+ * marks the METAL env-reflection sub-mode (block_80023720) — NOT yet derived
+ * natively (same family as #1 specular reflection); rendered as basic-flat for
+ * now (approximate but leak-free). The feed reads ZERO .s prim output. */
 static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
+    if (s_sh_nohl < 0) { const char* e=getenv("OPENPETE_SHADED_NOHL"); s_sh_nohl = (e&&*e!='0'); }
+    s_shmode[0]=s_shmode[1]=s_shmode[2]=0;
     s_wtri_n = 0;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
+        /* Per-vertex gouraud lit colours from the inline normal stream
+         * (model+0x10, 3 signed bytes/vertex: byte0=Nz, byte1=Nx, byte2=Ny —
+         * same byte layout as the vertex positions). Computed for every moby;
+         * only read for gouraud faces (flat faces light per-face below). */
+        static uint32_t pcol[256];
+        int pcn = vc < 256 ? vc : 256;
+        for (int i = 0; i < pcn; i++) {
+            uint32_t p = R->model + 0x10u + (uint32_t)i*3u;
+            int nz=(int8_t)cpu->read_byte(p), nx=(int8_t)cpu->read_byte(p+1), ny=(int8_t)cpu->read_byte(p+2);
+            pcol[i] = shaded_lit_color(R->RT, nx, ny, nz, R->base, s_sh_nohl?0:1);
+        }
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_wtri_n < MAX_NTRI; f++, fp += 8u) {
-            uint32_t w0 = cpu->read_word(fp);
+            uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
+            if (w0 & 1u) { if (w0 & 2u) s_shmode[2]++; else s_shmode[1]++; } else s_shmode[0]++;
             int i0 = (int)((w0 >> 21) & 0x1FCu) >> 2;
             int i1 = (int)((w0 >> 14) & 0x1FCu) >> 2;
             int i2 = (int)((w0 >>  7) & 0x1FCu) >> 2;
             int i3 = (int)( w0        & 0x1FCu) >> 2;
             if (i0 >= vc || i1 >= vc || i2 >= vc) continue;
+            /* Colour: w0 bit0 selects shading MODE — flat (1) lights once from
+             * w1's 3-byte face normal; gouraud (0) reads per-vertex colours
+             * indexed by w1's colour fields (>>{21,14,7,0}&0x1FC, >>2 = slot). */
+            uint32_t c0,c1,c2,c3; uint8_t mode;
+            if (w0 & 1u) {
+                int fnz=(int8_t)(w1>>24), fnx=(int8_t)(w1>>16), fny=(int8_t)(w1>>8);
+                c0=c1=c2=c3 = shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
+                mode = (w0 & 2u) ? 2 : 1;
+            } else {
+                int j0=(int)((w1>>21)&0x1FCu)>>2, j1=(int)((w1>>14)&0x1FCu)>>2;
+                int j2=(int)((w1>> 7)&0x1FCu)>>2, j3=(int)( w1     &0x1FCu)>>2;
+                c0 = j0<pcn?pcol[j0]:0x808080u; c1 = j1<pcn?pcol[j1]:0x808080u;
+                c2 = j2<pcn?pcol[j2]:0x808080u; c3 = j3<pcn?pcol[j3]:0x808080u;
+                mode = 0;
+            }
+            int mt0 = s_wtri_n;
             proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
             double ncl1 = tri_nclip_i(p0, p1, p2);
             if (i2 == i3) {                                       /* TRI */
                 if (ncl1 > 0.0)
-                    emit_wtri(p0,p1,p2, 0x808080,0x808080,0x808080, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
             } else if (i3 < vc) {                                 /* QUAD */
                 proj_xy* p3 = &base[i3];
                 double ncl2 = tri_nclip_i(p3, p1, p2);
                 if (ncl1 > 0.0 || ncl2 < 0.0) {
-                    emit_wtri(p0,p1,p2, 0x808080,0x808080,0x808080, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
                     if (s_wtri_n < MAX_NTRI)
-                        emit_wtri(p1,p3,p2, 0x808080,0x808080,0x808080, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                        emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
                 }
             }
+            for (int t = mt0; t < s_wtri_n; t++) s_wtri_mode[t] = mode;
         }
     }
     return s_wtri_n;
 }
 
-/* INTERIM colour for the native shaded walk (#2a): per-vertex nearest-prim-vertex
- * RGB from the .s's captured prims. Always colours every vertex (no gaps), unlike
- * the tri-match recolor which leaves unmatched tris at the base colour. Stands in
- * until the float MVMVA directional lighting lands (#2b). */
-static void shaded_recolor_pervert(void) {
-    build_prim_tris();
-    if (s_ptri_n <= 0) return;
-    for (int wi = 0; wi < s_wtri_n; wi++) {
-        for (int k = 0; k < 3; k++) {
-            float wx = s_wtri[wi].v[k].sx, wy = s_wtri[wi].v[k].sy;
-            double bd = 1e18; uint32_t brgb = s_wtri[wi].v[k].rgb;
-            for (int pi = 0; pi < s_ptri_n; pi++)
-                for (int j = 0; j < 3; j++) {
-                    double dx = s_ptri[pi].x[j]-wx, dy = s_ptri[pi].y[j]-wy, d = dx*dx+dy*dy;
-                    if (d < bd) { bd = d; brgb = s_ptri[pi].rgb[j]; }
-                }
-            s_wtri[wi].v[k].rgb = brgb;
+/* Ground-truth check for the gouraud per-vertex lighting: the .s writes its
+ * per-vertex lit colours to scratchpad D_SONY+0x2A00 (block_80023258), one
+ * word per vertex, for the LAST gouraud moby it processed (overwritten each
+ * moby). Recompute pcol[] for each rec, find the one whose pcol matches the
+ * scratchpad (that's the last gouraud moby), and dump element-wise — zero
+ * tri-match / cross-moby confound. Call from the verify path. */
+static void shaded_pcol_scratch_check(CPUState* cpu) {
+    uint32_t SCR = D_SONY + 0x2A00u;
+    int brec=-1; double bscore=1e18;
+    for (int r=0; r<s_nshrecs; r++) {            /* find the rec the scratchpad holds */
+        shaded_rec* R=&s_shrecs[r]; if (R->vcount<3) continue;
+        double e=0; int nn = R->vcount<8?R->vcount:8;
+        for (int i=0;i<nn;i++){
+            uint32_t p=R->model+0x10u+(uint32_t)i*3u;
+            int nz=(int8_t)cpu->read_byte(p), nx=(int8_t)cpu->read_byte(p+1), ny=(int8_t)cpu->read_byte(p+2);
+            uint32_t mine=shaded_lit_color(R->RT,nx,ny,nz,R->base,s_sh_nohl?0:1);
+            uint32_t sc=cpu->read_word(SCR+(uint32_t)i*4u)&0xFFFFFFu;
+            e += abs((int)(mine&0xFF)-(int)(sc&0xFF))+abs((int)((mine>>8)&0xFF)-(int)((sc>>8)&0xFF))
+               + abs((int)((mine>>16)&0xFF)-(int)((sc>>16)&0xFF));
         }
+        e/=nn; if(e<bscore){bscore=e;brec=r;}
     }
+    if (brec<0) return;
+    shaded_rec* R=&s_shrecs[brec];
+    uint32_t rot=cpu->read_word(R->moby+0x44u);
+    int nn=R->vcount<64?R->vcount:64, exact=0; double err=0;
+    for (int i=0;i<nn;i++){
+        uint32_t p=R->model+0x10u+(uint32_t)i*3u;
+        int nz=(int8_t)cpu->read_byte(p),nx=(int8_t)cpu->read_byte(p+1),ny=(int8_t)cpu->read_byte(p+2);
+        uint32_t mine=shaded_lit_color(R->RT,nx,ny,nz,R->base,s_sh_nohl?0:1)&0xFFFFFFu;
+        uint32_t s=cpu->read_word(SCR+(uint32_t)i*4u)&0xFFFFFFu;
+        if(mine==s)exact++;
+        err += abs((int)(mine&0xFF)-(int)(s&0xFF))+abs((int)((mine>>8)&0xFF)-(int)((s>>8)&0xFF))
+             + abs((int)((mine>>16)&0xFF)-(int)((s>>16)&0xFF));
+    }
+    int nyonly=0, nx=0, nz=0;   /* euler census across all shaded mobys this frame */
+    for (int r=0;r<s_nshrecs;r++){ uint32_t rr=cpu->read_word(s_shrecs[r].moby+0x44u);
+        int X=(rr&0xFF00u)>>7, Z=(rr&0xFFu)<<1; if(X)nx++; if(Z)nz++; if(!X&&!Z)nyonly++; }
+    fprintf(stderr,"[shaded-pcol f=%u] rec=%d cls=0x%X vcount=%d euler{Y=%u X=%u Z=%u} R->RT exact=%d/%d meanChErr=%.2f nohl=%d | census{Yonly=%d Xrot=%d Zrot=%d of %d}\n",
+        openpete_frame, brec, R->cls, R->vcount,
+        (rot>>15)&0x1FEu, (rot&0xFF00u)>>7, (rot&0xFFu)<<1, exact, nn, err/(3.0*nn), s_sh_nohl,
+        nyonly, nx, nz, s_nshrecs);
 }
 
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
@@ -1220,22 +1442,23 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
-    if (feed) {                                 /* feed shaded mobys to the scene */
+    if (feed) {                                 /* feed shaded mobys to the scene — fully native */
         s_cur_mat = "SHD";
-        capture_gte(cpu, startp, endp);         /* shaded prims for the interim colour */
-        build_shaded_walk_tris(cpu);            /* NATIVE topology (#2a — identity slot map, verified) */
-        shaded_recolor_pervert();               /* interim per-vertex prim colour (#2b: float MVMVA lighting) */
-        push_scene_moby();
+        build_shaded_walk_tris(cpu);            /* native topology (#2a) + native lighting (#2b) */
+        push_scene_moby();                      /* reads zero .s prim output */
     }
 
     if (verify) {
         static int s_dumped = 0, s_sreports = 0;
         if (openpete_frame >= moby_verify_frame() && endp > startp && s_sreports < 12) {
+            s_cur_mat = "SHD";
             capture_gte(cpu, startp, endp);
             if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
             shaded_verify(cpu);                 /* vertex A/B (100% geometry match) */
-            build_shaded_walk_tris(cpu);        /* native topology (#2a) -> s_wtri */
+            build_shaded_walk_tris(cpu);        /* native topology (#2a) + lighting (#2b) -> s_wtri */
             compare_walk_vs_prims();            /* triangle A/B vs the shaded prims (~90% onscreen) */
+            shaded_color_ab();                  /* position-keyed colour A/B (#2b lighting) */
+            shaded_pcol_scratch_check(cpu);     /* direct pcol vs .s +0x2A00 scratchpad */
             s_sreports++;
         }
     }
