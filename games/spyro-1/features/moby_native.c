@@ -464,27 +464,44 @@ static int build_walk_tris(CPUState* cpu) {
 
             /* FRESH faces run the .s's dual-NCLIP (block_8002008C): NCLIP1=(v0,v1,v2),
              * then v3 is loaded into SXY0 so NCLIP2=(v3,v1,v2). bit0(=w0f&1) flips the
-             * sign test (the `neg` dance). Outcomes:
-             *   t6a>=0 && t6b>0  -> QUAD: emit (v0,v1,v2)+(v1,v3,v2)
+             * sign test (the `neg` dance). The emit TARGET (read from the .s by its GPU
+             * command byte -- 0x30=tri, 0x38=quad) determines tri-vs-quad, and it is the
+             * OPPOSITE of what the t6a>=0 "s1=0x10" path suggests:
+             *   t6a>=0 && t6b>0  -> .L800203F4 (+8=v3): single 0x30 TRI (v3,v1,v2)
              *   t6a>=0 && t6b<=0 -> skip the whole face
-             *   t6a<0  && t6b>0  -> tri-2nd: emit (v3,v1,v2)   (.L80020158)
-             *   t6a<0  && t6b<=0 -> tri-1st: emit (v0,v1,v2)   (.L800203F4 s1=0)
+             *   t6a<0  && t6b>0  -> .L80020158:        0x38 QUAD (v0,v1,v2)+(v1,v3,v2)
+             *   t6a<0  && t6b<=0 -> .L800203F4 (+8=v0): single 0x30 TRI (v0,v1,v2)
+             * (Measured: walkQ matches the .s's primQ=49/frame on the Insomniac sign,
+             * recall 64%->99%. The earlier inverted map drew one half of every quad.)
              * STRIPS (.L8002031C) are single triangles, keep if NCLIP>0. */
             proj_xy* p3 = (i3 < vcount) ? &s_proj[base+i3] : NULL;
             double ncl1 = tri_nclip_i(p0,p1,p2);
+            double ncl2 = p3 ? tri_nclip_i(p3,p1,p2) : -1.0;
             int emit_a = 0, emit_b = 0, b_is_v3tri = 0;
             if (fresh) {
-                double ncl2 = p3 ? tri_nclip_i(p3,p1,p2) : -1.0;
                 int bit0 = (int)(w0 & 1u);
-                double t6a = (bit0 && ncl1 > 0.0) ? -ncl1 : ncl1;
-                double t6b = (bit0 && ncl2 >= 0.0) ? -ncl2 : ncl2;
-                if (t6a >= 0.0) { if (t6b > 0.0 && p3) { emit_a = emit_b = 1; s_walkdiag.quad++; } }
-                else            { if (t6b > 0.0 && p3) { emit_b = b_is_v3tri = 1; } else emit_a = 1; }
+                double t6a = (bit0 && ncl1 > 0.0) ? -ncl1 : ncl1;   /* asm .L800200D0 blez: negate NCLIP1 when >0 */
+                double t6b = (bit0 && ncl2 < 0.0) ? -ncl2 : ncl2;   /* asm .L80020108/.L80020138 bgez: negate NCLIP2 when <0 */
+                /* Emit-target codes read from the .s:
+                 *   t6a>=0 && t6b>0  -> .L800203F4 (+8=v3): single 0x30 TRI (v3,v1,v2)
+                 *   t6a>=0 && t6b<=0 -> SKIP
+                 *   t6a<0  && t6b>0  -> .L80020158:        0x38 QUAD (v0,v1,v2)+(v1,v3,v2)
+                 *   t6a<0  && t6b<=0 -> .L800203F4 (+8=v0): single 0x30 TRI (v0,v1,v2) */
+                if (t6a >= 0.0) { if (t6b > 0.0 && p3) { emit_b = b_is_v3tri = 1; } }   /* tri (v3,v1,v2) */
+                else if (t6b > 0.0 && p3) { emit_a = emit_b = 1; s_walkdiag.quad++; }   /* QUAD */
+                else emit_a = 1;                                                        /* tri (v0,v1,v2) */
             } else {
                 /* strip: single tri. bit0=0 keep NCLIP>0; bit0=1 keep NCLIP!=0
                  * (.L800203B8 vs .L800203D0 -- bit0 strips carry either winding). */
                 int bit0 = (int)(w0 & 1u);
                 if (bit0 ? (ncl1 != 0.0) : (ncl1 > 0.0)) emit_a = 1;
+            }
+            if (fresh) {   /* one-shot decision dump: which fresh faces emit what */
+                static int s_fd=0;
+                if (s_fd < 24) { s_fd++;
+                    fprintf(stderr,"  [fresh%s] i0=%d i1=%d i2=%d i3=%d vc=%d ncl1=%.0f ncl2=%.0f bit0=%d -> %s\n",
+                        textured?"T":"G", i0,i1,i2,i3,vcount,ncl1, p3?ncl2:-99999.0, (int)(w0&1u),
+                        (emit_a&&emit_b)?"QUAD":b_is_v3tri?"tri-v3":emit_a?"tri-v0":"SKIP"); }
             }
             if (!emit_a && !emit_b) { fp += adv; continue; }
 
@@ -571,6 +588,8 @@ static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
     int wn=s_wtri_n, pn=s_ptri_n;
+    int prim_quad=0, prim_tri=0;   /* how many GPU quads vs tris the .s actually emitted */
+    for(int g=0;g<s_gte_n;g++){ if(s_gte[g].nv==4)prim_quad++; else if(s_gte[g].nv==3)prim_tri++; }
     int wmatch=0, neg_m=0, pos_m=0, neg_u=0, pos_u=0;
     int mt_p=0,mt_n=0,mf_p=0,mf_n=0;  /* matched nclip split: textured/flat (winding rule) */
     int colmatch=0, coln=0, uvmatch=0, uvn=0;
@@ -615,12 +634,33 @@ static void compare_walk_vs_prims(void) {
             }
         }
     }
-    int pcov=0, pon=0, pcov_on=0;
+    int pcov=0, pon=0, pcov_on=0, puncov_dump=0;
     for(int pi=0;pi<pn;pi++){
         pcov+=pmatched[pi];
         double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
         double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
-        if(ONSCR(pcx,pcy)){ pon++; if(pmatched[pi]) pcov_on++; }
+        if(ONSCR(pcx,pcy)){
+            pon++;
+            if(pmatched[pi]) pcov_on++;
+            else if(s_cmp_dump && puncov_dump++<12)   /* prims the .s drew that the walk MISSED */
+                fprintf(stderr,"  [uncovered-prim] (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) tex=%d rgb=%06X\n",
+                    s_ptri[pi].x[0],s_ptri[pi].y[0],s_ptri[pi].x[1],s_ptri[pi].y[1],
+                    s_ptri[pi].x[2],s_ptri[pi].y[2], s_ptri[pi].tex, s_ptri[pi].rgb[0]&0xFFFFFFu);
+        }
+    }
+    /* self-duplicate walk tris (order-independent vertex coincidence <=1px): the
+     * "repeating tri" detector. A count-preserving topology substitution (emit a
+     * wrong tri that still matches some prim's POINTS, miss the real one) shows up
+     * here even while precision stays 100% -- the matcher is winding/dup-blind. */
+    int wdup=0;
+    for(int i=0;i<wn;i++) for(int j=0;j<i;j++){
+        static const int pm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+        double cost=1e18;
+        for(int q=0;q<6;q++){ double mx=0; for(int k=0;k<3;k++){
+            double dx=s_wtri[i].v[k].sx-s_wtri[j].v[pm[q][k]].sx;
+            double dy=s_wtri[i].v[k].sy-s_wtri[j].v[pm[q][k]].sy;
+            double d=sqrt(dx*dx+dy*dy); if(d>mx)mx=d; } if(mx<cost)cost=mx; }
+        if(cost<=1.0){ wdup++; break; }
     }
     fprintf(stderr,
         "[moby-walk %s f=%u] recs=%d faces=%d walkTris=%d primTris=%d | "
@@ -633,12 +673,13 @@ static void compare_walk_vs_prims(void) {
         "[moby-walk2 f=%u] "
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
-        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d\n",
+        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d\n",
         openpete_frame,
         s_walkdiag.fresh_g, s_walkdiag.fresh_t, s_walkdiag.strip, s_walkdiag.sprite,
         s_walkdiag.skip, s_walkdiag.quad, s_walkdiag.oor,
         s_walkdiag.align_lo, s_walkdiag.align_hi, s_walkdiag.desync,
-        neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn);
+        neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
+        prim_quad, prim_tri, s_walkdiag.quad);
     #undef ONSCR
 }
 
@@ -807,8 +848,10 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
 
     if (verify) {
         static int s_dumped = 0, s_reports = 0;
-        int target = (openpete_frame >= moby_verify_frame() && s_gte_n > 0 &&
-                      (openpete_frame % 200u == 0) && s_reports < 60);  /* sample across levels */
+        unsigned vf = moby_verify_frame();
+        int target = (s_gte_n > 0 && s_reports < 120 &&
+                      ((openpete_frame >= vf && openpete_frame <= vf + 12u) ||   /* dense window at target frame */
+                       (openpete_frame >= vf && openpete_frame % 200u == 0)));   /* + sparse across levels */
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
         if (target) {
             compare_and_report(nrec);
