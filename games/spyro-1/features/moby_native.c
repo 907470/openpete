@@ -1082,7 +1082,7 @@ static void shaded_verify(CPUState* cpu) {
 /* Per-shaded-moby metadata recorded alongside the projected verts, so the
  * native face-stream walk (build_shaded_walk_tris) can index each moby's verts
  * in out[] and read its face stream. */
-typedef struct { int sv_off, vcount; uint32_t faces; int fcount; } shaded_rec;
+typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls; } shaded_rec;
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
@@ -1131,55 +1131,30 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat; n++;
         }
-        if (s_nshrecs < 256) s_shrecs[s_nshrecs++] = (shaded_rec){ sv_off, n - sv_off, faces, fcount };
+        if (s_nshrecs < 256) s_shrecs[s_nshrecs++] = (shaded_rec){ sv_off, n - sv_off, faces, fcount, (int)cls };
     }
     return n;
 }
 
-/* Feed shaded mobys to the scene via the .s's prim topology + colour, NN-snapped
- * onto the 100%-verified native verts (project_all_shaded). The native-topology
- * walk (build_shaded_walk_tris, below) is the #2a goal but its slot mapping is
- * still WIP; this prim-snap path is the working feed meanwhile. Returns tris. */
-static int build_shaded_tris(CPUState* cpu) {
-    static proj_xy sv[8192]; int nsv = project_all_shaded(cpu, sv, 8192);
-    s_wtri_n = 0;
-    for (int g=0; g<s_gte_n; g++) {
-        prim_t* P = &s_gte[g]; if (P->nv < 3) continue;
-        proj_xy* fp[4] = {0,0,0,0};
-        for (int k=0;k<P->nv;k++) {
-            double best=1e18; int bi=-1;
-            for (int i=0;i<nsv;i++){ if(sv[i].sat)continue; double dx=sv[i].sx-P->x[k],dy=sv[i].sy-P->y[k],d=dx*dx+dy*dy; if(d<best){best=d;bi=i;} }
-            fp[k] = (bi>=0) ? &sv[bi] : NULL;
-        }
-        if (!fp[0]||!fp[1]||!fp[2] || s_wtri_n>=MAX_NTRI) continue;
-        emit_wtri(fp[0],fp[1],fp[2], P->rgb[0],P->rgb[1],P->rgb[2], 0,0,0,0,0,0, 0,0,0,0,0,16,0);
-        if (P->nv==4 && fp[3] && s_wtri_n<MAX_NTRI)
-            emit_wtri(fp[1],fp[3],fp[2], P->rgb[1],P->rgb[3],P->rgb[2], 0,0,0,0,0,0, 0,0,0,0,0,16,0);
-    }
-    return s_wtri_n;
-}
-
-/* Native-topology shaded walk (backlog #2a) — STRUCTURE COMPLETE, slot mapping WIP.
- * Derives the shaded triangle set from the face stream (func_80022A2C .L800232A8)
- * instead of riding the .s's prims: per moby, word0 packs 4 vertex indices
- * (idx_k = (w0>>{21,14,7,0})&0x1FC, >>2 = slot). tri-vs-quad = (idx2==idx3):
+/* Native-topology shaded walk (backlog #2a) — VERIFIED, FED. Derives the shaded
+ * triangle set from the face stream (func_80022A2C .L800232A8) instead of riding
+ * the .s's prims: per moby, word0 packs 4 vertex indices (idx_k =
+ * (w0>>{21,14,7,0})&0x1FC, >>2 = slot into this moby's projected verts).
+ * tri-vs-quad = (idx2==idx3):
  *   TRI (v0,v1,v2)             kept if NCLIP1>0
  *   QUAD (v0,v1,v2)+(v1,v3,v2) kept if NCLIP1>0 || NCLIP2(v3,v1,v2)<0
  * (bit0/bit1 of word0 only select the shading MODE — gouraud vs flat — not the
  * topology, so they're ignored here.) Positions come from project_all_shaded
  * (100% A/B-verified); s_shrecs[] gives each moby's vert base + face stream.
  *
- * SLOT MAPPING IS WIP: the face indices reference the .s's GTE-pipelined SXY
- * scratch, whose slot order is a PERMUTATION of the sequential project_all_shaded
- * order (NOT identity, NOT a constant offset — both falsified: a direct
- * sv[slot]-vs-scratch[slot] check on a single moby gave ~5px vs the 1.6px NN
- * match, and an offset sweep -4..+1 never beat 33% precision). It can't be pinned
- * against the demo's shaded mobys because they're all degenerate-tiny (6-14px,
- * verts ~2px apart) — NN matching is ambiguous there. Finishing #2a needs a
- * LARGE shaded moby (a real level via --bk2) to scratch-calibrate the permutation,
- * or a precise replication of the .s store pipeline. Until then this is verify-
- * only (the feed uses build_shaded_tris); colour (#2b float MVMVA lighting) is a
- * later step. Emits a grey placeholder. Returns tris. */
+ * SLOT MAP = IDENTITY (sv[slot]). Confirmed by reading the .s's projected SXY
+ * straight from PSX scratchpad 0x1F800000 on a clean shaded moby (cliff_town
+ * class 0x3A, 115 verts): direct sv[slot]-vs-scratch[slot] = ~1-2px (GTE
+ * truncation) for every slot, and the topology A/B hit ~90% ONSCREEN precision.
+ * The earlier "permutation / 33%" reading was a phantom of the attract demo's
+ * degenerate-tiny shaded mobys (6-14px, verts ~2px apart), where NN matching and
+ * the direct check both break down. Colour is INTERIM (shaded_recolor_pervert,
+ * per-vertex prim NN) until the float MVMVA directional lighting lands (#2b). */
 static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
     s_wtri_n = 0;
@@ -1214,6 +1189,27 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     return s_wtri_n;
 }
 
+/* INTERIM colour for the native shaded walk (#2a): per-vertex nearest-prim-vertex
+ * RGB from the .s's captured prims. Always colours every vertex (no gaps), unlike
+ * the tri-match recolor which leaves unmatched tris at the base colour. Stands in
+ * until the float MVMVA directional lighting lands (#2b). */
+static void shaded_recolor_pervert(void) {
+    build_prim_tris();
+    if (s_ptri_n <= 0) return;
+    for (int wi = 0; wi < s_wtri_n; wi++) {
+        for (int k = 0; k < 3; k++) {
+            float wx = s_wtri[wi].v[k].sx, wy = s_wtri[wi].v[k].sy;
+            double bd = 1e18; uint32_t brgb = s_wtri[wi].v[k].rgb;
+            for (int pi = 0; pi < s_ptri_n; pi++)
+                for (int j = 0; j < 3; j++) {
+                    double dx = s_ptri[pi].x[j]-wx, dy = s_ptri[pi].y[j]-wy, d = dx*dx+dy*dy;
+                    if (d < bd) { bd = d; brgb = s_ptri[pi].rgb[j]; }
+                }
+            s_wtri[wi].v[k].rgb = brgb;
+        }
+    }
+}
+
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = moby_verify_enabled();
@@ -1225,8 +1221,9 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     if (feed) {                                 /* feed shaded mobys to the scene */
-        capture_gte(cpu, startp, endp);         /* shaded prims (fixes a latent stale-prim feed bug) */
-        build_shaded_tris(cpu);                 /* working prim-topology feed (native walk is WIP — #2a) */
+        capture_gte(cpu, startp, endp);         /* shaded prims for the interim colour */
+        build_shaded_walk_tris(cpu);            /* NATIVE topology (#2a — identity slot map, verified) */
+        shaded_recolor_pervert();               /* interim per-vertex prim colour (#2b: float MVMVA lighting) */
         push_scene_moby();
     }
 
@@ -1236,8 +1233,8 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
             capture_gte(cpu, startp, endp);
             if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
             shaded_verify(cpu);                 /* vertex A/B (100% geometry match) */
-            build_shaded_walk_tris(cpu);        /* native topology (#2a WIP) -> s_wtri */
-            compare_walk_vs_prims();            /* triangle A/B vs the shaded prims (tracks #2a) */
+            build_shaded_walk_tris(cpu);        /* native topology (#2a) -> s_wtri */
+            compare_walk_vs_prims();            /* triangle A/B vs the shaded prims (~90% onscreen) */
             s_sreports++;
         }
     }
