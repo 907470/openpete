@@ -80,12 +80,12 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
 
 /* Float RTPS mirror WITH translation: MAC_i = TR[i] + (R_i . V)>>12 ;
  * SX = OFX + IR1*H/SZ3. Returns view-Z (MAC3). (gte.cpp gte_rtps_internal.) */
-static double project(const int M[3][3], const int TR[3], int vx, int vy, int vz,
+static double project(const int M[3][3], const int TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
-    double mac1 = (double)TR[0] + (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
-    double mac2 = (double)TR[1] + (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
-    double mac3 = (double)TR[2] + (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
+    double mac1 = (double)TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
+    double mac2 = (double)TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
+    double mac3 = (double)TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
     double z = (mac3 != 0.0) ? mac3 : 1.0;
     *out_sx = ofx_px + mac1 * H / z;
     *out_sy = ofy_px + mac2 * H / z;
@@ -227,12 +227,38 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 }
 
 /* ---- per-moby native vertex decode + projection -------------------- */
-/* Decodes one record's frame-A vertex stream (literal words + interleaved
- * 5/5/5 short-delta, the bit-0 flag of each word selecting the next), float-
- * projects with the record's R/TR (mirrors F798's no-blend path block
- * 8001FCC8), and writes screen XY into out[]. Returns vertex count.
- * Static-pose (blend factor 0) only; the keyframe-INTPL blend path is a TODO.
- * The caller set-matches these against the emitted prim vertices. */
+/* One moby vertex stream (frame A or B): packed 11/11/10 literals interleaved
+ * with 5/5/5 short-deltas, the bit-0 flag of each word selecting the next. A
+ * literal RESETS the accumulator; a short ADDS. */
+typedef struct { uint32_t litp, shortp; int VX, VY, VZ, flag, s5; } vstream;
+static void vstream_init(CPUState* cpu, vstream* s, uint32_t frame, int s5) {
+    uint32_t fw0 = cpu->read_word(frame), fw1 = cpu->read_word(frame + 4);
+    s->litp   = (fw0 & 0x1FFFFFu) | 0x80000000u;
+    s->shortp = s->litp + ((fw1 >> 24) & 0xFFu) * 4u;
+    s->VX = s->VY = s->VZ = s->flag = 0; s->s5 = s5;
+}
+static void vstream_next(CPUState* cpu, vstream* s, int first) {
+    if (first || s->flag == 0) {
+        uint32_t w = cpu->read_word(s->litp); s->litp += 4;
+        s->VZ = (int32_t)w >> 21;
+        s->VX = (int32_t)(w << 10) >> 21;
+        s->VY = (int32_t)(w << 20) >> 19;
+        s->flag = (int)(w & 1u);
+    } else {
+        int16_t d = (int16_t)cpu->read_half(s->shortp); s->shortp += 2;
+        s->VZ += ((int32_t)d >> 11) << s->s5;                       /* sra11 */
+        s->VX -= ((int32_t)((uint32_t)(int32_t)d << 21) >> 27) << s->s5;
+        s->VY -= ((int32_t)((uint32_t)(int32_t)d << 26) >> 27) << s->s5;
+        s->flag = (int)((uint16_t)d & 1u);
+    }
+}
+
+/* Decode + float-project one record's vertices. Mirrors F798: the no-blend path
+ * (block 8001FCC8) when the keyframe blend factor is 0, else the INTPL blend
+ * path (block 8001FA44) -- decode BOTH frame A and frame B streams and lerp each
+ * vertex in MODEL space by blend/4096 before RTPS (the asm INTPLs IR(=A) toward
+ * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
+ * Returns vertex count. The caller set-matches these vs the emitted prims. */
 typedef struct { float sx, sy, vz; int sat; } proj_xy;  /* vz = view-space Z (for depth) */
 
 static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
@@ -248,31 +274,32 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
 
-    uint32_t fw0 = cpu->read_word(frameA), fw1 = cpu->read_word(frameA + 4);
-    uint32_t litp   = (fw0 & 0x1FFFFFu) | 0x80000000u;
-    uint32_t shortp = litp + ((fw1 >> 24) & 0xFFu) * 4u;
     int s5    = (cpu->read_byte(header + 6) & 0xFF) + 1;
     int count = cpu->read_byte(header + 8) & 0xFF;   /* gte_ctrl[30] sign adj = 0 here */
     if (count > cap) count = cap;
 
-    int VX = 0, VY = 0, VZ = 0, flag = 0;
+    /* Keyframe blend: IR0 = (rec.w0 & 0xFF00) >> 2 (1.0=4096); frame B at +0x0C.
+     * 0 (or B absent) => the no-blend path (frame A only). */
+    uint32_t frameB = cpu->read_word(rec + 0x0C);
+    int blend = (int)((cpu->read_word(rec) & 0xFF00u) >> 2);
+    int do_blend = (blend > 0 && frameB >= 0x80000000u);
+    double t = (double)blend / 4096.0;
+
+    vstream A, B;
+    vstream_init(cpu, &A, frameA, s5);
+    if (do_blend) vstream_init(cpu, &B, frameB, s5);
     for (int i = 0; i < count; i++) {
-        if (i == 0 || flag == 0) {
-            uint32_t w = cpu->read_word(litp); litp += 4;
-            VZ = (int32_t)w >> 21;
-            VX = (int32_t)(w << 10) >> 21;
-            VY = (int32_t)(w << 20) >> 19;
-            flag = (int)(w & 1u);
-        } else {
-            int16_t d = (int16_t)cpu->read_half(shortp); shortp += 2;
-            VZ += ((int32_t)d >> 11) << s5;                       /* sra11 */
-            VX -= ((int32_t)((uint32_t)(int32_t)d << 21) >> 27) << s5;
-            VY -= ((int32_t)((uint32_t)(int32_t)d << 26) >> 27) << s5;
-            flag = (int)((uint16_t)d & 1u);
+        vstream_next(cpu, &A, i == 0);
+        double vx = A.VX, vy = A.VY, vz = A.VZ;
+        if (do_blend) {
+            vstream_next(cpu, &B, i == 0);
+            vx += t * (B.VX - A.VX);
+            vy += t * (B.VY - A.VY);
+            vz += t * (B.VZ - A.VZ);
         }
         double sx, sy; int sat;
-        double vz = project(M, TR, VX, VY, VZ, ofx, ofy, H, &sx, &sy, &sat);
-        out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].vz = (float)vz; out[i].sat = sat;
+        double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
+        out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].vz = (float)vzz; out[i].sat = sat;
     }
     return count;
 }
