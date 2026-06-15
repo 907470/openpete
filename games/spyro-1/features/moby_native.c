@@ -978,19 +978,94 @@ static void shaded_verify(CPUState* cpu) {
             gv, near,clean, clean?100.0*near/clean:0.0, near?sum/near:0.0);
 }
 
+/* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
+ * out[]. Returns vertex count. Shared by shaded_verify + the feed. */
+static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
+    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);
+    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
+    double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
+    int n=0;
+    for (int r=0; r<256; r++) {
+        uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
+        if (m < 0x80000000u) break;
+        uint32_t cls = cpu->read_half(m + 0x36);
+        uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
+        uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
+        int count = cpu->read_byte(model + 0x0u) & 0xFF;
+        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
+        int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
+        int M[3][3], TR[3]; double mofx, mofy;
+        if (billboard) {
+            M[0][0]=4096;M[0][1]=0;M[0][2]=0; M[1][0]=0;M[1][1]=2560;M[1][2]=0; M[2][0]=0;M[2][1]=0;M[2][2]=4096;
+            TR[0]=0; TR[1]=0; TR[2]=pz>>1; mofx=(double)px; mofy=(double)py;
+        } else {
+            uint32_t rot = cpu->read_word(m + 0x44u); uint32_t idx0=(rot>>15)&0x1FEu;
+            int s0=(int16_t)cpu->read_half(SINCOS_TABLE+idx0), c0=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+idx0);
+            int Ry[3][3]={{c0,0,s0},{0,4096,0},{-s0,0,c0}};
+            for(int i=0;i<3;i++)for(int j=0;j<3;j++) M[i][j]=(PM[i][0]*Ry[0][j]+PM[i][1]*Ry[1][j]+PM[i][2]*Ry[2][j])>>12;
+            int32_t dx=px-cx,dy=py-cy,dz=pz-cz; for(int i=0;i<3;i++) TR[i]=(PM[i][0]*dx+PM[i][1]*dy+PM[i][2]*dz)>>12;
+            mofx=ofx; mofy=ofy;
+        }
+        for (int i=0;i<count && n<cap;i++) {
+            uint32_t p=vbase+(uint32_t)i*3u;
+            uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
+            int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
+            double sx,sy; int sat;
+            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)TR[2]; out[n].sat=sat; n++;
+        }
+    }
+    return n;
+}
+
+/* Feed shaded mobys to the scene. The verts are 100%-verified (project_all_
+ * shaded); topology rides the captured prims (each prim vertex snapped to its
+ * nearest verified native vert), exactly as the regular 3a.2a scaffold did
+ * before its independent walk landed -- the independent shaded face-stream walk
+ * (model+0xC, stride 8, word0 indices) is a follow-up (verts exact; the per-face
+ * index mapping needs the slot detail). Colour rides the prim. Returns tris. */
+static int build_shaded_tris(CPUState* cpu) {
+    static proj_xy sv[8192]; int nsv = project_all_shaded(cpu, sv, 8192);
+    s_wtri_n = 0;
+    for (int g=0; g<s_gte_n; g++) {
+        prim_t* P = &s_gte[g]; if (P->nv < 3) continue;
+        proj_xy* fp[4] = {0,0,0,0};
+        for (int k=0;k<P->nv;k++) {
+            double best=1e18; int bi=-1;
+            for (int i=0;i<nsv;i++){ if(sv[i].sat)continue; double dx=sv[i].sx-P->x[k],dy=sv[i].sy-P->y[k],d=dx*dx+dy*dy; if(d<best){best=d;bi=i;} }
+            fp[k] = (bi>=0) ? &sv[bi] : NULL;
+        }
+        if (!fp[0]||!fp[1]||!fp[2] || s_wtri_n>=MAX_NTRI) continue;
+        emit_wtri(fp[0],fp[1],fp[2], P->rgb[0],P->rgb[1],P->rgb[2], 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+        if (P->nv==4 && fp[3] && s_wtri_n<MAX_NTRI)
+            emit_wtri(fp[1],fp[3],fp[2], P->rgb[1],P->rgb[3],P->rgb[2], 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+    }
+    return s_wtri_n;
+}
+
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled()) return 0;   /* verify-only; feed pending the R-rebuild */
+    int verify = moby_verify_enabled();
+    int feed   = openpete_native_render_enabled();
+    if (!verify && !feed) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-    static int s_dumped = 0, s_sreports = 0;
-    if (openpete_frame >= moby_verify_frame() && endp > startp && s_sreports < 12) {
-        capture_gte(cpu, startp, endp);
-        if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
-        shaded_verify(cpu);
-        s_sreports++;
+
+    if (feed) { build_shaded_tris(cpu); push_scene_moby(); }   /* feed shaded mobys to the scene */
+
+    if (verify) {
+        static int s_dumped = 0, s_sreports = 0;
+        if (openpete_frame >= moby_verify_frame() && endp > startp && s_sreports < 12) {
+            capture_gte(cpu, startp, endp);
+            if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
+            shaded_verify(cpu);                 /* vertex A/B (100% geometry match) */
+            build_shaded_tris(cpu);             /* face-walk topology -> s_wtri */
+            compare_walk_vs_prims();            /* triangle A/B vs the shaded prims */
+            s_sreports++;
+        }
     }
     s_in = 0;
     return 1;
