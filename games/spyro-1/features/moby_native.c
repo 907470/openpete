@@ -411,6 +411,17 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                       int ua,int va,int ub,int vb,int uc,int vc,
                       int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
     if (s_wtri_n >= MAX_NTRI) return;
+    /* NEAR-PLANE CULL: drop any triangle with a vertex at/behind the camera
+     * (view-Z <= 0). The .s relies on the GTE perspective divide + NCLIP to
+     * reject behind-camera prims; our float project() does a raw H/Z, so a
+     * negative Z flips the vertex (sign inverts both screen axes) and hurls it
+     * to the top of the view. Without this, a moby that passes behind the camera
+     * — e.g. the gem value-popup the player charges THROUGH — renders inverted
+     * ("upside down") at screen top. Matches the .s (it draws nothing for a
+     * fully-behind moby). Cheap whole-triangle cull (no near-plane clipping):
+     * mobys rarely straddle the near plane, and a 1-frame early disappear beats
+     * a flipped explosion. */
+    if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
     ntri_t* t = &s_wtri[s_wtri_n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb};
