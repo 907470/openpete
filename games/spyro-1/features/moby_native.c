@@ -64,6 +64,9 @@ typedef struct {
 
 #define MAX_PRIMS 8192
 static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
+/* Cumulative prim-code coverage across the whole run (missing-poly diagnosis):
+ * which GPU codes F798 emits, and which we DON'T decode (= dropped from feed). */
+static int s_code_hist[256]; static int s_uncoded_hist[256];
 
 /* ---- helpers (shared with the cyclorama harness conventions) -------- */
 static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
@@ -116,28 +119,55 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
             /* GT3 (0x34, 10w) / GT4 (0x3C, 13w): per-vertex blocks of
              * {rgb|code, xy, uv|clut-or-tpage}. xy0 @ word[2], xy1 @ [5],
              * xy2 @ [8], xy3 @ [11]. (Confirmed by the hex dump.) */
-            if (code == 0x34 || code == 0x3C) {
-                t->gouraud = 1; t->textured = 1;
-                t->quad = (code == 0x3C);
-                t->nv  = t->quad ? 4 : 3;
-                static const int xyw[4] = { 2, 5, 8, 11 };
-                static const int uvw[4] = { 3, 6, 9, 12 };
-                static const int rgbw[4]= { 1, 4, 7, 10 };
+            /* General PSX polygon decode by command bits (bit4=gouraud,
+             * bit3=quad, bit2=textured). Handles every moby variant uniformly:
+             * GT3/GT4 (0x34/0x3C), G3/G4 (0x30/0x38), FT3/FT4 (0x24/0x2C, incl.
+             * the +0x02 semi-transparent 0x26/0x2E), F3/F4. Layout: word[1] =
+             * rgb0|code, then per vertex {rgb if gouraud&&k>0}{xy}{uv if tex};
+             * clut rides v0's uv-word hi, tpage rides v1's. Bit-identical to the
+             * old hardcoded GT3/GT4 path, so the verified match is preserved. */
+            if ((code & 0xE0) == 0x20) {
+                int gouraud = (code & 0x10) != 0;
+                int quad    = (code & 0x08) != 0;
+                int tex     = (code & 0x04) != 0;
+                t->gouraud = gouraud; t->textured = tex; t->quad = quad;
+                t->nv = quad ? 4 : 3;
+                uint32_t rgb0 = t->raw[1] & 0xFFFFFF;
+                int c = 2;                          /* word cursor past rgb0|code */
                 for (int k = 0; k < t->nv; k++) {
-                    uint32_t xy = t->raw[xyw[k]];
+                    t->rgb[k] = (gouraud && k > 0) ? (t->raw[c++] & 0xFFFFFF) : rgb0;
+                    uint32_t xy = t->raw[c++];
                     t->x[k] = (float)(int16_t)(xy & 0xFFFF);
                     t->y[k] = (float)(int16_t)(xy >> 16);
-                    t->rgb[k] = t->raw[rgbw[k]] & 0xFFFFFF;
-                    uint32_t uv = t->raw[uvw[k]];
-                    t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
+                    if (tex) {
+                        uint32_t uv = t->raw[c++];
+                        t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
+                        if (k == 0)      t->clut  = (int)(uv >> 16);
+                        else if (k == 1) t->tpage = (int)(uv >> 16);
+                    }
                 }
-                t->clut  = (int)(t->raw[3] >> 16);
-                t->tpage = (int)(t->raw[6] >> 16);
             }
+            s_code_hist[code & 0xFF]++;
+            if (t->nv == 0) s_uncoded_hist[code & 0xFF]++;  /* not fed = missing polys */
             s_gte_n++;
         }
         p += stride;
     }
+}
+
+/* Cumulative prim-code coverage line: every code F798 has emitted so far, and
+ * which we still DON'T decode (those are dropped from the native feed = missing
+ * polys). "UNDECODED: none" across a whole demo run means the feed is complete
+ * for the regular material. */
+static void report_code_hist(void) {
+    char hb[400]; int hp = 0; hb[0] = 0;
+    for (int c = 0; c < 256; c++) if (s_code_hist[c] && hp < (int)sizeof(hb) - 16)
+        hp += snprintf(hb + hp, sizeof(hb) - hp, " %02X=%d", c, s_code_hist[c]);
+    char ub[200]; int up = 0; ub[0] = 0;
+    for (int c = 0; c < 256; c++) if (s_uncoded_hist[c] && up < (int)sizeof(ub) - 16)
+        up += snprintf(ub + up, sizeof(ub) - up, " %02X=%d", c, s_uncoded_hist[c]);
+    fprintf(stderr, "[moby-codes f=%u] cumulative F798 codes:%s | UNDECODED(dropped):%s\n",
+            openpete_frame, hb, up ? ub : " none");
 }
 
 /* ---- one-shot hex dump (falsify-before-ship) ------------------------ */
@@ -252,12 +282,15 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
  * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
+static int s_max_blend;   /* max keyframe-blend factor (rec.w0 IR0) across this frame's records */
 static int project_all_records(CPUState* cpu) {
-    s_proj_n = 0;
+    s_proj_n = 0; s_max_blend = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = REC_BASE + (uint32_t)r * REC_STRIDE;
         if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
+        int bl = (int)((cpu->read_word(rec) & 0xFF00u) >> 2);  /* INTPL blend 0..4096 */
+        if (bl > s_max_blend) s_max_blend = bl;
         int got = moby_project_record(cpu, rec, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -355,50 +388,63 @@ static void push_scene_moby(void) {
 static void compare_and_report(int nrec) {
     if (!s_proj_n) { fprintf(stderr, "[moby-verify f=%u] no records\n", openpete_frame); return; }
 
-    int gv_n = 0, near_n = 0, floor_ok = 0, ambig = 0;
+    int gv_n = 0, near_n = 0, floor_ok = 0, ambig = 0, divergent_n = 0;
+    int tex_n = 0, tex_m = 0, flat_n = 0, flat_m = 0;  /* CLEAN (non-divergent) match split */
     double sum = 0, mx = 0, worst = -1, max_tiejump = 0;
-    float wgx=0,wgy=0,wnx=0,wny=0;
+    float wgx=0,wgy=0; int worst_code = 0;
     for (int g = 0; g < s_gte_n; g++) {
         prim_t* P = &s_gte[g];
+        int it = P->textured;
         for (int k = 0; k < P->nv; k++) {
             float gx = P->x[k], gy = P->y[k];
             gv_n++;
-            double best = 1e18, best2 = 1e18; float bnx=0, bny=0, bnx2=0, bny2=0;
+            /* Nearest native vert INCLUDING saturated ones, so a prim vert maps
+             * to its true native vert even when the GTE divide/IR clamp made the
+             * two diverge; we then bin those out (sanctioned, exactly as the
+             * cyclorama harness did) rather than score them as decode failures.
+             * Near mobys (small view-Z, H>=2*SZ3) hit this a lot. */
+            double best = 1e18, best2 = 1e18; int bn_sat = 1; float bnx=0, bny=0, bnx2=0, bny2=0;
             for (int i = 0; i < s_proj_n; i++) {
-                if (s_proj[i].sat) continue;
                 double dx = s_proj[i].sx - gx, dy = s_proj[i].sy - gy;
                 double d = dx*dx + dy*dy;
                 if (d < best) { best2 = best; bnx2 = bnx; bny2 = bny;
-                                best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; }
+                                best = d; bnx = s_proj[i].sx; bny = s_proj[i].sy; bn_sat = s_proj[i].sat; }
                 else if (d < best2) { best2 = d; bnx2 = s_proj[i].sx; bny2 = s_proj[i].sy; }
             }
             double dist = sqrt(best);
+            if (bn_sat) { divergent_n++; continue; }   /* near-Z / IR-clamp divergence: expected */
+            if (it) tex_n++; else flat_n++;            /* clean denominator */
             if (dist <= 4.0) {
                 near_n++; sum += dist; if (dist > mx) mx = dist;
+                if (it) tex_m++; else flat_m++;
                 if (fabs(floor((double)bnx) - gx) <= 1.0 && fabs(floor((double)bny) - gy) <= 1.0)
                     floor_ok++;
-                /* NN-ambiguity (jitter proxy): when the 2nd-nearest native vert
-                 * is within 1px of the nearest, NN can flip between them as the
-                 * moby moves frame-to-frame -> the scaffold's jitter. Record how
-                 * far such a vertex would jump (the 1st<->2nd vert separation).
-                 * 3a.2b's real index decode eliminates this entirely. */
+                /* NN-ambiguity (jitter proxy): 2nd-nearest within 1px of nearest
+                 * -> NN can flip frame-to-frame (the scaffold jitter; 3a.2b fixes). */
                 if (best2 < 1e17 && sqrt(best2) - dist < 1.0) {
                     ambig++;
                     double jx = bnx2 - bnx, jy = bny2 - bny, jump = sqrt(jx*jx + jy*jy);
                     if (jump > max_tiejump) max_tiejump = jump;
                 }
             }
-            if (dist > worst && dist < 1e17) { worst = dist; wgx=gx; wgy=gy; wnx=bnx; wny=bny; }
+            if (dist > worst && dist < 1e17) { worst = dist; wgx=gx; wgy=gy; worst_code = P->code; }
         }
     }
+    int n_tex = 0, n_flat = 0;   /* per-frame split: confirms the non-textured (G3/G4) decode is exercised */
+    for (int g = 0; g < s_gte_n; g++)
+        if (s_gte[g].nv >= 3) { if (s_gte[g].textured) n_tex++; else n_flat++; }
+    int clean = tex_n + flat_n;   /* prim verts whose nearest native vert is non-divergent */
     fprintf(stderr,
-        "[moby-verify f=%u] recs=%d nativeVerts=%d primVerts=%d | matched(<=4px)=%d/%d(%.1f%%) "
-        "mean=%.3fpx max=%.3fpx floor(+-1)=%d | NN-ambiguous=%d/%d(%.1f%%) maxTieJump=%.1fpx | "
-        "worst gte(%.0f,%.0f) near(%.1f,%.1f) d=%.1f | prims=%d\n",
-        openpete_frame, nrec, s_proj_n, gv_n, near_n, gv_n,
-        gv_n?100.0*near_n/gv_n:0.0, near_n?sum/near_n:0.0, mx, floor_ok,
-        ambig, near_n, near_n?100.0*ambig/near_n:0.0, max_tiejump,
-        wgx,wgy,wnx,wny, worst, s_gte_n);
+        "[moby-verify f=%u] recs=%d blend=%d primVerts=%d divergent(satNN)=%d | clean-match(<=4px)=%d/%d(%.1f%%) "
+        "mean=%.3fpx | texMatch=%d/%d(%.1f%%) flatMatch=%d/%d(%.1f%%) | "
+        "NN-amb=%d(%.1f%%) maxTieJump=%.1fpx | worst gte(%.0f,%.0f) d=%.1f code=%02X | "
+        "prims=%d(tex=%d flat=%d)\n",
+        openpete_frame, nrec, s_max_blend, gv_n, divergent_n, near_n, clean, clean?100.0*near_n/clean:0.0,
+        near_n?sum/near_n:0.0,
+        tex_m, tex_n, tex_n?100.0*tex_m/tex_n:0.0,
+        flat_m, flat_n, flat_n?100.0*flat_m/flat_n:0.0,
+        ambig, near_n?100.0*ambig/near_n:0.0, max_tiejump,
+        wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat);
 }
 
 /* ---- dispatch hook -------------------------------------------------- */
@@ -436,7 +482,8 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
 
     if (verify) {
         static int s_dumped = 0, s_reports = 0;
-        int target = (openpete_frame >= moby_verify_frame() && s_gte_n > 0 && s_reports < 16);
+        int target = (openpete_frame >= moby_verify_frame() && s_gte_n > 0 &&
+                      (openpete_frame % 200u == 0) && s_reports < 40);  /* sample across levels */
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
         if (target) {
             compare_and_report(nrec);
@@ -445,6 +492,13 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
                     "-- 0 fallbacks => every fed vertex is native\n",
                     openpete_frame, s_ntri_n, s_gte_n, fb);
             s_reports++;
+        }
+        /* Cumulative prim-code coverage, sampled across the whole demo (catches
+         * enemy/fodder frames beyond the 16-report A/B window): which codes the
+         * regular renderer emits and which we still drop. */
+        static unsigned s_codes_at = 0;
+        if (s_gte_n > 0 && openpete_frame >= s_codes_at + 2000) {
+            s_codes_at = openpete_frame; report_code_hist();
         }
     }
     s_in = 0;
