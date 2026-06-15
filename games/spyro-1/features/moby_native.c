@@ -1225,6 +1225,36 @@ static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
     return (uint32_t)ch[0] | ((uint32_t)ch[1]<<8) | ((uint32_t)ch[2]<<16);
 }
 
+#define D_METAL_COLTAB 0x8006E44Cu  /* shaded METAL base-colour table, 8B/entry, idx = m_SpecularMetalColor>>21 */
+
+/* Shaded METAL sub-mode colour (word0 bit1, block_80023720) — env-mapped
+ * reflection. The face normal is rotated to view space (RT·N), then the
+ * reflection intensity = light·N' (the LCM is the directional light broadcast
+ * across all rows, set from D_800770C8). The metal table entry (8B at
+ * D_8006E44C[scolor>>21]) gives word0 = base tint, word1 = reflected tint; the
+ * final colour = word0_base + (intensity·word1)>>12 + a brightness boost,
+ * clamped 12->8. (This is the gem shine — without it gems read as the gray flat
+ * table. The exact far-distance branch >>10/word0>>1 is approximated by the near
+ * >>8 path; env-texture/depth select is display-irrelevant.) Returns 0x00BBGGRR. */
+static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
+                                   uint32_t w0, uint32_t w1) {
+    int64_t m1=((int64_t)RT[0][0]*nx+(int64_t)RT[0][1]*ny+(int64_t)RT[0][2]*nz)>>12;
+    int64_t m2=((int64_t)RT[1][0]*nx+(int64_t)RT[1][1]*ny+(int64_t)RT[1][2]*nz)>>12;
+    int64_t m3=((int64_t)RT[2][0]*nx+(int64_t)RT[2][1]*ny+(int64_t)RT[2][2]*nz)>>12;
+    int32_t ir1=sat_ir_lm(m1,0), ir2=sat_ir_lm(m2,0), ir3=sat_ir_lm(m3,0);
+    int64_t refl=(int64_t)s_shL[0]*ir1+(int64_t)s_shL[1]*ir2+(int64_t)s_shL[2]*ir3;
+    int32_t intensity=(int32_t)(refl>>8);
+    int16_t ir0=(int16_t)intensity;
+    int r1=(int)((w1<<4)&0xFF0u), g1=(int)((w1>>4)&0xFF0u), b1=(int)((w1>>12)&0xFF0u);
+    int r0=(int)((w0<<4)&0xFF0u), g0=(int)((w0>>4)&0xFF0u), b0=(int)((w0>>12)&0xFF0u);
+    int R=r0+(((int)ir0*r1)>>12), G=g0+(((int)ir0*g1)>>12), B=b0+(((int)ir0*b1)>>12);
+    int bo=intensity-0x5C0; if(bo>0){ bo<<=3; R+=bo; G+=bo; B+=bo; }
+    R = R<0?0:(R>=0xFFF?0xFF:(R>>4));
+    G = G<0?0:(G>=0xFFF?0xFF:(G>>4));
+    B = B<0?0:(B>=0xFFF?0xFF:(B>>4));
+    return (uint32_t)R | ((uint32_t)G<<8) | ((uint32_t)B<<16);
+}
+
 /* Per-shaded-moby metadata recorded alongside the projected verts, so the
  * native face-stream walk (build_shaded_walk_tris) can index each moby's verts
  * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
@@ -1268,7 +1298,19 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             /* model->view = PM (camera ProjMatrix) composed with the full moby
              * euler rotation (block_80022CE4 PM start, then the same chain). */
             shaded_compose_euler(cpu, PM, rot, M);
-            int32_t dx=px-cx,dy=py-cy,dz=pz-cz; for(int i=0;i<3;i++) TR[i]=(PM[i][0]*dx+PM[i][1]*dy+PM[i][2]*dz)>>12;
+            /* TR (moby centre in view space) = the .s's swizzled centre MVMVA
+             * (block_80022B40..80022D18): IR=((cam.y-my)>>2,(cam.z-mz)>>2,(mx-cam.x)>>2)
+             * loaded as (IR1,IR2,IR3); MAC=(PM·IR)>>12; TR=MAC<<1; then an optional
+             * GPF perspective scale by m_DrawScale (moby+0x57). NOT the naive
+             * PM·(pos-cam) — that swizzle/scale mismatch sank 3D mobys (gems)
+             * below ground (verified: gem v0 nnPrim 35-130px -> 0.1px). */
+            int32_t Dx=(px-cx)>>2, Dy=(cy-py)>>2, Dz=(cz-pz)>>2;
+            int64_t t1=((int64_t)PM[0][0]*Dy+(int64_t)PM[0][1]*Dz+(int64_t)PM[0][2]*Dx)>>12;
+            int64_t t2=((int64_t)PM[1][0]*Dy+(int64_t)PM[1][1]*Dz+(int64_t)PM[1][2]*Dx)>>12;
+            int64_t t3=((int64_t)PM[2][0]*Dy+(int64_t)PM[2][1]*Dz+(int64_t)PM[2][2]*Dx)>>12;
+            TR[0]=(int)(t1<<1); TR[1]=(int)(t2<<1); TR[2]=(int)(t3<<1);
+            uint8_t p57=cpu->read_byte(m+0x57);
+            if (p57){ for(int i=0;i<3;i++){ int16_t ir=(int16_t)TR[i]; TR[i]=((int32_t)p57*ir)>>5; } }
             mofx=ofx; mofy=ofy;
         }
         for (int i=0;i<count && n<cap;i++) {
@@ -1343,6 +1385,13 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             int nz=(int8_t)cpu->read_byte(p), nx=(int8_t)cpu->read_byte(p+1), ny=(int8_t)cpu->read_byte(p+2);
             pcol[i] = shaded_lit_color(R->RT, nx, ny, nz, R->base, s_sh_nohl?0:1);
         }
+        /* METAL sub-mode base (word0 bit1): the gem/shiny tint comes from the
+         * metal table D_8006E44C[scolor>>21] (8B: word0=base, word1=reflected),
+         * NOT the flat gray table — see shaded_metal_color. Read once per moby. */
+        uint32_t mscolor = cpu->read_word(R->moby + 0x4Cu);
+        uint32_t mtab = D_METAL_COLTAB + (uint32_t)((int32_t)mscolor >> 21);
+        uint32_t metal_w0 = cpu->read_word(mtab) & 0xFFFFFFu;
+        uint32_t metal_w1 = cpu->read_word(mtab + 4u) & 0xFFFFFFu;
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_wtri_n < MAX_NTRI; f++, fp += 8u) {
             uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
@@ -1358,7 +1407,10 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             uint32_t c0,c1,c2,c3; uint8_t mode;
             if (w0 & 1u) {
                 int fnz=(int8_t)(w1>>24), fnx=(int8_t)(w1>>16), fny=(int8_t)(w1>>8);
-                c0=c1=c2=c3 = shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
+                if (w0 & 2u)   /* METAL: env-reflection tint (block_80023720) */
+                    c0=c1=c2=c3 = shaded_metal_color(R->RT, fnx, fny, fnz, metal_w0, metal_w1);
+                else           /* flat-basic: directional light, flat table base */
+                    c0=c1=c2=c3 = shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
                 mode = (w0 & 2u) ? 2 : 1;
             } else {
                 int j0=(int)((w1>>21)&0x1FCu)>>2, j1=(int)((w1>>14)&0x1FCu)>>2;
