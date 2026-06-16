@@ -277,9 +277,46 @@ static int screen_rect_cull(double sxf, double syf) {
     return 0;
 }
 
-typedef struct { float sx[4], sy[4], sz[4]; int sel; } fquad;
+typedef struct {
+    float sx[4], sy[4], sz[4];   /* corner screen XY + per-corner view-Z */
+    float cz;                     /* representative centre view-Z (depth sort) */
+    int sel;
+    uint32_t rgb;                 /* modulation colour (particle +0x0C low24) */
+    int u[4], v[4];               /* per-corner texel coords */
+    int tpx, tpy, clx, cly, bpp;  /* VRAM material */
+    int textured, blend;          /* 0 opaque / 1 alpha / 2 add / 3 sub */
+} fquad;
 #define MAX_FQUAD 2048
 static fquad s_fq[MAX_FQUAD]; static int s_fq_n;
+
+/* Decode the FT4 material from gamestate (static texture table + the particle's
+ * colour word) — same idiom for all FT4 classes: cmd/colour at +0x0C (hi byte =
+ * GPU code, STP=bit1), texture record = D_80076278[m_Class] + (byte +0x10)*8,
+ * UV0/clut at texrec+4, UV3/tpage at texrec+8, the other two corners are the
+ * (u3,v0)/(u0,v3) split. corner k <-> UVk (matches the .s vertex order). */
+static void decode_material(CPUState* cpu, uint32_t pp, int mclass, fquad* q) {
+    uint32_t cmd = cpu->read_word(pp + 0x0C);
+    q->rgb = cmd & 0xFFFFFF;
+    int stp = ((cmd >> 24) & 0x02) != 0;          /* GPU code STP bit */
+    uint32_t texbase = cpu->read_word(D_PARTTEX + (uint32_t)mclass * 4);
+    if (!texbase) {                               /* no texture record -> flat */
+        q->textured = 0; q->blend = stp ? 1 : 0;
+        for (int k = 0; k < 4; k++) { q->u[k] = q->v[k] = 0; }
+        q->tpx = q->tpy = q->clx = q->cly = q->bpp = 0;
+        return;
+    }
+    uint32_t texrec = texbase + (cpu->read_word(pp + 0x10) & 0xFF) * 8u;
+    uint32_t w4 = cpu->read_word(texrec + 4), w8 = cpu->read_word(texrec + 8);
+    int u0 = (int)(w4 & 0xFF), v0 = (int)((w4 >> 8) & 0xFF), clut = (int)((w4 >> 16) & 0xFFFF);
+    int u3 = (int)(w8 & 0xFF), v3 = (int)((w8 >> 8) & 0xFF), tpage = (int)((w8 >> 16) & 0xFFFF);
+    q->u[0]=u0; q->v[0]=v0; q->u[1]=u3; q->v[1]=v0; q->u[2]=u0; q->v[2]=v3; q->u[3]=u3; q->v[3]=v3;
+    q->tpx = (tpage & 0xF) * 64; q->tpy = ((tpage >> 4) & 1) * 256;
+    int mode = (tpage >> 7) & 3; q->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+    q->clx = (clut & 0x3F) * 16; q->cly = (clut >> 6) & 0x1FF;
+    q->textured = 1;
+    int abr = (tpage >> 5) & 3;                    /* data-driven blend (ABR + STP) */
+    q->blend = stp ? (abr == 0 ? 1 : abr == 1 ? 2 : abr == 2 ? 3 : 2) : 0;
+}
 
 /* SZ window 128..8192 (clamped SZ3) + depth-cue LOD cull (SZ3>>5 < texsub>>8). */
 static int sz_and_lod_cull(double mac3, int texsub_hi) {
@@ -301,7 +338,9 @@ static void particle_build(CPUState* cpu) {
 
     uint32_t pp = s_part_pool;                          /* pool the .s walked (hook-entry) */
     for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
-        int mtype = (int)((cpu->read_word(pp) >> 8) & 0xFF);  /* dispatch byte */
+        uint32_t hdr = cpu->read_word(pp);
+        int mtype = (int)((hdr >> 8) & 0xFF);           /* dispatch byte (sel) */
+        int mclass = (int)(hdr & 0xFF);                 /* texture/clut index */
         if (mtype == 0xFF) break;                       /* end of pool (gp>>8==-1) */
         if (mtype & 0x80) continue;                     /* inactive slot (skip, not stop) */
         int sel = mtype;
@@ -327,6 +366,8 @@ static void particle_build(CPUState* cpu) {
             q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
             q.sx[2]=X0; q.sy[2]=Y1; q.sx[3]=X1; q.sy[3]=Y1;
             for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
+            q.cz = (float)c.m3;
+            decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel == 2) {                          /* affine sin/cos billboard */
             projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
@@ -348,6 +389,8 @@ static void particle_build(CPUState* cpu) {
                 q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
                 q.sz[k] = (float)TR2;
             }
+            q.cz = (float)c.m3;                          /* real centre depth (not TR2) */
+            decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel >= 6) {                          /* rotated-billboard FT4 default */
             int sizeB = (int)((B >> 16) & 0xFF);
@@ -364,6 +407,8 @@ static void particle_build(CPUState* cpu) {
                 zsum += pr[k].m3 < 0 ? 0 : (pr[k].m3 > 65535 ? 65535 : pr[k].m3);
             }
             if (zsum < 512.0 || zsum >= 32768.0) continue;
+            q.cz = (float)(zsum / 4.0);
+            decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         }
         /* sel 0 (TILE), 1/4 (lines), 5 (affine matrix): TODO, not FT4-comparable */
@@ -401,6 +446,38 @@ static void particle_compare(CPUState* cpu) {
                     s_fq[c].sx[0],s_fq[c].sy[0],s_fq[c].sx[1],s_fq[c].sy[1],
                     s_fq[c].sx[2],s_fq[c].sy[2],s_fq[c].sx[3],s_fq[c].sy[3]);
             c++;
+        }
+    }
+}
+
+/* ---- native feed (3b.3 endpoint: float FT4 particles into the scene) -------
+ * Push the native FT4 quads (sel 2/3/6) as textured tris with the data-driven
+ * blend + a single representative centre depth (particles are small billboards;
+ * the per-vertex z would over-separate the affine path's TR<<2). Determinism-
+ * safe (display-only; the .s produced m_03 / Sparkle m_Life headless). NOTE:
+ * sel 0 (tile), 1/4 (lines), 5 (affine matrix), sparkles + glow rings are not
+ * yet walked, so those are absent in the native panel (TODO). */
+static void particle_feed_native(CPUState* cpu) {
+    particle_build(cpu);
+    if (s_fq_n <= 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
+    int split[2][3] = { {0,1,2}, {1,3,2} };              /* FT4 -> 2 tris */
+    for (int i = 0; i < s_fq_n; i++) {
+        fquad* q = &s_fq[i];
+        float depth = openpete_native_depth_from_viewz(q->cz);
+        for (int s = 0; s < 2; s++) {
+            openpete_scene_tri st;
+            for (int k = 0; k < 3; k++) {
+                int j = split[s][k];
+                st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j]; st.v[k].z = depth;
+                st.v[k].u = (float)q->u[j]; st.v[k].v = (float)q->v[j];
+                st.v[k].rgba = (q->rgb & 0xFFFFFFu) | 0xFF000000u;
+            }
+            st.textured = q->textured;
+            st.tpage_x = q->tpx; st.tpage_y = q->tpy;
+            st.clut_x = q->clx; st.clut_y = q->cly; st.bpp = q->bpp;
+            st.blend = q->blend;
+            openpete_native_scene_add_tri(&st);
         }
     }
 }
@@ -446,6 +523,11 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         s_prim_n = 0;
         capture_prims(cpu, startp, endp);
     }
+
+    /* feed the native FT4 particles (sel 2/3/6) into the scene. Only the
+     * particles renderer (tag 'p'); glows/sparkles have no native walk yet. */
+    if (feed && tag[0]=='p' && endp > startp && render_path_enabled(RP_PARTICLES))
+        particle_feed_native(cpu);
 
     if (verify && endp > startp && openpete_frame >= verify_frame()) {
         static int s_dumped[3] = {0,0,0};
