@@ -333,7 +333,8 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
-                 int metal; } rec_meta;  /* metal = m_SpecularMetalColor (rec+0x30) high byte (env flag) */
+                 int metal; uint32_t mscol; } rec_meta;  /* metal = m_SpecularMetalColor (rec+0x30)
+                 high byte (env flag); mscol = the full word (highlight back-colour BK + spec byte) */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
@@ -358,7 +359,10 @@ static int project_all_records(CPUState* cpu) {
                 (header >= 0x80000000u) ? cpu->read_word(header + 0x14) : 0u, w0,
                 /* env metal flag = high byte of m_SpecularMetalColor @rec+0x30 (specular
                  * cull pass copies it; @80020CA0 / read @8002176C srl 24, bnez .L800226F8) */
-                (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu) };
+                (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu),
+                /* full m_SpecularMetalColor: the highlight back-colour (.L80021DB4) +
+                 * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
+                cpu->read_word(rec + 0x30) };
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -593,19 +597,30 @@ static int build_walk_tris(CPUState* cpu) {
                 textured = 1;   /* env faces sample the reflection texture */
                 tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
               } else {
-                /* DIFFUSE HIGHLIGHT -- per-face flat shade that REPLACES the base
-                 * colour (native float, fitted to the prims): c = base*(0.68 -
-                 * 1.54*NL), NL = view face-normal . spec-light (D_800770C8+0xC).
-                 * Without it metal-less shiny objects (the chest) render flat-lit. */
+                /* DIFFUSE HIGHLIGHT (.L80021DB4) -- per-face flat colour that
+                 * REPLACES the base. The .s builds it from the moby's
+                 * m_SpecularMetalColor as the GTE back-colour (BK) plus a gray
+                 * light contribution scaled by the spec coefficient (byte2) and the
+                 * facing. BK carries the per-moby TINT, so a flamed metal chest
+                 * (mscol -> red) reddens ("gets hot but doesn't break"); the cold
+                 * chest's BK is gray -> silver. Using the gray *base* colour missed
+                 * this. BK channels (the .s packing @80021E38): RBK=(ms>>10)&0xFF,
+                 * GBK=(ms>>4)&0xFF, BBK=(ms<<2)&0xFF; spec = byte2 = (ms>>16)&0xFF.
+                 * facing add fitted to the prims: ~ -1.19 * spec * NL (gray), NL =
+                 * view face-normal . spec-light (D_800770C8+0xC). */
+                uint32_t ms=R->mscol;
+                int RBK=(int)((ms>>10)&0xFFu), GBK=(int)((ms>>4)&0xFFu), BBK=(int)((ms<<2)&0xFFu);
+                int spec=(int)((ms>>16)&0xFFu);
                 float e1x=p1->ex-p0->ex, e1y=p1->ey-p0->ey, e1z=p1->ez-p0->ez;
                 float e2x=p2->ex-p0->ex, e2y=p2->ey-p0->ey, e2z=p2->ez-p0->ez;
                 float nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
                 float nl=sqrtf(nx*nx+ny*ny+nz*nz);
                 if (nl > 0.001f) {
                     float NL=(nx*s_specL[0]+ny*s_specL[1]+nz*s_specL[2])/(nl*s_specLlen);
-                    float g=0.68f - 1.54f*NL; if(g<0)g=0; if(g>2.0f)g=2.0f;
-                    int rr=(int)((c0&0xFF)*g), gg=(int)(((c0>>8)&0xFF)*g), bb2=(int)(((c0>>16)&0xFF)*g);
-                    if(rr>255)rr=255; if(gg>255)gg=255; if(bb2>255)bb2=255;
+                    int add=(int)(-1.19f * (float)spec * NL);
+                    int rr=RBK+add, gg=GBK+add, bb2=BBK+add;
+                    if(rr<0)rr=0; if(rr>255)rr=255; if(gg<0)gg=0; if(gg>255)gg=255;
+                    if(bb2<0)bb2=0; if(bb2>255)bb2=255;
                     c0=c1=c2=c3=(uint32_t)(rr|(gg<<8)|(bb2<<16));   /* flat per face */
                 }
               }
@@ -937,6 +952,9 @@ static void specular_env_calibrate(CPUState* cpu) {
         openpete_frame, s_metalM[0][0],s_metalM[0][1],s_metalM[0][2],
         s_metalM[1][0],s_metalM[1][1],s_metalM[1][2], s_metalM[2][0],s_metalM[2][1],s_metalM[2][2],
         s_camHead, s_nrecs, cpu->read_word(0x800756F0u), cpu->read_word(0x800756F4u));
+    for (int r = 0; r < s_nrecs; r++)
+        fprintf(stderr, "  rec%d metal=%d mscol=%08X moby=%08X\n", r,
+            s_recs[r].metal, s_recs[r].mscol, cpu->read_word(s_recs[r].addr + 0x34));
     int dumped = 0, nv = 0; double sumu = 0, sumv = 0, sgnu = 0; int maxu = 0, maxv = 0;
     for (int wi = 0; wi < s_wtri_n && dumped < 16; wi++) {
         ntri_t* w = &s_wtri[wi];
@@ -988,7 +1006,7 @@ static void specular_hl_calibrate(CPUState* cpu) {
     build_prim_tris();
     fprintf(stderr, "[spec-hl f=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
     int dumped=0;
-    for (int wi=0; wi<s_wtri_n && dumped<14; wi++) {
+    for (int wi=0; wi<s_wtri_n && dumped<24; wi++) {
         ntri_t* w=&s_wtri[wi];
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
         double best=1e18; int bp=-1;
