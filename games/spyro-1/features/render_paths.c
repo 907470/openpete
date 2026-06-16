@@ -89,9 +89,10 @@ bool render_path_addr_visible(uint32_t addr) {
 #define POLYBUF_CURSOR 0x800757B0u
 
 extern void func_8002B9CC(CPUState* cpu);  /* environment render (-> func_800258F0 world renderer) */
-extern void func_800573C8(CPUState* cpu);  /* particle systems */
-/* shadow brackets (func_80059F8C/func_80059A48) retired — shadow_native.c
- * records the RP_SHADOW polybuf range itself (see feature_list.c). */
+/* shadow brackets (func_80059F8C/func_80059A48) and the particle bracket
+ * (func_800573C8/0x800580F4/0x800584C4) retired — shadow_native.c and
+ * particle_native.c record their RP_SHADOW/RP_PARTICLES ranges themselves
+ * (see feature_list.c). */
 
 #define RP_BRACKET(hookname, realfn, pathid)                                   \
     static int hookname(CPUState* cpu, uint32_t addr) {                        \
@@ -107,12 +108,11 @@ extern void func_800573C8(CPUState* cpu);  /* particle systems */
     }
 
 RP_BRACKET(on_terrain_bracket,     func_8002B9CC, RP_TERRAIN)
-RP_BRACKET(on_particles_bracket,   func_800573C8, RP_PARTICLES)
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
     { 0x8002B9CCu, on_terrain_bracket },
-    { 0x800573C8u, on_particles_bracket },
-    /* shadow (0x80059F8C/0x80059A48) recorded by shadow_native.c */
+    /* shadow (0x80059F8C/0x80059A48) recorded by shadow_native.c;
+     * particles (0x800573C8/0x800580F4/0x800584C4) by particle_native.c */
     { 0u, NULL },
 };
 

@@ -1,0 +1,426 @@
+// games/spyro-1/features/particle_native.c — Phase 3b.3 of
+// notes/plans/openpete-native-renderer.md: the PARTICLE renderer family
+// (func_800573C8 particles + func_800580F4 glows + func_800584C4 sparkles /
+// r_particles.s) re-derived from gamestate in float + its numerical A/B
+// harness. This is the LAST 3b actor and the most complex: 7 particle sprite
+// classes (FT4 billboards, dots/tiles, F2 lines), additive glow rings, and
+// twinkle sparkle quads — a mix of GPU primitive types over one polybuf.
+//
+// VERDICT-CRITICAL (see the format notes): the .s writes Particle.m_03
+// (drawn stamp, read next frame -> conditional rand() -> RNG seed) and
+// Sparkle m_Life. We NEVER reproduce those — the real .s runs headless exactly
+// once per call (behaviour-identical to normal dispatch) and we only READ pool
+// state + capture its emitted prims afterwards, so determinism holds by
+// construction. The native path only mirrors the GEOMETRY in float.
+//
+// Three sub-renderers hooked; all record RP_PARTICLES (retiring the thin
+// render_paths.c bracket on func_800573C8). func_800573C8 is called ~9x/frame
+// (one per occlusion/gamestate pass); glows+sparkles once/frame. Each call
+// brackets the polybuf cursor and appends to the native scene.
+//
+// Gated by OPENPETE_PARTICLE_VERIFY (dump/A/B) or a native renderer mode
+// (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
+
+#include "feature_registry.h"
+#include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
+#include "openpete_native_render.h"
+#include "render_paths.h"  /* --render-paths isolation */
+
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
+extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
+extern void     func_800584C4(CPUState* cpu);  /* RenderSparkles   */
+extern unsigned openpete_frame;
+
+/* ---- gamestate addresses (psx.map / the format notes) --------------- */
+#define G_PARTICLES    0x80075824u   /* Particle[] base, stride 0x20, m_Type=0xFF term */
+#define G_SPARKLES     0x80077108u   /* Sparkle[8], stride 0x18                        */
+#define D_GLOWS        0x80078800u   /* Glow[16], stride 0x24                          */
+#define D_PARTTEX      0x80076278u   /* ParticleTexture*[32] by m_Type                 */
+#define G_CAMERA       0x80076DD0u   /* projMat +0x00 (5 words), world pos +0x28        */
+#define D_SIN_TABLE    0x8006CBF8u   /* SINE_8 sin[idx]; cos at +0x80                   */
+#define POLYBUF_CURSOR 0x800757B0u
+
+/* ---- captured prims (ground truth) --------------------------------------- *
+ * Particle FT4 quads (GPU code 0x2C/0x2E) + glow G3 rings (0x32) decode with
+ * the standard PSX polygon layout (code = high byte of word[+0x04]; word[+0x00]
+ * is the OT tag whose high byte is the *length*, low24 the link). Tiles (0x60),
+ * lines (0x40/0x48) and the sparkle quads are NON-polygon prims: kept as raw
+ * words for the dump, decoded specially in the feed once the dump confirms the
+ * exact layout. */
+typedef struct {
+    uint8_t  code;          /* GPU prim code byte (word[1]>>24)  */
+    uint8_t  taglen;        /* OT tag length (word[0]>>24)       */
+    int      nv;            /* decoded polygon verts (3/4), else 0 */
+    float    x[4], y[4];
+    uint32_t rgb[4];
+    int      u[4], v[4];
+    int      clut, tpage;
+    int      textured, gouraud, quad, stp;
+    uint32_t raw[16];
+    int      nraw;
+} prim_t;
+
+#define MAX_PRIMS 8192
+static prim_t s_prim[MAX_PRIMS]; static int s_prim_n;
+static int s_code_hist[256];     /* keyed on the GPU code byte (word[+4]>>24) */
+static int s_tag_hist[256];      /* keyed on the OT tag length (word[+0]>>24) */
+
+static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
+
+/* Walk a polybuf [start,end) by OT tag length (stride=((w0>>24)+1)*4); decode
+ * polygon prims (code high byte of word[+4]) with the standard PSX layout. */
+static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    uint32_t p = start;
+    int guard = 0;
+    while (p < end && guard++ < MAX_PRIMS) {
+        uint32_t w0 = cpu->read_word(p);
+        uint32_t taglen = (w0 >> 24) & 0xFF;
+        if (taglen == 0 || taglen > 12) break;        /* not a tag / corrupt — stop */
+        uint32_t stride = (taglen + 1) * 4;
+        uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
+        if (s_prim_n < MAX_PRIMS) {
+            prim_t* t = &s_prim[s_prim_n];
+            memset(t, 0, sizeof(*t));
+            t->code = code; t->taglen = (uint8_t)taglen;
+            t->nraw = (int)(stride / 4); if (t->nraw > 16) t->nraw = 16;
+            for (int i = 0; i < t->nraw; i++) t->raw[i] = cpu->read_word(p + (uint32_t)i*4);
+            if ((code & 0xE0) == 0x20) {              /* a GPU polygon */
+                int gouraud = (code & 0x10) != 0;
+                int quad    = (code & 0x08) != 0;
+                int tex     = (code & 0x04) != 0;
+                int stp     = (code & 0x02) != 0;
+                t->gouraud = gouraud; t->textured = tex; t->quad = quad; t->stp = stp;
+                t->nv = quad ? 4 : 3;
+                uint32_t rgb0 = t->raw[1] & 0xFFFFFF;
+                int c = 2;
+                for (int k = 0; k < t->nv; k++) {
+                    t->rgb[k] = (gouraud && k > 0) ? (t->raw[c++] & 0xFFFFFF) : rgb0;
+                    uint32_t xy = t->raw[c++];
+                    t->x[k] = (float)(int16_t)(xy & 0xFFFF);
+                    t->y[k] = (float)(int16_t)(xy >> 16);
+                    if (tex) {
+                        uint32_t uv = t->raw[c++];
+                        t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
+                        if (k == 0)      t->clut  = (int)(uv >> 16);
+                        else if (k == 1) t->tpage = (int)(uv >> 16);
+                    }
+                }
+            }
+            s_code_hist[code & 0xFF]++;
+            s_tag_hist[taglen & 0xFF]++;
+            s_prim_n++;
+        }
+        p += stride;
+    }
+}
+
+/* ---- one-shot dump (gamestate pools + raw polybuf + decoded prims) -------- */
+static void dump_pools(CPUState* cpu) {
+    fprintf(stderr, "  [particles] g_Particles walk (sel/m_Class Life m03 | +4 +8):");
+    uint32_t pp = cpu->read_word(G_PARTICLES); int npart = 0;   /* g_Particles is a POINTER */
+    for (int i = 0; i < 320; i++) {
+        uint32_t hdr = cpu->read_word(pp);
+        int cls = (int)(int16_t)(hdr & 0xFFFF);
+        if (cls < 0) break;                            /* high-byte==0xFF terminator */
+        int sel = (cls >> 8) & 0xFF, mclass = cls & 0xFF;   /* dispatch sel = high byte */
+        int life = (int)((hdr >> 16) & 0xFF), m03 = (int)((hdr >> 24) & 0xFF);
+        if (npart < 16) fprintf(stderr, " [%d]s%d/c%d L%d d%d(%08X,%08X)", i, sel, mclass, life, m03,
+                                cpu->read_word(pp+4), cpu->read_word(pp+8));
+        npart++; pp += 0x20;
+    }
+    fprintf(stderr, "  (total live=%d)\n", npart);
+
+    fprintf(stderr, "  [sparkles] g_Sparkles[8] (pos | Life Speed type | color size):\n");
+    for (int i = 0; i < 8; i++) {
+        uint32_t sp = G_SPARKLES + (uint32_t)i*0x18;
+        int x = (int)cpu->read_word(sp+0), y = (int)cpu->read_word(sp+4), z = (int)cpu->read_word(sp+8);
+        uint32_t w3 = cpu->read_word(sp+0xC), col = cpu->read_word(sp+0x10), w5 = cpu->read_word(sp+0x14);
+        fprintf(stderr, "    [%d] (%d,%d,%d) life=%d spd=%d t=%d col=%06X size=%d\n", i, x, y, z,
+                (int)(w3&0xFF), (int)((w3>>8)&0xFF), (int)((w3>>24)&0xFF), col&0xFFFFFF, (int)((w5>>8)&0xFF));
+    }
+
+    fprintf(stderr, "  [glows] D_80078800[16] (active | MobyPos* color size | offset bias):\n");
+    for (int i = 0; i < 16; i++) {
+        uint32_t g = D_GLOWS + (uint32_t)i*0x24;
+        uint32_t act = cpu->read_word(g+0);
+        if (act == 0) continue;
+        uint32_t mp = cpu->read_word(g+0x08), col = cpu->read_word(g+0x0C), sz = cpu->read_word(g+0x10);
+        int ox = (int)cpu->read_word(g+0x14), oy = (int)cpu->read_word(g+0x18), oz = (int)cpu->read_word(g+0x1C);
+        int bias = (int)cpu->read_word(g+0x20);
+        fprintf(stderr, "    [%d] act=%X mobypos=%08X col=%06X size=%d off=(%d,%d,%d) bias=%d\n",
+                i, act, mp, col&0xFFFFFF, (int)sz, ox, oy, oz, bias);
+    }
+    fprintf(stderr, "  camera projMat:");
+    for (int i = 0; i < 5; i++) fprintf(stderr, " %08X", cpu->read_word(G_CAMERA+(uint32_t)i*4));
+    fprintf(stderr, "  pos=(%d,%d,%d)\n", (int)cpu->read_word(G_CAMERA+0x28),
+            (int)cpu->read_word(G_CAMERA+0x2C), (int)cpu->read_word(G_CAMERA+0x30));
+    fprintf(stderr, "  OFX=%d OFY=%d H=%d DQA=%d DQB=%d\n",
+            (int)cpu->gte_ctrl[24]>>16, (int)cpu->gte_ctrl[25]>>16, (int)(cpu->gte_ctrl[26]&0xFFFF),
+            (int)cpu->gte_ctrl[27], (int)cpu->gte_ctrl[28]);
+}
+
+static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t end) {
+    fprintf(stderr, "\n=== [%s-dump f=%u] polybuf [%08X,%08X) %u bytes, %d prims ===\n",
+            tag, openpete_frame, start, end, end - start, s_prim_n);
+    /* linear raw dump (4 words/row) — the only reliable view of non-polygon prims */
+    fprintf(stderr, "  RAW words:\n");
+    int rows = 0;
+    for (uint32_t p = start; p < end && rows < 40; p += 16, rows++) {
+        fprintf(stderr, "    +%04X:", p - start);
+        for (int i = 0; i < 4 && p + (uint32_t)i*4 < end; i++)
+            fprintf(stderr, " %08X", cpu->read_word(p + (uint32_t)i*4));
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "  code histogram (word[+4]>>24):");
+    for (int c = 0; c < 256; c++) if (s_code_hist[c]) fprintf(stderr, " %02X:%d", c, s_code_hist[c]);
+    fprintf(stderr, "\n  tag-len histogram (word[+0]>>24):");
+    for (int c = 0; c < 256; c++) if (s_tag_hist[c]) fprintf(stderr, " %d:%d", c, s_tag_hist[c]);
+    fprintf(stderr, "\n");
+    int n = s_prim_n < 8 ? s_prim_n : 8;
+    for (int i = 0; i < n; i++) {
+        prim_t* t = &s_prim[i];
+        fprintf(stderr, "  prim[%d] code=%02X taglen=%d nv=%d tex=%d gour=%d quad=%d stp=%d  raw:",
+                i, t->code, t->taglen, t->nv, t->textured, t->gouraud, t->quad, t->stp);
+        for (int k = 0; k < t->nraw; k++) fprintf(stderr, " %08X", t->raw[k]);
+        if (t->nv) {
+            fprintf(stderr, "\n      decoded:");
+            for (int k = 0; k < t->nv; k++)
+                fprintf(stderr, " v%d(%.0f,%.0f rgb=%06X uv=%d,%d)", k, t->x[k], t->y[k], t->rgb[k], t->u[k], t->v[k]);
+            if (t->textured) fprintf(stderr, " clut=%04X tpage=%04X", t->clut, t->tpage);
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "=== end %s-dump ===\n\n", tag);
+}
+
+/* ---- native float walk (3b.3) — WORK IN PROGRESS, verify-only ------------- *
+ * Re-derive particle geometry from gamestate in float. NOT YET fed to the scene
+ * (no native particle rendering) and NOT YET A/B-validated — this is the probe
+ * that will become the walk. It runs only under OPENPETE_PARTICLE_VERIFY (an
+ * A/B diagnostic) and is inert in the feed/oracle paths, so determinism is
+ * unaffected.
+ *
+ * ESTABLISHED so far (see the format notes "Native walk progress"):
+ *   - g_Particles (0x80075824) is a POINTER to the buffer (deref before walking).
+ *   - dispatch class = the HIGH byte of the lh header (m_Type/"sel"); the LOW
+ *     byte is m_Class (texture/clut index). The doc had these swapped.
+ *   - position layout: X=lo16(+0x04), Y=hi16(+0x04), Z=lo16(+0x08), all in
+ *     world/4 units; camera-relative VX=X-camX/4, VY=camY/4-Y, VZ=camZ/4-Z.
+ *     Confirmed by sel=2/3 particles decoding to small near-camera offsets.
+ *   - the FT4 (code 0x2C) prims in the demo come from sel=2 + sel=3 (affine /
+ *     GPF-rect billboards), NOT sel=0 — so a clean ordered A/B needs ALL FT4
+ *     emitters (0/2/3) implemented before the prim sequence aligns. TODO.
+ *
+ * Stage 1 below = the class-0 (sel==0 / sel>6 fall-through) rotated billboard
+ * only (block_800574F8): sine/cosine rotation scaled by the size byte (GPF),
+ * 4 swizzled corners through the camera matrix (TR=0). Classes 2/3/6 (FT4),
+ * 1 (tile), 4/5 (lines), glows + sparkles still TODO. */
+#define GTE_DIV_CAP   (131071.0 / 65536.0)
+#define GTE_SXY_BOUND 1024.0
+
+static int rd_s16(CPUState* cpu, uint32_t addr) {
+    uint32_t w = cpu->read_word(addr & ~3u);
+    return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
+}
+
+/* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
+static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
+    uint32_t w0 = cpu->read_word(G_CAMERA+0), w1 = cpu->read_word(G_CAMERA+4);
+    uint32_t w2 = cpu->read_word(G_CAMERA+8), w3 = cpu->read_word(G_CAMERA+12);
+    uint32_t w4 = cpu->read_word(G_CAMERA+16);
+    R[0][0]=s16(w0&0xFFFF); R[0][1]=s16(w0>>16); R[0][2]=s16(w1&0xFFFF);
+    R[1][0]=s16(w1>>16);    R[1][1]=s16(w2&0xFFFF); R[1][2]=s16(w2>>16);
+    R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
+}
+
+/* RTPS one view-space vertex (TR=0) through R -> screen (float) + view-Z */
+static void proj(const int R[3][3], double ofx, double ofy, double H,
+                 double vx, double vy, double vz, float* sx, float* sy, float* sz) {
+    double mac1 = (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
+    double mac2 = (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
+    double mac3 = (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
+    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
+    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
+    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
+    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
+    double x = ofx + ir1 * q, y = ofy + ir2 * q;
+    if (x < -GTE_SXY_BOUND) x = -GTE_SXY_BOUND; else if (x > GTE_SXY_BOUND-1.0) x = GTE_SXY_BOUND-1.0;
+    if (y < -GTE_SXY_BOUND) y = -GTE_SXY_BOUND; else if (y > GTE_SXY_BOUND-1.0) y = GTE_SXY_BOUND-1.0;
+    *sx = (float)x; *sy = (float)y; *sz = (float)mac3;
+}
+
+typedef struct { float sx[4], sy[4], sz[4]; } fquad;
+#define MAX_FQUAD 1024
+static fquad s_fq[MAX_FQUAD]; static int s_fq_n;
+
+static void particle_build_class0(CPUState* cpu) {
+    s_fq_n = 0;
+    int R[3][3]; load_cam_matrix(cpu, R);
+    int s7 = (int)cpu->read_word(G_CAMERA+0x28) >> 2;   /* camX/4 */
+    int t8 = (int)cpu->read_word(G_CAMERA+0x2C) >> 2;   /* camY/4 */
+    int t9 = (int)cpu->read_word(G_CAMERA+0x30) >> 2;   /* camZ/4 */
+    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
+    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
+    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+
+    static int dbg = -1;
+    if (dbg < 0) { const char* e = getenv("OPENPETE_PARTICLE_DEBUG"); dbg = (e && *e && *e != '0'); }
+    static int dbg_call = 0;
+    int do_dbg = dbg && (dbg_call++ == 4);   /* full pool walk for one mid call */
+
+    uint32_t pp = cpu->read_word(G_PARTICLES);          /* g_Particles is a POINTER */
+    for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
+        int lh = (int)(int16_t)(cpu->read_word(pp) & 0xFFFF);
+        if (lh < 0) break;                              /* m_Type==0xFF terminator */
+        int klass = lh >> 8;                            /* dispatch = HIGH byte */
+        if (do_dbg)
+            fprintf(stderr, "   [psel] i=%d sel=%d mclass=%d +4=%08X +8=%08X\n",
+                    i, klass, lh & 0xFF, cpu->read_word(pp+4), cpu->read_word(pp+8));
+        if (klass >= 1 && klass <= 6) continue;         /* other classes: TODO */
+
+        uint32_t A = cpu->read_word(pp + 4), B = cpu->read_word(pp + 8);
+        int VX = (int)(A & 0xFFFF) - s7;
+        int VY = t8 - (int)(A >> 16);
+        int VZ = t9 - (int)(B & 0xFFFF);
+        int sizeB = (int)((B >> 16) & 0xFF);
+        int angIdx = (int)((B >> 23) & 0x1FE);
+        int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+        int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+        int eS = (sizeB * sinv) >> 12;                  /* GPF: (size*sin)>>12 */
+        int eC = (sizeB * cosv) >> 12;                  /* GPF: (size*cos)>>12 */
+        if (do_dbg) {
+            float dsx,dsy,dsz; proj(R, ofx, ofy, H, (double)(VY-eS), (double)VZ, (double)(VX+eC), &dsx,&dsy,&dsz);
+            fprintf(stderr, "   [pbld] i=%d cls=%d A=%08X B=%08X VX=%d VY=%d VZ=%d sz=%d ang=%d eS=%d eC=%d  c0=(%.0f,%.0f z=%.0f)\n",
+                    i, klass, A, B, VX, VY, VZ, sizeB, angIdx, eS, eC, dsx, dsy, dsz);
+        }
+
+        /* swizzled GTE inputs (gte-X<-VY, gte-Y<-VZ, gte-Z<-VX), rotated quad */
+        double cx[4] = { (double)(VY - eS), (double)(VY + eC), (double)(VY - eC), (double)(VY + eS) };
+        double cz[4] = { (double)(VX + eC), (double)(VX + eS), (double)(VX - eS), (double)(VX - eC) };
+        double cy = (double)VZ;
+        fquad q; double zsum = 0;
+        for (int k = 0; k < 4; k++) {
+            proj(R, ofx, ofy, H, cx[k], cy, cz[k], &q.sx[k], &q.sy[k], &q.sz[k]);
+            zsum += q.sz[k] < 0 ? 0 : (q.sz[k] > 65535 ? 65535 : q.sz[k]);
+        }
+        if (zsum < 512.0 || zsum >= 32768.0) continue;  /* .s depth-sum window */
+        s_fq[s_fq_n++] = q;
+    }
+}
+
+static void particle_compare(CPUState* cpu) {
+    particle_build_class0(cpu);
+    int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
+    int n = s_fq_n < ft4 ? s_fq_n : ft4;
+    double worst = 0, sum = 0; int nv = 0, qi = 0, over4 = 0;
+    for (int p = 0; p < s_prim_n && qi < n; p++) {
+        prim_t* pr = &s_prim[p];
+        if (!(pr->code == 0x2C || pr->code == 0x2E)) continue;
+        fquad* q = &s_fq[qi];
+        double qw = 0;
+        for (int k = 0; k < 4; k++) {
+            double dx = q->sx[k] - pr->x[k], dy = q->sy[k] - pr->y[k];
+            double d = (dx<0?-dx:dx) + (dy<0?-dy:dy);
+            sum += d; nv++; if (d > qw) qw = d;
+        }
+        if (qw > worst) worst = qw;
+        if (qw > 4.0) over4++;
+        qi++;
+    }
+    fprintf(stderr, "[part-c0 f=%u] native=%d prims(FT4)=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d\n",
+            openpete_frame, s_fq_n, ft4, n, nv?sum/nv:0, worst, over4, n);
+    if (s_fq_n && ft4 && getenv("OPENPETE_PARTICLE_DEBUG")) {
+        for (int p = 0, c = 0; p < s_prim_n && c < 2; p++) {
+            if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
+            fprintf(stderr, "   prim v: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+                    s_prim[p].x[0],s_prim[p].y[0],s_prim[p].x[1],s_prim[p].y[1],
+                    s_prim[p].x[2],s_prim[p].y[2],s_prim[p].x[3],s_prim[p].y[3]);
+            if (c < s_fq_n) fprintf(stderr, "   nat  v: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+                    s_fq[c].sx[0],s_fq[c].sy[0],s_fq[c].sx[1],s_fq[c].sy[1],
+                    s_fq[c].sx[2],s_fq[c].sy[2],s_fq[c].sx[3],s_fq[c].sy[3]);
+            c++;
+        }
+    }
+}
+
+/* ---- gating --------------------------------------------------------------- */
+static int verify_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY"); v = (e && *e && *e != '0'); }
+    return v;
+}
+static unsigned verify_frame(void) {
+    static unsigned f = 0xFFFFFFFFu;
+    if (f == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY_FRAME"); f = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
+    return f;
+}
+
+/* Shared hook body: run the real renderer once, capture its prims, record the
+ * RP_PARTICLES polybuf range, (dump in verify mode). `tag` selects the dump
+ * label + which gamestate pools to print. */
+static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag, int dump_pools_too) {
+    int verify = verify_enabled();
+    int feed   = openpete_native_render_enabled();
+    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+
+    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    realfn(cpu);                                   /* run the real renderer (verdict bytes) */
+    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+
+    render_path_record(RP_PARTICLES, startp, endp);
+
+    if (verify) {
+        static int s_trace[3] = {0,0,0};
+        int slot = (tag[0]=='p') ? 0 : (tag[0]=='g') ? 1 : 2;
+        if (s_trace[slot] < 30 && endp != startp) {
+            fprintf(stderr, "[%s-call f=%u] polybuf %u bytes\n", tag, openpete_frame, endp - startp);
+            s_trace[slot]++;
+        }
+    }
+
+    if ((feed || verify) && endp > startp) {
+        s_prim_n = 0;
+        capture_prims(cpu, startp, endp);
+    }
+
+    if (verify && endp > startp && openpete_frame >= verify_frame()) {
+        static int s_dumped[3] = {0,0,0};
+        int slot = (tag[0]=='p') ? 0 : (tag[0]=='g') ? 1 : 2;
+        if (!s_dumped[slot]) {
+            if (dump_pools_too) dump_pools(cpu);
+            dump_prims(cpu, tag, startp, endp);
+            s_dumped[slot] = 1;
+        }
+        if (slot == 0) {                                 /* particles: class-0 FT4 A/B */
+            static int s_reports = 0;
+            if (s_reports < 100) { particle_compare(cpu); s_reports++; }
+        }
+    }
+
+    s_in = 0;
+    return 1;
+}
+
+static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", 1); }
+static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", 0); }
+static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", 0); }
+
+static const feature_dispatch_entry_t particle_dispatch[] = {
+    { 0x800573C8u, on_800573C8_particles },
+    { 0x800580F4u, on_800580F4_glows },
+    { 0x800584C4u, on_800584C4_sparkles },
+    { 0u, NULL },
+};
+
+const feature_module_t particle_native_module = {
+    .name           = "particle_native",
+    .apply_options  = NULL,
+    .dispatch_table = particle_dispatch,
+};
