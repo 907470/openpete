@@ -90,8 +90,8 @@ bool render_path_addr_visible(uint32_t addr) {
 
 extern void func_8002B9CC(CPUState* cpu);  /* environment render (-> func_800258F0 world renderer) */
 extern void func_800573C8(CPUState* cpu);  /* particle systems */
-extern void func_80059F8C(CPUState* cpu);  /* moby shadows */
-extern void func_80059A48(CPUState* cpu);  /* Spyro silhouette shadow */
+/* shadow brackets (func_80059F8C/func_80059A48) retired — shadow_native.c
+ * records the RP_SHADOW polybuf range itself (see feature_list.c). */
 
 #define RP_BRACKET(hookname, realfn, pathid)                                   \
     static int hookname(CPUState* cpu, uint32_t addr) {                        \
@@ -108,14 +108,11 @@ extern void func_80059A48(CPUState* cpu);  /* Spyro silhouette shadow */
 
 RP_BRACKET(on_terrain_bracket,     func_8002B9CC, RP_TERRAIN)
 RP_BRACKET(on_particles_bracket,   func_800573C8, RP_PARTICLES)
-RP_BRACKET(on_shadow_moby_bracket, func_80059F8C, RP_SHADOW)
-RP_BRACKET(on_shadow_spyro_bracket,func_80059A48, RP_SHADOW)
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
     { 0x8002B9CCu, on_terrain_bracket },
     { 0x800573C8u, on_particles_bracket },
-    { 0x80059F8Cu, on_shadow_moby_bracket },
-    { 0x80059A48u, on_shadow_spyro_bracket },
+    /* shadow (0x80059F8C/0x80059A48) recorded by shadow_native.c */
     { 0u, NULL },
 };
 

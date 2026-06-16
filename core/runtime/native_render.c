@@ -158,9 +158,12 @@ static struct {
      * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
+    rhi_pipeline *gouraud_blend_pipe; /* 3b.2: semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
+    rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — Spyro shadow */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
+    rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
@@ -391,6 +394,31 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
         .uses_vram = false, .push_const_size = 0,
     };
+    /* Semi-transparent UNTEXTURED gouraud pipeline (3b.2): the Spyro silhouette
+     * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
+     * (B+F)/2) — untextured, so it can't go through the textured-blend pipe.
+     * RHI_BLEND_ALPHA = src*a + dst*(1-a); the feeder sets vertex alpha = 128
+     * (~0.5) so the result is (B+F)/2, reproducing mode 0. depth_write_off: the
+     * shadow tests against opaque geometry (a wall/ground occludes it) but
+     * never occludes another transparent layer. Same quad.vert/quad.frag as the
+     * opaque gouraud pipe — quad.frag emits the full vertex rgba incl. alpha. */
+    rhi_pipeline_desc gouraud_blend_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Subtractive UNTEXTURED gouraud pipeline (3b.2, the Spyro silhouette
+     * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
+     * reverse-subtracts the vertex colour from the framebuffer, darkening the
+     * ground (the shadow grey is subtracted; black vertices leave it
+     * unchanged). depth_write_off like the other transparent passes. */
+    rhi_pipeline_desc gouraud_sub_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
     /* Textured scene pipeline (3a.3): samples the PSX VRAM mirror via the ported
      * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
      * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
@@ -424,6 +452,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* Subtractive (ABR mode 2, dst = B - F) textured pipeline (3b.2): moby
+     * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
+     * RHI_BLEND_SUBTRACT reverse-subtracts the modulated shadow sprite from the
+     * framebuffer (tex*col/128 darkens the ground), depth_write_off so the
+     * shadow tests against opaque geometry but never occludes another layer. */
+    rhi_pipeline_desc scene_tex_sub_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
      * depth, no blend. Built only in diff mode. */
@@ -436,16 +475,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
+    rhi_pipeline *gouraud_blend_pipe = rhi_create_pipeline(dev, &gouraud_blend_desc);
+    rhi_pipeline *gouraud_sub_pipe = rhi_create_pipeline(dev, &gouraud_sub_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
+    rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *diff_pipe = diff_mode ? rhi_create_pipeline(dev, &diff_desc) : NULL;
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = diff_mode ? rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6) : NULL;
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         (diff_mode && (!diff_pipe || !diff_quad_vb))) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
@@ -454,9 +496,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
         if (diff_pipe)     rhi_destroy_pipeline(dev, diff_pipe);
+        if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
+        if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
+        if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
         if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
         if (vram_pipe)     rhi_destroy_pipeline(dev, vram_pipe);
         if (blit_pipe)     rhi_destroy_pipeline(dev, blit_pipe);
@@ -473,9 +518,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.blit_pipe    = blit_pipe;
     s_nr.vram_pipe    = vram_pipe;
     s_nr.gouraud_pipe = gouraud_pipe;
+    s_nr.gouraud_blend_pipe = gouraud_blend_pipe;
+    s_nr.gouraud_sub_pipe = gouraud_sub_pipe;
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
+    s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
@@ -721,20 +769,31 @@ static bool draw_native_scene(bool full_extent)
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
     }
-    /* Two passes into one VB: untextured tris (bg + gouraud) in [0, ut_end),
-     * then textured tris in [tx_start, n). The depth buffer sorts the passes, so
-     * drawing them separately (gouraud pipe, then VRAM-sampler pipe) is correct
-     * regardless of inter-pass order. */
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+    /* Untextured tris grouped in the VB by ABR class, in draw order: OPAQUE
+     * (bg + gouraud) in [0, ut_op_end); ALPHA (ABR mode 0) in [ut_op_end,
+     * ut_al_end); SUBTRACT (ABR mode 2, the Spyro shadow) in [ut_al_end,
+     * ut_end). Then textured tris in [tx_start, n). The depth buffer sorts
+     * opaque vs transparent; the transparent classes draw after the opaque
+     * world so they blend over it. scene_tri.blend: 0=opaque 1=alpha(ABR0)
+     * 2=additive(ABR1) 3=subtract(ABR2); untextured has no additive consumer. */
+    static const int ut_order[3] = { 0, 1, 3 };   /* opaque, alpha, subtract */
+    int ut_op_end = 0, ut_al_end = 0;
+    for (int gi = 0; gi < 3; gi++) {
+        int want = ut_order[gi];
+        for (int t = 0; t < scene_n; t++) {
+            int b = scene[t].blend; if (b != 1 && b != 3) b = 0;   /* untextured class */
+            if (scene[t].textured || b != want || n + 3 > SCENE_VB_VERTS) continue;
+            for (int k = 0; k < 3; k++) {
+                float cx, cy;
+                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                rhi_vertex *o = &buf[n + k];
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
+            }
+            n += 3;
         }
-        n += 3;
+        if (gi == 0) ut_op_end = n;        /* opaque (incl. bg) end */
+        else if (gi == 1) ut_al_end = n;   /* alpha end */
     }
     int ut_end = n, tx_start = n;
     for (int t = 0; t < scene_n; t++) {
@@ -763,38 +822,68 @@ static bool draw_native_scene(bool full_extent)
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
     }
 
-    /* Untextured pass (bg + gouraud tris). */
-    if (ut_end > 0) {
+    /* Untextured OPAQUE pass (bg fill + opaque gouraud tris), drawn first so
+     * depth-tested geometry sits in front of the background. */
+    if (ut_op_end > 0) {
         rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_end, 0);
+        rhi_draw(s_nr.dev, (uint32_t)ut_op_end, 0);
     }
-    /* Textured passes, by blend mode (scene_tri.blend): 0=opaque first, then
-     * 1=semi-transparent alpha (ABR mode 0, (B+F)/2) over it, then 2=additive
-     * (ABR mode 1, B+F) on top — flame/glows. Each blends/depth-tests against the
-     * passes already drawn; additive last so the glow accumulates over the lit
-     * scene. Per-tri material push+draw; material-batched draws + back-to-front
-     * transparent sort (3c) are later. */
-    if (n > tx_start && s_nr.vram_tex) {
-        rhi_pipeline *tex_pipe[3] = { s_nr.scene_tex_pipe, s_nr.scene_tex_blend_pipe,
-                                      s_nr.scene_tex_add_pipe };
-        for (int pass = 0; pass < 3; pass++) {
-            rhi_pipeline *pipe = tex_pipe[pass];
-            if (!pipe) continue;
-            rhi_bind_pipeline(s_nr.dev, pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            int off = tx_start;
-            for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-                if (!scene[t].textured) continue;
-                int b = scene[t].blend; if (b < 0 || b > 2) b = 0;  /* unknown -> opaque */
-                if (b == pass) {
-                    const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                             scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                    rhi_push_constants(s_nr.dev, &m, sizeof m);
-                    rhi_draw(s_nr.dev, 3, (uint32_t)off);
+    /* Textured OPAQUE pass (blend 0 / unknown), right after the opaque gouraud
+     * so the opaque world is complete before any transparent class blends. */
+    if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        int off = tx_start;
+        for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+            if (!scene[t].textured) continue;
+            int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+            if (b == 0) {
+                const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                         scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
+                rhi_push_constants(s_nr.dev, &m, sizeof m);
+                rhi_draw(s_nr.dev, 3, (uint32_t)off);
+            }
+            off += 3;
+        }
+    }
+    /* Transparent passes, by ABR class in the order opaque-already-done ->
+     * alpha (ABR0) -> subtract (ABR2) -> additive (ABR1, last so glows
+     * accumulate over the lit scene). For each class draw the UNTEXTURED tris
+     * (their own gouraud pipe) then the TEXTURED tris (VRAM-sampler pipe), so
+     * both blend over the opaque world. Each is depth_write_off (tests vs
+     * opaque, never occludes another transparent layer). Per-tri material
+     * push+draw; material-batched draws + back-to-front sort (3c) are later. */
+    {
+        struct { int blend; rhi_pipeline *utex, *tex; uint32_t ut_first, ut_count; } cls[3] = {
+            { 1, s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe, (uint32_t)ut_op_end, (uint32_t)(ut_al_end - ut_op_end) },
+            { 3, s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe,   (uint32_t)ut_al_end, (uint32_t)(ut_end - ut_al_end) },
+            { 2, NULL,                    s_nr.scene_tex_add_pipe,   0u, 0u },
+        };
+        for (int ci = 0; ci < 3; ci++) {
+            /* untextured tris of this class */
+            if (cls[ci].utex && cls[ci].ut_count > 0) {
+                rhi_bind_pipeline(s_nr.dev, cls[ci].utex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, cls[ci].ut_count, cls[ci].ut_first);
+            }
+            /* textured tris of this class */
+            if (n > tx_start && s_nr.vram_tex && cls[ci].tex) {
+                rhi_bind_pipeline(s_nr.dev, cls[ci].tex);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                int off = tx_start;
+                for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+                    if (!scene[t].textured) continue;
+                    if (scene[t].blend == cls[ci].blend) {
+                        const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                                 scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
+                        rhi_push_constants(s_nr.dev, &m, sizeof m);
+                        rhi_draw(s_nr.dev, 3, (uint32_t)off);
+                    }
+                    off += 3;  /* advance for every textured tri (verts are contiguous) */
                 }
-                off += 3;  /* advance for every textured tri (verts are contiguous) */
             }
         }
     }
@@ -940,8 +1029,12 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
+    if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
+    if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+    if (s_nr.gouraud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
+    if (s_nr.gouraud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_blend_pipe);
     if (s_nr.gouraud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     if (s_nr.vram_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.vram_pipe);
     if (s_nr.blit_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.blit_pipe);

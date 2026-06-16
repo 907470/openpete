@@ -99,7 +99,9 @@ typedef struct rhi_buffer   rhi_buffer;
 typedef struct rhi_pipeline rhi_pipeline;
 typedef struct rhi_texture  rhi_texture;
 
-typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD } rhi_blend_mode;
+/* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
+ * dst ONE — used by shadows (subtractive darkening). */
+typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT } rhi_blend_mode;
 
 typedef struct {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */

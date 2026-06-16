@@ -80,12 +80,18 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
  * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3. */
-/* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend
- * (the textured frag's per-texel STP-derived alpha — 0.5 for STP texels, 1.0
- * otherwise — reproduces mode 0 WITH per-texel STP gating); 2 = ABR mode 1 (B+F)
- * -> additive blend (3b.1, flame/glows: src ONE + dst ONE, depth_write_off).
- * ABR modes 2/3 (subtract/quarter) + back-to-front sort are still TODO (no
- * consumer yet). Only meaningful for textured tris; untextured gouraud is opaque. */
+/* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend;
+ * 2 = ABR mode 1 (B+F) -> additive blend (3b.1, flame/glows: src ONE + dst ONE);
+ * 3 = ABR mode 2 (B-F) -> subtractive blend (3b.2, shadows: reverse-subtract,
+ * src ONE + dst ONE — the shadow colour darkens the framebuffer). All
+ * transparent classes are depth_write_off (test vs opaque, never occlude
+ * another transparent layer). ABR mode 3 (B+F/4) + back-to-front sort are still
+ * TODO (no consumer yet).
+ *   TEXTURED tris go through the VRAM sampler (tex*col/128) for every class.
+ *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha — uses the
+ * vertex rgba ALPHA byte; set 128 for (B+F)/2) and 3 (subtract — reverse-
+ * subtracts the vertex colour, alpha ignored). Class 2 (additive) has no
+ * untextured consumer. */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;

@@ -1590,6 +1590,12 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
     } else if (desc->blend == RHI_BLEND_ADD) {
         cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else if (desc->blend == RHI_BLEND_SUBTRACT) {
+        /* PSX ABR mode 2: dst = B - F  (reverse-subtract, src ONE, dst ONE). */
+        cba.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
     } else {
         cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
