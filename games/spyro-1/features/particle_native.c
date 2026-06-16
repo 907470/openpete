@@ -277,6 +277,23 @@ static int screen_rect_cull(double sxf, double syf) {
     return 0;
 }
 
+/* the default class's 4-corner Sutherland reject (block_8005768C..80057718):
+ * cull only when ALL 4 corners lie outside the SAME screen edge (s4=top,
+ * s5=bottom, s6=right; left = SX<=0), on the packed int32 SXY like the .s. */
+static int clip4_cull(const float* sx, const float* sy) {
+    int top = 1, bot = 1, left = 1, right = 1;
+    for (int k = 0; k < 4; k++) {
+        int SX = (int)lrintf(sx[k]), SY = (int)lrintf(sy[k]);
+        int32_t v   = (int32_t)(((uint32_t)(SY & 0xFFFF) << 16) | (uint32_t)(SX & 0xFFFF));
+        int32_t sxs = (int32_t)((uint32_t)(SX & 0xFFFF) << 16);
+        if ((v - 0x10000) > 0)     top = 0;
+        if ((v - 0x1000000) < 0)   bot = 0;
+        if (sxs > 0)               left = 0;
+        if ((sxs - 0x2000000) < 0) right = 0;
+    }
+    return top | bot | left | right;
+}
+
 typedef struct {
     float sx[4], sy[4], sz[4];   /* corner screen XY + per-corner view-Z */
     float cz;                     /* representative centre view-Z (depth sort) */
@@ -406,24 +423,48 @@ static void particle_build(CPUState* cpu) {
                 q.sx[k] = (float)pr[k].sx; q.sy[k] = (float)pr[k].sy; q.sz[k] = (float)pr[k].m3;
                 zsum += pr[k].m3 < 0 ? 0 : (pr[k].m3 > 65535 ? 65535 : pr[k].m3);
             }
-            if (zsum < 512.0 || zsum >= 32768.0) continue;
+            if (zsum < 512.0 || zsum >= 32768.0) continue;          /* depth-sum window */
+            if ((((int)zsum) >> 7) - texsub_hi < 0) continue;       /* LOD cull */
+            if (clip4_cull(q.sx, q.sy)) continue;                   /* 4-corner clip */
             q.cz = (float)(zsum / 4.0);
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
+        } else if (sel == 0) {                          /* TILE / 1px dot (block_80057F98) */
+            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            int sz3 = (int)(c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3));
+            if (sz3 == 0 || sz3 >= 8192) continue;      /* SZ window (SZ3!=0 .. 8192) */
+            if (screen_rect_cull(c.sx, c.sy)) continue;
+            int lod = (int)((B >> 16) & 0xFF);
+            if (((sz3 >> 5) - lod - 2) <= 0) continue;  /* depth-cue LOD cull (s3=2) */
+            q.sx[0]=(float)c.sx;       q.sy[0]=(float)c.sy;        /* 1px dot -> 1px quad */
+            q.sx[1]=(float)(c.sx+1.0); q.sy[1]=(float)c.sy;
+            q.sx[2]=(float)c.sx;       q.sy[2]=(float)(c.sy+1.0);
+            q.sx[3]=(float)(c.sx+1.0); q.sy[3]=(float)(c.sy+1.0);
+            for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
+            q.cz = (float)c.m3;
+            uint32_t cmd = cpu->read_word(pp + 0x0C);    /* flat colour, no texture */
+            q.rgb = cmd & 0xFFFFFF; q.textured = 0;
+            q.blend = ((cmd >> 24) & 0x02) ? 1 : 0;
+            for (int k = 0; k < 4; k++) { q.u[k] = q.v[k] = 0; }
+            q.tpx = q.tpy = q.clx = q.cly = q.bpp = 0;
+            s_fq[s_fq_n++] = q;
         }
-        /* sel 0 (TILE), 1/4 (lines), 5 (affine matrix): TODO, not FT4-comparable */
+        /* sel 1/4 (lines), 5 (affine matrix): not in the demo (sel hist) — TODO */
     }
 }
 
 static void particle_compare(CPUState* cpu) {
     particle_build(cpu);
     int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
-    int n = s_fq_n < ft4 ? s_fq_n : ft4;
-    double worst = 0, sum = 0; int nv = 0, qi = 0, over4 = 0;
-    for (int p = 0; p < s_prim_n && qi < n; p++) {
+    int natft4 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel != 0) natft4++;  /* sel 0 = non-FT4 */
+    int n = natft4 < ft4 ? natft4 : ft4;
+    double worst = 0, sum = 0; int nv = 0, matched = 0, over4 = 0, fqi = 0;
+    for (int p = 0; p < s_prim_n && matched < n; p++) {
         prim_t* pr = &s_prim[p];
         if (!(pr->code == 0x2C || pr->code == 0x2E)) continue;
-        fquad* q = &s_fq[qi];
+        while (fqi < s_fq_n && s_fq[fqi].sel == 0) fqi++;     /* skip sel-0 tile quads */
+        if (fqi >= s_fq_n) break;
+        fquad* q = &s_fq[fqi++];
         double qw = 0;
         for (int k = 0; k < 4; k++) {
             double dx = q->sx[k] - pr->x[k], dy = q->sy[k] - pr->y[k];
@@ -432,10 +473,31 @@ static void particle_compare(CPUState* cpu) {
         }
         if (qw > worst) worst = qw;
         if (qw > 4.0) over4++;
-        qi++;
+        matched++;
     }
-    fprintf(stderr, "[part-ab f=%u] native=%d prims(FT4)=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d\n",
-            openpete_frame, s_fq_n, ft4, n, nv?sum/nv:0, worst, over4, n);
+    /* order-independent NN: each native FT4 quad -> nearest prim FT4 by centroid
+     * (robust to a cull-boundary count mismatch that cascades the ordered A/B). */
+    double nnsum = 0; int nnn = 0;
+    for (int q = 0; q < s_fq_n; q++) {
+        if (s_fq[q].sel == 0) continue;
+        double qcx = (s_fq[q].sx[0]+s_fq[q].sx[1]+s_fq[q].sx[2]+s_fq[q].sx[3])/4.0;
+        double qcy = (s_fq[q].sy[0]+s_fq[q].sy[1]+s_fq[q].sy[2]+s_fq[q].sy[3])/4.0;
+        double best = 1e9;
+        for (int p = 0; p < s_prim_n; p++) {
+            if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
+            double pcx=(s_prim[p].x[0]+s_prim[p].x[1]+s_prim[p].x[2]+s_prim[p].x[3])/4.0;
+            double pcy=(s_prim[p].y[0]+s_prim[p].y[1]+s_prim[p].y[2]+s_prim[p].y[3])/4.0;
+            double d=(qcx-pcx<0?pcx-qcx:qcx-pcx)+(qcy-pcy<0?pcy-qcy:qcy-pcy);
+            if (d<best) best=d;
+        }
+        if (best<1e8) { nnsum+=best; nnn++; }
+    }
+    int ns2=0,ns3=0,ns6=0; for (int q=0;q<s_fq_n;q++){if(s_fq[q].sel==2)ns2++;else if(s_fq[q].sel==3)ns3++;else if(s_fq[q].sel>=6)ns6++;}
+    if (getenv("OPENPETE_PARTICLE_DEBUG")) fprintf(stderr, "   [sel] nat sel2=%d sel3=%d sel6=%d\n", ns2, ns3, ns6);
+    int nat_sel0 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel == 0) nat_sel0++;
+    int prim_tile = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].taglen == 3) prim_tile++;
+    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  tile:nat=%d prim=%d\n",
+            openpete_frame, natft4, ft4, n, nv?sum/nv:0, worst, over4, n, nnn?nnsum/nnn:0, nat_sel0, prim_tile);
     if (getenv("OPENPETE_PARTICLE_DEBUG")) {
         for (int p = 0, c = 0; p < s_prim_n && c < 3 && c < s_fq_n; p++) {
             if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
@@ -537,9 +599,9 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
             dump_prims(cpu, tag, startp, endp);
             s_dumped[slot] = 1;
         }
-        if (slot == 0) {                                 /* particles: class-0 FT4 A/B */
+        if (slot == 0) {                                 /* particles: FT4 A/B */
             static int s_reports = 0;
-            if (s_reports < 100) { particle_compare(cpu); s_reports++; }
+            if (s_reports < 2000) { particle_compare(cpu); s_reports++; }
         }
     }
 
