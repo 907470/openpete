@@ -159,7 +159,8 @@ static struct {
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
-    rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha) */
+    rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
+    rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
@@ -410,6 +411,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* Additive (ABR mode 1, dst = B + F) textured pipeline (3b.1): the first
+     * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
+     * gouraud quad ribbon whose tpage selects ABR=1. RHI_BLEND_ADD = src ONE +
+     * dst ONE; depth_write_off so the glow tests against opaque geometry (a wall
+     * occludes the flame) but additive layers never occlude each other. The
+     * grey-ramp vertex colour modulates the flame sprite (tex*col/128) and the
+     * result accumulates into the framebuffer — bright core, never darkens. */
+    rhi_pipeline_desc scene_tex_add_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
      * depth, no blend. Built only in diff mode. */
@@ -424,13 +438,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
+    rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
     rhi_pipeline *diff_pipe = diff_mode ? rhi_create_pipeline(dev, &diff_desc) : NULL;
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = diff_mode ? rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6) : NULL;
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         (diff_mode && (!diff_pipe || !diff_quad_vb))) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
@@ -439,6 +454,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
         if (diff_pipe)     rhi_destroy_pipeline(dev, diff_pipe);
+        if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
@@ -459,6 +475,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_pipe = gouraud_pipe;
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
+    s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
@@ -752,13 +769,17 @@ static bool draw_native_scene(bool full_extent)
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_end, 0);
     }
-    /* Textured passes: opaque (blend==0) first, then semi-transparent (blend==1)
-     * over it, so the transparent alpha blends against the opaque already drawn
-     * (and depth-tests against it). Per-tri material push+draw; material-batched
-     * draws + back-to-front transparent sort (3c) are later. */
+    /* Textured passes, by blend mode (scene_tri.blend): 0=opaque first, then
+     * 1=semi-transparent alpha (ABR mode 0, (B+F)/2) over it, then 2=additive
+     * (ABR mode 1, B+F) on top — flame/glows. Each blends/depth-tests against the
+     * passes already drawn; additive last so the glow accumulates over the lit
+     * scene. Per-tri material push+draw; material-batched draws + back-to-front
+     * transparent sort (3c) are later. */
     if (n > tx_start && s_nr.vram_tex) {
-        for (int pass = 0; pass < 2; pass++) {
-            rhi_pipeline *pipe = (pass == 0) ? s_nr.scene_tex_pipe : s_nr.scene_tex_blend_pipe;
+        rhi_pipeline *tex_pipe[3] = { s_nr.scene_tex_pipe, s_nr.scene_tex_blend_pipe,
+                                      s_nr.scene_tex_add_pipe };
+        for (int pass = 0; pass < 3; pass++) {
+            rhi_pipeline *pipe = tex_pipe[pass];
             if (!pipe) continue;
             rhi_bind_pipeline(s_nr.dev, pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -766,7 +787,8 @@ static bool draw_native_scene(bool full_extent)
             int off = tx_start;
             for (int t = 0; t < scene_n && off + 3 <= n; t++) {
                 if (!scene[t].textured) continue;
-                if (((scene[t].blend != 0) ? 1 : 0) == pass) {
+                int b = scene[t].blend; if (b < 0 || b > 2) b = 0;  /* unknown -> opaque */
+                if (b == pass) {
                     const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
                                              scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
                     rhi_push_constants(s_nr.dev, &m, sizeof m);

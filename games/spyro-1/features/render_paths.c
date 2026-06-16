@@ -78,8 +78,8 @@ bool render_path_addr_visible(uint32_t addr) {
 }
 
 /* ---- polybuf brackets for paths WITHOUT a native feature module ----------
- * cyclorama/spyro/moby record their intervals from their own native modules.
- * The remaining presentation-only paths (terrain/shadow/flame/particles) get a
+ * cyclorama/spyro/moby/flame record their intervals from their own native
+ * modules. The remaining presentation-only paths (terrain/shadow/particles) get a
  * thin bracket hook here so the OT filter can isolate them in PsyCross now, even
  * before they have a native renderer. Each runs the real function exactly once
  * (gameplay writes — sector visibility, m_WasDrawn — happen identically to
@@ -89,7 +89,6 @@ bool render_path_addr_visible(uint32_t addr) {
 #define POLYBUF_CURSOR 0x800757B0u
 
 extern void func_8002B9CC(CPUState* cpu);  /* environment render (-> func_800258F0 world renderer) */
-extern void func_80058D64(CPUState* cpu);  /* Spyro's flame */
 extern void func_800573C8(CPUState* cpu);  /* particle systems */
 extern void func_80059F8C(CPUState* cpu);  /* moby shadows */
 extern void func_80059A48(CPUState* cpu);  /* Spyro silhouette shadow */
@@ -108,14 +107,12 @@ extern void func_80059A48(CPUState* cpu);  /* Spyro silhouette shadow */
     }
 
 RP_BRACKET(on_terrain_bracket,     func_8002B9CC, RP_TERRAIN)
-RP_BRACKET(on_flame_bracket,       func_80058D64, RP_FLAME)
 RP_BRACKET(on_particles_bracket,   func_800573C8, RP_PARTICLES)
 RP_BRACKET(on_shadow_moby_bracket, func_80059F8C, RP_SHADOW)
 RP_BRACKET(on_shadow_spyro_bracket,func_80059A48, RP_SHADOW)
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
     { 0x8002B9CCu, on_terrain_bracket },
-    { 0x80058D64u, on_flame_bracket },
     { 0x800573C8u, on_particles_bracket },
     { 0x80059F8Cu, on_shadow_moby_bracket },
     { 0x80059A48u, on_shadow_spyro_bracket },

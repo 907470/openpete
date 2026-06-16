@@ -15,6 +15,7 @@ extern const feature_module_t render_paths_module;
 extern const feature_module_t cyclorama_native_module;
 extern const feature_module_t moby_native_module;
 extern const feature_module_t spyro_native_module;
+extern const feature_module_t flame_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -36,6 +37,12 @@ const feature_module_t* const openpete_features[] = {
      * player-avatar renderer 0x80023AC4 only when OPENPETE_SPYRO_VERIFY or
      * a native renderer mode (--renderer vk|ab|diff) is set; inert otherwise. */
     &spyro_native_module,
+    /* Phase 3b.1 native-renderer flame spike + A/B harness + the first ADDITIVE
+     * (ABR mode 1) consumer. Hooks Spyro's flame renderer 0x80058D64 only when
+     * OPENPETE_FLAME_VERIFY or a native renderer mode (--renderer vk|ab|diff) is
+     * set; inert otherwise. Records the RP_FLAME polybuf range itself (so the
+     * render_paths thin bracket for flame is retired — see render_paths.c). */
+    &flame_native_module,
 };
 
 const size_t openpete_feature_count =

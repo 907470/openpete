@@ -80,10 +80,12 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
  * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3. */
-/* blend: 0 = opaque, 1 = PSX semi-transparent (ABE) -> alpha blend. The textured
- * frag's per-texel STP-derived alpha (0.5 for STP texels, 1.0 otherwise) makes
- * the alpha blend reproduce PSX ABR mode 0 ((B+F)/2) WITH per-texel STP gating.
- * The other ABR modes (additive/subtract/quarter) + back-to-front sort are TODO. */
+/* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend
+ * (the textured frag's per-texel STP-derived alpha — 0.5 for STP texels, 1.0
+ * otherwise — reproduces mode 0 WITH per-texel STP gating); 2 = ABR mode 1 (B+F)
+ * -> additive blend (3b.1, flame/glows: src ONE + dst ONE, depth_write_off).
+ * ABR modes 2/3 (subtract/quarter) + back-to-front sort are still TODO (no
+ * consumer yet). Only meaningful for textured tris; untextured gouraud is opaque. */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
