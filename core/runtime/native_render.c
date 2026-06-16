@@ -70,18 +70,46 @@ typedef struct {
  * it). begin() clears; add_tri() appends. */
 #define MAX_SCENE_TRIS 16384
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 6)  /* +6 = the bg-fill quad */
-static openpete_scene_tri s_scene[MAX_SCENE_TRIS];
+static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
+
+/* A/B frame-sync: the native scene is built from the FRESHLY-computed geometry
+ * (frame N), but PsyCross's reference panel shows its display FBO, which lags by
+ * one frame (classic PSX double-buffer: the OT drawn this frame was built last
+ * frame). Presenting the native scene as-is runs the native panel one frame
+ * AHEAD of the reference. To keep the two A/B panels on the SAME frame we delay
+ * the presented native scene by one frame: snapshot each completed frame and
+ * draw the snapshot (= the previous frame, matching the reference). On by
+ * default; OPENPETE_NATIVE_SCENE_DELAY=0 disables (draw the current frame). */
+static openpete_scene_tri s_scene_disp[MAX_SCENE_TRIS]; /* presented (frame N-1) */
+static int                s_scene_disp_n;
+static uint32_t           s_scene_disp_bg;
+static int                s_scene_delay = -1;   /* -1 uninit; 1 = delay; 0 = off */
+
+static int scene_delay_enabled(void) {
+    if (s_scene_delay < 0) {
+        const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
+        s_scene_delay = (e && e[0] == '0') ? 0 : 1;   /* default ON */
+    }
+    return s_scene_delay;
+}
 
 void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
- * scene instead of clobbering each other. See the header for the rationale. */
+ * scene instead of clobbering each other. See the header for the rationale.
+ * On a frame change, the just-completed scene (still in s_scene) is snapshotted
+ * to s_scene_disp before the clear, so the present can draw the 1-frame-delayed
+ * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
+        if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
+            if (s_scene_n > 0) memcpy(s_scene_disp, s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
+            s_scene_disp_n = s_scene_n; s_scene_disp_bg = s_scene_bg;
+        }
         s_scene_n = 0; s_scene_bg = 0; s_scene_frame = frame;
     }
 }
@@ -89,6 +117,13 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
     if (tri && s_scene_n < MAX_SCENE_TRIS) s_scene[s_scene_n++] = *tri;
 }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+
+/* The scene buffer the present should draw: the 1-frame-delayed snapshot when
+ * delay is on (A/B-synced with the reference), else the current accumulator. */
+static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg) {
+    if (scene_delay_enabled()) { *out_n = s_scene_disp_n; *out_bg = s_scene_disp_bg; return s_scene_disp; }
+    *out_n = s_scene_n; *out_bg = s_scene_bg; return s_scene;
+}
 
 /* Single native renderer instance (one window per process). */
 static struct {
@@ -428,19 +463,21 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
  * pipeline. Returns true if anything was drawn. */
 static bool draw_native_scene(void)
 {
-    if (s_scene_n <= 0) return false;
+    int scene_n; uint32_t scene_bg;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg);
+    if (scene_n <= 0) return false;
 
     static rhi_vertex buf[SCENE_VB_VERTS];
     int n = 0;
     /* Background fill (untextured, far plane), drawn first; depth-tested actors
      * sit in front of it. */
-    if (s_scene_bg != 0) {
+    if (scene_bg != 0) {
         float l = s_nr.p0_cx - s_nr.p0_hx, r = s_nr.p0_cx + s_nr.p0_hx;
         float t = s_nr.p0_hy, b = -s_nr.p0_hy;
-        const rhi_vertex tl = { l, t, 1.0f, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex tr = { r, t, 1.0f, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex br = { r, b, 1.0f, 0, 0, s_scene_bg, 0 };
-        const rhi_vertex bl = { l, b, 1.0f, 0, 0, s_scene_bg, 0 };
+        const rhi_vertex tl = { l, t, 1.0f, 0, 0, scene_bg, 0 };
+        const rhi_vertex tr = { r, t, 1.0f, 0, 0, scene_bg, 0 };
+        const rhi_vertex br = { r, b, 1.0f, 0, 0, scene_bg, 0 };
+        const rhi_vertex bl = { l, b, 1.0f, 0, 0, scene_bg, 0 };
         buf[0] = tl; buf[1] = tr; buf[2] = br;
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
@@ -449,27 +486,27 @@ static bool draw_native_scene(void)
      * then textured tris in [tx_start, n). The depth buffer sorts the passes, so
      * drawing them separately (gouraud pipe, then VRAM-sampler pipe) is correct
      * regardless of inter-pass order. */
-    for (int t = 0; t < s_scene_n; t++) {
-        if (s_scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
-            scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = s_scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
-            o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
     int ut_end = n, tx_start = n;
-    for (int t = 0; t < s_scene_n; t++) {
-        if (!s_scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+    for (int t = 0; t < scene_n; t++) {
+        if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
-            scene_to_clip(s_scene[t].v[k].sx, s_scene[t].v[k].sy, &cx, &cy);
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = s_scene[t].v[k].z;
-            o->u = s_scene[t].v[k].u; o->v = s_scene[t].v[k].v;
-            o->rgba = s_scene[t].v[k].rgba; o->tex = 0;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+            o->u = scene[t].v[k].u; o->v = scene[t].v[k].v;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -502,11 +539,11 @@ static bool draw_native_scene(void)
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             int off = tx_start;
-            for (int t = 0; t < s_scene_n && off + 3 <= n; t++) {
-                if (!s_scene[t].textured) continue;
-                if (((s_scene[t].blend != 0) ? 1 : 0) == pass) {
-                    const psx_material m = { s_scene[t].tpage_x, s_scene[t].tpage_y,
-                                             s_scene[t].clut_x, s_scene[t].clut_y, s_scene[t].bpp };
+            for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+                if (!scene[t].textured) continue;
+                if (((scene[t].blend != 0) ? 1 : 0) == pass) {
+                    const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                             scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
                     rhi_push_constants(s_nr.dev, &m, sizeof m);
                     rhi_draw(s_nr.dev, 3, (uint32_t)off);
                 }
