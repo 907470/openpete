@@ -27,13 +27,17 @@ extern "C" {
 typedef enum {
     RP_CYCLORAMA = 0,
     RP_SPYRO,
-    RP_MOBY,
-    RP_TERRAIN,
-    RP_FLAME,
-    RP_PARTICLES,
-    RP_HUD,
+    RP_MOBY,      /* regular + specular + shaded mobys; also HUD mobys (CopyHudMobysToShaded) */
+    RP_TERRAIN,   /* world/environment geometry (func_8002B9CC -> func_800258F0) */
+    RP_SHADOW,    /* moby shadows (func_80059F8C) + Spyro silhouette shadow (func_80059A48) */
+    RP_FLAME,     /* Spyro's flame breath (func_80058D64) */
+    RP_PARTICLES, /* particle systems (func_800573C8) */
     RP_COUNT
 } render_path_t;
+
+/* Note: there is no separate HUD path — HUD content is copied into the shaded
+ * moby list (CopyHudMobysToShaded) and rendered through the moby pipeline, so it
+ * is part of RP_MOBY, not separately isolatable via a dispatch bracket. */
 
 /* Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
  * filtering off). Unknown names are warned and ignored. */

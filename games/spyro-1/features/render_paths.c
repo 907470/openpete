@@ -2,6 +2,7 @@
 
 #include "render_paths.h"
 #include "feature_registry.h"
+#include "psx_runtime.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
 #include "openpete_native_render.h"  /* diff bg-match toggle */
 
@@ -9,7 +10,7 @@
 #include <string.h>
 
 static const char* const k_names[RP_COUNT] = {
-    "cyclorama", "spyro", "moby", "terrain", "flame", "particles", "hud",
+    "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */
@@ -76,8 +77,54 @@ bool render_path_addr_visible(uint32_t addr) {
     return false;   /* untracked geometry: dropped while a selection is active */
 }
 
-/* Feature module: parse --render-paths at startup. No per-vaddr dispatch arms;
- * the path brackets live in the existing native feature modules. */
+/* ---- polybuf brackets for paths WITHOUT a native feature module ----------
+ * cyclorama/spyro/moby record their intervals from their own native modules.
+ * The remaining presentation-only paths (terrain/shadow/flame/particles) get a
+ * thin bracket hook here so the OT filter can isolate them in PsyCross now, even
+ * before they have a native renderer. Each runs the real function exactly once
+ * (gameplay writes — sector visibility, m_WasDrawn — happen identically to
+ * normal dispatch) and records its polybuf range; presentation is then
+ * filtered by selection in psyq_DrawOTag. Only armed when a selection is in
+ * effect (else zero overhead). */
+#define POLYBUF_CURSOR 0x800757B0u
+
+extern void func_8002B9CC(CPUState* cpu);  /* environment render (-> func_800258F0 world renderer) */
+extern void func_80058D64(CPUState* cpu);  /* Spyro's flame */
+extern void func_800573C8(CPUState* cpu);  /* particle systems */
+extern void func_80059F8C(CPUState* cpu);  /* moby shadows */
+extern void func_80059A48(CPUState* cpu);  /* Spyro silhouette shadow */
+
+#define RP_BRACKET(hookname, realfn, pathid)                                   \
+    static int hookname(CPUState* cpu, uint32_t addr) {                        \
+        (void)addr;                                                            \
+        if (!render_paths_active()) return 0;  /* normal dispatch; no overhead */ \
+        static int s_in = 0; if (s_in) return 0; s_in = 1;                     \
+        uint32_t start = cpu->read_word(POLYBUF_CURSOR);                       \
+        realfn(cpu);                                                           \
+        uint32_t end = cpu->read_word(POLYBUF_CURSOR);                         \
+        render_path_record(pathid, start, end);                               \
+        s_in = 0;                                                             \
+        return 1;                                                             \
+    }
+
+RP_BRACKET(on_terrain_bracket,     func_8002B9CC, RP_TERRAIN)
+RP_BRACKET(on_flame_bracket,       func_80058D64, RP_FLAME)
+RP_BRACKET(on_particles_bracket,   func_800573C8, RP_PARTICLES)
+RP_BRACKET(on_shadow_moby_bracket, func_80059F8C, RP_SHADOW)
+RP_BRACKET(on_shadow_spyro_bracket,func_80059A48, RP_SHADOW)
+
+static const feature_dispatch_entry_t render_paths_dispatch[] = {
+    { 0x8002B9CCu, on_terrain_bracket },
+    { 0x80058D64u, on_flame_bracket },
+    { 0x800573C8u, on_particles_bracket },
+    { 0x80059F8Cu, on_shadow_moby_bracket },
+    { 0x80059A48u, on_shadow_spyro_bracket },
+    { 0u, NULL },
+};
+
+/* Feature module: parse --render-paths at startup + bracket the
+ * presentation-only paths (above). cyclorama/spyro/moby bracket from their own
+ * native modules. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
     render_paths_init(opts ? opts->render_paths : NULL);
     /* In isolation the reference background is a uniform framebuffer clear; tell
@@ -88,5 +135,5 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
 const feature_module_t render_paths_module = {
     .name           = "render_paths",
     .apply_options  = render_paths_apply_options,
-    .dispatch_table = NULL,
+    .dispatch_table = render_paths_dispatch,
 };
