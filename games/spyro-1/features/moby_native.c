@@ -448,6 +448,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
 static void specular_env_load(CPUState* cpu);
 static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv);
 static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
+static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (highlight) */
 
 /* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
  * No backface cull yet (the winding sign is determined from the A/B's nclip
@@ -586,6 +587,28 @@ static int build_walk_tris(CPUState* cpu) {
                 }
                 if (umin < 0) for (int q = 0; q < nvtx; q++) u[q] += 128;
                 tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
+            }
+            /* #1 follow-up SPECULAR HIGHLIGHT: non-metal shiny faces get the .s's
+             * per-face diffuse highlight (.L80021DB4: OP face-normal -> spec light
+             * -> CC) which REPLACES the base colour (flat per face). Native float
+             * diffuse, fitted to the prims (demo f4096 chest, byte-level):
+             *   c = base * (0.62 - 1.4*NL),  NL = view face-normal . spec-light
+             * (D_800770C8+0xC), clamped. Gated exactly like the .s: SPEC strip face
+             * (!fresh) with word0&0x4 (on strips that bit is the highlight enable @
+             * 80021B64; on fresh faces it's the quad flag), non-metal record.
+             * Without it, metal-less specular objects (the chest) render flat-lit. */
+            if (s_cur_mat[0]=='S' && !R->metal && !fresh && (w0 & 0x4u)) {
+                float e1x=p1->ex-p0->ex, e1y=p1->ey-p0->ey, e1z=p1->ez-p0->ez;
+                float e2x=p2->ex-p0->ex, e2y=p2->ey-p0->ey, e2z=p2->ez-p0->ez;
+                float nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
+                float nl=sqrtf(nx*nx+ny*ny+nz*nz);
+                if (nl > 0.001f) {
+                    float NL=(nx*s_specL[0]+ny*s_specL[1]+nz*s_specL[2])/(nl*s_specLlen);
+                    float g=0.68f - 1.54f*NL; if(g<0)g=0; if(g>2.0f)g=2.0f;
+                    int rr=(int)((c0&0xFF)*g), gg=(int)(((c0>>8)&0xFF)*g), bb2=(int)(((c0>>16)&0xFF)*g);
+                    if(rr>255)rr=255; if(gg>255)gg=255; if(bb2>255)bb2=255;
+                    c0=c1=c2=c3=(uint32_t)(rr|(gg<<8)|(bb2<<16));   /* flat per face */
+                }
             }
             int blend = 0;   /* ABE bit not in word0; 3a.3 sets it from tpage */
 
@@ -855,10 +878,16 @@ static void recolor_walk_from_prims(void) {
  * HD-ready, the prim UV is a closeness/camera-tracking sanity check (not 100%).*/
 static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
+/* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
 #define D_METAL_TILEDEF 0x800756F0u   /* static metal env-texture Tiledef (level-load) */
 static void specular_env_load(CPUState* cpu) {
     read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
     s_camHead = (int)cpu->read_word(G_CAMERA + 0x50u);
+    s_specL[0] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0xCu);
+    s_specL[1] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0x10u);
+    s_specL[2] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0x14u);
+    s_specLlen = sqrtf(s_specL[0]*s_specL[0] + s_specL[1]*s_specL[1] + s_specL[2]*s_specL[2]);
+    if (s_specLlen < 1.0f) s_specLlen = 1.0f;
     /* metal env texture page/CLUT: D_800756F0 word0 hi=clut, word1 hi=tpage
      * (empirically clut=0x1C20 tpage=0x80AC; == the captured env prims). */
     unsigned cl = cpu->read_word(D_METAL_TILEDEF) >> 16;
@@ -943,6 +972,47 @@ static void specular_env_calibrate(CPUState* cpu) {
     fprintf(stderr, "[spec-env f=%u] camHead=%d dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
         "signedU=%.2f maxErr u=%d v=%d\n",
         openpete_frame, s_camHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
+}
+
+/* SPECULAR HIGHLIGHT correlation (#1 follow-up: the flat-lit chest). The .s gives
+ * non-metal shiny faces a per-face highlight (.L80021DB4: OP screen-face-normal ->
+ * normalize -> CC against m_SpecularMetalColor + the specular light) that REPLACES
+ * the per-vertex base colour. The native walk omits it -> flat/dim. Dump the
+ * view-space face-normal . specular-light vs the prim colour to find the float
+ * model. Runs BEFORE recolor so w->v[].rgb is still the native base. */
+static void specular_hl_calibrate(CPUState* cpu) {
+    int lx=(int32_t)cpu->read_word(D_SPEC_LIGHT+0xCu);   /* m_specularLightDirectionMoby */
+    int ly=(int32_t)cpu->read_word(D_SPEC_LIGHT+0x10u);
+    int lz=(int32_t)cpu->read_word(D_SPEC_LIGHT+0x14u);
+    float Llen=sqrtf((float)(lx*lx+ly*ly+lz*lz)); if(Llen<1) Llen=1;
+    build_prim_tris();
+    fprintf(stderr, "[spec-hl f=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
+    int dumped=0;
+    for (int wi=0; wi<s_wtri_n && dumped<14; wi++) {
+        ntri_t* w=&s_wtri[wi];
+        double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
+        double best=1e18; int bp=-1;
+        for (int pi=0;pi<s_ptri_n;pi++){
+            double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
+            double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
+            if(fabs(pcx-wcx)>32.0||fabs(pcy-wcy)>32.0) continue;
+            double c=tri_match_cost(w,&s_ptri[pi]); if(c<best){best=c;bp=pi;}
+        }
+        if(bp<0||best>8.0) continue;
+        ptri* P=&s_ptri[bp];
+        /* view-space face normal from the rotated vertex offsets */
+        float e1x=w->v[1].ex-w->v[0].ex, e1y=w->v[1].ey-w->v[0].ey, e1z=w->v[1].ez-w->v[0].ez;
+        float e2x=w->v[2].ex-w->v[0].ex, e2y=w->v[2].ey-w->v[0].ey, e2z=w->v[2].ez-w->v[0].ez;
+        float nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
+        float nl=sqrtf(nx*nx+ny*ny+nz*nz); if(nl<0.001f) nl=1;
+        float dotp=(nx*lx+ny*ly+nz*lz)/(nl*Llen);   /* [-1,1] both signs */
+        uint32_t b=w->v[0].rgb; int br=b&0xFF, bg=(b>>8)&0xFF, bb=(b>>16)&0xFF;
+        uint32_t pr0=P->rgb[0]; int pr=pr0&0xFF, pg=(pr0>>8)&0xFF, pb=(pr0>>16)&0xFF;
+        fprintf(stderr, "  NL=%+.3f tex=%d | base(%d,%d,%d) L%d -> prim(%d,%d,%d) L%d  ratio=%.2f\n",
+            dotp, w->textured, br,bg,bb,(br+bg+bb)/3, pr,pg,pb,(pr+pg+pb)/3,
+            (br+bg+bb)?(double)(pr+pg+pb)/(br+bg+bb):0.0);
+        dumped++;
+    }
 }
 
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
@@ -1123,6 +1193,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             compare_walk_vs_prims();
             if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
                 specular_env_calibrate(cpu);  /* #1 env-UV calibration dump (native refl vs prim UV) */
+                specular_hl_calibrate(cpu);   /* #1 follow-up: highlight (face-normal.light vs prim) */
                 recolor_walk_from_prims();
                 compare_walk_vs_prims();      /* the post-recolor col= should jump high */
             }
