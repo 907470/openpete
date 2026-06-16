@@ -13,6 +13,7 @@ extern const feature_module_t widescreen_module;
 extern const feature_module_t no_lod_module;
 extern const feature_module_t cyclorama_native_module;
 extern const feature_module_t moby_native_module;
+extern const feature_module_t spyro_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -26,6 +27,10 @@ const feature_module_t* const openpete_features[] = {
      * REGULAR material renderer 0x8001F798 only when OPENPETE_MOBY_VERIFY or
      * --native-ab is set; inert fall-through otherwise. */
     &moby_native_module,
+    /* Phase 3b.4 native-renderer Spyro spike + A/B verify harness. Hooks the
+     * player-avatar renderer 0x80023AC4 only when OPENPETE_SPYRO_VERIFY or
+     * --native-ab is set; inert fall-through otherwise. */
+    &spyro_native_module,
 };
 
 const size_t openpete_feature_count =
