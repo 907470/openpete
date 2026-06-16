@@ -68,6 +68,10 @@ typedef struct {
 
 #define MAX_PRIMS 8192
 static prim_t s_prim[MAX_PRIMS]; static int s_prim_n;
+/* The g_Particles pool pointer is double-buffered and swapped between render
+ * calls, so reading it AFTER the .s runs gets the wrong (other) buffer. The
+ * hook stashes the pointer the .s actually walked at hook-entry. */
+static uint32_t s_part_pool;
 static int s_code_hist[256];     /* keyed on the GPU code byte (word[+4]>>24) */
 static int s_tag_hist[256];      /* keyed on the OT tag length (word[+0]>>24) */
 
@@ -123,16 +127,16 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 /* ---- one-shot dump (gamestate pools + raw polybuf + decoded prims) -------- */
 static void dump_pools(CPUState* cpu) {
     fprintf(stderr, "  [particles] g_Particles walk (sel/m_Class Life m03 | +4 +8):");
-    uint32_t pp = cpu->read_word(G_PARTICLES); int npart = 0;   /* g_Particles is a POINTER */
-    for (int i = 0; i < 320; i++) {
+    uint32_t pp = s_part_pool; int npart = 0;   /* pool the .s walked (hook-entry) */
+    for (int i = 0; i < 320; i++, pp += 0x20) {
         uint32_t hdr = cpu->read_word(pp);
-        int cls = (int)(int16_t)(hdr & 0xFFFF);
-        if (cls < 0) break;                            /* high-byte==0xFF terminator */
-        int sel = (cls >> 8) & 0xFF, mclass = cls & 0xFF;   /* dispatch sel = high byte */
+        int sel = (int)((hdr >> 8) & 0xFF), mclass = (int)(hdr & 0xFF);
+        if (sel == 0xFF) break;                        /* end of pool */
+        if (sel & 0x80) continue;                      /* inactive slot (skip) */
         int life = (int)((hdr >> 16) & 0xFF), m03 = (int)((hdr >> 24) & 0xFF);
         if (npart < 16) fprintf(stderr, " [%d]s%d/c%d L%d d%d(%08X,%08X)", i, sel, mclass, life, m03,
                                 cpu->read_word(pp+4), cpu->read_word(pp+8));
-        npart++; pp += 0x20;
+        npart++;
     }
     fprintf(stderr, "  (total live=%d)\n", npart);
 
@@ -217,16 +221,23 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  *     GPF-rect billboards), NOT sel=0 — so a clean ordered A/B needs ALL FT4
  *     emitters (0/2/3) implemented before the prim sequence aligns. TODO.
  *
- * Stage 1 below = the class-0 (sel==0 / sel>6 fall-through) rotated billboard
- * only (block_800574F8): sine/cosine rotation scaled by the size byte (GPF),
- * 4 swizzled corners through the camera matrix (TR=0). Classes 2/3/6 (FT4),
- * 1 (tile), 4/5 (lines), glows + sparkles still TODO. */
+ * Stage 1 below = the FT4 emitters present in the attract demo: sel 3
+ * (block_80057A74, depth-cued screen rect), sel 2 (block_80057C08, affine
+ * sin/cos billboard) + the sel>=6 fall-through rotated billboard
+ * (block_800574F8). sel 0 (TILE), sel 1/4 (lines), sel 5 (affine matrix),
+ * glows + sparkles still TODO. */
 #define GTE_DIV_CAP   (131071.0 / 65536.0)
 #define GTE_SXY_BOUND 1024.0
 
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
+}
+static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
+static double clampSXY(double x) {
+    if (x < -GTE_SXY_BOUND) return -GTE_SXY_BOUND;
+    if (x > GTE_SXY_BOUND-1.0) return GTE_SXY_BOUND-1.0;
+    return x;
 }
 
 /* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
@@ -239,27 +250,46 @@ static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
     R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
 }
 
-/* RTPS one view-space vertex (TR=0) through R -> screen (float) + view-Z */
-static void proj(const int R[3][3], double ofx, double ofy, double H,
-                 double vx, double vy, double vz, float* sx, float* sy, float* sz) {
+/* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
+typedef struct { double sx, sy, m1, m2, m3; } projres;
+static void proj2(const int R[3][3], double ofx, double ofy, double H,
+                  double vx, double vy, double vz, projres* o) {
     double mac1 = (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
     double mac2 = (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
     double mac3 = (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
-    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
-    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
+    o->m1 = mac1; o->m2 = mac2; o->m3 = mac3;
     double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
     double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    double x = ofx + ir1 * q, y = ofy + ir2 * q;
-    if (x < -GTE_SXY_BOUND) x = -GTE_SXY_BOUND; else if (x > GTE_SXY_BOUND-1.0) x = GTE_SXY_BOUND-1.0;
-    if (y < -GTE_SXY_BOUND) y = -GTE_SXY_BOUND; else if (y > GTE_SXY_BOUND-1.0) y = GTE_SXY_BOUND-1.0;
-    *sx = (float)x; *sy = (float)y; *sz = (float)mac3;
+    o->sx = clampSXY(ofx + clamp16(mac1) * q);
+    o->sy = clampSXY(ofy + clamp16(mac2) * q);
 }
 
-typedef struct { float sx[4], sy[4], sz[4]; } fquad;
-#define MAX_FQUAD 1024
+/* the .s screen-rect reject of the projected centre (s4=0x10000 s5=0x1000000
+ * s6=0x2000000), faithfully on the packed int32 (SY<<16)|(SX&0xFFFF). */
+static int screen_rect_cull(double sxf, double syf) {
+    int SX = (int)lrint(sxf), SY = (int)lrint(syf);
+    int32_t v0  = (int32_t)(((uint32_t)(SY & 0xFFFF) << 16) | (uint32_t)(SX & 0xFFFF));
+    int32_t sxs = (int32_t)((uint32_t)(SX & 0xFFFF) << 16);
+    if ((v0 - 0x10000) <= 0)    return 1;   /* above top / SY<=1   */
+    if ((v0 - 0x1000000) >= 0)  return 1;   /* below bottom SY>=256 */
+    if (sxs <= 0)               return 1;    /* left of screen SX<=0 */
+    if ((sxs - 0x2000000) >= 0) return 1;    /* right of screen SX>=512 */
+    return 0;
+}
+
+typedef struct { float sx[4], sy[4], sz[4]; int sel; } fquad;
+#define MAX_FQUAD 2048
 static fquad s_fq[MAX_FQUAD]; static int s_fq_n;
 
-static void particle_build_class0(CPUState* cpu) {
+/* SZ window 128..8192 (clamped SZ3) + depth-cue LOD cull (SZ3>>5 < texsub>>8). */
+static int sz_and_lod_cull(double mac3, int texsub_hi) {
+    int sz3 = (int)(mac3 < 0 ? 0 : (mac3 > 65535 ? 65535 : mac3));
+    if (sz3 < 128 || sz3 >= 8192) return 1;
+    if (((sz3 >> 5) - texsub_hi) < 0) return 1;
+    return 0;
+}
+
+static void particle_build(CPUState* cpu) {
     s_fq_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
     int s7 = (int)cpu->read_word(G_CAMERA+0x28) >> 2;   /* camX/4 */
@@ -269,53 +299,79 @@ static void particle_build_class0(CPUState* cpu) {
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
 
-    static int dbg = -1;
-    if (dbg < 0) { const char* e = getenv("OPENPETE_PARTICLE_DEBUG"); dbg = (e && *e && *e != '0'); }
-    static int dbg_call = 0;
-    int do_dbg = dbg && (dbg_call++ == 4);   /* full pool walk for one mid call */
-
-    uint32_t pp = cpu->read_word(G_PARTICLES);          /* g_Particles is a POINTER */
+    uint32_t pp = s_part_pool;                          /* pool the .s walked (hook-entry) */
     for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
-        int lh = (int)(int16_t)(cpu->read_word(pp) & 0xFFFF);
-        if (lh < 0) break;                              /* m_Type==0xFF terminator */
-        int klass = lh >> 8;                            /* dispatch = HIGH byte */
-        if (do_dbg)
-            fprintf(stderr, "   [psel] i=%d sel=%d mclass=%d +4=%08X +8=%08X\n",
-                    i, klass, lh & 0xFF, cpu->read_word(pp+4), cpu->read_word(pp+8));
-        if (klass >= 1 && klass <= 6) continue;         /* other classes: TODO */
-
+        int mtype = (int)((cpu->read_word(pp) >> 8) & 0xFF);  /* dispatch byte */
+        if (mtype == 0xFF) break;                       /* end of pool (gp>>8==-1) */
+        if (mtype & 0x80) continue;                     /* inactive slot (skip, not stop) */
+        int sel = mtype;
         uint32_t A = cpu->read_word(pp + 4), B = cpu->read_word(pp + 8);
-        int VX = (int)(A & 0xFFFF) - s7;
-        int VY = t8 - (int)(A >> 16);
-        int VZ = t9 - (int)(B & 0xFFFF);
-        int sizeB = (int)((B >> 16) & 0xFF);
-        int angIdx = (int)((B >> 23) & 0x1FE);
-        int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-        int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-        int eS = (sizeB * sinv) >> 12;                  /* GPF: (size*sin)>>12 */
-        int eC = (sizeB * cosv) >> 12;                  /* GPF: (size*cos)>>12 */
-        if (do_dbg) {
-            float dsx,dsy,dsz; proj(R, ofx, ofy, H, (double)(VY-eS), (double)VZ, (double)(VX+eC), &dsx,&dsy,&dsz);
-            fprintf(stderr, "   [pbld] i=%d cls=%d A=%08X B=%08X VX=%d VY=%d VZ=%d sz=%d ang=%d eS=%d eC=%d  c0=(%.0f,%.0f z=%.0f)\n",
-                    i, klass, A, B, VX, VY, VZ, sizeB, angIdx, eS, eC, dsx, dsy, dsz);
-        }
+        int VXb = (int)(A & 0xFFFF) - s7;               /* GTE-Z */
+        int VYb = t8 - (int)(A >> 16);                  /* GTE-X */
+        int VZb = t9 - (int)(B & 0xFFFF);               /* GTE-Y */
+        int texsub_hi = (int)(cpu->read_word(pp + 0x10) & 0xFFFF) >> 8;
+        fquad q; q.sel = sel;
 
-        /* swizzled GTE inputs (gte-X<-VY, gte-Y<-VZ, gte-Z<-VX), rotated quad */
-        double cx[4] = { (double)(VY - eS), (double)(VY + eC), (double)(VY - eC), (double)(VY + eS) };
-        double cz[4] = { (double)(VX + eC), (double)(VX + eS), (double)(VX - eS), (double)(VX - eC) };
-        double cy = (double)VZ;
-        fquad q; double zsum = 0;
-        for (int k = 0; k < 4; k++) {
-            proj(R, ofx, ofy, H, cx[k], cy, cz[k], &q.sx[k], &q.sy[k], &q.sz[k]);
-            zsum += q.sz[k] < 0 ? 0 : (q.sz[k] > 65535 ? 65535 : q.sz[k]);
+        if (sel == 3) {                                 /* depth-cued screen rect */
+            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            if (screen_rect_cull(c.sx, c.sy)) continue;
+            if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
+            int sz3 = (int)(c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3));
+            double qd = sz3 <= 0 ? 0 : (double)H / sz3;
+            int IR0 = (int)(qd * 4096.0); if (IR0 < 0) IR0 = 0; else if (IR0 > 4096) IR0 = 4096;
+            int sizeB = (int)((B >> 16) & 0xFF), alphaB = (int)((B >> 24) & 0xFF);
+            int a2 = (sizeB * IR0) >> 12, a3 = (alphaB * IR0) >> 12;  /* halfW, halfH */
+            int t0 = a2 >> 1, t1 = a3 >> 1;
+            double cx = c.sx + t0, cy = c.sy + t1;       /* rect corners (screen) */
+            double X0 = cx - a2, X1 = cx, Y0 = cy - a3, Y1 = cy;
+            q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
+            q.sx[2]=X0; q.sy[2]=Y1; q.sx[3]=X1; q.sy[3]=Y1;
+            for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
+            s_fq[s_fq_n++] = q;
+        } else if (sel == 2) {                          /* affine sin/cos billboard */
+            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            if (screen_rect_cull(c.sx, c.sy)) continue;
+            if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
+            int sizeB = (int)((B >> 16) & 0xFF);
+            int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
+            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+            int a2 = (sizeB * sinv) >> 10, a3 = (sizeB * cosv) >> 10;
+            double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
+            double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
+            double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
+            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+            for (int k = 0; k < 4; k++) {                /* R'=diag(4096,2560,4096)+TR */
+                double m1 = C[k][0] + TR0;
+                double m2 = C[k][1]*2560.0/4096.0 + TR1;
+                q.sx[k] = (float)clampSXY(ofx + clamp16(m1)*qd);
+                q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
+                q.sz[k] = (float)TR2;
+            }
+            s_fq[s_fq_n++] = q;
+        } else if (sel >= 6) {                          /* rotated-billboard FT4 default */
+            int sizeB = (int)((B >> 16) & 0xFF);
+            int angIdx = (int)((B >> 23) & 0x1FE);
+            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+            int eS = (sizeB * sinv) >> 12, eC = (sizeB * cosv) >> 12;
+            double cx[4] = { (double)(VYb-eS), (double)(VYb+eC), (double)(VYb-eC), (double)(VYb+eS) };
+            double cz[4] = { (double)(VXb+eC), (double)(VXb+eS), (double)(VXb-eS), (double)(VXb-eC) };
+            projres pr[4]; double zsum = 0;
+            for (int k = 0; k < 4; k++) {
+                proj2(R, ofx, ofy, H, cx[k], (double)VZb, cz[k], &pr[k]);
+                q.sx[k] = (float)pr[k].sx; q.sy[k] = (float)pr[k].sy; q.sz[k] = (float)pr[k].m3;
+                zsum += pr[k].m3 < 0 ? 0 : (pr[k].m3 > 65535 ? 65535 : pr[k].m3);
+            }
+            if (zsum < 512.0 || zsum >= 32768.0) continue;
+            s_fq[s_fq_n++] = q;
         }
-        if (zsum < 512.0 || zsum >= 32768.0) continue;  /* .s depth-sum window */
-        s_fq[s_fq_n++] = q;
+        /* sel 0 (TILE), 1/4 (lines), 5 (affine matrix): TODO, not FT4-comparable */
     }
 }
 
 static void particle_compare(CPUState* cpu) {
-    particle_build_class0(cpu);
+    particle_build(cpu);
     int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
     int n = s_fq_n < ft4 ? s_fq_n : ft4;
     double worst = 0, sum = 0; int nv = 0, qi = 0, over4 = 0;
@@ -333,15 +389,15 @@ static void particle_compare(CPUState* cpu) {
         if (qw > 4.0) over4++;
         qi++;
     }
-    fprintf(stderr, "[part-c0 f=%u] native=%d prims(FT4)=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d\n",
+    fprintf(stderr, "[part-ab f=%u] native=%d prims(FT4)=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d\n",
             openpete_frame, s_fq_n, ft4, n, nv?sum/nv:0, worst, over4, n);
-    if (s_fq_n && ft4 && getenv("OPENPETE_PARTICLE_DEBUG")) {
-        for (int p = 0, c = 0; p < s_prim_n && c < 2; p++) {
+    if (getenv("OPENPETE_PARTICLE_DEBUG")) {
+        for (int p = 0, c = 0; p < s_prim_n && c < 3 && c < s_fq_n; p++) {
             if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
-            fprintf(stderr, "   prim v: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+            fprintf(stderr, "   sel%d prim:(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)  nat:(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+                    s_fq[c].sel,
                     s_prim[p].x[0],s_prim[p].y[0],s_prim[p].x[1],s_prim[p].y[1],
-                    s_prim[p].x[2],s_prim[p].y[2],s_prim[p].x[3],s_prim[p].y[3]);
-            if (c < s_fq_n) fprintf(stderr, "   nat  v: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+                    s_prim[p].x[2],s_prim[p].y[2],s_prim[p].x[3],s_prim[p].y[3],
                     s_fq[c].sx[0],s_fq[c].sy[0],s_fq[c].sx[1],s_fq[c].sy[1],
                     s_fq[c].sx[2],s_fq[c].sy[2],s_fq[c].sx[3],s_fq[c].sy[3]);
             c++;
@@ -371,6 +427,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    s_part_pool = cpu->read_word(G_PARTICLES);     /* the pool the .s walks (g_Particles is a ptr) */
     realfn(cpu);                                   /* run the real renderer (verdict bytes) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
