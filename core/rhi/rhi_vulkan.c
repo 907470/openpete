@@ -61,6 +61,10 @@ struct rhi_device {
 
     /* Offscreen color target (== swapchain extent for 1a) */
     VkRenderPass   off_rp;
+    /* Render-to-texture pass: same attachment formats as off_rp (so off_rp-built
+     * pipelines are compatible) but the color attachment ends in
+     * SHADER_READ_ONLY_OPTIMAL so the result can be sampled the same frame. */
+    VkRenderPass   rt_rp;
     VkImage        off_image;
     VkDeviceMemory off_mem;
     VkImageView    off_view;
@@ -113,10 +117,18 @@ struct rhi_texture {
     VkDeviceMemory  mem;
     VkImageView     view;
     VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
-    rhi_buffer     *staging;   /* host-visible upload buffer */
+    rhi_buffer     *staging;   /* host-visible upload buffer (NULL for render targets) */
     uint32_t        width, height;
     uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
+
+    /* Render-target extras (is_rt only): a depth attachment + a framebuffer so
+     * geometry can be rendered into `image` via dev->rt_rp. */
+    bool            is_rt;
+    VkImage         rt_depth_image;
+    VkDeviceMemory  rt_depth_mem;
+    VkImageView     rt_depth_view;
+    VkFramebuffer   rt_fb;
 };
 
 /* ------------------------------------------------------------------ */
@@ -454,6 +466,67 @@ static bool create_render_pass(rhi_device *dev)
     return true;
 }
 
+/* Render pass for render-to-texture targets. Identical attachment FORMATS to
+ * off_rp (so pipelines built against off_rp are compatible and can be used
+ * here), but the color attachment ends in SHADER_READ_ONLY_OPTIMAL — i.e. the
+ * rendered image is immediately sampleable by a later pass in the same frame. */
+static bool create_rt_render_pass(rhi_device *dev)
+{
+    VkAttachmentDescription color = {
+        .format = dev->sc_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkAttachmentDescription depth = {
+        .format = VK_FORMAT_D32_SFLOAT,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference ref = { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_ref = { .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription sub = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1, .pColorAttachments = &ref,
+        .pDepthStencilAttachment = &depth_ref,
+    };
+    VkSubpassDependency deps[2] = {
+        { .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+          .srcAccessMask = 0,
+          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
+        { /* subpass -> external: make the color result available to the sampler */
+          .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT },
+    };
+    VkAttachmentDescription atts[2] = { color, depth };
+    VkRenderPassCreateInfo rci = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 2, .pAttachments = atts,
+        .subpassCount = 1, .pSubpasses = &sub,
+        .dependencyCount = 2, .pDependencies = deps,
+    };
+    VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->rt_rp);
+    if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass(rt) failed: %d\n", (int)r); return false; }
+    return true;
+}
+
 static bool create_offscreen(rhi_device *dev)
 {
     /* For 1a the offscreen target matches the swapchain extent. Later it
@@ -743,6 +816,7 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
     volkLoadDevice(dev->device);        /* device-specific dispatch (faster) */
     if (!create_swapchain(dev))         goto fail;
     if (!create_render_pass(dev))       goto fail;
+    if (!create_rt_render_pass(dev))    goto fail;
     if (!create_offscreen(dev))         goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
     if (!create_descriptor_infra(dev))  goto fail;
@@ -764,6 +838,7 @@ void rhi_destroy(rhi_device *dev)
 
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
+    if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
 
     if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
@@ -1153,6 +1228,152 @@ rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
     return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
 }
 
+rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    rhi_texture *t = calloc(1, sizeof(*t));
+    if (!t) return NULL;
+    t->is_rt = true;
+    t->width = width; t->height = height; t->bpp = 4;
+    t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    /* Color image: same format as the offscreen/swapchain (so rt_rp & off_rp
+     * pipelines are compatible), usable as a color attachment AND a sampler. */
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D, .format = dev->sc_format,
+        .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev->device, &ici, NULL, &t->image) != VK_SUCCESS) {
+        RHI_LOG("rt vkCreateImage failed\n"); goto fail;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(dev->device, t->image, &mr);
+    uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt == UINT32_MAX) { RHI_LOG("rt: no device-local memory\n"); goto fail; }
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = mr.size, .memoryTypeIndex = mt };
+    if (vkAllocateMemory(dev->device, &mai, NULL, &t->mem) != VK_SUCCESS) {
+        RHI_LOG("rt vkAllocateMemory failed\n"); goto fail;
+    }
+    vkBindImageMemory(dev->device, t->image, t->mem, 0);
+    VkImageViewCreateInfo vci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = dev->sc_format,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1 },
+    };
+    if (vkCreateImageView(dev->device, &vci, NULL, &t->view) != VK_SUCCESS) {
+        RHI_LOG("rt vkCreateImageView failed\n"); goto fail;
+    }
+
+    /* Depth attachment for the RT framebuffer. */
+    VkImageCreateInfo dici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev->device, &dici, NULL, &t->rt_depth_image) != VK_SUCCESS) {
+        RHI_LOG("rt depth vkCreateImage failed\n"); goto fail;
+    }
+    VkMemoryRequirements dmr;
+    vkGetImageMemoryRequirements(dev->device, t->rt_depth_image, &dmr);
+    uint32_t dmt = find_memtype(dev->phys, dmr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (dmt == UINT32_MAX) { RHI_LOG("rt: no device-local memory (depth)\n"); goto fail; }
+    VkMemoryAllocateInfo dmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                  .allocationSize = dmr.size, .memoryTypeIndex = dmt };
+    if (vkAllocateMemory(dev->device, &dmai, NULL, &t->rt_depth_mem) != VK_SUCCESS) {
+        RHI_LOG("rt depth vkAllocateMemory failed\n"); goto fail;
+    }
+    vkBindImageMemory(dev->device, t->rt_depth_image, t->rt_depth_mem, 0);
+    VkImageViewCreateInfo dvci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->rt_depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .levelCount = 1, .layerCount = 1 },
+    };
+    if (vkCreateImageView(dev->device, &dvci, NULL, &t->rt_depth_view) != VK_SUCCESS) {
+        RHI_LOG("rt depth vkCreateImageView failed\n"); goto fail;
+    }
+    VkImageView fb_atts[2] = { t->view, t->rt_depth_view };
+    VkFramebufferCreateInfo fci = {
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = dev->rt_rp,
+        .attachmentCount = 2, .pAttachments = fb_atts,
+        .width = width, .height = height, .layers = 1,
+    };
+    if (vkCreateFramebuffer(dev->device, &fci, NULL, &t->rt_fb) != VK_SUCCESS) {
+        RHI_LOG("rt vkCreateFramebuffer failed\n"); goto fail;
+    }
+
+    /* Descriptor set (this view + shared sampler) so it binds like any texture. */
+    VkDescriptorSetAllocateInfo dsi = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = dev->desc_pool, .descriptorSetCount = 1, .pSetLayouts = &dev->vram_set_layout,
+    };
+    if (vkAllocateDescriptorSets(dev->device, &dsi, &t->set) != VK_SUCCESS) {
+        RHI_LOG("rt vkAllocateDescriptorSets failed\n"); goto fail;
+    }
+    VkDescriptorImageInfo dii = {
+        .sampler = dev->vram_sampler, .imageView = t->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = t->set, .dstBinding = 0,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+
+    /* Valid sampling layout before the first render (defensive). */
+    VkCommandBuffer cb = one_shot_begin(dev);
+    image_barrier(cb, t->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  0, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    one_shot_end(dev, cb);
+    t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return t;
+
+fail:
+    rhi_destroy_texture(dev, t);
+    return NULL;
+}
+
+void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
+                             float r, float g, float b, float a)
+{
+    if (!dev->frame_active || !rt || !rt->is_rt) return;
+    VkClearValue cv[2];
+    cv[0].color.float32[0] = r; cv[0].color.float32[1] = g;
+    cv[0].color.float32[2] = b; cv[0].color.float32[3] = a;
+    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0;
+    VkExtent2D ext = { rt->width, rt->height };
+    VkRenderPassBeginInfo rp = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = dev->rt_rp, .framebuffer = rt->rt_fb,
+        .renderArea = { .offset = {0, 0}, .extent = ext },
+        .clearValueCount = 2, .pClearValues = cv,
+    };
+    vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    /* Y-flipped viewport, matching rhi_begin_offscreen. */
+    VkViewport vp = { .x = 0.0f, .y = (float)rt->height,
+                      .width = (float)rt->width, .height = -(float)rt->height,
+                      .minDepth = 0.0f, .maxDepth = 1.0f };
+    VkRect2D scissor = { .offset = {0, 0}, .extent = ext };
+    vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
+    vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
+}
+
+void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
+{
+    if (!dev->frame_active || !rt || !rt->is_rt) return;
+    vkCmdEndRenderPass(dev->cmd[dev->frame]);
+    rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* rt_rp finalLayout */
+}
+
 static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
     if (!tex || !tex->staging) return;
@@ -1240,6 +1461,11 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     if (tex->view)    vkDestroyImageView(dev->device, tex->view, NULL);
     if (tex->image)   vkDestroyImage(dev->device, tex->image, NULL);
     if (tex->mem)     vkFreeMemory(dev->device, tex->mem, NULL);
+    /* Render-target extras. */
+    if (tex->rt_fb)         vkDestroyFramebuffer(dev->device, tex->rt_fb, NULL);
+    if (tex->rt_depth_view) vkDestroyImageView(dev->device, tex->rt_depth_view, NULL);
+    if (tex->rt_depth_image) vkDestroyImage(dev->device, tex->rt_depth_image, NULL);
+    if (tex->rt_depth_mem)  vkFreeMemory(dev->device, tex->rt_depth_mem, NULL);
     free(tex);
 }
 
@@ -1394,10 +1620,14 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0, .size = desc->push_const_size,
     };
+    /* set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
+     * reference sampler) — both reuse the single-binding vram set layout. */
+    VkDescriptorSetLayout set_layouts[2] = { dev->vram_set_layout, dev->vram_set_layout };
+    uint32_t set_count = desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = desc->uses_vram ? 1u : 0u,
-        .pSetLayouts = desc->uses_vram ? &dev->vram_set_layout : NULL,
+        .setLayoutCount = set_count,
+        .pSetLayouts = set_count ? set_layouts : NULL,
         .pushConstantRangeCount = desc->push_const_size ? 1u : 0u,
         .pPushConstantRanges = desc->push_const_size ? &pcr : NULL,
     };
@@ -1460,6 +1690,13 @@ void rhi_bind_vram(rhi_device *dev, rhi_texture *tex)
     if (!dev->frame_active) return;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, 0, 1, &tex->set, 0, NULL);
+}
+
+void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
+{
+    if (!dev->frame_active) return;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)

@@ -107,7 +107,9 @@ typedef struct {
     rhi_blend_mode blend;
     bool           depth_test;  /* needs a depth attachment (added later) */
     bool           depth_write_off; /* depth_test but NO depth write (transparent: test vs opaque, don't occlude) */
-    bool           uses_vram;   /* layout includes the VRAM sampler (set 0)   */
+    bool           uses_vram;   /* layout includes a sampler at set 0          */
+    bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
+                                 * set 0 = native render, set 1 = reference)   */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
 } rhi_pipeline_desc;
 
@@ -139,6 +141,24 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
+/* ---- render-to-texture (the diff pass; later: framebuffer effects) ----- */
+
+/* An RGBA8 image that is BOTH a color attachment AND a sampler2D — geometry
+ * can be rendered into it (rhi_begin/end_render_target) and the result then
+ * sampled by a later pass in the SAME frame. Carries its own depth buffer and
+ * framebuffer; binds as a normal texture via rhi_bind_vram. Sized in pixels;
+ * recreate (destroy + create) on size change. */
+rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height);
+
+/* Render INTO a render target. begin clears color to (r,g,b,a) + depth to far,
+ * sets a full-target Y-flipped viewport/scissor; record draws; end closes the
+ * pass and leaves the color image in SHADER_READ_ONLY (ready to sample). Must
+ * be called inside a frame (after rhi_begin_frame) but OUTSIDE the offscreen
+ * pass (it is its own render pass). */
+void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
+                             float r, float g, float b, float a);
+void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
@@ -149,6 +169,9 @@ void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
  * rhi_texture (the VRAM image or an RGBA8 image) — the set layout is the
  * same; only the shader's sampler type differs. */
 void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
+/* Bind a second texture to set 1 (for a uses_vram2 pipeline — e.g. the diff
+ * pass's reference sampler). Call after rhi_bind_pipeline + rhi_bind_vram. */
+void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
 /* Restrict rasterization to a framebuffer-pixel rect (top-left origin, y
  * down) for subsequent draws this frame — e.g. confine one panel's geometry
  * to its region so off-panel triangles are clipped. rhi_reset_scissor

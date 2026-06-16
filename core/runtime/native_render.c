@@ -74,28 +74,30 @@ static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
-/* A/B frame-sync: the native scene is built from the FRESHLY-computed geometry
- * (frame N), but PsyCross's reference panel shows its display FBO, which lags by
- * one frame (classic PSX double-buffer: the OT drawn this frame was built last
- * frame). Presenting the native scene as-is runs the native panel one frame
- * AHEAD of the reference. To keep the two A/B panels on the SAME frame we delay
- * the presented native scene by one frame: snapshot each completed frame and
- * draw the snapshot (= the previous frame, matching the reference). On by
- * default; OPENPETE_NATIVE_SCENE_DELAY=0 disables (draw the current frame). */
+/* Reference frame-sync: the native scene is built from the FRESHLY-computed
+ * geometry (frame N), but PsyCross's reference shows its display FBO, which lags
+ * by one frame (classic PSX double-buffer: the OT drawn this frame was built
+ * last frame). Comparing the native scene against the reference as-is puts them
+ * one frame apart — in A/B the two panels are skewed; in diff EVERY moving
+ * object ghosts (it appears at both frame N and frame N-1 in |native - ref|). To
+ * keep native and the reference on the SAME frame we delay the native scene by
+ * one frame: snapshot each completed frame and use the snapshot (= the previous
+ * frame, matching the lagged reference). On by default in any reference-compare
+ * mode; OPENPETE_NATIVE_SCENE_DELAY=0 disables (use the current frame). */
 static openpete_scene_tri s_scene_disp[MAX_SCENE_TRIS]; /* presented (frame N-1) */
 static int                s_scene_disp_n;
 static uint32_t           s_scene_disp_bg;
 static int                s_scene_delay = -1;   /* -1 uninit; 1 = delay; 0 = off */
-static int                s_scene_ab_mode = 1;   /* set by init: 1 = A/B compare, 0 = vk-only */
+static int                s_scene_ref_compare = 1; /* set by init: 1 = ab/diff (lagged reference), 0 = vk-only */
 
 static int scene_delay_enabled(void) {
     if (s_scene_delay < 0) {
         const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
-        /* Explicit env wins; otherwise default ON only in A/B compare mode (the
-         * delay aligns the native panel with the lagged reference). In vk-only
-         * mode there is no reference, so default OFF — present the live frame. */
+        /* Explicit env wins; otherwise default ON whenever we compare against the
+         * lagged PsyCross reference (A/B + diff) so native and reference are the
+         * same frame. vk-only has no reference, so default OFF (live frame). */
         if (e) s_scene_delay = (e[0] == '0') ? 0 : 1;
-        else   s_scene_delay = s_scene_ab_mode;
+        else   s_scene_delay = s_scene_ref_compare;
     }
     return s_scene_delay;
 }
@@ -178,7 +180,23 @@ static struct {
     rhi_buffer   *panels_vb;
     int           layout_win_w, layout_win_h, layout_ref_w, layout_ref_h;
     int           layout_disp_w, layout_clip_h;
+
+    /* Diff mode (--renderer diff): render the native scene into native_rtt (a
+     * sampleable render target at the reference resolution), then a fullscreen
+     * diff pass samples native_rtt (set 0) + ref_tex (set 1) and writes
+     * |native - ref| into the offscreen. diff_quad_vb is the panel-0 rect with
+     * 0..1 UVs that the diff pass draws. */
+    bool          diff_mode;
+    rhi_pipeline *diff_pipe;
+    rhi_texture  *native_rtt;
+    int           rtt_w, rtt_h;
+    rhi_buffer   *diff_quad_vb;
 } s_nr;
+
+/* When set, draw_native_scene maps the PSX screen to the FULL render target
+ * (clip -1..1) instead of panel-0's window rect — used when rendering into
+ * native_rtt for the diff pass (native_rtt IS the frame, no panel inset). */
+static int s_render_full_extent = 0;
 
 /* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
  * (hx,hy); v0 is the UV-v at the TOP edge, v1 at the BOTTOM. (VRAM is uploaded
@@ -228,9 +246,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * delay. (diff's live colour-diff render + diff screenshot land in a later
      * step; for now diff mirrors vk so the flag is usable.) */
     bool ab_mode = (opts->renderer == OPENPETE_RENDERER_AB);
+    bool diff_mode = (opts->renderer == OPENPETE_RENDERER_DIFF);
     s_nr.ab_mode  = ab_mode;
-    s_nr.n_panels = ab_mode ? 2 : 1;
-    s_scene_ab_mode = ab_mode ? 1 : 0;
+    s_nr.diff_mode = diff_mode;
+    s_nr.n_panels = ab_mode ? 2 : 1;   /* vk/diff are single full-window panels */
+    /* Delay the native scene one frame whenever we compare against the lagged
+     * PsyCross reference — A/B (panel sync) AND diff (else moving objects ghost
+     * across native frame N vs reference frame N-1). vk-only has no reference. */
+    s_scene_ref_compare = (ab_mode || diff_mode) ? 1 : 0;
 
     /* SDL_INIT_VIDEO is already up (PsyX_Initialise). Create a SECOND window
      * for the Vulkan surface: a single SDL window can't carry both PsyCross's
@@ -249,8 +272,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (ab_mode && opts->window_w <= 0)
         w *= 2;
 
-    SDL_Window *win = SDL_CreateWindow(ab_mode ? "openpete — native renderer (A/B)"
-                                               : "openpete — native renderer", w, h,
+    const char *title = ab_mode   ? "openpete — native renderer (A/B)"
+                      : diff_mode ? "openpete — native renderer (diff)"
+                                  : "openpete — native renderer";
+    SDL_Window *win = SDL_CreateWindow(title, w, h,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!win) {
         OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
@@ -304,21 +329,35 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* Diff pipeline (--renderer diff): samples two textures — native render at
+     * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
+     * depth, no blend. Built only in diff mode. */
+    rhi_pipeline_desc diff_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "diff.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .uses_vram2 = true, .push_const_size = 0,
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
+    rhi_pipeline *diff_pipe = diff_mode ? rhi_create_pipeline(dev, &diff_desc) : NULL;
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    rhi_buffer   *diff_quad_vb = diff_mode ? rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6) : NULL;
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror) {
-        OPL_ERROR_F("native", "RHI setup failed; continuing without native A/B");
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+        (diff_mode && (!diff_pipe || !diff_quad_vb))) {
+        OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
+        if (diff_quad_vb)  rhi_destroy_buffer(dev, diff_quad_vb);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
+        if (diff_pipe)     rhi_destroy_pipeline(dev, diff_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
@@ -341,9 +380,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
+    s_nr.diff_pipe    = diff_pipe;
+    s_nr.diff_quad_vb = diff_quad_vb;
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
-    OPL_INFO_F("native", "Vulkan A/B window up (%dx%d, device='%s'); PsyCross hidden",
+    OPL_INFO_F("native", "Vulkan %s window up (%dx%d, device='%s'); PsyCross hidden",
+               ab_mode ? "A/B" : diff_mode ? "diff" : "vk",
                w, h, rhi_device_name(dev));
     return 0;
 }
@@ -417,6 +459,25 @@ static bool sync_reference_texture(void)
     return true;
 }
 
+/* (Re)create native_rtt at the reference resolution (diff mode only) — the diff
+ * renders the native scene into it at the same size as ref_tex so the per-pixel
+ * compare is fair. No-op until the reference size is known; recreates on change.
+ * Must run OUTSIDE a frame (creates GPU resources / waits idle). */
+static void ensure_native_rtt(void)
+{
+    if (!s_nr.diff_mode || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
+    if (s_nr.native_rtt && s_nr.rtt_w == s_nr.ref_w && s_nr.rtt_h == s_nr.ref_h) return;
+    if (s_nr.native_rtt) {
+        rhi_wait_idle(s_nr.dev);
+        rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
+        s_nr.native_rtt = NULL;
+    }
+    s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
+    s_nr.rtt_w = s_nr.ref_w; s_nr.rtt_h = s_nr.ref_h;
+    if (s_nr.native_rtt)
+        OPL_INFO_F("native", "diff render target %dx%d", s_nr.ref_w, s_nr.ref_h);
+}
+
 /* Rebuild the panel row (VRAM | reference), each aspect-fit into its cell, so
  * resizing never stretches. Only runs when the window or reference size
  * changes (the VRAM panel is a fixed 1024x512). */
@@ -467,6 +528,14 @@ static void update_layout(void)
      * (startup / resize), so fully sync before rewriting it. */
     rhi_wait_idle(s_nr.dev);
     rhi_update_buffer(s_nr.panels_vb, verts, sizeof(verts));
+    /* Diff mode: the diff pass draws one quad over panel 0's rect, sampling
+     * native_rtt (set 0) + ref_tex (set 1) with 0..1 UVs (top-down; diff.frag
+     * V-flips the GL-bottom-up reference). */
+    if (s_nr.diff_mode && s_nr.diff_quad_vb) {
+        rhi_vertex dq[6] = {0};
+        build_panel(dq, s_nr.p0_cx, 0.0f, s_nr.p0_hx, s_nr.p0_hy, 0.0f, 0.0f, 1.0f, 1.0f);
+        rhi_update_buffer(s_nr.diff_quad_vb, dq, sizeof(dq));
+    }
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
     s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_clip_h = s_nr.clip_h;
@@ -483,25 +552,38 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     float band   = (disp_h - clip_h) * 0.5f;
     float nx = sx / disp_w;             /* 0..1 across the frame width */
     float ny = (sy - band) / clip_h;    /* 0..1 down the visible band  */
-    *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
-    *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy); /* screen y down -> clip y up */
+    if (s_render_full_extent) {
+        /* native_rtt IS the frame: map to the full target, clip -1..1. */
+        *cx = -1.0f + nx * 2.0f;
+        *cy =  1.0f - ny * 2.0f;        /* screen y down -> clip y up */
+    } else {
+        *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
+        *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy);
+    }
 }
 
-/* Build + draw the native 3D scene (cyclorama) into panel 0 with the gouraud
- * pipeline. Returns true if anything was drawn. */
-static bool draw_native_scene(void)
+/* Build + draw the native 3D scene (cyclorama + actors). full_extent=false
+ * draws into panel 0's window rect (the normal vk/ab path); full_extent=true
+ * draws into the whole render target (used when rendering into native_rtt for
+ * the diff pass, where the target IS the frame). Returns true if anything was
+ * drawn. */
+static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg);
     if (scene_n <= 0) return false;
 
+    s_render_full_extent = full_extent ? 1 : 0;
+
     static rhi_vertex buf[SCENE_VB_VERTS];
     int n = 0;
     /* Background fill (untextured, far plane), drawn first; depth-tested actors
-     * sit in front of it. */
+     * sit in front of it. Covers the panel rect (window) or the full target. */
     if (scene_bg != 0) {
-        float l = s_nr.p0_cx - s_nr.p0_hx, r = s_nr.p0_cx + s_nr.p0_hx;
-        float t = s_nr.p0_hy, b = -s_nr.p0_hy;
+        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
+        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
+        float t = full_extent ?  1.0f : s_nr.p0_hy;
+        float b = full_extent ? -1.0f : -s_nr.p0_hy;
         const rhi_vertex tl = { l, t, 1.0f, 0, 0, scene_bg, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 0, 0, scene_bg, 0 };
         const rhi_vertex br = { r, b, 1.0f, 0, 0, scene_bg, 0 };
@@ -542,12 +624,15 @@ static bool draw_native_scene(void)
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
      * the PSX screen (legitimately, after near-plane culling) are clipped to
-     * the panel instead of streaking across the window. */
-    int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-    int sw = (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
-    int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
-    int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
-    rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
+     * the panel instead of streaking across the window. In full_extent mode the
+     * RT pass already scissors to the whole target (the frame fills it). */
+    if (!full_extent) {
+        int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+        int sw = (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
+        int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
+        int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
+        rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
+    }
 
     /* Untextured pass (bg + gouraud tris). */
     if (ut_end > 0) {
@@ -580,7 +665,8 @@ static bool draw_native_scene(void)
         }
     }
 
-    rhi_reset_scissor(s_nr.dev);
+    if (!full_extent) rhi_reset_scissor(s_nr.dev);
+    s_render_full_extent = 0;
     return true;
 }
 
@@ -604,9 +690,39 @@ void openpete_native_render_frame(void)
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
     update_layout();
+    ensure_native_rtt();
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+
+    /* Diff mode: render the native scene into native_rtt (reference resolution,
+     * full extent), then a fullscreen diff pass writes |native - ref| into the
+     * offscreen. Falls back to the normal native-into-offscreen path below until
+     * the reference / RTT are ready or the scene is empty. */
+    if (s_nr.diff_mode && s_nr.native_rtt && have_ref) {
+        int dn; uint32_t dbg;
+        (void)scene_present_buf(&dn, &dbg);
+        if (dn > 0) {
+            float br = (float)((dbg >>  0) & 0xFF) / 255.0f;
+            float bgc = (float)((dbg >> 8) & 0xFF) / 255.0f;
+            float bb = (float)((dbg >> 16) & 0xFF) / 255.0f;
+            rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
+            draw_native_scene(true);
+            rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+
+            rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+            rhi_bind_pipeline(s_nr.dev, s_nr.diff_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.native_rtt);  /* set 0 = native */
+            rhi_bind_vram2(s_nr.dev, s_nr.ref_tex);    /* set 1 = reference */
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.diff_quad_vb);
+            rhi_draw(s_nr.dev, 6, 0);
+            rhi_end_offscreen(s_nr.dev);
+
+            rhi_blit_to_swapchain(s_nr.dev);
+            rhi_end_frame(s_nr.dev);
+            return;
+        }
+    }
 
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
 
@@ -632,7 +748,7 @@ void openpete_native_render_frame(void)
         /* Panel 0 — the native 3D render (Phase 2: cyclorama from gamestate)
          * when the game pushed a scene; otherwise fall back to re-displaying
          * the PSX framebuffer region from the VRAM mirror (pre-Phase-2). */
-        if (!draw_native_scene()) {
+        if (!draw_native_scene(false)) {
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
             rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -677,9 +793,12 @@ void openpete_native_render_shutdown(void)
         return;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
+    if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
+    if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
     if (s_nr.gouraud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_pipe);
@@ -691,5 +810,5 @@ void openpete_native_render_shutdown(void)
     free(s_nr.vram_mirror);
 
     memset(&s_nr, 0, sizeof(s_nr));
-    OPL_INFO_F("native", "Vulkan A/B window shut down");
+    OPL_INFO_F("native", "Vulkan native renderer window shut down");
 }
