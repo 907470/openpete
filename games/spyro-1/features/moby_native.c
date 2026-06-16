@@ -596,6 +596,20 @@ static int build_walk_tris(CPUState* cpu) {
                 if (umin < 0) for (int q = 0; q < nvtx; q++) u[q] += 128;
                 textured = 1;   /* env faces sample the reflection texture */
                 tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
+                /* FLAMED-METAL heat red-shift (.L80021FE0, gated heat!=0): the .s
+                 * red-shifts the env face's modulating colour by a2=(ms>>16)&0xFF
+                 * (R+=a2, G-=a2, B-=a2, clamp) before the env UV -- so a heated
+                 * METAL object reddens, the same as the non-metal chest. cbase (the
+                 * base) is already correct; only this shift was missing. No-op for
+                 * cold metal (heat==0). [audit 2026-06-16] */
+                int heat=(int)((R->mscol>>16)&0xFFu);
+                if (heat) {
+                    uint32_t* cc[4]={&c0,&c1,&c2,&c3};
+                    for (int q=0;q<4;q++){ uint32_t c=*cc[q];
+                        int r=(int)(c&0xFF)+heat, g=(int)((c>>8)&0xFF)-heat, b=(int)((c>>16)&0xFF)-heat;
+                        if(r>255)r=255; if(g<0)g=0; if(b<0)b=0;
+                        *cc[q]=(uint32_t)(r|(g<<8)|(b<<16)); }
+                }
               } else {
                 /* DIFFUSE HIGHLIGHT (.L80021DB4) -- per-face flat colour that
                  * REPLACES the base. The .s builds it from the moby's
