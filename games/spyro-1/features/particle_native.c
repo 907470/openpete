@@ -436,10 +436,15 @@ static void particle_build(CPUState* cpu) {
             if (screen_rect_cull(c.sx, c.sy)) continue;
             int lod = (int)((B >> 16) & 0xFF);
             if (((sz3 >> 5) - lod - 2) <= 0) continue;  /* depth-cue LOD cull (s3=2) */
-            q.sx[0]=(float)c.sx;       q.sy[0]=(float)c.sy;        /* 1px dot -> 1px quad */
-            q.sx[1]=(float)(c.sx+1.0); q.sy[1]=(float)c.sy;
+            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY) — a
+             * 2px-wide x 1px-tall horizontal footprint (PSX plots both line
+             * endpoints). A 1px-wide quad renders as a tall sliver because PSX
+             * pixels are tall (512x224 framebuffer shown at 4:3 ~ 0.583:1 px);
+             * matching the 2px line width makes it ~square like the .s. */
+            q.sx[0]=(float)c.sx;       q.sy[0]=(float)c.sy;        /* 2x1 line footprint */
+            q.sx[1]=(float)(c.sx+2.0); q.sy[1]=(float)c.sy;
             q.sx[2]=(float)c.sx;       q.sy[2]=(float)(c.sy+1.0);
-            q.sx[3]=(float)(c.sx+1.0); q.sy[3]=(float)(c.sy+1.0);
+            q.sx[3]=(float)(c.sx+2.0); q.sy[3]=(float)(c.sy+1.0);
             for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
             q.cz = (float)c.m3;
             uint32_t cmd = cpu->read_word(pp + 0x0C);    /* flat colour, no texture */
@@ -495,9 +500,39 @@ static void particle_compare(CPUState* cpu) {
     int ns2=0,ns3=0,ns6=0; for (int q=0;q<s_fq_n;q++){if(s_fq[q].sel==2)ns2++;else if(s_fq[q].sel==3)ns3++;else if(s_fq[q].sel>=6)ns6++;}
     if (getenv("OPENPETE_PARTICLE_DEBUG")) fprintf(stderr, "   [sel] nat sel2=%d sel3=%d sel6=%d\n", ns2, ns3, ns6);
     int nat_sel0 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel == 0) nat_sel0++;
-    int prim_tile = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].taglen == 3) prim_tile++;
-    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  tile:nat=%d prim=%d\n",
-            openpete_frame, natft4, ft4, n, nv?sum/nv:0, worst, over4, n, nnn?nnsum/nnn:0, nat_sel0, prim_tile);
+    /* sel-0 GEOMETRY (closes the count-only blind spot that hid the 1px-sliver
+     * bug): the .s emits each sel-0 as a LINE_F (code 0x40), kept raw — vertex0
+     * is raw[2] packed (Y<<16)|X. NN-match each native sel-0 quad anchor
+     * (sx[0],sy[0]) to the nearest .s line vertex0 and report the distance. */
+    int prim_line = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x40) prim_line++;
+    double t0sum = 0, t0worst = 0; int t0n = 0, t0fpmis = 0;
+    for (int q = 0; q < s_fq_n; q++) {
+        if (s_fq[q].sel != 0) continue;
+        double ax = s_fq[q].sx[0], ay = s_fq[q].sy[0], best = 1e9; int bp = -1;
+        for (int p = 0; p < s_prim_n; p++) {
+            if (s_prim[p].code != 0x40) continue;
+            double lx = (double)(int16_t)(s_prim[p].raw[2] & 0xFFFF);
+            double ly = (double)(int16_t)(s_prim[p].raw[2] >> 16);
+            double d = (ax-lx<0?lx-ax:ax-lx) + (ay-ly<0?ly-ay:ay-ly);
+            if (d < best) { best = d; bp = p; }
+        }
+        if (bp >= 0) {
+            t0sum += best; if (best > t0worst) t0worst = best; t0n++;
+            /* FOOTPRINT check — the 1px-sliver bug was a WIDTH error at the
+             * correct position, which a position NN alone misses. Compare the
+             * native quad's covered-pixel extent to the .s line's: line covers
+             * pixels v0..v1 inclusive = |Δ|+1; the native quad covers sx[1]-sx[0]
+             * (built as +2 to match the 2px line). */
+            int v0x=(int16_t)(s_prim[bp].raw[2]&0xFFFF), v1x=(int16_t)(s_prim[bp].raw[3]&0xFFFF);
+            int v0y=(int16_t)(s_prim[bp].raw[2]>>16),    v1y=(int16_t)(s_prim[bp].raw[3]>>16);
+            int line_w=(v1x>v0x?v1x-v0x:v0x-v1x)+1, line_h=(v1y>v0y?v1y-v0y:v0y-v1y)+1;
+            int nat_w=(int)(s_fq[q].sx[1]-s_fq[q].sx[0]+0.5), nat_h=(int)(s_fq[q].sy[2]-s_fq[q].sy[0]+0.5);
+            if (nat_w != line_w || nat_h != line_h) t0fpmis++;
+        }
+    }
+    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  sel0:nat=%d line=%d nn=%.1f/%.1f fpMis=%d\n",
+            openpete_frame, natft4, ft4, n, nv?sum/nv:0, worst, over4, n, nnn?nnsum/nnn:0,
+            nat_sel0, prim_line, t0n?t0sum/t0n:0, t0worst, t0fpmis);
     if (getenv("OPENPETE_PARTICLE_DEBUG")) {
         for (int p = 0, c = 0; p < s_prim_n && c < 3 && c < s_fq_n; p++) {
             if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
