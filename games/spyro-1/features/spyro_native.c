@@ -192,6 +192,11 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
             dump_words(cpu, "m_AnimationVertices[0x00..0x20]", vbase, 0x08);
     }
 
+    /* Live GTE rotation matrix (post-call) vs each segment's +0x10 slot — which
+     * matrix does the body actually use? (R11R12/R13R21/R22R23/R31R32/R33.) */
+    fprintf(stderr, "  gte_ctrl R[0..4] (post-call): %08X %08X %08X %08X %08X\n",
+            cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2], cpu->gte_ctrl[3], cpu->gte_ctrl[4]);
+
     /* Segment matrix scratch block (D_SCRATCH+0x1900, stride 0x44). */
     for (int s = 0; s < 3; s++) {
         uint32_t e = D_SCRATCH + 0x1900u + (uint32_t)s * 0x44u;
@@ -408,27 +413,29 @@ static void spyro_compare_geometry(void) {
  * s_sproj is in the same order, so s_sproj[j] <-> scratchpad[j]. Direct compare
  * isolates a per-axis decode error with zero NN ambiguity / back-face noise. */
 #define SCRATCHPAD 0x1F800000u
-static void spyro_scratchpad_ab(CPUState* cpu) {
-    if (s_sproj_n <= 0) return;
-    int n = s_sproj_n, hit2 = 0, hit4 = 0; double errsum = 0; float emax = 0; int shown = 0;
+/* match% (<=4px) of native vert j vs scratchpad[j+off], per segment + overall */
+static void spyro_scratchpad_at(CPUState* cpu, int off) {
+    int n = s_sproj_n, hit4 = 0, tot = 0; double errsum = 0;
     int seg_hit[3]={0,0,0}, seg_tot[3]={0,0,0};
     for (int j = 0; j < n; j++) {
-        uint32_t w = cpu->read_word(SCRATCHPAD + (uint32_t)j * 4);
+        int k = j + off; if (k < 0 || k >= n) continue;
+        uint32_t w = cpu->read_word(SCRATCHPAD + (uint32_t)k * 4);
         float gx = (float)(int16_t)(w & 0xFFFF), gy = (float)(int16_t)(w >> 16);
-        spxy* p = &s_sproj[j];
-        float dx = p->sx - gx, dy = p->sy - gy, d = sqrtf(dx*dx + dy*dy);
-        errsum += d; if (d > emax) emax = d; if (d <= 2.0f) hit2++; if (d <= 4.0f) hit4++;
-        int sg = p->seg; if (sg>=0&&sg<3){ seg_tot[sg]++; if(d<=4.0f) seg_hit[sg]++; }
-        if (d > 4.0f && shown < 8) {
-            fprintf(stderr, "    [sp-miss j=%d seg%d] nat=(%.1f,%.1f) gte=(%.1f,%.1f) d=%.1f\n",
-                    j, sg, p->sx, p->sy, gx, gy, d); shown++;
-        }
+        float dx = s_sproj[j].sx - gx, dy = s_sproj[j].sy - gy, d = sqrtf(dx*dx + dy*dy);
+        tot++; errsum += d; if (d <= 4.0f) hit4++;
+        int sg = s_sproj[j].seg; if (sg>=0&&sg<3){ seg_tot[sg]++; if(d<=4.0f) seg_hit[sg]++; }
     }
-    fprintf(stderr, "[spyro-scratch f=%u] n=%d  <=2px=%.1f%% <=4px=%.1f%%  mean=%.2fpx max=%.1fpx | "
-            "body=%.0f%% head=%.0f%% tail=%.0f%%\n",
-            openpete_frame, n, 100.0*hit2/n, 100.0*hit4/n, errsum/n, emax,
+    fprintf(stderr, "[spyro-scratch f=%u off=%+d] <=4px=%.1f%% mean=%.2fpx | body=%.0f%% head=%.0f%% tail=%.0f%%\n",
+            openpete_frame, off, tot?100.0*hit4/tot:0, tot?errsum/tot:0,
             seg_tot[0]?100.0*seg_hit[0]/seg_tot[0]:0, seg_tot[1]?100.0*seg_hit[1]/seg_tot[1]:0,
             seg_tot[2]?100.0*seg_hit[2]/seg_tot[2]:0);
+}
+static void spyro_scratchpad_ab(CPUState* cpu) {
+    if (s_sproj_n <= 0) return;
+    uint32_t fd0 = cpu->read_word(SEG_SCRATCH + 0x00);  /* body frameData */
+    fprintf(stderr, "  (body fd=%08X blend=%u dual=%d A%s B%s)\n", fd0, fd0 & 0xFFF,
+            (fd0 & 0xFFF) != 0, (fd0 & 0x1000) ? "2" : "1", (fd0 & 0x2000) ? "2" : "1");
+    spyro_scratchpad_at(cpu, 0);
 }
 
 /* ---- gating --------------------------------------------------------------- */
