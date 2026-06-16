@@ -267,20 +267,18 @@ static inline int32_t sra_field(int32_t v, int lsh, int rsh) {
 typedef struct { float sx, sy, vz; int sat, seg; } spxy;
 #define MAX_SPROJ 2048
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
+static int s_lastseg_start, s_lastseg_n, s_lastseg_id;  /* last segment's s_sproj range */
 
 /* Decode one segment's model-space verts (running accumulator + INTPL lerp),
  * project each, append to s_sproj. Returns verts emitted. Mirrors the four
  * width combos of .L800244D8/.L80024580/.L800246B4/.L800247D8 + wide escapes. */
 static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3], const int TR[3],
-                                 double ofx, double ofy, double H, int seg) {
+                                 double ofx, double ofy, double H, int seg, int count) {
     uint32_t fd = cpu->read_word(entry + 0x00);
     int a2 = (fd & 0x1000u) != 0;
     int b2 = (fd & 0x2000u) != 0;
     int dual = (fd & 0xFFFu) != 0;          /* s7 != 0 -> two-keyframe INTPL */
     double blend = (double)(fd & 0xFFFu) / 4096.0;
-    /* [23:14] is the scratchpad output BYTE span (0x1F800000-relative); each
-     * vertex writes one word, so vertex count = span/4. */
-    int count = (int)(((fd >> 14) & 0x3FFu) >> 2);
     uint32_t atA = cpu->read_word(entry + 0x24), v0A = cpu->read_word(entry + 0x28), v1A = cpu->read_word(entry + 0x2C);
     uint32_t atB = cpu->read_word(entry + 0x34), v0B = cpu->read_word(entry + 0x38), v1B = cpu->read_word(entry + 0x3C);
     int aZ=0,aX=0,aY=0;   /* frame-A accumulator (Z added, X/Y subtracted) */
@@ -346,10 +344,17 @@ static int spyro_project_all(CPUState* cpu) {
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
     int M[3][3]; int TR[3]; int have_mat = 0;
     int nseg = 0;
+    int prev_end = 0;                                /* cumulative scratchpad byte offset */
     for (int s = 0; s < 3; s++) {
         uint32_t entry = SEG_SCRATCH + (uint32_t)s * SEG_STRIDE;
         uint32_t fd = cpu->read_word(entry + 0x00);
         if (fd == 0) break;                          /* terminator */
+        /* [23:14] is the CUMULATIVE scratchpad end byte-offset (fp runs
+         * continuously across segments — it does NOT reset). This segment's
+         * vertex count = (this_end - prev_end) / 4. */
+        int cur_end = (int)((fd >> 14) & 0x3FFu);
+        int count = (cur_end - prev_end) >> 2; if (count < 0) count = 0;
+        prev_end = cur_end;
         /* Matrix is STICKY across segments. Phase A stores a segment's own
          * matrix at +0x10 only when it has a distinct (seam-rotated) pose; an
          * all-zero slot means "reuse the previous segment's matrix" (the .s
@@ -362,7 +367,9 @@ static int spyro_project_all(CPUState* cpu) {
         TR[1] = (int32_t)cpu->read_word(entry + 0x08);
         TR[2] = (int32_t)cpu->read_word(entry + 0x0C);
         if (!have_mat) continue;                     /* no matrix yet (shouldn't happen for seg0) */
-        spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s);
+        s_lastseg_start = s_sproj_n;
+        s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
+        s_lastseg_id = s;
         nseg++;
     }
     return nseg;
@@ -393,6 +400,35 @@ static void spyro_compare_geometry(void) {
     fprintf(stderr, "[spyro-verify f=%u] proj=%d primVerts=%d  match<=4px=%.1f%% <=2px=%.1f%%  mean=%.2fpx max=%.1fpx\n",
             openpete_frame, s_sproj_n, total,
             100.0*hit4/total, 100.0*hit2/total, errsum/total, emax);
+}
+
+/* ---- CLEAN per-vertex A/B vs the .s scratchpad SXY (no NN) ----------------
+ * fp runs continuously across segments, so post-call scratchpad 0x1F800000
+ * holds ALL verts in order: body[0..], head[..], tail[..] (238*4 < 1KB). Our
+ * s_sproj is in the same order, so s_sproj[j] <-> scratchpad[j]. Direct compare
+ * isolates a per-axis decode error with zero NN ambiguity / back-face noise. */
+#define SCRATCHPAD 0x1F800000u
+static void spyro_scratchpad_ab(CPUState* cpu) {
+    if (s_sproj_n <= 0) return;
+    int n = s_sproj_n, hit2 = 0, hit4 = 0; double errsum = 0; float emax = 0; int shown = 0;
+    int seg_hit[3]={0,0,0}, seg_tot[3]={0,0,0};
+    for (int j = 0; j < n; j++) {
+        uint32_t w = cpu->read_word(SCRATCHPAD + (uint32_t)j * 4);
+        float gx = (float)(int16_t)(w & 0xFFFF), gy = (float)(int16_t)(w >> 16);
+        spxy* p = &s_sproj[j];
+        float dx = p->sx - gx, dy = p->sy - gy, d = sqrtf(dx*dx + dy*dy);
+        errsum += d; if (d > emax) emax = d; if (d <= 2.0f) hit2++; if (d <= 4.0f) hit4++;
+        int sg = p->seg; if (sg>=0&&sg<3){ seg_tot[sg]++; if(d<=4.0f) seg_hit[sg]++; }
+        if (d > 4.0f && shown < 8) {
+            fprintf(stderr, "    [sp-miss j=%d seg%d] nat=(%.1f,%.1f) gte=(%.1f,%.1f) d=%.1f\n",
+                    j, sg, p->sx, p->sy, gx, gy, d); shown++;
+        }
+    }
+    fprintf(stderr, "[spyro-scratch f=%u] n=%d  <=2px=%.1f%% <=4px=%.1f%%  mean=%.2fpx max=%.1fpx | "
+            "body=%.0f%% head=%.0f%% tail=%.0f%%\n",
+            openpete_frame, n, 100.0*hit2/n, 100.0*hit4/n, errsum/n, emax,
+            seg_tot[0]?100.0*seg_hit[0]/seg_tot[0]:0, seg_tot[1]?100.0*seg_hit[1]/seg_tot[1]:0,
+            seg_tot[2]?100.0*seg_hit[2]/seg_tot[2]:0);
 }
 
 /* ---- gating --------------------------------------------------------------- */
@@ -426,6 +462,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
             if (s_reports < 12) {
                 spyro_project_all(cpu);              /* native decode + project -> s_sproj */
                 spyro_compare_geometry();            /* prim-NN A/B (geometry verdict) */
+                spyro_scratchpad_ab(cpu);            /* clean per-vertex A/B vs scratchpad */
                 s_reports++;
             }
         }
