@@ -187,6 +187,7 @@ static struct {
      * |native - ref| into the offscreen. diff_quad_vb is the panel-0 rect with
      * 0..1 UVs that the diff pass draws. */
     bool          diff_mode;
+    bool          stats_enabled;   /* --render-stats: per-frame diff readback + stats */
     rhi_pipeline *diff_pipe;
     rhi_texture  *native_rtt;
     int           rtt_w, rtt_h;
@@ -197,6 +198,82 @@ static struct {
  * (clip -1..1) instead of panel-0's window rect — used when rendering into
  * native_rtt for the diff pass (native_rtt IS the frame, no panel inset). */
 static int s_render_full_extent = 0;
+
+/* Diff colour-stats (--render-stats) + the reference-background-match toggle
+ * (set by the game when isolating a path). */
+#define DIFF_STATS_TOL 8           /* per-channel "match" tolerance (of 255) */
+static bool s_diff_match_ref_bg = false;
+static struct {
+    double   sum[3];               /* per-channel abs-diff sums over all counted px */
+    uint64_t n;                    /* total counted (panel) px across frames */
+    int      max[3];               /* per-channel max abs diff seen */
+    uint64_t within;               /* px with max-channel diff <= TOL */
+    uint64_t off;                  /* px with max-channel diff >  TOL (the differing ones) */
+    unsigned frames;               /* frames sampled */
+} s_diff_stats;
+static unsigned char *s_stats_buf = NULL;   /* offscreen readback scratch */
+static size_t         s_stats_cap = 0;
+
+void openpete_native_diff_match_ref_bg(bool on) { s_diff_match_ref_bg = on; }
+
+/* Read the just-presented diff offscreen back and fold its panel-rect pixels into
+ * the running stats; log a throttled per-frame line. */
+static void diff_stats_accumulate(void)
+{
+    if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    if (cap > s_stats_cap) {
+        free(s_stats_buf);
+        s_stats_buf = malloc(cap);
+        s_stats_cap = s_stats_buf ? cap : 0;
+    }
+    if (!s_stats_buf) return;
+    int w = 0, h = 0;
+    if (!rhi_read_offscreen(s_nr.dev, s_stats_buf, cap, &w, &h) || w <= 0 || h <= 0) return;
+
+    /* Panel-0 pixel rect (exclude the letterbox bars, which are a 0 diff). */
+    int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)w + 0.5f);
+    int sw = (int)((s_nr.p0_hx) * (float)w + 0.5f);
+    int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)h + 0.5f);
+    int sh = (int)((s_nr.p0_hy) * (float)h + 0.5f);
+    if (sx < 0) sx = 0; if (sy < 0) sy = 0;
+    if (sx + sw > w) sw = w - sx; if (sy + sh > h) sh = h - sy;
+    if (sw <= 0 || sh <= 0) return;
+
+    double fsum[3] = {0, 0, 0};
+    uint64_t fn = 0, fwithin = 0, foff = 0;
+    int fmax[3] = {0, 0, 0};
+    for (int y = sy; y < sy + sh; y++) {
+        const unsigned char* row = &s_stats_buf[(size_t)y * w * 4u];
+        for (int x = sx; x < sx + sw; x++) {
+            const unsigned char* px = &row[(size_t)x * 4u];
+            int r = px[0], g = px[1], b = px[2];
+            fsum[0] += r; fsum[1] += g; fsum[2] += b;
+            if (r > fmax[0]) fmax[0] = r;
+            if (g > fmax[1]) fmax[1] = g;
+            if (b > fmax[2]) fmax[2] = b;
+            int mc = r; if (g > mc) mc = g; if (b > mc) mc = b;
+            if (mc > DIFF_STATS_TOL) foff++; else fwithin++;
+            fn++;
+        }
+    }
+    if (fn == 0) return;
+
+    for (int c = 0; c < 3; c++) {
+        s_diff_stats.sum[c] += fsum[c];
+        if (fmax[c] > s_diff_stats.max[c]) s_diff_stats.max[c] = fmax[c];
+    }
+    s_diff_stats.n += fn; s_diff_stats.within += fwithin; s_diff_stats.off += foff;
+    s_diff_stats.frames++;
+
+    if ((s_diff_stats.frames % 60u) == 1u) {  /* throttled per-frame line */
+        OPL_INFO_F("native", "diff-stats: mean=(%.1f,%.1f,%.1f) max=(%d,%d,%d) "
+                   "within%d=%.1f%% diff-px=%llu/%llu",
+                   fsum[0]/fn, fsum[1]/fn, fsum[2]/fn, fmax[0], fmax[1], fmax[2],
+                   DIFF_STATS_TOL, 100.0 * (double)fwithin / (double)fn,
+                   (unsigned long long)foff, (unsigned long long)fn);
+    }
+}
 
 /* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
  * (hx,hy); v0 is the UV-v at the TOP edge, v1 at the BOTTOM. (VRAM is uploaded
@@ -249,6 +326,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     bool diff_mode = (opts->renderer == OPENPETE_RENDERER_DIFF);
     s_nr.ab_mode  = ab_mode;
     s_nr.diff_mode = diff_mode;
+    s_nr.stats_enabled = diff_mode && opts->render_stats;  /* per-frame diff readback */
     s_nr.n_panels = ab_mode ? 2 : 1;   /* vk/diff are single full-window panels */
     /* Delay the native scene one frame whenever we compare against the lagged
      * PsyCross reference — A/B (panel sync) AND diff (else moving objects ghost
@@ -703,9 +781,18 @@ void openpete_native_render_frame(void)
         int dn; uint32_t dbg;
         (void)scene_present_buf(&dn, &dbg);
         if (dn > 0) {
-            float br = (float)((dbg >>  0) & 0xFF) / 255.0f;
-            float bgc = (float)((dbg >> 8) & 0xFF) / 255.0f;
-            float bb = (float)((dbg >> 16) & 0xFF) / 255.0f;
+            /* native_rtt clear: normally the scene's own background. In path-
+             * isolation (game sets match_ref_bg) clear to the REFERENCE's
+             * background instead, sampled from a readback corner — the bg then
+             * cancels in the diff (cleaner isolated diff) and the stats measure
+             * the path itself, not the framebuffer-clear mismatch. */
+            float br  = (float)((dbg >>  0) & 0xFF) / 255.0f;
+            float bgc = (float)((dbg >>  8) & 0xFF) / 255.0f;
+            float bb  = (float)((dbg >> 16) & 0xFF) / 255.0f;
+            if (s_diff_match_ref_bg && s_nr.readback && s_nr.ref_w > 8 && s_nr.ref_h > 8) {
+                const unsigned char* c = &s_nr.readback[((4 * s_nr.ref_w) + 4) * 4]; /* inset corner */
+                br = (float)c[0] / 255.0f; bgc = (float)c[1] / 255.0f; bb = (float)c[2] / 255.0f;
+            }
             rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
             draw_native_scene(true);
             rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
@@ -720,6 +807,8 @@ void openpete_native_render_frame(void)
 
             rhi_blit_to_swapchain(s_nr.dev);
             rhi_end_frame(s_nr.dev);
+
+            if (s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
             return;
         }
     }
@@ -808,6 +897,22 @@ void openpete_native_render_shutdown(void)
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
     free(s_nr.vram_mirror);
+
+    /* --render-stats aggregate over the whole run. */
+    if (s_diff_stats.frames > 0 && s_diff_stats.n > 0) {
+        double inv = 1.0 / (double)s_diff_stats.n;
+        OPL_INFO_F("native", "diff-stats AGGREGATE over %u frames: mean=(%.2f,%.2f,%.2f) "
+                   "max=(%d,%d,%d) within%d=%.2f%% diff-px=%.1f%% (avg %llu/frame)",
+                   s_diff_stats.frames,
+                   s_diff_stats.sum[0]*inv, s_diff_stats.sum[1]*inv, s_diff_stats.sum[2]*inv,
+                   s_diff_stats.max[0], s_diff_stats.max[1], s_diff_stats.max[2],
+                   DIFF_STATS_TOL, 100.0 * (double)s_diff_stats.within * inv,
+                   100.0 * (double)s_diff_stats.off * inv,
+                   (unsigned long long)(s_diff_stats.off / s_diff_stats.frames));
+    }
+    free(s_stats_buf);
+    s_stats_buf = NULL; s_stats_cap = 0;
+    memset(&s_diff_stats, 0, sizeof(s_diff_stats));
 
     memset(&s_nr, 0, sizeof(s_nr));
     OPL_INFO_F("native", "Vulkan native renderer window shut down");

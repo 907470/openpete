@@ -225,6 +225,14 @@ typedef struct {
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
+    /* --render-stats (debug): in --renderer diff, read the per-pixel diff back
+     * each frame and log colour-closeness statistics (per-channel mean/max abs
+     * diff, % within tolerance, differing-pixel count) over the panel, plus an
+     * aggregate at exit. Pairs with --render-paths to measure a single path's
+     * native-vs-PsyCross accuracy. Opt-in (the per-frame readback is a GPU
+     * stall) — the live diff view stays fast without it. Display-only. */
+    bool render_stats;
+
     /* --render-paths CSV (debug): restrict rendering to the named render paths
      * (e.g. "cyclorama,spyro") in BOTH renderers, so a path can be compared in
      * isolation. PsyCross drops the other paths' geometry prims during the OT

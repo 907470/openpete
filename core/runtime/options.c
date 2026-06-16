@@ -175,6 +175,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--render-paths") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_paths = v; i++;
+        } else if (strcmp(a, "--render-stats") == 0) {
+            opts->render_stats = true;
         } else if (strcmp(a, "--render-fps") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_fps = atoi(v); i++;
@@ -433,6 +435,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --render-paths LIST        debug: render ONLY these paths in both renderers, e.g.\n"
                 "                             cyclorama,spyro (others: moby,terrain,flame,particles,hud). Lets a path\n"
                 "                             be compared in isolation. Presentation-only; gameplay state unaffected.\n"
+                "  --render-stats             debug: with --renderer diff, log per-frame + aggregate colour-diff\n"
+                "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
+                "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"

@@ -41,6 +41,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);
 
+/* Diff mode: when `on`, clear the native render target to the REFERENCE's
+ * background colour (sampled from a readback corner) instead of the scene's own
+ * background, so the framebuffer-clear mismatch cancels in |native - ref|. The
+ * game enables this when isolating a render path (--render-paths), where the
+ * reference background is a uniform clear — it makes the isolated diff cleaner
+ * and the --render-stats numbers measure the path, not the background. Generic
+ * core toggle (no game knowledge); a no-op until set. */
+void openpete_native_diff_match_ref_bg(bool on);
+
 /* Record the active PSX display framebuffer (DISPENV `disp` rect, VRAM px —
  * the scanned-out double-buffer page) and the drawn region (DRAWENV `clip`
  * rect). The native renderer crops the disp vertically to the clip so it

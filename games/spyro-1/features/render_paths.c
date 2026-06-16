@@ -3,6 +3,7 @@
 #include "render_paths.h"
 #include "feature_registry.h"
 #include "openpete.h"
+#include "openpete_native_render.h"  /* diff bg-match toggle */
 
 #include <stdio.h>
 #include <string.h>
@@ -79,6 +80,9 @@ bool render_path_addr_visible(uint32_t addr) {
  * the path brackets live in the existing native feature modules. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
     render_paths_init(opts ? opts->render_paths : NULL);
+    /* In isolation the reference background is a uniform framebuffer clear; tell
+     * the diff to match it so the bg cancels (cleaner diff + path-only stats). */
+    openpete_native_diff_match_ref_bg(render_paths_active());
 }
 
 const feature_module_t render_paths_module = {
