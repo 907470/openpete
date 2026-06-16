@@ -191,6 +191,15 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
                 cpu->read_word(animHdr + 0x24 + frB * 8), cpu->read_word(animHdr + 0x24 + frB * 8 + 4));
         if (vbase >= 0x80000000u && vbase < 0x80800000u)
             dump_words(cpu, "m_AnimationVertices[0x00..0x20]", vbase, 0x08);
+        /* Face stream (m_Faces @ animHdr+0x14): word0 = byte length, records
+         * start at +4. Dump the length + first ~24 words so the walk's stride /
+         * index decode can be hand-verified against the captured prims. */
+        uint32_t faces = cpu->read_word(animHdr + 0x14);
+        if (faces >= 0x80000000u && faces < 0x80800000u) {
+            uint32_t flen = cpu->read_word(faces);
+            fprintf(stderr, "    m_Faces=%08X len=%u (records @+4)\n", faces, flen);
+            dump_words(cpu, "faces[0x00..0x60]", faces, 0x18);
+        }
     }
 
     /* Live GTE rotation matrix (post-call) vs each segment's +0x10 slot — which
@@ -297,6 +306,12 @@ typedef struct { float sx, sy, vz; int sat, seg; } spxy;
 #define MAX_SPROJ 2048
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
 static int s_lastseg_start, s_lastseg_n, s_lastseg_id;  /* last segment's s_sproj range */
+
+/* 3b.4 face-stream walk — forward decls (the aggregate verdict uses these; the
+ * definitions are below spyro_feed_scaffold). */
+typedef struct { int walk, expected, cnt_ok, n, pos_ok, rgb_ok, uv_ok, first_bad; } walk_stats;
+static int  build_spyro_walk(CPUState* cpu);
+static void spyro_walk_eval(CPUState* cpu, walk_stats* st);
 
 /* Decode ONE vertex of ONE keyframe stream into the running accumulator
  * (*az/*ax/*ay), advancing whichever packed cursor (v0 1-byte / v1 2-byte) this
@@ -499,7 +514,10 @@ static struct {
     long frames, bad_frames;
     double worst_match; unsigned worst_frame; int worst_seg;
     double max_err; unsigned max_err_frame;
-} s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0 };
+    /* 3b.4 walk verdict (topology+colour+UV vs prims, full run) */
+    long w_cnt_bad, w_rgb_bad, w_uv_bad, w_interp;   /* frames with a defect */
+    unsigned w_first_cnt_bad_frame, w_first_interp_frame;
+} s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0, 0, 0, 0, 0, 0, 0 };
 
 static void spyro_agg_final(void) {
     fprintf(stderr, "[spyro-agg FINAL] frames=%ld imperfect=%ld (%.2f%%)  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u  => %s\n",
@@ -507,7 +525,12 @@ static void spyro_agg_final(void) {
             s_agg.frames ? 100.0 * s_agg.bad_frames / s_agg.frames : 0.0,
             s_agg.worst_match, s_agg.worst_seg, s_agg.worst_frame,
             s_agg.max_err, s_agg.max_err_frame,
-            s_agg.bad_frames == 0 ? "PASS (100% all segments, all frames)" : "RESIDUAL");
+            s_agg.bad_frames == 0 ? "PASS (geometry 100% all segments, all frames)" : "GEOMETRY RESIDUAL");
+    fprintf(stderr, "[spyro-walk FINAL] frames=%ld  cnt-mismatch=%ld (first @f%u)  rgb-bad=%ld  uv-bad=%ld  interp-path=%ld (first @f%u)  => %s\n",
+            s_agg.frames, s_agg.w_cnt_bad, s_agg.w_first_cnt_bad_frame,
+            s_agg.w_rgb_bad, s_agg.w_uv_bad, s_agg.w_interp, s_agg.w_first_interp_frame,
+            (s_agg.w_cnt_bad==0 && s_agg.w_rgb_bad==0 && s_agg.w_uv_bad==0 && s_agg.w_interp==0)
+              ? "PASS (walk topology+colour+UV byte-exact, all frames)" : "WALK RESIDUAL");
 }
 
 static void spyro_aggregate(CPUState* cpu) {
@@ -537,10 +560,30 @@ static void spyro_aggregate(CPUState* cpu) {
     }
     if (bad) s_agg.bad_frames++;
     if (fmax > s_agg.max_err) { s_agg.max_err = fmax; s_agg.max_err_frame = openpete_frame; }
-    if ((s_agg.frames % 2000) == 0)
+
+    /* 3b.4 walk verdict (cheap per-frame; build already done by the caller).
+     * interp-path detector: the demo uses the DIRECT emit path (g_Spyro+0x30==0);
+     * if any level sets it non-zero, the direct-only walk would mis-stride, so
+     * flag it loudly rather than silently emitting garbage. */
+    if (cpu->read_word(G_SPYRO + 0x30) != 0) {
+        if (!s_agg.w_interp) s_agg.w_first_interp_frame = openpete_frame;
+        s_agg.w_interp++;
+    }
+    { walk_stats wst; spyro_walk_eval(cpu, &wst);
+      if (!wst.cnt_ok) { if (!s_agg.w_cnt_bad) s_agg.w_first_cnt_bad_frame = openpete_frame; s_agg.w_cnt_bad++; }
+      if (wst.n && wst.rgb_ok < wst.n) s_agg.w_rgb_bad++;
+      if (wst.n && wst.uv_ok  < wst.n) s_agg.w_uv_bad++;
+    }
+
+    if ((s_agg.frames % 2000) == 0) {
         fprintf(stderr, "[spyro-agg f=%u] frames=%ld imperfect=%ld  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u\n",
                 openpete_frame, s_agg.frames, s_agg.bad_frames, s_agg.worst_match,
                 s_agg.worst_seg, s_agg.worst_frame, s_agg.max_err, s_agg.max_err_frame);
+        fprintf(stderr, "[spyro-walk f=%u] frames=%ld cnt-mismatch=%ld rgb-bad=%ld uv-bad=%ld interp-path=%ld => %s\n",
+                openpete_frame, s_agg.frames, s_agg.w_cnt_bad, s_agg.w_rgb_bad, s_agg.w_uv_bad, s_agg.w_interp,
+                (s_agg.w_cnt_bad==0 && s_agg.w_rgb_bad==0 && s_agg.w_uv_bad==0 && s_agg.w_interp==0)
+                  ? "PASS (walk byte-exact)" : "WALK RESIDUAL");
+    }
 }
 
 /* ---- scene feed (3b.4 scaffold) ------------------------------------------
@@ -594,65 +637,237 @@ static void spyro_idx_audit(CPUState* cpu) {
             openpete_frame, exact, total, fallback, disagree,
             total ? 100.0 * disagree / total : 0.0);
 }
-static void spyro_feed_scaffold(CPUState* cpu) {
-    static int s_logged = 0;
-    if (s_sproj_n <= 0 || s_gte_n <= 0) return;
-    /* frame-keyed: no-op if the cyclorama/mobys already began this frame (we
-     * append after them), clears if Spyro is somehow the first feeder. */
-    openpete_native_scene_begin_frame(openpete_frame);
-    int fed = 0;
-    long exact = 0, nn_disagree = 0, fallback = 0, total = 0;  /* falsification */
-    for (int i = 0; i < s_gte_n; i++) {
-        prim_t* p = &s_gte[i];
-        if (p->nv < 3) continue;
-        int tpx=0,tpy=0,clx=0,cly=0,bpp=16;
-        if (p->textured) {
-            unsigned tp=(unsigned)p->tpage, cl=(unsigned)p->clut;
-            tpx=(int)(tp&0xFu)*64; tpy=(int)((tp>>4)&1u)*256;
-            int mode=(int)((tp>>7)&3u); bpp=(mode==0)?4:(mode==1)?8:16;
-            clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
-        }
-        int blend = (p->code & 0x2) ? 1 : 0;   /* ABE (semi-transparent) bit */
-        int idx[4];
-        for (int k = 0; k < p->nv; k++) {
-            int ex = spyro_index_of(cpu, (int)p->x[k], (int)p->y[k]);
-            total++;
-            if (ex >= 0) {
-                exact++;
-                if (ex != spyro_nn(p->x[k], p->y[k])) nn_disagree++;  /* NN would have erred */
-                idx[k] = ex;
+/* (spyro_feed_scaffold removed 2026-06-16 — the prim-driven NN/index-recovery
+ * feed is superseded by the independent face-stream walk spyro_feed_walk, the
+ * moby-3a.2b analog. spyro_index_of/spyro_nn are kept: the verify A/B still uses
+ * them. See spyro_feed_walk below the walk code.) */
+
+/* ======================================================================== *
+ *  3b.4: INDEPENDENT FACE-STREAM WALK (retire the prim/NN scaffold)         *
+ * ======================================================================== *
+ * Derive triangle TOPOLOGY + per-vertex COLOUR + UV natively from the Spyro
+ * face stream (m_Faces), exactly as the .s Phase C does (r_pete.s 1170-1447,
+ * the DIRECT path; g_Spyro+0x30 == 0, confirmed live for the demo). This is the
+ * moby 3a.2b analog: it retires the prim-driven NN/index scaffold, leaving only
+ * the static texture/VRAM read (a sanctioned asset read, not per-frame reuse).
+ *
+ * Face stream = m_Faces (animHdr+0x14): word0 @+0 = byte length, records @+4.
+ * All 238 verts share ONE global face stream + colour table (body/head/tail
+ * stitch into one mesh), so the walk is segment-agnostic: face indices slot
+ * straight into s_sproj (== the .s SXY scratchpad at 0x1F800000, same order).
+ *
+ * Per face:
+ *   word0 = $at: sign<0 = FRESH (quad-capable), >=0 = STRIP (single tri);
+ *     bit0 = NCLIP-sign toggle; three vertex indices i0/i1/i2 =
+ *     ((w0>>{20,11,2})&0x7FC)>>2.
+ *   word1 = $s0: three colour indices ((>>17,>>8,<<1)&0x7FC) into m_Colors
+ *     (packed RGB words). Colour table = m_Colors when colorFilter.interp==0
+ *     (the common case), else the Fairy-Kiss pre-blend scratch D_SCRATCH+0x1D00.
+ *   FRESH (stride 0x18): word2 @+8 -> i3=(w2&0x7FC)>>2, c3=(w2>>9)&0x7FC; UVs
+ *     (Tiledef) @+0xC/+0x10/+0x14; dual-NCLIP -> quad(0x3C GT4) / tri(0x34 GT3) /
+ *     skip (the moby emit map: t6a=NCLIP1, t6b=NCLIP2 with bit0 sign-negate;
+ *     t6a>=0&t6b>0 -> tri(v3,v1,v2); t6a>=0&t6b<=0 -> skip; t6a<0&t6b>0 -> QUAD
+ *     (v0,v1,v2)+(v1,v3,v2); t6a<0&t6b<=0 -> tri(v0,v1,v2)).
+ *   STRIP (stride 0x14): single tri, UVs @+0x8/+0xC/+0x10, keep if
+ *     (bit0 ? always : NCLIP1>0).
+ *
+ * NCLIP uses the .s's int16 SXY straight from the scratchpad (byte-exact cull
+ * decision while the .s runs); the EMITTED vertex positions use s_sproj's native
+ * float (smooth sub-pixel geometry). Validated by spyro_walk_compare (ordered,
+ * index-exact vs the captured prims) before it replaces the feed. */
+
+typedef struct { float sx,sy,vz; int u,v; uint32_t rgb; int idx; } swv;
+typedef struct {
+    swv v[3];
+    int textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend;
+} swtri;
+#define MAX_SWTRI (MAX_SPROJ * 4)
+static swtri s_swtri[MAX_SWTRI]; static int s_swtri_n;
+
+/* signed 2*area on the .s's int16 SXY (scratchpad), == the GTE NCLIP sign. */
+static double spyro_nclip(CPUState* cpu, int i0, int i1, int i2) {
+    uint32_t w0=cpu->read_word(SCRATCHPAD+(uint32_t)i0*4);
+    uint32_t w1=cpu->read_word(SCRATCHPAD+(uint32_t)i1*4);
+    uint32_t w2=cpu->read_word(SCRATCHPAD+(uint32_t)i2*4);
+    double ax=(int16_t)(w0&0xFFFF), ay=(int16_t)(w0>>16);
+    double bx=(int16_t)(w1&0xFFFF), by=(int16_t)(w1>>16);
+    double cx=(int16_t)(w2&0xFFFF), cy=(int16_t)(w2>>16);
+    return (bx-ax)*(cy-ay) - (cx-ax)*(by-ay);
+}
+
+static void emit_swtri(int i0,int i1,int i2, uint32_t c0,uint32_t c1,uint32_t c2,
+                       int u0,int v0,int u1,int v1,int u2,int v2,
+                       int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
+    if (s_swtri_n >= MAX_SWTRI) return;
+    if (i0 >= s_sproj_n || i1 >= s_sproj_n || i2 >= s_sproj_n) return;
+    swtri* t = &s_swtri[s_swtri_n++];
+    t->v[0]=(swv){s_sproj[i0].sx,s_sproj[i0].sy,s_sproj[i0].vz,u0,v0,c0,i0};
+    t->v[1]=(swv){s_sproj[i1].sx,s_sproj[i1].sy,s_sproj[i1].vz,u1,v1,c1,i1};
+    t->v[2]=(swv){s_sproj[i2].sx,s_sproj[i2].sy,s_sproj[i2].vz,u2,v2,c2,i2};
+    t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly; t->bpp=bpp; t->blend=blend;
+}
+
+static int build_spyro_walk(CPUState* cpu) {
+    s_swtri_n = 0;
+    if (s_sproj_n <= 0) return 0;
+    /* face stream + colour table from the body (seg0) animHdr — shared across
+     * segments (the mesh topology is fixed; only vertex positions animate). */
+    uint32_t model = cpu->read_word(G_MODELS) | 0x80000000u;
+    uint32_t animIdx = cpu->read_byte(G_SPYRO + 0x18);
+    uint32_t animHdr = cpu->read_word(model + 0x38 + animIdx * 4);
+    if (animHdr < 0x80000000u) return 0;
+    uint32_t faces     = cpu->read_word(animHdr + 0x14);
+    uint32_t colorbase = cpu->read_word(animHdr + 0x18);          /* m_Colors */
+    if ((cpu->read_word(G_SPYRO + 0x28) >> 24) != 0)              /* colorFilter.interp */
+        colorbase = D_SCRATCH + 0x1D00u;                         /* Fairy-Kiss pre-blend */
+    if (faces < 0x80000000u || colorbase < 0x80000000u) return 0;
+    uint32_t len = cpu->read_word(faces);
+    if (len == 0 || len > 0x20000u) return 0;
+    uint32_t fp = faces + 4u, end = faces + 4u + len;
+    int guard = 0;
+    while (fp + 8u <= end && guard++ < 8192) {
+        uint32_t w0 = cpu->read_word(fp);
+        uint32_t w1 = cpu->read_word(fp + 4);
+        int fresh = ((int32_t)w0) < 0;
+        int bit0  = (int)(w0 & 1u);
+        int i0 = (int)((w0>>20)&0x7FCu)>>2, i1=(int)((w0>>11)&0x7FCu)>>2, i2=(int)((w0>>2)&0x7FCu)>>2;
+        uint32_t c0 = cpu->read_word(colorbase + ((w1>>17)&0x7FCu)) & 0xFFFFFFu;
+        uint32_t c1 = cpu->read_word(colorbase + ((w1>> 8)&0x7FCu)) & 0xFFFFFFu;
+        uint32_t c2 = cpu->read_word(colorbase + ((w1<< 1)&0x7FCu)) & 0xFFFFFFu;
+        uint32_t adv    = fresh ? 0x18u : 0x14u;
+        uint32_t uvbase = fresh ? fp + 0xCu : fp + 0x8u;          /* Tiledef words */
+        uint32_t td0=cpu->read_word(uvbase), td1=cpu->read_word(uvbase+4), td2=cpu->read_word(uvbase+8);
+        int u0=(int)(td0&0xFF), v0=(int)((td0>>8)&0xFF); unsigned cl=(td0>>16)&0xFFFFu;
+        int u1=(int)(td1&0xFF), v1=(int)((td1>>8)&0xFF); unsigned tp=(td1>>16)&0xFFFFu;
+        int u2=(int)(td2&0xFF), v2=(int)((td2>>8)&0xFF);
+        int tpx=(int)(tp&0xFu)*64, tpy=(int)((tp>>4)&1u)*256;
+        int mode=(int)((tp>>7)&3u), bpp=(mode==0)?4:(mode==1)?8:16;
+        int clx=(int)(cl&0x3Fu)*16, cly=(int)((cl>>6)&0x1FFu);
+        int blend=0;   /* Spyro prims are 0x34/0x3C (ABE bit clear) — opaque */
+        if (fresh) {
+            uint32_t w2 = cpu->read_word(fp + 8);
+            int i3 = (int)(w2 & 0x7FCu)>>2;
+            uint32_t c3 = cpu->read_word(colorbase + ((w2>>9)&0x7FCu)) & 0xFFFFFFu;
+            int u3=(int)((td2>>16)&0xFF), v3=(int)((td2>>24)&0xFF);   /* uv3 = high half of uv2 word */
+            if (bit0) {
+                /* bit0==1 fresh: the .s skips the NCLIP test entirely
+                 * (.L80024D04 bgtz $t6 -> .L80024D70 -> .L80024D98) and ALWAYS
+                 * emits the GT4 quad — these faces are pre-marked quads. (Keying
+                 * the quad/tri/skip on the per-frame NCLIP sign here was the
+                 * dual-keyframe count desync: a bit0==1 face flipped tri<->quad
+                 * as Spyro animated.) GT4 -> (v0,v1,v2) + (v1,v3,v2). */
+                emit_swtri(i0,i1,i2, c0,c1,c2, u0,v0,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
+                emit_swtri(i1,i3,i2, c1,c3,c2, u1,v1,u3,v3,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
             } else {
-                fallback++;
-                idx[k] = spyro_nn(p->x[k], p->y[k]);
+                /* bit0==0 fresh: dual-NCLIP decides (.s map, NCLIP on int16 SXY).
+                 *   n1>=0 & n2>0  -> tri (v3,v1,v2)
+                 *   n1>=0 & n2<=0 -> skip
+                 *   n1<0  & n2>0  -> QUAD (v0,v1,v2)+(v1,v3,v2)
+                 *   n1<0  & n2<=0 -> tri (v0,v1,v2) */
+                double n1 = spyro_nclip(cpu,i0,i1,i2);
+                double n2 = (i3 < s_sproj_n) ? spyro_nclip(cpu,i3,i1,i2) : -1.0;
+                if (n1 >= 0.0) {
+                    if (n2 > 0.0)   /* single tri (v3,v1,v2) */
+                        emit_swtri(i3,i1,i2, c3,c1,c2, u3,v3,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
+                    /* else skip */
+                } else if (n2 > 0.0) {   /* QUAD GT4 -> (v0,v1,v2) + (v1,v3,v2) */
+                    emit_swtri(i0,i1,i2, c0,c1,c2, u0,v0,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
+                    emit_swtri(i1,i3,i2, c1,c3,c2, u1,v1,u3,v3,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
+                } else {   /* single tri (v0,v1,v2) */
+                    emit_swtri(i0,i1,i2, c0,c1,c2, u0,v0,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
+                }
             }
+        } else {   /* strip: single tri, keep if (bit0 ? always : NCLIP1>0) */
+            double n1 = spyro_nclip(cpu,i0,i1,i2);
+            if (bit0 || n1 > 0.0)
+                emit_swtri(i0,i1,i2, c0,c1,c2, u0,v0,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
         }
-        int tris[2][3], nt;
-        if (p->nv == 3) { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2; nt=1; }
-        else            { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2;
-                          tris[1][0]=1;tris[1][1]=3;tris[1][2]=2; nt=2; }  /* PSX quad split */
-        for (int t = 0; t < nt; t++) {
-            openpete_scene_tri st;
-            int ok = 1;
-            for (int k = 0; k < 3; k++) {
-                int vk = tris[t][k], sj = idx[vk];
-                if (sj < 0) { ok = 0; break; }
-                st.v[k].sx = s_sproj[sj].sx; st.v[k].sy = s_sproj[sj].sy;
-                st.v[k].z  = openpete_native_depth_from_viewz(s_sproj[sj].vz);
-                st.v[k].u  = (float)p->u[vk]; st.v[k].v = (float)p->v[vk];
-                st.v[k].rgba = p->rgb[vk] | 0xFF000000u;
-            }
-            if (!ok) continue;
-            st.textured = p->textured; st.tpage_x = tpx; st.tpage_y = tpy;
-            st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = blend;
-            openpete_native_scene_add_tri(&st); fed++;
+        fp += adv;
+    }
+    return s_swtri_n;
+}
+
+/* ---- walk A/B: ordered, index-exact vs the captured prims ----------------
+ * The .s emits prims in face order; the walk visits faces in face order and
+ * splits quads the same way (GT4 -> (v0,v1,v2)+(v1,v3,v2)), so the two emitted
+ * tri sequences align 1:1. We rebuild the EXPECTED tri list from the prims (with
+ * exact stream indices recovered via the scratchpad) and compare element-wise:
+ * walk[k] vs expected[k] must agree on (RGB, UV); count-OK + rgb/uv is the
+ * byte-exact verdict (a wrong vertex carries a different model colour/UV). The
+ * `pos` cross-check is confounded by coincident-pixel verts (two of the 238 can
+ * share one int16 SXY -> index recovery is ambiguous), so geometry truth is the
+ * separate spyro-scratch A/B; here pos is informational only. */
+static void spyro_walk_eval(CPUState* cpu, walk_stats* st) {
+    memset(st, 0, sizeof(*st)); st->first_bad = -1; st->cnt_ok = 1;
+    if (s_gte_n <= 0 || s_sproj_n <= 0) return;
+    static struct { int i[3]; uint32_t rgb[3]; int u[3], v[3]; } exp[MAX_SWTRI];
+    int en = 0;
+    for (int p = 0; p < s_gte_n && en + 2 < MAX_SWTRI; p++) {
+        prim_t* pr = &s_gte[p];
+        if (pr->nv < 3) continue;
+        int pi[4];
+        for (int k = 0; k < pr->nv; k++) pi[k] = spyro_index_of(cpu, (int)pr->x[k], (int)pr->y[k]);
+        int splits = (pr->nv == 4) ? 2 : 1;
+        for (int s = 0; s < splits; s++) {
+            int a,b,c;
+            if (s == 0) { a=0;b=1;c=2; } else { a=1;b=3;c=2; }   /* GT4 GPU split */
+            exp[en].i[0]=pi[a]; exp[en].i[1]=pi[b]; exp[en].i[2]=pi[c];
+            exp[en].rgb[0]=pr->rgb[a]; exp[en].rgb[1]=pr->rgb[b]; exp[en].rgb[2]=pr->rgb[c];
+            exp[en].u[0]=pr->u[a]; exp[en].v[0]=pr->v[a];
+            exp[en].u[1]=pr->u[b]; exp[en].v[1]=pr->v[b];
+            exp[en].u[2]=pr->u[c]; exp[en].v[2]=pr->v[c];
+            en++;
         }
     }
-    if (s_logged < 6 && fed > 0) {
-        s_logged++;
-        fprintf(stderr, "[spyro-native f=%u] %d tris  idx-recover: exact=%ld/%ld fallback=%ld  "
-                "NN-would-disagree=%ld (%.1f%%)\n",
-                openpete_frame, fed, exact, total, fallback,
-                nn_disagree, total ? 100.0 * nn_disagree / total : 0.0);
+    int n = s_swtri_n < en ? s_swtri_n : en;
+    for (int k = 0; k < n; k++) {
+        int pok=1, rok=1, uok=1;
+        for (int j = 0; j < 3; j++) {
+            int wi = s_swtri[k].v[j].idx, ei = exp[k].i[j];
+            if (ei < 0 || wi < 0 ||
+                floorf(s_sproj[wi].sx) != floorf(s_sproj[ei].sx) ||
+                floorf(s_sproj[wi].sy) != floorf(s_sproj[ei].sy)) pok=0;
+            if (s_swtri[k].v[j].rgb != exp[k].rgb[j]) rok=0;
+            if (s_swtri[k].v[j].u != exp[k].u[j] || s_swtri[k].v[j].v != exp[k].v[j]) uok=0;
+        }
+        if (pok) st->pos_ok++; if (rok) st->rgb_ok++; if (uok) st->uv_ok++;
+        if (!(rok&&uok) && st->first_bad<0) st->first_bad=k;
+    }
+    st->walk = s_swtri_n; st->expected = en; st->n = n; st->cnt_ok = (s_swtri_n == en);
+}
+static void spyro_walk_compare(CPUState* cpu) {
+    walk_stats st; spyro_walk_eval(cpu, &st);
+    fprintf(stderr, "[spyro-walk f=%u] walk=%d expected=%d (prims=%d) %s pos=%.1f%% rgb=%.1f%% uv=%.1f%%  first_bad=%d\n",
+            openpete_frame, st.walk, st.expected, s_gte_n, st.cnt_ok ? "CNT-OK" : "CNT-MISMATCH",
+            st.n?100.0*st.pos_ok/st.n:0, st.n?100.0*st.rgb_ok/st.n:0, st.n?100.0*st.uv_ok/st.n:0, st.first_bad);
+}
+
+/* ---- scene feed (3b.4 NATIVE WALK) ---------------------------------------
+ * Emit the independent face-stream walk's triangles (native float geometry +
+ * gamestate colour + static-Tiledef texture) into the shared depth-sorted
+ * scene. This RETIRES the prim-driven scaffold: nothing here reads the .s's
+ * per-frame prim output — topology/colour/UV come from m_Faces/m_Colors, the
+ * geometry from s_sproj (native float projection), the texture from VRAM (a
+ * static asset). The only remaining .s coupling is spyro_nclip reading the
+ * int16 SXY scratchpad for a byte-exact cull decision; that becomes a native
+ * float NCLIP at the Phase-6 switch (the .s geometry turning off). */
+static void spyro_feed_walk(CPUState* cpu) {
+    spyro_project_all(cpu);                 /* native float verts -> s_sproj */
+    build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
+    if (s_swtri_n <= 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
+    for (int i = 0; i < s_swtri_n; i++) {
+        swtri* w = &s_swtri[i];
+        openpete_scene_tri st;
+        for (int k = 0; k < 3; k++) {
+            st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
+            st.v[k].z  = openpete_native_depth_from_viewz(w->v[k].vz);
+            st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
+            st.v[k].rgba = w->v[k].rgb | 0xFF000000u;
+        }
+        st.textured = w->textured; st.tpage_x = w->tpage_x; st.tpage_y = w->tpage_y;
+        st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
+        openpete_native_scene_add_tri(&st);
     }
 }
 
@@ -684,9 +899,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
 
     if (feed && endp > startp && render_path_enabled(RP_SPYRO)) {  /* native feed (if selected) */
-        capture_prims(cpu, startp, endp);         /* topology + colour + texture */
-        spyro_project_all(cpu);                   /* native float verts -> s_sproj */
-        spyro_feed_scaffold(cpu);                 /* index-recovered native verts + prim topology */
+        spyro_feed_walk(cpu);                     /* independent face-stream walk: native verts+topology+colour+UV */
     }
 
     if (verify) {
@@ -695,10 +908,12 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
             capture_prims(cpu, startp, endp);
             if (!s_dumped) { spyro_dump(cpu, startp, endp); s_dumped = 1; }
             spyro_project_all(cpu);                  /* native decode + project -> s_sproj */
+            build_spyro_walk(cpu);                   /* 3b.4 independent face-stream walk */
             if (s_reports < 200) {                   /* detailed spot-check (first 200 frames) */
                 spyro_compare_geometry();            /* prim-NN A/B (geometry verdict) */
                 spyro_scratchpad_ab(cpu);            /* clean per-vertex A/B vs scratchpad */
                 spyro_idx_audit(cpu);                /* index-recovery vs NN disagreement */
+                spyro_walk_compare(cpu);             /* walk topology+colour+UV vs prims (ordered) */
                 s_reports++;
             }
             spyro_aggregate(cpu);                    /* cheap per-frame full-run (20k) verdict */
