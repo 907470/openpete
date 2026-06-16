@@ -562,23 +562,27 @@ static int build_walk_tris(CPUState* cpu) {
                 int mode=(int)((tp>>7)&3u); bpp=(mode==0)?4:(mode==1)?8:16;
                 clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
             }
-            /* #1 SPECULAR ENV-REFLECTION (metal faces): the .s replaces the baked
-             * Tiledef UV with a view-dependent reflection map (per-vertex
-             * metalMatrix.(viewPos-TR) -> spherical UV). Re-derived in float
-             * (byte-exact <=1 texel vs the prims); tpage/clut from the static metal
-             * Tiledef. Gated to the SPEC pass + metal records (rec+0x30 hi byte). */
-            if (textured && s_cur_mat[0]=='S' && R->metal) {
+            /* #1 SPECULAR per-face shading. The .s gives ONLY strip faces (!fresh)
+             * with word0&0x4 set a special per-face treatment (the bit is the
+             * highlight-enable @80021B64; on FRESH faces the same bit is the quad
+             * flag, so they're excluded). METAL record -> env reflection
+             * (.L800226F8/.L800222C0); non-metal -> diffuse highlight (.L80021DB4).
+             * Every OTHER face keeps its baked Tiledef texture + per-vertex colour.
+             * This per-face gate is load-bearing: a metal moby's sombrero/eyes are
+             * regular textured faces and must NOT be env-mapped -- only its at&4
+             * strip faces reflect. (The earlier gate env-mapped EVERY textured face
+             * of a metal moby -> sombrero went shiny-green with the wrong texture.) */
+            if (s_cur_mat[0]=='S' && !fresh && (w0 & 0x4u)) {
+              if (R->metal) {
+                /* ENV REFLECTION -- view-dependent spherical UV (byte-exact <=1
+                 * texel vs prims); tpage/clut from the static metal Tiledef. */
                 specular_env_uv(p0->ex,p0->ey,p0->ez, &u[0],&v[0]);
                 specular_env_uv(p1->ex,p1->ey,p1->ez, &u[1],&v[1]);
                 specular_env_uv(p2->ex,p2->ey,p2->ez, &u[2],&v[2]);
                 if (p3) specular_env_uv(p3->ex,p3->ey,p3->ez, &u[3],&v[3]);
-                /* SEAM UNWRAP: u is azimuth mod 128, so a face straddling the 0/128
-                 * seam would have e.g. u={120,9} and the GPU would interpolate the
-                 * whole texture backwards across it. The .s shifts the whole face to
-                 * stay contiguous (the 143-vs-15 prim case). Mirror it: pull u[1..3]
-                 * within +-64 of u[0], then keep all >=0. (v is bounded elevation, no
-                 * wrap.) Absolute 128-block may differ from the .s by one period on
-                 * seam faces -- harmless for a tiling reflection panorama. */
+                /* SEAM UNWRAP: u is azimuth mod 128; pull u[1..3] within +-64 of
+                 * u[0] (then keep >=0) so a seam face isn't interpolated backwards
+                 * (mirrors the .s shifting a whole face by +-128). */
                 int nvtx = p3 ? 4 : 3, umin = u[0];
                 for (int q = 1; q < nvtx; q++) {
                     while (u[q] - u[0] >  64) u[q] -= 128;
@@ -586,18 +590,13 @@ static int build_walk_tris(CPUState* cpu) {
                     if (u[q] < umin) umin = u[q];
                 }
                 if (umin < 0) for (int q = 0; q < nvtx; q++) u[q] += 128;
+                textured = 1;   /* env faces sample the reflection texture */
                 tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
-            }
-            /* #1 follow-up SPECULAR HIGHLIGHT: non-metal shiny faces get the .s's
-             * per-face diffuse highlight (.L80021DB4: OP face-normal -> spec light
-             * -> CC) which REPLACES the base colour (flat per face). Native float
-             * diffuse, fitted to the prims (demo f4096 chest, byte-level):
-             *   c = base * (0.62 - 1.4*NL),  NL = view face-normal . spec-light
-             * (D_800770C8+0xC), clamped. Gated exactly like the .s: SPEC strip face
-             * (!fresh) with word0&0x4 (on strips that bit is the highlight enable @
-             * 80021B64; on fresh faces it's the quad flag), non-metal record.
-             * Without it, metal-less specular objects (the chest) render flat-lit. */
-            if (s_cur_mat[0]=='S' && !R->metal && !fresh && (w0 & 0x4u)) {
+              } else {
+                /* DIFFUSE HIGHLIGHT -- per-face flat shade that REPLACES the base
+                 * colour (native float, fitted to the prims): c = base*(0.68 -
+                 * 1.54*NL), NL = view face-normal . spec-light (D_800770C8+0xC).
+                 * Without it metal-less shiny objects (the chest) render flat-lit. */
                 float e1x=p1->ex-p0->ex, e1y=p1->ey-p0->ey, e1z=p1->ez-p0->ez;
                 float e2x=p2->ex-p0->ex, e2y=p2->ey-p0->ey, e2z=p2->ez-p0->ez;
                 float nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
@@ -609,6 +608,7 @@ static int build_walk_tris(CPUState* cpu) {
                     if(rr>255)rr=255; if(gg>255)gg=255; if(bb2>255)bb2=255;
                     c0=c1=c2=c3=(uint32_t)(rr|(gg<<8)|(bb2<<16));   /* flat per face */
                 }
+              }
             }
             int blend = 0;   /* ABE bit not in word0; 3a.3 sets it from tpage */
 
