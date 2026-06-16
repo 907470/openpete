@@ -438,6 +438,69 @@ static void spyro_scratchpad_ab(CPUState* cpu) {
     spyro_scratchpad_at(cpu, 0);
 }
 
+/* ---- scene feed (3b.4 first-visible scaffold) ----------------------------
+ * Mirrors the moby 3a.2a scaffold: native float verts (s_sproj) carry the
+ * geometry, the captured prims carry topology + per-vertex colour + texture
+ * (Tiledef). Each prim vertex is nearest-neighbour matched to s_sproj so the
+ * fed XY/Z are NATIVE (sub-pixel, no int16 wobble), while connectivity rides
+ * the .s. The independent native face-stream walk (the 3a.2b analog) replaces
+ * this later; for now it gets Spyro on screen to drive visual iteration.
+ * NOTE: the 2-byte body residual shows as slight NN jitter until that's fixed. */
+static int spyro_nn(float px, float py) {
+    int best = -1; float bd = 1e18f;
+    for (int j = 0; j < s_sproj_n; j++) {
+        float dx = px - s_sproj[j].sx, dy = py - s_sproj[j].sy, d = dx*dx + dy*dy;
+        if (d < bd) { bd = d; best = j; }
+    }
+    return best;
+}
+static void spyro_feed_scaffold(void) {
+    static int s_logged = 0;
+    if (s_sproj_n <= 0 || s_gte_n <= 0) return;
+    /* frame-keyed: no-op if the cyclorama/mobys already began this frame (we
+     * append after them), clears if Spyro is somehow the first feeder. */
+    openpete_native_scene_begin_frame(openpete_frame);
+    int fed = 0;
+    for (int i = 0; i < s_gte_n; i++) {
+        prim_t* p = &s_gte[i];
+        if (p->nv < 3) continue;
+        int tpx=0,tpy=0,clx=0,cly=0,bpp=16;
+        if (p->textured) {
+            unsigned tp=(unsigned)p->tpage, cl=(unsigned)p->clut;
+            tpx=(int)(tp&0xFu)*64; tpy=(int)((tp>>4)&1u)*256;
+            int mode=(int)((tp>>7)&3u); bpp=(mode==0)?4:(mode==1)?8:16;
+            clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
+        }
+        int blend = (p->code & 0x2) ? 1 : 0;   /* ABE (semi-transparent) bit */
+        int idx[4]; for (int k = 0; k < p->nv; k++) idx[k] = spyro_nn(p->x[k], p->y[k]);
+        int tris[2][3], nt;
+        if (p->nv == 3) { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2; nt=1; }
+        else            { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2;
+                          tris[1][0]=1;tris[1][1]=3;tris[1][2]=2; nt=2; }  /* PSX quad split */
+        for (int t = 0; t < nt; t++) {
+            openpete_scene_tri st;
+            int ok = 1;
+            for (int k = 0; k < 3; k++) {
+                int vk = tris[t][k], sj = idx[vk];
+                if (sj < 0) { ok = 0; break; }
+                st.v[k].sx = s_sproj[sj].sx; st.v[k].sy = s_sproj[sj].sy;
+                st.v[k].z  = openpete_native_depth_from_viewz(s_sproj[sj].vz);
+                st.v[k].u  = (float)p->u[vk]; st.v[k].v = (float)p->v[vk];
+                st.v[k].rgba = p->rgb[vk] | 0xFF000000u;
+            }
+            if (!ok) continue;
+            st.textured = p->textured; st.tpage_x = tpx; st.tpage_y = tpy;
+            st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = blend;
+            openpete_native_scene_add_tri(&st); fed++;
+        }
+    }
+    if (!s_logged && fed > 0) {
+        s_logged = 1;
+        fprintf(stderr, "[spyro-native] feeding %d Spyro tris (3b.4 scaffold: native verts + prim topology) frame %u\n",
+                fed, openpete_frame);
+    }
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int spyro_verify_enabled(void) {
     static int v = -1;
@@ -460,6 +523,12 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_80023AC4(cpu);                          /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+
+    if (feed && endp > startp) {                  /* native scene feed (--native-ab) */
+        capture_prims(cpu, startp, endp);         /* topology + colour + texture */
+        spyro_project_all(cpu);                   /* native float verts -> s_sproj */
+        spyro_feed_scaffold();                    /* NN native verts + prim topology */
+    }
 
     if (verify) {
         static int s_dumped = 0, s_reports = 0;
