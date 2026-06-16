@@ -14,8 +14,9 @@
  * A/B comparison; the end state hides PsyCross (FBO-only, read back as the
  * "reference") and the Vulkan window is the only one shown.
  *
- * Gated entirely by --native-ab. With the flag absent every entry point is
- * an inert no-op, so normal/headless runs are byte-for-byte unaffected.
+ * Gated entirely by --renderer vk|ab|diff. With --renderer psycross (the
+ * default) every entry point is an inert no-op, so normal/headless runs are
+ * byte-for-byte unaffected.
  */
 #ifndef OPENPETE_NATIVE_RENDER_H
 #define OPENPETE_NATIVE_RENDER_H

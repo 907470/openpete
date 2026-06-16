@@ -403,7 +403,7 @@ static void push_scene(CPUState* cpu) {
 static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
-    int feed   = openpete_native_render_enabled();   /* --native-ab live */
+    int feed   = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
     if (!verify && !feed) return 0;         /* fall through — zero overhead */
     static int s_in = 0;
     if (s_in) return 0;

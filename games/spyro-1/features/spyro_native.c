@@ -23,8 +23,8 @@
 //
 // Determinism: never writes PSX RAM. Calls the real renderer exactly once
 // (behaviour-identical to the normal dispatch fall-through) and only READS
-// state afterwards. Gated by OPENPETE_SPYRO_VERIFY (dump/A/B) or --native-ab
-// (scene feed); inert fall-through otherwise.
+// state afterwards. Gated by OPENPETE_SPYRO_VERIFY (dump/A/B) or a native
+// renderer mode (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
@@ -524,7 +524,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     func_80023AC4(cpu);                          /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
-    if (feed && endp > startp) {                  /* native scene feed (--native-ab) */
+    if (feed && endp > startp) {                  /* native scene feed (--renderer vk|ab|diff) */
         capture_prims(cpu, startp, endp);         /* topology + colour + texture */
         spyro_project_all(cpu);                   /* native float verts -> s_sproj */
         spyro_feed_scaffold();                    /* NN native verts + prim topology */

@@ -25,11 +25,11 @@ const feature_module_t* const openpete_features[] = {
     &cyclorama_native_module,
     /* Phase 3 native-renderer moby spike + A/B verify harness. Hooks the
      * REGULAR material renderer 0x8001F798 only when OPENPETE_MOBY_VERIFY or
-     * --native-ab is set; inert fall-through otherwise. */
+     * a native renderer mode (--renderer vk|ab|diff) is set; inert otherwise. */
     &moby_native_module,
     /* Phase 3b.4 native-renderer Spyro spike + A/B verify harness. Hooks the
      * player-avatar renderer 0x80023AC4 only when OPENPETE_SPYRO_VERIFY or
-     * --native-ab is set; inert fall-through otherwise. */
+     * a native renderer mode (--renderer vk|ab|diff) is set; inert otherwise. */
     &spyro_native_module,
 };
 

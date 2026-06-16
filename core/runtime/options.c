@@ -161,10 +161,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->max_runtime_seconds = atoi(v); i++;
         } else if (strcmp(a, "--headless") == 0) {
             opts->headless = true;
-        } else if (strcmp(a, "--native-ab") == 0) {
-            opts->native_ab = true;
-        } else if (strcmp(a, "--native-only") == 0) {
-            opts->native_only = true;
+        } else if (strcmp(a, "--renderer") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if      (strcmp(v, "psycross") == 0) opts->renderer = OPENPETE_RENDERER_PSYCROSS;
+            else if (strcmp(v, "vk")       == 0) opts->renderer = OPENPETE_RENDERER_VK;
+            else if (strcmp(v, "ab")       == 0) opts->renderer = OPENPETE_RENDERER_AB;
+            else if (strcmp(v, "diff")     == 0) opts->renderer = OPENPETE_RENDERER_DIFF;
+            else {
+                fprintf(stderr, "openpete: --renderer expects psycross|vk|ab|diff, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--render-fps") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_fps = atoi(v); i++;
@@ -417,7 +424,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
-                "  --native-ab                open the native Vulkan renderer A/B window (dev; ignored with --headless)\n"
+                "  --renderer MODE            display renderer: psycross (default) | vk (native, full-window) |\n"
+                "                             ab (native|psycross side-by-side) | diff (native live; --screenshot-on-frame\n"
+                "                             writes a colour diff vs psycross). Native modes ignored with --headless.\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"

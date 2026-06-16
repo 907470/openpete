@@ -708,12 +708,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * WGL) must therefore be present; pure-console CI needs Xvfb. The window
      * is created unmapped via startHidden so it never flashes or steals
      * focus — GL/FBO rendering works fine without it ever being shown. */
-    /* Hide PsyCross's GL window when the native renderer owns the display
-     * (--native-ab): PsyCross renders to its FBO only and we read it back
-     * into the Vulkan window, which becomes the single visible one. Keyboard
-     * focus moves to the Vulkan window; gamepad input is focus-independent. */
+    /* Hide PsyCross's GL window when a native renderer mode owns the display
+     * (--renderer vk|ab|diff): PsyCross renders to its FBO only and we read it
+     * back into the Vulkan window, which becomes the single visible one.
+     * Keyboard focus moves to the Vulkan window; gamepad input is
+     * focus-independent. */
+    bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
-                    /*startHidden=*/(opts->headless || opts->native_ab || opts->native_only) ? 1 : 0);
+                    /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
 
     /* Hor+ post-PsyX knob population — see core/features/widescreen.c.
      * Sets g_psyx_render_aspect_factor + every psx_runtime_* knob the
@@ -765,8 +767,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
-    /* --native-ab / --native-only: bring up the native Vulkan renderer's window. SDL is
-     * already initialized by PsyX_Initialise. Pass the same resolved window
+    /* --renderer vk|ab|diff: bring up the native Vulkan renderer's window. SDL
+     * is already initialized by PsyX_Initialise. Pass the same resolved window
      * size handed to PsyCross so the native window matches the game's. A
      * bring-up failure is non-fatal — we log and run PsyCross-only. The
      * native path is a pure display consumer; it never touches PSX RAM, so
@@ -1501,15 +1503,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_present_pending = 0;
             did_present_this_iter = true;
 
-            /* Native renderer A/B: present one frame to the Vulkan window now
-             * that PsyCross's present FBO is freshly rendered (1c.2 will read
-             * it back here as the reference). No-op unless --native-ab. */
+            /* Native renderer: present one frame to the Vulkan window now that
+             * PsyCross's present FBO is freshly rendered (read back here as the
+             * reference). No-op unless --renderer vk|ab|diff. */
             openpete_native_render_frame();
 
-            /* Native A/B screenshot: capture the just-rendered Vulkan window
-             * (both panels — native render + reference) to "<out>-ab.png" on
-             * the same --screenshot-on-frame targets, so the native view can
-             * be inspected like the PsyCross one. */
+            /* Native screenshot: capture the just-rendered Vulkan window to
+             * "<out>-ab.png" on the same --screenshot-on-frame targets, so the
+             * native view can be inspected like the PsyCross one. */
             if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
                 static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {

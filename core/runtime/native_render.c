@@ -214,18 +214,20 @@ static void fit_cell(float cx, float cy, float chx, float chy,
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
-    if (!opts || (!opts->native_ab && !opts->native_only))
-        return 0; /* not requested — inert no-op */
+    if (!opts || opts->renderer == OPENPETE_RENDERER_PSYCROSS)
+        return 0; /* PsyCross owns the display — native window inert */
 
     if (opts->headless) {
-        OPL_WARN_F("native", "--native-ab/--native-only ignored under --headless (no display)");
+        OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no display)");
         return 0;
     }
 
-    /* vk-only mode: the native render is the sole panel (no reference compare),
-     * so it takes priority over --native-ab if both are given. The 1-frame
-     * scene delay (an A/B-alignment hack) defaults OFF here. */
-    bool ab_mode = opts->native_ab && !opts->native_only;
+    /* A/B compare mode shows the PsyCross reference in a second panel and delays
+     * the native scene by one frame to align with that lagged reference. vk and
+     * diff are single full-window panels with no reference panel and no scene
+     * delay. (diff's live colour-diff render + diff screenshot land in a later
+     * step; for now diff mirrors vk so the flag is usable.) */
+    bool ab_mode = (opts->renderer == OPENPETE_RENDERER_AB);
     s_nr.ab_mode  = ab_mode;
     s_nr.n_panels = ab_mode ? 2 : 1;
     s_scene_ab_mode = ab_mode ? 1 : 0;
@@ -238,6 +240,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * so it isn't surprisingly larger than the PsyCross-only window. */
     int w = (win_w > 0) ? win_w : NR_DEFAULT_W;
     int h = (win_h > 0) ? win_h : NR_DEFAULT_H;
+
+    /* A/B shows two panels side-by-side, so widen the window 2x by default —
+     * each panel then gets the game's full width instead of being squeezed into
+     * half. vk/diff are single full-window panels and keep the resolved size.
+     * An explicit --window is treated as the intended TOTAL window size and is
+     * left alone (the user picked it deliberately). */
+    if (ab_mode && opts->window_w <= 0)
+        w *= 2;
 
     SDL_Window *win = SDL_CreateWindow(ab_mode ? "openpete — native renderer (A/B)"
                                                : "openpete — native renderer", w, h,

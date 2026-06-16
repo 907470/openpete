@@ -26,6 +26,24 @@ typedef enum {
     OPENPETE_LOG_JSON  = 1,
 } openpete_log_format_t;
 
+/* Active renderer / display mode (--renderer). PSYCROSS is the default: the
+ * original PsyCross GL renderer drives the single visible window, no native
+ * Vulkan window. The other three bring up the native Vulkan renderer's window
+ * (and start PsyCross hidden, rendering only to its FBO):
+ *   VK   — native renderer is the sole, full-window display.
+ *   AB   — native | PsyCross side-by-side, for visual comparison.
+ *   DIFF — native renderer live full-window; --screenshot-on-frame writes a
+ *          per-pixel colour diff of native vs the PsyCross reference.
+ * All native modes are pure display consumers — they never perturb gameplay
+ * state. Native modes are ignored under --headless. See
+ * notes/plans/openpete-native-renderer.md. */
+typedef enum {
+    OPENPETE_RENDERER_PSYCROSS = 0,  /* default: PsyCross GL, no native window */
+    OPENPETE_RENDERER_VK,            /* native Vulkan renderer, sole display */
+    OPENPETE_RENDERER_AB,            /* native | PsyCross side-by-side */
+    OPENPETE_RENDERER_DIFF,          /* native live; screenshot = colour diff */
+} openpete_renderer_t;
+
 /* All command-line options live here. Per-game main.cpp may override
  * `display_name` before passing to `openpete_run`. */
 typedef struct {
@@ -199,18 +217,13 @@ typedef struct {
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
 
-    /* Native Vulkan renderer A/B harness. Opens a second (Vulkan) window
-     * alongside PsyCross's GL window as the development view for the native
-     * renderer. Pure display consumer — never perturbs gameplay state. No-op
-     * under --headless. See notes/plans/openpete-native-renderer.md. */
-    bool native_ab;
-
-    /* Native Vulkan renderer as the SOLE display (vk-only mode): one full-window
-     * panel showing the native render, no PsyCross reference panel. Unlike
-     * --native-ab (two side-by-side panels for comparison), this has no
-     * reference to align to, so the 1-frame A/B scene delay is OFF by default
-     * (present the live frame, no added latency). Pure display consumer. */
-    bool native_only;
+    /* Active renderer / display mode (--renderer psycross|vk|ab|diff). Default
+     * OPENPETE_RENDERER_PSYCROSS = the original behavior (PsyCross owns the one
+     * window, no native Vulkan window). The other modes open the native
+     * renderer's Vulkan window and start PsyCross hidden. Pure display
+     * selection — never perturbs gameplay state; native modes are no-ops under
+     * --headless. See openpete_renderer_t above. */
+    openpete_renderer_t renderer;
 
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
