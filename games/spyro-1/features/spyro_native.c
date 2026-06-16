@@ -29,6 +29,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -517,14 +518,18 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = spyro_verify_enabled();
     int feed   = openpete_native_render_enabled();
-    if (!verify && !feed) return 0;             /* inert: let normal dispatch run it */
+    /* --render-paths also needs the bracket so the OT filter knows this path's
+     * polybuf range, even when not feeding/verifying. */
+    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch runs it */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_80023AC4(cpu);                          /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
-    if (feed && endp > startp) {                  /* native scene feed (--renderer vk|ab|diff) */
+    render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
+
+    if (feed && endp > startp && render_path_enabled(RP_SPYRO)) {  /* native feed (if selected) */
         capture_prims(cpu, startp, endp);         /* topology + colour + texture */
         spyro_project_all(cpu);                   /* native float verts -> s_sproj */
         spyro_feed_scaffold();                    /* NN native verts + prim topology */

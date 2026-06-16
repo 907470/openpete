@@ -195,6 +195,7 @@ extern "C" {
  * place of the XA stream when present. See
  * notes/plans/openpete-music-wav-override.md. */
 #include "music_override.h"
+#include "features/render_paths.h"  /* --render-paths OT-walk filter */
 
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
@@ -744,6 +745,22 @@ void psyq_DrawOTag(CPUState* cpu) {
         uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
         uint32_t next = tag & 0x00FFFFFFu;
 
+        /* --render-paths: drop geometry prims belonging to a non-selected render
+         * path. Presentation-only — we just don't submit the prim; game RAM is
+         * untouched (the OT itself is never modified), so gameplay state is
+         * unaffected. Control/env prims (plen==0, or code 0xE0/0xA0/0x00) always
+         * pass so the draw-env / image loads still set up the framebuffer. */
+        if (render_paths_active()) {
+            uint8_t cb = (plen != 0u) ? host[7] : 0u;
+            uint8_t hi = cb & 0xF0u;
+            bool is_geom = (plen != 0u) && (hi >= 0x20u && hi <= 0x70u);
+            if (is_geom && !render_path_addr_visible(addr)) {
+                if (next == 0x00FFFFFFu) break;
+                addr = next | 0x80000000u;
+                continue;
+            }
+        }
+
         /* Payload-size estimate. The PSX P_TAG length is 8-bit (max 1020 bytes
          * payload), but variable-length primitives like LoadImage (code 0xA0)
          * embed image data right after the struct that doesn't necessarily
@@ -925,6 +942,11 @@ void psyq_DrawOTag(CPUState* cpu) {
         addr = next | 0x80000000u;
     }
     if (dump) std::fflush(dump);
+
+    /* --render-paths: the per-path polybuf intervals were recorded during this
+     * frame's render pass and consumed by the walk above; clear them so the next
+     * frame's paths record fresh. (Spyro issues one DrawOTag per frame.) */
+    render_paths_frame_reset();
 
     /* Patch each slot's addr to point at the next slot's host pointer; last
      * slot terminates with `prim_terminator`. */

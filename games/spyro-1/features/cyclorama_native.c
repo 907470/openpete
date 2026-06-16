@@ -27,6 +27,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
+#include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -404,7 +405,9 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
     int feed   = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
-    if (!verify && !feed) return 0;         /* fall through — zero overhead */
+    /* --render-paths also needs the bracket so the OT filter knows this path's
+     * polybuf range, even when not feeding/verifying. */
+    if (!verify && !feed && !render_paths_active()) return 0;  /* zero overhead */
     static int s_in = 0;
     if (s_in) return 0;
     s_in = 1;
@@ -414,8 +417,11 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     func_8004EBA8(cpu);                     /* run the real renderer */
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
+    render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */
+
     cyc_extract(cpu, a0, a1, a2);           /* native scene from gamestate */
-    if (feed) push_scene(cpu);              /* display it in panel 0 */
+    if (feed && render_path_enabled(RP_CYCLORAMA))
+        push_scene(cpu);                    /* display it in panel 0 (if selected) */
 
     if (verify) {
         static int s_dumped = 0;

@@ -11,6 +11,7 @@
 
 extern const feature_module_t widescreen_module;
 extern const feature_module_t no_lod_module;
+extern const feature_module_t render_paths_module;
 extern const feature_module_t cyclorama_native_module;
 extern const feature_module_t moby_native_module;
 extern const feature_module_t spyro_native_module;
@@ -18,6 +19,10 @@ extern const feature_module_t spyro_native_module;
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
     &no_lod_module,
+    /* --render-paths: parse the path-isolation selection at startup (apply_options
+     * only; the per-path polybuf brackets live in the native feature modules and
+     * the OT-walk filter in psyq_DrawOTag). */
+    &render_paths_module,
     /* Phase 2 native-renderer cyclorama spike + A/B verify harness.
      * Hooks 0x8004EBA8 only when OPENPETE_CYC_VERIFY is set; otherwise an
      * inert fall-through. Registered after widescreen so its cyclorama-360

@@ -28,6 +28,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -1053,6 +1054,7 @@ static void specular_hl_calibrate(CPUState* cpu) {
  * carries its own view-space Z, so opaque faces sort correctly regardless of
  * submission order. Determinism-safe: host-side display only. */
 static void push_scene_moby(void) {
+    if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     static int s_logged = 0;
     if (!s_logged && s_wtri_n > 0) {
         s_logged = 1;
@@ -1203,6 +1205,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     render_fn(cpu);                            /* run the real renderer */
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
+    render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
+
     capture_gte(cpu, start, end);
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
 
@@ -1240,7 +1244,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
 
 static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled() && !openpete_native_render_enabled()) return 0;
+    if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_native_pass(cpu, func_8001F798, "REG");   /* regular material */
     s_in = 0;
@@ -1248,7 +1252,7 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
 }
 static int on_80020F34_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled() && !openpete_native_render_enabled()) return 0;
+    if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_native_pass(cpu, func_80020F34, "SPEC");  /* specular: same geometry, +0x1600 base */
     s_in = 0;
@@ -1751,11 +1755,13 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = moby_verify_enabled();
     int feed   = openpete_native_render_enabled();
-    if (!verify && !feed) return 0;
+    if (!verify && !feed && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+
+    render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */
 
     if (feed) {                                 /* feed shaded mobys to the scene — fully native */
         s_cur_mat = "SHD";

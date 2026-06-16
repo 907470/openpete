@@ -88,6 +88,7 @@ add_executable(openpete-spyro1
     feature_list.c
     features/no_lod.c
     features/widescreen.c
+    features/render_paths.c
     features/render_decouple.c
     features/polybuf.c
     features/cyclorama_native.c

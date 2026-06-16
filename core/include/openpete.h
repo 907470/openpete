@@ -225,6 +225,15 @@ typedef struct {
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
+    /* --render-paths CSV (debug): restrict rendering to the named render paths
+     * (e.g. "cyclorama,spyro") in BOTH renderers, so a path can be compared in
+     * isolation. PsyCross drops the other paths' geometry prims during the OT
+     * walk (presentation-only — never writes game RAM, so gameplay state is
+     * unaffected); the native renderer feeds only the selected paths. The path
+     * NAMES are game-specific, so core only carries the raw string; the per-game
+     * impl parses it. NULL/empty = all paths (no filtering). */
+    const char* render_paths;
+
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */
