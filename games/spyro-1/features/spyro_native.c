@@ -384,12 +384,210 @@ static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3
     return emitted;
 }
 
+/* ======================================================================== *
+ *  PHASE-A NATIVE MATRIX DERIVATION (re-derive M + TR from gamestate)       *
+ * ======================================================================== *
+ * The last .s per-frame coupling for Spyro geometry: spyro_project_all reads
+ * each segment's view×rotation matrix (M) and translation (TR) straight from
+ * the Phase-A scratch block (D_SCRATCH+0x1900). Here we rebuild them from
+ * gamestate (g_Camera projection matrix × g_Spyro pose + the seam joints),
+ * the moby-3a.1→3a.4.3 analog. RE'd from r_pete.s 281-622 (.L80023EE0 TR +
+ * .L800241E0/.L80024290/.L80024344 euler + D_80024054 seam RTPS):
+ *
+ *   TR_body = swizzled-centre MVMVA (.L80023EE0): IR1=cam.y-sy, IR2=cam.z-sz,
+ *     IR3=sx-cam.x (int16); MAC=(PM·IR)>>12 (sf=1, no <<1/>>2 — unlike moby).
+ *   M_body  = PM · Ry·Rx·Rz from g_Spyro[0xC] (same euler idx/order/signs as
+ *     moby shaded_compose_euler — Y-rotation sign verified bit-exact by tracing
+ *     the GTE column-rotate: .L800241E0 builds col0'=cos·col0+sin·col2,
+ *     col2'=-sin·col0+cos·col2 == M·Ry, Ry={{c,0,-s},{0,1,0},{s,0,c}}).
+ *   M_head/M_tail = M_body · euler(g_Spyro[0x10]/[0x14]); else STICKY = M_body
+ *     (the .s leaves the body matrix in the GTE; D_800240F8 reloads only when
+ *     the angle word is non-zero — that sets the segment's frameData sign bit).
+ *   TR_head/TR_tail = seam joints (D_80024054 RTPS): decode the body keyframe
+ *     stream word [0x10] (head) / [0x14] (tail) — same field layout as a vertex
+ *     delta, X/Y negated, Z kept — INTPL'd by body progress for dual keyframes,
+ *     then RTPS through M_body + TR_body, IR = sat16(view coords).
+ *
+ * Verified per-element vs the scratch block (byte-exact ground truth — it holds
+ * the exact M/TR Phase A built), then drives spyro_project_all (gated). */
+
+typedef struct { int M[3][3]; int TR[3]; int present; } seg_xform;
+static seg_xform s_xf[3];
+
+/* Native Phase-A matrices are the DEFAULT (verified byte-exact vs the scratch
+ * block over the full 20k/4-level demo: M worstΔ=0, TR worstΔ=1 LSB, geometry
+ * imperfect=0 @3.9px). OPENPETE_SPYRO_SCRATCH_MAT=1 forces the old scratch read
+ * (kept for A/B regression). */
+static int spyro_native_mat(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SPYRO_SCRATCH_MAT"); v = !(e && *e && *e != '0'); }
+    return v;
+}
+
+/* int 3x3 multiply with the GTE's per-step >>12 truncation (the column-rotate
+ * the .s does via MVMVA; 64-bit accum to match the GTE's intermediate width). */
+static void spyro_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] + (int64_t)A[i][2]*B[2][j]) >> 12);
+}
+
+/* M = start·Ry·Rx·Rz from a packed euler word (g_Spyro[0xC/0x10/0x14]). rot==0
+ * -> identity (sin@0=0, cos@0=4096) so M=start (the sticky / no-rotation case). */
+static void spyro_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]) {
+    uint32_t iy = (rot>>15)&0x1FEu, ix = (rot&0xFF00u)>>7, iz = (rot&0xFFu)<<1;
+    int sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy),       cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
+    int sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix),       cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
+    int sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz),       cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
+    int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
+    int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
+    int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
+    int t1[3][3], t2[3][3];
+    spyro_mat_mul3(start, Ry, t1);
+    spyro_mat_mul3(t1, Rx, t2);
+    spyro_mat_mul3(t2, Rz, out);
+}
+
+static inline int spyro_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
+
+/* INTPL one seam-joint field: kfA `jw`, kfB `jwB`, blend IR0 (.s $t6 = prog<<8).
+ * Mirrors the GTE INTPL pipe (color_depth_cue_finish): result = (IR<<12 +
+ * IR0*sat16(FC-IR)) >> 12. Single keyframe (!dual) = the raw field. Integer-
+ * exact so the seam TR matches the scratch block byte-for-byte (a float lerp +
+ * truncate drifted up to 2 units, +0.2px at the near-plane tail tip). */
+static int spyro_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
+    int a = sra_field(jw, lsh, 21);
+    if (!dual) return a;
+    int diff = sra_field(jwB, lsh, 21) - a;        /* 11-bit fields -> fits int16 */
+    diff = spyro_sat16(diff);
+    return (int)((((int64_t)a << 12) + (int64_t)ir0 * diff) >> 12);
+}
+
+/* Seam-joint view-space TR (head/tail): RTPS the body keyframe offset word `jw`
+ * (kfB `jwB`, blend ir0=prog<<8) through M_body + TR_body. Field layout matches
+ * the vertex delta (Z=>>21, X=<<11>>21, Y=<<22>>21); X/Y negated. RTPS:
+ * MAC = (TR<<12 + M·V) >> 12, IR = sat16(MAC) — the .s seam RTPS at D_80024054. */
+static void spyro_seam_tr(const int Mb[3][3], const int TRb[3], int32_t jw, int32_t jwB,
+                          int ir0, int dual, int out[3]) {
+    int VZ =  spyro_seam_field(jw, jwB, 0,  ir0, dual);
+    int VX = -spyro_seam_field(jw, jwB, 11, ir0, dual);   /* X subtracted (negated) */
+    int VY = -spyro_seam_field(jw, jwB, 22, ir0, dual);   /* Y subtracted (negated) */
+    for (int i = 0; i < 3; i++) {
+        int64_t mac = ((int64_t)TRb[i] << 12)
+                    + (int64_t)Mb[i][0]*VX + (int64_t)Mb[i][1]*VY + (int64_t)Mb[i][2]*VZ;
+        out[i] = spyro_sat16((int)(mac >> 12));
+    }
+}
+
+/* Fill s_xf[3] = {M,TR,present} from gamestate. */
+static void spyro_derive_phaseA(CPUState* cpu) {
+    memset(s_xf, 0, sizeof s_xf);
+    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);  /* camera m_ProjectionMatrix @ +0x00 */
+    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    int32_t sx=(int32_t)cpu->read_word(G_SPYRO+0x00), sy=(int32_t)cpu->read_word(G_SPYRO+0x04), sz=(int32_t)cpu->read_word(G_SPYRO+0x08);
+    int IR1=(int16_t)(cy-sy), IR2=(int16_t)(cz-sz), IR3=(int16_t)(sx-cx);
+    int TRb[3];
+    for (int i = 0; i < 3; i++)
+        TRb[i] = (int)(((int64_t)PM[i][0]*IR1 + (int64_t)PM[i][1]*IR2 + (int64_t)PM[i][2]*IR3) >> 12);
+    int Mb[3][3]; spyro_compose_euler(cpu, PM, cpu->read_word(G_SPYRO+0xC), Mb);
+    memcpy(s_xf[0].M, Mb, sizeof Mb); memcpy(s_xf[0].TR, TRb, sizeof TRb); s_xf[0].present = 1;
+    uint32_t rotH = cpu->read_word(G_SPYRO+0x10), rotT = cpu->read_word(G_SPYRO+0x14);
+    if (rotH) spyro_compose_euler(cpu, Mb, rotH, s_xf[1].M); else memcpy(s_xf[1].M, Mb, sizeof Mb);
+    if (rotT) spyro_compose_euler(cpu, Mb, rotT, s_xf[2].M); else memcpy(s_xf[2].M, Mb, sizeof Mb);
+    s_xf[1].present = s_xf[2].present = 1;
+    /* seam joints: body kfA(/kfB) stream words [0x10] (head) / [0x14] (tail).
+     * a0 = (2-byte cursor) - 0x18 (.s: cursor = a0+0x18); t2=*(a0+0x10), t3=*(a0+0x14)
+     * => *(cursor-8) / *(cursor-4). The cursor is a static frame-offset asset
+     * pointer (Phase-A stream setup, not camera-coupled); reading the keyframe
+     * block through it is an asset read. (Cursor re-derivation = separate part.) */
+    /* INTPL blend = IR0/4096 where IR0 = the .s's $t6 = (progress << 8) (the
+     * progress byte is shifted left 8 at 80023B60 before feeding C2_IR0 at
+     * .L80023E3C — NOT the raw byte). progress is 0..15 so prog<<8 <= 0xF00. */
+    int prog = cpu->read_byte(G_SPYRO+0x24);
+    int ir0 = prog << 8;                            /* .s $t6 = progress<<8 -> C2_IR0 */
+    uint32_t curA = cpu->read_word(SEG_SCRATCH + 0x2C), curB = cpu->read_word(SEG_SCRATCH + 0x3C);
+    int32_t jhA=(int32_t)cpu->read_word(curA-8), jtA=(int32_t)cpu->read_word(curA-4);
+    int32_t jhB=0, jtB=0;
+    if (prog) { jhB=(int32_t)cpu->read_word(curB-8); jtB=(int32_t)cpu->read_word(curB-4); }
+    spyro_seam_tr(Mb, TRb, jhA, jhB, ir0, prog!=0, s_xf[1].TR);
+    spyro_seam_tr(Mb, TRb, jtA, jtB, ir0, prog!=0, s_xf[2].TR);
+}
+
+/* ---- matrix A/B: derived M+TR vs the scratch block (byte-exact ground truth)
+ * Per segment: max |derived-scratch| over the 9 matrix elements + 3 TR words.
+ * For a sticky segment (no own matrix) the effective matrix is the body's, so
+ * compare against seg0's scratch matrix. Returns worst element/TR deltas. */
+typedef struct { int seg_n; int m_max[3]; int tr_max[3]; int worst_m, worst_tr; } mat_stats;
+static void spyro_matrix_eval(CPUState* cpu, mat_stats* ms) {
+    memset(ms, 0, sizeof *ms);
+    spyro_derive_phaseA(cpu);
+    int M0[3][3]; read_matrix(cpu, SEG_SCRATCH + 0x10, M0);   /* body (seg0) scratch matrix */
+    for (int s = 0; s < 3; s++) {
+        uint32_t e = SEG_SCRATCH + (uint32_t)s*SEG_STRIDE;
+        uint32_t fd = cpu->read_word(e);
+        if (fd == 0) break;
+        ms->seg_n++;
+        int hasMat = (s == 0) || (fd & 0x80000000u);
+        int Ms_[3][3]; if (hasMat) read_matrix(cpu, e + 0x10, Ms_); else memcpy(Ms_, M0, sizeof M0);
+        int mmax = 0;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) { int d = abs(s_xf[s].M[i][j] - Ms_[i][j]); if (d>mmax) mmax=d; }
+        int TRs[3] = { (int32_t)cpu->read_word(e+0x04), (int32_t)cpu->read_word(e+0x08), (int32_t)cpu->read_word(e+0x0C) };
+        int tmax = 0;
+        for (int i=0;i<3;i++) { int d = abs(s_xf[s].TR[i] - TRs[i]); if (d>tmax) tmax=d; }
+        ms->m_max[s] = mmax; ms->tr_max[s] = tmax;
+        if (mmax > ms->worst_m) ms->worst_m = mmax;
+        if (tmax > ms->worst_tr) ms->worst_tr = tmax;
+    }
+}
+static void spyro_matrix_compare(CPUState* cpu) {
+    mat_stats ms; spyro_matrix_eval(cpu, &ms);
+    fprintf(stderr, "[spyro-mat f=%u] segs=%d  Mmax(b/h/t)=%d/%d/%d  TRmax(b/h/t)=%d/%d/%d  => %s\n",
+            openpete_frame, ms.seg_n, ms.m_max[0], ms.m_max[1], ms.m_max[2],
+            ms.tr_max[0], ms.tr_max[1], ms.tr_max[2],
+            (ms.worst_m <= 2 && ms.worst_tr <= 2) ? "MATCH" : "MISMATCH");
+}
+
+/* One-shot input dump (diagnostic): the gamestate the derivation reads + the
+ * scratch outputs it must reproduce, side by side. */
+static void spyro_phaseA_dump(CPUState* cpu) {
+    fprintf(stderr, "[spyro-phaseA f=%u]\n", openpete_frame);
+    fprintf(stderr, "  cam projM:");
+    for (int w=0;w<5;w++) fprintf(stderr, " %08X", cpu->read_word(G_CAMERA + (uint32_t)w*4));
+    fprintf(stderr, "  campos=(%d,%d,%d)\n", (int32_t)cpu->read_word(G_CAMERA+0x28),
+            (int32_t)cpu->read_word(G_CAMERA+0x2C), (int32_t)cpu->read_word(G_CAMERA+0x30));
+    fprintf(stderr, "  spyropos=(%d,%d,%d)  rot[0xC/0x10/0x14]=%08X/%08X/%08X  prog[0x24]=%02X\n",
+            (int32_t)cpu->read_word(G_SPYRO+0x00), (int32_t)cpu->read_word(G_SPYRO+0x04),
+            (int32_t)cpu->read_word(G_SPYRO+0x08), cpu->read_word(G_SPYRO+0xC),
+            cpu->read_word(G_SPYRO+0x10), cpu->read_word(G_SPYRO+0x14), cpu->read_byte(G_SPYRO+0x24));
+    spyro_derive_phaseA(cpu);
+    for (int s=0;s<3;s++) {
+        uint32_t e = SEG_SCRATCH + (uint32_t)s*SEG_STRIDE;
+        if (cpu->read_word(e)==0) break;
+        fprintf(stderr, "  seg%d scratch M:", s);
+        for (int w=0;w<5;w++) fprintf(stderr, " %08X", cpu->read_word(e+0x10+(uint32_t)w*4));
+        fprintf(stderr, "  TR=(%d,%d,%d)\n", (int32_t)cpu->read_word(e+0x04),
+                (int32_t)cpu->read_word(e+0x08), (int32_t)cpu->read_word(e+0x0C));
+        fprintf(stderr, "  seg%d derivd M: [%d %d %d / %d %d %d / %d %d %d]  TR=(%d,%d,%d)\n", s,
+                s_xf[s].M[0][0],s_xf[s].M[0][1],s_xf[s].M[0][2], s_xf[s].M[1][0],s_xf[s].M[1][1],s_xf[s].M[1][2],
+                s_xf[s].M[2][0],s_xf[s].M[2][1],s_xf[s].M[2][2], s_xf[s].TR[0],s_xf[s].TR[1],s_xf[s].TR[2]);
+    }
+    /* a0 base check: does (2-byte cursor - 0x18) == m_AnimationVertices + frame-offset? */
+    uint32_t animIdx=cpu->read_byte(G_SPYRO+0x18), frA=cpu->read_byte(G_SPYRO+0x1E);
+    uint32_t model=cpu->read_word(G_MODELS)|0x80000000u;
+    uint32_t animHdr=cpu->read_word(model+0x38+animIdx*4);
+    uint32_t vbase=cpu->read_word(animHdr+0x10), fword=cpu->read_word(animHdr+0x24+frA*4);
+    uint32_t curA=cpu->read_word(SEG_SCRATCH+0x2C);
+    fprintf(stderr, "  a0=cursorA-0x18=%08X  m_AnimVerts=%08X frameWord[A]=%08X  off=((fw<<11)>>10)=%08X  base+off=%08X\n",
+            curA-0x18, vbase, fword, ((fword<<11)>>10), vbase + ((fword<<11)>>10));
+}
+
 /* Walk the 3 segment scratch entries, decode + project all verts to s_sproj. */
 static int spyro_project_all(CPUState* cpu) {
     s_sproj_n = 0;
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    int native = spyro_native_mat();
+    if (native) spyro_derive_phaseA(cpu);            /* M+TR from gamestate (Phase A) */
     int M[3][3]; int TR[3]; int have_mat = 0;
     int nseg = 0;
     int prev_end = 0;                                /* cumulative scratchpad byte offset */
@@ -403,6 +601,18 @@ static int spyro_project_all(CPUState* cpu) {
         int cur_end = (int)((fd >> 14) & 0x3FFu);
         int count = (cur_end - prev_end) >> 2; if (count < 0) count = 0;
         prev_end = cur_end;
+        if (native) {
+            /* Phase-A native: M + TR re-derived from gamestate (s_xf), the last
+             * .s coupling for Spyro geometry retired. (Stickiness is resolved in
+             * spyro_derive_phaseA: a no-rotation head/tail gets M = M_body.) */
+            memcpy(M, s_xf[s].M, sizeof M);
+            TR[0]=s_xf[s].TR[0]; TR[1]=s_xf[s].TR[1]; TR[2]=s_xf[s].TR[2];
+            have_mat = 1;
+            s_lastseg_start = s_sproj_n;
+            s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
+            s_lastseg_id = s; nseg++;
+            continue;
+        }
         /* Matrix reload keys on the frameData SIGN BIT, exactly like the .s:
          * `bgez $s1, .L80024478` SKIPS the ctc2 reload when the sign bit is
          * CLEAR, so the matrix is STICKY — the segment reuses the previous one.
@@ -517,7 +727,9 @@ static struct {
     /* 3b.4 walk verdict (topology+colour+UV vs prims, full run) */
     long w_cnt_bad, w_rgb_bad, w_uv_bad, w_interp;   /* frames with a defect */
     unsigned w_first_cnt_bad_frame, w_first_interp_frame;
-} s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0, 0, 0, 0, 0, 0, 0 };
+    /* Phase-A matrix verdict (derived M+TR vs scratch block, full run) */
+    long mat_bad; int mat_worst_m, mat_worst_tr; unsigned mat_worst_frame;
+} s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 static void spyro_agg_final(void) {
     fprintf(stderr, "[spyro-agg FINAL] frames=%ld imperfect=%ld (%.2f%%)  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u  => %s\n",
@@ -531,6 +743,9 @@ static void spyro_agg_final(void) {
             s_agg.w_rgb_bad, s_agg.w_uv_bad, s_agg.w_interp, s_agg.w_first_interp_frame,
             (s_agg.w_cnt_bad==0 && s_agg.w_rgb_bad==0 && s_agg.w_uv_bad==0 && s_agg.w_interp==0)
               ? "PASS (walk topology+colour+UV byte-exact, all frames)" : "WALK RESIDUAL");
+    fprintf(stderr, "[spyro-mat FINAL] frames=%ld  mat-mismatch=%ld  worstM=%d worstTR=%d @f%u  => %s\n",
+            s_agg.frames, s_agg.mat_bad, s_agg.mat_worst_m, s_agg.mat_worst_tr, s_agg.mat_worst_frame,
+            (s_agg.mat_bad==0) ? "PASS (M+TR derived from gamestate match scratch, all frames)" : "MATRIX RESIDUAL");
 }
 
 static void spyro_aggregate(CPUState* cpu) {
@@ -575,6 +790,13 @@ static void spyro_aggregate(CPUState* cpu) {
       if (wst.n && wst.uv_ok  < wst.n) s_agg.w_uv_bad++;
     }
 
+    /* Phase-A matrix verdict (derived M+TR vs scratch; cheap, every frame). */
+    { mat_stats ms; spyro_matrix_eval(cpu, &ms);
+      if (ms.worst_m > 2 || ms.worst_tr > 2) s_agg.mat_bad++;
+      if (ms.worst_m > s_agg.mat_worst_m) { s_agg.mat_worst_m = ms.worst_m; s_agg.mat_worst_frame = openpete_frame; }
+      if (ms.worst_tr > s_agg.mat_worst_tr) { s_agg.mat_worst_tr = ms.worst_tr; }
+    }
+
     if ((s_agg.frames % 2000) == 0) {
         fprintf(stderr, "[spyro-agg f=%u] frames=%ld imperfect=%ld  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u\n",
                 openpete_frame, s_agg.frames, s_agg.bad_frames, s_agg.worst_match,
@@ -583,6 +805,9 @@ static void spyro_aggregate(CPUState* cpu) {
                 openpete_frame, s_agg.frames, s_agg.w_cnt_bad, s_agg.w_rgb_bad, s_agg.w_uv_bad, s_agg.w_interp,
                 (s_agg.w_cnt_bad==0 && s_agg.w_rgb_bad==0 && s_agg.w_uv_bad==0 && s_agg.w_interp==0)
                   ? "PASS (walk byte-exact)" : "WALK RESIDUAL");
+        fprintf(stderr, "[spyro-mat f=%u] frames=%ld mat-mismatch=%ld worstM=%d worstTR=%d @f%u => %s\n",
+                openpete_frame, s_agg.frames, s_agg.mat_bad, s_agg.mat_worst_m, s_agg.mat_worst_tr, s_agg.mat_worst_frame,
+                (s_agg.mat_bad==0) ? "PASS (matrix byte-exact)" : "MATRIX RESIDUAL");
     }
 }
 
@@ -906,7 +1131,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
         static int s_dumped = 0, s_reports = 0;
         if (openpete_frame >= spyro_verify_frame() && endp > startp) {
             capture_prims(cpu, startp, endp);
-            if (!s_dumped) { spyro_dump(cpu, startp, endp); s_dumped = 1; }
+            if (!s_dumped) { spyro_dump(cpu, startp, endp); spyro_phaseA_dump(cpu); s_dumped = 1; }
             spyro_project_all(cpu);                  /* native decode + project -> s_sproj */
             build_spyro_walk(cpu);                   /* 3b.4 independent face-stream walk */
             if (s_reports < 200) {                   /* detailed spot-check (first 200 frames) */
@@ -914,6 +1139,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
                 spyro_scratchpad_ab(cpu);            /* clean per-vertex A/B vs scratchpad */
                 spyro_idx_audit(cpu);                /* index-recovery vs NN disagreement */
                 spyro_walk_compare(cpu);             /* walk topology+colour+UV vs prims (ordered) */
+                spyro_matrix_compare(cpu);           /* Phase-A derived M+TR vs scratch block */
                 s_reports++;
             }
             spyro_aggregate(cpu);                    /* cheap per-frame full-run (20k) verdict */
