@@ -251,17 +251,40 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
     M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
 }
 
-/* Float RTPS mirror WITH translation (gte.cpp gte_rtps_internal). */
+/* Float RTPS mirror WITH translation (gte.cpp gte_rtps_internal), reproducing
+ * the GTE's near-plane behaviour in float. For a vertex close to the camera the
+ * hardware caps the perspective divide: push_sz clamps SZ3 to [0,0xFFFF], and
+ * gte_divide returns 0x1FFFF (≈2.0 in the 1.16 quotient) whenever H >= 2*SZ3
+ * (or SZ3==0) instead of the true H/SZ3. The .s therefore pins a near vertex
+ * near the screen centre+2*IR; using the *true* (much larger) 1/z instead made
+ * such verts shoot off — the Spyro tail-tip "stretch to the screen edge" (demo
+ * f19196-19200, the only residual in the 20k sweep: 18/12110 frames, all the
+ * tail). Mirroring the cap (and the IR16 / ±0x400 SXY clamps) removes it while
+ * leaving the 99.85% of in-range verts byte-identical (there q = H/SZ3 exactly,
+ * the path that already matched to ~0.8px). The UNR reciprocal's sub-pixel
+ * wobble is not reproduced (our true divide is strictly closer to ideal). */
+#define GTE_DIV_CAP   (131071.0 / 65536.0)   /* 0x1FFFF as a 1.16 quotient (~2.0) */
+#define GTE_SXY_BOUND 1024.0                  /* push_sxy signed-11-bit clamp (4:3) */
 static double project(const int M[3][3], const int TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
     double mac1 = (double)TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
     double mac2 = (double)TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
     double mac3 = (double)TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-    double z = (mac3 != 0.0) ? mac3 : 1.0;
-    *out_sx = ofx_px + mac1 * H / z;
-    *out_sy = ofy_px + mac2 * H / z;
-    if (out_sat) *out_sat = (mac3 <= 0.0 || H >= 2.0 * mac3);
+    /* IR1/IR2 = MAC saturated to int16 (the GTE projects from saturated IR). */
+    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
+    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
+    /* SZ3 = MAC3 saturated to [0,0xFFFF]; divide caps to 0x1FFFF when near. */
+    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
+    int sat = (sz3 <= 0.0 || H >= 2.0 * sz3);
+    double q = sat ? GTE_DIV_CAP : (H / sz3);
+    double sx = ofx_px + ir1 * q;
+    double sy = ofy_px + ir2 * q;
+    if (sx < -GTE_SXY_BOUND) sx = -GTE_SXY_BOUND; else if (sx > GTE_SXY_BOUND - 1.0) sx = GTE_SXY_BOUND - 1.0;
+    if (sy < -GTE_SXY_BOUND) sy = -GTE_SXY_BOUND; else if (sy > GTE_SXY_BOUND - 1.0) sy = GTE_SXY_BOUND - 1.0;
+    *out_sx = sx;
+    *out_sy = sy;
+    if (out_sat) *out_sat = sat;
     return mac3;
 }
 
@@ -275,14 +298,48 @@ typedef struct { float sx, sy, vz; int sat, seg; } spxy;
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
 static int s_lastseg_start, s_lastseg_n, s_lastseg_id;  /* last segment's s_sproj range */
 
+/* Decode ONE vertex of ONE keyframe stream into the running accumulator
+ * (*az/*ax/*ay), advancing whichever packed cursor (v0 1-byte / v1 2-byte) this
+ * vertex uses. `corr` is the per-vertex m_AnimationVertices correction word
+ * (fetched + advanced by the caller). Returns the NEXT vertex's width as a
+ * boolean (1 = 2-byte): the width is PER-VERTEX, carried in a flag bit of the
+ * current vertex — bit0 of the byte (1-byte form, .L800246C8 `andi $t0,$s1,0x1`)
+ * or bit14 (0x4000) of the halfword (2-byte form, .L800247F0 `andi $t0,$s1,0x4000`,
+ * set before the escape branch so it applies to escapes too). The first vertex's
+ * width comes from frameData bit 0x1000 (A) / 0x2000 (B). This is the headline
+ * fix: the stream interleaves 1-/2-byte verts and a fixed per-segment width
+ * desyncs the prefix-sum at the first switch. X/Y deltas subtract, Z adds. */
+static int spyro_decode_vertex(CPUState* cpu, int is2, int32_t corr,
+                               uint32_t* v0, uint32_t* v1, int* az, int* ax, int* ay) {
+    if (!is2) {                                      /* 1-byte form */
+        uint32_t b = cpu->read_byte(*v0); *v0 += 1;
+        int32_t d = (int32_t)cpu->read_word(D_VERT_LUT + ((b << 1) & 0x1FCu)) + corr;
+        *az += sra_field(d,0,21); *ax -= sra_field(d,11,21); *ay -= sra_field(d,22,21);
+        return (b & 1u) ? 1 : 0;                     /* bit0 -> next vertex width */
+    }
+    int16_t h = (int16_t)cpu->read_half(*v1); *v1 += 2;  /* 2-byte form */
+    int next2 = ((uint16_t)h & 0x4000u) ? 1 : 0;     /* bit14 -> next vertex width */
+    if (h < 0) {                                     /* wide escape (absolute set, no corr) */
+        uint32_t s2 = cpu->read_half(*v1); *v1 += 2;
+        *az = sra_field((int32_t)h,18,21);
+        *ax = -sra_field((int32_t)((s2 << 12) | (((uint32_t)(int32_t)h) << 28)),0,21);
+        *ay = -sra_field((int32_t)(s2 << 22),0,21);
+    } else {                                         /* h-split + corr-split */
+        *az += sra_field((int32_t)h,18,25); *ax -= sra_field((int32_t)h,23,25); *ay -= sra_field((int32_t)h,28,25);
+        *az += sra_field(corr,0,21); *ax -= sra_field(corr,11,21); *ay -= sra_field(corr,22,21);
+    }
+    return next2;
+}
+
 /* Decode one segment's model-space verts (running accumulator + INTPL lerp),
  * project each, append to s_sproj. Returns verts emitted. Mirrors the four
- * width combos of .L800244D8/.L80024580/.L800246B4/.L800247D8 + wide escapes. */
+ * width combos of .L800244D8/.L80024580/.L800246B4/.L800247D8 + wide escapes,
+ * with per-vertex width switching (see spyro_decode_vertex). */
 static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3], const int TR[3],
                                  double ofx, double ofy, double H, int seg, int count) {
     uint32_t fd = cpu->read_word(entry + 0x00);
-    int a2 = (fd & 0x1000u) != 0;
-    int b2 = (fd & 0x2000u) != 0;
+    int a2 = (fd & 0x1000u) != 0;           /* current frame-A width (per-vertex) */
+    int b2 = (fd & 0x2000u) != 0;           /* current frame-B width (per-vertex) */
     int dual = (fd & 0xFFFu) != 0;          /* s7 != 0 -> two-keyframe INTPL */
     double blend = (double)(fd & 0xFFFu) / 4096.0;
     uint32_t atA = cpu->read_word(entry + 0x24), v0A = cpu->read_word(entry + 0x28), v1A = cpu->read_word(entry + 0x2C);
@@ -291,44 +348,14 @@ static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3
     int bZ=0,bX=0,bY=0;   /* frame-B accumulator */
     int emitted = 0;
     for (int i = 0; i < count && s_sproj_n < MAX_SPROJ; i++) {
-        /* ---- frame A vertex ---- */
+        /* ---- frame A vertex (corr + cursor advance happen every vertex) ---- */
         int32_t corrA = (int32_t)cpu->read_word(atA); atA += 4;
-        if (!a2) {                                   /* A 1-byte */
-            uint32_t b = cpu->read_byte(v0A); v0A += 1;
-            int32_t d = (int32_t)cpu->read_word(D_VERT_LUT + ((b << 1) & 0x1FCu)) + corrA;
-            aZ += sra_field(d,0,21); aX -= sra_field(d,11,21); aY -= sra_field(d,22,21);
-        } else {                                     /* A 2-byte */
-            int16_t h = (int16_t)cpu->read_half(v1A); v1A += 2;
-            if (h < 0) {                             /* wide escape (absolute) */
-                uint32_t s2 = cpu->read_half(v1A); v1A += 2;
-                aZ = sra_field((int32_t)h,18,21);
-                aX = -sra_field((int32_t)((s2 << 12) | (((uint32_t)(int32_t)h) << 28)),0,21);
-                aY = -sra_field((int32_t)(s2 << 22),0,21);
-            } else {
-                aZ += sra_field((int32_t)h,18,25); aX -= sra_field((int32_t)h,23,25); aY -= sra_field((int32_t)h,28,25);
-                aZ += sra_field(corrA,0,21); aX -= sra_field(corrA,11,21); aY -= sra_field(corrA,22,21);
-            }
-        }
+        a2 = spyro_decode_vertex(cpu, a2, corrA, &v0A, &v1A, &aZ, &aX, &aY);
         double VX = aX, VY = aY, VZ = aZ;
         /* ---- frame B vertex (only if dual) ---- */
         if (dual) {
             int32_t corrB = (int32_t)cpu->read_word(atB); atB += 4;
-            if (!b2) {                               /* B 1-byte */
-                uint32_t b = cpu->read_byte(v0B); v0B += 1;
-                int32_t d = (int32_t)cpu->read_word(D_VERT_LUT + ((b << 1) & 0x1FCu)) + corrB;
-                bZ += sra_field(d,0,21); bX -= sra_field(d,11,21); bY -= sra_field(d,22,21);
-            } else {                                 /* B 2-byte */
-                int16_t h = (int16_t)cpu->read_half(v1B); v1B += 2;
-                bZ += sra_field(corrB,0,21); bX -= sra_field(corrB,11,21); bY -= sra_field(corrB,22,21);
-                if (h < 0) {                         /* wide escape (overwrites) */
-                    uint32_t s2 = cpu->read_half(v1B); v1B += 2;
-                    bZ = sra_field((int32_t)h,18,21);
-                    bX = -sra_field((int32_t)((s2 << 12) | (((uint32_t)(int32_t)h) << 28)),0,21);
-                    bY = -sra_field((int32_t)(s2 << 22),0,21);
-                } else {
-                    bZ += sra_field((int32_t)h,18,25); bX -= sra_field((int32_t)h,23,25); bY -= sra_field((int32_t)h,28,25);
-                }
-            }
+            b2 = spyro_decode_vertex(cpu, b2, corrB, &v0B, &v1B, &bZ, &bX, &bY);
             VX = (double)aX + blend * (bX - aX);
             VY = (double)aY + blend * (bY - aY);
             VZ = (double)aZ + blend * (bZ - aZ);
@@ -361,14 +388,18 @@ static int spyro_project_all(CPUState* cpu) {
         int cur_end = (int)((fd >> 14) & 0x3FFu);
         int count = (cur_end - prev_end) >> 2; if (count < 0) count = 0;
         prev_end = cur_end;
-        /* Matrix is STICKY across segments. Phase A stores a segment's own
-         * matrix at +0x10 only when it has a distinct (seam-rotated) pose; an
-         * all-zero slot means "reuse the previous segment's matrix" (the .s
-         * skips the ctc2 reload via bgez). So load +0x10 only when non-zero. */
-        uint32_t m0 = cpu->read_word(entry + 0x10), m1 = cpu->read_word(entry + 0x14);
-        uint32_t m2 = cpu->read_word(entry + 0x18), m3 = cpu->read_word(entry + 0x1C);
-        uint32_t m4 = cpu->read_word(entry + 0x20);
-        if (m0|m1|m2|m3|m4) { read_matrix(cpu, entry + 0x10, M); have_mat = 1; }
+        /* Matrix reload keys on the frameData SIGN BIT, exactly like the .s:
+         * `bgez $s1, .L80024478` SKIPS the ctc2 reload when the sign bit is
+         * CLEAR, so the matrix is STICKY — the segment reuses the previous one.
+         * The first segment always takes the body matrix: the .s decode loop
+         * inherits whatever Phase A left in the GTE, which is the body's matrix
+         * == seg0's +0x10 slot (confirmed: post-call gte_ctrl R[0..4] == seg0
+         * +0x10 on every captured frame). NOTE: keying on "+0x10 != 0" is WRONG
+         * — Phase A can leave non-zero scratch matrices in the head/tail +0x10
+         * slots with a CLEAR sign bit (the .s ignores them, staying sticky);
+         * adopting them projected head/tail with a stale matrix (f4549: head
+         * vanishes, tail lands at the front of the body). */
+        if (s == 0 || (fd & 0x80000000u)) { read_matrix(cpu, entry + 0x10, M); have_mat = 1; }
         TR[0] = (int32_t)cpu->read_word(entry + 0x04);
         TR[1] = (int32_t)cpu->read_word(entry + 0x08);
         TR[2] = (int32_t)cpu->read_word(entry + 0x0C);
@@ -418,6 +449,7 @@ static void spyro_compare_geometry(void) {
 static void spyro_scratchpad_at(CPUState* cpu, int off) {
     int n = s_sproj_n, hit4 = 0, tot = 0; double errsum = 0;
     int seg_hit[3]={0,0,0}, seg_tot[3]={0,0,0};
+    int worst_j = -1; float worst_d = 0; float worst_gx=0, worst_gy=0;
     for (int j = 0; j < n; j++) {
         int k = j + off; if (k < 0 || k >= n) continue;
         uint32_t w = cpu->read_word(SCRATCHPAD + (uint32_t)k * 4);
@@ -425,7 +457,13 @@ static void spyro_scratchpad_at(CPUState* cpu, int off) {
         float dx = s_sproj[j].sx - gx, dy = s_sproj[j].sy - gy, d = sqrtf(dx*dx + dy*dy);
         tot++; errsum += d; if (d <= 4.0f) hit4++;
         int sg = s_sproj[j].seg; if (sg>=0&&sg<3){ seg_tot[sg]++; if(d<=4.0f) seg_hit[sg]++; }
+        if (d > worst_d) { worst_d = d; worst_j = j; worst_gx = gx; worst_gy = gy; }
     }
+    if (worst_j >= 0 && worst_d > 8.0f)  /* outlier: native vs .s, with view-Z */
+        fprintf(stderr, "  [outlier f=%u] j=%d seg=%d err=%.1fpx  native=(%.1f,%.1f) .s=(%.0f,%.0f) vz=%.1f sat=%d\n",
+                openpete_frame, worst_j, s_sproj[worst_j].seg, worst_d,
+                s_sproj[worst_j].sx, s_sproj[worst_j].sy, worst_gx, worst_gy,
+                s_sproj[worst_j].vz, s_sproj[worst_j].sat);
     fprintf(stderr, "[spyro-scratch f=%u off=%+d] <=4px=%.1f%% mean=%.2fpx | body=%.0f%% head=%.0f%% tail=%.0f%%\n",
             openpete_frame, off, tot?100.0*hit4/tot:0, tot?errsum/tot:0,
             seg_tot[0]?100.0*seg_hit[0]/seg_tot[0]:0, seg_tot[1]?100.0*seg_hit[1]/seg_tot[1]:0,
@@ -433,20 +471,92 @@ static void spyro_scratchpad_at(CPUState* cpu, int off) {
 }
 static void spyro_scratchpad_ab(CPUState* cpu) {
     if (s_sproj_n <= 0) return;
-    uint32_t fd0 = cpu->read_word(SEG_SCRATCH + 0x00);  /* body frameData */
-    fprintf(stderr, "  (body fd=%08X blend=%u dual=%d A%s B%s)\n", fd0, fd0 & 0xFFF,
-            (fd0 & 0xFFF) != 0, (fd0 & 0x1000) ? "2" : "1", (fd0 & 0x2000) ? "2" : "1");
+    /* Per-segment frameData + distinct-matrix flag (non-zero +0x10 slot). The
+     * head "turning" => its own seam matrix => +0x10 non-zero / sign bit set;
+     * surface it so head-merge frames are identifiable. */
+    for (int s = 0; s < 3; s++) {
+        uint32_t e = SEG_SCRATCH + (uint32_t)s * SEG_STRIDE;
+        uint32_t fd = cpu->read_word(e);
+        if (fd == 0) break;
+        uint32_t m0 = cpu->read_word(e+0x10)|cpu->read_word(e+0x14)|cpu->read_word(e+0x18)
+                     |cpu->read_word(e+0x1C)|cpu->read_word(e+0x20);
+        fprintf(stderr, "  (%s fd=%08X blend=%u dual=%d A%s B%s mat=%s sign=%d)\n",
+                k_seg_name[s], fd, fd & 0xFFF, (fd & 0xFFF) != 0,
+                (fd & 0x1000) ? "2" : "1", (fd & 0x2000) ? "2" : "1",
+                m0 ? "own" : "sticky", (int)(fd >> 31));
+    }
     spyro_scratchpad_at(cpu, 0);
 }
 
-/* ---- scene feed (3b.4 first-visible scaffold) ----------------------------
- * Mirrors the moby 3a.2a scaffold: native float verts (s_sproj) carry the
- * geometry, the captured prims carry topology + per-vertex colour + texture
- * (Tiledef). Each prim vertex is nearest-neighbour matched to s_sproj so the
- * fed XY/Z are NATIVE (sub-pixel, no int16 wobble), while connectivity rides
- * the .s. The independent native face-stream walk (the 3a.2b analog) replaces
- * this later; for now it gets Spyro on screen to drive visual iteration.
- * NOTE: the 2-byte body residual shows as slight NN jitter until that's fixed. */
+/* ---- full-run aggregate (20k verdict) ------------------------------------
+ * Cheap per-frame (O(verts)) per-index match vs the .s scratchpad, accumulated
+ * across the WHOLE run so a 20k/4-level demo gets a single verdict without 80k
+ * log lines or the O(n^2) NN/idx cost. Tracks total Spyro-render frames, frames
+ * with any segment <100% (≤4px), the worst single segment-match and its frame,
+ * and the max per-vertex error. Prints a running line every 2000 frames + the
+ * cumulative verdict, so the last line near the run end is the answer. */
+static struct {
+    long frames, bad_frames;
+    double worst_match; unsigned worst_frame; int worst_seg;
+    double max_err; unsigned max_err_frame;
+} s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0 };
+
+static void spyro_agg_final(void) {
+    fprintf(stderr, "[spyro-agg FINAL] frames=%ld imperfect=%ld (%.2f%%)  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u  => %s\n",
+            s_agg.frames, s_agg.bad_frames,
+            s_agg.frames ? 100.0 * s_agg.bad_frames / s_agg.frames : 0.0,
+            s_agg.worst_match, s_agg.worst_seg, s_agg.worst_frame,
+            s_agg.max_err, s_agg.max_err_frame,
+            s_agg.bad_frames == 0 ? "PASS (100% all segments, all frames)" : "RESIDUAL");
+}
+
+static void spyro_aggregate(CPUState* cpu) {
+    static int s_reg = 0;
+    if (!s_reg) { s_reg = 1; atexit(spyro_agg_final); }
+    int seg_hit[3] = {0,0,0}, seg_tot[3] = {0,0,0};
+    double fmax = 0.0; int worst_j = -1; float wgx = 0, wgy = 0;
+    for (int j = 0; j < s_sproj_n; j++) {
+        uint32_t w = cpu->read_word(SCRATCHPAD + (uint32_t)j * 4);
+        float gx = (float)(int16_t)(w & 0xFFFF), gy = (float)(int16_t)(w >> 16);
+        float dx = s_sproj[j].sx - gx, dy = s_sproj[j].sy - gy, d = sqrtf(dx*dx + dy*dy);
+        int sg = s_sproj[j].seg; if (sg>=0&&sg<3){ seg_tot[sg]++; if(d<=4.0f) seg_hit[sg]++; }
+        if (d > fmax) { fmax = d; worst_j = j; wgx = gx; wgy = gy; }
+    }
+    if (fmax > 8.0f && worst_j >= 0)  /* outlier: capture vert + view-Z wherever it occurs in the full run */
+        fprintf(stderr, "  [outlier f=%u] j=%d seg=%d err=%.1fpx native=(%.1f,%.1f) .s=(%.0f,%.0f) vz=%.1f sat=%d "
+                "(n=%d)\n", openpete_frame, worst_j, s_sproj[worst_j].seg, fmax,
+                s_sproj[worst_j].sx, s_sproj[worst_j].sy, wgx, wgy,
+                s_sproj[worst_j].vz, s_sproj[worst_j].sat, s_sproj_n);
+    s_agg.frames++;
+    int bad = 0;
+    for (int sg = 0; sg < 3; sg++) {
+        if (!seg_tot[sg]) continue;
+        double m = 100.0 * seg_hit[sg] / seg_tot[sg];
+        if (m < 100.0) bad = 1;
+        if (m < s_agg.worst_match) { s_agg.worst_match = m; s_agg.worst_frame = openpete_frame; s_agg.worst_seg = sg; }
+    }
+    if (bad) s_agg.bad_frames++;
+    if (fmax > s_agg.max_err) { s_agg.max_err = fmax; s_agg.max_err_frame = openpete_frame; }
+    if ((s_agg.frames % 2000) == 0)
+        fprintf(stderr, "[spyro-agg f=%u] frames=%ld imperfect=%ld  worst=%.1f%% (seg %d @f%u)  maxerr=%.1fpx @f%u\n",
+                openpete_frame, s_agg.frames, s_agg.bad_frames, s_agg.worst_match,
+                s_agg.worst_seg, s_agg.worst_frame, s_agg.max_err, s_agg.max_err_frame);
+}
+
+/* ---- scene feed (3b.4 scaffold) ------------------------------------------
+ * Native float verts (s_sproj) carry the geometry; the captured prims carry
+ * topology + per-vertex colour + texture (Tiledef). Each prim vertex is mapped
+ * to its native vertex by EXACT INDEX RECOVERY: the .s wrote every vertex's
+ * screen SXY to scratchpad 0x1F800000 in stream order (== s_sproj order), and
+ * the prim packet's SXY is a byte-identical copy of that same RTPS output, so
+ * `prim SXY == scratchpad[index]` recovers the .s's own vertex index exactly.
+ * We then feed s_sproj[index] (native sub-pixel float). This replaces the old
+ * screen-distance nearest-neighbour match, which grabbed ACROSS segments when
+ * the head overlapped the body on screen (head triangles attaching to body
+ * verts -> the "head merges with body" artifact): NN picks the closest vertex,
+ * which need not be the one the face references. Index recovery is segment-safe
+ * by construction. (The independent face-stream walk — the moby-3a.2b analog —
+ * supersedes this scaffold entirely later.) */
 static int spyro_nn(float px, float py) {
     int best = -1; float bd = 1e18f;
     for (int j = 0; j < s_sproj_n; j++) {
@@ -455,13 +565,43 @@ static int spyro_nn(float px, float py) {
     }
     return best;
 }
-static void spyro_feed_scaffold(void) {
+/* Recover a prim vertex's stream index via exact SXY match vs the .s scratchpad.
+ * Returns -1 if no exact match (caller falls back to NN). */
+static int spyro_index_of(CPUState* cpu, int px, int py) {
+    uint32_t want = ((uint32_t)(py & 0xFFFF) << 16) | (uint32_t)(px & 0xFFFF);
+    for (int j = 0; j < s_sproj_n; j++)
+        if (cpu->read_word(SCRATCHPAD + (uint32_t)j * 4) == want) return j;
+    return -1;
+}
+/* Headless falsification: how often would screen-distance NN pick a DIFFERENT
+ * vertex than exact index recovery? (Runs under OPENPETE_SPYRO_VERIFY, where the
+ * scene feed is unavailable.) A high % means NN was mis-attaching faces — the
+ * head-merge cause. */
+static void spyro_idx_audit(CPUState* cpu) {
+    long exact = 0, disagree = 0, fallback = 0, total = 0;
+    for (int i = 0; i < s_gte_n; i++) {
+        prim_t* p = &s_gte[i];
+        if (p->nv < 3) continue;
+        for (int k = 0; k < p->nv; k++) {
+            int ex = spyro_index_of(cpu, (int)p->x[k], (int)p->y[k]);
+            total++;
+            if (ex < 0) { fallback++; continue; }
+            exact++;
+            if (ex != spyro_nn(p->x[k], p->y[k])) disagree++;
+        }
+    }
+    fprintf(stderr, "[spyro-idx f=%u] exact=%ld/%ld fallback=%ld  NN-would-disagree=%ld (%.1f%%)\n",
+            openpete_frame, exact, total, fallback, disagree,
+            total ? 100.0 * disagree / total : 0.0);
+}
+static void spyro_feed_scaffold(CPUState* cpu) {
     static int s_logged = 0;
     if (s_sproj_n <= 0 || s_gte_n <= 0) return;
     /* frame-keyed: no-op if the cyclorama/mobys already began this frame (we
      * append after them), clears if Spyro is somehow the first feeder. */
     openpete_native_scene_begin_frame(openpete_frame);
     int fed = 0;
+    long exact = 0, nn_disagree = 0, fallback = 0, total = 0;  /* falsification */
     for (int i = 0; i < s_gte_n; i++) {
         prim_t* p = &s_gte[i];
         if (p->nv < 3) continue;
@@ -473,7 +613,19 @@ static void spyro_feed_scaffold(void) {
             clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
         }
         int blend = (p->code & 0x2) ? 1 : 0;   /* ABE (semi-transparent) bit */
-        int idx[4]; for (int k = 0; k < p->nv; k++) idx[k] = spyro_nn(p->x[k], p->y[k]);
+        int idx[4];
+        for (int k = 0; k < p->nv; k++) {
+            int ex = spyro_index_of(cpu, (int)p->x[k], (int)p->y[k]);
+            total++;
+            if (ex >= 0) {
+                exact++;
+                if (ex != spyro_nn(p->x[k], p->y[k])) nn_disagree++;  /* NN would have erred */
+                idx[k] = ex;
+            } else {
+                fallback++;
+                idx[k] = spyro_nn(p->x[k], p->y[k]);
+            }
+        }
         int tris[2][3], nt;
         if (p->nv == 3) { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2; nt=1; }
         else            { tris[0][0]=0;tris[0][1]=1;tris[0][2]=2;
@@ -495,10 +647,12 @@ static void spyro_feed_scaffold(void) {
             openpete_native_scene_add_tri(&st); fed++;
         }
     }
-    if (!s_logged && fed > 0) {
-        s_logged = 1;
-        fprintf(stderr, "[spyro-native] feeding %d Spyro tris (3b.4 scaffold: native verts + prim topology) frame %u\n",
-                fed, openpete_frame);
+    if (s_logged < 6 && fed > 0) {
+        s_logged++;
+        fprintf(stderr, "[spyro-native f=%u] %d tris  idx-recover: exact=%ld/%ld fallback=%ld  "
+                "NN-would-disagree=%ld (%.1f%%)\n",
+                openpete_frame, fed, exact, total, fallback,
+                nn_disagree, total ? 100.0 * nn_disagree / total : 0.0);
     }
 }
 
@@ -532,7 +686,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     if (feed && endp > startp && render_path_enabled(RP_SPYRO)) {  /* native feed (if selected) */
         capture_prims(cpu, startp, endp);         /* topology + colour + texture */
         spyro_project_all(cpu);                   /* native float verts -> s_sproj */
-        spyro_feed_scaffold();                    /* NN native verts + prim topology */
+        spyro_feed_scaffold(cpu);                 /* index-recovered native verts + prim topology */
     }
 
     if (verify) {
@@ -540,12 +694,14 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
         if (openpete_frame >= spyro_verify_frame() && endp > startp) {
             capture_prims(cpu, startp, endp);
             if (!s_dumped) { spyro_dump(cpu, startp, endp); s_dumped = 1; }
-            if (s_reports < 12) {
-                spyro_project_all(cpu);              /* native decode + project -> s_sproj */
+            spyro_project_all(cpu);                  /* native decode + project -> s_sproj */
+            if (s_reports < 200) {                   /* detailed spot-check (first 200 frames) */
                 spyro_compare_geometry();            /* prim-NN A/B (geometry verdict) */
                 spyro_scratchpad_ab(cpu);            /* clean per-vertex A/B vs scratchpad */
+                spyro_idx_audit(cpu);                /* index-recovery vs NN disagreement */
                 s_reports++;
             }
+            spyro_aggregate(cpu);                    /* cheap per-frame full-run (20k) verdict */
         }
     }
     s_in = 0;
