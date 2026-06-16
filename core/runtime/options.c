@@ -163,6 +163,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->headless = true;
         } else if (strcmp(a, "--native-ab") == 0) {
             opts->native_ab = true;
+        } else if (strcmp(a, "--native-only") == 0) {
+            opts->native_only = true;
         } else if (strcmp(a, "--render-fps") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_fps = atoi(v); i++;

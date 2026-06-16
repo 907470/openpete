@@ -205,6 +205,13 @@ typedef struct {
      * under --headless. See notes/plans/openpete-native-renderer.md. */
     bool native_ab;
 
+    /* Native Vulkan renderer as the SOLE display (vk-only mode): one full-window
+     * panel showing the native render, no PsyCross reference panel. Unlike
+     * --native-ab (two side-by-side panels for comparison), this has no
+     * reference to align to, so the 1-frame A/B scene delay is OFF by default
+     * (present the live frame, no added latency). Pure display consumer. */
+    bool native_only;
+
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */

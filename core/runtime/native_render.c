@@ -86,11 +86,16 @@ static openpete_scene_tri s_scene_disp[MAX_SCENE_TRIS]; /* presented (frame N-1)
 static int                s_scene_disp_n;
 static uint32_t           s_scene_disp_bg;
 static int                s_scene_delay = -1;   /* -1 uninit; 1 = delay; 0 = off */
+static int                s_scene_ab_mode = 1;   /* set by init: 1 = A/B compare, 0 = vk-only */
 
 static int scene_delay_enabled(void) {
     if (s_scene_delay < 0) {
         const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
-        s_scene_delay = (e && e[0] == '0') ? 0 : 1;   /* default ON */
+        /* Explicit env wins; otherwise default ON only in A/B compare mode (the
+         * delay aligns the native panel with the lagged reference). In vk-only
+         * mode there is no reference, so default OFF — present the live frame. */
+        if (e) s_scene_delay = (e[0] == '0') ? 0 : 1;
+        else   s_scene_delay = s_scene_ab_mode;
     }
     return s_scene_delay;
 }
@@ -128,6 +133,8 @@ static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg)
 /* Single native renderer instance (one window per process). */
 static struct {
     bool          enabled;
+    bool          ab_mode;      /* true = A/B compare (2 panels + reference); false = vk-only */
+    int           n_panels;     /* 2 in A/B, 1 in vk-only */
     SDL_Window   *window;
     rhi_device   *dev;
     int           win_w, win_h; /* last-known pixel size, for resize detection */
@@ -207,13 +214,21 @@ static void fit_cell(float cx, float cy, float chx, float chy,
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
-    if (!opts || !opts->native_ab)
+    if (!opts || (!opts->native_ab && !opts->native_only))
         return 0; /* not requested — inert no-op */
 
     if (opts->headless) {
-        OPL_WARN_F("native", "--native-ab ignored under --headless (no display)");
+        OPL_WARN_F("native", "--native-ab/--native-only ignored under --headless (no display)");
         return 0;
     }
+
+    /* vk-only mode: the native render is the sole panel (no reference compare),
+     * so it takes priority over --native-ab if both are given. The 1-frame
+     * scene delay (an A/B-alignment hack) defaults OFF here. */
+    bool ab_mode = opts->native_ab && !opts->native_only;
+    s_nr.ab_mode  = ab_mode;
+    s_nr.n_panels = ab_mode ? 2 : 1;
+    s_scene_ab_mode = ab_mode ? 1 : 0;
 
     /* SDL_INIT_VIDEO is already up (PsyX_Initialise). Create a SECOND window
      * for the Vulkan surface: a single SDL window can't carry both PsyCross's
@@ -224,7 +239,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     int w = (win_w > 0) ? win_w : NR_DEFAULT_W;
     int h = (win_h > 0) ? win_h : NR_DEFAULT_H;
 
-    SDL_Window *win = SDL_CreateWindow("openpete — native renderer (A/B)", w, h,
+    SDL_Window *win = SDL_CreateWindow(ab_mode ? "openpete — native renderer (A/B)"
+                                               : "openpete — native renderer", w, h,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!win) {
         OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
@@ -403,10 +419,12 @@ static void update_layout(void)
         s_nr.disp_w == s_nr.layout_disp_w && s_nr.clip_h == s_nr.layout_clip_h)
         return;
 
-    /* NR_PANELS cells across the window; cell i centered at cx_i, half-width
-     * 1/NR_PANELS in clip space, full height. */
-    const float chx = 1.0f / (float)NR_PANELS;
-    rhi_vertex verts[NR_PANELS * 6];
+    /* n_panels cells across the window; cell i centered at cx_i, half-width
+     * 1/n_panels in clip space, full height. vk-only mode has 1 (full-window)
+     * panel; A/B has 2 (native | reference). */
+    const int   np  = s_nr.n_panels > 0 ? s_nr.n_panels : 2;
+    const float chx = 1.0f / (float)np;
+    rhi_vertex verts[NR_PANELS * 6] = {0};
 
     /* Panel 0 — native render of the PSX display region, sampled from the VRAM
      * texture and cropped to the visible viewport: full disp width, but only
@@ -428,8 +446,8 @@ static void update_layout(void)
         s_nr.p0_cx = cx; s_nr.p0_hx = hx; s_nr.p0_hy = hy; /* for the native scene map */
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
-     * normalized (blit uses texture()). */
-    {
+     * normalized (blit uses texture()). Only in A/B mode (np >= 2). */
+    if (np >= 2) {
         float cx = -1.0f + 3.0f * chx, hx, hy;
         fit_cell(cx, 0.0f, chx, 1.0f, s_nr.ref_w, s_nr.ref_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
         build_panel(&verts[6], cx, 0.0f, hx, hy, 0.0f, 1.0f, 1.0f, 0.0f);
@@ -613,8 +631,8 @@ void openpete_native_render_frame(void)
             rhi_draw(s_nr.dev, 6, 0);
         }
 
-        /* Panel 1 — reference. */
-        if (have_ref) {
+        /* Panel 1 — reference (A/B compare mode only; vk-only shows panel 0). */
+        if (s_nr.ab_mode && have_ref) {
             rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.ref_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);

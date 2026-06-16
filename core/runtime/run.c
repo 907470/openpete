@@ -713,7 +713,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * into the Vulkan window, which becomes the single visible one. Keyboard
      * focus moves to the Vulkan window; gamepad input is focus-independent. */
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
-                    /*startHidden=*/(opts->headless || opts->native_ab) ? 1 : 0);
+                    /*startHidden=*/(opts->headless || opts->native_ab || opts->native_only) ? 1 : 0);
 
     /* Hor+ post-PsyX knob population — see core/features/widescreen.c.
      * Sets g_psyx_render_aspect_factor + every psx_runtime_* knob the
@@ -765,7 +765,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
-    /* --native-ab: bring up the native Vulkan renderer's window. SDL is
+    /* --native-ab / --native-only: bring up the native Vulkan renderer's window. SDL is
      * already initialized by PsyX_Initialise. Pass the same resolved window
      * size handed to PsyCross so the native window matches the game's. A
      * bring-up failure is non-fatal — we log and run PsyCross-only. The
