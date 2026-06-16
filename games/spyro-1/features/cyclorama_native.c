@@ -382,9 +382,15 @@ static void push_scene(CPUState* cpu) {
     /* The PSX cyclorama clears the frame to g_Cyclorama.m_BackgroundColor
      * (+0x10) before drawing the dome; mirror that so uncovered areas (below
      * the dome / gaps) show it, not black. Same colour conversion as the dome
-     * (low 24 = R,G,B; opaque alpha). */
+     * (low 24 = R,G,B; opaque alpha). **The background COLOUR is a scene
+     * property, not part of the cyclorama dome geometry** — set it always (even
+     * when `--render-paths` excludes the dome), so an isolated path (e.g.
+     * `--render-paths spyro`) renders over the real scene background, matching
+     * PsyCross (which always clears to it via the draw-env). Only the dome
+     * TRIANGLES are gated on RP_CYCLORAMA. */
     uint32_t bg = cpu->read_word(G_CYCLORAMA + 0x10) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);
+    if (!render_path_enabled(RP_CYCLORAMA)) return;  /* bg only; dome not selected */
     for (int i = 0; i < s_native_n; i++) {
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
@@ -420,8 +426,9 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */
 
     cyc_extract(cpu, a0, a1, a2);           /* native scene from gamestate */
-    if (feed && render_path_enabled(RP_CYCLORAMA))
-        push_scene(cpu);                    /* display it in panel 0 (if selected) */
+    if (feed)
+        push_scene(cpu);                    /* always sets the scene bg colour;
+                                             * dome tris gated inside on RP_CYCLORAMA */
 
     if (verify) {
         static int s_dumped = 0;

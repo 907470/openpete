@@ -4,7 +4,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
-#include "openpete_native_render.h"  /* diff bg-match toggle */
+#include "openpete_native_render.h"  /* isolation toggle */
 
 #include <stdio.h>
 #include <string.h>
@@ -127,9 +127,9 @@ static const feature_dispatch_entry_t render_paths_dispatch[] = {
  * native modules. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
     render_paths_init(opts ? opts->render_paths : NULL);
-    /* In isolation the reference background is a uniform framebuffer clear; tell
-     * the diff to match it so the bg cancels (cleaner diff + path-only stats). */
-    openpete_native_diff_match_ref_bg(render_paths_active());
+    /* In isolation, an empty native scene must show the background, not the
+     * unfiltered PSX VRAM framebuffer (which would show every path). */
+    openpete_native_set_isolation(render_paths_active());
 }
 
 const feature_module_t render_paths_module = {

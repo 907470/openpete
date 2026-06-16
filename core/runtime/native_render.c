@@ -199,10 +199,15 @@ static struct {
  * native_rtt for the diff pass (native_rtt IS the frame, no panel inset). */
 static int s_render_full_extent = 0;
 
-/* Diff colour-stats (--render-stats) + the reference-background-match toggle
- * (set by the game when isolating a path). */
+/* Path-isolation mode (--render-paths, set by the game). When on, an empty
+ * native scene presents the background instead of re-displaying the PSX VRAM
+ * framebuffer — the VRAM is unfiltered, so falling back to it would defeat the
+ * isolation. Generic core toggle; no-op until set. */
+static bool s_isolation = false;
+void openpete_native_set_isolation(bool on) { s_isolation = on; }
+
+/* Diff colour-stats (--render-stats). */
 #define DIFF_STATS_TOL 8           /* per-channel "match" tolerance (of 255) */
-static bool s_diff_match_ref_bg = false;
 static struct {
     double   sum[3];               /* per-channel abs-diff sums over all counted px */
     uint64_t n;                    /* total counted (panel) px across frames */
@@ -213,8 +218,6 @@ static struct {
 } s_diff_stats;
 static unsigned char *s_stats_buf = NULL;   /* offscreen readback scratch */
 static size_t         s_stats_cap = 0;
-
-void openpete_native_diff_match_ref_bg(bool on) { s_diff_match_ref_bg = on; }
 
 /* Read the just-presented diff offscreen back and fold its panel-rect pixels into
  * the running stats; log a throttled per-frame line. */
@@ -640,6 +643,22 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     }
 }
 
+/* The scene background colour = what PsyCross actually clears the framebuffer to,
+ * sampled from a top-left corner of the reference readback. This matches PsyCross
+ * in EVERY state (levels, titlescreen, menus) and mode — unlike a gamestate
+ * source like g_Cyclorama.m_BackgroundColor, which is the level sky colour but is
+ * stale/wrong outside a level (e.g. the titlescreen, where the frame clears to a
+ * different colour). Returns 0 (no bg) until a reference frame exists; the caller
+ * then falls back to the scene-fed colour. rgba byte order R,G,B,A. */
+static uint32_t bg_from_ref_corner(void)
+{
+    if (!s_nr.readback || s_nr.ref_w < 6 || s_nr.ref_h < 6) return 0;
+    /* GL readback is bottom-up, so the TOP rows are at the end; inset a few px. */
+    const unsigned char* c =
+        &s_nr.readback[(((size_t)(s_nr.ref_h - 4) * (size_t)s_nr.ref_w) + 4) * 4u];
+    return 0xFF000000u | (uint32_t)c[0] | ((uint32_t)c[1] << 8) | ((uint32_t)c[2] << 16);
+}
+
 /* Build + draw the native 3D scene (cyclorama + actors). full_extent=false
  * draws into panel 0's window rect (the normal vk/ab path); full_extent=true
  * draws into the whole render target (used when rendering into native_rtt for
@@ -649,7 +668,22 @@ static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg);
-    if (scene_n <= 0) return false;
+
+    /* Background colour = PsyCross's actual framebuffer clear (ref corner), so it
+     * matches in every state/mode; fall back to the scene-fed colour only until a
+     * reference frame exists. (This is why an isolated path — e.g.
+     * `--render-paths spyro` — gets the real scene background on both sides,
+     * including the titlescreen, instead of a stale gamestate colour.) */
+    uint32_t bg = bg_from_ref_corner();
+    if (bg == 0) bg = scene_bg;
+
+    /* Empty scene: normally return false so the caller re-displays the PSX VRAM
+     * framebuffer (load screens, transitions, and other direct-present frames).
+     * But in ISOLATION (--render-paths) the VRAM is the UNFILTERED frame — falling
+     * back to it would show every path and defeat the isolation. So in isolation
+     * present just the background (= PsyCross's filtered clear) instead. */
+    if (scene_n <= 0 && (!s_isolation || bg == 0))
+        return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
 
@@ -657,15 +691,15 @@ static bool draw_native_scene(bool full_extent)
     int n = 0;
     /* Background fill (untextured, far plane), drawn first; depth-tested actors
      * sit in front of it. Covers the panel rect (window) or the full target. */
-    if (scene_bg != 0) {
+    if (bg != 0) {
         float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
         float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
         float t = full_extent ?  1.0f : s_nr.p0_hy;
         float b = full_extent ? -1.0f : -s_nr.p0_hy;
-        const rhi_vertex tl = { l, t, 1.0f, 0, 0, scene_bg, 0 };
-        const rhi_vertex tr = { r, t, 1.0f, 0, 0, scene_bg, 0 };
-        const rhi_vertex br = { r, b, 1.0f, 0, 0, scene_bg, 0 };
-        const rhi_vertex bl = { l, b, 1.0f, 0, 0, scene_bg, 0 };
+        const rhi_vertex tl = { l, t, 1.0f, 0, 0, bg, 0 };
+        const rhi_vertex tr = { r, t, 1.0f, 0, 0, bg, 0 };
+        const rhi_vertex br = { r, b, 1.0f, 0, 0, bg, 0 };
+        const rhi_vertex bl = { l, b, 1.0f, 0, 0, bg, 0 };
         buf[0] = tl; buf[1] = tr; buf[2] = br;
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
@@ -781,18 +815,14 @@ void openpete_native_render_frame(void)
         int dn; uint32_t dbg;
         (void)scene_present_buf(&dn, &dbg);
         if (dn > 0) {
-            /* native_rtt clear: normally the scene's own background. In path-
-             * isolation (game sets match_ref_bg) clear to the REFERENCE's
-             * background instead, sampled from a readback corner — the bg then
-             * cancels in the diff (cleaner isolated diff) and the stats measure
-             * the path itself, not the framebuffer-clear mismatch. */
+            /* Clear native_rtt to the scene's background colour (the same colour
+             * the cyclorama module sets, which PsyCross also clears to) so the
+             * background cancels in |native - ref| — the diff/stats then measure
+             * the path, not the framebuffer-clear. draw_native_scene also paints
+             * a bg quad in this colour; the clear just covers any gap. */
             float br  = (float)((dbg >>  0) & 0xFF) / 255.0f;
             float bgc = (float)((dbg >>  8) & 0xFF) / 255.0f;
             float bb  = (float)((dbg >> 16) & 0xFF) / 255.0f;
-            if (s_diff_match_ref_bg && s_nr.readback && s_nr.ref_w > 8 && s_nr.ref_h > 8) {
-                const unsigned char* c = &s_nr.readback[((4 * s_nr.ref_w) + 4) * 4]; /* inset corner */
-                br = (float)c[0] / 255.0f; bgc = (float)c[1] / 255.0f; bb = (float)c[2] / 255.0f;
-            }
             rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
             draw_native_scene(true);
             rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
