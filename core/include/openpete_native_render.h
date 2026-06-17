@@ -89,9 +89,9 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * TODO (no consumer yet).
  *   TEXTURED tris go through the VRAM sampler (tex*col/128) for every class.
  *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha — uses the
- * vertex rgba ALPHA byte; set 128 for (B+F)/2) and 3 (subtract — reverse-
- * subtracts the vertex colour, alpha ignored). Class 2 (additive) has no
- * untextured consumer. */
+ * vertex rgba ALPHA byte; set 128 for (B+F)/2), 3 (subtract — reverse-
+ * subtracts the vertex colour, alpha ignored) and 2 (additive, B+F — the glow
+ * rings: gouraud fan, bright centre fading to black edge, alpha ignored). */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;

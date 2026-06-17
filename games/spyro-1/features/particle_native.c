@@ -579,6 +579,125 @@ static void particle_feed_native(CPUState* cpu) {
     }
 }
 
+/* ---- glow rings (func_800580F4) — native float walk + feed + A/B ----------- *
+ * Decoded from the recompiled C (generated/PSX.EXE_full.c block_800580F4). Each
+ * active glow (D_80078800[16], stride 0x24) is a gouraud TRIANGLE FAN: a bright
+ * centre (the glow colour) fading to BLACK at a perspective-scaled ring, drawn
+ * ADDITIVE (the .s emits a 0xE1000220 draw-mode packet = ABR mode 1, then N-1
+ * G3-STP tris, code 0x32). The ring template (unk_0x04, default D_8006E308) is a
+ * static 17-point ellipse (96 wide x 60 tall — pre-compensated for tall PSX
+ * pixels, so ~circular on the 4:3 display); unk_0x00 is the ring point count.
+ *
+ * Differences from the particle/sparkle swizzle: the glow uses RAW camera world
+ * coords (NO >>2 — MobyPos is full-scale world units), and a per-glow LOD shift
+ * that cancels out of SX/SY and persize, so the float walk skips it (the int16
+ * floor it introduces is exactly what we're improving on). All gamestate-derived
+ * (pool + static ring template + colour); determinism-safe by construction (the
+ * .s ran headless; glows write no verdict byte). */
+typedef struct {
+    float sx[3], sy[3];      /* fan tri: v0=centre, v1=prev ring, v2=this ring */
+    uint32_t rgb[3];         /* v0=glow colour, v1/v2=black (the fade) */
+    float cz;                /* centre view-Z (depth) */
+} gtri;
+#define MAX_GTRI 4096
+static gtri s_gtri[MAX_GTRI]; static int s_gtri_n;
+
+static void glow_build(CPUState* cpu) {
+    s_gtri_n = 0;
+    int R[3][3]; load_cam_matrix(cpu, R);
+    int camX = (int)cpu->read_word(G_CAMERA+0x28);    /* RAW world units (no >>2) */
+    int camY = (int)cpu->read_word(G_CAMERA+0x2C);
+    int camZ = (int)cpu->read_word(G_CAMERA+0x30);
+    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
+    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
+    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+
+    for (int i = 0; i < 16 && s_gtri_n < MAX_GTRI; i++) {
+        uint32_t g = D_GLOWS + (uint32_t)i*0x24;
+        int count = (int)cpu->read_word(g + 0x00);    /* unk_0x00 = ring point count */
+        if (count <= 0) continue;                     /* inactive slot */
+        uint32_t mpp = cpu->read_word(g + 0x08);      /* MobyPos* */
+        if (!mpp) continue;
+        uint32_t tmpl = cpu->read_word(g + 0x04);     /* ring template (int32 x,y pairs) */
+        if (!tmpl) continue;
+        int px = (int)cpu->read_word(mpp+0) + (int)cpu->read_word(g + 0x14);  /* + PosOffset */
+        int py = (int)cpu->read_word(mpp+4) + (int)cpu->read_word(g + 0x18);
+        int pz = (int)cpu->read_word(mpp+8) + (int)cpu->read_word(g + 0x1C);
+        /* swizzle like particles but in raw world units: GTE-X=camY-py,
+         * GTE-Y=camZ-pz, GTE-Z=px-camX; TR=0 through the camera matrix. */
+        projres c; proj2(R, ofx, ofy, H, (double)(camY-py), (double)(camZ-pz), (double)(px-camX), &c);
+        double mac3 = c.m3;
+        if (mac3 <= 0.0) continue;                    /* behind camera */
+        int size = (int)cpu->read_word(g + 0x10);
+        int bias = (int)cpu->read_word(g + 0x20);
+        double depthidx = mac3 / 128.0 + bias;        /* the .s OT-depth cull (a3<=0) */
+        if (depthidx <= 0.0) continue;
+        double persize = (double)size * 4096.0 / mac3;/* IR0 = size*4096/Z */
+        uint32_t color = cpu->read_word(g + 0x0C) & 0xFFFFFF;
+
+        int nc = count > 64 ? 64 : count;
+        double rx[64], ry[64];
+        for (int j = 0; j < nc; j++) {
+            int tx = (int)cpu->read_word(tmpl + (uint32_t)j*8 + 0);  /* template offset (int32) */
+            int ty = (int)cpu->read_word(tmpl + (uint32_t)j*8 + 4);
+            rx[j] = c.sx + persize * tx / 4096.0;     /* GPF: centre + (IR0*tmpl)>>12 */
+            ry[j] = c.sy + persize * ty / 4096.0;
+        }
+        for (int j = 1; j < nc && s_gtri_n < MAX_GTRI; j++) {
+            gtri* t = &s_gtri[s_gtri_n++];
+            t->sx[0]=(float)c.sx;   t->sy[0]=(float)c.sy;   t->rgb[0]=color;   /* centre */
+            t->sx[1]=(float)rx[j-1];t->sy[1]=(float)ry[j-1];t->rgb[1]=0;       /* prev ring */
+            t->sx[2]=(float)rx[j];  t->sy[2]=(float)ry[j];  t->rgb[2]=0;       /* this ring */
+            t->cz = (float)mac3;
+        }
+    }
+}
+
+/* Feed the native glow fan tris into the scene — untextured gouraud, ADDITIVE
+ * (blend 2). Display-only; the .s produced any verdict state headless. */
+static void glow_feed_native(CPUState* cpu) {
+    glow_build(cpu);
+    if (s_gtri_n <= 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);
+    for (int i = 0; i < s_gtri_n; i++) {
+        gtri* t = &s_gtri[i];
+        float depth = openpete_native_depth_from_viewz(t->cz);
+        openpete_scene_tri st;
+        for (int k = 0; k < 3; k++) {
+            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
+            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
+            st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
+        }
+        st.textured = 0;
+        st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
+        st.blend = 2;                                 /* ABR mode 1 (additive) */
+        openpete_native_scene_add_tri(&st);
+    }
+}
+
+/* A/B the native glow fan vs the captured G3-STP prims (code 0x32). Per-vertex
+ * NN (order-independent) over all native fan verts -> nearest .s G3 vertex;
+ * validates the centre projection AND the ring corners (persize + template). */
+static void glow_compare(CPUState* cpu) {
+    glow_build(cpu);
+    int prim_g3 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x32) prim_g3++;
+    double sum = 0, worst = 0; int nn = 0;
+    for (int t = 0; t < s_gtri_n; t++) for (int k = 0; k < 3; k++) {
+        double ax = s_gtri[t].sx[k], ay = s_gtri[t].sy[k], best = 1e9;
+        for (int p = 0; p < s_prim_n; p++) {
+            if (s_prim[p].code != 0x32) continue;
+            for (int m = 0; m < 3; m++) {
+                double dx = ax - s_prim[p].x[m], dy = ay - s_prim[p].y[m];
+                double d = (dx<0?-dx:dx) + (dy<0?-dy:dy);
+                if (d < best) best = d;
+            }
+        }
+        if (best < 1e8) { sum += best; if (best > worst) worst = best; nn++; }
+    }
+    fprintf(stderr, "[glow-ab f=%u] native_tri=%d prim_g3=%d nn=%.2f worst=%.1fpx\n",
+            openpete_frame, s_gtri_n, prim_g3, nn?sum/nn:0, worst);
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int verify_enabled(void) {
     static int v = -1;
@@ -621,10 +740,12 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         capture_prims(cpu, startp, endp);
     }
 
-    /* feed the native FT4 particles (sel 2/3/6) into the scene. Only the
-     * particles renderer (tag 'p'); glows/sparkles have no native walk yet. */
-    if (feed && tag[0]=='p' && endp > startp && render_path_enabled(RP_PARTICLES))
-        particle_feed_native(cpu);
+    /* feed the native geometry into the scene: FT4 particles (tag 'p') or glow
+     * rings (tag 'g'); sparkles ('s') have no native walk yet. */
+    if (feed && endp > startp && render_path_enabled(RP_PARTICLES)) {
+        if (tag[0] == 'p')      particle_feed_native(cpu);
+        else if (tag[0] == 'g') glow_feed_native(cpu);
+    }
 
     if (verify && endp > startp && openpete_frame >= verify_frame()) {
         static int s_dumped[3] = {0,0,0};
@@ -637,6 +758,9 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         if (slot == 0) {                                 /* particles: FT4 A/B */
             static int s_reports = 0;
             if (s_reports < 2000) { particle_compare(cpu); s_reports++; }
+        } else if (slot == 1) {                          /* glows: ring fan A/B */
+            static int s_greports = 0;
+            if (s_greports < 2000) { glow_compare(cpu); s_greports++; }
         }
     }
 
