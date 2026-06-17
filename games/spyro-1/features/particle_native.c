@@ -503,11 +503,11 @@ static void particle_build(CPUState* cpu) {
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
             l->sel = 1;
         } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
-            /* UNVALIDATED — decoded from asm, pending an egg-collection bk2 (see
-             * "sel 1 streak lines" doc). A gouraud LINE_G between two VIEW-SPACE
-             * points (HUD particle: the .s sets the GTE TR to the stored coords
-             * with vertex=(0,0,0), so they project directly — NO camera swizzle).
-             * EP0=(s16 A.lo, s16 A.hi, s16 B.lo); EP1=(s16 B.hi, s16 C.lo, s16 C.hi). */
+            /* VALIDATED vs egg.bk2 (egg-collection HUD burst, level_11 f3579): 32/32
+             * count-exact, endpoint NN ~0.6-1.1px mean / ~2px worst. A gouraud LINE_G
+             * between two VIEW-SPACE points (HUD particle: the .s sets the GTE TR to
+             * the stored coords with vertex=(0,0,0), so they project directly — NO
+             * camera swizzle). EP0=(s16 A.lo, A.hi, B.lo); EP1=(s16 B.hi, C.lo, C.hi). */
             uint32_t C = cpu->read_word(pp + 0x0C);
             int X0=(int)(int16_t)(A&0xFFFF), Y0=(int)(int16_t)(A>>16), Z0=(int)(int16_t)(B&0xFFFF);
             int X1=(int)(int16_t)(B>>16),    Y1=(int)(int16_t)(C&0xFFFF), Z1=(int)(int16_t)(C>>16);
@@ -515,10 +515,12 @@ static void particle_build(CPUState* cpu) {
             proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
             proj_view(ofx, ofy, H, (double)X1, (double)Y1, (double)Z1, &e1);
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
+            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
             if (screen_rect_cull(e0.sx, e0.sy)) continue;
-            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
-            if (((sz3 >> 5) - (int)(col1 >> 24)) < 0) continue;   /* sel-4 LOD (no -2) */
+            /* (sz3>>5)-(col1>>24) is a LOD-LEVEL index (clamped to 0 when negative,
+             * block_80057A30 falls through — NOT a cull); it selects a colour-table
+             * entry, not visibility. The line endpoints are already fixed. */
             pline* l = &s_pline[s_pline_n++];
             l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
             l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
@@ -526,11 +528,13 @@ static void particle_build(CPUState* cpu) {
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;
             l->sel = 4;
         } else if (sel == 5) {                           /* HUD key-burst affine FT4 (block_80057750) */
-            /* UNVALIDATED — decoded from asm, pending a key-collection bk2. Same
-             * affine sin/cos corner math as sel 2, but the centre TR is the
-             * DIRECT view-space packing (no centre RTPS/swizzle): TRX=(s16 A.lo)*4,
-             * TRZ=(s16 B.lo)*4, TRY=(int32)A>>14 (combined packing — the most
-             * uncertain field; verify against captured prims first). */
+            /* VALIDATED vs key.bk2 (key-collection HUD burst, level_11 f2435): 6/6
+             * count-exact, FT4 NN ~0.9-1.1px mean / ~1.8px worst, 0 over-emission
+             * (pure-sel-5 frames). Same affine sin/cos corner math as sel 2, but the
+             * centre TR is the DIRECT view-space packing (no centre RTPS/swizzle):
+             * TRX=(s16 A.lo)*4, TRZ=(s16 B.lo)*4, TRY=(int32)A>>14 (combined packing,
+             * confirmed against block_80057750 ctc2 sequence). LOD cull is real here
+             * (asm jumps to the loop tail), unlike sel-4 where it clamps to 0. */
             double TR0 = (double)((int32_t)(A << 16) >> 14);  /* X*4 */
             double TR1 = (double)((int32_t)A >> 14);          /* ~Y*4 (combined) */
             double TR2 = (double)((int32_t)(B << 16) >> 14);  /* Z*4 */
