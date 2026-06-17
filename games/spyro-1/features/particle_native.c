@@ -698,6 +698,152 @@ static void glow_compare(CPUState* cpu) {
             openpete_frame, s_gtri_n, prim_g3, nn?sum/nn:0, worst);
 }
 
+/* ---- sparkle twinkles (func_800584C4) — native float walk + feed + A/B ----- *
+ * Decoded from the recompiled C (block_800584C4). Each live sparkle (g_Sparkles[8],
+ * stride 0x18) is a "twinkle cross" = TWO LINE_F prims (code 0x40, opaque white):
+ * T0→T3 and T1→T2, the two diagonals. Tips (view space, VZ=0):
+ *   T0=(-ec,-es) T1=(es,-ec) T2=(-es,ec) T3=(ec,es),
+ *   ec=(scaledFade·cos[fade8])>>19, es=(scaledFade·sin[fade8])>>19,
+ *   scaledFade=(256−fade8)·m_Fade, fade8=|m_Speed−newLife|·256/m_Speed.
+ * They are transformed by a uniform matrix diag(a3,a3,a3), a3=max(centreMAC3,4096),
+ * TR = centre·2 (the centre's view-space MAC), then projected.
+ *
+ * VERDICT-SAFE by construction: the `.s` ran headless (realfn) — it decremented
+ * m_Life and killed off-screen/expired sparkles by writing m_Life=0. So we read
+ * the pool AFTER the `.s` and **render exactly the sparkles with post-`.s`
+ * m_Life>0** (which is `newLife` — the value the `.s` used for the fade), no
+ * separate cull needed. The native lines are emitted as thin quads (the scene is
+ * triangles-only), like the sel-0 line footprint. */
+typedef struct {
+    float ax, ay, bx, by;    /* line endpoints (centerline) */
+    float cz;                /* centre view-Z (depth) */
+    uint32_t rgb;            /* m_Color (flat) */
+} sline;
+#define MAX_SLINE 64
+static sline s_sline[MAX_SLINE]; static int s_sline_n;
+
+static void sparkle_build(CPUState* cpu) {
+    s_sline_n = 0;
+    int R[3][3]; load_cam_matrix(cpu, R);
+    int camX = (int)cpu->read_word(G_CAMERA+0x28);   /* RAW; the .s shifts the diff >>2 */
+    int camY = (int)cpu->read_word(G_CAMERA+0x2C);
+    int camZ = (int)cpu->read_word(G_CAMERA+0x30);
+    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
+    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
+    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+
+    for (int i = 0; i < 8 && s_sline_n + 2 <= MAX_SLINE; i++) {
+        uint32_t sp = G_SPARKLES + (uint32_t)i*0x18;
+        uint32_t w3 = cpu->read_word(sp + 0x0C);
+        int newLife = (int)(w3 & 0xFF);              /* post-.s m_Life (== newLife) */
+        if (newLife <= 0) continue;                  /* killed/expired by the .s → skip */
+        int speed = (int)((w3 >> 8) & 0xFF);
+        if (speed <= 0) continue;
+        uint32_t w5 = cpu->read_word(sp + 0x14);
+        int fade = (int)(w5 & 0xFF);                 /* m_Fade (+0x14) */
+        uint32_t color = cpu->read_word(sp + 0x10) & 0xFFFFFF;
+        int px = (int)cpu->read_word(sp + 0), py = (int)cpu->read_word(sp + 4), pz = (int)cpu->read_word(sp + 8);
+        /* centre RTPS: swizzle (camera-relative >>2), TR=0, camera matrix */
+        double VXg = (double)((camY - py) >> 2);     /* GTE-X */
+        double VYg = (double)((camZ - pz) >> 2);     /* GTE-Y */
+        double VZg = (double)((px - camX) >> 2);     /* GTE-Z */
+        projres c; proj2(R, ofx, ofy, H, VXg, VYg, VZg, &c);
+        if (c.m3 <= 0.0) continue;
+
+        /* SCALE: fade8 = |m_Speed − newLife|·256/m_Speed → scaledFade pulses the
+         * twinkle. ANGLE: indexed by the animated m_0x0E seed (+0xE), which the
+         * .s increments ~3·dt/frame for a smooth spin (NOT fade8 — that only
+         * scales). Read post-.s m_0x0E (the value the .s used + wrote). */
+        int df = speed - newLife; if (df < 0) df = -df;
+        int fade8 = speed ? (df * 256) / speed : 0;
+        if (fade8 < 0) fade8 = 0; else if (fade8 > 255) fade8 = 255;
+        double scaledFade = (double)(256 - fade8) * fade;
+        int angIdx = (int)((w3 >> 16) & 0xFF);       /* m_0x0E (spin angle) */
+        int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2);
+        int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2 + 128);  /* cos = +0x80 */
+        double ec = scaledFade * cosv / 524288.0;    /* >>19 */
+        double es = scaledFade * sinv / 524288.0;
+        /* tips view-space (VZ=0); transform diag(a3)+TR=2*centre, then project */
+        double a3 = c.m3 > 4096.0 ? c.m3 : 4096.0;
+        double TR0 = c.m1*2.0, TR1 = c.m2*2.0, TR2 = c.m3*2.0;
+        double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
+        double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+        double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
+        double sx[4], sy[4];
+        for (int k = 0; k < 4; k++) {
+            double m1 = TR0 + a3 * T[k][0] / 4096.0;
+            double m2 = TR1 + a3 * T[k][1] / 4096.0;
+            sx[k] = clampSXY(ofx + clamp16(m1)*qd);
+            sy[k] = clampSXY(ofy + clamp16(m2)*qd);
+        }
+        /* line 1 = T0→T3, line 2 = T1→T2 */
+        sline* l0 = &s_sline[s_sline_n++];
+        l0->ax=(float)sx[0]; l0->ay=(float)sy[0]; l0->bx=(float)sx[3]; l0->by=(float)sy[3];
+        l0->cz=(float)c.m3; l0->rgb=color;
+        sline* l1 = &s_sline[s_sline_n++];
+        l1->ax=(float)sx[1]; l1->ay=(float)sy[1]; l1->bx=(float)sx[2]; l1->by=(float)sy[2];
+        l1->cz=(float)c.m3; l1->rgb=color;
+    }
+}
+
+/* Feed each sparkle line as a thin (1px-perp) opaque quad — the scene is
+ * triangles-only, so LINE_F becomes a 2-tri ribbon along the centerline. */
+static void sparkle_feed_native(CPUState* cpu) {
+    sparkle_build(cpu);
+    if (s_sline_n <= 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);
+    int split[2][3] = { {0,1,2}, {1,3,2} };
+    for (int i = 0; i < s_sline_n; i++) {
+        sline* l = &s_sline[i];
+        float dx = l->bx - l->ax, dy = l->by - l->ay;
+        float len = sqrtf(dx*dx + dy*dy);
+        float px = 0.5f, py = 0.0f;                  /* perpendicular ·0.5 (1px wide) */
+        if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
+        float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
+        float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
+        float depth = openpete_native_depth_from_viewz(l->cz);
+        for (int s = 0; s < 2; s++) {
+            openpete_scene_tri st;
+            for (int k = 0; k < 3; k++) {
+                int j = split[s][k];
+                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
+                st.v[k].u = 0.0f; st.v[k].v = 0.0f;
+                st.v[k].rgba = (l->rgb & 0xFFFFFFu) | 0xFF000000u;
+            }
+            st.textured = 0;
+            st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
+            st.blend = 0;                            /* LINE_F 0x40 = opaque */
+            openpete_native_scene_add_tri(&st);
+        }
+    }
+}
+
+/* A/B native sparkle lines vs the captured LINE_F prims (code 0x40): per-vertex
+ * NN over native endpoints ↔ nearest .s line endpoint (raw[2]/raw[3]). */
+static void sparkle_compare(CPUState* cpu) {
+    sparkle_build(cpu);
+    int prim_line = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x40) prim_line++;
+    double sum = 0, worst = 0; int nn = 0;
+    for (int t = 0; t < s_sline_n; t++) {
+        double e[2][2] = { {s_sline[t].ax, s_sline[t].ay}, {s_sline[t].bx, s_sline[t].by} };
+        for (int k = 0; k < 2; k++) {
+            double best = 1e9;
+            for (int p = 0; p < s_prim_n; p++) {
+                if (s_prim[p].code != 0x40) continue;
+                for (int m = 2; m <= 3; m++) {       /* raw[2]=v0, raw[3]=v1 packed (Y<<16)|X */
+                    double lx = (double)(int16_t)(s_prim[p].raw[m] & 0xFFFF);
+                    double ly = (double)(int16_t)(s_prim[p].raw[m] >> 16);
+                    double d = (e[k][0]-lx<0?lx-e[k][0]:e[k][0]-lx) + (e[k][1]-ly<0?ly-e[k][1]:e[k][1]-ly);
+                    if (d < best) best = d;
+                }
+            }
+            if (best < 1e8) { sum += best; if (best > worst) worst = best; nn++; }
+        }
+    }
+    fprintf(stderr, "[sparkle-ab f=%u] native_line=%d prim_line=%d nn=%.2f worst=%.1fpx\n",
+            openpete_frame, s_sline_n, prim_line, nn?sum/nn:0, worst);
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int verify_enabled(void) {
     static int v = -1;
@@ -740,11 +886,12 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         capture_prims(cpu, startp, endp);
     }
 
-    /* feed the native geometry into the scene: FT4 particles (tag 'p') or glow
-     * rings (tag 'g'); sparkles ('s') have no native walk yet. */
+    /* feed the native geometry into the scene: FT4 particles (tag 'p'), glow
+     * rings (tag 'g'), or sparkle twinkles (tag 's'). */
     if (feed && endp > startp && render_path_enabled(RP_PARTICLES)) {
         if (tag[0] == 'p')      particle_feed_native(cpu);
         else if (tag[0] == 'g') glow_feed_native(cpu);
+        else if (tag[0] == 's') sparkle_feed_native(cpu);
     }
 
     if (verify && endp > startp && openpete_frame >= verify_frame()) {
@@ -761,6 +908,9 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         } else if (slot == 1) {                          /* glows: ring fan A/B */
             static int s_greports = 0;
             if (s_greports < 2000) { glow_compare(cpu); s_greports++; }
+        } else if (slot == 2) {                          /* sparkles: line A/B */
+            static int s_sreports = 0;
+            if (s_sreports < 2000) { sparkle_compare(cpu); s_sreports++; }
         }
     }
 
