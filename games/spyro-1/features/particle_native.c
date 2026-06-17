@@ -306,6 +306,17 @@ typedef struct {
 #define MAX_FQUAD 2048
 static fquad s_fq[MAX_FQUAD]; static int s_fq_n;
 
+/* sel-1 gouraud motion-streak LINE_G (code 0x50): a line between two
+ * camera-relative world positions with a per-endpoint colour. */
+typedef struct {
+    float ax, ay, bx, by;        /* projected endpoints */
+    uint32_t rgb0, rgb1;         /* per-endpoint colour (gouraud) */
+    float cz;                    /* EP0 view-Z (depth) */
+    int blend;
+} pline;
+#define MAX_PLINE 1024
+static pline s_pline[MAX_PLINE]; static int s_pline_n;
+
 /* Decode the FT4 material from gamestate (static texture table + the particle's
  * colour word) — same idiom for all FT4 classes: cmd/colour at +0x0C (hi byte =
  * GPU code, STP=bit1), texture record = D_80076278[m_Class] + (byte +0x10)*8,
@@ -344,7 +355,7 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
 }
 
 static void particle_build(CPUState* cpu) {
-    s_fq_n = 0;
+    s_fq_n = 0; s_pline_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
     int s7 = (int)cpu->read_word(G_CAMERA+0x28) >> 2;   /* camX/4 */
     int t8 = (int)cpu->read_word(G_CAMERA+0x2C) >> 2;   /* camY/4 */
@@ -453,8 +464,29 @@ static void particle_build(CPUState* cpu) {
             for (int k = 0; k < 4; k++) { q.u[k] = q.v[k] = 0; }
             q.tpx = q.tpy = q.clx = q.cly = q.bpp = 0;
             s_fq[s_fq_n++] = q;
+        } else if (sel == 1 && s_pline_n < MAX_PLINE) {  /* gouraud motion-streak LINE_G (block_80057E7C) */
+            /* EP0 = (X0=A&0xFFFF, Y0=A>>16, Z0=B&0xFFFF); the loop's VXb/VYb/VZb
+             * already hold EP0's swizzle (GTE-Z/X/Y). EP1 = (X1=B>>16,
+             * Y1=C&0xFFFF, Z1=C>>16). Same camera-rel /4 swizzle. */
+            uint32_t C = cpu->read_word(pp + 0x0C);
+            int X1 = (int)(B >> 16), Y1 = (int)(C & 0xFFFF), Z1 = (int)(C >> 16);
+            projres e0, e1;
+            proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
+            proj2(R, ofx, ofy, H, (double)(t8 - Y1), (double)(t9 - Z1), (double)(X1 - s7), &e1); /* EP1 */
+            int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
+            if (sz3 == 0 || sz3 >= 8192) continue;       /* EP0 SZ window */
+            if (screen_rect_cull(e0.sx, e0.sy)) continue; /* EP0 screen-rect */
+            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
+            int lod = (int)(col1 >> 24);
+            if (((sz3 >> 5) - lod - 2) <= 0) continue;    /* EP0 depth-cue LOD (s3=2) */
+            pline* l = &s_pline[s_pline_n++];
+            l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
+            l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
+            l->cz = (float)e0.m3;
+            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
         }
-        /* sel 1/4 (lines), 5 (affine matrix): not in the demo (sel hist) — TODO */
+        /* sel 4 (LINE_G), 5 (affine matrix): absent across the whole 20k demo
+         * (census: s4=s5=0) — no test target, deferred. */
     }
 }
 
@@ -530,9 +562,31 @@ static void particle_compare(CPUState* cpu) {
             if (nat_w != line_w || nat_h != line_h) t0fpmis++;
         }
     }
-    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  sel0:nat=%d line=%d nn=%.1f/%.1f fpMis=%d\n",
+    /* sel-1 gouraud LINE_G (code 0x50) A/B: NN native streak endpoints -> nearest
+     * .s 0x50 line endpoint (raw[2]=xy0, raw[4]=xy1, packed (Y<<16)|X). */
+    int prim_gline = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x50) prim_gline++;
+    double l1sum = 0, l1worst = 0; int l1n = 0;
+    for (int t = 0; t < s_pline_n; t++) {
+        double e[2][2] = { {s_pline[t].ax, s_pline[t].ay}, {s_pline[t].bx, s_pline[t].by} };
+        for (int k = 0; k < 2; k++) {
+            double best = 1e9;
+            for (int p = 0; p < s_prim_n; p++) {
+                if (s_prim[p].code != 0x50) continue;
+                int idx[2] = {2, 4};
+                for (int m = 0; m < 2; m++) {
+                    double lx = (double)(int16_t)(s_prim[p].raw[idx[m]] & 0xFFFF);
+                    double ly = (double)(int16_t)(s_prim[p].raw[idx[m]] >> 16);
+                    double d = (e[k][0]-lx<0?lx-e[k][0]:e[k][0]-lx) + (e[k][1]-ly<0?ly-e[k][1]:e[k][1]-ly);
+                    if (d < best) best = d;
+                }
+            }
+            if (best < 1e8) { l1sum += best; if (best > l1worst) l1worst = best; l1n++; }
+        }
+    }
+    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  sel0:nat=%d line=%d nn=%.1f/%.1f fpMis=%d  sel1:nat=%d gline=%d nn=%.1f/%.1f\n",
             openpete_frame, natft4, ft4, n, nv?sum/nv:0, worst, over4, n, nnn?nnsum/nnn:0,
-            nat_sel0, prim_line, t0n?t0sum/t0n:0, t0worst, t0fpmis);
+            nat_sel0, prim_line, t0n?t0sum/t0n:0, t0worst, t0fpmis,
+            s_pline_n, prim_gline, l1n?l1sum/l1n:0, l1worst);
     if (getenv("OPENPETE_PARTICLE_DEBUG")) {
         for (int p = 0, c = 0; p < s_prim_n && c < 3 && c < s_fq_n; p++) {
             if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
@@ -556,9 +610,35 @@ static void particle_compare(CPUState* cpu) {
  * yet walked, so those are absent in the native panel (TODO). */
 static void particle_feed_native(CPUState* cpu) {
     particle_build(cpu);
-    if (s_fq_n <= 0) return;
+    if (s_fq_n <= 0 && s_pline_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
     int split[2][3] = { {0,1,2}, {1,3,2} };              /* FT4 -> 2 tris */
+    /* sel-1 gouraud streak lines -> thin (1px-perp) gouraud quads */
+    for (int i = 0; i < s_pline_n; i++) {
+        pline* l = &s_pline[i];
+        float dx = l->bx - l->ax, dy = l->by - l->ay;
+        float len = sqrtf(dx*dx + dy*dy);
+        float px = 0.5f, py = 0.0f;
+        if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
+        float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
+        float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
+        uint32_t cc[4] = { l->rgb0, l->rgb0, l->rgb1, l->rgb1 };  /* gouraud along the line */
+        float depth = openpete_native_depth_from_viewz(l->cz);
+        for (int s = 0; s < 2; s++) {
+            openpete_scene_tri st;
+            for (int k = 0; k < 3; k++) {
+                int j = split[s][k];
+                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
+                st.v[k].u = 0.0f; st.v[k].v = 0.0f;
+                st.v[k].rgba = (cc[j] & 0xFFFFFFu) | 0xFF000000u;
+            }
+            st.textured = 0;
+            st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
+            st.blend = l->blend;
+            openpete_native_scene_add_tri(&st);
+        }
+    }
+    if (s_fq_n <= 0) return;
     for (int i = 0; i < s_fq_n; i++) {
         fquad* q = &s_fq[i];
         float depth = openpete_native_depth_from_viewz(q->cz);
@@ -871,6 +951,22 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_PARTICLES, startp, endp);
+
+    /* sel-class census (uncapped) — locate the rare/unimplemented classes (1/4/5)
+     * so we have real test frames before decoding them. tag 'p' only. */
+    if (tag[0] == 'p' && getenv("OPENPETE_PARTICLE_CENSUS")) {
+        int sh[8] = {0}; uint32_t pp = s_part_pool;
+        for (int i = 0; i < 320; i++, pp += 0x20) {
+            uint32_t hdr = cpu->read_word(pp);
+            int sel = (int)((hdr >> 8) & 0xFF);
+            if (sel == 0xFF) break;
+            if (sel & 0x80) continue;
+            sh[sel < 7 ? sel : 7]++;
+        }
+        if (sh[1] || sh[4] || sh[5])
+            fprintf(stderr, "[selhist f=%u] s0=%d s1=%d s2=%d s3=%d s4=%d s5=%d s6+=%d\n",
+                    openpete_frame, sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[7]);
+    }
 
     if (verify) {
         static int s_trace[3] = {0,0,0};
