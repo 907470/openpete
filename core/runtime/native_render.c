@@ -76,28 +76,34 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
  * geometry (frame N), but PsyCross's reference shows its display FBO, which lags
- * by one frame (classic PSX double-buffer: the OT drawn this frame was built
- * last frame). Comparing the native scene against the reference as-is puts them
- * one frame apart — in A/B the two panels are skewed; in diff EVERY moving
- * object ghosts (it appears at both frame N and frame N-1 in |native - ref|). To
- * keep native and the reference on the SAME frame we delay the native scene by
- * one frame: snapshot each completed frame and use the snapshot (= the previous
- * frame, matching the lagged reference). On by default in any reference-compare
- * mode; OPENPETE_NATIVE_SCENE_DELAY=0 disables (use the current frame). */
-static openpete_scene_tri s_scene_disp[MAX_SCENE_TRIS]; /* presented (frame N-1) */
-static int                s_scene_disp_n;
-static uint32_t           s_scene_disp_bg;
-static int                s_scene_delay = -1;   /* -1 uninit; 1 = delay; 0 = off */
+ * the native geometry (the OT PsyCross draws is the one Spyro built a frame or
+ * two earlier — PSX double-buffer + the build-vs-draw split). Comparing the
+ * native scene against the reference as-is puts them N frames apart — in A/B the
+ * two panels are skewed; in diff EVERY moving object ghosts (it appears at both
+ * frames in |native - ref|). To keep native and the reference on the SAME frame
+ * we delay the native scene by an integer DEPTH: keep a ring of recent completed
+ * frames and present the one `depth` frames back. Default depth in any
+ * reference-compare mode = AB_DIFF_SCENE_DELAY (measured to align with the lagged
+ * reference); vk-only has no reference, so depth 0 (live frame, runs ahead).
+ * OPENPETE_NATIVE_SCENE_DELAY=<n> overrides with an explicit integer depth. */
+#define SCENE_HIST 4   /* ring of completed-frame snapshots; supports delay depth 0..3 */
+#define AB_DIFF_SCENE_DELAY 2   /* ab/diff default: native lagged 2 frames to match PsyCross */
+static openpete_scene_tri s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
+static int                s_scene_hist_n[SCENE_HIST];
+static uint32_t           s_scene_hist_bg[SCENE_HIST];
+static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
+static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
+static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
 static int                s_scene_ref_compare = 1; /* set by init: 1 = ab/diff (lagged reference), 0 = vk-only */
 
-static int scene_delay_enabled(void) {
-    if (s_scene_delay < 0) {
+static int scene_delay_depth(void) {
+    if (s_scene_delay < -1) {
         const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
-        /* Explicit env wins; otherwise default ON whenever we compare against the
-         * lagged PsyCross reference (A/B + diff) so native and reference are the
-         * same frame. vk-only has no reference, so default OFF (live frame). */
-        if (e) s_scene_delay = (e[0] == '0') ? 0 : 1;
-        else   s_scene_delay = s_scene_ref_compare;
+        /* Explicit env wins (integer depth); otherwise default to the measured
+         * ab/diff lag so native and the lagged reference are the same frame.
+         * vk-only has no reference → depth 0 (live frame). */
+        if (e && *e) { int d = atoi(e); s_scene_delay = (d < 0) ? 0 : (d >= SCENE_HIST ? SCENE_HIST - 1 : d); }
+        else         s_scene_delay = s_scene_ref_compare ? AB_DIFF_SCENE_DELAY : 0;
     }
     return s_scene_delay;
 }
@@ -114,8 +120,11 @@ static unsigned s_scene_frame = 0xFFFFFFFFu;
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
         if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
-            if (s_scene_n > 0) memcpy(s_scene_disp, s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
-            s_scene_disp_n = s_scene_n; s_scene_disp_bg = s_scene_bg;
+            int slot = (s_scene_hist_head + 1) % SCENE_HIST;
+            if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
+            s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+            s_scene_hist_head = slot;
+            if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_n = 0; s_scene_bg = 0; s_scene_frame = frame;
     }
@@ -125,10 +134,16 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
 }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
-/* The scene buffer the present should draw: the 1-frame-delayed snapshot when
- * delay is on (A/B-synced with the reference), else the current accumulator. */
+/* The scene buffer the present should draw: the depth-frames-back snapshot when
+ * a reference-compare delay is set (A/B-synced with the lagged reference), else
+ * the live accumulator (vk-only, runs ahead). Falls back to the live frame
+ * during warmup before enough history has accumulated. */
 static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg) {
-    if (scene_delay_enabled()) { *out_n = s_scene_disp_n; *out_bg = s_scene_disp_bg; return s_scene_disp; }
+    int depth = scene_delay_depth();
+    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
+        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
+        *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot]; return s_scene_hist[slot];
+    }
     *out_n = s_scene_n; *out_bg = s_scene_bg; return s_scene;
 }
 
