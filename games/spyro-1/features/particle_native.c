@@ -252,6 +252,13 @@ static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
 
 /* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
 typedef struct { double sx, sy, m1, m2, m3; } projres;
+
+/* Perspective-project a VIEW-SPACE point (X,Y,Z) directly — sel 4/5 (HUD
+ * particles) store view-space coords and feed them to the GTE as the TR with the
+ * vertex = (0,0,0), so MAC=(X,Y,Z) and SX=OFX+X*H/Z (the camera matrix is
+ * multiplied by V=0, so it drops out). No swizzle. */
+static void proj_view(double ofx, double ofy, double H,
+                      double X, double Y, double Z, projres* o);
 static void proj2(const int R[3][3], double ofx, double ofy, double H,
                   double vx, double vy, double vz, projres* o) {
     double mac1 = (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
@@ -262,6 +269,15 @@ static void proj2(const int R[3][3], double ofx, double ofy, double H,
     double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
     o->sx = clampSXY(ofx + clamp16(mac1) * q);
     o->sy = clampSXY(ofy + clamp16(mac2) * q);
+}
+
+static void proj_view(double ofx, double ofy, double H,
+                      double X, double Y, double Z, projres* o) {
+    o->m1 = X; o->m2 = Y; o->m3 = Z;
+    double sz3 = Z < 0.0 ? 0.0 : (Z > 65535.0 ? 65535.0 : Z);
+    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
+    o->sx = clampSXY(ofx + clamp16(X) * q);
+    o->sy = clampSXY(ofy + clamp16(Y) * q);
 }
 
 /* the .s screen-rect reject of the projected centre (s4=0x10000 s5=0x1000000
@@ -313,6 +329,7 @@ typedef struct {
     uint32_t rgb0, rgb1;         /* per-endpoint colour (gouraud) */
     float cz;                    /* EP0 view-Z (depth) */
     int blend;
+    int sel;                     /* 1 = world streak; 4 = HUD egg-burst (view-space) */
 } pline;
 #define MAX_PLINE 1024
 static pline s_pline[MAX_PLINE]; static int s_pline_n;
@@ -484,9 +501,62 @@ static void particle_build(CPUState* cpu) {
             l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
             l->cz = (float)e0.m3;
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
+            l->sel = 1;
+        } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
+            /* UNVALIDATED — decoded from asm, pending an egg-collection bk2 (see
+             * "sel 1 streak lines" doc). A gouraud LINE_G between two VIEW-SPACE
+             * points (HUD particle: the .s sets the GTE TR to the stored coords
+             * with vertex=(0,0,0), so they project directly — NO camera swizzle).
+             * EP0=(s16 A.lo, s16 A.hi, s16 B.lo); EP1=(s16 B.hi, s16 C.lo, s16 C.hi). */
+            uint32_t C = cpu->read_word(pp + 0x0C);
+            int X0=(int)(int16_t)(A&0xFFFF), Y0=(int)(int16_t)(A>>16), Z0=(int)(int16_t)(B&0xFFFF);
+            int X1=(int)(int16_t)(B>>16),    Y1=(int)(int16_t)(C&0xFFFF), Z1=(int)(int16_t)(C>>16);
+            projres e0, e1;
+            proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
+            proj_view(ofx, ofy, H, (double)X1, (double)Y1, (double)Z1, &e1);
+            int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
+            if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
+            if (screen_rect_cull(e0.sx, e0.sy)) continue;
+            uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
+            if (((sz3 >> 5) - (int)(col1 >> 24)) < 0) continue;   /* sel-4 LOD (no -2) */
+            pline* l = &s_pline[s_pline_n++];
+            l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
+            l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
+            l->cz = (float)e0.m3;
+            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;
+            l->sel = 4;
+        } else if (sel == 5) {                           /* HUD key-burst affine FT4 (block_80057750) */
+            /* UNVALIDATED — decoded from asm, pending a key-collection bk2. Same
+             * affine sin/cos corner math as sel 2, but the centre TR is the
+             * DIRECT view-space packing (no centre RTPS/swizzle): TRX=(s16 A.lo)*4,
+             * TRZ=(s16 B.lo)*4, TRY=(int32)A>>14 (combined packing — the most
+             * uncertain field; verify against captured prims first). */
+            double TR0 = (double)((int32_t)(A << 16) >> 14);  /* X*4 */
+            double TR1 = (double)((int32_t)A >> 14);          /* ~Y*4 (combined) */
+            double TR2 = (double)((int32_t)(B << 16) >> 14);  /* Z*4 */
+            if (TR2 <= 0.0) continue;
+            int sz3i = (int)(TR2 > 65535 ? 65535 : TR2);
+            int lod = (int)((cpu->read_word(pp + 0x10) >> 8) & 0xFF);
+            if (((sz3i >> 7) - lod) < 0) continue;       /* sel-5 cull TRZ>>7 - lod */
+            int sizeB = (int)((B >> 16) & 0xFF);
+            int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
+            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+            int a2 = (sizeB * sinv) >> 10, a3 = (sizeB * cosv) >> 10;
+            double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
+            double sz3 = TR2 > 65535 ? 65535 : TR2;
+            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+            for (int k = 0; k < 4; k++) {                /* diag(4096,2560,4096) + TR */
+                double m1 = Cc[k][0] + TR0;
+                double m2 = Cc[k][1]*2560.0/4096.0 + TR1;
+                q.sx[k] = (float)clampSXY(ofx + clamp16(m1)*qd);
+                q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
+                q.sz[k] = (float)TR2;
+            }
+            q.cz = (float)TR2;
+            decode_material(cpu, pp, mclass, &q);
+            s_fq[s_fq_n++] = q;
         }
-        /* sel 4 (LINE_G), 5 (affine matrix): absent across the whole 20k demo
-         * (census: s4=s5=0) — no test target, deferred. */
     }
 }
 
@@ -529,8 +599,9 @@ static void particle_compare(CPUState* cpu) {
         }
         if (best<1e8) { nnsum+=best; nnn++; }
     }
-    int ns2=0,ns3=0,ns6=0; for (int q=0;q<s_fq_n;q++){if(s_fq[q].sel==2)ns2++;else if(s_fq[q].sel==3)ns3++;else if(s_fq[q].sel>=6)ns6++;}
-    if (getenv("OPENPETE_PARTICLE_DEBUG")) fprintf(stderr, "   [sel] nat sel2=%d sel3=%d sel6=%d\n", ns2, ns3, ns6);
+    int ns2=0,ns3=0,ns5=0,ns6=0; for (int q=0;q<s_fq_n;q++){if(s_fq[q].sel==2)ns2++;else if(s_fq[q].sel==3)ns3++;else if(s_fq[q].sel==5)ns5++;else if(s_fq[q].sel>=6)ns6++;}
+    int npl1=0,npl4=0; for (int t=0;t<s_pline_n;t++){if(s_pline[t].sel==4)npl4++;else npl1++;}
+    if (getenv("OPENPETE_PARTICLE_DEBUG")) fprintf(stderr, "   [sel] nat sel2=%d sel3=%d sel5=%d sel6=%d line1=%d line4=%d\n", ns2, ns3, ns5, ns6, npl1, npl4);
     int nat_sel0 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel == 0) nat_sel0++;
     /* sel-0 GEOMETRY (closes the count-only blind spot that hid the 1px-sliver
      * bug): the .s emits each sel-0 as a LINE_F (code 0x40), kept raw — vertex0
@@ -583,10 +654,10 @@ static void particle_compare(CPUState* cpu) {
             if (best < 1e8) { l1sum += best; if (best > l1worst) l1worst = best; l1n++; }
         }
     }
-    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  sel0:nat=%d line=%d nn=%.1f/%.1f fpMis=%d  sel1:nat=%d gline=%d nn=%.1f/%.1f\n",
+    fprintf(stderr, "[part-ab f=%u] FT4 native=%d prim=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx over4=%d/%d nnCtr=%.1f  sel0:nat=%d line=%d nn=%.1f/%.1f fpMis=%d  sel1:nat=%d gline=%d nn=%.1f/%.1f  sel4:nat=%d sel5:nat=%d\n",
             openpete_frame, natft4, ft4, n, nv?sum/nv:0, worst, over4, n, nnn?nnsum/nnn:0,
             nat_sel0, prim_line, t0n?t0sum/t0n:0, t0worst, t0fpmis,
-            s_pline_n, prim_gline, l1n?l1sum/l1n:0, l1worst);
+            s_pline_n, prim_gline, l1n?l1sum/l1n:0, l1worst, npl4, ns5);
     if (getenv("OPENPETE_PARTICLE_DEBUG")) {
         for (int p = 0, c = 0; p < s_prim_n && c < 3 && c < s_fq_n; p++) {
             if (!(s_prim[p].code==0x2C||s_prim[p].code==0x2E)) continue;
