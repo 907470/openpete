@@ -460,7 +460,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
      * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
     rhi_pipeline_desc scene_tex_desc = {
-        .vert_spv = "psx_sample.vert.spv",
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
@@ -471,7 +471,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * depth, so they never occlude each other (correct ordering still needs the
      * back-to-front sort, 3c; this is the prerequisite half). */
     rhi_pipeline_desc scene_tex_blend_desc = {
-        .vert_spv = "psx_sample.vert.spv",
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
@@ -484,7 +484,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * grey-ramp vertex colour modulates the flame sprite (tex*col/128) and the
      * result accumulates into the framebuffer — bright core, never darkens. */
     rhi_pipeline_desc scene_tex_add_desc = {
-        .vert_spv = "psx_sample.vert.spv",
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
@@ -495,7 +495,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * framebuffer (tex*col/128 darkens the ground), depth_write_off so the
      * shadow tests against opaque geometry but never occludes another layer. */
     rhi_pipeline_desc scene_tex_sub_desc = {
-        .vert_spv = "psx_sample.vert.spv",
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
