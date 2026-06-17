@@ -18,6 +18,7 @@ extern const feature_module_t spyro_native_module;
 extern const feature_module_t flame_native_module;
 extern const feature_module_t shadow_native_module;
 extern const feature_module_t particle_native_module;
+extern const feature_module_t terrain_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -60,6 +61,13 @@ const feature_module_t* const openpete_features[] = {
      * mode; inert otherwise. Records the RP_PARTICLES polybuf range itself (so
      * the render_paths thin bracket on func_800573C8 is retired). */
     &particle_native_module,
+    /* Phase 4 native-renderer TERRAIN/world: hooks the env-render dispatch
+     * func_8002B9CC (-> func_800258F0 world renderer) only under
+     * OPENPETE_TERRAIN_VERIFY or a native renderer mode; inert otherwise.
+     * Records the RP_TERRAIN polybuf range itself (so the render_paths thin
+     * bracket on func_8002B9CC is retired — see render_paths.c). Capture+dump
+     * harness now; native gamestate walk + scene feed are the next increment. */
+    &terrain_native_module,
 };
 
 const size_t openpete_feature_count =

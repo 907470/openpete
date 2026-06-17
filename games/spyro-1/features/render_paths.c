@@ -86,33 +86,14 @@ bool render_path_addr_visible(uint32_t addr) {
  * normal dispatch) and records its polybuf range; presentation is then
  * filtered by selection in psyq_DrawOTag. Only armed when a selection is in
  * effect (else zero overhead). */
-#define POLYBUF_CURSOR 0x800757B0u
-
-extern void func_8002B9CC(CPUState* cpu);  /* environment render (-> func_800258F0 world renderer) */
-/* shadow brackets (func_80059F8C/func_80059A48) and the particle bracket
- * (func_800573C8/0x800580F4/0x800584C4) retired — shadow_native.c and
- * particle_native.c record their RP_SHADOW/RP_PARTICLES ranges themselves
- * (see feature_list.c). */
-
-#define RP_BRACKET(hookname, realfn, pathid)                                   \
-    static int hookname(CPUState* cpu, uint32_t addr) {                        \
-        (void)addr;                                                            \
-        if (!render_paths_active()) return 0;  /* normal dispatch; no overhead */ \
-        static int s_in = 0; if (s_in) return 0; s_in = 1;                     \
-        uint32_t start = cpu->read_word(POLYBUF_CURSOR);                       \
-        realfn(cpu);                                                           \
-        uint32_t end = cpu->read_word(POLYBUF_CURSOR);                         \
-        render_path_record(pathid, start, end);                               \
-        s_in = 0;                                                             \
-        return 1;                                                             \
-    }
-
-RP_BRACKET(on_terrain_bracket,     func_8002B9CC, RP_TERRAIN)
+/* All per-path polybuf brackets are now retired here — each path's native
+ * feature module records its own RP_* range: terrain (func_8002B9CC) →
+ * terrain_native.c; shadow (func_80059F8C/func_80059A48) → shadow_native.c;
+ * particles (func_800573C8/0x800580F4/0x800584C4) → particle_native.c;
+ * cyclorama/spyro/moby/flame from their own modules. This module is now just
+ * the --render-paths parser + the OT-walk filter (above). */
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
-    { 0x8002B9CCu, on_terrain_bracket },
-    /* shadow (0x80059F8C/0x80059A48) recorded by shadow_native.c;
-     * particles (0x800573C8/0x800580F4/0x800584C4) by particle_native.c */
     { 0u, NULL },
 };
 
