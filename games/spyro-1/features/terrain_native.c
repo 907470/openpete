@@ -210,18 +210,23 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
     M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
 }
 
-/* Float RTPS mirror, TR=0: MAC = (M*V)>>12 ; SX = OFX + MAC1*H/MAC3. The
- * LP-world/16 vs HP-world/4 scale cancels in the MAC1/MAC3 ratio, so V can be
- * built in any consistent unit (we use world/16). */
-static double project(const int M[3][3], int vx, int vy, int vz,
-                      double ofx, double ofy, double H, double* sx, double* sy) {
-    double m1 = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
-    double m2 = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
-    double m3 = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
-    double z = (m3 != 0.0) ? m3 : 1.0;
-    *sx = ofx + m1 * H / z;
-    *sy = ofy + m2 * H / z;
-    return m3;
+/* Projection params (file-static so the clip/emit path can re-project clipped
+ * vertices). Set per frame in terrain_build. */
+static double s_ofx, s_ofy, s_H;
+
+/* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12. SX/SY = OFX/OFY +
+ * MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs HP-world/4 scale cancels in
+ * the MAC1/MAC3 ratio, so V can be built in any consistent unit (world/16). */
+static void project(const int M[3][3], int vx, int vy, int vz,
+                    double* m1, double* m2, double* m3) {
+    *m1 = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
+    *m2 = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
+    *m3 = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
+}
+static void proj_screen(double m1, double m2, double m3, float* sx, float* sy) {
+    double z = (m3 > 1e-9) ? m3 : 1e-9;
+    *sx = (float)(s_ofx + m1 * s_H / z);
+    *sy = (float)(s_ofy + m2 * s_H / z);
 }
 
 #define MAX_TVERTS 16384
@@ -292,8 +297,9 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
     return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
 }
 
-/* Per-sector local projected vertex (indexed by face vertex index). */
-typedef struct { float sx, sy; double vz; int ok; } lvert;
+/* Per-sector local projected vertex (indexed by face vertex index). Carries the
+ * camera-space (m1,m2,m3) for near-plane clipping + the projected screen sx,sy. */
+typedef struct { float sx, sy; double m1, m2, m3, vz; int ok; } lvert;
 
 /* A face corner: native colour + page-relative texel UV. */
 typedef struct { uint32_t rgb; float u, v; } lcorner;
@@ -340,31 +346,73 @@ static float s_cvx[MAX_TTRIS * 3], s_cvy[MAX_TTRIS * 3];
 static double s_cvz[MAX_TTRIS * 3];               /* m3 (world/16 view-Z) for fog regime */
 static uint32_t s_cvrgb[MAX_TTRIS * 3]; static int s_cv_n;
 static int s_tex_faces, s_tex_tris;               /* diagnostics: textured-face count */
+static int s_dbg_clipped;                          /* faces that hit the near plane */
 
-/* Emit one triangle: explicit per-corner colour+UV + the face material (+ the
- * near-plane spike cull). */
-static void emit_tri(const lvert* sv, int a, int b, int c,
-                     lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
+/* A clip-space corner: camera-space pos (m1,m2,m3) + colour + UV. Near-plane
+ * clipping (§near-plane) interpolates all of these along an edge. */
+typedef struct { double m1, m2, m3; uint32_t rgb; float u, v; } cvert;
+
+/* Near plane (camera-space m3, world/16 view-Z). Vertices closer than this are
+ * clipped so float H/m3 never blows up and behind-camera (m3<=0) verts don't
+ * project to a wild position. Env-tunable. */
+static double s_nearz = -1.0;
+
+static cvert cv_lerp(cvert a, cvert b) {     /* crossing point at m3 == s_nearz */
+    double t = (s_nearz - a.m3) / (b.m3 - a.m3);
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    cvert r;
+    r.m1 = a.m1 + t * (b.m1 - a.m1);
+    r.m2 = a.m2 + t * (b.m2 - a.m2);
+    r.m3 = s_nearz;
+    r.u  = a.u + (float)t * (b.u - a.u);
+    r.v  = a.v + (float)t * (b.v - a.v);
+    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
+    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
+    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
+    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
+    return r;
+}
+
+/* Push one (already near-clipped) camera-space triangle: project to screen + the
+ * scene-feed ttri (+ the colour-A/B verts). */
+static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     if (s_tri_n >= MAX_TTRIS) return;
-    /* Near-plane spike cull: a vertex just in front of the camera makes float
-     * H/Z explode → a tri spiking across the screen (the GTE clamps these). */
-    if (fabsf(sv[a].sx) > 768.f || fabsf(sv[a].sy) > 640.f ||
-        fabsf(sv[b].sx) > 768.f || fabsf(sv[b].sy) > 640.f ||
-        fabsf(sv[c].sx) > 768.f || fabsf(sv[c].sy) > 640.f) { s_dbg_spike++; return; }
+    cvert cc[3] = { a, b, c };
     ttri* t = &s_tri[s_tri_n++];
-    t->sx[0]=sv[a].sx; t->sy[0]=sv[a].sy; t->vz[0]=sv[a].vz;
-    t->sx[1]=sv[b].sx; t->sy[1]=sv[b].sy; t->vz[1]=sv[b].vz;
-    t->sx[2]=sv[c].sx; t->sy[2]=sv[c].sy; t->vz[2]=sv[c].vz;
-    t->rgb[0]=ka.rgb; t->rgb[1]=kb.rgb; t->rgb[2]=kc.rgb;
-    t->u[0]=ka.u; t->v[0]=ka.v; t->u[1]=kb.u; t->v[1]=kb.v; t->u[2]=kc.u; t->v[2]=kc.v;
+    for (int k = 0; k < 3; k++) {
+        proj_screen(cc[k].m1, cc[k].m2, cc[k].m3, &t->sx[k], &t->sy[k]);
+        t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->u[k] = cc[k].u; t->v[k] = cc[k].v;
+        if (s_cv_n < MAX_TTRIS * 3) {
+            s_cvx[s_cv_n]=t->sx[k]; s_cvy[s_cv_n]=t->sy[k]; s_cvz[s_cv_n]=cc[k].m3; s_cvrgb[s_cv_n]=cc[k].rgb; s_cv_n++;
+        }
+    }
     t->textured=m->textured; t->tpx=m->tpx; t->tpy=m->tpy;
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
     if (m->textured) s_tex_tris++;
-    if (s_cv_n + 3 <= MAX_TTRIS * 3) {
-        s_cvx[s_cv_n]=sv[a].sx; s_cvy[s_cv_n]=sv[a].sy; s_cvz[s_cv_n]=sv[a].vz; s_cvrgb[s_cv_n]=ka.rgb; s_cv_n++;
-        s_cvx[s_cv_n]=sv[b].sx; s_cvy[s_cv_n]=sv[b].sy; s_cvz[s_cv_n]=sv[b].vz; s_cvrgb[s_cv_n]=kb.rgb; s_cv_n++;
-        s_cvx[s_cv_n]=sv[c].sx; s_cvy[s_cv_n]=sv[c].sy; s_cvz[s_cv_n]=sv[c].vz; s_cvrgb[s_cv_n]=kc.rgb; s_cv_n++;
+}
+
+/* Emit a triangle with near-plane clipping (Sutherland-Hodgman against the single
+ * plane m3 >= s_nearz). 0 verts clipped → 1 tri; 1 clipped → quad (2 tris); 2
+ * clipped → 1 tri; 3 clipped → dropped. Replaces the old behind-drop + spike
+ * cull: near/straddling faces are clipped & rendered, not discarded. */
+static void emit_tri(const lvert* sv, int a, int b, int c,
+                     lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
+    cvert in[3] = {
+        { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v },
+        { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v },
+        { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v },
+    };
+    cvert out[4]; int nout = 0; int clipped = 0;
+    for (int i = 0; i < 3; i++) {
+        cvert cur = in[i], nxt = in[(i + 1) % 3];
+        int curIn = cur.m3 >= s_nearz, nxtIn = nxt.m3 >= s_nearz;
+        if (curIn) out[nout++] = cur;
+        if (curIn != nxtIn && nout < 4) { out[nout++] = cv_lerp(cur, nxt); clipped = 1; }
     }
+    if (nout < 3) { s_dbg_behind++; return; }     /* fully behind the near plane */
+    if (clipped) s_dbg_clipped++;
+    push_tri(out[0], out[1], out[2], m);          /* fan the clipped polygon */
+    if (nout == 4) push_tri(out[0], out[2], out[3], m);
 }
 
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
@@ -374,16 +422,20 @@ static void emit_tri(const lvert* sv, int a, int b, int c,
  * 0x80026238-0x800262C0 (matrix = g_Camera+0x00; world axes = origin+field). */
 static void terrain_build(CPUState* cpu) {
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
-    s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = 0;
+    s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     terrain_dbg_init();
     if (s_fogscale < 0.0) {  /* world/16 m3 → world/4 SZ3 = ×4 (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
         s_fogscale = (e && *e) ? atof(e) : 4.0;
     }
+    if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
+        const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
+        s_nearz = (e && *e) ? atof(e) : 1.0;
+    }
     int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
-    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
     int camx = (int32_t)rd(cpu, G_CAMERA + 0x28) >> 4;
     int camy = (int32_t)rd(cpu, G_CAMERA + 0x2C) >> 4;
     int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
@@ -429,15 +481,16 @@ static void terrain_build(CPUState* cpu) {
         for (int k = 0; k < nv; k++) {
             uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
             int Xf = (int)((v >> 21) & 0x7FF), Yf = (int)((v >> 10) & 0x7FF), Zf = (int)(v & 0x3FF);
-            double sx, sy;
-            double m3 = project(M, s5 - Yf, s6 - Zf, Xf + s4, ofx, ofy, H, &sx, &sy);
-            sv[k].sx = (float)sx; sv[k].sy = (float)sy; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
+            double m1, m2, m3;
+            project(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
+            sv[k].m1 = m1; sv[k].m2 = m2; sv[k].m3 = m3; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
+            proj_screen(m1, m2, m3, &sv[k].sx, &sv[k].sy);
             if (m3 > 0.0 && s_tv_n < MAX_TVERTS) {       /* feed the geometry A/B */
-                s_tvx[s_tv_n] = (float)sx; s_tvy[s_tv_n] = (float)sy; s_tvz[s_tv_n] = m3; s_tv_n++;
+                s_tvx[s_tv_n] = sv[k].sx; s_tvy[s_tv_n] = sv[k].sy; s_tvz[s_tv_n] = m3; s_tv_n++;
             }
         }
 
-        for (int f = 0; f < nf && s_tri_n < MAX_TTRIS - 2; f++) {
+        for (int f = 0; f < nf && s_tri_n < MAX_TTRIS - 4; f++) {  /* clipped quad → ≤4 tris */
             uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
             uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);   /* colours */
             int i0, i1, i2, i3, flip, fogRef, c0, c1, c2, c3;
@@ -467,13 +520,13 @@ static void terrain_build(CPUState* cpu) {
             }
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
             int quad = (i2 != i3);
-            /* Behind-camera: drop the whole face if any used vertex is behind
-             * (the .s near-plane clips; native drops). The GPU quad strip uses
-             * all four, a tri only i0..i2. */
-            if (!sv[i0].ok || !sv[i1].ok || !sv[i2].ok || (quad && !sv[i3].ok)) { s_dbg_behind++; continue; }
             s_dbg_faces++;
+            /* No behind-drop: emit_tri near-plane-CLIPS faces that straddle the
+             * camera (and drops fully-behind ones), so near terrain renders
+             * instead of being discarded. */
             /* NCLIP back-face cull (off by default; Z-buffer hides backfaces).
-             * 2D cross product == GTE MAC0; flip negates it (word3 & 0x2). */
+             * 2D cross product == GTE MAC0; flip negates it (word3 & 0x2). NB the
+             * screen coords are pre-clip, only meaningful for in-front verts. */
             double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
@@ -580,8 +633,8 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d behind=%d nclipCulled=%d spikeCulled=%d emitted=%d  texturedFaces=%d texTris=%d\n",
-        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_nclip, s_dbg_spike, s_tri_n, s_tex_faces, s_tex_tris);
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d emitted=%d  texturedFaces=%d texTris=%d\n",
+        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_tri_n, s_tex_faces, s_tex_tris);
 
     /* Colour A/B: NN-match each native colour-vert (post-fog) to the nearest
      * captured prim corner by SCREEN position; where the geometry match is tight
