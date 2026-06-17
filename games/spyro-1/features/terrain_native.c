@@ -307,8 +307,11 @@ typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend; } tmat;
  *   < 0, != -1 → textured ABE     (tile = texByte & 0x7F; blend from tpage ABR)
  * Tile = lqTable + tile*16, near/max-detail half [0..7] (skip the +8 far LOD):
  *   word0 = {u8 u0, u8 v0, u16 clut}; word1 = {u8 u1, u8 v1, u16 tpage}.
- * Corners (matching the .s GT4 prim emit 0x800270AC): uv0=(u0,v0), uv1=(u1,v1),
- * uv2=(u0,v0+0x1F), uv3=(u0+0x1F,v0+0x1F) — a fixed 32×32 tile. */
+ * A fixed 32×32 tile. Output u/v[] are the 4 SPATIAL corners in [TL,TR,BL,BR]
+ * order: TL=(u0,v0), TR=(u1,v1), BL=(u0,v0+0x1F), BR=(u0+0x1F,v0+0x1F) — matching
+ * the .s GT4 prim emit (0x800270AC). NOTE the .s reorders the last two SXY/UV
+ * slots (slot2=i3, slot3=i2; stores 0x80026DD0-DC) — so the caller maps vertex
+ * i0→TL, i1→TR, i3→BL, i2→BR, and uses the GPU diagonal i1-i3 (affine-faithful). */
 static void terrain_texmat(CPUState* cpu, uint32_t lqTable, int texByte,
                            tmat* m, float u[4], float v[4]) {
     memset(m, 0, sizeof(*m)); m->bpp = 16;
@@ -319,10 +322,10 @@ static void terrain_texmat(CPUState* cpu, uint32_t lqTable, int texByte,
     uint32_t w0 = rd(cpu, e + 0), w1 = rd(cpu, e + 4);
     int u0 = (int)(w0 & 0xFF), v0 = (int)((w0 >> 8) & 0xFF), clut = (int)((w0 >> 16) & 0xFFFF);
     int u1 = (int)(w1 & 0xFF), v1 = (int)((w1 >> 8) & 0xFF), tpage = (int)((w1 >> 16) & 0xFFFF);
-    u[0]=(float)u0;            v[0]=(float)v0;
-    u[1]=(float)u1;            v[1]=(float)v1;
-    u[2]=(float)u0;            v[2]=(float)((v0 + 0x1F) & 0xFF);
-    u[3]=(float)((u0+0x1F)&0xFF); v[3]=(float)((v0 + 0x1F) & 0xFF);
+    u[0]=(float)u0;               v[0]=(float)v0;                  /* TL */
+    u[1]=(float)u1;               v[1]=(float)v1;                  /* TR */
+    u[2]=(float)u0;               v[2]=(float)((v0 + 0x1F) & 0xFF);/* BL */
+    u[3]=(float)((u0+0x1F)&0xFF); v[3]=(float)((v0 + 0x1F) & 0xFF);/* BR */
     m->textured = 1;
     m->tpx = (tpage & 0xF) * 64; m->tpy = ((tpage >> 4) & 1) * 256;
     int mode = (tpage >> 7) & 3; m->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
@@ -463,14 +466,14 @@ static void terrain_build(CPUState* cpu) {
                 memset(&mat, 0, sizeof(mat)); mat.bpp = 16;   /* LP = untextured */
             }
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
-            if (!sv[i0].ok || !sv[i1].ok || !sv[i2].ok) { s_dbg_behind++; continue; }
             int quad = (i2 != i3);
-            /* NCLIP back-face cull (2D cross product) on the quad as a whole,
-             * honoring the flip bit. Gate ONCE — then emit BOTH tris with
-             * consistent winding (i0,i1,i2)+(i1,i2,i3). Per-tri NCLIP dropped
-             * the 2nd tri of every front-facing quad (reversed winding) → holes
-             * everywhere (the "missing tris" symptom). */
+            /* Behind-camera: drop the whole face if any used vertex is behind
+             * (the .s near-plane clips; native drops). The GPU quad strip uses
+             * all four, a tri only i0..i2. */
+            if (!sv[i0].ok || !sv[i1].ok || !sv[i2].ok || (quad && !sv[i3].ok)) { s_dbg_behind++; continue; }
             s_dbg_faces++;
+            /* NCLIP back-face cull (off by default; Z-buffer hides backfaces).
+             * 2D cross product == GTE MAC0; flip negates it (word3 & 0x2). */
             double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
@@ -478,16 +481,26 @@ static void terrain_build(CPUState* cpu) {
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
-            lcorner k0 = { terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef), tu[0], tv[0] };
-            lcorner k1 = { terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef), tu[1], tv[1] };
-            lcorner k2 = { terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef), tu[2], tv[2] };
-            lcorner k3 = { quad ? terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0, tu[3], tv[3] };
-            /* Quad triangulation = FAN from i0 (diagonal i0-i2): (i0,i1,i2) +
-             * (i0,i2,i3). The strip split (i0,i1,i2)+(i1,i2,i3) shares EDGE
-             * i1-i2 which is a quad edge, not a diagonal, for this winding — it
-             * left a triangular gap inside every quad (the "missing tris"). */
-            emit_tri(sv, i0, i1, i2, k0, k1, k2, &mat);
-            if (quad && sv[i3].ok) emit_tri(sv, i0, i2, i3, k0, k2, k3, &mat);
+            uint32_t rc0 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
+            uint32_t rc1 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
+            uint32_t rc2 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
+            uint32_t rc3 = quad ? terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            /* UV per vertex (the .s slot reorder): i0→TL, i1→TR, i3→BL, and i2→BR
+             * for a quad / BL for a tri (the GT3 3rd corner is slot2=BL). */
+            lcorner k0 = { rc0, tu[0], tv[0] };                  /* i0 = TL */
+            lcorner k1 = { rc1, tu[1], tv[1] };                  /* i1 = TR */
+            lcorner k3 = { rc3, tu[2], tv[2] };                  /* i3 = BL */
+            lcorner k2 = { rc2, quad ? tu[3] : tu[2], quad ? tv[3] : tv[2] };  /* i2 = BR/BL */
+            /* GPU triangulation (affine-faithful): a quad is the prim strip
+             * slots (0,1,2)+(1,2,3) = (i0,i1,i3)+(i1,i3,i2) — diagonal i1-i3
+             * (NOT a FAN i0-i2: affine texture/colour warp is diagonal-dependent,
+             * the cause of the "slanted textures"). A tri is just (i0,i1,i2). */
+            if (quad) {
+                emit_tri(sv, i0, i1, i3, k0, k1, k3, &mat);
+                emit_tri(sv, i1, i3, i2, k1, k3, k2, &mat);
+            } else {
+                emit_tri(sv, i0, i1, i2, k0, k1, k2, &mat);
+            }
         }
     }
 }
