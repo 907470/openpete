@@ -197,6 +197,27 @@ static void terrain_dump(CPUState* cpu) {
         if (t->textured) fprintf(stderr, "  uv0=(%d,%d) clut=%04X tpage=%04X", t->u[0], t->v[0], t->clut, t->tpage);
         fprintf(stderr, "\n");
     }
+
+    /* Tiledef table dump (OPENPETE_TERRAIN_TABLEDUMP): for each tile, show both
+     * halves of the LQ table and the HQ table — find where the bpp8 (tpage mode 1)
+     * detail tiles actually live (medallion = tpage 0x008E). */
+    if (getenv("OPENPETE_TERRAIN_TABLEDUMP")) {
+        uint32_t lq = lqTex, hq = hqTex;
+        int found8_lq0=0,found8_lq8=0,found8_hq0=0,found8_hq8=0;
+        for (int tile = 0; tile < 128; tile++) {
+            uint32_t lq0w1 = rd(cpu, lq + tile*16 + 4), lq8w1 = rd(cpu, lq + tile*16 + 12);
+            uint32_t hq0w1 = rd(cpu, hq + tile*16 + 4), hq8w1 = rd(cpu, hq + tile*16 + 12);
+            int lq0m=((lq0w1>>16)>>7)&3, lq8m=((lq8w1>>16)>>7)&3;
+            int hq0m=((hq0w1>>16)>>7)&3, hq8m=((hq8w1>>16)>>7)&3;
+            if(lq0m==1)found8_lq0++; if(lq8m==1)found8_lq8++;
+            if(hq0m==1)found8_hq0++; if(hq8m==1)found8_hq8++;
+            if (tile < 8) fprintf(stderr,
+                "  tile[%d] LQ[+0]tpage=%04X LQ[+8]tpage=%04X HQ[+0]tpage=%04X HQ[+8]tpage=%04X\n",
+                tile, lq0w1>>16, lq8w1>>16, hq0w1>>16, hq8w1>>16);
+        }
+        fprintf(stderr, "[tabledump] bpp8(mode1) counts: LQ[+0]=%d LQ[+8]=%d HQ[+0]=%d HQ[+8]=%d\n",
+            found8_lq0, found8_lq8, found8_hq0, found8_hq8);
+    }
 }
 
 /* ---- native gamestate walk (float) + geometry A/B ------------------------- */
@@ -328,14 +349,19 @@ typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend; } tmat;
  * order: TL=(u0,v0), TR=(u1,v1), BL=(u0,v0+0x1F), BR=(u0+0x1F,v0+0x1F) — matching
  * the .s GT4 prim emit (0x800270AC). NOTE the .s reorders the last two SXY/UV
  * slots (slot2=i3, slot3=i2; stores 0x80026DD0-DC) — so the caller maps vertex
- * i0→TL, i1→TR, i3→BL, i2→BR, and uses the GPU diagonal i1-i3 (affine-faithful). */
-static void terrain_texmat(CPUState* cpu, uint32_t lqTable, int texByte,
-                           tmat* m, float u[4], float v[4]) {
-    memset(m, 0, sizeof(*m)); m->bpp = 16;
-    if (texByte == -1) { m->textured = 0; return; }      /* 0xFF: untextured */
-    int abe = (texByte < 0);                              /* high bit = semi-transparent */
-    int tile = texByte & 0x7F;
-    uint32_t e = lqTable + (uint32_t)tile * 16u;          /* [0..7] = near/max detail */
+ * i0→TL, i1→TR, i3→BL, i2→BR, and uses the GPU diagonal i1-i3 (affine-faithful).
+ *
+ * hiDetail selects the LOD HALF of the 16-byte Tiledef entry: each entry stores
+ * TWO 8-byte tiles — [0..7] = FAR/low-detail (typically bpp4), [8..15] = NEAR/
+ * high-detail (typically bpp8). The .s picks the half per-quad by depth at
+ * 0x80026F70 (see terrain_build); under --no-lod the saturated m_LodDistance
+ * forces hi-detail everywhere. (The CORRECTED layout: the +8 bump is the NEAR/HQ
+ * tile, not far — empirically the bpp8 medallion/detail textures live in [8..15].) */
+/* Decode one 8-byte Tiledef entry at byte address `e` → material + 4 spatial
+ * corner UVs [TL,TR,BL,BR]. Shared by the per-quad LQ path (terrain_texmat) and
+ * the near/HQ subdivide path (entries inside the 168-byte HQ cell record). `m`
+ * must be zeroed by the caller. */
+static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[4], float v[4]) {
     uint32_t w0 = rd(cpu, e + 0), w1 = rd(cpu, e + 4);
     int u0 = (int)(w0 & 0xFF), v0 = (int)((w0 >> 8) & 0xFF), clut = (int)((w0 >> 16) & 0xFFFF);
     int u1 = (int)(w1 & 0xFF), v1 = (int)((w1 >> 8) & 0xFF), tpage = (int)((w1 >> 16) & 0xFFFF);
@@ -347,9 +373,17 @@ static void terrain_texmat(CPUState* cpu, uint32_t lqTable, int texByte,
     m->tpx = (tpage & 0xF) * 64; m->tpy = ((tpage >> 4) & 1) * 256;
     int mode = (tpage >> 7) & 3; m->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
     m->clx = (clut & 0x3F) * 16; m->cly = (clut >> 6) & 0x1FF;
-    /* blend: opaque unless the face's high bit set; then the tpage ABR mode
-     * (0..3) → scene blend 1..4 ((B+F)/2, +, −, B+F/4). */
+    /* blend: opaque unless ABE; then the tpage ABR mode (0..3) → scene blend
+     * 1..4 ((B+F)/2, +, −, B+F/4). */
     m->blend = abe ? (((tpage >> 5) & 3) + 1) : 0;
+}
+
+static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDetail,
+                           tmat* m, float u[4], float v[4]) {
+    memset(m, 0, sizeof(*m)); m->bpp = 16;
+    if (texByte == -1) { m->textured = 0; return; }      /* 0xFF: untextured */
+    uint32_t e = table + (uint32_t)(texByte & 0x7F) * 16u + (hiDetail ? 8u : 0u);  /* LOD half */
+    decode_tiledef(cpu, e, (texByte < 0), m, u, v);      /* high bit = semi-transparent */
 }
 
 /* Native colour-verts (per emitted tri corner) for the colour A/B. */
@@ -367,6 +401,8 @@ typedef struct { double m1, m2, m3; uint32_t rgb; float u, v; } cvert;
  * clipped so float H/m3 never blows up and behind-camera (m3<=0) verts don't
  * project to a wild position. Env-tunable. */
 static double s_nearz = -1.0;
+/* near/HQ subdivide pass enable (Route 2; OPENPETE_TERRAIN_NEARHQ, default ON). */
+static int s_nearhq = -1;
 
 static cvert cv_lerp(cvert a, cvert b) {     /* crossing point at m3 == s_nearz */
     double t = (s_nearz - a.m3) / (b.m3 - a.m3);
@@ -402,17 +438,11 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     if (m->textured) s_tex_tris++;
 }
 
-/* Emit a triangle with near-plane clipping (Sutherland-Hodgman against the single
- * plane m3 >= s_nearz). 0 verts clipped → 1 tri; 1 clipped → quad (2 tris); 2
- * clipped → 1 tri; 3 clipped → dropped. Replaces the old behind-drop + spike
- * cull: near/straddling faces are clipped & rendered, not discarded. */
-static void emit_tri(const lvert* sv, int a, int b, int c,
-                     lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
-    cvert in[3] = {
-        { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v },
-        { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v },
-        { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v },
-    };
+/* Near-plane clip (Sutherland-Hodgman against the single plane m3 >= s_nearz) of
+ * a camera-space triangle given as 3 cverts, then push. 0 clipped → 1 tri; 1 →
+ * quad (2 tris); 2 → 1 tri; 3 → dropped. */
+static void clip_push_tri(cvert a, cvert b, cvert c, const tmat* m) {
+    cvert in[3] = { a, b, c };
     cvert out[4]; int nout = 0; int clipped = 0;
     for (int i = 0; i < 3; i++) {
         cvert cur = in[i], nxt = in[(i + 1) % 3];
@@ -426,6 +456,178 @@ static void emit_tri(const lvert* sv, int a, int b, int c,
     if (nout == 4) push_tri(out[0], out[2], out[3], m);
 }
 
+/* Emit a triangle (sv[] index form) with near-plane clipping. Replaces the old
+ * behind-drop + spike cull: near/straddling faces are clipped & rendered. */
+static void emit_tri(const lvert* sv, int a, int b, int c,
+                     lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
+    cvert A = { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v };
+    cvert B = { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v };
+    cvert C = { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v };
+    clip_push_tri(A, B, C, m);
+}
+
+/* Camera-space midpoint of two cverts: position averaged, colour per-channel
+ * averaged (UVs filled later by the caller). Mirrors the .s near-pass's
+ * `(a+b)>>1` grid build (§near-HQ). */
+static cvert cv_mid(cvert a, cvert b) {
+    cvert r;
+    r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
+    r.u = 0; r.v = 0;
+    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
+    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
+    r.rgb = (uint32_t)((ar+br)>>1) | ((uint32_t)((ag+bg)>>1)<<8) | ((uint32_t)((ab+bb)>>1)<<16);
+    return r;
+}
+
+/* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
+ * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
+ * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. */
+static void emit_quad_cv(cvert tl, cvert tr, cvert bl, cvert br,
+                         const tmat* m, const float u[4], const float v[4]) {
+    tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
+    clip_push_tri(tl, tr, bl, m);
+    clip_push_tri(tr, bl, br, m);
+}
+
+/* Near/HQ subdivide pass — the func_800276A0 simple-emit path (.L80027D7C),
+ * verified against r_environment.s. A near foreground cell is split 2×2 into a
+ * 3×3 grid (corners + edge midpoints + centre, midpoints in camera space via
+ * `(a+b)>>1`) and emitted as 4 sub-quads textured from the per-cell HQ Tiledef
+ * record (`m_HQTexturePointer + (faceWord2 & 0x7F)*168`): sub-quad i (i=0..3 =
+ * TL,TR,BL,BR quadrant) uses the 8-byte Tiledef at `hqBase + i*8` (the .s does
+ * `t6 += 8` per sub-quad), with the 4 spatial corner UVs (u0,v0)/(u1,v1)/
+ * (u0,v0+0x1F)/(u0+0x1F,v0+0x1F) = [TL,TR,BL,BR] (the .s t1/t2/t1+0x1F00/
+ * t1+0x1F1F). These are the bpp8 hi-detail tiles (the central-platform
+ * medallion). `abe` = faceWord2 & 0x80 (the .s `s0 & 0x80` semi-transparent
+ * gate). Colour is bilinear (no DPCS fog on near cells); the corner cverts carry
+ * the original quad's raw NEAR colours. (The minority per-cell detail-bit finer
+ * subdivision — the D_8006CF98 pattern path — is NOT replicated here; the 2×2 is
+ * the dominant geometry and fixes the medallion's affine warp.) */
+static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
+                              cvert TL, cvert TR, cvert BL, cvert BR) {
+    cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
+    cvert mL = cv_mid(TL, BL), mR = cv_mid(TR, BR);
+    cvert C  = cv_mid(mT, mB);                 /* centre = mean of 4 corners */
+    cvert q[4][4] = {                          /* {TL,TR,BL,BR} per sub-quad */
+        { TL, mT, mL, C  },                    /* SQ0: top-left quadrant   → entry 0 */
+        { mT, TR, C,  mR },                    /* SQ1: top-right quadrant  → entry 1 */
+        { mL, C,  BL, mB },                    /* SQ2: bottom-left quadrant→ entry 2 */
+        { C,  mR, mB, BR },                    /* SQ3: bottom-right        → entry 3 */
+    };
+    static int hqdbg = -1;
+    if (hqdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_HQDBG"); hqdbg = (e && *e && *e != '0'); }
+    for (int i = 0; i < 4; i++) {
+        tmat mat; float u[4], v[4]; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
+        /* sub-quad i uses HQ Tiledef entry (i+1), NOT i: the .s simple-emit loop
+         * (func_800276A0 .L80027D88) does `t6 += 8` in the branch DELAY SLOT before
+         * the first Tiledef read, so descriptor[0]=TL → offset 8, …, descriptor[3]
+         * =BR → offset 32 (entries 1..4; entry 0 is the detail-path base, unused by
+         * the 2×2). Reading entries 0..3 shifted every sub-tile by one → "4 textures
+         * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
+        decode_tiledef(cpu, hqBase + (uint32_t)(i + 1) * 8u, abe, &mat, u, v);
+        if (hqdbg) {   /* debug: paint HQ sub-quads untextured magenta to localize */
+            mat.textured = 0; mat.blend = 0;
+            q[i][0].rgb=q[i][1].rgb=q[i][2].rgb=q[i][3].rgb=0x00FF00FFu;
+        }
+        emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
+    }
+}
+
+/* ---- deferred near-cell queue (Route 2: the .s's own near classification) --
+ *
+ * func_800258F0's HP face walk classifies each HP face (the classifier at
+ * r_environment.s 0x80026CFC): a NEAR foreground face is deferred into one of two
+ * per-frame queues in g_SonyImage scratch, which func_800276A0 then drains +
+ * subdivides:
+ *   +0x2000 (tier 2): depthSum < 0x2000 && !(word3 & 0x80) && no corner SZ3
+ *                     < 0x140 && !(word3 & 0x40)         (.L80026D3C, sb 2)
+ *   +0x1E00 (tier 4): depthSum < 0x2000 && !(word3 & 0x80) && a corner SZ3
+ *                     < 0x140 && depthSum != 0 && !(word3 & 0x40)  (.L80026D70, sb 4)
+ * (depthSum = Σ of the 4 corner SZ3; faces with m_LodDistance - depthSum <= 0 are
+ * dropped entirely — too far for HP.) Both queues are 0-terminated by
+ * func_800276A0's entry; each entry is: 0 = end, POSITIVE = a header
+ * (sectorPtr>>2, sets up the drain's vertex/colour bases), NEGATIVE = a cell
+ * (faceRecPtr | clipBit, low 2 bits are flags). func_800276A0 drains +0x2000 then
+ * +0x1E00 (.L8002857C re-points $ra at +0x1E00), so BOTH are rendered.
+ *
+ * We replicate the .s's classification EXACTLY by reading the filled queues from
+ * RAM after func_800258F0 returns (the hook runs it first), collecting the set of
+ * deferred face-record pointers. Re-deriving the classifier in the main loop was
+ * Route 1, which over-deferred (the artist flags 0x40/0x80 are unset this scene,
+ * so depthSum<0x2000 alone caught ~701/839 cells vs the .s's ~tens). Reading the
+ * queue sidesteps that — it IS the game's verdict. The face record IS the same
+ * 16B HP face record the main loop walks (faceRecPtr = faces + f*16), and the HQ
+ * index is its word2 & 0x7F, so a deferred face just routes through
+ * terrain_near_emit instead of the flat LQ emit. */
+#define MAX_DEFER 4096
+static uint32_t s_defer[MAX_DEFER]; static int s_defer_n;
+static int s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e;
+static int defer_cmp(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+static void terrain_read_defer(CPUState* cpu) {
+    s_defer_n = 0;
+    s_defer_hdr2 = s_defer_cell2 = s_defer_hdr1e = s_defer_cell1e = 0;
+    const uint32_t qbase[2] = { D_SONY + 0x2000u, D_SONY + 0x1E00u };
+    for (int q = 0; q < 2; q++) {
+        uint32_t p = qbase[q];
+        for (int guard = 0; guard < MAX_DEFER * 2; guard++) {
+            uint32_t e = rd(cpu, p); p += 4;
+            if (e == 0) break;
+            if ((int32_t)e > 0) { if (q) s_defer_hdr1e++; else s_defer_hdr2++; continue; }
+            if (s_defer_n < MAX_DEFER) s_defer[s_defer_n++] = e & ~3u;  /* cell: faceRecPtr */
+            if (q) s_defer_cell1e++; else s_defer_cell2++;
+        }
+    }
+    if (s_defer_n > 1) qsort(s_defer, (size_t)s_defer_n, sizeof(s_defer[0]), defer_cmp);
+}
+static int is_deferred(uint32_t faceRecPtr) {
+    int lo = 0, hi = s_defer_n - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) >> 1;
+        if (s_defer[m] < faceRecPtr) lo = m + 1;
+        else if (s_defer[m] > faceRecPtr) hi = m - 1;
+        else return 1;
+    }
+    return 0;
+}
+
+/* Near-cell classifier — replicates func_800258F0's HP-walk defer test (the
+ * classifier at r_environment.s 0x80026CFC) from GAMESTATE, so it works in ALL
+ * modes. (The deferred QUEUE the .s fills is per-frame .s OUTPUT — the plan's
+ * core principle forbids consuming that; and --no-lod's m_LodDistance saturation
+ * perturbs the .s's scratch-buffer reuse so the queue is garbage there anyway. So
+ * the queue is kept ONLY as a verify-path oracle to calibrate this against.)
+ *
+ * A face is deferred to the near subdivide pass when its 4 corner depths mark it
+ * foreground:
+ *   depthSum < 0x2000 && !(word3 & 0x80) && (minCorner < 0x140 || !(word3 & 0x40))
+ * Depths are the GTE SZ3 (world/4). Our m3 is world/16, so SZ3 = HQSCALE·m3
+ * (HQSCALE=4: HP renders world/4, we project world/16). The .s's leading
+ * "m_LodDistance - depthSum <= 0 → skip" gate never fires for a near face
+ * (depthSum < 0x2000 << m_LodDistance), so it is omitted — that omission is what
+ * makes this --no-lod-robust (no m_LodDistance dependency). depthSum > 0 stands in
+ * for the tier-4 depthSum != 0 guard and drops behind-camera faces. */
+static double s_hqscale = -1.0;   /* SZ3 = s_hqscale * m3 (env OPENPETE_TERRAIN_HQSCALE) */
+static int face_is_near(double z0, double z1, double z2, double z3, uint32_t word3) {
+    if (s_hqscale < 0.0) {
+        const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
+    }
+    double s = s_hqscale;
+    double sz0 = z0*s, sz1 = z1*s, sz2 = z2*s, sz3 = z3*s;
+    double sum = sz0 + sz1 + sz2 + sz3;
+    if (sum <= 0.0 || sum >= 8192.0) return 0;        /* behind / not foreground (0x2000) */
+    if (word3 & 0x80) return 0;
+    double mn = sz0; if (sz1<mn) mn=sz1; if (sz2<mn) mn=sz2; if (sz3<mn) mn=sz3;
+    if (mn < 320.0) return 1;                          /* a corner SZ3 < 0x140 → tier 4 */
+    return !(word3 & 0x40);                            /* else tier 2 unless flag 0x40 */
+}
+static int s_near_q_agree, s_near_c_only;   /* classifier vs queue cross-check (verify) */
+static int s_caldbg = -1, s_cal_qn;         /* calibration probe (OPENPETE_TERRAIN_CALDBG) */
+static int s_nearq = -2;                     /* OPENPETE_TERRAIN_NEARQ: use queue oracle (debug) */
+static double s_cal_qsum_max, s_cal_qmin_max, s_cal_nqsum_min;
+
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
  * visible set, isolating decode+projection+faces from the cull), project its HP
  * vertices (LP for 0x4000 "no-HP" sectors), then walk the HP faces (16B) / LP
@@ -434,6 +636,15 @@ static void emit_tri(const lvert* sv, int a, int b, int c,
 static void terrain_build(CPUState* cpu) {
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
+    s_near_q_agree = s_near_c_only = 0;
+    if (s_caldbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_CALDBG"); s_caldbg = (e && *e && *e != '0'); }
+    if (s_nearq == -2) { const char* e = getenv("OPENPETE_TERRAIN_NEARQ"); s_nearq = (e && *e && *e != '0') ? 1 : -1; }
+    s_cal_qn = 0; s_cal_qsum_max = 0; s_cal_qmin_max = 0; s_cal_nqsum_min = 1e18;
+    /* The render decision uses face_is_near (gamestate); the deferred QUEUE is read
+     * ONLY as a verify oracle / for the NEARQ debug path — never in the shipping
+     * feed path (the plan forbids consuming .s per-frame output for rendering). */
+    int wantOracle = s_caldbg || s_nearq > 0 ||
+                     (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
     terrain_dbg_init();
     if (s_fogscale < 0.0) {  /* viewZ = m3 (m3 already in SZ3 scale); env-tunable */
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
@@ -453,7 +664,16 @@ static void terrain_build(CPUState* cpu) {
     int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
+    uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
+    /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
+    int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
+    if (s_nearhq < 0) {      /* near/HQ subdivide pass enable (Route 2, default ON) */
+        const char* e = getenv("OPENPETE_TERRAIN_NEARHQ");
+        s_nearhq = (e && *e) ? (*e != '0') : 1;
+    }
     s_tex_faces = s_tex_tris = 0;
+    if (wantOracle) terrain_read_defer(cpu);   /* oracle only (verify/debug) — see above */
+    else s_defer_n = 0;
 
     static lvert sv[256];
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
@@ -506,6 +726,8 @@ static void terrain_build(CPUState* cpu) {
             uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
             uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);   /* colours */
             int i0, i1, i2, i3, flip, fogRef, c0, c1, c2, c3;
+            uint32_t hqW2 = 0;                 /* HP word2: HQ index (&0x7F) + ABE (&0x80) */
+            uint32_t hqW3 = 0;                 /* HP word3 flags: 0x80/0x40 gate the near defer */
             tmat mat; float tu[4] = {0,0,0,0}, tv[4] = {0,0,0,0};
             if (faceStride == 16) {            /* HP: byte-packed indices; word3 flags */
                 i0 = (w0 >> 24) & 0xFF; i1 = (w0 >> 16) & 0xFF;
@@ -514,12 +736,21 @@ static void terrain_build(CPUState* cpu) {
                  * flip, 0x38 depth). CORRECTED: §7 had word2/word3 swapped. */
                 uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
                 uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
+                hqW2 = w2; hqW3 = w3;
                 flip = (w3 & 0x2) != 0;
                 fogRef = fogRefBase + ((w3 & 0x1) ? 0x2000 : 0);
                 /* HP colour indices (pre-×4 byte offsets), §7. */
                 c0 = (int)((w1 >> 22) & 0x3FC); c1 = (int)((w1 >> 14) & 0x3FC);
                 c2 = (int)((w1 >> 6) & 0x3FC);  c3 = (int)((w1 << 2) & 0x3FC);
-                terrain_texmat(cpu, lqTable, (int)(int8_t)(w2 & 0xFF), &mat, tu, tv);
+                /* Texture tier (§8): the main HP loop draws FAR cells from the LQ
+                 * Tiledef table (g_Environment+0x18, per-quad 16B, bpp4). NEAR
+                 * foreground cells are intercepted below (the near/HQ subdivide
+                 * dispatch) and drawn from the per-cell HQ record instead. This
+                 * texmat is the LQ tier for the far cells. texTblMode env: 0=auto,
+                 * 1=force LQ everywhere (disables near pass), 2=force HQ (debug). */
+                int tb = (int)(int8_t)(w2 & 0xFF);
+                uint32_t tbl = (texTblMode==2) ? hqTable : lqTable;
+                terrain_texmat(cpu, tbl, tb, 0, &mat, tu, tv);
                 if (mat.textured) s_tex_faces++;
             } else {                            /* LP: 6-bit indices in word0 */
                 i0 = (int)((w0 >> 23) & 0x1F8) >> 3; i1 = (int)((w0 >> 17) & 0x1F8) >> 3;
@@ -533,15 +764,60 @@ static void terrain_build(CPUState* cpu) {
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
             int quad = (i2 != i3);
             s_dbg_faces++;
-            /* No behind-drop: emit_tri near-plane-CLIPS faces that straddle the
-             * camera (and drops fully-behind ones), so near terrain renders
-             * instead of being discarded. */
-            /* NCLIP back-face cull (off by default; Z-buffer hides backfaces).
-             * 2D cross product == GTE MAC0; flip negates it (word3 & 0x2). NB the
-             * screen coords are pre-clip, only meaningful for in-front verts. */
+            /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
+             * word3 & 0x2). front = nclip > 0. The .s NCLIP-culls back-faces BEFORE
+             * the near classifier, so only front cells defer; we don't cull for
+             * drawing (Z-buffer hides back-faces), but DO gate the near dispatch on
+             * it (else near back-faces the .s dropped get wrongly subdivided). */
             double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
+            /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
+             * boundary that separates the .s's deferred cells (queue oracle) from
+             * the rest, to calibrate face_is_near's scale/threshold. */
+            if (faceStride == 16 && s_caldbg && nclip > 0.0) {  /* front-facing only */
+                double rs = sv[i0].m3+sv[i1].m3+sv[i2].m3+sv[i3].m3;
+                double rmn = sv[i0].m3; if(sv[i1].m3<rmn)rmn=sv[i1].m3;
+                if(sv[i2].m3<rmn)rmn=sv[i2].m3; if(sv[i3].m3<rmn)rmn=sv[i3].m3;
+                if (is_deferred(faces + (uint32_t)f * 16u)) {
+                    s_cal_qn++; if (rs > s_cal_qsum_max) s_cal_qsum_max = rs;
+                    if (rmn > s_cal_qmin_max) s_cal_qmin_max = rmn;
+                } else if (rs > 0 && rs < 4096.0) {
+                    if (rs < s_cal_nqsum_min) s_cal_nqsum_min = rs;
+                }
+            }
+            /* Near/HQ subdivide dispatch (Route 2): if this face classifies as a
+             * near foreground cell (face_is_near, replicating the .s defer test from
+             * gamestate), subdivide it 2×2 and texture from the per-cell HQ record
+             * (word2 & 0x7F → m_HQTexturePointer + idx*168; word2 & 0x80 → ABE)
+             * instead of the flat LQ emit — exactly the cells func_800276A0
+             * subdivides. Corner→vertex: TL=i0,TR=i1,BL=i3,BR=i2 (the .s grid order).
+             * Near colours are the raw HP near-colour array (no DPCS fog on near
+             * cells — func_800276A0 reads s5[idx] directly). */
+            int near = (faceStride == 16 && s_nearhq && hqTable && nclip > 0.0 &&
+                        face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
+            if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
+                near = (faceStride == 16 && s_nearhq && hqTable && is_deferred(faces + (uint32_t)f*16u));
+            if (near) {
+                if (is_deferred(faces + (uint32_t)f * 16u)) s_near_q_agree++; else s_near_c_only++;
+                int abe = (hqW2 & 0x80) != 0;
+                uint32_t r0 = rd(cpu, nearBase + (uint32_t)c0) & 0xFFFFFFu;
+                uint32_t r1 = rd(cpu, nearBase + (uint32_t)c1) & 0xFFFFFFu;
+                uint32_t r2 = rd(cpu, nearBase + (uint32_t)c2) & 0xFFFFFFu;
+                uint32_t r3 = rd(cpu, nearBase + (uint32_t)c3) & 0xFFFFFFu;
+                cvert TL = { sv[i0].m1, sv[i0].m2, sv[i0].m3, r0, 0, 0 };
+                cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
+                cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
+                cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
+                terrain_near_emit(cpu, hqTable + (uint32_t)(hqW2 & 0x7F) * 168u, abe,
+                                  TL, TR, BL, BR);
+                s_dbg_spike++;   /* near/HQ cells subdivided */
+                continue;
+            }
+            /* No behind-drop: emit_tri near-plane-CLIPS faces that straddle the
+             * camera (and drops fully-behind ones), so near terrain renders
+             * instead of being discarded. NCLIP back-face cull is off by default
+             * (Z-buffer hides backfaces); nclip computed above. */
             if (s_cull && nclip <= 0.0) { s_dbg_nclip++; continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
@@ -645,8 +921,14 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d emitted=%d  texturedFaces=%d texTris=%d\n",
-        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_tri_n, s_tex_faces, s_tex_tris);
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
+        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
+    fprintf(stderr, "[terrain-defer] queue(oracle): +0x2000{hdr=%d cell=%d} +0x1E00{hdr=%d cell=%d} total=%d  |  classifier: near=%d (×4 subquads → %d bpp8 prims)  agreeWithQueue=%d classifierOnly=%d queueOnly=%d\n",
+        s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e, s_defer_n,
+        s_dbg_spike, s_dbg_spike * 4, s_near_q_agree, s_near_c_only, s_defer_n - s_near_q_agree);
+    if (s_caldbg)
+        fprintf(stderr, "[terrain-cal] queueCells=%d  max(Σm3 over queue)=%.0f  max(minM3 over queue)=%.0f  min(Σm3 over non-queue HP, <4096)=%.0f\n",
+            s_cal_qn, s_cal_qsum_max, s_cal_qmin_max, s_cal_nqsum_min);
 
     /* Colour A/B: NN-match each native colour-vert (post-fog) to the nearest
      * captured prim corner by SCREEN position; where the geometry match is tight
@@ -697,6 +979,82 @@ static void terrain_compare(void) {
             fprintf(stderr,
                 "[terrain-color-near] matched=%ld  meanΔ=%.2f exact=%.0f%% within±4=%.0f%% worstΔ=%d (m3<1024, unfogged HP-in-both)\n",
                 nmatched, nesum / nmatched, 100.0 * nexact / nmatched, 100.0 * nnear4 / nmatched, nworst);
+    }
+
+    /* UV/tile A/B (OPENPETE_TERRAIN_UVDBG): for each native textured tri, NN-match
+     * to the nearest captured TEXTURED prim by screen centroid; where the centroid
+     * match is tight, the captured prim's UVs/tpage/CLUT are the .s oracle — print
+     * native vs captured so a tile-select / UV-mapping / CLUT-row divergence is
+     * visible directly (geometry A/B can't see it). Optional box filter via
+     * OPENPETE_TERRAIN_UVBOX="x0,y0,x1,y1" to focus on one feature (e.g. platform). */
+    { const char* e = getenv("OPENPETE_TERRAIN_UVDBG");
+      if (e && *e && *e != '0') {
+        float bx0=-1e9f,by0=-1e9f,bx1=1e9f,by1=1e9f;
+        const char* be = getenv("OPENPETE_TERRAIN_UVBOX");
+        if (be && *be) sscanf(be, "%f,%f,%f,%f", &bx0, &by0, &bx1, &by1);
+        int shown = 0, want = 40;
+        long uvmatch=0, uvexact_tp=0, uvexact_cl=0, tight=0, tdis=0;
+        double hi_min=1e18,hi_max=0,lo_min=1e18,lo_max=0,hi_sum=0,lo_sum=0; long hin=0,lon=0;
+        for (int i = 0; i < s_tri_n; i++) {
+            ttri* t = &s_tri[i];
+            if (!t->textured) continue;
+            float ncx=(t->sx[0]+t->sx[1]+t->sx[2])/3.f, ncy=(t->sy[0]+t->sy[1]+t->sy[2])/3.f;
+            if (ncx<bx0||ncx>bx1||ncy<by0||ncy>by1) continue;
+            /* nearest captured textured prim by centroid */
+            int bj=-1; float bd=1e18f;
+            for (int p=0;p<s_gte_n;p++){ prim_t* g=&s_gte[p]; if(!g->textured) continue;
+                float gcx=0,gcy=0; for(int k=0;k<g->nv;k++){gcx+=g->x[k];gcy+=g->y[k];}
+                gcx/=g->nv; gcy/=g->nv; float dx=ncx-gcx,dy=ncy-gcy,d=dx*dx+dy*dy;
+                if(d<bd){bd=d;bj=p;} }
+            if (bj<0) continue; bd=sqrtf(bd);
+            if (bd > 6.0f) continue;                /* loose match — skip */
+            prim_t* g=&s_gte[bj];
+            /* decode captured material the same way terrain_texmat does */
+            int gtpx=(g->tpage&0xF)*64, gtpy=((g->tpage>>4)&1)*256;
+            int gclx=(g->clut&0x3F)*16, gcly=(g->clut>>6)&0x1FF;
+            int gmode=(g->tpage>>7)&3, gbpp=(gmode==0)?4:(gmode==1)?8:16;
+            uvmatch++;
+            int tp_ok = (gtpx==t->tpx && gtpy==t->tpy && gbpp==t->bpp);
+            int cl_ok = (gclx==t->clx && gcly==t->cly);
+            if (tp_ok) uvexact_tp++;
+            if (cl_ok) uvexact_cl++;
+            /* Only print TIGHT matches (d<2.5px, trustworthy spatial pairing) that
+             * actually DISAGREE — those are real per-tile decode divergences, not
+             * NN noise from grabbing an adjacent checkerboard tile. */
+            if (bd < 2.5f && (!tp_ok || !cl_ok) && shown < want) { shown++;
+                fprintf(stderr,
+                  "[uvdbg] c=(%.0f,%.0f) d=%.1f | NAT tp=(%d,%d) bpp=%d cl=(%d,%d) uv=[(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)]\n"
+                  "                          | PSX tp=(%d,%d) bpp=%d cl=(%d,%d) uv=",
+                  ncx, ncy, bd, t->tpx, t->tpy, t->bpp, t->clx, t->cly,
+                  t->u[0],t->v[0],t->u[1],t->v[1],t->u[2],t->v[2],
+                  gtpx, gtpy, gbpp, gclx, gcly);
+                for (int k=0;k<g->nv;k++) fprintf(stderr,"(%d,%d)",g->u[k],g->v[k]);
+                fprintf(stderr, " raw tpage=%04X clut=%04X\n", g->tpage, g->clut);
+            }
+            if (bd < 2.5f) { tight++; if (!tp_ok || !cl_ok) tdis++;
+                /* empirical near/far fit: native mean view-Z (m3) vs the table the
+                 * game chose (bpp8 = HQ/near, bpp4 = LQ/far). */
+                double mvz = (t->vz[0]+t->vz[1]+t->vz[2])/3.0;
+                if (gbpp==8){ if(mvz<hi_min)hi_min=mvz; if(mvz>hi_max)hi_max=mvz; hin++; hi_sum+=mvz; }
+                else if (gbpp==4){ if(mvz<lo_min)lo_min=mvz; if(mvz>lo_max)lo_max=mvz; lon++; lo_sum+=mvz; }
+            }
+        }
+        fprintf(stderr,"[nearfit] HQ/bpp8: n=%ld vz[%.0f..%.0f] mean=%.0f | LQ/bpp4: n=%ld vz[%.0f..%.0f] mean=%.0f\n",
+            hin,hi_min,hi_max,hin?hi_sum/hin:0.0, lon,lo_min,lo_max,lon?lo_sum/lon:0.0);
+        /* bpp histograms: native tris vs captured textured prims */
+        { long nb[3]={0,0,0}, cb[3]={0,0,0};
+          for(int i2=0;i2<s_tri_n;i2++){ if(!s_tri[i2].textured)continue;
+              int b=s_tri[i2].bpp; nb[b==4?0:b==8?1:2]++; }
+          for(int p=0;p<s_gte_n;p++){ prim_t* g=&s_gte[p]; if(!g->textured)continue;
+              int m=(g->tpage>>7)&3,b=(m==0)?4:(m==1)?8:16; cb[b==4?0:b==8?1:2]++; }
+          fprintf(stderr,"[uvdbg-bpphist] NAT 4bpp=%ld 8bpp=%ld 16bpp=%ld | PSX 4bpp=%ld 8bpp=%ld 16bpp=%ld\n",
+              nb[0],nb[1],nb[2],cb[0],cb[1],cb[2]); }
+        fprintf(stderr, "[uvdbg-summary] matched=%ld  tpage/bpp-exact=%ld (%.0f%%)  clut-exact=%ld (%.0f%%)\n",
+            uvmatch, uvexact_tp, uvmatch?100.0*uvexact_tp/uvmatch:0.0,
+            uvexact_cl, uvmatch?100.0*uvexact_cl/uvmatch:0.0);
+        fprintf(stderr, "[uvdbg-tight] tight(<2.5px)=%ld disagree=%ld (%.0f%%)\n",
+            tight, tdis, tight?100.0*tdis/tight:0.0);
+      }
     }
 }
 
