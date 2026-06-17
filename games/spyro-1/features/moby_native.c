@@ -318,7 +318,15 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
         }
         double sx, sy; int sat;
         double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
-        out[i].sx = (float)sx; out[i].sy = (float)sy; out[i].vz = (float)vzz; out[i].sat = sat;
+        /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
+         * each other. project's mac3 is in the m_scale-adjusted world/4 scale
+         * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
+         * 2^m_scale to reach full-world (probe: m_scale=2 mac3 x4 == true cam-Z).
+         * Sign-preserving, so emit_wtri's vz<=0 near cull still holds; sx/sy and
+         * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
+        int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
+        out[i].sx = (float)sx; out[i].sy = (float)sy;
+        out[i].vz = (float)(vzz * (double)(1 << ds)); out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
@@ -1555,6 +1563,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
         uint32_t rot = cpu->read_word(m + 0x44u);   /* m_Rotation (3 euler bytes) */
         int M[3][3], TR[3]; double mofx, mofy;
+        double vz_scale = 1.0;   /* depth -> full-world (set for the 3D path below) */
         if (billboard) {
             /* base = [4096 0 0/0 2560 0/0 0 4096] composed with the moby euler
              * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
@@ -1579,6 +1588,11 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             uint8_t p57=cpu->read_byte(m+0x57);
             if (p57){ for(int i=0;i<3;i++){ int16_t ir=(int16_t)TR[i]; TR[i]=((int32_t)p57*ir)>>5; } }
             mofx=ofx; mofy=ofy;
+            /* TR here = trueViewZ/2 (D=(pos-cam)>>2 then MAC<<1), or x p57/32 with
+             * draw-scale: scale the fed depth back to full-world so shaded mobys
+             * (gems) sort vs terrain/Spyro. p57=0 -> x2 (probe: ratio exactly 2.0);
+             * p57!=0 -> x64/p57. Sign-preserving (near cull intact); depth-only. */
+            vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
         for (int i=0;i<count && n<cap;i++) {
             uint32_t p=vbase+(uint32_t)i*3u;
@@ -1591,7 +1605,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
-            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)vzz; out[n].sat=sat;
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)(vzz*vz_scale); out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
         }
