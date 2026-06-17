@@ -277,10 +277,15 @@ static void build_captured_colors(void) {
  * blend is out = seed + IR0·(FC-seed) with seed=far ($s0[idx]), FC=near
  * ($t7[idx]) → out = lerp(far, near, f), f = clamp((fogRef - viewZ)/4096, 0, 1):
  * near (small viewZ) keeps the near colour, far recedes to the far colour. viewZ
- * is the .s SZ3 in world/4 (sf=1 → SZ3=MAC3); our m3 is world/16, so ×4. Colour
- * words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP (no-HP
- * 0x4000 sectors) is a single 4B colour, no fog. */
-static double s_fogscale = -1.0;    /* m3(world/16) → SZ3(world/4); 4.0, env-tunable */
+ * is the .s fog SZ3, which equals our m3 DIRECTLY (scale 1) — empirically
+ * validated (fogscale=1 → 87-92% colour-exact across scenes; ×4 → 25-67%). The
+ * earlier "world/16 ×4" was wrong: the projection matrix already yields m3 in the
+ * SZ3 scale, and the geometry A/B can't catch an absolute-m3 scale error because
+ * SX = m1·H/m3 cancels it — fog is the first consumer of absolute m3. Colour words
+ * are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP (no-HP 0x4000
+ * sectors) is a single 4B colour, no fog. */
+static double s_fogscale = -1.0;    /* viewZ = fogscale·m3; 1.0 (m3 is already SZ3), env-tunable */
+int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
 static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
                               uint32_t nearBase, uint32_t farBase,
                               int idx, double m3, int fogRef) {
@@ -291,6 +296,12 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
     if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
     int nr = nearC & 0xFF, ng = (nearC >> 8) & 0xFF, nb = (nearC >> 16) & 0xFF;
     int fr = farC  & 0xFF, fg = (farC  >> 8) & 0xFF, fb = (farC  >> 16) & 0xFF;
+    extern int s_fogdbg; static int s_fogdbg_n;
+    if (s_fogdbg && m3 > 600.0 && s_fogdbg_n < 24) {
+        fprintf(stderr, "[fogdbg] m3=%.0f f=%.3f fogRef=%d  near=%06X far=%06X  idx=%d\n",
+                m3, f, fogRef, nearC, farC, idx);
+        s_fogdbg_n++;
+    }
     int r = (int)((double)fr + f * (nr - fr) + 0.5);
     int g = (int)((double)fg + f * (ng - fg) + 0.5);
     int b = (int)((double)fb + f * (nb - fb) + 0.5);
@@ -424,14 +435,15 @@ static void terrain_build(CPUState* cpu) {
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     terrain_dbg_init();
-    if (s_fogscale < 0.0) {  /* world/16 m3 → world/4 SZ3 = ×4 (env-tunable) */
+    if (s_fogscale < 0.0) {  /* viewZ = m3 (m3 already in SZ3 scale); env-tunable */
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
-        s_fogscale = (e && *e) ? atof(e) : 4.0;
+        s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
         s_nearz = (e && *e) ? atof(e) : 1.0;
     }
+    { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
     int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
@@ -668,6 +680,11 @@ static void terrain_compare(void) {
                 nmatched++; nesum += de; if (de > nworst) nworst = de;
                 if (de == 0) nexact++;
                 if (dr <= 4 && dg <= 4 && db <= 4) nnear4++;
+            }
+            if (s_fogdbg && s_cvz[i] > 1024.0 && de > 30) {  /* fogged, large-err samples */
+                static int pr; if (pr < 20) { pr++;
+                    fprintf(stderr, "[colcmp] m3=%.0f native=%06X psx=%06X  dRGB=(%d,%d,%d)\n",
+                            s_cvz[i], n, crgb, dr, dg, db); }
             }
         }
         if (matched)
