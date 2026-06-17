@@ -952,9 +952,15 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 
     render_path_record(RP_PARTICLES, startp, endp);
 
-    /* sel-class census (uncapped) — locate the rare/unimplemented classes (1/4/5)
-     * so we have real test frames before decoding them. tag 'p' only. */
+    /* sel-class census (uncapped) — sweep tool to find which levels spawn each
+     * particle class. The pool histogram detects a class even when culled (it
+     * found sel 1 at f3797 despite 0 rendered), so it reliably answers "does this
+     * level use sel N?". Run per-level via --skip-to-level + a bk2/gameplay:
+     *   [selnew] announces the first sighting of each class (grep this per level),
+     *   [selsum] is a periodic running max. tag 'p' only. */
     if (tag[0] == 'p' && getenv("OPENPETE_PARTICLE_CENSUS")) {
+        static int seen[8] = {0}, announced[8] = {0};
+        static unsigned lastsum = 0;
         int sh[8] = {0}; uint32_t pp = s_part_pool;
         for (int i = 0; i < 320; i++, pp += 0x20) {
             uint32_t hdr = cpu->read_word(pp);
@@ -963,9 +969,18 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
             if (sel & 0x80) continue;
             sh[sel < 7 ? sel : 7]++;
         }
-        if (sh[1] || sh[4] || sh[5])
-            fprintf(stderr, "[selhist f=%u] s0=%d s1=%d s2=%d s3=%d s4=%d s5=%d s6+=%d\n",
-                    openpete_frame, sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[7]);
+        for (int s = 0; s < 8; s++) {
+            if (sh[s] > seen[s]) seen[s] = sh[s];
+            if (sh[s] && !announced[s]) {
+                announced[s] = 1;
+                fprintf(stderr, "[selnew f=%u] sel %d FIRST SEEN (count=%d)\n", openpete_frame, s, sh[s]);
+            }
+        }
+        if (openpete_frame - lastsum >= 1024) {
+            lastsum = openpete_frame;
+            fprintf(stderr, "[selsum f=%u] max-seen s0=%d s1=%d s2=%d s3=%d s4=%d s5=%d s6+=%d\n",
+                    openpete_frame, seen[0], seen[1], seen[2], seen[3], seen[4], seen[5], seen[7]);
+        }
     }
 
     if (verify) {
