@@ -9,13 +9,14 @@
 // visibility VERDICT), walks LP (8B) / HP (16B) face lists, and emits fogged
 // GT4/GT3 (+ flat G3) prims for the whole environment.
 //
-// This module currently provides the CAPTURE + DUMP harness (the Phase-4 walk's
-// step 1): it hooks func_8002B9CC, runs the real renderer once (gameplay writes —
+// This module hooks func_800258F0, runs the real renderer once (gameplay writes —
 // sector visibility — happen identically), brackets the polybuf to capture the
-// .s prims as ground truth, live-decodes g_Environment + visible sector headers
-// to confirm the format map against real data, and records RP_TERRAIN so
-// --render-paths can isolate terrain. The native gamestate walk + scene feed are
-// the next increment (a TODO stub below).
+// .s prims as the A/B oracle, then does the NATIVE walk: per visible sector it
+// decodes 11/11/10 verts → float RTPS projection, walks HP (16B) / LP (8B) faces
+// into tris, and computes per-vertex RGB888 + DPCS depth-cue fog from the sector
+// colour arrays (terrain_color). The result is fed to the native scene
+// (untextured gouraud) and numerically A/B'd vs the captured .s prims (geometry +
+// colour). Textures (m_LQTexturePointer) + ABE are the next increment.
 //
 // Determinism: display-only. It never writes PSX RAM (it READS gamestate + the
 // captured polybuf). func_8002B9CC/func_800258F0 keep running canonical-4:3 as
@@ -245,10 +246,8 @@ static void terrain_dbg_init(void) {
     if (s_flat < 0) { const char* e = getenv("OPENPETE_TERRAIN_FLAT"); s_flat = (e && *e && *e != '0'); }
 }
 
-/* Scaffold colour: NN each native vertex to the nearest captured prim vertex's
- * RGB. Temporary (the .s prim colour is already DPCS-fogged) — to be replaced by
- * native RGB888 + DPCS fog (the two colour tables $t7/$s0 + DPCS, §10) next
- * increment. Tracked in the Native-derivation backlog. */
+/* Captured prim corner colours = the .s DPCS-fogged output, used as the ORACLE
+ * for the native-colour A/B (terrain_compare). Not fed to the scene. */
 static float s_ccx[MAX_PRIMS * 4], s_ccy[MAX_PRIMS * 4];
 static uint32_t s_ccrgb[MAX_PRIMS * 4]; static int s_cc_n;
 static void build_captured_colors(void) {
@@ -261,20 +260,46 @@ static void build_captured_colors(void) {
         }
     }
 }
-static uint32_t nn_color(float sx, float sy) {
-    float best = 1e18f; uint32_t rgb = 0x808080;
-    for (int j = 0; j < s_cc_n; j++) {
-        float dx = sx - s_ccx[j], dy = sy - s_ccy[j], d = dx * dx + dy * dy;
-        if (d < best) { best = d; rgb = s_ccrgb[j]; }
-    }
-    return rgb;
+
+/* Native per-vertex terrain colour: RGB888 read from the sector colour arrays +
+ * the per-vertex DPCS depth-cue fog (§9/§10, asm-derived from r_environment.s
+ * 0x80026DF0-0x80026E6C). The HP colour block is TWO 4B-stride arrays
+ * [near0..][far0..]; `idx` is the pre-×4 byte offset from face word1. The DPCS
+ * blend is out = seed + IR0·(FC-seed) with seed=far ($s0[idx]), FC=near
+ * ($t7[idx]) → out = lerp(far, near, f), f = clamp((fogRef - viewZ)/4096, 0, 1):
+ * near (small viewZ) keeps the near colour, far recedes to the far colour. viewZ
+ * is the .s SZ3 in world/4 (sf=1 → SZ3=MAC3); our m3 is world/16, so ×4. Colour
+ * words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP (no-HP
+ * 0x4000 sectors) is a single 4B colour, no fog. */
+static double s_fogscale = -1.0;    /* m3(world/16) → SZ3(world/4); 4.0, env-tunable */
+static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
+                              uint32_t nearBase, uint32_t farBase,
+                              int idx, double m3, int fogRef) {
+    if (noHP) return rd(cpu, lpBase + (uint32_t)idx) & 0xFFFFFFu;
+    uint32_t nearC = rd(cpu, nearBase + (uint32_t)idx) & 0xFFFFFFu;
+    uint32_t farC  = rd(cpu, farBase  + (uint32_t)idx) & 0xFFFFFFu;
+    double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
+    if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
+    int nr = nearC & 0xFF, ng = (nearC >> 8) & 0xFF, nb = (nearC >> 16) & 0xFF;
+    int fr = farC  & 0xFF, fg = (farC  >> 8) & 0xFF, fb = (farC  >> 16) & 0xFF;
+    int r = (int)((double)fr + f * (nr - fr) + 0.5);
+    int g = (int)((double)fg + f * (ng - fg) + 0.5);
+    int b = (int)((double)fb + f * (nb - fb) + 0.5);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
 }
 
 /* Per-sector local projected vertex (indexed by face vertex index). */
 typedef struct { float sx, sy; double vz; int ok; } lvert;
 
-/* Emit one triangle (scaffold colour + near-plane spike cull). */
-static void emit_tri(const lvert* sv, int a, int b, int c) {
+/* Native colour-verts (per emitted tri corner) for the colour A/B. */
+static float s_cvx[MAX_TTRIS * 3], s_cvy[MAX_TTRIS * 3];
+static double s_cvz[MAX_TTRIS * 3];               /* m3 (world/16 view-Z) for fog regime */
+static uint32_t s_cvrgb[MAX_TTRIS * 3]; static int s_cv_n;
+
+/* Emit one triangle with explicit per-corner native colours (+ near-plane spike
+ * cull). Colours are computed by the caller (terrain_color) per face corner. */
+static void emit_tri(const lvert* sv, int a, int b, int c,
+                     uint32_t ca, uint32_t cb, uint32_t cc) {
     if (s_tri_n >= MAX_TTRIS) return;
     /* Near-plane spike cull: a vertex just in front of the camera makes float
      * H/Z explode → a tri spiking across the screen (the GTE clamps these). */
@@ -285,9 +310,12 @@ static void emit_tri(const lvert* sv, int a, int b, int c) {
     t->sx[0]=sv[a].sx; t->sy[0]=sv[a].sy; t->vz[0]=sv[a].vz;
     t->sx[1]=sv[b].sx; t->sy[1]=sv[b].sy; t->vz[1]=sv[b].vz;
     t->sx[2]=sv[c].sx; t->sy[2]=sv[c].sy; t->vz[2]=sv[c].vz;
-    t->rgb[0]=nn_color(sv[a].sx,sv[a].sy);
-    t->rgb[1]=nn_color(sv[b].sx,sv[b].sy);
-    t->rgb[2]=nn_color(sv[c].sx,sv[c].sy);
+    t->rgb[0]=ca; t->rgb[1]=cb; t->rgb[2]=cc;
+    if (s_cv_n + 3 <= MAX_TTRIS * 3) {
+        s_cvx[s_cv_n]=sv[a].sx; s_cvy[s_cv_n]=sv[a].sy; s_cvz[s_cv_n]=sv[a].vz; s_cvrgb[s_cv_n]=ca; s_cv_n++;
+        s_cvx[s_cv_n]=sv[b].sx; s_cvy[s_cv_n]=sv[b].sy; s_cvz[s_cv_n]=sv[b].vz; s_cvrgb[s_cv_n]=cb; s_cv_n++;
+        s_cvx[s_cv_n]=sv[c].sx; s_cvy[s_cv_n]=sv[c].sy; s_cvz[s_cv_n]=sv[c].vz; s_cvrgb[s_cv_n]=cc; s_cv_n++;
+    }
 }
 
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
@@ -296,10 +324,13 @@ static void emit_tri(const lvert* sv, int a, int b, int c) {
  * faces (8B) into triangles. Camera-relative GTE-vector per r_environment.s
  * 0x80026238-0x800262C0 (matrix = g_Camera+0x00; world axes = origin+field). */
 static void terrain_build(CPUState* cpu) {
-    s_tv_n = 0; s_tri_n = 0; s_walk_sectors = 0;
+    s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = 0;
     terrain_dbg_init();
-    build_captured_colors();
+    if (s_fogscale < 0.0) {  /* world/16 m3 → world/4 SZ3 = ×4 (env-tunable) */
+        const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
+        s_fogscale = (e && *e) ? atof(e) : 4.0;
+    }
     int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
@@ -307,6 +338,7 @@ static void terrain_build(CPUState* cpu) {
     int camx = (int32_t)rd(cpu, G_CAMERA + 0x28) >> 4;
     int camy = (int32_t)rd(cpu, G_CAMERA + 0x2C) >> 4;
     int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
+    int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
 
     static lvert sv[256];
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
@@ -329,12 +361,16 @@ static void terrain_build(CPUState* cpu) {
         int hpVertsOff = (int)((hpw >> 24) & 0xFF);
 
         uint32_t verts, faces; int nv, nf, faceStride;
+        uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* §9/§10 colour arrays */
         if (noHP) {
             verts = s + 0x1C;                                       nv = nLpV;
             faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;         nf = nLpF; faceStride = 8;
+            lpColBase = s + 0x1C + (uint32_t)nLpV * 4;          /* LP colours (4B, no fog) */
         } else {
             verts = s + 0x1C + (uint32_t)hpVertsOff * 4;            nv = nHpV;
             faces = verts + (uint32_t)(nHpV + nHpC * 2) * 4;        nf = nHpF; faceStride = 16;
+            nearBase = verts + (uint32_t)nHpV * 4;             /* HP near colours (4B) */
+            farBase  = nearBase + (uint32_t)nHpC * 4;          /* HP far  colours (4B) */
         }
         if (nv > 256) nv = 256;
         s_walk_sectors++;
@@ -352,16 +388,26 @@ static void terrain_build(CPUState* cpu) {
 
         for (int f = 0; f < nf && s_tri_n < MAX_TTRIS - 2; f++) {
             uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
-            int i0, i1, i2, i3, flip;
-            if (faceStride == 16) {            /* HP: byte-packed indices, word2 flags */
+            uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);   /* colours */
+            int i0, i1, i2, i3, flip, fogRef, c0, c1, c2, c3;
+            if (faceStride == 16) {            /* HP: byte-packed indices; word3 flags */
                 i0 = (w0 >> 24) & 0xFF; i1 = (w0 >> 16) & 0xFF;
                 i2 = (w0 >> 8) & 0xFF;  i3 = w0 & 0xFF;
-                uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
-                flip = (w2 & 0x2) != 0;
+                /* word2 = texture byte; word3 = flags (0x1 fog-bias, 0x2 flip,
+                 * 0x38 depth). CORRECTED: §7 had word2/word3 swapped. */
+                uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
+                flip = (w3 & 0x2) != 0;
+                fogRef = fogRefBase + ((w3 & 0x1) ? 0x2000 : 0);
+                /* HP colour indices (pre-×4 byte offsets), §7. */
+                c0 = (int)((w1 >> 22) & 0x3FC); c1 = (int)((w1 >> 14) & 0x3FC);
+                c2 = (int)((w1 >> 6) & 0x3FC);  c3 = (int)((w1 << 2) & 0x3FC);
             } else {                            /* LP: 6-bit indices in word0 */
                 i0 = (int)((w0 >> 23) & 0x1F8) >> 3; i1 = (int)((w0 >> 17) & 0x1F8) >> 3;
                 i2 = (int)((w0 >> 11) & 0x1F8) >> 3; i3 = (int)((w0 >> 5) & 0x1F8) >> 3;
-                flip = 0;
+                flip = 0; fogRef = fogRefBase;
+                /* LP colour indices (pre-×4 byte offsets), §7. */
+                c0 = (int)((w1 >> 24) & 0xFC); c1 = (int)((w1 >> 18) & 0xFC);
+                c2 = (int)((w1 >> 12) & 0xFC); c3 = (int)((w1 >> 6) & 0xFC);
             }
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
             if (!sv[i0].ok || !sv[i1].ok || !sv[i2].ok) { s_dbg_behind++; continue; }
@@ -376,18 +422,26 @@ static void terrain_build(CPUState* cpu) {
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
             if (s_cull && nclip <= 0.0) { s_dbg_nclip++; continue; }
+            /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
+             * colour index is per face corner (word1); the fog viewZ is the
+             * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
+            uint32_t cc0 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
+            uint32_t cc1 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
+            uint32_t cc2 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
+            uint32_t cc3 = quad ? terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
             /* Quad triangulation = FAN from i0 (diagonal i0-i2): (i0,i1,i2) +
              * (i0,i2,i3). The strip split (i0,i1,i2)+(i1,i2,i3) shares EDGE
              * i1-i2 which is a quad edge, not a diagonal, for this winding — it
              * left a triangular gap inside every quad (the "missing tris"). */
-            emit_tri(sv, i0, i1, i2);
-            if (quad && sv[i3].ok) emit_tri(sv, i0, i2, i3);
+            emit_tri(sv, i0, i1, i2, cc0, cc1, cc2);
+            if (quad && sv[i3].ok) emit_tri(sv, i0, i2, i3, cc0, cc2, cc3);
         }
     }
 }
 
-/* Feed the built tris to the native scene (untextured gouraud, opaque). Scaffold
- * colour (above); textures + DPCS fog + ABE are the next increment. */
+/* Feed the built tris to the native scene (untextured gouraud, opaque). Colour is
+ * native RGB888 + DPCS fog (terrain_color); textures (m_LQTexturePointer) + ABE
+ * are the next increment. */
 static void terrain_feed_native(void) {
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
@@ -453,6 +507,52 @@ static void terrain_compare(void) {
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
     fprintf(stderr, "[terrain-faces] walked=%d oob=%d behind=%d nclipCulled=%d spikeCulled=%d emitted=%d\n",
         s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_nclip, s_dbg_spike, s_tri_n);
+
+    /* Colour A/B: NN-match each native colour-vert (post-fog) to the nearest
+     * captured prim corner by SCREEN position; where the geometry match is tight
+     * (<=2px) the captured prim's RGB is the .s DPCS oracle for that corner, so
+     * compare. (Shared verts carry per-corner colours, so a few NN mismatches are
+     * expected — read the median + exact-% as the discriminator, not the worst.) */
+    build_captured_colors();
+    if (s_cc_n && s_cv_n) {
+        long matched = 0, exact = 0, near4 = 0; double esum = 0; int eworst = 0;
+        /* Near-regime subset: f saturates to 1 (no fog) when 4·m3 <= fogRef-0x1000;
+         * with fogRef>=0x2000 that's m3 < 0x400. There the .s also renders HP
+         * unfogged → must match near-exactly. This isolates the decode (array
+         * base/byte order) from the LP/HP tier confound + fog rounding. */
+        long nmatched = 0, nexact = 0, nnear4 = 0; double nesum = 0; int nworst = 0;
+        for (int i = 0; i < s_cv_n; i++) {
+            float best = 1e18f; uint32_t crgb = 0;
+            for (int j = 0; j < s_cc_n; j++) {
+                float dx = s_cvx[i] - s_ccx[j], dy = s_cvy[i] - s_ccy[j], d = dx*dx + dy*dy;
+                if (d < best) { best = d; crgb = s_ccrgb[j]; }
+            }
+            if (best > 4.0f) continue;                  /* geometry too loose to trust */
+            uint32_t n = s_cvrgb[i];
+            int dr = abs((int)(n & 0xFF)        - (int)(crgb & 0xFF));
+            int dg = abs((int)((n >> 8) & 0xFF) - (int)((crgb >> 8) & 0xFF));
+            int db = abs((int)((n >> 16) & 0xFF)- (int)((crgb >> 16) & 0xFF));
+            int de = dr + dg + db;
+            matched++; esum += de; if (de > eworst) eworst = de;
+            if (de == 0) exact++;
+            if (dr <= 4 && dg <= 4 && db <= 4) near4++;
+            if (s_cvz[i] < 1024.0) {                     /* near (unfogged) regime */
+                nmatched++; nesum += de; if (de > nworst) nworst = de;
+                if (de == 0) nexact++;
+                if (dr <= 4 && dg <= 4 && db <= 4) nnear4++;
+            }
+        }
+        if (matched)
+            fprintf(stderr,
+                "[terrain-color] matched=%ld  meanΔ(r+g+b)=%.2f exact=%.0f%% within±4=%.0f%% worstΔ=%d\n",
+                matched, esum / matched, 100.0 * exact / matched, 100.0 * near4 / matched, eworst);
+        else
+            fprintf(stderr, "[terrain-color] no tight geometry matches to score colour\n");
+        if (nmatched)
+            fprintf(stderr,
+                "[terrain-color-near] matched=%ld  meanΔ=%.2f exact=%.0f%% within±4=%.0f%% worstΔ=%d (m3<1024, unfogged HP-in-both)\n",
+                nmatched, nesum / nmatched, 100.0 * nexact / nmatched, 100.0 * nnear4 / nmatched, nworst);
+    }
 }
 
 /* ---- gating --------------------------------------------------------------- */
