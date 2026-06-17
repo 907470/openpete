@@ -1062,6 +1062,7 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_category(OPENPETE_SCENE_ACTOR);  /* mobys cover shadows */
     for (int i = 0; i < s_wtri_n; i++) {
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
@@ -1079,6 +1080,7 @@ static void push_scene_moby(void) {
         t.blend    = s_wtri[i].blend;
         openpete_native_scene_add_tri(&t);
     }
+    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts --

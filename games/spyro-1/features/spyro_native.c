@@ -1081,6 +1081,7 @@ static void spyro_feed_walk(CPUState* cpu) {
     build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
     if (s_swtri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
+    openpete_native_scene_set_category(OPENPETE_SCENE_ACTOR);  /* Spyro covers his shadow */
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
         openpete_scene_tri st;
@@ -1094,6 +1095,7 @@ static void spyro_feed_walk(CPUState* cpu) {
         st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
         openpete_native_scene_add_tri(&st);
     }
+    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* ---- gating --------------------------------------------------------------- */

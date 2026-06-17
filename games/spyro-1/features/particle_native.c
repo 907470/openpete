@@ -228,6 +228,14 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * glows + sparkles still TODO. */
 #define GTE_DIV_CAP   (131071.0 / 65536.0)
 #define GTE_SXY_BOUND 1024.0
+/* WORLD particles project through proj2 with camera-relative coords shifted >>2
+ * (world/4), so their view-Z (cz) is 1/4 the shared full-world scale that
+ * depth_from_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
+ * sites (where the class is known) so they sort against terrain instead of
+ * always being ~4x too near and drawing THROUGH it. HUD bursts (sel 4/5, direct
+ * view-space) and glows (raw-cam, full-world) are already full-scale — not
+ * touched. cz is feed-only (culls use the raw view-Z), so scaling it is safe. */
+#define PART_VZ_WORLD4 4.0f
 
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
@@ -411,7 +419,7 @@ static void particle_build(CPUState* cpu) {
             q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
             q.sx[2]=X0; q.sy[2]=Y1; q.sx[3]=X1; q.sy[3]=Y1;
             for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
-            q.cz = (float)c.m3;
+            q.cz = (float)c.m3 * PART_VZ_WORLD4;        /* world/4 -> full-world */
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel == 2) {                          /* affine sin/cos billboard */
@@ -434,7 +442,7 @@ static void particle_build(CPUState* cpu) {
                 q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
                 q.sz[k] = (float)TR2;
             }
-            q.cz = (float)c.m3;                          /* real centre depth (not TR2) */
+            q.cz = (float)c.m3 * PART_VZ_WORLD4;          /* world/4 -> full-world (centre depth, not TR2) */
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel >= 6) {                          /* rotated-billboard FT4 default */
@@ -454,7 +462,7 @@ static void particle_build(CPUState* cpu) {
             if (zsum < 512.0 || zsum >= 32768.0) continue;          /* depth-sum window */
             if ((((int)zsum) >> 7) - texsub_hi < 0) continue;       /* LOD cull */
             if (clip4_cull(q.sx, q.sy)) continue;                   /* 4-corner clip */
-            q.cz = (float)(zsum / 4.0);
+            q.cz = (float)(zsum / 4.0) * PART_VZ_WORLD4;  /* world/4 -> full-world */
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel == 0) {                          /* TILE / 1px dot (block_80057F98) */
@@ -474,7 +482,7 @@ static void particle_build(CPUState* cpu) {
             q.sx[2]=(float)c.sx;       q.sy[2]=(float)(c.sy+1.0);
             q.sx[3]=(float)(c.sx+2.0); q.sy[3]=(float)(c.sy+1.0);
             for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
-            q.cz = (float)c.m3;
+            q.cz = (float)c.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
             uint32_t cmd = cpu->read_word(pp + 0x0C);    /* flat colour, no texture */
             q.rgb = cmd & 0xFFFFFF; q.textured = 0;
             q.blend = ((cmd >> 24) & 0x02) ? 1 : 0;
@@ -499,7 +507,7 @@ static void particle_build(CPUState* cpu) {
             pline* l = &s_pline[s_pline_n++];
             l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
             l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
-            l->cz = (float)e0.m3;
+            l->cz = (float)e0.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
             l->sel = 1;
         } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
@@ -934,10 +942,10 @@ static void sparkle_build(CPUState* cpu) {
         /* line 1 = T0→T3, line 2 = T1→T2 */
         sline* l0 = &s_sline[s_sline_n++];
         l0->ax=(float)sx[0]; l0->ay=(float)sy[0]; l0->bx=(float)sx[3]; l0->by=(float)sy[3];
-        l0->cz=(float)c.m3; l0->rgb=color;
+        l0->cz=(float)c.m3 * PART_VZ_WORLD4; l0->rgb=color;   /* world/4 -> full-world */
         sline* l1 = &s_sline[s_sline_n++];
         l1->ax=(float)sx[1]; l1->ay=(float)sy[1]; l1->bx=(float)sx[2]; l1->by=(float)sy[2];
-        l1->cz=(float)c.m3; l1->rgb=color;
+        l1->cz=(float)c.m3 * PART_VZ_WORLD4; l1->rgb=color;
     }
 }
 

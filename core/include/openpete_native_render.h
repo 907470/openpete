@@ -92,11 +92,22 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * vertex rgba ALPHA byte; set 128 for (B+F)/2), 3 (subtract — reverse-
  * subtracts the vertex colour, alpha ignored) and 2 (additive, B+F — the glow
  * rings: gouraud fan, bright centre fading to black edge, alpha ignored). */
+/* category: which draw layer an OPAQUE (blend==0) tri belongs to. The opaque
+ * pass is split WORLD-opaque -> shadows(subtract) -> ACTOR-opaque so a shadow
+ * (a ground decal pulled slightly toward the camera to clear terrain bumps)
+ * draws OVER the terrain it falls on but UNDER the actors standing on it — the
+ * PSX draw order (terrain, then shadow, then Spyro on top). Ignored for
+ * non-opaque tris (blend!=0 routes by blend). Stamped by add_tri from the
+ * current category (see openpete_native_scene_set_category), so feeders that
+ * don't care default to WORLD. */
+#define OPENPETE_SCENE_WORLD 0
+#define OPENPETE_SCENE_ACTOR 1
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
+    int category;
 } openpete_scene_tri;
 
 /* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
@@ -121,8 +132,15 @@ void openpete_native_scene_begin(void);
  * `openpete_frame` (the per-yield frame counter). Order-independent and robust
  * to a feeder being absent on a given level. */
 void openpete_native_scene_begin_frame(unsigned frame);
-/* Append one screen-space triangle to the current native scene. */
+/* Append one screen-space triangle to the current native scene. The tri's
+ * `category` is overwritten with the current scene category (set_category). */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
+/* Set the layer that subsequent add_tri calls are stamped with
+ * (OPENPETE_SCENE_WORLD / _ACTOR). Actor feeders (Spyro body, mobys) bracket
+ * their emit with set_category(ACTOR) ... set_category(WORLD). Reset to WORLD at
+ * each frame's first begin_frame and by scene_begin, so a feeder that never
+ * calls it always emits WORLD geometry. */
+void openpete_native_scene_set_category(int category);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
  * before the scene so uncovered areas show it instead of black, mirroring the
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).

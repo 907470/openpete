@@ -108,7 +108,11 @@ static int scene_delay_depth(void) {
     return s_scene_delay;
 }
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; }
+/* Current draw layer stamped onto every add_tri (OPENPETE_SCENE_WORLD/_ACTOR).
+ * Reset to WORLD per frame so a non-actor feeder never inherits a stale ACTOR. */
+static int s_scene_category = OPENPETE_SCENE_WORLD;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -127,11 +131,17 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_n = 0; s_scene_bg = 0; s_scene_frame = frame;
+        s_scene_category = OPENPETE_SCENE_WORLD;
     }
 }
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
-    if (tri && s_scene_n < MAX_SCENE_TRIS) s_scene[s_scene_n++] = *tri;
+    if (tri && s_scene_n < MAX_SCENE_TRIS) {
+        s_scene[s_scene_n] = *tri;
+        s_scene[s_scene_n].category = s_scene_category;  /* stamp the active layer */
+        s_scene_n++;
+    }
 }
+void openpete_native_scene_set_category(int category) { s_scene_category = category; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
@@ -799,21 +809,36 @@ static bool draw_native_scene(bool full_extent)
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
     }
-    /* Untextured tris grouped in the VB by ABR class, in draw order: OPAQUE
-     * (bg + gouraud) in [0, ut_op_end); ALPHA (ABR mode 0) in [ut_op_end,
-     * ut_al_end); SUBTRACT (ABR mode 2, the Spyro shadow) in [ut_al_end,
-     * ut_sub_end); ADDITIVE (ABR mode 1, the glow rings) in [ut_sub_end,
-     * ut_end). Then textured tris in [tx_start, n). The depth buffer sorts
-     * opaque vs transparent; the transparent classes draw after the opaque
-     * world so they blend over it. scene_tri.blend: 0=opaque 1=alpha(ABR0)
-     * 2=additive(ABR1) 3=subtract(ABR2). */
-    static const int ut_order[4] = { 0, 1, 3, 2 };   /* opaque, alpha, subtract, additive */
-    int ut_op_end = 0, ut_al_end = 0, ut_sub_end = 0;
-    for (int gi = 0; gi < 4; gi++) {
-        int want = ut_order[gi];
+    /* The scene draws in 5 LAYERED groups, in this order, so a ground-decal
+     * shadow lands OVER the terrain it falls on but UNDER the actors standing on
+     * it (the PSX terrain -> shadow -> Spyro draw order). A single near-bias on
+     * the shadow can't do both (it would also paint over Spyro's feet); the layer
+     * order does. Each group's UNTEXTURED tris are packed into a contiguous VB
+     * range (one batched draw); its TEXTURED tris are drawn per-tri (material
+     * push) by filtering the appended textured block. gcat <0 = any (only OPAQUE
+     * splits WORLD vs ACTOR; transparent classes route by blend alone).
+     *   0 WORLD-opaque (blend 0, cat WORLD)  terrain / sky / props
+     *   1 SUBTRACT     (blend 3)             shadows (depth_write_off)
+     *   2 ACTOR-opaque (blend 0, cat ACTOR)  Spyro / mobys — cover the shadows
+     *   3 ALPHA        (blend 1)             ABR0 semi-transparent
+     *   4 ADDITIVE     (blend 2)             ABR1 flame / glows (last) */
+    struct scene_group { int blend, gcat; rhi_pipeline *utex, *tex; };
+    const struct scene_group groups[5] = {
+        { 0, OPENPETE_SCENE_WORLD, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 3, -1,                   s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
+        { 0, OPENPETE_SCENE_ACTOR, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 1, -1,                   s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
+        { 2, -1,                   s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
+    };
+    int ut_first[5], ut_count[5];
+    for (int gi = 0; gi < 5; gi++) {
+        ut_first[gi] = n;
+        int gb = groups[gi].blend, gc = groups[gi].gcat;
         for (int t = 0; t < scene_n; t++) {
+            if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
-            if (scene[t].textured || b != want || n + 3 > SCENE_VB_VERTS) continue;
+            if (b != gb) continue;
+            if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -823,11 +848,9 @@ static bool draw_native_scene(bool full_extent)
             }
             n += 3;
         }
-        if (gi == 0) ut_op_end = n;        /* opaque (incl. bg) end */
-        else if (gi == 1) ut_al_end = n;   /* alpha end */
-        else if (gi == 2) ut_sub_end = n;  /* subtract end */
+        ut_count[gi] = n - ut_first[gi];
     }
-    int ut_end = n, tx_start = n;
+    int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
@@ -854,68 +877,36 @@ static bool draw_native_scene(bool full_extent)
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
     }
 
-    /* Untextured OPAQUE pass (bg fill + opaque gouraud tris), drawn first so
-     * depth-tested geometry sits in front of the background. */
-    if (ut_op_end > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_op_end, 0);
-    }
-    /* Textured OPAQUE pass (blend 0 / unknown), right after the opaque gouraud
-     * so the opaque world is complete before any transparent class blends. */
-    if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
-        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        int off = tx_start;
-        for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-            if (!scene[t].textured) continue;
-            int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
-            if (b == 0) {
-                const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                         scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                rhi_push_constants(s_nr.dev, &m, sizeof m);
-                rhi_draw(s_nr.dev, 3, (uint32_t)off);
-            }
-            off += 3;
+    /* Draw the 5 layered groups in order (WORLD-opaque, SUBTRACT shadows,
+     * ACTOR-opaque, ALPHA, ADDITIVE). For each: the batched untextured range,
+     * then its textured tris per-tri (material push). Opaque groups write depth;
+     * the transparent groups (1/3/4) are depth_write_off (test vs opaque, never
+     * occlude each other). Per-tri material draws; material-batched draws +
+     * back-to-front transparent sort (3c) are later. */
+    for (int gi = 0; gi < 5; gi++) {
+        const struct scene_group *g = &groups[gi];
+        if (g->utex && ut_count[gi] > 0) {
+            rhi_bind_pipeline(s_nr.dev, g->utex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
-    }
-    /* Transparent passes, by ABR class in the order opaque-already-done ->
-     * alpha (ABR0) -> subtract (ABR2) -> additive (ABR1, last so glows
-     * accumulate over the lit scene). For each class draw the UNTEXTURED tris
-     * (their own gouraud pipe) then the TEXTURED tris (VRAM-sampler pipe), so
-     * both blend over the opaque world. Each is depth_write_off (tests vs
-     * opaque, never occludes another transparent layer). Per-tri material
-     * push+draw; material-batched draws + back-to-front sort (3c) are later. */
-    {
-        struct { int blend; rhi_pipeline *utex, *tex; uint32_t ut_first, ut_count; } cls[3] = {
-            { 1, s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe, (uint32_t)ut_op_end,  (uint32_t)(ut_al_end - ut_op_end) },
-            { 3, s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe,   (uint32_t)ut_al_end,  (uint32_t)(ut_sub_end - ut_al_end) },
-            { 2, s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe,   (uint32_t)ut_sub_end, (uint32_t)(ut_end - ut_sub_end) },
-        };
-        for (int ci = 0; ci < 3; ci++) {
-            /* untextured tris of this class */
-            if (cls[ci].utex && cls[ci].ut_count > 0) {
-                rhi_bind_pipeline(s_nr.dev, cls[ci].utex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, cls[ci].ut_count, cls[ci].ut_first);
-            }
-            /* textured tris of this class */
-            if (n > tx_start && s_nr.vram_tex && cls[ci].tex) {
-                rhi_bind_pipeline(s_nr.dev, cls[ci].tex);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                int off = tx_start;
-                for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-                    if (!scene[t].textured) continue;
-                    if (scene[t].blend == cls[ci].blend) {
-                        const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                                 scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                        rhi_push_constants(s_nr.dev, &m, sizeof m);
-                        rhi_draw(s_nr.dev, 3, (uint32_t)off);
-                    }
-                    off += 3;  /* advance for every textured tri (verts are contiguous) */
+        if (n > tx_start && s_nr.vram_tex && g->tex) {
+            rhi_bind_pipeline(s_nr.dev, g->tex);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            int off = tx_start;
+            for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+                if (!scene[t].textured) continue;
+                int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+                int match = (b == g->blend) &&
+                            !(g->blend == 0 && g->gcat >= 0 && scene[t].category != g->gcat);
+                if (match) {
+                    const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                             scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
+                    rhi_push_constants(s_nr.dev, &m, sizeof m);
+                    rhi_draw(s_nr.dev, 3, (uint32_t)off);
                 }
+                off += 3;  /* advance for every textured tri (verts are contiguous) */
             }
         }
     }

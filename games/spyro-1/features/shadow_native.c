@@ -415,7 +415,46 @@ static void shadow_moby_build(CPUState* cpu) {
     }
 }
 
-/* feed the native moby shadows (textured FT3, ABR mode 0 -> blend=1) */
+/* Shadow depth feed. Two corrections over a raw depth_from_viewz(MAC3):
+ *
+ *  (1) SCALE — depth_from_viewz wants ONE shared view-Z scale (full-world, what
+ *      terrain feeds as m3*16 and mobys/Spyro-shadow feed directly). The moby
+ *      shadow walk works in world/4 coords (camera + moby positions >>2), so its
+ *      MAC3 is 4x too small; passing `scale` (4 for moby shadows, 1 for the Spyro
+ *      shadow) restores the shared scale. Without it the moby shadow is always
+ *      ~4x too near and shows THROUGH distant terrain that should occlude it.
+ *
+ *  (2) DECAL BIAS — a shadow is a ground decal coplanar with the terrain it falls
+ *      on. The .s drew it via a painter's OT (after the ground, so it always won);
+ *      a true Z-buffer instead Z-fights a coplanar pair. Pull the shadow's view-Z
+ *      slightly toward the camera so it reliably wins the LEQUAL test against its
+ *      own ground, while terrain genuinely nearer (a ledge between camera and
+ *      shadow sits at a MUCH smaller view-Z) still occludes it — the small factor
+ *      never reorders those. Shadows are depth_write_off, so this can't perturb
+ *      the opaque depth field. Tunable via OPENPETE_SHADOW_DEPTH_BIAS. */
+static float shadow_depth(float viewz, float scale, float bias) {
+    return openpete_native_depth_from_viewz(viewz * scale * bias);
+}
+/* Two separate biases (they want opposite things on uneven terrain):
+ *  - SPYRO shadow: large + near + on the HQ-subdivided ground right under the
+ *    hero, so its big flat fan slices badly through the bumps -> needs a STRONG
+ *    bias (~0.7) to drape over them. A ledge in front of Spyro sits at a MUCH
+ *    smaller view-Z, so even 0.7 never reorders genuine occluders.
+ *  - MOBY shadows: small + distant, so per-vertex barely varies and the footprint
+ *    covers little terrain; they need a WEAK bias (~0.96) so distant ones stay
+ *    OCCLUDED behind hills (the original "shadows through terrain" symptom). */
+static float shadow_bias_spyro(void) {
+    static float b = -1.0f;
+    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 0.70f; }
+    return b;
+}
+static float shadow_bias_moby(void) {
+    static float b = -1.0f;
+    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_MOBY"); b = (e && *e) ? (float)atof(e) : 0.96f; }
+    return b;
+}
+
+/* feed the native moby shadows (textured FT3, ABR mode 2 -> blend=3) */
 static void shadow_moby_feed_native(CPUState* cpu) {
     shadow_moby_build(cpu);
     if (s_mosh_n <= 0) return;
@@ -423,9 +462,10 @@ static void shadow_moby_feed_native(CPUState* cpu) {
     for (int i = 0; i < s_mosh_n; i++) {
         moshtri* m = &s_mosh[i];
         openpete_scene_tri st;
+        float bias = shadow_bias_moby();
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = m->sx[k]; st.v[k].sy = m->sy[k];
-            st.v[k].z  = openpete_native_depth_from_viewz(m->sz[k]);
+            st.v[k].z  = shadow_depth(m->sz[k], 4.0f, bias);  /* world/4 MAC3 -> full-world */
             st.v[k].u = (float)m->u[k]; st.v[k].v = (float)m->v[k];
             st.v[k].rgba = (m->rgb & 0xFFFFFFu) | 0xFF000000u;
         }
@@ -590,9 +630,10 @@ static void shadow_spyro_feed_native(CPUState* cpu) {
     for (int i = 0; i < s_sptri_n; i++) {
         sptri* c = &s_sptri[i];
         openpete_scene_tri st;
+        float bias = shadow_bias_spyro();
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
-            st.v[k].z  = openpete_native_depth_from_viewz(c->sz[k]);
+            st.v[k].z  = shadow_depth(c->sz[k], 1.0f, bias);  /* already full-world MAC3 */
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }
