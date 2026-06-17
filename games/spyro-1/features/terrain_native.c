@@ -29,6 +29,7 @@
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,6 +198,136 @@ static void terrain_dump(CPUState* cpu) {
     }
 }
 
+/* ---- native gamestate walk (float) + geometry A/B ------------------------- */
+
+/* Camera rotation matrix g_Camera+0x14 (5 words, standard ctc2 packing). */
+static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
+    uint32_t w0 = rd(cpu, p + 0), w1 = rd(cpu, p + 4), w2 = rd(cpu, p + 8);
+    uint32_t w3 = rd(cpu, p + 12), w4 = rd(cpu, p + 16);
+    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
+    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
+    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
+}
+
+/* Float RTPS mirror, TR=0: MAC = (M*V)>>12 ; SX = OFX + MAC1*H/MAC3. The
+ * LP-world/16 vs HP-world/4 scale cancels in the MAC1/MAC3 ratio, so V can be
+ * built in any consistent unit (we use world/16). */
+static double project(const int M[3][3], int vx, int vy, int vz,
+                      double ofx, double ofy, double H, double* sx, double* sy) {
+    double m1 = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
+    double m2 = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
+    double m3 = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
+    double z = (m3 != 0.0) ? m3 : 1.0;
+    *sx = ofx + m1 * H / z;
+    *sy = ofy + m2 * H / z;
+    return m3;
+}
+
+#define MAX_TVERTS 16384
+static float s_tvx[MAX_TVERTS], s_tvy[MAX_TVERTS];
+static double s_tvz[MAX_TVERTS];
+static int s_tv_n;
+static int s_walk_sectors;
+
+/* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
+ * visible set, so the A/B isolates the decode+projection from the cull) and
+ * project its HP vertices (LP for 0x4000 "no-HP" sectors). Camera-relative
+ * GTE-vector per r_environment.s 0x80026238-0x800262C0:
+ *   VZ0 = Xf + (originX - camX>>4);  VX0 = (camY>>4 - originY) - Yf;
+ *   VY0 = (camZ>>4 - originZ) - Zf.  (world axes are origin + field; the
+ *   minus on VX0/VY0 is the camera subtraction, not the field sign.) */
+static void terrain_walk(CPUState* cpu) {
+    s_tv_n = 0; s_walk_sectors = 0;
+    /* Phase-2 (vertex projection) reloads the matrix from g_Camera+0x00
+     * (m_ProjectionMatrix) at 0x800261A8 — NOT +0x14 (m_ViewMatrix), which
+     * Phase-1 used only for the sector cull. The per-vertex RTPS uses +0x00. */
+    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);
+    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    int camx = (int32_t)rd(cpu, G_CAMERA + 0x28) >> 4;
+    int camy = (int32_t)rd(cpu, G_CAMERA + 0x2C) >> 4;
+    int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
+
+    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
+    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        if (vis != 0xFF) continue;
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        uint32_t w1  = rd(cpu, s + 0x04);
+        uint32_t og  = rd(cpu, s + 0x08), oz = rd(cpu, s + 0x0C);
+        uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
+        int flags   = (int)(w1 & 0xE000);
+        int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
+        int s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
+
+        int noHP = (flags & 0x4000) != 0;
+        uint32_t verts; int nv;
+        if (noHP) { verts = s + 0x1C;                                 nv = lpw & 0xFF; }
+        else      { verts = s + 0x1C + ((hpw >> 24) & 0xFF) * 4;       nv = hpw & 0xFF; }
+        s_walk_sectors++;
+        for (int k = 0; k < nv && s_tv_n < MAX_TVERTS; k++) {
+            uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
+            int Xf = (int)((v >> 21) & 0x7FF), Yf = (int)((v >> 10) & 0x7FF), Zf = (int)(v & 0x3FF);
+            int vz0 = Xf + s4, vx0 = s5 - Yf, vy0 = s6 - Zf;
+            double sx, sy;
+            double m3 = project(M, vx0, vy0, vz0, ofx, ofy, H, &sx, &sy);
+            if (m3 <= 0.0) continue;                 /* behind camera */
+            s_tvx[s_tv_n] = (float)sx; s_tvy[s_tv_n] = (float)sy; s_tvz[s_tv_n] = m3;
+            s_tv_n++;
+        }
+    }
+}
+
+/* Geometry A/B: NN-match each native projected vertex to the nearest captured
+ * prim vertex (order/topology independent — the .s emits LP for far sectors, so
+ * exact ordering won't line up; NN measures the decode+projection). */
+static void terrain_compare(void) {
+    /* Gather captured prim verts. */
+    static float cx[MAX_PRIMS * 4], cy[MAX_PRIMS * 4]; int cn = 0;
+    for (int p = 0; p < s_gte_n && cn < MAX_PRIMS * 4 - 4; p++) {
+        prim_t* t = &s_gte[p];
+        for (int k = 0; k < t->nv; k++) { cx[cn] = t->x[k]; cy[cn] = t->y[k]; cn++; }
+    }
+    if (!cn || !s_tv_n) {
+        fprintf(stderr, "[terrain-ab] native=%d captured=%d (no compare)\n", s_tv_n, cn);
+        return;
+    }
+    static float nn[MAX_TVERTS]; int nnn = 0;
+    static float nn_on[MAX_TVERTS]; int nnon = 0;   /* on-screen subset */
+    double sum = 0; float worst = 0; int within1 = 0, within2 = 0;
+    for (int i = 0; i < s_tv_n; i++) {
+        float best = 1e9f;
+        for (int j = 0; j < cn; j++) {
+            float dx = s_tvx[i] - cx[j], dy = s_tvy[i] - cy[j];
+            float d = dx * dx + dy * dy;
+            if (d < best) best = d;
+        }
+        best = (float)sqrt((double)best);
+        sum += best; if (best > worst) worst = best;
+        if (best <= 1.0f) within1++;
+        if (best <= 2.0f) within2++;
+        nn[nnn++] = best;
+        if (s_tvx[i] >= -16.f && s_tvx[i] <= 528.f && s_tvy[i] >= -16.f && s_tvy[i] <= 272.f)
+            nn_on[nnon++] = best;
+    }
+    /* insertion sort (small N, once per dump) for percentiles */
+    for (int a = 1; a < nnn; a++) { float v = nn[a]; int b = a - 1;
+        while (b >= 0 && nn[b] > v) { nn[b+1] = nn[b]; b--; } nn[b+1] = v; }
+    float med = nn[nnn/2], p90 = nn[(nnn*9)/10];
+    /* on-screen median */
+    for (int a = 1; a < nnon; a++) { float v = nn_on[a]; int b = a - 1;
+        while (b >= 0 && nn_on[b] > v) { nn_on[b+1] = nn_on[b]; b--; } nn_on[b+1] = v; }
+    float med_on = nnon ? nn_on[nnon/2] : 0.f;
+    fprintf(stderr,
+        "[terrain-ab] sectors=%d nativeV=%d capturedV=%d  mean=%.2f median=%.2f p90=%.1f worst=%.1f"
+        "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
+        s_walk_sectors, s_tv_n, cn, sum / s_tv_n, med, p90, worst,
+        100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int terrain_verify_enabled(void) {
     static int v = -1;
@@ -237,7 +368,12 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
 
     if (verify && openpete_frame >= terrain_verify_frame()) {
         static int s_reports = 0;
-        if (s_reports < 8) { terrain_dump(cpu); s_reports++; }
+        if (s_reports < 8) {
+            terrain_dump(cpu);
+            terrain_walk(cpu);          /* native float decode + projection */
+            terrain_compare();          /* geometry A/B vs captured prims */
+            s_reports++;
+        }
     }
     s_in = 0;
     return 1;
