@@ -395,7 +395,11 @@ static void terrain_feed_native(void) {
         tri.textured = 0; tri.blend = 0;
         for (int k = 0; k < 3; k++) {
             tri.v[k].sx = t->sx[k]; tri.v[k].sy = t->sy[k];
-            tri.v[k].z  = openpete_native_depth_from_viewz((float)t->vz[k]);
+            /* Terrain view-Z is in world/16 units (cam>>4, verts /16); the
+             * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
+             * scale, so ×16 to match — else terrain's depth is ~16× too small
+             * (always nearest) and draws on top of every actor. */
+            tri.v[k].z  = openpete_native_depth_from_viewz((float)t->vz[k] * 16.0f);
             tri.v[k].rgba = s_flat ? 0xFF20C040u : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
         openpete_native_scene_add_tri(&tri);
