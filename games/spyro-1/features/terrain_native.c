@@ -229,19 +229,78 @@ static double s_tvz[MAX_TVERTS];
 static int s_tv_n;
 static int s_walk_sectors;
 
+/* Built triangles for the scene feed. */
+typedef struct { float sx[3], sy[3]; double vz[3]; uint32_t rgb[3]; } ttri;
+#define MAX_TTRIS 24576
+static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
+static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
+static void terrain_dbg_init(void) {
+    /* Backface cull is OFF by default: a native Z-buffer hides occluded
+     * backfaces, so emit-all gives full coverage. The .s NCLIP-culls for GPU
+     * perf; replicating it dropped ~half the faces (front faces too, on the
+     * sign/flip convention) → gaps. Re-enable for debug / once the NCLIP sign+
+     * flip is nailed as a perf optimization. */
+    if (s_cull < 0) { const char* e = getenv("OPENPETE_TERRAIN_CULL"); s_cull = (e && *e && *e != '0'); }
+    if (s_flat < 0) { const char* e = getenv("OPENPETE_TERRAIN_FLAT"); s_flat = (e && *e && *e != '0'); }
+}
+
+/* Scaffold colour: NN each native vertex to the nearest captured prim vertex's
+ * RGB. Temporary (the .s prim colour is already DPCS-fogged) — to be replaced by
+ * native RGB888 + DPCS fog (the two colour tables $t7/$s0 + DPCS, §10) next
+ * increment. Tracked in the Native-derivation backlog. */
+static float s_ccx[MAX_PRIMS * 4], s_ccy[MAX_PRIMS * 4];
+static uint32_t s_ccrgb[MAX_PRIMS * 4]; static int s_cc_n;
+static void build_captured_colors(void) {
+    s_cc_n = 0;
+    for (int p = 0; p < s_gte_n && s_cc_n < MAX_PRIMS * 4 - 4; p++) {
+        prim_t* t = &s_gte[p];
+        for (int k = 0; k < t->nv; k++) {
+            s_ccx[s_cc_n] = t->x[k]; s_ccy[s_cc_n] = t->y[k]; s_ccrgb[s_cc_n] = t->rgb[k];
+            s_cc_n++;
+        }
+    }
+}
+static uint32_t nn_color(float sx, float sy) {
+    float best = 1e18f; uint32_t rgb = 0x808080;
+    for (int j = 0; j < s_cc_n; j++) {
+        float dx = sx - s_ccx[j], dy = sy - s_ccy[j], d = dx * dx + dy * dy;
+        if (d < best) { best = d; rgb = s_ccrgb[j]; }
+    }
+    return rgb;
+}
+
+/* Per-sector local projected vertex (indexed by face vertex index). */
+typedef struct { float sx, sy; double vz; int ok; } lvert;
+
+/* Emit one triangle (scaffold colour + near-plane spike cull). */
+static void emit_tri(const lvert* sv, int a, int b, int c) {
+    if (s_tri_n >= MAX_TTRIS) return;
+    /* Near-plane spike cull: a vertex just in front of the camera makes float
+     * H/Z explode → a tri spiking across the screen (the GTE clamps these). */
+    if (fabsf(sv[a].sx) > 768.f || fabsf(sv[a].sy) > 640.f ||
+        fabsf(sv[b].sx) > 768.f || fabsf(sv[b].sy) > 640.f ||
+        fabsf(sv[c].sx) > 768.f || fabsf(sv[c].sy) > 640.f) { s_dbg_spike++; return; }
+    ttri* t = &s_tri[s_tri_n++];
+    t->sx[0]=sv[a].sx; t->sy[0]=sv[a].sy; t->vz[0]=sv[a].vz;
+    t->sx[1]=sv[b].sx; t->sy[1]=sv[b].sy; t->vz[1]=sv[b].vz;
+    t->sx[2]=sv[c].sx; t->sy[2]=sv[c].sy; t->vz[2]=sv[c].vz;
+    t->rgb[0]=nn_color(sv[a].sx,sv[a].sy);
+    t->rgb[1]=nn_color(sv[b].sx,sv[b].sy);
+    t->rgb[2]=nn_color(sv[c].sx,sv[c].sy);
+}
+
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
- * visible set, so the A/B isolates the decode+projection from the cull) and
- * project its HP vertices (LP for 0x4000 "no-HP" sectors). Camera-relative
- * GTE-vector per r_environment.s 0x80026238-0x800262C0:
- *   VZ0 = Xf + (originX - camX>>4);  VX0 = (camY>>4 - originY) - Yf;
- *   VY0 = (camZ>>4 - originZ) - Zf.  (world axes are origin + field; the
- *   minus on VX0/VY0 is the camera subtraction, not the field sign.) */
-static void terrain_walk(CPUState* cpu) {
-    s_tv_n = 0; s_walk_sectors = 0;
-    /* Phase-2 (vertex projection) reloads the matrix from g_Camera+0x00
-     * (m_ProjectionMatrix) at 0x800261A8 — NOT +0x14 (m_ViewMatrix), which
-     * Phase-1 used only for the sector cull. The per-vertex RTPS uses +0x00. */
-    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);
+ * visible set, isolating decode+projection+faces from the cull), project its HP
+ * vertices (LP for 0x4000 "no-HP" sectors), then walk the HP faces (16B) / LP
+ * faces (8B) into triangles. Camera-relative GTE-vector per r_environment.s
+ * 0x80026238-0x800262C0 (matrix = g_Camera+0x00; world axes = origin+field). */
+static void terrain_build(CPUState* cpu) {
+    s_tv_n = 0; s_tri_n = 0; s_walk_sectors = 0;
+    s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = 0;
+    terrain_dbg_init();
+    build_captured_colors();
+    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -249,6 +308,7 @@ static void terrain_walk(CPUState* cpu) {
     int camy = (int32_t)rd(cpu, G_CAMERA + 0x2C) >> 4;
     int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
 
+    static lvert sv[256];
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
     for (uint32_t i = 0; i < sectorCnt; i++) {
@@ -264,20 +324,81 @@ static void terrain_walk(CPUState* cpu) {
         int s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
 
         int noHP = (flags & 0x4000) != 0;
-        uint32_t verts; int nv;
-        if (noHP) { verts = s + 0x1C;                                 nv = lpw & 0xFF; }
-        else      { verts = s + 0x1C + ((hpw >> 24) & 0xFF) * 4;       nv = hpw & 0xFF; }
+        int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
+        int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
+        int hpVertsOff = (int)((hpw >> 24) & 0xFF);
+
+        uint32_t verts, faces; int nv, nf, faceStride;
+        if (noHP) {
+            verts = s + 0x1C;                                       nv = nLpV;
+            faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;         nf = nLpF; faceStride = 8;
+        } else {
+            verts = s + 0x1C + (uint32_t)hpVertsOff * 4;            nv = nHpV;
+            faces = verts + (uint32_t)(nHpV + nHpC * 2) * 4;        nf = nHpF; faceStride = 16;
+        }
+        if (nv > 256) nv = 256;
         s_walk_sectors++;
-        for (int k = 0; k < nv && s_tv_n < MAX_TVERTS; k++) {
+
+        for (int k = 0; k < nv; k++) {
             uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
             int Xf = (int)((v >> 21) & 0x7FF), Yf = (int)((v >> 10) & 0x7FF), Zf = (int)(v & 0x3FF);
-            int vz0 = Xf + s4, vx0 = s5 - Yf, vy0 = s6 - Zf;
             double sx, sy;
-            double m3 = project(M, vx0, vy0, vz0, ofx, ofy, H, &sx, &sy);
-            if (m3 <= 0.0) continue;                 /* behind camera */
-            s_tvx[s_tv_n] = (float)sx; s_tvy[s_tv_n] = (float)sy; s_tvz[s_tv_n] = m3;
-            s_tv_n++;
+            double m3 = project(M, s5 - Yf, s6 - Zf, Xf + s4, ofx, ofy, H, &sx, &sy);
+            sv[k].sx = (float)sx; sv[k].sy = (float)sy; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
+            if (m3 > 0.0 && s_tv_n < MAX_TVERTS) {       /* feed the geometry A/B */
+                s_tvx[s_tv_n] = (float)sx; s_tvy[s_tv_n] = (float)sy; s_tvz[s_tv_n] = m3; s_tv_n++;
+            }
         }
+
+        for (int f = 0; f < nf && s_tri_n < MAX_TTRIS - 2; f++) {
+            uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
+            int i0, i1, i2, i3, flip;
+            if (faceStride == 16) {            /* HP: byte-packed indices, word2 flags */
+                i0 = (w0 >> 24) & 0xFF; i1 = (w0 >> 16) & 0xFF;
+                i2 = (w0 >> 8) & 0xFF;  i3 = w0 & 0xFF;
+                uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
+                flip = (w2 & 0x2) != 0;
+            } else {                            /* LP: 6-bit indices in word0 */
+                i0 = (int)((w0 >> 23) & 0x1F8) >> 3; i1 = (int)((w0 >> 17) & 0x1F8) >> 3;
+                i2 = (int)((w0 >> 11) & 0x1F8) >> 3; i3 = (int)((w0 >> 5) & 0x1F8) >> 3;
+                flip = 0;
+            }
+            if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
+            if (!sv[i0].ok || !sv[i1].ok || !sv[i2].ok) { s_dbg_behind++; continue; }
+            int quad = (i2 != i3);
+            /* NCLIP back-face cull (2D cross product) on the quad as a whole,
+             * honoring the flip bit. Gate ONCE — then emit BOTH tris with
+             * consistent winding (i0,i1,i2)+(i1,i2,i3). Per-tri NCLIP dropped
+             * the 2nd tri of every front-facing quad (reversed winding) → holes
+             * everywhere (the "missing tris" symptom). */
+            s_dbg_faces++;
+            double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
+                         - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
+            if (flip) nclip = -nclip;
+            if (s_cull && nclip <= 0.0) { s_dbg_nclip++; continue; }
+            /* Quad triangulation = FAN from i0 (diagonal i0-i2): (i0,i1,i2) +
+             * (i0,i2,i3). The strip split (i0,i1,i2)+(i1,i2,i3) shares EDGE
+             * i1-i2 which is a quad edge, not a diagonal, for this winding — it
+             * left a triangular gap inside every quad (the "missing tris"). */
+            emit_tri(sv, i0, i1, i2);
+            if (quad && sv[i3].ok) emit_tri(sv, i0, i2, i3);
+        }
+    }
+}
+
+/* Feed the built tris to the native scene (untextured gouraud, opaque). Scaffold
+ * colour (above); textures + DPCS fog + ABE are the next increment. */
+static void terrain_feed_native(void) {
+    for (int i = 0; i < s_tri_n; i++) {
+        ttri* t = &s_tri[i];
+        openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
+        tri.textured = 0; tri.blend = 0;
+        for (int k = 0; k < 3; k++) {
+            tri.v[k].sx = t->sx[k]; tri.v[k].sy = t->sy[k];
+            tri.v[k].z  = openpete_native_depth_from_viewz((float)t->vz[k]);
+            tri.v[k].rgba = s_flat ? 0xFF20C040u : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
+        }
+        openpete_native_scene_add_tri(&tri);
     }
 }
 
@@ -322,10 +443,12 @@ static void terrain_compare(void) {
         while (b >= 0 && nn_on[b] > v) { nn_on[b+1] = nn_on[b]; b--; } nn_on[b+1] = v; }
     float med_on = nnon ? nn_on[nnon/2] : 0.f;
     fprintf(stderr,
-        "[terrain-ab] sectors=%d nativeV=%d capturedV=%d  mean=%.2f median=%.2f p90=%.1f worst=%.1f"
+        "[terrain-ab] sectors=%d nativeV=%d tris=%d capturedV=%d  mean=%.2f median=%.2f p90=%.1f worst=%.1f"
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
-        s_walk_sectors, s_tv_n, cn, sum / s_tv_n, med, p90, worst,
+        s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d behind=%d nclipCulled=%d spikeCulled=%d emitted=%d\n",
+        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_nclip, s_dbg_spike, s_tri_n);
 }
 
 /* ---- gating --------------------------------------------------------------- */
@@ -363,14 +486,17 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
-    /* TODO (next increment): native gamestate walk + scene feed.
-     *   if (feed && render_path_enabled(RP_TERRAIN)) terrain_feed_native(cpu); */
+    if (feed && endp > startp && render_path_enabled(RP_TERRAIN)) {
+        terrain_build(cpu);                         /* native walk + tris */
+        openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
+        terrain_feed_native();                      /* push tris to the scene */
+    }
 
     if (verify && openpete_frame >= terrain_verify_frame()) {
         static int s_reports = 0;
         if (s_reports < 8) {
             terrain_dump(cpu);
-            terrain_walk(cpu);          /* native float decode + projection */
+            terrain_build(cpu);         /* native float decode + projection + faces */
             terrain_compare();          /* geometry A/B vs captured prims */
             s_reports++;
         }
