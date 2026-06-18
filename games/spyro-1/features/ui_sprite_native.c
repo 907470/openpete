@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 extern void     func_800168DC(CPUState* cpu);   /* the real OT-insert helper */
 extern void     func_800190D4(CPUState* cpu);    /* the full-screen fade emitter */
@@ -126,6 +127,42 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1) {
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
+/* Feed one screen-space gouraud line (LINE_G2, code 0x50) into the native HUD
+ * layer as a thin gouraud quad (the scene is triangles-only, like the particle/
+ * sparkle line feeds). The consumer is func_8001844C ("shaded line") — the UI
+ * separator lines (the horizontal rules on the flight results screen, gem-UI
+ * dividers, …), with a per-endpoint shimmer colour. Layout: word[1]=code|rgb0,
+ * [2]=xy0, [3]=pad|rgb1, [4]=xy1. XY: x=lo16,y=hi16 signed. */
+static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
+    uint32_t xy0 = cpu->read_word(p + 0x08);
+    uint32_t c1  = cpu->read_word(p + 0x0C);
+    uint32_t xy1 = cpu->read_word(p + 0x10);
+    double x0 = (double)(int16_t)(xy0 & 0xFFFF), y0 = (double)(int16_t)(xy0 >> 16);
+    double x1 = (double)(int16_t)(xy1 & 0xFFFF), y1 = (double)(int16_t)(xy1 >> 16);
+    uint32_t rgba0 = (w1 & 0xFFFFFFu) | 0xFF000000u;   /* endpoint-0 colour */
+    uint32_t rgba1 = (c1 & 0xFFFFFFu) | 0xFF000000u;   /* endpoint-1 colour */
+    /* perpendicular half-width (~0.6 PSX px each side -> a ~1px-thin line). */
+    double dx = x1 - x0, dy = y1 - y0;
+    double len = sqrt(dx*dx + dy*dy); if (len < 1e-3) len = 1.0;
+    double px = -dy / len * 0.6, py = dx / len * 0.6;
+
+    openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_category(OPENPETE_SCENE_HUD);
+    /* corners: a=+perp, b=-perp; colour follows the endpoint (gouraud). */
+    float cx[4] = {(float)(x0+px),(float)(x1+px),(float)(x0-px),(float)(x1-px)};
+    float cy[4] = {(float)(y0+py),(float)(y1+py),(float)(y0-py),(float)(y1-py)};
+    uint32_t cc[4] = { rgba0, rgba1, rgba0, rgba1 };
+    static const int idx[2][3] = { {0,1,2}, {1,3,2} };
+    for (int t=0;t<2;t++) {
+        openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
+        for (int j=0;j<3;j++){ int c=idx[t][j];
+            tri.v[j].sx=cx[c]; tri.v[j].sy=cy[c]; tri.v[j].z=0.0f; tri.v[j].rgba=cc[c]; }
+        tri.textured=0; tri.blend=0;
+        openpete_native_scene_add_tri(&tri);
+    }
+    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
+}
+
 /* ---- dispatch ------------------------------------------------------------
  * A caller can MODIFY a prim AFTER linking it: TitlescreenDrawSprite mirrors a
  * sprite by swapping its U coords *after* func_800168DC returns (the "missing
@@ -159,6 +196,16 @@ static int is_f4(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
 }
 
+/* LINE_G2 (gouraud 2-point line, code 0x50) — the func_8001844C UI separator
+ * lines. (The particle sel-1 streak LINE_G goes through the particle path, not
+ * func_800168DC, so there's no overlap.) */
+static int is_line_g2(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return (uint8_t)(w1 >> 24) == 0x50            /* LINE_G2 */
+        && (uint8_t)(w0 >> 24) >= 4;              /* tag length >= 4 (full LINE_G2) */
+}
+
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_render_enabled();
@@ -181,6 +228,7 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
         }
         if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
         else if (is_f4(cpu, prim)) feed_f4(cpu, prim, cpu->read_word(prim + 4));  /* letterbox bars (immediate; no mirror) */
+        else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }
 
     func_800168DC(cpu);                          /* run the real OT insert (ref unchanged) */
