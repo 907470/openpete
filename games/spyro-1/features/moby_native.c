@@ -1570,6 +1570,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
             shaded_compose_euler(cpu, base, rot, M);
             TR[0]=0; TR[1]=0; TR[2]=pz>>1; mofx=(double)px; mofy=(double)py;
+            /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
+             * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
+             * pz). Scale the fed depth back to full-world so billboards (e.g. the
+             * level-intro "THE ADVENTURE BEGINS" text, and any sprite moby) sort vs
+             * terrain / Spyro / 3D mobys on the same scale. Without this they sit at
+             * half-depth — artificially near — and a billboard wrongly occludes
+             * actors that are actually in front of it (Spyro drew BEHIND the text). */
+            vz_scale = 2.0;
         } else {
             /* model->view = PM (camera ProjMatrix) composed with the full moby
              * euler rotation (block_80022CE4 PM start, then the same chain). */
