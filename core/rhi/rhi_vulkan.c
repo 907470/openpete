@@ -89,6 +89,8 @@ struct rhi_device {
     uint32_t image_index;  /* acquired swapchain image this frame */
     bool     needs_recreate;
     bool     frame_active;  /* between begin_frame and end_frame */
+    VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
+                            * or the bound render target) — for rhi_clear_depth */
 
     float clear[4];
 
@@ -921,6 +923,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
         .pClearValues = cv,
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->cur_extent = dev->sc_extent;   /* render area of this (offscreen) pass */
 
     /* Y-flipped viewport (Vulkan clip-space Y is down) so NDC/UV match the
      * GL/texture convention the ported PSX shaders assume. Dynamic so a
@@ -1358,6 +1361,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
         .clearValueCount = 2, .pClearValues = cv,
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->cur_extent = ext;   /* render area of this (render-target) pass */
     /* Y-flipped viewport, matching rhi_begin_offscreen. */
     VkViewport vp = { .x = 0.0f, .y = (float)rt->height,
                       .width = (float)rt->width, .height = -(float)rt->height,
@@ -1372,6 +1376,24 @@ void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
     if (!dev->frame_active || !rt || !rt->is_rt) return;
     vkCmdEndRenderPass(dev->cmd[dev->frame]);
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* rt_rp finalLayout */
+}
+
+/* Clear the depth attachment to far (1.0) WITHIN the current render pass — used
+ * to isolate a late depth-tested overlay (the 3D HUD icons) from world depth so
+ * it sorts internally yet always draws on top. vkCmdClearAttachments clears in
+ * the active subpass over the given rect (no new render pass). */
+void rhi_clear_depth(rhi_device *dev)
+{
+    if (!dev->frame_active) return;
+    VkClearAttachment att = {
+        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+        .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+    };
+    VkClearRect rect = {
+        .rect = { .offset = {0, 0}, .extent = dev->cur_extent },
+        .baseArrayLayer = 0, .layerCount = 1,
+    };
+    vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
 }
 
 static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)

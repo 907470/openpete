@@ -161,6 +161,11 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
 
+/* Clear the depth attachment to far WITHIN the current pass (offscreen or render
+ * target). Used to depth-isolate a late on-top overlay (3D HUD icons) so it
+ * Z-sorts internally without being occluded by, or occluding, world geometry. */
+void rhi_clear_depth(rhi_device *dev);
+
 /* Read a render target back into a host RGBA8 buffer (byte order R,G,B,A, alpha
  * forced opaque). The RT must be in SHADER_READ_ONLY (i.e. after
  * rhi_end_render_target + the frame that rendered it was submitted); the layout

@@ -476,7 +476,9 @@ static int build_walk_tris(CPUState* cpu) {
     memset(&s_walkdiag, 0, sizeof(s_walkdiag));
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
-        s_cur_ui = openpete_ui_moby_is_addr_ui(cpu->read_word(R->addr + 0x34));  /* HUD overlay tag */
+        { uint32_t mob = cpu->read_word(R->addr + 0x34);  /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
+          s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
+                   : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
         uint32_t bytecount = cpu->read_word(fb);
@@ -1075,12 +1077,15 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
-    /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top (HUD). Stamped
-     * per-tri from the walk's UI tag, so the icons (treasure/lives) aren't
-     * Z-occluded by nearer terrain. */
+    /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
+     * from the walk's UI tag (0=ACTOR, 1=HUD flat overlay, 2=HUD3D depth-sorted
+     * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
+     * range) go to HUD3D so their own faces Z-sort (depth-off paints them
+     * inside-out); the flat near-OT text/2D billboards stay HUD. */
     for (int i = 0; i < s_wtri_n; i++) {
-        openpete_native_scene_set_category(s_wtri_ui[i] ? OPENPETE_SCENE_HUD
-                                                        : OPENPETE_SCENE_ACTOR);
+        openpete_native_scene_set_category(s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
+                                          : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
+                                                              : OPENPETE_SCENE_ACTOR);
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
@@ -1543,7 +1548,10 @@ static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
  * native face-stream walk (build_shaded_walk_tris) can index each moby's verts
  * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
 typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
-                 uint32_t model, base, moby; int RT[3][3]; int near_ot; } shaded_rec;
+                 uint32_t model, base, moby; int RT[3][3]; int near_ot;
+                 int vzspread; } shaded_rec;   /* vzspread = model-space Z extent (max-min);
+                 * a large extent means a real 3D model that self-occludes → needs the HUD3D
+                 * depth pass, vs a thin text/decal overlay that renders fine depth-off. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
@@ -1620,10 +1628,12 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * p57!=0 -> x64/p57. Sign-preserving (near cull intact); depth-only. */
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
+        int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
         for (int i=0;i<count && n<cap;i++) {
             uint32_t p=vbase+(uint32_t)i*3u;
             uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
+            if (VZ<vzmin) vzmin=VZ; if (VZ>vzmax) vzmax=VZ;
             double sx,sy; int sat;
             /* TRUE per-vertex view-Z (project returns mac3). The old code threw this
              * away and stamped the moby-constant TR[2] on every vertex, collapsing
@@ -1641,6 +1651,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             shaded_rec* R = &s_shrecs[s_nshrecs++];
             R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
             R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
+            R->vzspread = (vzmax>vzmin) ? (vzmax-vzmin) : 0;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
         }
     }
@@ -1681,10 +1692,20 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     s_wtri_n = 0;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
-        /* HUD/overlay tag: explicit UI mobys (g_Hud range) OR the .s OT-bias
-         * near-OT billboards ("DEMO MODE" banner, level-intro text) — both must
-         * draw over the world instead of being depth-occluded by nearer terrain. */
-        s_cur_ui = openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot;
+        /* HUD/overlay tag (0=ACTOR, 1=HUD flat, 2=HUD3D depth-sorted). Two kinds of
+         * moby reach the HUD layer: the static g_Hud icons (gem/dragon/Spyro-head/
+         * key/digits) and the .s OT-bias near-OT billboards (level-intro/RESCUED
+         * text, "DEMO MODE", and 3D transition props like the "TREASURE FOUND"
+         * chest). The ones that are real 3D MODELS self-occlude and need their own
+         * Z-buffer (HUD3D, depth-isolated, on top) or they render inside-out; thin
+         * text/decal overlays (small model-space Z extent) are convex enough for
+         * painter's order and stay flat HUD (drawn UNDER the player — keeps the
+         * level-intro/RESCUED text behind Spyro). Static icons are always 3D → HUD3D;
+         * a near-OT/UI billboard is HUD3D only if its model Z-extent is large. */
+        int model_3d = (R->vzspread >= 96);   /* >~3× a text glyph's thickness */
+        s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
+                 : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
+                 : 0;
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
         /* Per-vertex gouraud lit colours from the inline normal stream
@@ -1813,6 +1834,15 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
         s_cur_mat = "SHD";
         build_shaded_walk_tris(cpu);            /* native topology (#2a) + native lighting (#2b) */
         push_scene_moby();                      /* reads zero .s prim output */
+        /* Flat HUD/text draws OVER the player by default; UNDER it only during the
+         * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
+         * revealed — that runs under GS_TitleScreen (13) (the title state machine
+         * drives the homeworld-entrance flyby). NOT GS_LevelTransition (1) — the
+         * "ENTERING <level>" portal transition has no Spyro-reveal, so text stays on
+         * top there like every other state (gameplay 0, RESCUED/Dragon 8, …).
+         * (g_Gamestate@0x800757D8.) Set after push (begin_frame, which resets the
+         * flag, has run); the moby renderer runs every 3D frame. */
+        openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
     }
 
     if (verify) {

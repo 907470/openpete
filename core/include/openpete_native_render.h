@@ -137,6 +137,14 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * flag). Untextured; alpha rides the vertex colour (128 = (B+F)/2, the PSX ABR mode 0
  * the 0x2A code selects). */
 #define OPENPETE_SCENE_HUD_PANEL 5
+/* HUD3D — the in-game 3D HUD icon mobys (g_Hud.m_Mobys: the spinning gem/treasure,
+ * dragon-head, Spyro-head/lives, key, and number digits). Unlike the flat 2D HUD
+ * layer, these are real 3D models, so they need a Z-buffer to sort their own faces
+ * (depth-test OFF makes them paint inside-out). Drawn LAST, on top of everything,
+ * after a mid-pass depth clear (rhi_clear_depth) so they sort internally yet are
+ * never occluded by world geometry. Only the static g_Hud range routes here
+ * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
+#define OPENPETE_SCENE_HUD3D 6
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
@@ -206,6 +214,15 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b);
  * scene_begin / begin_frame). Pass r<0 to clear explicitly. Determinism-safe
  * (display-only). */
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b);
+
+/* Flat 2D HUD/text draw order vs the player for this frame. Default (0) draws the
+ * flat HUD/text OVER the player (Spyro behind the HUD/text) — the normal case. Pass
+ * 1 ONLY during the GS_LevelTransition flyby ("THE ADVENTURE BEGINS"/"ENTERING
+ * <level>"), where Spyro flies in front of the text being revealed, so the flat HUD
+ * draws UNDER the player. The 3D HUD icons (HUD3D) and the letterbox/fade always draw
+ * on top regardless. Auto-clears each frame (reset by begin_frame); the feeder sets
+ * it from g_Gamestate every frame. Determinism-safe (display-only). */
+void openpete_native_scene_set_hud_under_player(int under);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */

@@ -63,3 +63,11 @@ int openpete_ui_moby_is_addr_ui(uint32_t a) {
 int openpete_ui_moby_is_current_ui(void) {
     return openpete_ui_moby_is_addr_ui(s_current);
 }
+
+/* STATIC range only (g_Hud.m_Mobys: the in-game gem/dragon/Spyro-head/key/digit
+ * icons) — these are real 3D models that need a Z-buffer (the HUD3D pass). The
+ * text range (func_80017FE4 letter mobys: RESCUED/CRASHED) is excluded — it's
+ * flat 2D and keeps the depth-off HUD behaviour (incl. "RESCUED under Spyro"). */
+int openpete_ui_moby_is_addr_static(uint32_t a) {
+    return a != 0 && a >= s_static_lo && a < s_static_hi;
+}

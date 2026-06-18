@@ -56,6 +56,12 @@ int  openpete_ui_moby_is_addr_ui(uint32_t addr);
  * UI range. Cheap two-comparison check on hot path. */
 int  openpete_ui_moby_is_current_ui(void);
 
+/* True iff `addr` falls in the STATIC HUD range only (g_Hud.m_Mobys: the in-game
+ * gem/dragon/Spyro-head/key/digit icons). These are real 3D models that need a
+ * Z-buffer (the native HUD3D depth-isolated pass); the per-frame text range is
+ * excluded (flat 2D, keeps the depth-off HUD behaviour). */
+int  openpete_ui_moby_is_addr_static(uint32_t addr);
+
 /* Read back the stashed moby pointer (for diagnostics). */
 uint32_t openpete_ui_moby_get_current(void);
 

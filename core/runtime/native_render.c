@@ -94,6 +94,7 @@ static int                s_scene_hist_n[SCENE_HIST];
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
+static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
@@ -126,7 +127,14 @@ static uint32_t s_scene_fade = 0;
  * desaturated + tinted as the backdrop instead of the world. */
 static uint32_t s_scene_freeze = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
+/* Flat-HUD-vs-player draw order for the current frame. 0 (default) = flat HUD/text
+ * drawn OVER the player (on top of everything); 1 = drawn UNDER the player, set only
+ * during GS_LevelTransition (the "THE ADVENTURE BEGINS"/"ENTERING <level>" flyby,
+ * where Spyro flies in front of the revealed text). Reset per frame; the feeder sets
+ * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
+static int s_scene_hud_under = 0;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -143,10 +151,11 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
+            s_scene_hist_hud_under[slot] = s_scene_hud_under;
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
-        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_frame = frame;
+        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
         s_scene_category = OPENPETE_SCENE_WORLD;
     }
 }
@@ -174,23 +183,27 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
     if (b < 0) b = 0; if (b > 255) b = 255;
     s_scene_freeze = (1u << 31) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
+void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
  * a reference-compare delay is set (A/B-synced with the lagged reference), else
  * the live accumulator (vk-only, runs ahead). Falls back to the live frame
  * during warmup before enough history has accumulated. */
 static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
-                                                   uint32_t* out_fade, uint32_t* out_freeze) {
+                                                   uint32_t* out_fade, uint32_t* out_freeze,
+                                                   int* out_hud_under) {
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
         *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot];
         *out_fade = s_scene_hist_fade[slot];
         if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
+        if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
         return s_scene_hist[slot];
     }
     *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
     if (out_freeze) *out_freeze = s_scene_freeze;
+    if (out_hud_under) *out_hud_under = s_scene_hud_under;
     return s_scene;
 }
 
@@ -903,10 +916,49 @@ static uint32_t bg_from_ref_corner(void)
  * draws into the whole render target (used when rendering into native_rtt for
  * the diff pass, where the target IS the frame). Returns true if anything was
  * drawn. */
+/* The flat 2D HUD layer (depth-test off): the menu dark panel (HUD_PANEL, alpha)
+ * first, then the textured HUD (2D backdrops), then the untextured HUD text/glyphs.
+ * Textured-before-untextured matches the PSX HUD-OT submission order (a 2D backdrop
+ * is linked before the text/icon glyphs — e.g. the flight results green backdrop
+ * UNDER the "CRASHED" text). Drawn either UNDER the player (gi==2, GS_LevelTransition
+ * flyby so Spyro flies in front of the revealed text) or, by default, OVER the player
+ * (after the whole scene) — see hud_under in draw_native_scene. The 3D HUD icons
+ * (HUD3D) are a separate depth-isolated pass drawn after this either way. */
+static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
+                                const int* ut_first, const int* ut_count, int n, int tx_start)
+{
+    if (s_nr.gouraud_hud_blend_pipe && ut_count[8] > 0) {           /* HUD_PANEL (alpha) */
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[8], (uint32_t)ut_first[8]);
+    }
+    if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
+        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        int off = tx_start;
+        for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+            if (!scene[t].textured) continue;
+            if (scene[t].category == OPENPETE_SCENE_HUD) {
+                const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                         scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
+                rhi_push_constants(s_nr.dev, &m, sizeof m);
+                rhi_draw(s_nr.dev, 3, (uint32_t)off);
+            }
+            off += 3;  /* advance for every textured tri (verts are contiguous) */
+        }
+    }
+    if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
+    }
+}
+
 static bool draw_native_scene(bool full_extent)
 {
-    int scene_n; uint32_t scene_bg, scene_fade, scene_freeze;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze);
+    int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
 
     /* Background colour = PsyCross's actual framebuffer clear (ref corner), so it
      * matches in every state/mode; fall back to the scene-fed colour only until a
@@ -974,14 +1026,16 @@ static bool draw_native_scene(bool full_extent)
     };
     /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
      * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
-     * under the HUD text). All depth-test off. */
-    int ut_first[9], ut_count[9];
+     * under the HUD text); 9 = HUD3D (in-game 3D icon mobys, DEPTH-TESTED on top
+     * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on. */
+    int ut_first[10], ut_count[10];
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
             if (scene[t].category == OPENPETE_SCENE_HUD ||
+                scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
@@ -1043,6 +1097,24 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[8] = n - ut_first[8];
+    /* HUD3D untextured: the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
+     * digits). DEPTH-TESTED (drawn with the opaque gouraud_pipe after a mid-pass
+     * depth clear) so their own faces Z-sort — depth-off paints them inside-out.
+     * Per-vertex z is the real view-Z depth (openpete_native_depth_from_viewz),
+     * same as actors. */
+    ut_first[9] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD3D || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[9] = n - ut_first[9];
     int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -1166,6 +1238,7 @@ static bool draw_native_scene(bool full_extent)
                 if (!scene[t].textured) continue;
                 int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
                 int match = scene[t].category != OPENPETE_SCENE_HUD &&  /* HUD -> overlay pass */
+                            scene[t].category != OPENPETE_SCENE_HUD3D && /* HUD3D -> depth pass */
                             (b == g->blend) &&
                             !(g->blend == 0 && g->gcat >= 0 && scene[t].category != g->gcat);
                 if (match) {
@@ -1177,45 +1250,32 @@ static bool draw_native_scene(bool full_extent)
                 off += 3;  /* advance for every textured tri (verts are contiguous) */
             }
         }
-        /* HUD/overlay layer, inserted between the ACTOR group (mobys, gi==2) and the
-         * PLAYER group (Spyro, gi==3): TEXTURED HUD first, then the UNTEXTURED batch.
-         * depth-test off (over world + mobys, under the player). Textured-before-
-         * untextured matches the PSX HUD submission order where a textured 2D
-         * BACKDROP is linked first and the text/icon glyphs after: e.g. the flight
-         * results screen draws the green grayscale-freeze backdrop (textured FT4 via
-         * func_800168DC) UNDER the "CRASHED"/objective text (untextured letter mobys
-         * via func_80022A2C). Drawing untextured first would let the opaque backdrop
-         * paint over the text. */
-        if (gi == 2) {
-            /* HUD_PANEL (alpha) FIRST — the dim menu dark panel sits UNDER the HUD
-             * text/icons (and over the world/freeze backdrop). */
-            if (s_nr.gouraud_hud_blend_pipe && ut_count[8] > 0) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[8], (uint32_t)ut_first[8]);
-            }
-            if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                int off = tx_start;
-                for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-                    if (!scene[t].textured) continue;
-                    if (scene[t].category == OPENPETE_SCENE_HUD) {
-                        const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                                 scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                        rhi_push_constants(s_nr.dev, &m, sizeof m);
-                        rhi_draw(s_nr.dev, 3, (uint32_t)off);
-                    }
-                    off += 3;  /* advance for every textured tri (verts are contiguous) */
-                }
-            }
-            if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
-            }
-        }
+        /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
+         * after the ACTOR group (gi==2) but BEFORE the PLAYER group (gi==3) — so the
+         * fly-in Spyro draws in front of the revealed "THE ADVENTURE BEGINS" text.
+         * In every other state the flat HUD draws OVER the player (after the loop). */
+        if (gi == 2 && hud_under)
+            draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, n, tx_start);
+    }
+
+    /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player
+     * (Spyro behind the HUD/text). Only the GS_LevelTransition flyby puts it under
+     * the player (handled at gi==2 above). */
+    if (!hud_under)
+        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, n, tx_start);
+
+    /* HUD3D layer — the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
+     * digits). They are real 3D models, so depth-off (the flat HUD layer) paints
+     * their own faces inside-out. Draw them LAST, on top of the whole scene, but
+     * with the depth buffer CLEARED first (rhi_clear_depth) so they Z-sort among
+     * their own faces (depth-test ON via the opaque gouraud_pipe) while never being
+     * occluded by world/actor/player geometry. Their vertex positions already match
+     * the .s to <1px; this only fixes their internal depth ordering. */
+    if (s_nr.gouraud_pipe && ut_count[9] > 0) {
+        rhi_clear_depth(s_nr.dev);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[9], (uint32_t)ut_first[9]);
     }
 
     /* OVERLAY layer (HUD-OT 2D flat quads — the cutscene letterbox bars): drawn
@@ -1261,7 +1321,7 @@ enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
 static bool compose_variant(int variant, bool have_ref)
 {
     int sn; uint32_t sbg, sfade, sfreeze;
-    const openpete_scene_tri* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze);
+    const openpete_scene_tri* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL);
     uint32_t bg = bg_from_ref_corner(); if (bg == 0) bg = sbg;
     bool want_scene = (sn > 0) || (s_isolation && bg != 0);
 
@@ -1413,7 +1473,7 @@ int openpete_native_render_screenshot_all(const char *base)
     /* Background = PsyCross's framebuffer clear (ref corner), matching the live
      * native render; clears the RTT so empty regions cancel against the ref. */
     int scene_n; uint32_t scene_bg, scene_fade;
-    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL);
+    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL);
     uint32_t bg = bg_from_ref_corner();
     if (bg == 0) bg = scene_bg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
