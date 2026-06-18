@@ -196,6 +196,25 @@ static int is_f4(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
 }
 
+/* Freeze-frame green-overlay backdrop FT4 (pause / inventory / flight results):
+ * func_8001A40C / the Flight5 overlay desaturate the frozen frame to grayscale and
+ * re-display it as 4 full-screen POLY_FT4 sampling a VRAM scratch copy, each with
+ * the green tint setRGB0(0x4C,0x80,0x40) and the grayscale CLUT at VRAM (512,224).
+ * That tint+CLUT pair is the unambiguous signature (the title logo is also 8bpp at
+ * tpage x=512 but white-tinted with its own CLUT). The native renderer reproduces
+ * the overlay from its OWN last world frame (set_freeze_backdrop) and skips feeding
+ * this FT4, so the green overlay shows the native render rather than PsyCross VRAM. */
+static int is_freeze_backdrop(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    if (((uint8_t)(w1 >> 24) & 0xFD) != 0x2C) return 0;   /* POLY_FT4 (0x2C/0x2E) */
+    if ((uint8_t)(w0 >> 24) < 9) return 0;                /* full FT4 tag */
+    if ((w1 & 0xFFFFFFu) != 0x40804Cu) return 0;          /* green freeze tint (B,G,R) */
+    uint32_t clut = (cpu->read_word(prim + 0x0C) >> 16) & 0xFFFFu;
+    int clx = (int)(clut & 0x3Fu) * 16, cly = (int)((clut >> 6) & 0x1FFu);
+    return clx == 512 && cly == 224;                      /* grayscale-CLUT location */
+}
+
 /* LINE_G2 (gouraud 2-point line, code 0x50) — the func_8001844C UI separator
  * lines. (The particle sel-1 streak LINE_G goes through the particle path, not
  * func_800168DC, so there's no overlap.) */
@@ -226,7 +245,18 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
                 feed_ft4(cpu, s_pending, cpu->read_word(s_pending + 4));
             s_pending = 0;
         }
-        if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
+        if (is_freeze_backdrop(cpu, prim)) {
+            /* Pause / inventory / flight-results green overlay: drive the native
+             * freeze backdrop from our own last world frame and DROP this FT4 (it
+             * samples PsyCross's VRAM scratch). Tint = the FT4's setRGB0 (B,G,R
+             * packed in w1) — r=lo byte, g=mid, b=hi. */
+            uint32_t w1 = cpu->read_word(prim + 4);
+            openpete_native_scene_begin_frame(openpete_frame);  /* idempotent within a frame */
+            openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
+                                                      (int)((w1 >> 8) & 0xFFu),
+                                                      (int)((w1 >> 16) & 0xFFu));
+        }
+        else if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
         else if (is_f4(cpu, prim)) feed_f4(cpu, prim, cpu->read_word(prim + 4));  /* letterbox bars (immediate; no mirror) */
         else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }

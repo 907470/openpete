@@ -184,6 +184,18 @@ void openpete_native_scene_set_bg(uint32_t rgba);
  * frame with no set_fade call shows no fade. Pass mode<0 to clear it explicitly.
  * Determinism-safe (display-only). */
 void openpete_native_scene_set_fade(int mode, int r, int g, int b);
+/* Freeze-frame green overlay (the pause / inventory / flight-results backdrop).
+ * The game freezes the rendered frame, desaturates it to grayscale and re-displays
+ * it green-tinted (setRGB0(0x4C,0x80,0x40)) via a full-screen POLY_FT4 that samples
+ * a VRAM scratch copy. The native renderer instead snapshots its OWN last world
+ * frame (frozen_tex) and draws it desaturated + tinted — so the green overlay shows
+ * the native HQ render and survives the end-state where PsyCross's VRAM is gone.
+ * The feeder detects the backdrop FT4 (its unique green tint + grayscale-CLUT
+ * signature), calls this with the FT4's r/g/b tint, and SKIPS feeding the FT4. Call
+ * every frame the backdrop is active; it auto-clears each frame (reset by
+ * scene_begin / begin_frame). Pass r<0 to clear explicitly. Determinism-safe
+ * (display-only). */
+void openpete_native_scene_set_freeze_backdrop(int r, int g, int b);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */

@@ -70,7 +70,7 @@ typedef struct {
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
 #define MAX_SCENE_TRIS 16384
-#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 12)  /* +6 bg-fill quad, +6 fade overlay quad */
+#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
@@ -93,6 +93,7 @@ static openpete_scene_tri s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed
 static int                s_scene_hist_n[SCENE_HIST];
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
+static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
@@ -119,7 +120,13 @@ static int s_scene_category = OPENPETE_SCENE_WORLD;
  * G in 8..15, B in 0..7). Reset every frame; the present draws it dead last. */
 static uint32_t s_scene_fade = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
+/* Freeze-frame green overlay for the current frame (pause / inventory / flight
+ * results). 0 = inactive; else bit31 = active, bits[23:0] = green tint rgb (the
+ * FT4's setRGB0). Reset every frame; when active the present draws frozen_tex
+ * desaturated + tinted as the backdrop instead of the world. */
+static uint32_t s_scene_freeze = 0;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -135,10 +142,11 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
             s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
             s_scene_hist_fade[slot] = s_scene_fade;
+            s_scene_hist_freeze[slot] = s_scene_freeze;
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
-        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_frame = frame;
+        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_frame = frame;
         s_scene_category = OPENPETE_SCENE_WORLD;
     }
 }
@@ -159,19 +167,44 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     s_scene_fade = (1u << 31) | ((uint32_t)(mode & 3) << 24)
                  | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
+void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
+    if (r < 0) { s_scene_freeze = 0; return; }
+    if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    s_scene_freeze = (1u << 31) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
  * a reference-compare delay is set (A/B-synced with the lagged reference), else
  * the live accumulator (vk-only, runs ahead). Falls back to the live frame
  * during warmup before enough history has accumulated. */
-static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg, uint32_t* out_fade) {
+static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
+                                                   uint32_t* out_fade, uint32_t* out_freeze) {
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
         *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot];
-        *out_fade = s_scene_hist_fade[slot]; return s_scene_hist[slot];
+        *out_fade = s_scene_hist_fade[slot];
+        if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
+        return s_scene_hist[slot];
     }
-    *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade; return s_scene;
+    *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
+    if (out_freeze) *out_freeze = s_scene_freeze;
+    return s_scene;
+}
+
+/* True if the presented scene holds any WORLD/ACTOR/PLAYER (non-UI) geometry —
+ * i.e. a real world frame worth snapshotting into frozen_tex. Menu/transition
+ * frames (only HUD/OVERLAY tris, or empty) return false, so the snapshot keeps
+ * the last gameplay frame to freeze. */
+static bool scene_has_world(const openpete_scene_tri* scene, int n) {
+    for (int t = 0; t < n; t++) {
+        int c = scene[t].category;
+        if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR || c == OPENPETE_SCENE_PLAYER)
+            return true;
+    }
+    return false;
 }
 
 /* Single native renderer instance (one window per process). */
@@ -241,6 +274,19 @@ static struct {
     rhi_texture  *native_rtt;
     int           rtt_w, rtt_h;
     rhi_buffer   *diff_quad_vb;
+
+    /* Freeze-frame green overlay (pause / inventory / flight-results backdrop).
+     * native_rtt is the canonical native frame each present; frozen_tex snapshots
+     * the last WORLD frame's native render (copied from native_rtt on non-menu
+     * frames). When the game's freeze backdrop is active, the scene draws
+     * frozen_tex desaturated + green-tinted (freeze_overlay_pipe) instead of the
+     * FT4 that samples PsyCross's VRAM scratch — so the green overlay shows OUR
+     * render and survives the end-state where PsyCross's VRAM is gone. */
+    rhi_texture  *frozen_tex;
+    int           frozen_w, frozen_h;
+    bool          frozen_valid;       /* a world frame has been captured */
+    rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
+    rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -546,6 +592,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .uses_vram2 = true, .push_const_size = 0,
     };
+    /* Freeze-frame overlay pipeline (pause / inventory / flight-results backdrop):
+     * samples frozen_tex (set 0) — the last world frame's native render — and
+     * outputs it desaturated + green-tinted (freeze_overlay.frag; tint = vertex
+     * colour). No depth (it's the menu backdrop), no blend (opaque, like the PSX
+     * grayscale-freeze FT4 it replaces). */
+    rhi_pipeline_desc freeze_overlay_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "freeze_overlay.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
@@ -559,15 +616,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
     rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
+    rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !diff_pipe || !diff_quad_vb) {
+        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !fs_quad_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
+        if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
+        if (fs_quad_vb)    rhi_destroy_buffer(dev, fs_quad_vb);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (diff_quad_vb)  rhi_destroy_buffer(dev, diff_quad_vb);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
@@ -611,8 +672,18 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
     s_nr.diff_quad_vb = diff_quad_vb;
+    s_nr.freeze_overlay_pipe = freeze_overlay_pipe;
+    s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
+
+    /* Static full-target quad (clip -1..1, UV 0..1 top-down) for render-target
+     * copies — currently the native_rtt -> frozen_tex freeze-snapshot blit. */
+    {
+        rhi_vertex fsq[6];
+        build_panel(fsq, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+        rhi_update_buffer(fs_quad_vb, fsq, sizeof(fsq));
+    }
     OPL_INFO_F("native", "Vulkan %s window up (%dx%d, device='%s'); PsyCross hidden",
                ab_mode ? "A/B" : diff_mode ? "diff" : "vk",
                w, h, rhi_device_name(dev));
@@ -688,25 +759,28 @@ static bool sync_reference_texture(void)
     return true;
 }
 
-/* (Re)create native_rtt at the reference resolution — the diff pass renders the
- * native scene into it at the same size as ref_tex so the per-pixel compare is
- * fair. No-op until the reference size is known; recreates on change. Must run
+/* (Re)create native_rtt (the canonical native frame each present) AND frozen_tex
+ * (the freeze-backdrop snapshot) at the reference resolution. native_rtt is the
+ * frame the diff pass compares and the live vk/ab panel blits from; frozen_tex
+ * holds the last world frame for the pause/inventory/flight green overlay. No-op
+ * until the reference size is known; recreates both on size change. Must run
  * OUTSIDE a frame (creates GPU resources / waits idle). `want` gates allocation:
- * the live path passes diff_mode; the screenshot-all path passes true so the
- * -diff.png variant has an RTT even when launched in vk/ab mode. */
+ * always true once the native path is live (the canonical-frame model needs the
+ * RTTs in every mode); the screenshot-all path also passes true. */
 static void ensure_native_rtt(bool want)
 {
     if (!want || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
     if (s_nr.native_rtt && s_nr.rtt_w == s_nr.ref_w && s_nr.rtt_h == s_nr.ref_h) return;
-    if (s_nr.native_rtt) {
-        rhi_wait_idle(s_nr.dev);
-        rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
-        s_nr.native_rtt = NULL;
-    }
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.native_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.native_rtt); s_nr.native_rtt = NULL; }
+    if (s_nr.frozen_tex) { rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex); s_nr.frozen_tex = NULL; }
+    s_nr.frozen_valid = false;
     s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
+    s_nr.frozen_tex = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
     s_nr.rtt_w = s_nr.ref_w; s_nr.rtt_h = s_nr.ref_h;
+    s_nr.frozen_w = s_nr.ref_w; s_nr.frozen_h = s_nr.ref_h;
     if (s_nr.native_rtt)
-        OPL_INFO_F("native", "diff render target %dx%d", s_nr.ref_w, s_nr.ref_h);
+        OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
 }
 
 /* Rebuild the panel row (VRAM | reference), each aspect-fit into its cell, so
@@ -816,8 +890,8 @@ static uint32_t bg_from_ref_corner(void)
  * drawn. */
 static bool draw_native_scene(bool full_extent)
 {
-    int scene_n; uint32_t scene_bg, scene_fade;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade);
+    int scene_n; uint32_t scene_bg, scene_fade, scene_freeze;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze);
 
     /* Background colour = PsyCross's actual framebuffer clear (ref corner), so it
      * matches in every state/mode; fall back to the scene-fed colour only until a
@@ -978,6 +1052,32 @@ static bool draw_native_scene(bool full_extent)
         n += 6;
     }
 
+    /* Freeze-frame green overlay backdrop (pause / inventory / flight results):
+     * a full-panel quad sampling frozen_tex (the last world frame's native render),
+     * desaturated + green-tinted by freeze_overlay_pipe. The tint rides the vertex
+     * colour (the game's setRGB0 0x4C,0x80,0x40). UV 0..1 (top-down, like the RT).
+     * Drawn FIRST (the backdrop) so the menu UI composites on top. Only when a
+     * world frame has been captured; else fall through (clear/bg shows). */
+    int freeze_first = -1;
+    if ((scene_freeze & (1u << 31)) && s_nr.frozen_valid && s_nr.freeze_overlay_pipe
+        && n + 6 <= SCENE_VB_VERTS) {
+        uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
+        uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
+        uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | 0xFF000000u;  /* byte order R,G,B,A */
+        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
+        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
+        float t = full_extent ?  1.0f : s_nr.p0_hy;
+        float b = full_extent ? -1.0f : -s_nr.p0_hy;
+        const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0 };
+        const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0 };
+        const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0 };
+        const rhi_vertex bl = { l, b, 1.0f, 0.0f, 1.0f, trgba, 0 };
+        freeze_first = n;
+        buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
+        buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
+        n += 6;
+    }
+
     rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
@@ -990,6 +1090,17 @@ static bool draw_native_scene(bool full_extent)
         int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
+    }
+
+    /* Freeze backdrop FIRST (behind world/UI): the frozen native frame sampled
+     * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
+     * a freeze frame the world groups are empty (the game stops rendering the
+     * world), so this fills the screen and the menu UI composites over it. */
+    if (freeze_first >= 0 && s_nr.frozen_tex) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.frozen_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
     }
 
     /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
@@ -1109,62 +1220,69 @@ enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
  * --render-stats. Shared by the live render path and the screenshot-all dump. */
 static bool compose_variant(int variant, bool have_ref)
 {
-    /* Diff: render the native scene into native_rtt (reference resolution, full
-     * extent), then a fullscreen diff pass writes |native - ref| into the
-     * offscreen. Falls through to the plain native path until the reference /
-     * RTT are ready or the scene is empty. */
-    if (variant == NRV_DIFF && s_nr.native_rtt && have_ref) {
-        int dn; uint32_t dbg, dfade;
-        (void)scene_present_buf(&dn, &dbg, &dfade);
-        if (dn > 0) {
-            /* Clear native_rtt to the scene's background colour (the same colour
-             * the cyclorama module sets, which PsyCross also clears to) so the
-             * background cancels in |native - ref| — the diff/stats then measure
-             * the path, not the framebuffer-clear. draw_native_scene also paints
-             * a bg quad in this colour; the clear just covers any gap. */
-            float br  = (float)((dbg >>  0) & 0xFF) / 255.0f;
-            float bgc = (float)((dbg >>  8) & 0xFF) / 255.0f;
-            float bb  = (float)((dbg >> 16) & 0xFF) / 255.0f;
-            rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
-            draw_native_scene(true);
-            rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+    int sn; uint32_t sbg, sfade, sfreeze;
+    const openpete_scene_tri* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze);
+    uint32_t bg = bg_from_ref_corner(); if (bg == 0) bg = sbg;
+    bool want_scene = (sn > 0) || (s_isolation && bg != 0);
 
-            rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
-            rhi_bind_pipeline(s_nr.dev, s_nr.diff_pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.native_rtt);  /* set 0 = native */
-            rhi_bind_vram2(s_nr.dev, s_nr.ref_tex);    /* set 1 = reference */
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.diff_quad_vb);
+    /* native_rtt is the OFF-DISPLAY reference-resolution render: the diff pass
+     * compares it, and the freeze-backdrop snapshot copies it. The LIVE vk/ab panel
+     * does NOT blit from it — it draws the scene DIRECTLY into the window-sized
+     * offscreen below, so the native display keeps its FULL window resolution
+     * (rendering into the ref-sized native_rtt and upscaling would soften textures
+     * and drop fine UI). So native_rtt is rendered only when actually consumed:
+     * every frame in diff mode, and on WORLD frames in vk/ab to refresh the freeze
+     * snapshot (skip menu/freeze frames so the snapshot is the gameplay frame to
+     * freeze, never the menu drawn over it). */
+    bool world_frame = want_scene && !(sfreeze & (1u << 31)) && scene_has_world(scene, sn);
+    bool rtt_drew = false;
+    if (s_nr.native_rtt && want_scene && (variant == NRV_DIFF || world_frame)) {
+        float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
+        float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
+        float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
+        rtt_drew = draw_native_scene(true);
+        rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+
+        if (rtt_drew && world_frame && s_nr.frozen_tex) {
+            rhi_begin_render_target(s_nr.dev, s_nr.frozen_tex, 0.0f, 0.0f, 0.0f, 1.0f);
+            rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.native_rtt);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
             rhi_draw(s_nr.dev, 6, 0);
-            rhi_end_offscreen(s_nr.dev);
-            return true;
+            rhi_end_render_target(s_nr.dev, s_nr.frozen_tex);
+            s_nr.frozen_valid = true;
         }
-        /* scene empty — fall through to plain native (diff has nothing to show) */
     }
 
-    rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    /* Diff: |native_rtt - reference| into the offscreen (panel-0 rect). */
+    if (variant == NRV_DIFF && rtt_drew && have_ref) {
+        rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_bind_pipeline(s_nr.dev, s_nr.diff_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.native_rtt);  /* set 0 = native */
+        rhi_bind_vram2(s_nr.dev, s_nr.ref_tex);    /* set 1 = reference */
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.diff_quad_vb);
+        rhi_draw(s_nr.dev, 6, 0);
+        rhi_end_offscreen(s_nr.dev);
+        return true;
+    }
 
-    /* Panel 0 — native render of the PSX display region, decoded 16bpp from
-     * the VRAM mirror at the DISPENV disp origin (whole VRAM until the game
-     * sets DISPENV). The tpage matches the UVs baked into the layout. */
+    /* vk / ab (and the diff fallback on an empty scene): draw the scene DIRECTLY
+     * into the window-sized offscreen at full resolution (the original display path,
+     * unchanged by the freeze work). The freeze overlay — drawn inside
+     * draw_native_scene sampling frozen_tex — composes here too on menu frames. An
+     * empty scene falls back to re-displaying the PSX VRAM framebuffer (loading
+     * screens / transitions / pre-scene bootstrap). */
+    rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
-        /* tpage = the CURRENT front-buffer origin (flips per frame via the
-         * double buffer), plus the top overscan band dy so the sampled rows are
-         * the visible clip. The panel UVs are baked by size; only the origin
-         * moves per frame. */
+        /* tpage = the CURRENT front-buffer origin (flips per frame via the double
+         * buffer) + the top overscan band so the sampled rows are the visible clip. */
         int tx = 0, ty = 0;
         if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
-            /* Overscan band, centered: clip.y − disp.y is unreliable here (at
-             * present time disp is the FRONT buffer while clip was last set for
-             * the BACK buffer — different double-buffer pages). The bands are
-             * symmetric (8px top+bottom on Spyro's 240→224), so derive the top
-             * band from the sizes instead. */
             int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
             tx = s_nr.disp_x;
             ty = s_nr.disp_y + dy;
         }
-        /* Panel 0 — the native 3D render (Phase 2: cyclorama from gamestate)
-         * when the game pushed a scene; otherwise fall back to re-displaying
-         * the PSX framebuffer region from the VRAM mirror (pre-Phase-2). */
         if (!draw_native_scene(false)) {
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
             rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
@@ -1207,7 +1325,7 @@ void openpete_native_render_frame(void)
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
     update_layout();
-    ensure_native_rtt(s_nr.diff_mode);
+    ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
@@ -1255,7 +1373,7 @@ int openpete_native_render_screenshot_all(const char *base)
     /* Background = PsyCross's framebuffer clear (ref corner), matching the live
      * native render; clears the RTT so empty regions cancel against the ref. */
     int scene_n; uint32_t scene_bg, scene_fade;
-    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade);
+    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL);
     uint32_t bg = bg_from_ref_corner();
     if (bg == 0) bg = scene_bg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
@@ -1352,10 +1470,13 @@ void openpete_native_render_shutdown(void)
     rhi_wait_idle(s_nr.dev);
     if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
+    if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
+    if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
     if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
