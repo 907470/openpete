@@ -514,8 +514,6 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
         { mL, C,  BL, mB },                    /* SQ2: bottom-left quadrant→ entry 2 */
         { C,  mR, mB, BR },                    /* SQ3: bottom-right        → entry 3 */
     };
-    static int hqdbg = -1;
-    if (hqdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_HQDBG"); hqdbg = (e && *e && *e != '0'); }
     for (int i = 0; i < 4; i++) {
         tmat mat; float u[4], v[4]; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
         /* sub-quad i uses HQ Tiledef entry (i+1), NOT i: the .s simple-emit loop
@@ -525,10 +523,6 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
          * the 2×2). Reading entries 0..3 shifted every sub-tile by one → "4 textures
          * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
         decode_tiledef(cpu, hqBase + (uint32_t)(i + 1) * 8u, abe, &mat, u, v);
-        if (hqdbg) {   /* debug: paint HQ sub-quads untextured magenta to localize */
-            mat.textured = 0; mat.blend = 0;
-            q[i][0].rgb=q[i][1].rgb=q[i][2].rgb=q[i][3].rgb=0x00FF00FFu;
-        }
         emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
 }
@@ -750,7 +744,8 @@ static void terrain_build(CPUState* cpu) {
                  * 1=force LQ everywhere (disables near pass), 2=force HQ (debug). */
                 int tb = (int)(int8_t)(w2 & 0xFF);
                 uint32_t tbl = (texTblMode==2) ? hqTable : lqTable;
-                terrain_texmat(cpu, tbl, tb, 0, &mat, tu, tv);
+                static int s_hidet=-2; if(s_hidet==-2){const char* e=getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet=e?atoi(e):-1;}
+                terrain_texmat(cpu, tbl, tb, s_hidet>=0?s_hidet:0, &mat, tu, tv);
                 if (mat.textured) s_tex_faces++;
             } else {                            /* LP: 6-bit indices in word0 */
                 i0 = (int)((w0 >> 23) & 0x1F8) >> 3; i1 = (int)((w0 >> 17) & 0x1F8) >> 3;
@@ -765,17 +760,15 @@ static void terrain_build(CPUState* cpu) {
             int quad = (i2 != i3);
             s_dbg_faces++;
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
-             * word3 & 0x2). front = nclip > 0. The .s NCLIP-culls back-faces BEFORE
-             * the near classifier, so only front cells defer; we don't cull for
-             * drawing (Z-buffer hides back-faces), but DO gate the near dispatch on
-             * it (else near back-faces the .s dropped get wrongly subdivided). */
+             * word3 & 0x2). front = nclip > 0. */
             double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
+            int front = (nclip > 0.0);
             /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
              * boundary that separates the .s's deferred cells (queue oracle) from
              * the rest, to calibrate face_is_near's scale/threshold. */
-            if (faceStride == 16 && s_caldbg && nclip > 0.0) {  /* front-facing only */
+            if (faceStride == 16 && s_caldbg && front) {  /* front-facing only */
                 double rs = sv[i0].m3+sv[i1].m3+sv[i2].m3+sv[i3].m3;
                 double rmn = sv[i0].m3; if(sv[i1].m3<rmn)rmn=sv[i1].m3;
                 if(sv[i2].m3<rmn)rmn=sv[i2].m3; if(sv[i3].m3<rmn)rmn=sv[i3].m3;
@@ -794,7 +787,7 @@ static void terrain_build(CPUState* cpu) {
              * subdivides. Corner→vertex: TL=i0,TR=i1,BL=i3,BR=i2 (the .s grid order).
              * Near colours are the raw HP near-colour array (no DPCS fog on near
              * cells — func_800276A0 reads s5[idx] directly). */
-            int near = (faceStride == 16 && s_nearhq && hqTable && nclip > 0.0 &&
+            int near = (faceStride == 16 && s_nearhq && hqTable && front &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
                 near = (faceStride == 16 && s_nearhq && hqTable && is_deferred(faces + (uint32_t)f*16u));
@@ -814,11 +807,9 @@ static void terrain_build(CPUState* cpu) {
                 s_dbg_spike++;   /* near/HQ cells subdivided */
                 continue;
             }
-            /* No behind-drop: emit_tri near-plane-CLIPS faces that straddle the
-             * camera (and drops fully-behind ones), so near terrain renders
-             * instead of being discarded. NCLIP back-face cull is off by default
-             * (Z-buffer hides backfaces); nclip computed above. */
-            if (s_cull && nclip <= 0.0) { s_dbg_nclip++; continue; }
+            /* NCLIP back-face cull (off by default — the Z-buffer hides back-faces;
+             * OPENPETE_TERRAIN_CULL=1 enables). front = nclip > 0, computed above. */
+            if (s_cull && !front) { s_dbg_nclip++; continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
@@ -826,8 +817,13 @@ static void terrain_build(CPUState* cpu) {
             uint32_t rc1 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
             uint32_t rc2 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
             uint32_t rc3 = quad ? terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
-            /* UV per vertex (the .s slot reorder): i0→TL, i1→TR, i3→BL, and i2→BR
-             * for a quad / BL for a tri (the GT3 3rd corner is slot2=BL). */
+            /* UV corners. decode_tiledef gives tu/tv[0..3] = [TL,TR,BL,BR]. A QUAD
+             * (GT4) uses them directly via the .s slot reorder (i0→TL, i1→TR,
+             * i3→BL, i2→BR). A TRIANGLE (GT3) carries a 2-bit UV ORIENTATION in
+             * bits 8-9 of the texture word (w2): the .s GT3 emit (func_800258F0
+             * .L80027534 — `t4 & 0x300`) selects one of 4 corner rotations. Native
+             * applied only orientation 0, leaving rotated tiles 90°/180°-wrong (the
+             * Artisans bridge-junction "flap" — a tile-9 GT3 with orientation 2). */
             lcorner k0 = { rc0, tu[0], tv[0] };                  /* i0 = TL */
             lcorner k1 = { rc1, tu[1], tv[1] };                  /* i1 = TR */
             lcorner k3 = { rc3, tu[2], tv[2] };                  /* i3 = BL */
@@ -840,7 +836,16 @@ static void terrain_build(CPUState* cpu) {
                 emit_tri(sv, i0, i1, i3, k0, k1, k3, &mat);
                 emit_tri(sv, i1, i3, i2, k1, k3, k2, &mat);
             } else {
-                emit_tri(sv, i0, i1, i2, k0, k1, k2, &mat);
+                /* GT3 UV orientation: corner indices into [TL,TR,BL,BR]=[0,1,2,3]
+                 * for slots (i0,i1,i2). rot 0 = {TL,TR,BL} (the .s .L80027588),
+                 * 1 = {TR,BR,TL}, 2 = {BR,BL,TR}, 3 = {BL,TL,BR} (.L800275A4/C4/DC). */
+                static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
+                int rot = (faceStride == 16) ? (int)((hqW2 >> 8) & 3u) : 0;
+                const int* tcn = triRot[rot];
+                lcorner t0 = { rc0, tu[tcn[0]], tv[tcn[0]] };
+                lcorner t1 = { rc1, tu[tcn[1]], tv[tcn[1]] };
+                lcorner t2 = { rc2, tu[tcn[2]], tv[tcn[2]] };
+                emit_tri(sv, i0, i1, i2, t0, t1, t2, &mat);
             }
         }
     }
@@ -869,7 +874,7 @@ static void terrain_feed_native(void) {
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:
-             * the gouraud colour. s_flat = the debug coverage colour. */
+             * the gouraud colour; s_flat = a debug coverage colour. */
             tri.v[k].rgba = s_flat ? 0xFF20C040u : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
         openpete_native_scene_add_tri(&tri);
@@ -1021,11 +1026,12 @@ static void terrain_compare(void) {
             /* Only print TIGHT matches (d<2.5px, trustworthy spatial pairing) that
              * actually DISAGREE — those are real per-tile decode divergences, not
              * NN noise from grabbing an adjacent checkerboard tile. */
-            if (bd < 2.5f && (!tp_ok || !cl_ok) && shown < want) { shown++;
+            int printall = getenv("OPENPETE_TERRAIN_UVALL") != NULL;
+            if (((printall && bd < 6.0f) || (bd < 2.5f && (!tp_ok || !cl_ok))) && shown < want) { shown++;
                 fprintf(stderr,
-                  "[uvdbg] c=(%.0f,%.0f) d=%.1f | NAT tp=(%d,%d) bpp=%d cl=(%d,%d) uv=[(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)]\n"
+                  "[uvdbg] c=(%.0f,%.0f) d=%.1f %s%s | NAT tp=(%d,%d) bpp=%d cl=(%d,%d) uv=[(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)]\n"
                   "                          | PSX tp=(%d,%d) bpp=%d cl=(%d,%d) uv=",
-                  ncx, ncy, bd, t->tpx, t->tpy, t->bpp, t->clx, t->cly,
+                  ncx, ncy, bd, tp_ok?"":"TP! ", cl_ok?"":"CL! ", t->tpx, t->tpy, t->bpp, t->clx, t->cly,
                   t->u[0],t->v[0],t->u[1],t->v[1],t->u[2],t->v[2],
                   gtpx, gtpy, gbpp, gclx, gcly);
                 for (int k=0;k<g->nv;k++) fprintf(stderr,"(%d,%d)",g->u[k],g->v[k]);
@@ -1056,6 +1062,75 @@ static void terrain_compare(void) {
             tight, tdis, tight?100.0*tdis/tight:0.0);
       }
     }
+
+    /* Point probe (OPENPETE_TERRAIN_POINT="x,y;x,y;..."): for each screen point,
+     * find the FRONTMOST native tri and the FRONTMOST .s prim covering it
+     * (point-in-poly + nearest vz), print both tiles — exact, no NN looseness. */
+    { const char* pe = getenv("OPENPETE_TERRAIN_POINT");
+      if (pe && *pe) {
+        const char* p = pe;
+        while (*p) {
+            float px, py; if (sscanf(p, "%f,%f", &px, &py) != 2) break;
+            /* frontmost native tri (min vz) whose screen tri contains (px,py) */
+            int bi=-1; double bvz=1e18;
+            for (int i=0;i<s_tri_n;i++){ ttri* t=&s_tri[i];
+                float ax=t->sx[0],ay=t->sy[0],bx=t->sx[1],by=t->sy[1],cx=t->sx[2],cy=t->sy[2];
+                float d1=(px-bx)*(ay-by)-(ax-bx)*(py-by);
+                float d2=(px-cx)*(by-cy)-(bx-cx)*(py-cy);
+                float d3=(px-ax)*(cy-ay)-(cx-ax)*(py-ay);
+                int neg=(d1<0)||(d2<0)||(d3<0), pos=(d1>0)||(d2>0)||(d3>0);
+                if(neg&&pos) continue;                       /* not inside */
+                double vz=(t->vz[0]+t->vz[1]+t->vz[2])/3.0;
+                if(vz<bvz){bvz=vz;bi=i;} }
+            /* ALL .s prims covering the point (draw order; last = painter winner) */
+            int gj=-1;
+            fprintf(stderr,"          (%.0f,%.0f) PSX covering prims (draw order):\n",px,py);
+            for (int q=0;q<s_gte_n;q++){ prim_t* g=&s_gte[q];
+                int inside=0;
+                int tris[2][3]={{0,1,2},{0,2,3}}; int nt=(g->nv==4)?2:1;
+                for(int tt=0;tt<nt&&!inside;tt++){ int*ix=tris[tt];
+                    float ax=g->x[ix[0]],ay=g->y[ix[0]],bx=g->x[ix[1]],by=g->y[ix[1]],cx=g->x[ix[2]],cy=g->y[ix[2]];
+                    float d1=(px-bx)*(ay-by)-(ax-bx)*(py-by);
+                    float d2=(px-cx)*(by-cy)-(bx-cx)*(py-cy);
+                    float d3=(px-ax)*(cy-ay)-(cx-ax)*(py-ay);
+                    int neg=(d1<0)||(d2<0)||(d3<0), pos=(d1>0)||(d2>0)||(d3>0);
+                    if(!(neg&&pos)) inside=1; }
+                if(inside){ int gtpx=(g->tpage&0xF)*64, gtpy=((g->tpage>>4)&1)*256;
+                    int gclx=(g->clut&0x3F)*16, gcly=(g->clut>>6)&0x1FF;
+                    fprintf(stderr,"      prim#%d tp=(%d,%d) cl=(%d,%d) nv=%d xy=",q,gtpx,gtpy,gclx,gcly,g->nv);
+                    for(int k=0;k<g->nv;k++) fprintf(stderr,"(%.0f,%.0f)",g->x[k],g->y[k]);
+                    fprintf(stderr," uv=");
+                    for(int k=0;k<g->nv;k++) fprintf(stderr,"(%d,%d)",g->u[k],g->v[k]);
+                    fprintf(stderr,"\n"); gj=q; } }
+            /* list ALL native tris covering the point (depth order) */
+            fprintf(stderr,"[point] (%.0f,%.0f) NAT covering tris:\n",px,py);
+            for (int i=0;i<s_tri_n;i++){ ttri* t=&s_tri[i];
+                float ax=t->sx[0],ay=t->sy[0],bx=t->sx[1],by=t->sy[1],cx=t->sx[2],cy=t->sy[2];
+                float d1=(px-bx)*(ay-by)-(ax-bx)*(py-by);
+                float d2=(px-cx)*(by-cy)-(bx-cx)*(py-cy);
+                float d3=(px-ax)*(cy-ay)-(cx-ax)*(py-ay);
+                int neg=(d1<0)||(d2<0)||(d3<0), pos=(d1>0)||(d2>0)||(d3>0);
+                if(neg&&pos) continue;
+                double vz=(t->vz[0]+t->vz[1]+t->vz[2])/3.0;
+                fprintf(stderr,"    tri#%d tp=(%d,%d) cl=(%d,%d) vz=%.0f xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) uv=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)\n",
+                    i,t->tpx,t->tpy,t->clx,t->cly,vz,
+                    t->sx[0],t->sy[0],t->sx[1],t->sy[1],t->sx[2],t->sy[2],
+                    t->u[0],t->v[0],t->u[1],t->v[1],t->u[2],t->v[2]); }
+            (void)bi;(void)bvz;
+            if(gj>=0){ prim_t* g=&s_gte[gj];
+                int gtpx=(g->tpage&0xF)*64, gtpy=((g->tpage>>4)&1)*256;
+                int gclx=(g->clut&0x3F)*16, gcly=(g->clut>>6)&0x1FF;
+                int gm=(g->tpage>>7)&3, gbpp=(gm==0)?4:(gm==1)?8:16;
+                fprintf(stderr,"          (%.0f,%.0f) PSX prim#%d tex=%d tp=(%d,%d) bpp=%d cl=(%d,%d) raw tpage=%04X clut=%04X uv=",
+                    px,py,gj,g->textured,gtpx,gtpy,gbpp,gclx,gcly,g->tpage,g->clut);
+                for(int k=0;k<g->nv;k++) fprintf(stderr,"(%d,%d)",g->u[k],g->v[k]);
+                fprintf(stderr,"\n");
+            } else fprintf(stderr,"          (%.0f,%.0f) PSX none\n",px,py);
+            const char* sc=strchr(p,';'); if(!sc) break; p=sc+1;
+        }
+      }
+    }
+
 }
 
 /* ---- gating --------------------------------------------------------------- */
