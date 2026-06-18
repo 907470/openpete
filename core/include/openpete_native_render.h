@@ -155,6 +155,19 @@ void openpete_native_scene_set_category(int category);
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).
  * Reset to 0 by openpete_native_scene_begin. */
 void openpete_native_scene_set_bg(uint32_t rgba);
+/* Full-screen fade overlay (the game's func_800190D4): every transition the game
+ * darkens/brightens the WHOLE frame with one semi-transparent full-screen POLY_F4
+ * whose ABR mode is the fade direction — mode 2 (B-F, subtractive) fades to BLACK,
+ * mode 1 (B+F, additive) fades to WHITE. The native renderer reproduces it as a
+ * full-panel quad drawn DEAD LAST — over the world, actors, HUD and 2D UI — in the
+ * matching blend mode with the depth test passing everywhere (z=near), so it tints
+ * the whole composited frame exactly as the PSX F4 does. `mode` is the PSX ABR mode
+ * (0 = (B+F)/2 alpha, 1 = add, 2 = subtract; 3 is unused by the game). r/g/b are
+ * the fade colour 0..255. Call it every frame the fade is active; the overlay
+ * auto-clears each frame (reset by openpete_native_scene_begin / begin_frame), so a
+ * frame with no set_fade call shows no fade. Pass mode<0 to clear it explicitly.
+ * Determinism-safe (display-only). */
+void openpete_native_scene_set_fade(int mode, int r, int g, int b);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */

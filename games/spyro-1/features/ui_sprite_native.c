@@ -31,6 +31,7 @@
 #include <string.h>
 
 extern void     func_800168DC(CPUState* cpu);   /* the real OT-insert helper */
+extern void     func_800190D4(CPUState* cpu);    /* the full-screen fade emitter */
 extern unsigned openpete_frame;
 
 /* ---- gating -------------------------------------------------------------- */
@@ -148,8 +149,34 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/* ---- full-screen fade overlay (func_800190D4) ----------------------------
+ * Every transition the game tints the WHOLE frame via func_800190D4(mode, r, g, b):
+ * one semi-transparent full-screen POLY_F4 whose ABR mode is the fade direction —
+ * mode 2 (B-F) fades to black, mode 1 (B+F) fades to white. PsyCross renders this
+ * F4 incorrectly (a half-screen diagonal triangle), so there is no usable A/B
+ * ground truth; we drive the native overlay straight from the function arguments
+ * instead, which is also far cleaner than reconstructing the fade from the F4 prim
+ * + its preceding DR_MODE (which carries the ABR bits). The native renderer draws a
+ * full-panel quad last in the matching blend (openpete_native_scene_set_fade). The
+ * fade auto-clears each frame, so we just set it whenever func_800190D4 runs.
+ * Determinism-safe: the real func_800190D4 still runs (the OT/F4 are built for the
+ * PsyCross reference unchanged); we only READ its arguments. */
+static int on_800190D4(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (!openpete_native_render_enabled()) return 0;   /* inert: normal dispatch runs it */
+    static int s_in = 0;
+    if (s_in) return 0;                                /* re-entry from our own call -> real body */
+    s_in = 1;
+    openpete_native_scene_begin_frame(openpete_frame); /* idempotent within a frame */
+    openpete_native_scene_set_fade((int)cpu->a0, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3);
+    func_800190D4(cpu);                                /* run the real fade emit (ref unchanged) */
+    s_in = 0;
+    return 1;
+}
+
 static const feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0x800168DCu, on_800168DC },
+    { 0x800190D4u, on_800190D4 },
     { 0u, NULL },
 };
 

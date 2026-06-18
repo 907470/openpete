@@ -70,7 +70,7 @@ typedef struct {
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
 #define MAX_SCENE_TRIS 16384
-#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 6)  /* +6 = the bg-fill quad */
+#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 12)  /* +6 bg-fill quad, +6 fade overlay quad */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
@@ -92,6 +92,7 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
 static openpete_scene_tri s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
 static int                s_scene_hist_n[SCENE_HIST];
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
+static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
@@ -113,7 +114,12 @@ static int scene_delay_depth(void) {
  * Reset to WORLD per frame so a non-actor feeder never inherits a stale ACTOR. */
 static int s_scene_category = OPENPETE_SCENE_WORLD;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
+/* Full-screen fade overlay for the current frame (func_800190D4). 0 = none; else
+ * bit31 = active, bits[25:24] = PSX ABR mode (0..3), bits[23:0] = rgb (R in 16..23,
+ * G in 8..15, B in 0..7). Reset every frame; the present draws it dead last. */
+static uint32_t s_scene_fade = 0;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -128,10 +134,11 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
             s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+            s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
-        s_scene_n = 0; s_scene_bg = 0; s_scene_frame = frame;
+        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_frame = frame;
         s_scene_category = OPENPETE_SCENE_WORLD;
     }
 }
@@ -144,18 +151,27 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
 }
 void openpete_native_scene_set_category(int category) { s_scene_category = category; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
+    if (mode < 0) { s_scene_fade = 0; return; }
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    s_scene_fade = (1u << 31) | ((uint32_t)(mode & 3) << 24)
+                 | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
  * a reference-compare delay is set (A/B-synced with the lagged reference), else
  * the live accumulator (vk-only, runs ahead). Falls back to the live frame
  * during warmup before enough history has accumulated. */
-static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg) {
+static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg, uint32_t* out_fade) {
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
-        *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot]; return s_scene_hist[slot];
+        *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot];
+        *out_fade = s_scene_hist_fade[slot]; return s_scene_hist[slot];
     }
-    *out_n = s_scene_n; *out_bg = s_scene_bg; return s_scene;
+    *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade; return s_scene;
 }
 
 /* Single native renderer instance (one window per process). */
@@ -800,8 +816,8 @@ static uint32_t bg_from_ref_corner(void)
  * drawn. */
 static bool draw_native_scene(bool full_extent)
 {
-    int scene_n; uint32_t scene_bg;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg);
+    int scene_n; uint32_t scene_bg, scene_fade;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade);
 
     /* Background colour = PsyCross's actual framebuffer clear (ref corner), so it
      * matches in every state/mode; fall back to the scene-fed colour only until a
@@ -909,6 +925,35 @@ static bool draw_native_scene(bool full_extent)
         }
         n += 3;
     }
+
+    /* Full-screen fade overlay (func_800190D4): a single full-panel quad at the
+     * near plane (z=0 passes LESS_OR_EQUAL against everything), drawn dead last so
+     * it tints the WHOLE composited frame — world, actors, HUD and 2D UI — exactly
+     * as the PSX's semi-transparent full-screen POLY_F4 does. The vertex colour is
+     * the fade colour; the blend mode (set below) reproduces the PSX ABR. */
+    int fade_first = -1, fade_mode = -1;
+    if ((scene_fade & (1u << 31)) && n + 6 <= SCENE_VB_VERTS) {
+        fade_mode  = (int)((scene_fade >> 24) & 3u);
+        int fr = (int)((scene_fade >> 16) & 0xFFu);
+        int fg = (int)((scene_fade >> 8) & 0xFFu);
+        int fb = (int)(scene_fade & 0xFFu);
+        /* mode 0 = (B+F)/2 -> alpha 128; add/subtract ignore alpha. */
+        uint32_t fa = (fade_mode == 0) ? 0x80u : 0xFFu;
+        uint32_t frgba = (uint32_t)fr | ((uint32_t)fg << 8) | ((uint32_t)fb << 16) | (fa << 24);
+        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
+        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
+        float t = full_extent ?  1.0f : s_nr.p0_hy;
+        float b = full_extent ? -1.0f : -s_nr.p0_hy;
+        const rhi_vertex tl = { l, t, 0.0f, 0, 0, frgba, 0 };
+        const rhi_vertex tr = { r, t, 0.0f, 0, 0, frgba, 0 };
+        const rhi_vertex br = { r, b, 0.0f, 0, 0, frgba, 0 };
+        const rhi_vertex bl = { l, b, 0.0f, 0, 0, frgba, 0 };
+        fade_first = n;
+        buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
+        buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
+        n += 6;
+    }
+
     rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
@@ -990,6 +1035,21 @@ static bool draw_native_scene(bool full_extent)
         }
     }
 
+    /* Draw the full-screen fade overlay last (over every layer above), in the PSX
+     * ABR blend: mode 2 (B-F) subtract -> fade to black; mode 1 (B+F) add -> fade to
+     * white; mode 0 ((B+F)/2) -> alpha. These pipes are depth_write_off + the quad
+     * is at z=0, so it tests-passes against the whole frame and writes no depth. */
+    if (fade_first >= 0) {
+        rhi_pipeline* fp = (fade_mode == 2) ? s_nr.gouraud_sub_pipe
+                         : (fade_mode == 0) ? s_nr.gouraud_blend_pipe
+                                            : s_nr.gouraud_add_pipe;  /* 1 (and 3) -> additive */
+        if (fp) {
+            rhi_bind_pipeline(s_nr.dev, fp);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
+        }
+    }
+
     if (!full_extent) rhi_reset_scissor(s_nr.dev);
     s_render_full_extent = 0;
     return true;
@@ -1012,8 +1072,8 @@ static bool compose_variant(int variant, bool have_ref)
      * offscreen. Falls through to the plain native path until the reference /
      * RTT are ready or the scene is empty. */
     if (variant == NRV_DIFF && s_nr.native_rtt && have_ref) {
-        int dn; uint32_t dbg;
-        (void)scene_present_buf(&dn, &dbg);
+        int dn; uint32_t dbg, dfade;
+        (void)scene_present_buf(&dn, &dbg, &dfade);
         if (dn > 0) {
             /* Clear native_rtt to the scene's background colour (the same colour
              * the cyclorama module sets, which PsyCross also clears to) so the
@@ -1152,8 +1212,8 @@ int openpete_native_render_screenshot_all(const char *base)
 
     /* Background = PsyCross's framebuffer clear (ref corner), matching the live
      * native render; clears the RTT so empty regions cancel against the ref. */
-    int scene_n; uint32_t scene_bg;
-    (void)scene_present_buf(&scene_n, &scene_bg);
+    int scene_n; uint32_t scene_bg, scene_fade;
+    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade);
     uint32_t bg = bg_from_ref_corner();
     if (bg == 0) bg = scene_bg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
