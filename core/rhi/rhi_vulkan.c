@@ -1453,6 +1453,61 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     return true;
 }
 
+bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
+                            size_t out_bytes, int *out_w, int *out_h)
+{
+    if (!rt || !rt->is_rt) return false;
+    int w = (int)rt->width, h = (int)rt->height;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    size_t need = (size_t)w * (size_t)h * 4u;
+    if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
+
+    /* The RT is left in SHADER_READ_ONLY by rhi_end_render_target. Wait for the
+     * frame that rendered it, transition to TRANSFER_SRC, copy to a host buffer,
+     * then restore SHADER_READ_ONLY so it stays sampleable / safe to destroy. */
+    vkDeviceWaitIdle(dev->device);
+    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!rb) return false;
+
+    VkCommandBuffer cb = one_shot_begin(dev);
+    image_barrier(cb, rt->image,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, rt->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           rb->buffer, 1, &region);
+    image_barrier(cb, rt->image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    one_shot_end(dev, cb);
+    rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    /* Same B8G8R8A8 -> R,G,B,A swizzle + opaque alpha as rhi_read_offscreen. */
+    const uint8_t *src = (const uint8_t *)rb->mapped;
+    uint8_t *dst = (uint8_t *)out;
+    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
+        dst[i*4+0] = swap_rb ? c2 : c0;
+        dst[i*4+1] = c1;
+        dst[i*4+2] = swap_rb ? c0 : c2;
+        dst[i*4+3] = 0xFF;
+    }
+    rhi_destroy_buffer(dev, rb);
+    return true;
+}
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 {
     if (!tex) return;

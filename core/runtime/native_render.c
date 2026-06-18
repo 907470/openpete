@@ -31,6 +31,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>   /* snprintf */
 #include <stdlib.h>
 #include <string.h>
 
@@ -502,7 +503,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
-     * depth, no blend. Built only in diff mode. */
+     * depth, no blend. Built unconditionally so --screenshot-on-frame can dump
+     * a -diff.png regardless of the live --renderer mode. */
     rhi_pipeline_desc diff_desc = {
         .vert_spv = "psx_sample.vert.spv",
         .frag_spv = "diff.frag.spv",
@@ -519,14 +521,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
-    rhi_pipeline *diff_pipe = diff_mode ? rhi_create_pipeline(dev, &diff_desc) : NULL;
+    rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
-    rhi_buffer   *diff_quad_vb = diff_mode ? rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6) : NULL;
+    rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        (diff_mode && (!diff_pipe || !diff_quad_vb))) {
+        !diff_pipe || !diff_quad_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
@@ -645,13 +647,15 @@ static bool sync_reference_texture(void)
     return true;
 }
 
-/* (Re)create native_rtt at the reference resolution (diff mode only) — the diff
- * renders the native scene into it at the same size as ref_tex so the per-pixel
- * compare is fair. No-op until the reference size is known; recreates on change.
- * Must run OUTSIDE a frame (creates GPU resources / waits idle). */
-static void ensure_native_rtt(void)
+/* (Re)create native_rtt at the reference resolution — the diff pass renders the
+ * native scene into it at the same size as ref_tex so the per-pixel compare is
+ * fair. No-op until the reference size is known; recreates on change. Must run
+ * OUTSIDE a frame (creates GPU resources / waits idle). `want` gates allocation:
+ * the live path passes diff_mode; the screenshot-all path passes true so the
+ * -diff.png variant has an RTT even when launched in vk/ab mode. */
+static void ensure_native_rtt(bool want)
 {
-    if (!s_nr.diff_mode || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
+    if (!want || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
     if (s_nr.native_rtt && s_nr.rtt_w == s_nr.ref_w && s_nr.rtt_h == s_nr.ref_h) return;
     if (s_nr.native_rtt) {
         rhi_wait_idle(s_nr.dev);
@@ -717,7 +721,7 @@ static void update_layout(void)
     /* Diff mode: the diff pass draws one quad over panel 0's rect, sampling
      * native_rtt (set 0) + ref_tex (set 1) with 0..1 UVs (top-down; diff.frag
      * V-flips the GL-bottom-up reference). */
-    if (s_nr.diff_mode && s_nr.diff_quad_vb) {
+    if (s_nr.diff_quad_vb) {
         rhi_vertex dq[6] = {0};
         build_panel(dq, s_nr.p0_cx, 0.0f, s_nr.p0_hx, s_nr.p0_hy, 0.0f, 0.0f, 1.0f, 1.0f);
         rhi_update_buffer(s_nr.diff_quad_vb, dq, sizeof(dq));
@@ -916,36 +920,23 @@ static bool draw_native_scene(bool full_extent)
     return true;
 }
 
-void openpete_native_render_frame(void)
+/* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all
+ * three (see openpete_native_render_screenshot_all). */
+enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
+
+/* Compose one variant into the open frame's offscreen, ready for the caller to
+ * rhi_blit_to_swapchain + rhi_end_frame. Assumes rhi_begin_frame succeeded, the
+ * layout matches the variant's panel count (1 for vk/diff, 2 for ab), and — for
+ * NRV_DIFF — native_rtt is allocated. Returns true iff the diff pass actually
+ * ran (scene non-empty + reference present), so the caller can fold per-frame
+ * --render-stats. Shared by the live render path and the screenshot-all dump. */
+static bool compose_variant(int variant, bool have_ref)
 {
-    if (!s_nr.enabled)
-        return;
-
-    /* Detect window-size changes WITHOUT polling SDL events (the host loop
-     * owns the event queue, and stealing events would starve PsyCross input). */
-    int pw = 0, ph = 0;
-    if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
-        (pw != s_nr.win_w || ph != s_nr.win_h)) {
-        s_nr.win_w = pw;
-        s_nr.win_h = ph;
-        rhi_notify_resize(s_nr.dev);
-    }
-
-    /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
-     * their own one-shot GPU submits, kept clear of our render pass. */
-    sync_vram_texture();
-    bool have_ref = sync_reference_texture();
-    update_layout();
-    ensure_native_rtt();
-
-    if (!rhi_begin_frame(s_nr.dev))
-        return; /* swapchain recreating or window minimized — skip this present */
-
-    /* Diff mode: render the native scene into native_rtt (reference resolution,
-     * full extent), then a fullscreen diff pass writes |native - ref| into the
-     * offscreen. Falls back to the normal native-into-offscreen path below until
-     * the reference / RTT are ready or the scene is empty. */
-    if (s_nr.diff_mode && s_nr.native_rtt && have_ref) {
+    /* Diff: render the native scene into native_rtt (reference resolution, full
+     * extent), then a fullscreen diff pass writes |native - ref| into the
+     * offscreen. Falls through to the plain native path until the reference /
+     * RTT are ready or the scene is empty. */
+    if (variant == NRV_DIFF && s_nr.native_rtt && have_ref) {
         int dn; uint32_t dbg;
         (void)scene_present_buf(&dn, &dbg);
         if (dn > 0) {
@@ -968,13 +959,9 @@ void openpete_native_render_frame(void)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.diff_quad_vb);
             rhi_draw(s_nr.dev, 6, 0);
             rhi_end_offscreen(s_nr.dev);
-
-            rhi_blit_to_swapchain(s_nr.dev);
-            rhi_end_frame(s_nr.dev);
-
-            if (s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
-            return;
+            return true;
         }
+        /* scene empty — fall through to plain native (diff has nothing to show) */
     }
 
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1010,8 +997,8 @@ void openpete_native_render_frame(void)
             rhi_draw(s_nr.dev, 6, 0);
         }
 
-        /* Panel 1 — reference (A/B compare mode only; vk-only shows panel 0). */
-        if (s_nr.ab_mode && have_ref) {
+        /* Panel 1 — reference (A/B compare only; vk/diff are single panels). */
+        if (variant == NRV_AB && have_ref) {
             rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.ref_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
@@ -1020,8 +1007,149 @@ void openpete_native_render_frame(void)
     }
 
     rhi_end_offscreen(s_nr.dev);
+    return false;
+}
+
+void openpete_native_render_frame(void)
+{
+    if (!s_nr.enabled)
+        return;
+
+    /* Detect window-size changes WITHOUT polling SDL events (the host loop
+     * owns the event queue, and stealing events would starve PsyCross input). */
+    int pw = 0, ph = 0;
+    if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
+        (pw != s_nr.win_w || ph != s_nr.win_h)) {
+        s_nr.win_w = pw;
+        s_nr.win_h = ph;
+        rhi_notify_resize(s_nr.dev);
+    }
+
+    /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
+     * their own one-shot GPU submits, kept clear of our render pass. */
+    sync_vram_texture();
+    bool have_ref = sync_reference_texture();
+    update_layout();
+    ensure_native_rtt(s_nr.diff_mode);
+
+    if (!rhi_begin_frame(s_nr.dev))
+        return; /* swapchain recreating or window minimized — skip this present */
+
+    int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
+    bool did_diff = compose_variant(variant, have_ref);
+
     rhi_blit_to_swapchain(s_nr.dev);
     rhi_end_frame(s_nr.dev);
+
+    if (did_diff && s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
+}
+
+/* Insert a suffix before the extension: ("shot-42.png","-vk") -> "shot-42-vk.png". */
+static void path_with_suffix(const char *base, const char *suffix,
+                             char *out, size_t cap)
+{
+    const char *dot = strrchr(base, '.');
+    if (dot) snprintf(out, cap, "%.*s%s%s", (int)(dot - base), base, suffix, dot);
+    else     snprintf(out, cap, "%s%s", base, suffix);
+}
+
+int openpete_native_render_screenshot_all(const char *base)
+{
+    if (!s_nr.enabled || !base) return 1;
+
+    /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
+    sync_vram_texture();
+    bool have_ref = sync_reference_texture();
+    ensure_native_rtt(true);
+    if (!have_ref || !s_nr.native_rtt || !s_nr.readback ||
+        s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
+        return 1;
+
+    /* Compose every variant at the REFERENCE resolution rather than the window
+     * size, so the images are the true content size with no window letterbox:
+     *   -vk   = native scene           (W x H)
+     *   -diff = |native - reference|   (W x H)
+     *   -ab   = native | reference     (2W x H)
+     * The native scene is rendered full-extent into the ref-sized RTT and read
+     * straight back; the reference comes from the PsyCross readback. */
+    const int W = s_nr.ref_w, H = s_nr.ref_h;
+    const size_t frame_px = (size_t)W * (size_t)H;
+
+    /* Background = PsyCross's framebuffer clear (ref corner), matching the live
+     * native render; clears the RTT so empty regions cancel against the ref. */
+    int scene_n; uint32_t scene_bg;
+    (void)scene_present_buf(&scene_n, &scene_bg);
+    uint32_t bg = bg_from_ref_corner();
+    if (bg == 0) bg = scene_bg;
+    const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
+    const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
+    const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+
+    /* Render the native scene into the ref-sized RTT (full extent, no panels).
+     * The offscreen + present are kept valid with a plain bg clear so the window
+     * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
+    if (!rhi_begin_frame(s_nr.dev)) return 1;
+    rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
+    draw_native_scene(true);
+    rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+    rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
+    rhi_end_offscreen(s_nr.dev);
+    rhi_blit_to_swapchain(s_nr.dev);
+    rhi_end_frame(s_nr.dev);
+
+    unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
+    unsigned char *ref = malloc(frame_px * 4);          /* reference, top-down  */
+    unsigned char *ab  = malloc(frame_px * 4 * 2);      /* native | reference   */
+    unsigned char *dif = malloc(frame_px * 4);          /* |native - reference| */
+    if (!nat || !ref || !ab || !dif) {
+        free(nat); free(ref); free(ab); free(dif);
+        return 1;
+    }
+
+    int nw = 0, nh = 0;
+    if (!rhi_read_render_target(s_nr.dev, s_nr.native_rtt, nat, frame_px * 4, &nw, &nh)) {
+        free(nat); free(ref); free(ab); free(dif);
+        return 1;
+    }
+    /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
+    for (int y = 0; y < H; y++)
+        memcpy(&ref[(size_t)y * W * 4],
+               &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
+    /* Empty native scene (load/transition frames): mirror the reference so -vk
+     * shows the framebuffer and -diff reads ~zero instead of a flat clear. */
+    if (scene_n <= 0) memcpy(nat, ref, frame_px * 4);
+
+    /* -ab: native on the left, reference on the right (2W wide). */
+    for (int y = 0; y < H; y++) {
+        memcpy(&ab[(size_t)y * (2 * W) * 4],         &nat[(size_t)y * W * 4], (size_t)W * 4);
+        memcpy(&ab[((size_t)y * (2 * W) + W) * 4],   &ref[(size_t)y * W * 4], (size_t)W * 4);
+    }
+    /* -diff: per-channel absolute difference, opaque. */
+    for (size_t i = 0; i < frame_px; i++) {
+        for (int c = 0; c < 3; c++) {
+            int d = (int)nat[i * 4 + c] - (int)ref[i * 4 + c];
+            dif[i * 4 + c] = (unsigned char)(d < 0 ? -d : d);
+        }
+        dif[i * 4 + 3] = 0xFF;
+    }
+
+    int rc = 0;
+    char path[1100];
+    path_with_suffix(base, "-vk", path, sizeof(path));
+    if (openpete_write_png_rgba(path, nat, W, H) == 0)
+        OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
+    else rc = 1;
+    path_with_suffix(base, "-ab", path, sizeof(path));
+    if (openpete_write_png_rgba(path, ab, 2 * W, H) == 0)
+        OPL_INFO_F("native", "ab screenshot %dx%d -> %s", 2 * W, H, path);
+    else rc = 1;
+    path_with_suffix(base, "-diff", path, sizeof(path));
+    if (openpete_write_png_rgba(path, dif, W, H) == 0)
+        OPL_INFO_F("native", "diff screenshot %dx%d -> %s", W, H, path);
+    else rc = 1;
+
+    free(nat); free(ref); free(ab); free(dif);
+    return rc;
 }
 
 int openpete_native_render_screenshot(const char *path)

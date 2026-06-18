@@ -163,6 +163,15 @@ void openpete_native_render_frame(void);
  * Returns 0 on success, nonzero if disabled or on failure. */
 int openpete_native_render_screenshot(const char *path);
 
+/* Dump every native renderer variant for one --screenshot-on-frame target,
+ * regardless of the live --renderer mode: re-renders the scene as vk (single
+ * panel), A/B (native|reference), and diff (|native - ref|), writing each to
+ * `base` with "-vk"/"-ab"/"-diff" inserted before the extension. The PsyCross
+ * reference ("-og") is captured separately by the caller. Restores the live
+ * layout afterwards. Returns 0 if all variants were written, nonzero otherwise
+ * (including when the native path is disabled). */
+int openpete_native_render_screenshot_all(const char *base);
+
 /* Tear down the device + window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 

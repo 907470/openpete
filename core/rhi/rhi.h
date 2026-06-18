@@ -161,6 +161,16 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
 
+/* Read a render target back into a host RGBA8 buffer (byte order R,G,B,A, alpha
+ * forced opaque). The RT must be in SHADER_READ_ONLY (i.e. after
+ * rhi_end_render_target + the frame that rendered it was submitted); the layout
+ * is restored on return. `out` must hold >= width*height*4 bytes; the RT's
+ * extent is written back. Returns false on failure. Blocks the GPU. Used by the
+ * screenshot dump to capture the native scene at the reference resolution (no
+ * window letterbox) regardless of window size. */
+bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
+                            size_t out_bytes, int *out_w, int *out_h);
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */

@@ -1470,11 +1470,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 if (s_shot_fired[si]) continue;
                 if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
                 s_shot_fired[si] = true;
-                char path[1024];
+                char base[1024], path[1100];
                 openpete_screenshot_format_path(opts->screenshot_output,
                                                 opts->screenshot_frames[si],
                                                 /*present=*/0,
-                                                path, sizeof(path));
+                                                base, sizeof(base));
+                /* PsyCross reference render -> "<base>-og.png" so it sits
+                 * alongside the native -vk/-ab/-diff variants dumped below. */
+                const char *odot = strrchr(base, '.');
+                if (odot) snprintf(path, sizeof(path), "%.*s-og%s",
+                                   (int)(odot - base), base, odot);
+                else      snprintf(path, sizeof(path), "%s-og", base);
                 openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",
                            "wrote %s on frame %u (target=%d)",
@@ -1508,24 +1514,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * reference). No-op unless --renderer vk|ab|diff. */
             openpete_native_render_frame();
 
-            /* Native screenshot: capture the just-rendered Vulkan window to
-             * "<out>-ab.png" on the same --screenshot-on-frame targets, so the
-             * native view can be inspected like the PsyCross one. */
+            /* Native screenshots: on the same --screenshot-on-frame targets,
+             * dump every native variant — "<out>-vk.png", "<out>-ab.png",
+             * "<out>-diff.png" — regardless of the live --renderer mode, so the
+             * native views sit beside the PsyCross "<out>-og.png" above. */
             if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
                 static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {
                     if (s_ab_shot[si]) continue;
                     if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
                     s_ab_shot[si] = true;
-                    char base[1024], path[1100];
+                    char base[1024];
                     openpete_screenshot_format_path(opts->screenshot_output,
                                                     opts->screenshot_frames[si],
                                                     0, base, sizeof(base));
-                    const char* dot = strrchr(base, '.');
-                    if (dot) snprintf(path, sizeof(path), "%.*s-ab%s",
-                                      (int)(dot - base), base, dot);
-                    else     snprintf(path, sizeof(path), "%s-ab", base);
-                    openpete_native_render_screenshot(path);
+                    openpete_native_render_screenshot_all(base);
                 }
             }
 

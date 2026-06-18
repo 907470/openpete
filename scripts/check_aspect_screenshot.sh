@@ -137,8 +137,11 @@ run_one() {
     [[ "$label" != "4:3" ]] && aspect_arg="$label"
     local win_w; win_w="$(window_w_for "$label")"
     local out_png="$OUT_DIR/shot-$label-${FRAME}.png"
+    # --screenshot-on-frame writes the PsyCross render with an "-og" suffix
+    # before the extension (native modes add -vk/-ab/-diff alongside).
+    local shot_file="${out_png%.png}-og.png"
     local log="$OUT_DIR/log-$label.txt"
-    rm -f "$out_png"
+    rm -f "$out_png" "$shot_file"
     local args=(--headless --disc "$DISC" --run-recomp 0x80012204
                 --frame-limit "$((FRAME + 5))"
                 --window "${win_w}x720"
@@ -148,9 +151,9 @@ run_one() {
     [[ -n "$aspect_arg" ]] && args+=(--aspect "$aspect_arg")
     "$BIN" "${args[@]}" > "$log" 2>&1
     local rc=$?
-    [[ $rc -eq 0 && -f "$out_png" ]] || {
+    [[ $rc -eq 0 && -f "$shot_file" ]] || {
         echo "FAIL: $label run exited $rc (see $log)" >&2; return 1; }
-    echo "$out_png"
+    echo "$shot_file"
 }
 
 echo "[shot-cmp] frame=$FRAME baseline=$BASELINE thresh=$DIFF_THRESHOLD"
