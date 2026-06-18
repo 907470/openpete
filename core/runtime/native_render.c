@@ -241,6 +241,7 @@ static struct {
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows */
     rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
+    rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
     rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
@@ -576,6 +577,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = false, .push_const_size = 0,
     };
+    /* HUD panel pipeline: untextured alpha gouraud, depth-test OFF — the dim
+     * semi-transparent dark panel behind the pause/inventory menu text (a 0x2A F4,
+     * ABR mode 0 = (B+F)/2). Like gouraud_hud_pipe but alpha-blended; the vertex
+     * alpha (128) gives (B+F)/2. Drawn at the start of the HUD layer so the text
+     * reads on top. quad.frag emits the full vertex rgba incl. alpha. */
+    rhi_pipeline_desc gouraud_hud_blend_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
     rhi_pipeline_desc scene_tex_hud_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene.frag.spv",
@@ -614,6 +626,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
+    rhi_pipeline *gouraud_hud_blend_pipe = rhi_create_pipeline(dev, &gouraud_hud_blend_desc);
     rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
@@ -623,10 +636,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !fs_quad_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
+        if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
         if (fs_quad_vb)    rhi_destroy_buffer(dev, fs_quad_vb);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
@@ -667,6 +681,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
+    s_nr.gouraud_hud_blend_pipe = gouraud_hud_blend_pipe;
     s_nr.scene_tex_hud_pipe = scene_tex_hud_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
@@ -958,14 +973,16 @@ static bool draw_native_scene(bool full_extent)
         { 2, -1,                    s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
     };
     /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
-     * letterbox / HUD-OT 2D flat quads, over everything). Both depth-test off. */
-    int ut_first[8], ut_count[8];
+     * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
+     * under the HUD text). All depth-test off. */
+    int ut_first[9], ut_count[9];
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
-            if (scene[t].category == OPENPETE_SCENE_HUD) continue;  /* HUD -> overlay pass */
+            if (scene[t].category == OPENPETE_SCENE_HUD ||
+                scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
@@ -1010,6 +1027,22 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[7] = n - ut_first[7];
+    /* HUD_PANEL untextured: the semi-transparent menu dark panel, drawn alpha-blended
+     * at the START of the HUD layer (before the HUD text/icons) so the text reads on
+     * top. Submission order; depth-test off. */
+    ut_first[8] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[8] = n - ut_first[8];
     int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -1154,6 +1187,13 @@ static bool draw_native_scene(bool full_extent)
          * via func_80022A2C). Drawing untextured first would let the opaque backdrop
          * paint over the text. */
         if (gi == 2) {
+            /* HUD_PANEL (alpha) FIRST — the dim menu dark panel sits UNDER the HUD
+             * text/icons (and over the world/freeze backdrop). */
+            if (s_nr.gouraud_hud_blend_pipe && ut_count[8] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[8], (uint32_t)ut_first[8]);
+            }
             if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {
                 rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -1479,6 +1519,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+    if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
     if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);

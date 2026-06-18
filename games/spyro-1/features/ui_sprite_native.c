@@ -99,29 +99,33 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
-/* Feed one screen-space opaque POLY_F4 (untextured flat quad) into the native
- * OVERLAY layer — drawn over EVERYTHING (incl. the player), matching the PSX HUD
- * OT this prim lives in. The consumer is the cutscene letterbox (func_80018F30):
- * two full-width black bars at the screen top/bottom. Layout: word[1]=code|rgb,
- * [2]=xy0,[3]=xy1,[4]=xy2,[5]=xy3 (NO interleaved UV — F4 packs the 4 XY words
- * consecutively, unlike FT4). XY: x=lo16,y=hi16 signed. Corners TL,TR,BL,BR. */
-static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1) {
+/* Feed one screen-space untextured POLY_F4 (flat quad) into a native HUD-OT layer.
+ * Two consumers:
+ *   - the cutscene letterbox (func_80018F30): two full-width OPAQUE black bars
+ *     (code 0x28) -> OPENPETE_SCENE_OVERLAY (dead last, over everything), alpha 0xFF;
+ *   - the pause/inventory menu dark panel (func_8001A40C): a SEMI-TRANSPARENT quad
+ *     (code 0x2A, setRGB0(64,64,64)) -> OPENPETE_SCENE_HUD_PANEL (under the menu
+ *     text, over the world/backdrop), alpha 0x80 = ABR mode 0 (B+F)/2.
+ * Layout: word[1]=code|rgb, [2]=xy0,[3]=xy1,[4]=xy2,[5]=xy3 (NO interleaved UV — F4
+ * packs the 4 XY words consecutively, unlike FT4). XY: x=lo16,y=hi16 signed. Corners
+ * TL,TR,BL,BR. `category`/`alpha`/`blend` select the layer + transparency. */
+static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend) {
     int sx[4], sy[4];
     uint32_t xyw[4];
     xyw[0]=cpu->read_word(p+0x08); xyw[1]=cpu->read_word(p+0x0C);
     xyw[2]=cpu->read_word(p+0x10); xyw[3]=cpu->read_word(p+0x14);
     for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16); }
-    uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
+    uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
-    openpete_native_scene_set_category(OPENPETE_SCENE_OVERLAY);
+    openpete_native_scene_set_category(category);
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
         for (int j=0;j<3;j++){ int c=idx[t][j];
             tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
             tri.v[j].z=0.0f; tri.v[j].rgba=rgba; }
-        tri.textured=0; tri.blend=0;
+        tri.textured=0; tri.blend=blend;
         openpete_native_scene_add_tri(&tri);
     }
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
@@ -178,6 +182,9 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
  * serves (title/menu re-emit identical 2D every frame). */
 static uint32_t s_pending = 0;        /* prim awaiting its (post-link) mirror swap */
 static unsigned s_pending_frame = 0;  /* openpete_frame the pending prim was recorded */
+static int      s_in_fade = 0;        /* set across func_800190D4's real-func call so the
+                                       * on_800168DC hook can tell the fade's 0x2A F4 from a
+                                       * menu dark panel's 0x2A F4 (both go via func_800168DC) */
 
 static int is_ft4(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
@@ -186,13 +193,22 @@ static int is_ft4(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 9;              /* tag length >= 9 (full FT4) */
 }
 
-/* Opaque POLY_F4 only (0x28) — the letterbox bars. The semi-transparent F4 (0x2A)
- * is the full-screen fade, driven by the func_800190D4 hook, so it's excluded here
- * to avoid double-handling. */
-static int is_f4(CPUState* cpu, uint32_t prim) {
+/* Opaque POLY_F4 (0x28) — the cutscene letterbox bars. */
+static int is_f4_opaque(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
     return (uint8_t)(w1 >> 24) == 0x28            /* POLY_F4 opaque */
+        && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
+}
+
+/* Semi-transparent POLY_F4 (0x2A) — the pause/inventory menu dark panel. Same code
+ * as the full-screen fade, BUT the fade is emitted from func_800190D4 (the feeder
+ * excludes it via s_in_fade, set across that hook's real-func call). So a 0x2A F4
+ * seen with s_in_fade clear is a menu panel; with it set, it's the fade (handled). */
+static int is_f4_semitrans(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return (uint8_t)(w1 >> 24) == 0x2A            /* POLY_F4 semi-transparent */
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
 }
 
@@ -257,7 +273,10 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
                                                       (int)((w1 >> 16) & 0xFFu));
         }
         else if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
-        else if (is_f4(cpu, prim)) feed_f4(cpu, prim, cpu->read_word(prim + 4));  /* letterbox bars (immediate; no mirror) */
+        else if (is_f4_opaque(cpu, prim))                                       /* letterbox bars: OVERLAY, opaque */
+            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_OVERLAY, 0xFFu, 0);
+        else if (is_f4_semitrans(cpu, prim) && !s_in_fade)                      /* menu dark panel: under text, (B+F)/2 */
+            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_HUD_PANEL, 0x80u, 1);
         else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }
 
@@ -286,7 +305,12 @@ static int on_800190D4(CPUState* cpu, uint32_t addr) {
     s_in = 1;
     openpete_native_scene_begin_frame(openpete_frame); /* idempotent within a frame */
     openpete_native_scene_set_fade((int)cpu->a0, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3);
+    /* The real fade emit links its 0x2A F4 via func_800168DC; flag it so the
+     * on_800168DC hook treats that F4 as the fade (already handled) and NOT a menu
+     * dark panel (also a 0x2A F4). */
+    s_in_fade = 1;
     func_800190D4(cpu);                                /* run the real fade emit (ref unchanged) */
+    s_in_fade = 0;
     s_in = 0;
     return 1;
 }

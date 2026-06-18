@@ -127,6 +127,16 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * "RESCUED" text is NOT here — that is moby near-OT geometry = HUD, under the
  * player.) Untextured opaque; routed by the feeder. */
 #define OPENPETE_SCENE_OVERLAY 4
+/* HUD_PANEL — a semi-transparent 2D HUD-OT quad that sits UNDER the HUD text/icons
+ * but OVER the world/backdrop: the dim dark panel behind the pause / inventory menu
+ * text (func_8001A40C emits it as a POLY_F4 with code 0x2A, setRGB0(64,64,64) or
+ * (112,112,112), via func_800168DC). Drawn alpha-blended, depth-test OFF, at the
+ * START of the HUD layer (before the HUD text), so the menu text reads on top of it.
+ * Distinct from OVERLAY (dead-last, over text) and from the full-screen fade (also a
+ * 0x2A F4, but emitted by func_800190D4 — the feeder excludes that via a re-entry
+ * flag). Untextured; alpha rides the vertex colour (128 = (B+F)/2, the PSX ABR mode 0
+ * the 0x2A code selects). */
+#define OPENPETE_SCENE_HUD_PANEL 5
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
