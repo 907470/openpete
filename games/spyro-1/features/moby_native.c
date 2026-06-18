@@ -29,6 +29,7 @@
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
+#include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 
 #include <math.h>
 #include <stdint.h>
@@ -415,6 +416,8 @@ typedef struct {
 
 static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
+static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
+static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
 
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
@@ -447,6 +450,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * mobys rarely straddle the near plane, and a 1-frame early disappear beats
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
+    s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
     ntri_t* t = &s_wtri[s_wtri_n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez};
@@ -472,6 +476,7 @@ static int build_walk_tris(CPUState* cpu) {
     memset(&s_walkdiag, 0, sizeof(s_walkdiag));
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
+        s_cur_ui = openpete_ui_moby_is_addr_ui(cpu->read_word(R->addr + 0x34));  /* HUD overlay tag */
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
         uint32_t bytecount = cpu->read_word(fb);
@@ -1070,8 +1075,12 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_category(OPENPETE_SCENE_ACTOR);  /* mobys cover shadows */
+    /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top (HUD). Stamped
+     * per-tri from the walk's UI tag, so the icons (treasure/lives) aren't
+     * Z-occluded by nearer terrain. */
     for (int i = 0; i < s_wtri_n; i++) {
+        openpete_native_scene_set_category(s_wtri_ui[i] ? OPENPETE_SCENE_HUD
+                                                        : OPENPETE_SCENE_ACTOR);
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
@@ -1534,7 +1543,7 @@ static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
  * native face-stream walk (build_shaded_walk_tris) can index each moby's verts
  * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
 typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
-                 uint32_t model, base, moby; int RT[3][3]; } shaded_rec;
+                 uint32_t model, base, moby; int RT[3][3]; int near_ot; } shaded_rec;
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
@@ -1562,6 +1571,15 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
         int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
         uint32_t rot = cpu->read_word(m + 0x44u);   /* m_Rotation (3 euler bytes) */
+        /* OT-bias overlay flag: the .s billboard path (block_80022D90) computes the
+         * OT index as (pz>>7) - ((int32_t)m_0x44 >> 24) clamped >= 0. A large bias
+         * byte forces the index to 0 — the NEAR OT slot — so the moby draws OVER the
+         * world/terrain (but still UNDER Spyro, which renders in a later pass). This
+         * is how the game keeps HUD icons, the "DEMO MODE" banner, and the level-
+         * intro text on top of the scene. Mirror it: such mobys go to the HUD/overlay
+         * layer instead of being world-depth-sorted (else nearer terrain occludes
+         * them). Only billboards carry this; 3D shaded mobys keep their own depth. */
+        int near_ot = billboard && (((pz >> 7) - ((int32_t)rot >> 24)) <= 0);
         int M[3][3], TR[3]; double mofx, mofy;
         double vz_scale = 1.0;   /* depth -> full-world (set for the 3D path below) */
         if (billboard) {
@@ -1622,7 +1640,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             uint32_t base = cpu->read_word(D_SHADE_COLTAB + (uint32_t)((int32_t)scolor >> 22));
             shaded_rec* R = &s_shrecs[s_nshrecs++];
             R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
-            R->model=model; R->base=base; R->moby=m;
+            R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
         }
     }
@@ -1663,6 +1681,10 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     s_wtri_n = 0;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
+        /* HUD/overlay tag: explicit UI mobys (g_Hud range) OR the .s OT-bias
+         * near-OT billboards ("DEMO MODE" banner, level-intro text) — both must
+         * draw over the world instead of being depth-occluded by nearer terrain. */
+        s_cur_ui = openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot;
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
         /* Per-vertex gouraud lit colours from the inline normal stream

@@ -191,6 +191,8 @@ static struct {
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows */
+    rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
+    rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
 
@@ -501,6 +503,23 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
+     * drawn LAST, ignoring the depth buffer so they sit on top of all world/actor
+     * geometry regardless of their world-space view-Z (the PSX draws HUD in a
+     * separate near-OT pass). Painter's order = submission order. One untextured
+     * (gouraud) + one textured (VRAM sampler), mirroring the opaque pair. */
+    rhi_pipeline_desc gouraud_hud_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    rhi_pipeline_desc scene_tex_hud_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
      * depth, no blend. Built unconditionally so --screenshot-on-frame can dump
@@ -521,13 +540,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
+    rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
+    rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !diff_pipe || !diff_quad_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
@@ -536,6 +557,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
         if (diff_pipe)     rhi_destroy_pipeline(dev, diff_pipe);
+        if (scene_tex_hud_pipe) rhi_destroy_pipeline(dev, scene_tex_hud_pipe);
+        if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
@@ -566,6 +589,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
+    s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
+    s_nr.scene_tex_hud_pipe = scene_tex_hud_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
@@ -834,12 +859,14 @@ static bool draw_native_scene(bool full_extent)
         { 1, -1,                   s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
         { 2, -1,                   s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
     };
-    int ut_first[5], ut_count[5];
+    /* ut group 5 = HUD untextured overlay (drawn last, depth-test off). */
+    int ut_first[6], ut_count[6];
     for (int gi = 0; gi < 5; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+            if (scene[t].category == OPENPETE_SCENE_HUD) continue;  /* HUD -> overlay pass */
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
@@ -854,6 +881,21 @@ static bool draw_native_scene(bool full_extent)
         }
         ut_count[gi] = n - ut_first[gi];
     }
+    /* HUD untextured: every HUD-category untextured tri (any blend), painter's
+     * order = submission order; the overlay pipe ignores depth so they sit on top. */
+    ut_first[5] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[5] = n - ut_first[5];
     int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -886,7 +928,14 @@ static bool draw_native_scene(bool full_extent)
      * then its textured tris per-tri (material push). Opaque groups write depth;
      * the transparent groups (1/3/4) are depth_write_off (test vs opaque, never
      * occlude each other). Per-tri material draws; material-batched draws +
-     * back-to-front transparent sort (3c) are later. */
+     * back-to-front transparent sort (3c) are later.
+     *
+     * The HUD/overlay layer (depth-test OFF) is drawn AFTER shadows (group 1) and
+     * BEFORE actors (group 2): it ignores world depth so it sits on top of the
+     * terrain (the "DEMO MODE" banner / level-intro text / HUD icons the .s forces
+     * to the near OT slot), but it writes no depth, so actors drawn next still
+     * cover it where they are genuinely nearer (e.g. Spyro flying in front of the
+     * intro text). Matches the PSX moby-OT[0] layer: over world, under Spyro. */
     for (int gi = 0; gi < 5; gi++) {
         const struct scene_group *g = &groups[gi];
         if (g->utex && ut_count[gi] > 0) {
@@ -902,7 +951,8 @@ static bool draw_native_scene(bool full_extent)
             for (int t = 0; t < scene_n && off + 3 <= n; t++) {
                 if (!scene[t].textured) continue;
                 int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
-                int match = (b == g->blend) &&
+                int match = scene[t].category != OPENPETE_SCENE_HUD &&  /* HUD -> overlay pass */
+                            (b == g->blend) &&
                             !(g->blend == 0 && g->gcat >= 0 && scene[t].category != g->gcat);
                 if (match) {
                     const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
@@ -911,6 +961,31 @@ static bool draw_native_scene(bool full_extent)
                     rhi_draw(s_nr.dev, 3, (uint32_t)off);
                 }
                 off += 3;  /* advance for every textured tri (verts are contiguous) */
+            }
+        }
+        /* HUD/overlay layer, inserted between shadows (gi==1) and actors (gi==2):
+         * untextured batch, then HUD textured tris per-tri. depth-test off. */
+        if (gi == 1) {
+            if (s_nr.gouraud_hud_pipe && ut_count[5] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[5], (uint32_t)ut_first[5]);
+            }
+            if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                int off = tx_start;
+                for (int t = 0; t < scene_n && off + 3 <= n; t++) {
+                    if (!scene[t].textured) continue;
+                    if (scene[t].category == OPENPETE_SCENE_HUD) {
+                        const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
+                                                 scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
+                        rhi_push_constants(s_nr.dev, &m, sizeof m);
+                        rhi_draw(s_nr.dev, 3, (uint32_t)off);
+                    }
+                    off += 3;  /* advance for every textured tri (verts are contiguous) */
+                }
             }
         }
     }
@@ -1180,6 +1255,8 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
+    if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+    if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);

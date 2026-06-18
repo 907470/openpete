@@ -102,6 +102,15 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * don't care default to WORLD. */
 #define OPENPETE_SCENE_WORLD 0
 #define OPENPETE_SCENE_ACTOR 1
+/* HUD/overlay mobys — the elements the PSX forces into the moby OT's NEAR slot:
+ * the treasure/lives HUD icons, the "DEMO MODE" banner, and the level-intro text.
+ * Drawn with the depth test OFF, in the layer BETWEEN shadows and actors, so they
+ * sit on top of the world/terrain (not Z-occluded by nearer terrain) but write no
+ * depth — actors drawn next still cover them where genuinely nearer (Spyro flies
+ * in front of the intro text). Mirrors the PSX moby-OT[0] layer (over world, under
+ * Spyro). Routed independently of `blend`. Tagged by the feeder from the UI-moby
+ * classifier OR the .s billboard OT-bias (see moby_native near_ot). */
+#define OPENPETE_SCENE_HUD   2
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
