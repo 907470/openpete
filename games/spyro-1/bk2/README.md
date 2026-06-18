@@ -78,6 +78,7 @@ not an error; it's the common case.
 
 | BK2                          | What it exercises                                          |
 | ---------------------------- | ---------------------------------------------------------- |
+| `artisans-bridge.bk2`        | Artisans bridge→hill junction (terrain GT3 UV orientation) |
 | `demo.bk2`                   | Full run through of demo mode (no inputs)                  |
 | `frame-time-test.bk2`        | Frame-pacing under variable input                          |
 | `inventory.bk2`              | Inventory open/close, gem/dragon/life HUD reads            |
