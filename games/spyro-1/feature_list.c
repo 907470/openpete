@@ -19,6 +19,7 @@ extern const feature_module_t flame_native_module;
 extern const feature_module_t shadow_native_module;
 extern const feature_module_t particle_native_module;
 extern const feature_module_t terrain_native_module;
+extern const feature_module_t ui_sprite_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -68,6 +69,11 @@ const feature_module_t* const openpete_features[] = {
      * bracket on func_8002B9CC is retired — see render_paths.c). Capture+dump
      * harness now; native gamestate walk + scene feed are the next increment. */
     &terrain_native_module,
+    /* 2D-from-OT native UI: hooks func_800168DC (the 2D addPrim chokepoint) to
+     * feed the title logo / "PRESS START" / HUD text sprites into the native
+     * scene's HUD overlay layer. Inert unless a native renderer mode or
+     * OPENPETE_UISPRITE_DUMP is set. */
+    &ui_sprite_native_module,
 };
 
 const size_t openpete_feature_count =
