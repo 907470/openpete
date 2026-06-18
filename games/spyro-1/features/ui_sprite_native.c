@@ -98,6 +98,34 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
+/* Feed one screen-space opaque POLY_F4 (untextured flat quad) into the native
+ * OVERLAY layer — drawn over EVERYTHING (incl. the player), matching the PSX HUD
+ * OT this prim lives in. The consumer is the cutscene letterbox (func_80018F30):
+ * two full-width black bars at the screen top/bottom. Layout: word[1]=code|rgb,
+ * [2]=xy0,[3]=xy1,[4]=xy2,[5]=xy3 (NO interleaved UV — F4 packs the 4 XY words
+ * consecutively, unlike FT4). XY: x=lo16,y=hi16 signed. Corners TL,TR,BL,BR. */
+static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1) {
+    int sx[4], sy[4];
+    uint32_t xyw[4];
+    xyw[0]=cpu->read_word(p+0x08); xyw[1]=cpu->read_word(p+0x0C);
+    xyw[2]=cpu->read_word(p+0x10); xyw[3]=cpu->read_word(p+0x14);
+    for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16); }
+    uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
+
+    openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
+    openpete_native_scene_set_category(OPENPETE_SCENE_OVERLAY);
+    static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
+    for (int t=0;t<2;t++) {
+        openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
+        for (int j=0;j<3;j++){ int c=idx[t][j];
+            tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
+            tri.v[j].z=0.0f; tri.v[j].rgba=rgba; }
+        tri.textured=0; tri.blend=0;
+        openpete_native_scene_add_tri(&tri);
+    }
+    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
+}
+
 /* ---- dispatch ------------------------------------------------------------
  * A caller can MODIFY a prim AFTER linking it: TitlescreenDrawSprite mirrors a
  * sprite by swapping its U coords *after* func_800168DC returns (the "missing
@@ -121,6 +149,16 @@ static int is_ft4(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 9;              /* tag length >= 9 (full FT4) */
 }
 
+/* Opaque POLY_F4 only (0x28) — the letterbox bars. The semi-transparent F4 (0x2A)
+ * is the full-screen fade, driven by the func_800190D4 hook, so it's excluded here
+ * to avoid double-handling. */
+static int is_f4(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return (uint8_t)(w1 >> 24) == 0x28            /* POLY_F4 opaque */
+        && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
+}
+
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_render_enabled();
@@ -142,6 +180,7 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
             s_pending = 0;
         }
         if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
+        else if (is_f4(cpu, prim)) feed_f4(cpu, prim, cpu->read_word(prim + 4));  /* letterbox bars (immediate; no mirror) */
     }
 
     func_800168DC(cpu);                          /* run the real OT insert (ref unchanged) */

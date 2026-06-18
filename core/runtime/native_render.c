@@ -854,30 +854,39 @@ static bool draw_native_scene(bool full_extent)
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
     }
-    /* The scene draws in 5 LAYERED groups, in this order, so a ground-decal
+    /* The scene draws in 6 LAYERED groups, in this order, so a ground-decal
      * shadow lands OVER the terrain it falls on but UNDER the actors standing on
      * it (the PSX terrain -> shadow -> Spyro draw order). A single near-bias on
      * the shadow can't do both (it would also paint over Spyro's feet); the layer
      * order does. Each group's UNTEXTURED tris are packed into a contiguous VB
      * range (one batched draw); its TEXTURED tris are drawn per-tri (material
      * push) by filtering the appended textured block. gcat <0 = any (only OPAQUE
-     * splits WORLD vs ACTOR; transparent classes route by blend alone).
-     *   0 WORLD-opaque (blend 0, cat WORLD)  terrain / sky / props
-     *   1 SUBTRACT     (blend 3)             shadows (depth_write_off)
-     *   2 ACTOR-opaque (blend 0, cat ACTOR)  Spyro / mobys — cover the shadows
-     *   3 ALPHA        (blend 1)             ABR0 semi-transparent
-     *   4 ADDITIVE     (blend 2)             ABR1 flame / glows (last) */
+     * splits WORLD vs ACTOR vs PLAYER; transparent classes route by blend alone).
+     *   0 WORLD-opaque  (blend 0, cat WORLD)   terrain / sky / props
+     *   1 SUBTRACT      (blend 3)              shadows (depth_write_off)
+     *   2 ACTOR-opaque  (blend 0, cat ACTOR)   mobys — cover the shadows
+     *   --- HUD/overlay (depth-test off) drawn here: OVER mobys, UNDER the player ---
+     *   3 PLAYER-opaque (blend 0, cat PLAYER)  Spyro — covers the near-OT HUD text
+     *   4 ALPHA         (blend 1)              ABR0 semi-transparent
+     *   5 ADDITIVE      (blend 2)              ABR1 flame / glows (last)
+     * The HUD/overlay sits BETWEEN regular mobys and the player so the PSX's
+     * near-OT-slot UI (HUD icons, "DEMO MODE", level-intro / "RESCUED <dragon>"
+     * text) draws OVER mobys (e.g. the rescued dragon Nestor) yet UNDER the player
+     * Spyro (who flies in front of the intro text) — exactly the PSX OT order
+     * (text at the near slot, over other mobys; the player rendered on top). */
     struct scene_group { int blend, gcat; rhi_pipeline *utex, *tex; };
-    const struct scene_group groups[5] = {
-        { 0, OPENPETE_SCENE_WORLD, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
-        { 3, -1,                   s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
-        { 0, OPENPETE_SCENE_ACTOR, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
-        { 1, -1,                   s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
-        { 2, -1,                   s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
+    const struct scene_group groups[6] = {
+        { 0, OPENPETE_SCENE_WORLD,  s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 3, -1,                    s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
+        { 0, OPENPETE_SCENE_ACTOR,  s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 0, OPENPETE_SCENE_PLAYER, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 1, -1,                    s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
+        { 2, -1,                    s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
     };
-    /* ut group 5 = HUD untextured overlay (drawn last, depth-test off). */
-    int ut_first[6], ut_count[6];
-    for (int gi = 0; gi < 5; gi++) {
+    /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
+     * letterbox / HUD-OT 2D flat quads, over everything). Both depth-test off. */
+    int ut_first[8], ut_count[8];
+    for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         for (int t = 0; t < scene_n; t++) {
@@ -899,7 +908,7 @@ static bool draw_native_scene(bool full_extent)
     }
     /* HUD untextured: every HUD-category untextured tri (any blend), painter's
      * order = submission order; the overlay pipe ignores depth so they sit on top. */
-    ut_first[5] = n;
+    ut_first[6] = n;
     for (int t = 0; t < scene_n; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
@@ -911,7 +920,22 @@ static bool draw_native_scene(bool full_extent)
         }
         n += 3;
     }
-    ut_count[5] = n - ut_first[5];
+    ut_count[6] = n - ut_first[6];
+    /* OVERLAY untextured: HUD-OT 2D flat quads (letterbox bars). Drawn dead last,
+     * over everything (incl. the player). Untextured opaque; painter's order. */
+    ut_first[7] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_OVERLAY || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[7] = n - ut_first[7];
     int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -968,20 +992,21 @@ static bool draw_native_scene(bool full_extent)
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
     }
 
-    /* Draw the 5 layered groups in order (WORLD-opaque, SUBTRACT shadows,
-     * ACTOR-opaque, ALPHA, ADDITIVE). For each: the batched untextured range,
-     * then its textured tris per-tri (material push). Opaque groups write depth;
-     * the transparent groups (1/3/4) are depth_write_off (test vs opaque, never
-     * occlude each other). Per-tri material draws; material-batched draws +
-     * back-to-front transparent sort (3c) are later.
+    /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
+     * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE). For each: the batched
+     * untextured range, then its textured tris per-tri (material push). Opaque
+     * groups write depth; the transparent groups (1/4/5) are depth_write_off (test
+     * vs opaque, never occlude each other). Per-tri material draws; material-batched
+     * draws + back-to-front transparent sort (3c) are later.
      *
-     * The HUD/overlay layer (depth-test OFF) is drawn AFTER shadows (group 1) and
-     * BEFORE actors (group 2): it ignores world depth so it sits on top of the
-     * terrain (the "DEMO MODE" banner / level-intro text / HUD icons the .s forces
-     * to the near OT slot), but it writes no depth, so actors drawn next still
-     * cover it where they are genuinely nearer (e.g. Spyro flying in front of the
-     * intro text). Matches the PSX moby-OT[0] layer: over world, under Spyro. */
-    for (int gi = 0; gi < 5; gi++) {
+     * The HUD/overlay layer (depth-test OFF) is drawn AFTER the ACTOR group (mobys,
+     * gi==2) and BEFORE the PLAYER group (Spyro, gi==3): it ignores world depth so
+     * it sits on top of the terrain AND regular mobys (the "DEMO MODE" banner /
+     * level-intro & "RESCUED <dragon>" text / HUD icons the .s forces to the near OT
+     * slot, over other mobys like the rescued dragon), but writes no depth, so the
+     * player Spyro drawn next still covers it (Spyro flies in front of the intro
+     * text). Matches the PSX moby OT: near-slot UI over other mobys, player on top. */
+    for (int gi = 0; gi < 6; gi++) {
         const struct scene_group *g = &groups[gi];
         if (g->utex && ut_count[gi] > 0) {
             rhi_bind_pipeline(s_nr.dev, g->utex);
@@ -1008,13 +1033,14 @@ static bool draw_native_scene(bool full_extent)
                 off += 3;  /* advance for every textured tri (verts are contiguous) */
             }
         }
-        /* HUD/overlay layer, inserted between shadows (gi==1) and actors (gi==2):
-         * untextured batch, then HUD textured tris per-tri. depth-test off. */
-        if (gi == 1) {
-            if (s_nr.gouraud_hud_pipe && ut_count[5] > 0) {
+        /* HUD/overlay layer, inserted between the ACTOR group (mobys, gi==2) and the
+         * PLAYER group (Spyro, gi==3): untextured batch, then HUD textured tris
+         * per-tri. depth-test off (over world + mobys, under the player). */
+        if (gi == 2) {
+            if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {
                 rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[5], (uint32_t)ut_first[5]);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
             }
             if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {
                 rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
@@ -1033,6 +1059,16 @@ static bool draw_native_scene(bool full_extent)
                 }
             }
         }
+    }
+
+    /* OVERLAY layer (HUD-OT 2D flat quads — the cutscene letterbox bars): drawn
+     * after every scene group, over everything incl. the player, depth-test off
+     * (gouraud_hud_pipe). Before the fade, matching the PSX HUD-OT order (the fade
+     * F4 is linked after the border, so it draws on top of the bars). */
+    if (s_nr.gouraud_hud_pipe && ut_count[7] > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[7], (uint32_t)ut_first[7]);
     }
 
     /* Draw the full-screen fade overlay last (over every layer above), in the PSX

@@ -83,6 +83,7 @@ not an error; it's the common case.
 | `frame-time-test.bk2`        | Frame-pacing under variable input                          |
 | `inventory.bk2`              | Inventory open/close, gem/dragon/life HUD reads            |
 | `missing-geometry.bk2`       | Sector load order                                          |
+| `nestor.bk2`                 | Dragon-rescue cutscene (RESCUED text over moby; letterbox; f1875) |
 | `missing-world.bk2`          | Level-overlay translation edge case                        |
 | `moby-culling-16-9.bk2`      | Cone-cull at 16:9 (m_WasDrawn channel exemplar)            |
 | `portal-cyclorama-issue.bk2` | Cyclorama clip-X widening (gated channel exemplar)         |

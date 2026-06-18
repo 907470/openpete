@@ -1081,7 +1081,7 @@ static void spyro_feed_walk(CPUState* cpu) {
     build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
     if (s_swtri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
-    openpete_native_scene_set_category(OPENPETE_SCENE_ACTOR);  /* Spyro covers his shadow */
+    openpete_native_scene_set_category(OPENPETE_SCENE_PLAYER);  /* covers his shadow + the near-OT HUD text */
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
         openpete_scene_tri st;

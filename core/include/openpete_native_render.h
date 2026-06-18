@@ -101,16 +101,32 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * current category (see openpete_native_scene_set_category), so feeders that
  * don't care default to WORLD. */
 #define OPENPETE_SCENE_WORLD 0
+/* ACTOR — regular + shaded mobys (the rescued dragon, level mobys, gems, …). Drawn
+ * after shadows, then the HUD/overlay layer goes ON TOP of them. */
 #define OPENPETE_SCENE_ACTOR 1
 /* HUD/overlay mobys — the elements the PSX forces into the moby OT's NEAR slot:
- * the treasure/lives HUD icons, the "DEMO MODE" banner, and the level-intro text.
- * Drawn with the depth test OFF, in the layer BETWEEN shadows and actors, so they
- * sit on top of the world/terrain (not Z-occluded by nearer terrain) but write no
- * depth — actors drawn next still cover them where genuinely nearer (Spyro flies
- * in front of the intro text). Mirrors the PSX moby-OT[0] layer (over world, under
- * Spyro). Routed independently of `blend`. Tagged by the feeder from the UI-moby
- * classifier OR the .s billboard OT-bias (see moby_native near_ot). */
+ * the treasure/lives HUD icons, the "DEMO MODE" banner, and the level-intro /
+ * "RESCUED <dragon>" text. Drawn with the depth test OFF, in the layer BETWEEN the
+ * ACTOR group (regular mobys) and the PLAYER group (Spyro), so they sit on top of
+ * the world/terrain AND other mobys (not Z-occluded; the near-OT slot draws over
+ * other mobys like the rescued dragon) but write no depth — so the player Spyro,
+ * drawn next, still covers them (Spyro flies in front of the intro text). Mirrors
+ * the PSX moby OT: near-slot UI over other mobys, the player rendered on top.
+ * Routed independently of `blend`. Tagged by the feeder from the UI-moby classifier
+ * OR the .s billboard OT-bias (see moby_native near_ot). */
 #define OPENPETE_SCENE_HUD   2
+/* PLAYER — the player Spyro's body. An opaque actor like ACTOR, but drawn AFTER the
+ * HUD/overlay layer so Spyro covers the near-OT HUD text (the level-intro fly-in),
+ * whereas regular mobys (ACTOR) stay UNDER it. The only player feeder is
+ * spyro_native; everything else uses ACTOR. */
+#define OPENPETE_SCENE_PLAYER 3
+/* OVERLAY — 2D prims from the HUD ordering table (func_800168DC), which the PSX
+ * draws ON TOP OF THE ENTIRE 3D scene (a separate OT presented over the scene OT):
+ * the cutscene letterbox bars, and any full-screen 2D flat quad. Drawn DEAD LAST
+ * with the depth test off, OVER everything incl. the player. (The level-intro /
+ * "RESCUED" text is NOT here — that is moby near-OT geometry = HUD, under the
+ * player.) Untextured opaque; routed by the feeder. */
+#define OPENPETE_SCENE_OVERLAY 4
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
