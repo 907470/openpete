@@ -901,9 +901,20 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
  * source like g_Cyclorama.m_BackgroundColor, which is the level sky colour but is
  * stale/wrong outside a level (e.g. the titlescreen, where the frame clears to a
  * different colour). Returns 0 (no bg) until a reference frame exists; the caller
- * then falls back to the scene-fed colour. rgba byte order R,G,B,A. */
+ * then falls back to the scene-fed colour. rgba byte order R,G,B,A.
+ *
+ * ONLY a valid source in the A/B / diff HARNESS, where pixel-matching PsyCross is
+ * the point. In vk-only (the shipping path) the reference readback is still
+ * populated (sync_reference_texture runs ungated), but its top-left corner is
+ * frequently CONTENT, not the clear — the cyclorama dome, the HUD (gem/life
+ * counters), or overscan — and reusing PsyCross's per-frame output violates the
+ * native renderer's Core Principle (derive from gamestate). So return 0 outside
+ * compare mode, forcing the gamestate `scene_bg` (g_Cyclorama.m_BackgroundColor)
+ * to be used instead. (Non-level vk states still want a gamestate draw-env clear
+ * source — tracked as a follow-up, see the native-renderer plan.) */
 static uint32_t bg_from_ref_corner(void)
 {
+    if (!s_scene_ref_compare) return 0;   /* vk-only: use gamestate scene_bg, not PsyCross */
     if (!s_nr.readback || s_nr.ref_w < 6 || s_nr.ref_h < 6) return 0;
     /* GL readback is bottom-up, so the TOP rows are at the end; inset a few px. */
     const unsigned char* c =
