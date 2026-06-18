@@ -89,6 +89,7 @@ not an error; it's the common case.
 | `skip-to-artisans.bk2`       | Title → first level transition                             |
 | `stone-hill-entry.bk2`       | Stone Hill entry sequence (longest deterministic baseline) |
 | `tas.bk2`                    | Multi-minute TAS-style input (broad coverage)              |
+| `titlescreen-menu.bk2`       | Title → memory-card menu (2D sprite mirror/flip; frame 450)|
 
 ## When the matrix harness fails on a BK2
 

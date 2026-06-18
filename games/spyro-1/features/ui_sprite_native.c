@@ -97,7 +97,29 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
-/* ---- dispatch ------------------------------------------------------------ */
+/* ---- dispatch ------------------------------------------------------------
+ * A caller can MODIFY a prim AFTER linking it: TitlescreenDrawSprite mirrors a
+ * sprite by swapping its U coords *after* func_800168DC returns (the "missing
+ * flip" — the right-hand memory-card border). So a prim's UVs are NOT final at
+ * its own func_800168DC call. But they ARE final by the NEXT func_800168DC call
+ * (the swap runs in the caller before it draws the next sprite). So we feed the
+ * PREVIOUS prim at each call ("feed-previous"): it has its post-link mirror
+ * applied, and we keep the proven func_800168DC placement (begin_frame at the
+ * render-pass openpete_frame, matching the 3D feeders — the immediate feed got
+ * this right; only its UVs were stale). func_800168DC is the clean 2D-vs-3D
+ * discriminator (the 3D renderers inline addPrim). The last prim of a frame is
+ * fed at the next frame's first call — invisible for the static screens this
+ * serves (title/menu re-emit identical 2D every frame). */
+static uint32_t s_pending = 0;        /* prim awaiting its (post-link) mirror swap */
+static unsigned s_pending_frame = 0;  /* openpete_frame the pending prim was recorded */
+
+static int is_ft4(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return ((uint8_t)(w1 >> 24) & 0xFD) == 0x2C   /* 0x2C / 0x2E = POLY_FT4 */
+        && (uint8_t)(w0 >> 24) >= 9;              /* tag length >= 9 (full FT4) */
+}
+
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_render_enabled();
@@ -109,13 +131,16 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
 
     uint32_t prim = cpu->a0;                     /* a0 = prim pointer being linked */
     if (dump) dump_prim(cpu, prim);
-    if (feed && prim >= 0x80000000u) {
-        uint32_t w0 = cpu->read_word(prim);
-        uint32_t w1 = cpu->read_word(prim + 4);
-        uint8_t  code = (uint8_t)(w1 >> 24);
-        uint8_t  plen = (uint8_t)(w0 >> 24);    /* OT tag length (words after tag) */
-        if ((code & 0xFD) == 0x2C && plen >= 9) /* 0x2C / 0x2E = POLY_FT4 (textured quad) */
-            feed_ft4(cpu, prim, w1);
+    if (feed) {
+        if (s_pending) {                         /* previous FT4 — its mirror swap is done now */
+            /* Stale guard: feed only if the pending prim is recent (<= one game
+             * frame ≈ 2 host ticks). On a screen that STOPS emitting 2D, a
+             * lingering pending must not flash into a later unrelated frame. */
+            if (openpete_frame - s_pending_frame <= 2u)
+                feed_ft4(cpu, s_pending, cpu->read_word(s_pending + 4));
+            s_pending = 0;
+        }
+        if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
     }
 
     func_800168DC(cpu);                          /* run the real OT insert (ref unchanged) */
