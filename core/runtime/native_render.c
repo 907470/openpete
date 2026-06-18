@@ -1034,14 +1034,15 @@ static bool draw_native_scene(bool full_extent)
             }
         }
         /* HUD/overlay layer, inserted between the ACTOR group (mobys, gi==2) and the
-         * PLAYER group (Spyro, gi==3): untextured batch, then HUD textured tris
-         * per-tri. depth-test off (over world + mobys, under the player). */
+         * PLAYER group (Spyro, gi==3): TEXTURED HUD first, then the UNTEXTURED batch.
+         * depth-test off (over world + mobys, under the player). Textured-before-
+         * untextured matches the PSX HUD submission order where a textured 2D
+         * BACKDROP is linked first and the text/icon glyphs after: e.g. the flight
+         * results screen draws the green grayscale-freeze backdrop (textured FT4 via
+         * func_800168DC) UNDER the "CRASHED"/objective text (untextured letter mobys
+         * via func_80022A2C). Drawing untextured first would let the opaque backdrop
+         * paint over the text. */
         if (gi == 2) {
-            if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
-            }
             if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {
                 rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -1057,6 +1058,11 @@ static bool draw_native_scene(bool full_extent)
                     }
                     off += 3;  /* advance for every textured tri (verts are contiguous) */
                 }
+            }
+            if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
             }
         }
     }
