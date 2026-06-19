@@ -128,13 +128,35 @@ static double project_world(CPUState* cpu, int wx, int wy, int wz,
     return mac3;
 }
 
-/* Identify the portal a leaf call belongs to by projecting every portal centre
- * and choosing the one whose screen position is nearest the clip-rect centre.
- * Returns the portal's full-world view-Z (for the native depth) or -1 on miss. */
+/* The depth a portal's sky should sit at: the FARTHEST of its outline points'
+ * view-Z. The stone ring's pointed top curves slightly back from the centre, so
+ * a centre-depth sky overdraws the top of the frame (f1845); placing it behind
+ * the whole ring lets the stone occlude it into the arch shape, while it stays
+ * far nearer than the through-hole background so it still shows in the opening.
+ * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind. */
+static double portal_outline_maxvz(CPUState* cpu, uint32_t p) {
+    int npts = (int32_t)cpu->read_word(p + 0x04);
+    if (npts < 1 || npts > 16) npts = 5;
+    double maxvz = -1.0;
+    for (int k = 0; k < npts; k++) {
+        int wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
+        int wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
+        int wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
+        double sx, sy, vz = project_world(cpu, wx, wy, wz, &sx, &sy);
+        if (vz > maxvz) maxvz = vz;
+    }
+    return maxvz;
+}
+
+/* Identify the portal a leaf call belongs to by projecting every portal centroid
+ * and choosing the one whose screen position is nearest the clip-rect centre,
+ * then return THAT portal's farthest-outline view-Z (the same depth basis as the
+ * dome path). Used for the far/medium flat leaves whose a0 carries no skybox
+ * link. -1 on miss. */
 static double owning_portal_viewz(CPUState* cpu, double rect_cx, double rect_cy) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT);
     if (n > 6) n = 6;
-    double best_d = 1e30, best_vz = -1.0;
+    double best_d = 1e30; uint32_t best_p = 0;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t p = cpu->read_word(G_PORTALS + i * 4);
         if (!p) continue;
@@ -151,9 +173,9 @@ static double owning_portal_viewz(CPUState* cpu, double rect_cx, double rect_cy)
         double vz = project_world(cpu, (int)ax, (int)ay, (int)az, &sx, &sy);
         if (vz <= 1.0) continue;                       /* behind camera */
         double dx = sx - rect_cx, dy = sy - rect_cy, d = dx*dx + dy*dy;
-        if (d < best_d) { best_d = d; best_vz = vz; }
+        if (d < best_d) { best_d = d; best_p = p; }
     }
-    return best_vz;
+    return best_p ? portal_outline_maxvz(cpu, best_p) : -1.0;
 }
 
 /* View-Z for the portal a leaf is rendering. The close/dome leaves pass the
@@ -170,21 +192,7 @@ static double portal_viewz(CPUState* cpu, uint32_t a0, double rect_cx, double re
         uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
         uint32_t sb = cpu->read_word(p + 0x00);
         if (!sb || (sb != a0 && sb != a0 - 0x10)) continue;
-        int npts = (int32_t)cpu->read_word(p + 0x04); if (npts < 1 || npts > 16) npts = 5;
-        /* Return the FARTHEST outline point's view-Z, not the centroid's: the
-         * stone arch ring's pointed top curves slightly back from the portal
-         * centre, so a centre-depth sky overdraws the top of the frame (f1845).
-         * Placing the sky behind the whole ring lets the stone occlude it into
-         * the arch shape — and it stays far nearer than the through-hole
-         * background, so the sky still shows in the opening. */
-        double maxvz = -1.0;
-        for (int k = 0; k < npts; k++) {
-            int wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
-            int wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
-            int wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
-            double sx, sy, vz = project_world(cpu, wx, wy, wz, &sx, &sy);
-            if (vz > maxvz) maxvz = vz;
-        }
+        double maxvz = portal_outline_maxvz(cpu, p);     /* farthest outline point */
         if (maxvz > 1.0) return maxvz;
     }
     return owning_portal_viewz(cpu, rect_cx, rect_cy);   /* far/medium: no skybox link */
