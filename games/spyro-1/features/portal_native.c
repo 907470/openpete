@@ -53,7 +53,22 @@ extern unsigned openpete_frame;
 #define D_PORTAL_PITCH   0x800758FCu   /* portal rotation pitch (animated) */
 #define D_PORTAL_DEPTH   0x80075934u   /* D_80075934: portal OT depth */
 #define D_CLIPRECT       0x8007AA00u   /* minY,maxY,minX,maxX each <<16 (per doc) */
-#define D_BLEND_TARGET   0x800757D4u   /* D_800757D4: distance colour-lerp target */
+#define D_BLEND_TARGET   0x800757D4u   /* D_800757D4: GTE far-colour (FC), the fog target (0x00BBGGRR) */
+#define D_FOG_FACTOR     0x8007575Cu   /* D_8007575C: GTE IR0, the DPCS depth-cue lerp coeff (0x1000 = 1.0) */
+
+/* DPCS depth-cue blend: lerp an 0x00BBGGRR colour toward the fog target by t in
+ * [0,1] (the blended-medium portal's cross-dissolve, func_80050240 — t=IR0/4096,
+ * fog=D_800757D4). t<=0 returns the colour unchanged (the un-fogged dome/flat). */
+static uint32_t blend_to_fog(uint32_t rgb, uint32_t fog, double t) {
+    if (t <= 0.0) return rgb & 0xFFFFFF;
+    if (t > 1.0) t = 1.0;
+    int r0 =  rgb        & 0xFF, g0 = (rgb  >> 8) & 0xFF, b0 = (rgb  >> 16) & 0xFF;
+    int rf =  fog        & 0xFF, gf = (fog  >> 8) & 0xFF, bf = (fog  >> 16) & 0xFF;
+    int r = r0 + (int)((rf - r0) * t + 0.5);
+    int g = g0 + (int)((gf - g0) * t + 0.5);
+    int b = b0 + (int)((bf - b0) * t + 0.5);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+}
 
 /* ---- dump gating ---------------------------------------------------- */
 static int portal_dump_enabled(void) {
@@ -238,58 +253,6 @@ static float plane_depth(double a, double b, double c, double x, double y) {
     return openpete_native_depth_from_viewz((float)vz);
 }
 
-/* Clip a gouraud polygon against one directed edge a->b, keeping the side whose
- * cross-product sign is ksign (the interior side). Interpolates colour. */
-static int clip_edge(const pgv* in, int n, pgv* out, float ax, float ay, float bx, float by, double ksign) {
-    int m = 0;
-    double ex = bx - ax, ey = by - ay;
-    for (int i = 0; i < n; i++) {
-        const pgv* p = &in[i];
-        const pgv* q = &in[(i + 1) % n];
-        double cp = (ex * (p->y - ay) - ey * (p->x - ax)) * ksign;
-        double cq = (ex * (q->y - ay) - ey * (q->x - ax)) * ksign;
-        if (cp >= 0) out[m++] = *p;
-        if ((cp >= 0) != (cq >= 0)) {
-            double t = cp / (cp - cq);
-            pgv r;
-            r.x = p->x + (float)t * (q->x - p->x);  r.y = p->y + (float)t * (q->y - p->y);
-            r.r = p->r + (float)t * (q->r - p->r);  r.g = p->g + (float)t * (q->g - p->g);  r.b = p->b + (float)t * (q->b - p->b);
-            out[m++] = r;
-        }
-    }
-    return m;
-}
-
-/* Clip a gouraud tri to the outline polygon and fan-emit it with the portal-plane
- * depth (so the sky sits on the tilted window plane, not one flat depth). */
-static void emit_tri_on_portal(pgv v0, pgv v1, pgv v2, const ppt* poly, int pn,
-                               double ccx, double ccy, double pa, double pb, double pc) {
-    pgv ba[24], bb[24];
-    ba[0] = v0; ba[1] = v1; ba[2] = v2;
-    pgv* cur = ba; pgv* nxt = bb; int n = 3;
-    for (int e = 0; e < pn && n >= 3; e++) {
-        float ax = poly[e].x, ay = poly[e].y, bx = poly[(e + 1) % pn].x, by = poly[(e + 1) % pn].y;
-        double ksign = ((bx - ax) * (ccy - ay) - (by - ay) * (ccx - ax)) >= 0 ? 1.0 : -1.0;
-        n = clip_edge(cur, n, nxt, ax, ay, bx, by, ksign);
-        pgv* t = cur; cur = nxt; nxt = t;
-    }
-    if (n < 3) return;
-    for (int i = 1; i + 1 < n; i++) {
-        openpete_scene_tri t;
-        memset(&t, 0, sizeof t);
-        t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_WORLD;
-        const pgv* tv[3] = { &cur[0], &cur[i], &cur[i + 1] };
-        for (int k = 0; k < 3; k++) {
-            uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
-            if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
-            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
-            t.v[k].z = plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y);
-            t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;
-        }
-        openpete_native_scene_add_tri(&t);
-    }
-}
-
 /* Far-path portal preview: the destination dome renders as a single flat colour
  * (a0[0]) filling the arch clip rect. Emit it as one opaque quad at the portal's
  * world-Z depth, so it sorts OVER the far terrain but UNDER the near arch stone
@@ -310,7 +273,8 @@ static void emit_tri_on_portal(pgv v0, pgv v1, pgv v2, const ppt* poly, int pn,
  * gaps (still far nearer than the through-hole terrain, so it never reveals the hill
  * behind). A far/medium flat (a0 = a stack/global colour ptr, NOT skybox-linked) IS
  * the whole preview — it stays on the portal plane (bias 1.0, backstop_bias ignored). */
-static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias) {
+static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
+                            uint32_t fog_rgb, double fog_t) {
     if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;   /* not a RAM pointer */
     /* The flat-fill colour. Far/medium leaves (func_8004FEA0/80050240) pass a
      * pointer whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or
@@ -322,6 +286,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias) {
      * per-vertex gradient dome is the next increment — see CARVE-OUT.) */
     uint32_t w0 = cpu->read_word(a0) & 0xFFFFFF;
     uint32_t rgb = (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
+    rgb = blend_to_fog(rgb, fog_rgb, fog_t);     /* blended-medium: fade the base toward the fog colour */
     uint32_t rgba = rgb | 0xFF000000u;
 
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16;
@@ -413,7 +378,15 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
     return m;
 }
 
-static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1, float depth) {
+/* Clip a gouraud face to the portal CLIP RECT and fan-emit it. This is what the
+ * dome leaves actually do: func_80050BD0 sets D_80077EA0[0]=0, so func_8005060C
+ * skips outline clipping — the dome is confined ONLY by the GPU scissor rect
+ * (D_8007AA00), and the arch SHAPE comes from the stone/floor occluding the rect
+ * spill via depth, not from clipping to the opening polygon. Depth is the portal
+ * PLANE (use_plane: inv-vz fit) so that occlusion is correct at any angle (f2945);
+ * `depth` is the constant fallback when the plane fit is unavailable. */
+static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1,
+                                 float depth, int use_plane, double pa, double pb, double pc) {
     pgv a[10], b[10];
     a[0] = v0; a[1] = v1; a[2] = v2;
     int n = 3;
@@ -429,14 +402,28 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
         for (int k = 0; k < 3; k++) {
             uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
             if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
-            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y; t.v[k].z = depth;
+            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
+            t.v[k].z = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : depth;
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
         }
         openpete_native_scene_add_tri(&t);
     }
 }
 
-static int feed_portal_dome(CPUState* cpu, uint32_t skybox) {
+/* A collected dome face awaiting depth-sorted emission. The dome is drawn at the
+ * single portal-plane depth so the arch occludes it, but the medium leaf's matrix
+ * compresses the dome's Y (~0.6x) and folds it onto itself in screen space; with
+ * every face at the same depth the fold has no z-order, so the back rim overdraws
+ * the front into a jagged mess. The PSX sorts the faces in its OT; we mirror that by
+ * sorting far→near and emitting in that order — with LESS_OR_EQUAL the last (nearest)
+ * face wins per pixel, so the near rim correctly paints over the far rim. */
+typedef struct { pgv a, b, c; double key; } dome_face;
+static int dome_face_cmp(const void* x, const void* y) {
+    double kx = ((const dome_face*)x)->key, ky = ((const dome_face*)y)->key;
+    return (kx < ky) ? 1 : (kx > ky) ? -1 : 0;   /* DESCENDING view-Z: far first */
+}
+
+static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, double fog_t) {
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int x0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, x1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
@@ -464,15 +451,15 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox) {
      * the rect clip + constant depth when an outline point is behind the camera. */
     uint32_t p = owning_portal_ptr(cpu, skybox, cx, cy);
     ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
-    double pa = 0, pb = 0, pc = 0, ccx = 0, ccy = 0;
+    double pa = 0, pb = 0, pc = 0;
     int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
-    if (use_plane) { for (int k = 0; k < pn; k++) { ccx += poly[k].x; ccy += poly[k].y; } ccx /= pn; ccy /= pn; }
 
     uint32_t cnt = cpu->read_word(skybox + 0x00), arr = cpu->read_word(skybox + 0x04);
     if (cnt > 1024) cnt = 1024;
     static float  px[4096], py[4096];
     static double pz[4096];
     static uint32_t col[4096];
+    static dome_face faces[8192]; int nf = 0;   /* collected for far→near depth sort */
     for (uint32_t si = 0; si < cnt; si++) {
         uint32_t S = cpu->read_word(arr + si * 4);
         if (!S) continue;
@@ -506,14 +493,23 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox) {
             if (i0 >= vc || i1 >= vc || i2 >= vc) continue;
             if (pz[i0] <= 1.0 || pz[i1] <= 1.0 || pz[i2] <= 1.0) continue;   /* near-plane reject */
             uint32_t cc0 = (k0 < colorCount) ? col[k0] : 0, cc1 = (k1 < colorCount) ? col[k1] : 0, cc2 = (k2 < colorCount) ? col[k2] : 0;
-            pgv a, b, c;
-            a.x = px[i0]; a.y = py[i0]; a.r = cc0 & 0xFF; a.g = (cc0 >> 8) & 0xFF; a.b = (cc0 >> 16) & 0xFF;
-            b.x = px[i1]; b.y = py[i1]; b.r = cc1 & 0xFF; b.g = (cc1 >> 8) & 0xFF; b.b = (cc1 >> 16) & 0xFF;
-            c.x = px[i2]; c.y = py[i2]; c.r = cc2 & 0xFF; c.g = (cc2 >> 8) & 0xFF; c.b = (cc2 >> 16) & 0xFF;
-            if (use_plane) emit_tri_on_portal(a, b, c, poly, pn, ccx, ccy, pa, pb, pc);
-            else           emit_clipped_gouraud(a, b, c, x0, y0, x1, y1, depth);
+            /* blended-medium dome (func_80050240): DPCS depth-cue fades each vertex
+             * colour toward the fog target (fog_t=0 for the un-fogged F4BC dome). */
+            cc0 = blend_to_fog(cc0, fog_rgb, fog_t);
+            cc1 = blend_to_fog(cc1, fog_rgb, fog_t);
+            cc2 = blend_to_fog(cc2, fog_rgb, fog_t);
+            if (nf >= (int)(sizeof faces / sizeof faces[0])) continue;
+            dome_face* df = &faces[nf++];
+            df->a.x = px[i0]; df->a.y = py[i0]; df->a.r = cc0 & 0xFF; df->a.g = (cc0 >> 8) & 0xFF; df->a.b = (cc0 >> 16) & 0xFF;
+            df->b.x = px[i1]; df->b.y = py[i1]; df->b.r = cc1 & 0xFF; df->b.g = (cc1 >> 8) & 0xFF; df->b.b = (cc1 >> 16) & 0xFF;
+            df->c.x = px[i2]; df->c.y = py[i2]; df->c.r = cc2 & 0xFF; df->c.g = (cc2 >> 8) & 0xFF; df->c.b = (cc2 >> 16) & 0xFF;
+            df->key = (pz[i0] + pz[i1] + pz[i2]) / 3.0;   /* face view-Z for the far→near sort */
         }
     }
+    /* depth-sort the whole dome far→near, then emit (LESS_OR_EQUAL → last wins). */
+    qsort(faces, nf, sizeof faces[0], dome_face_cmp);
+    for (int i = 0; i < nf; i++)
+        emit_clipped_gouraud(faces[i].a, faces[i].b, faces[i].c, x0, y0, x1, y1, depth, use_plane, pa, pb, pc);
     return 1;
 }
 
@@ -526,16 +522,17 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
     int rx0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, rx1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     uint32_t col = (a0 >= 0x80010000u && a0 < 0x80200000u) ? (cpu->read_word(a0) & 0xFFFFFF) : 0xFFFFFFFFu;
     double vz = portal_viewz(cpu, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
+    uint32_t fog = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF, ir0 = cpu->read_word(D_FOG_FACTOR) & 0xFFFF;
     fprintf(stderr, "[portal-dump f=%u] %s a0=%08X colour=%06X clip x[%d,%d] y[%d,%d] "
-                    "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes\n",
+                    "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes  fogFC=%06X IR0=%u(t=%.3f)\n",
             openpete_frame, which, a0, col, rx0, rx1, ry0, ry1,
             (int32_t)cpu->read_word(D_PORTAL_DEPTH), vz,
             (double)openpete_native_depth_from_viewz((float)(vz > 1.0 ? vz : 16384.0)),
-            (end > start) ? (end - start) : 0);
+            (end > start) ? (end - start) : 0, fog, ir0, (double)ir0 / 4096.0);
     /* For the dome leaf (F4BC, a0=skybox), capture everything the float walk
      * needs: the GTE transform it projected with (post-call), the skybox sector
      * table, sector0's cyclorama-format header, and the first emitted prims. */
-    if (which[0] == 'F' && which[1] == '4' && a0 >= 0x80010000u && a0 < 0x80200000u) {
+    if (((which[0] == 'F' && which[1] == '4') || (which[0] == '5')) && a0 >= 0x80010000u && a0 < 0x80200000u) {
         fprintf(stderr, "    GTE post: M=%08X %08X %08X %08X %08X TR=%d,%d,%d OFX=%d OFY=%d H=%u\n",
                 cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2], cpu->gte_ctrl[3], cpu->gte_ctrl[4],
                 (int32_t)cpu->gte_ctrl[5], (int32_t)cpu->gte_ctrl[6], (int32_t)cpu->gte_ctrl[7],
@@ -558,11 +555,18 @@ static int s_want_dump_this_frame(void) {
     return portal_dump_enabled() && openpete_frame >= portal_dump_frame();
 }
 
+/* Which native render a leaf maps to. The same destination skybox renders three
+ * ways across a portal's approach: FLAT colour when far, the DPCS-fogged dome at
+ * medium (the cross-dissolve), the full gouraud dome when close. */
+#define PORTAL_FLAT     0   /* func_8004FEA0: flat colour (far preview / close backstop) */
+#define PORTAL_DOME     1   /* func_8004F4BC: full gouraud dome, no fog                  */
+#define PORTAL_BLENDED  2   /* func_80050240: dome with DPCS fog toward D_800757D4       */
+
 /* Generic leaf hook: run the real renderer, capturing the polybuf range, then
  * dump. A re-entry guard keeps a nested call (shouldn't happen for leaves)
  * from re-dumping. */
 static int s_leaf_in = 0;
-static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int is_dome) {
+static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) {
     int feed = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0; /* inert */
     if (s_leaf_in) return 0;
@@ -575,27 +579,38 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     if (s_want_dump_this_frame() && s_reports < 512) { dump_leaf(cpu, which, a0, a1, a2, start, end); s_reports++; }
     if (feed) {
         openpete_native_scene_begin_frame(openpete_frame);  /* append; cyclorama/world already began it */
-        /* Far/medium flat leaves: one flat quad = the whole preview, on the portal
-         * plane (feed_portal_quad leaves a non-skybox a0 at bias 1.0). The close
-         * FEA0 flat (a0=skybox+0x10) is the dome's authored BACKSTOP — feed_portal_quad
-         * sinks it just behind the dome (1.0625). The DOME leaf (func_8004F4BC,
-         * a0=skybox) walks the gouraud dome on the plane AND lays its own backstop
-         * (skybox+0x18) FARTHER still (1.125) — redundant with FEA0's in practice
-         * (every dome here is paired with one), but a distinct-depth safety for an
-         * unpaired dome that can't z-fight either layer. Depths front→back: dome
-         * (×1.0) < FEA0 backstop (×1.0625) < F4BC safety (×1.125). All far nearer
-         * than the through-hole terrain. (Fixes the bg z-fight at f1910.) */
-        feed_portal_quad(cpu, a0, is_dome ? 1.125 : 1.0625);
+        int is_dome = (kind != PORTAL_FLAT);
+        /* The blended-medium leaf (func_80050240) is the cross-dissolve: it draws
+         * the SAME dome as F4BC but runs DPCS depth-cue, fading every colour toward
+         * the GTE far-colour FC (D_800757D4) by IR0/4096 (D_8007575C). Far = IR0≈4096
+         * (faded fully to the flat colour, the FEA0 preview); close = IR0≈0 (full
+         * dome). Apply the same fade to its backstop fill so the gaps match. */
+        uint32_t fog = 0; double fog_t = 0.0;
+        if (kind == PORTAL_BLENDED) {
+            fog   = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF;
+            fog_t = (double)(cpu->read_word(D_FOG_FACTOR) & 0xFFFF) / 4096.0;
+            if (fog_t > 1.0) fog_t = 1.0;
+        }
+        /* Far/medium FLAT leaves: one quad = the whole preview, on the portal plane
+         * (a non-skybox a0 stays at bias 1.0). The close FEA0 flat (a0=skybox+0x10)
+         * is the dome's authored BACKSTOP — sunk just behind the dome (1.0625). The
+         * DOME leaves walk the gouraud dome on the plane AND lay a backstop: F4BC at
+         * 1.125 (so it can't z-fight the paired FEA0 backstop at 1.0625), the medium
+         * leaf at 1.0625 (no FEA0 at medium). Depths front→back: dome (×1.0) <
+         * backstop (×1.0625) [< F4BC safety ×1.125]. All far nearer than the
+         * through-hole terrain. (Fixes the bg z-fight at f1910.) */
+        double backstop_bias = (kind == PORTAL_DOME) ? 1.125 : 1.0625;
+        feed_portal_quad(cpu, a0, backstop_bias, fog, fog_t);
         if (is_dome && a0 >= 0x80010000u && a0 < 0x80200000u)
-            feed_portal_dome(cpu, a0);
+            feed_portal_dome(cpu, a0, fog, fog_t);
     }
     s_leaf_in = 0;
     return 1;
 }
 
-static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "FEA0(close)",     func_8004FEA0, 0); }
-static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, 0); }
-static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, 1); }
+static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "FEA0(close)",     func_8004FEA0, PORTAL_FLAT);    }
+static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
+static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
 
 static int s_rp_in = 0;
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
