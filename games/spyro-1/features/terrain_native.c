@@ -787,10 +787,22 @@ static void terrain_build(CPUState* cpu) {
              * subdivides. Corner→vertex: TL=i0,TR=i1,BL=i3,BR=i2 (the .s grid order).
              * Near colours are the raw HP near-colour array (no DPCS fog on near
              * cells — func_800276A0 reads s5[idx] directly). */
-            int near = (faceStride == 16 && s_nearhq && hqTable && front &&
+            /* ONLY quads route to the 2×2 near subdivide. Near TRIANGLES (i2==i3)
+             * are emitted by the .s via its detail-descriptor path (func_800276A0
+             * block_80027C74, GT3 sub-tris) — NOT the simple 2×2 quad path
+             * (block_80027D88). terrain_near_emit only replicates the 2×2 quad path,
+             * so forcing a triangle through it (BL==BR → degenerate sub-quads)
+             * produced a protruding mis-textured "flap" at close range (the
+             * Artisans bridge corner, tile-9 GT3 orientation 2 — the same face the
+             * far-path triRot fix targets). Instead let near triangles fall through
+             * to the standard GT3 emit below, which already applies the 2-bit UV
+             * orientation (triRot). Geometry + orientation match; the only gap vs
+             * the .s is LQ-vs-HQ texture on that single tri (the HQ detail-path
+             * sub-tessellation is the existing carve-out). */
+            int near = (faceStride == 16 && s_nearhq && hqTable && front && quad &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
-                near = (faceStride == 16 && s_nearhq && hqTable && is_deferred(faces + (uint32_t)f*16u));
+                near = (faceStride == 16 && s_nearhq && hqTable && quad && is_deferred(faces + (uint32_t)f*16u));
             if (near) {
                 if (is_deferred(faces + (uint32_t)f * 16u)) s_near_q_agree++; else s_near_c_only++;
                 int abe = (hqW2 & 0x80) != 0;
