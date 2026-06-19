@@ -295,8 +295,22 @@ static void emit_tri_on_portal(pgv v0, pgv v1, pgv v2, const ppt* poly, int pn,
  * world-Z depth, so it sorts OVER the far terrain but UNDER the near arch stone
  * (which the terrain/moby feeders draw on top, leaving colour only in the hole).
  * Close-range portals (a0 not a RAM pointer -> the per-vertex dome path) are left
- * to the next increment. Returns 1 if a quad was emitted. */
-static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
+ * to the next increment. Returns 1 if a quad was emitted.
+ *
+ * For a CLOSE portal the original draws TWO passes: a flat colour base (the close
+ * func_8004FEA0, a0=skybox+0x10) THEN the gouraud dome over it (func_8004F4BC) —
+ * painter's order in the OT. With a depth buffer the flat base would land on the
+ * same portal plane as the dome and z-fight (worse: the two interpolate depth
+ * differently across the interior — this quad linearly per fan-tri, the dome
+ * perspective-correct per pixel — so the bg colour shimmers through, f1910). So a
+ * SKYBOX-LINKED flat (a0 == a portal's m_Skybox, or m_Skybox+0x10) is the dome's
+ * BACKSTOP: push it behind the dome by backstop_bias (>1 scales the fill's view-Z
+ * so depth_from_viewz sinks it farther). The dome then wins wherever it has
+ * coverage; the backstop only shows through the dome's culled/near-rejected edge
+ * gaps (still far nearer than the through-hole terrain, so it never reveals the hill
+ * behind). A far/medium flat (a0 = a stack/global colour ptr, NOT skybox-linked) IS
+ * the whole preview — it stays on the portal plane (bias 1.0, backstop_bias ignored). */
+static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias) {
     if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;   /* not a RAM pointer */
     /* The flat-fill colour. Far/medium leaves (func_8004FEA0/80050240) pass a
      * pointer whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or
@@ -324,6 +338,11 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
      * floor occludes it exactly at the frame, instead of a single flat depth
      * that makes the floor eat the near part (f2945). */
     uint32_t p = owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    /* Only a skybox-linked flat is a dome backstop (close FEA0 a0=skybox+0x10, or
+     * the dome's own a0=skybox) — push it behind the dome. Far/medium previews
+     * (a0 = stack/global colour) are the whole sky and stay on the plane. */
+    double back_bias = 1.0;
+    if (p) { uint32_t sb = cpu->read_word(p + 0x00); if (sb == a0 || sb == a0 - 0x10) back_bias = backstop_bias; }
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     if (pn >= 3) {
@@ -335,7 +354,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = openpete_native_depth_from_viewz((float)v->vz);
+                t.v[k].z = openpete_native_depth_from_viewz((float)(v->vz * back_bias));
                 t.v[k].rgba = rgba;
             }
             openpete_native_scene_add_tri(&t);
@@ -347,7 +366,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
      * clip rect at the farthest-outline constant depth. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)vz);
+    float depth = openpete_native_depth_from_viewz((float)(vz * back_bias));
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -556,11 +575,17 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     if (s_want_dump_this_frame() && s_reports < 512) { dump_leaf(cpu, which, a0, a1, a2, start, end); s_reports++; }
     if (feed) {
         openpete_native_scene_begin_frame(openpete_frame);  /* append; cyclorama/world already began it */
-        /* Far/medium + the close base-fill: one flat quad of the destination
-         * sky's base colour, clipped to the arch rect (feed_portal_quad picks the
-         * colour vs skybox+0x18). The DOME leaf (func_8004F4BC, a0=skybox) ALSO
-         * walks the gouraud gradient dome on top — clouds/horizon when near. */
-        feed_portal_quad(cpu, a0);
+        /* Far/medium flat leaves: one flat quad = the whole preview, on the portal
+         * plane (feed_portal_quad leaves a non-skybox a0 at bias 1.0). The close
+         * FEA0 flat (a0=skybox+0x10) is the dome's authored BACKSTOP — feed_portal_quad
+         * sinks it just behind the dome (1.0625). The DOME leaf (func_8004F4BC,
+         * a0=skybox) walks the gouraud dome on the plane AND lays its own backstop
+         * (skybox+0x18) FARTHER still (1.125) — redundant with FEA0's in practice
+         * (every dome here is paired with one), but a distinct-depth safety for an
+         * unpaired dome that can't z-fight either layer. Depths front→back: dome
+         * (×1.0) < FEA0 backstop (×1.0625) < F4BC safety (×1.125). All far nearer
+         * than the through-hole terrain. (Fixes the bg z-fight at f1910.) */
+        feed_portal_quad(cpu, a0, is_dome ? 1.125 : 1.0625);
         if (is_dome && a0 >= 0x80010000u && a0 < 0x80200000u)
             feed_portal_dome(cpu, a0);
     }
