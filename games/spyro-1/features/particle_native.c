@@ -816,6 +816,20 @@ static void glow_build(CPUState* cpu) {
     }
 }
 
+/* Push the additive aura just BEHIND its owning moby's body (a small multiplicative
+ * view-Z bias) so the moby occludes its own halo — the body shows through instead of
+ * being blown out by the additive blend painting over itself (Sparx was washed white
+ * at 1.0). The bias is small so the aura stays well IN FRONT of farther geometry
+ * (Spyro): the depth-test then sorts it correctly per-pixel — aura in front of Spyro
+ * when the moby is between him and the camera, occluded when behind. (The PSX OT
+ * can't do this: it buckets the whole aura at one depth slot, so nearer objects like
+ * Spyro always overdraw it regardless of the moby's true position — the native
+ * Z-buffer is deliberately more correct here.) Multiplicative so the push scales with
+ * the moby's apparent depth extent; 1.10 is the minimum that clears Sparx's body
+ * (white-px count is flat from 1.10→1.30, i.e. the body — not grass — is the occluder),
+ * which maximises the in-front-of-Spyro margin. */
+#define GLOW_AURA_BEHIND_MOBY_BIAS 1.10
+
 /* Feed the native glow fan tris into the scene — untextured gouraud, ADDITIVE
  * (blend 2). Display-only; the .s produced any verdict state headless. */
 static void glow_feed_native(CPUState* cpu) {
@@ -824,7 +838,7 @@ static void glow_feed_native(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_gtri_n; i++) {
         gtri* t = &s_gtri[i];
-        float depth = openpete_native_depth_from_viewz(t->cz);
+        float depth = openpete_native_depth_from_viewz((float)(t->cz * GLOW_AURA_BEHIND_MOBY_BIAS));
         openpete_scene_tri st;
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
