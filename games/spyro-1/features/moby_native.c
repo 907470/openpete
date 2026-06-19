@@ -47,7 +47,24 @@ static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic 
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
 #define D_SONY        0x8006FCF4u   /* g_SonyImage — reused as moby render scratch */
-#define REC_BASE      (D_SONY + 0x1600u) /* cull/gather records, stride 0x38 */
+/* Cull-record buffer base (stride 0x38). The .s REGULAR cull computes it as
+ * g_SonyImage + psx_runtime_moby_reg_queue_offset (offset_add channel at
+ * 0x8001F19C/0x8001F7E4); the offset is 0x1600 normally but --no-lod RELOCATES +
+ * GROWS the regular visible-queue to a separate host region (0x80600000), so a
+ * hardcoded +0x1600 would read the now-empty canonical slot → ZERO records → all
+ * regular mobys (enemies, fodder, Sparx) vanish in the native renderer under
+ * --no-lod. REC_BASE mirrors the live REGULAR offset.
+ *
+ * The SPECULAR cull (func_800208FC/func_80020F34, 0x80020xxx) is NOT in the
+ * channel substitution, so under --no-lod its queue stays at the CANONICAL
+ * 0x1600 (the regular relocation does not apply to it). The native feed must use
+ * a PER-PASS base (s_rec_base, set in moby_native_pass) — REGULAR=REC_BASE,
+ * SPECULAR=D_SONY+0x1600 — else native SPEC reads the relocated slot (stale
+ * regular records) and specular mobys (e.g. the Artisans rescue dragon, cls 0xFA)
+ * vanish under --no-lod while regular mobys are fine. (Normal mode: both are
+ * 0x1600.) g_sony_image_base is left canonical by --no-lod, so D_SONY is right. */
+#define REC_BASE      (D_SONY + psx_runtime_moby_reg_queue_offset) /* REGULAR base */
+static uint32_t s_rec_base = D_SONY + 0x1600u;   /* per-pass; set by moby_native_pass */
 #define POLYBUF_CURSOR 0x800757B0u
 #define G_MODELS      0x80076378u   /* Model* g_Models[512] */
 #define G_CAMERA      0x80076DD0u
@@ -354,7 +371,7 @@ static int project_all_records(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
-        uint32_t rec = REC_BASE + (uint32_t)r * REC_STRIDE;
+        uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
         uint32_t w0 = cpu->read_word(rec);
         int bl = (int)((w0 & 0xFF00u) >> 2);  /* INTPL blend 0..4096 */
@@ -1224,6 +1241,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     int verify = moby_verify_enabled();
     int feed   = openpete_native_render_enabled();
     s_cur_mat = mat;
+    /* SPECULAR queue is NOT relocated by --no-lod (see REC_BASE note); REGULAR is. */
+    s_rec_base = (mat && mat[0]=='S' && mat[1]=='P') ? (D_SONY + 0x1600u) : REC_BASE;
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     render_fn(cpu);                            /* run the real renderer */
