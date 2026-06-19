@@ -522,7 +522,33 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
          * =BR → offset 32 (entries 1..4; entry 0 is the detail-path base, unused by
          * the 2×2). Reading entries 0..3 shifted every sub-tile by one → "4 textures
          * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
-        decode_tiledef(cpu, hqBase + (uint32_t)(i + 1) * 8u, abe, &mat, u, v);
+        uint32_t e = hqBase + (uint32_t)(i + 1) * 8u;
+        decode_tiledef(cpu, e, abe, &mat, u, v);
+        /* HQ sub-quad UV ORIENTATION (rotation/flip), mirroring func_800276A0
+         * block_80027EA8: the HQ Tiledef carries an orientation index in
+         * `word1 >> 25`; when nonzero it selects an 8-byte entry in the offset
+         * table D_8006D058 (`base + ori`) of per-corner packed (du | dv<<8) deltas
+         * added to the base UVs — TL/BL/BR relative to (u0,v0) [word0], TR relative
+         * to (u1,v1) [word1] — then masked to the u/v bytes (carry between u,v is
+         * faithful). Entry 0/64 are the identity transform (≡ decode_tiledef's
+         * default), so cells already drawn correctly are untouched. Without this,
+         * rotated/flipped HQ tiles render unrotated (~0.4% of near sub-quads in the
+         * attract demo: e.g. Artisans tiles 6/23 ori=104, the right-column sub-quads
+         * of a cell). The 16px (0x0F) table half is unused in practice. */
+        uint32_t ori = rd(cpu, e + 4) >> 25;
+        if (ori) {
+            uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
+            uint32_t te = 0x8006D058u + ori;     /* D_8006D058: per-orientation UV-offset table */
+            uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
+            uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;  /* TL rel (u0,v0) */
+            uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;  /* TR rel (u1,v1) */
+            uint32_t bl = ((w0 & 0xFFFF) + (ew1 & 0xFFFF)) & 0xFFFF;  /* BL rel (u0,v0) */
+            uint32_t br = ((w0 & 0xFFFF) + (ew1 >> 16))    & 0xFFFF;  /* BR rel (u0,v0) */
+            u[0]=(float)(tl & 0xFF); v[0]=(float)((tl >> 8) & 0xFF);
+            u[1]=(float)(tr & 0xFF); v[1]=(float)((tr >> 8) & 0xFF);
+            u[2]=(float)(bl & 0xFF); v[2]=(float)((bl >> 8) & 0xFF);
+            u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
+        }
         emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
 }
