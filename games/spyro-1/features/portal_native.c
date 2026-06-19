@@ -245,12 +245,31 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
     return 1;
 }
 
+/* The portal cyclorama (the gouraud dome AND the flat far/medium preview) sits on
+ * the portal OPENING PLANE — exactly where many arches carry a thin "inner frame"
+ * band of geometry at the same depth. With a depth buffer the two coincide and
+ * z-fight around the rim: the frame sliver flickers through as the camera moves.
+ * The original never shows it — RenderPortals paints the sky OVER the frame in OT
+ * order (painter's). Mirror that by pulling the cyclorama a hair toward the camera
+ * (scale its view-Z by <1) so it always wins the depth test against the coincident
+ * inner frame, while staying well behind the MUCH-nearer outer stone arch front
+ * faces (which must still occlude it into the arch shape) and far in front of the
+ * through-hole terrain. Multiplicative (not a constant depth offset) so the margin
+ * tracks distance — depth_from_viewz compresses far depths, and a view-Z scale
+ * widens its step there to compensate. Tunable: too large risks poking through the
+ * stone, too small risks not clearing the inter-feeder rounding noise. */
+#define PORTAL_PLANE_FRONT_BIAS 0.99
+static float portal_plane_depth_from_viewz(double vz) {
+    return openpete_native_depth_from_viewz((float)(vz * PORTAL_PLANE_FRONT_BIAS));
+}
+
 /* Native depth from the portal plane at a screen point (perspective-correct via
- * the inv-vz fit). */
+ * the inv-vz fit), pulled forward by PORTAL_PLANE_FRONT_BIAS to win the inner-frame
+ * z-fight. */
 static float plane_depth(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
-    return openpete_native_depth_from_viewz((float)vz);
+    return portal_plane_depth_from_viewz(vz);
 }
 
 /* Far-path portal preview: the destination dome renders as a single flat colour
@@ -308,6 +327,10 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
      * (a0 = stack/global colour) are the whole sky and stay on the plane. */
     double back_bias = 1.0;
     if (p) { uint32_t sb = cpu->read_word(p + 0x00); if (sb == a0 || sb == a0 - 0x10) back_bias = backstop_bias; }
+    /* A far/medium FLAT preview (back_bias still 1.0) IS the whole visible sky and
+     * sits on the opening plane → same inner-frame z-fight as the dome; pull it
+     * forward. A backstop (back_bias>1) stays behind the dome with its push-back. */
+    double depth_bias = (back_bias == 1.0) ? PORTAL_PLANE_FRONT_BIAS : back_bias;
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     if (pn >= 3) {
@@ -319,7 +342,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = openpete_native_depth_from_viewz((float)(v->vz * back_bias));
+                t.v[k].z = openpete_native_depth_from_viewz((float)(v->vz * depth_bias));
                 t.v[k].rgba = rgba;
             }
             openpete_native_scene_add_tri(&t);
@@ -331,7 +354,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
      * clip rect at the farthest-outline constant depth. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)(vz * back_bias));
+    float depth = openpete_native_depth_from_viewz((float)(vz * depth_bias));
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -443,7 +466,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
     double vz = portal_viewz(cpu, skybox, cx, cy);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)vz);   /* rect-fallback depth */
+    float depth = portal_plane_depth_from_viewz(vz);   /* rect-fallback depth, front-biased */
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
