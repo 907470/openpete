@@ -20,6 +20,7 @@ extern const feature_module_t shadow_native_module;
 extern const feature_module_t particle_native_module;
 extern const feature_module_t terrain_native_module;
 extern const feature_module_t ui_sprite_native_module;
+extern const feature_module_t portal_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -74,6 +75,14 @@ const feature_module_t* const openpete_features[] = {
      * scene's HUD overlay layer. Inert unless a native renderer mode or
      * OPENPETE_UISPRITE_DUMP is set. */
     &ui_sprite_native_module,
+    /* Native PORTAL skybox previews: re-derives the destination-level dome
+     * shown inside homeworld portal arches (driven by RenderPortals
+     * func_80050BD0 -> func_8004FEA0/80050240/8004F4BC, into a per-portal clip
+     * rect). The main-sky feeder (cyclorama_native) only hooks func_8004EBA8,
+     * so portal previews were missing. Capture/dump harness under
+     * OPENPETE_PORTAL_DUMP now; float extraction + clip + feed are the next
+     * increment. Inert unless a native renderer mode or the dump is set. */
+    &portal_native_module,
 };
 
 const size_t openpete_feature_count =

@@ -99,6 +99,7 @@ add_executable(openpete-spyro1
     features/particle_native.c
     features/terrain_native.c
     features/ui_sprite_native.c
+    features/portal_native.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
