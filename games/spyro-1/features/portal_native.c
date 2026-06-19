@@ -246,19 +246,27 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
 }
 
 /* The portal cyclorama (the gouraud dome AND the flat far/medium preview) sits on
- * the portal OPENING PLANE — exactly where many arches carry a thin "inner frame"
- * band of geometry at the same depth. With a depth buffer the two coincide and
- * z-fight around the rim: the frame sliver flickers through as the camera moves.
- * The original never shows it — RenderPortals paints the sky OVER the frame in OT
- * order (painter's). Mirror that by pulling the cyclorama a hair toward the camera
- * (scale its view-Z by <1) so it always wins the depth test against the coincident
- * inner frame, while staying well behind the MUCH-nearer outer stone arch front
- * faces (which must still occlude it into the arch shape) and far in front of the
- * through-hole terrain. Multiplicative (not a constant depth offset) so the margin
- * tracks distance — depth_from_viewz compresses far depths, and a view-Z scale
- * widens its step there to compensate. Tunable: too large risks poking through the
- * stone, too small risks not clearing the inter-feeder rounding noise. */
-#define PORTAL_PLANE_FRONT_BIAS 0.99
+ * the portal OPENING PLANE. The original confines it to the arch by OT painter's
+ * order — RenderPortals paints the sky OVER everything seen THROUGH the opening and
+ * UNDER the arch stone — so a depth-buffer port must reproduce that with depth, and
+ * two things at the opening plane wrongly win against the sky:
+ *   1. INNER FRAME — many arches carry a thin decorative band at the opening plane;
+ *      it z-fights the sky and the sliver flickers through the rim as the camera moves.
+ *   2. THROUGH-ARCH GROUND/SILL — when close to a portal, the floor/sill seen through
+ *      the LOWER opening (below the sky dome's horizon, where only the flat backstop
+ *      fills) is nearer than the backstop and punches through ("ground disocclusion").
+ * Both are fixed by pulling the WHOLE portal sky (dome faces, flat preview, AND the
+ * backstop — see feed_portal_quad) toward the camera by this multiplicative view-Z
+ * bias, so it wins against coincident/through-arch geometry while staying behind the
+ * MUCH-nearer outer arch stone (which must still occlude it into the arch shape) and
+ * the near-side floor. Multiplicative (not a constant offset) so the margin tracks
+ * distance — depth_from_viewz compresses far depths, and a view-Z scale widens its
+ * step there. Value: 0.90 is the gentlest that covers the sill (the disocclusion
+ * persists at 0.95, clears at 0.90; A/B-matched to PsyCross on portal-ground-
+ * disocclusion f2444); verified no regression of the sharp-angle base connection
+ * (magic-crafters f2945), the close z-fight tiers (cyclorama-portal f1908), or far
+ * portals (f1750). Tunable: larger risks poking through the stone. */
+#define PORTAL_PLANE_FRONT_BIAS 0.90
 static float portal_plane_depth_from_viewz(double vz) {
     return openpete_native_depth_from_viewz((float)(vz * PORTAL_PLANE_FRONT_BIAS));
 }
@@ -327,10 +335,13 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
      * (a0 = stack/global colour) are the whole sky and stay on the plane. */
     double back_bias = 1.0;
     if (p) { uint32_t sb = cpu->read_word(p + 0x00); if (sb == a0 || sb == a0 - 0x10) back_bias = backstop_bias; }
-    /* A far/medium FLAT preview (back_bias still 1.0) IS the whole visible sky and
-     * sits on the opening plane → same inner-frame z-fight as the dome; pull it
-     * forward. A backstop (back_bias>1) stays behind the dome with its push-back. */
-    double depth_bias = (back_bias == 1.0) ? PORTAL_PLANE_FRONT_BIAS : back_bias;
+    /* Pull the WHOLE fill forward by the front bias: the far/medium FLAT preview
+     * (back_bias 1.0) so it clears the inner frame, AND the close/medium backstop
+     * (back_bias>1) so the lower opening (below the dome's horizon, where only the
+     * backstop fills) clears the through-arch ground/sill. The backstop keeps its
+     * relative push-back (back_bias) so it still sits just behind the dome where
+     * they overlap. */
+    double depth_bias = back_bias * PORTAL_PLANE_FRONT_BIAS;
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     if (pn >= 3) {
