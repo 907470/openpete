@@ -143,9 +143,11 @@ void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_
  * to s_scene_disp before the clear, so the present can draw the 1-frame-delayed
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
+static void alpha_census(const openpete_scene_tri* scene, int scene_n);  /* 3c instrument, defined below */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
         if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
+            alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
             s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
@@ -964,6 +966,73 @@ static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
     }
+}
+
+/* 3c falsify-first instrument: per-present census of ALPHA-class (blend==1, ABR
+ * mode 0 (B+F)/2) tris — the ONLY order-dependent class (additive/subtractive are
+ * commutative, so a back-to-front sort is a provable no-op for them). Reports the
+ * alpha count, its NDC-depth spread, and the number of overlapping pairs emitted
+ * OUT of back-to-front order (i emitted before j, screen bboxes overlap, i nearer
+ * than j -> i should have been drawn last). inversions>0 on any frame means the
+ * sort would visibly change that frame; inversions==0 across a corpus means the
+ * sort is unobservable there. Env-gated (OPENPETE_ALPHA_CENSUS), inert otherwise.
+ * Display-only diagnostic. */
+static void alpha_census(const openpete_scene_tri* scene, int scene_n)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_ALPHA_CENSUS"); s_on = (e && *e && *e != '0') ? 1 : 0; }
+    if (!s_on) return;
+
+    /* Blend histogram + running max per class. Sampling-proof: print whenever ANY
+     * class sets a new running high (so the FIRST add>0 / sub>0 / alpha>0 always
+     * shows), plus the first few frames (fire-confirm) and every alpha frame. This
+     * settles "does mode-0 alpha ever occur" regardless of sample spacing. */
+    static int s_shown = 0;
+    static int mx[4] = {0,0,0,0};
+    int hb[4] = {0,0,0,0};
+    for (int t = 0; t < scene_n; t++) { int b = scene[t].blend; if (b >= 0 && b <= 3) hb[b]++; }
+    int newmax = 0;
+    for (int b = 0; b < 4; b++) { if (hb[b] > mx[b]) { mx[b] = hb[b]; newmax = 1; } }
+    if (scene_n > 0 && (s_shown < 4 || newmax || hb[1] > 0)) {
+        if (s_shown < 4) s_shown++;
+        fprintf(stderr, "BLEND f=%u n=%d  o=%d alpha=%d add=%d sub=%d | max[o/a/ad/s]=%d/%d/%d/%d\n",
+                s_scene_frame, scene_n, hb[0], hb[1], hb[2], hb[3], mx[0], mx[1], mx[2], mx[3]);
+    }
+
+    /* Collect alpha tris: centroid depth + screen bbox, in EMIT order. */
+    enum { CAP = 4096 };
+    static float cz[CAP]; static float bx0[CAP], by0[CAP], bx1[CAP], by1[CAP]; static unsigned char tex[CAP];
+    int m = 0;
+    for (int t = 0; t < scene_n && m < CAP; t++) {
+        if (scene[t].blend != 1) continue;
+        float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0, zs = scene[t].v[0].z;
+        for (int k = 1; k < 3; k++) {
+            float x = scene[t].v[k].sx, y = scene[t].v[k].sy, z = scene[t].v[k].z;
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+            zs += z;
+        }
+        cz[m] = zs / 3.0f; bx0[m] = x0; by0[m] = y0; bx1[m] = x1; by1[m] = y1;
+        tex[m] = (unsigned char)(scene[t].textured ? 1 : 0);
+        m++;
+    }
+    if (m == 0) return;
+
+    float zmin = cz[0], zmax = cz[0]; int ntex = 0;
+    for (int i = 0; i < m; i++) { if (cz[i] < zmin) zmin = cz[i]; if (cz[i] > zmax) zmax = cz[i]; ntex += tex[i]; }
+
+    /* Out-of-order overlapping pairs. i<j = emit order; inversion if bboxes overlap
+     * and i is NEARER (smaller z) than j (i drawn first but should be drawn last). */
+    int overlaps = 0, inversions = 0;
+    for (int i = 0; i < m; i++) {
+        for (int j = i + 1; j < m; j++) {
+            if (bx0[i] > bx1[j] || bx0[j] > bx1[i] || by0[i] > by1[j] || by0[j] > by1[i]) continue;
+            overlaps++;
+            if (cz[i] < cz[j]) inversions++;   /* nearer tri emitted first -> wrong for back-to-front */
+        }
+    }
+    fprintf(stderr, "ALPHA-CENSUS f=%u alpha=%d (tex=%d) zspan=[%.3f,%.3f] overlaps=%d inversions=%d\n",
+            s_scene_frame, m, ntex, (double)zmin, (double)zmax, overlaps, inversions);
 }
 
 static bool draw_native_scene(bool full_extent)

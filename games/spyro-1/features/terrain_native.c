@@ -653,7 +653,62 @@ static double s_cal_qsum_max, s_cal_qmin_max, s_cal_nqsum_min;
  * vertices (LP for 0x4000 "no-HP" sectors), then walk the HP faces (16B) / LP
  * faces (8B) into triangles. Camera-relative GTE-vector per r_environment.s
  * 0x80026238-0x800262C0 (matrix = g_Camera+0x00; world axes = origin+field). */
+/* Camera-INDEPENDENT per-level ABR census (OPENPETE_TERRAIN_ABRSCAN). Walks EVERY
+ * sector and EVERY HP face (no visibility/frustum gate, no projection) and tallies
+ * the semi-transparent (ABE, face word2 bit 0x80) terrain faces by ABR blend mode
+ * (from the LQ Tiledef tpage): 1=alpha (B+F)/2, 2=additive, 3=subtract, 4=mode3.
+ * This answers "which levels CONTAIN mode-0 alpha terrain" across the whole game
+ * via a --skip-to-level sweep, with no dependence on where the camera looked — the
+ * gap that a playthrough (or my demo+spawn census) can leave. A back-to-front
+ * transparency sort can only ever matter where alpha(mode 1) terrain exists AND
+ * overlaps in view; this scan finds the necessary condition exhaustively. Prints
+ * once per level (first call at openpete_frame>=1800, i.e. loaded). Display-only. */
+static void terrain_abr_scan(CPUState* cpu) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ABRSCAN"); s_on = (e && *e && *e != '0') ? 1 : 0; }
+    if (!s_on) return;
+    static int s_done = 0;
+    if (s_done || openpete_frame < 1800u) return;
+    s_done = 1;
+
+    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
+    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    uint32_t lqTable   = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
+    long abe[5] = {0,0,0,0,0};   /* index by mat.blend (0..4); ABE faces only */
+    long hpFaces = 0, abeFaces = 0, secWalked = 0;
+
+    for (uint32_t i = 0; i < sectorCnt; i++) {       /* ALL sectors — no visibility gate */
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        secWalked++;
+        uint32_t w1  = rd(cpu, s + 0x04);
+        uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
+        if (w1 & 0x4000) continue;                   /* no-HP (LP-only) sector: untextured */
+        int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
+        int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
+        int hpVertsOff = (int)((hpw >> 24) & 0xFF);
+        (void)nLpV; (void)nLpC; (void)nLpF;
+        uint32_t verts = s + 0x1C + (uint32_t)hpVertsOff * 4;
+        uint32_t faces = verts + (uint32_t)(nHpV + nHpC * 2) * 4;
+        for (int f = 0; f < nHpF; f++) {
+            uint32_t w2 = rd(cpu, faces + (uint32_t)f * 16u + 8);
+            hpFaces++;
+            if (!(w2 & 0x80)) continue;              /* opaque (or 0xFF untextured) */
+            int tb = (int)(int8_t)(w2 & 0xFF);
+            tmat mat; float tu[4], tv[4]; memset(&mat, 0, sizeof(mat));
+            terrain_texmat(cpu, lqTable, tb, 0, &mat, tu, tv);
+            int b = mat.blend; if (b < 0 || b > 4) b = 0;
+            abeFaces++; abe[b]++;
+        }
+    }
+    fprintf(stderr,
+        "ABR-SCAN frame=%u sectors=%ld hpFaces=%ld abeFaces=%ld  "
+        "ABE-by-mode[alpha=%ld add=%ld sub=%ld mode3=%ld]\n",
+        openpete_frame, secWalked, hpFaces, abeFaces, abe[1], abe[2], abe[3], abe[4]);
+}
+
 static void terrain_build(CPUState* cpu) {
+    terrain_abr_scan(cpu);
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
