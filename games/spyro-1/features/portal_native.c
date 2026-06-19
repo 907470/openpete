@@ -70,6 +70,17 @@ static unsigned portal_dump_frame(void) {
 static void   read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 static double project_world(CPUState* cpu, int wx, int wy, int wz, double* out_sx, double* out_sy);
 
+typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex (clipping) */
+typedef struct { float x, y; double vz; } ppt; /* projected portal-outline point  */
+/* Owning portal of a leaf: skybox-pointer match (dome/close), else screen-centre
+ * match (far/medium flat). Returns the Portal* or 0. */
+static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double cy);
+/* Project a portal's outline (m_Points) to screen with per-point view-Z. Returns
+ * the count (>=3) iff every point is in front of the camera, else 0 (the portal
+ * is a tilted planar window — its sky is depth-interpolated across this polygon
+ * instead of drawn flat, so the stone frame occludes it correctly at an angle). */
+static int    portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn);
+
 static void dump_portal_table(CPUState* cpu) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT);
     fprintf(stderr, "[portal-dump f=%u] RenderPortals: g_PortalCount=%u yaw=%d pitch=%d\n",
@@ -148,54 +159,135 @@ static double portal_outline_maxvz(CPUState* cpu, uint32_t p) {
     return maxvz;
 }
 
-/* Identify the portal a leaf call belongs to by projecting every portal centroid
- * and choosing the one whose screen position is nearest the clip-rect centre,
- * then return THAT portal's farthest-outline view-Z (the same depth basis as the
- * dome path). Used for the far/medium flat leaves whose a0 carries no skybox
- * link. -1 on miss. */
-static double owning_portal_viewz(CPUState* cpu, double rect_cx, double rect_cy) {
-    uint32_t n = cpu->read_word(G_PORTALCOUNT);
-    if (n > 6) n = 6;
-    double best_d = 1e30; uint32_t best_p = 0;
+/* Owning portal of a leaf. The close/dome leaves pass the owning portal's skybox
+ * directly (func_8004F4BC: a0=m_Skybox; the close func_8004FEA0: a0=m_Skybox+0x10)
+ * → EXACT match (the screen-centre match mis-binds a large, screen-clamped portal
+ * whose clip-rect centre drifts onto another portal — the f2075 "portal vanished").
+ * Far/medium flat leaves carry a stack/global colour ptr with no skybox link →
+ * fall back to the portal whose centroid projects nearest the clip-rect centre. */
+static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double cy) {
+    uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
+    for (uint32_t i = 0; i < n; i++) {                  /* skybox-pointer match */
+        uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
+        uint32_t sb = cpu->read_word(p + 0x00);
+        if (sb && (sb == a0 || sb == a0 - 0x10)) return p;
+    }
+    double best_d = 1e30; uint32_t best_p = 0;          /* screen-centre match */
     for (uint32_t i = 0; i < n; i++) {
-        uint32_t p = cpu->read_word(G_PORTALS + i * 4);
-        if (!p) continue;
-        int npts = (int32_t)cpu->read_word(p + 0x04);
-        if (npts < 1 || npts > 16) npts = 5;
-        double ax = 0, ay = 0, az = 0;                 /* centroid of the outline points */
+        uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
+        int npts = (int32_t)cpu->read_word(p + 0x04); if (npts < 1 || npts > 16) npts = 5;
+        double ax = 0, ay = 0, az = 0;
         for (int k = 0; k < npts; k++) {
             ax += (int32_t)cpu->read_word(p + 0x20 + k*12);
             ay += (int32_t)cpu->read_word(p + 0x24 + k*12);
             az += (int32_t)cpu->read_word(p + 0x28 + k*12);
         }
         ax /= npts; ay /= npts; az /= npts;
-        double sx, sy;
-        double vz = project_world(cpu, (int)ax, (int)ay, (int)az, &sx, &sy);
-        if (vz <= 1.0) continue;                       /* behind camera */
-        double dx = sx - rect_cx, dy = sy - rect_cy, d = dx*dx + dy*dy;
+        double sx, sy, vz = project_world(cpu, (int)ax, (int)ay, (int)az, &sx, &sy);
+        if (vz <= 1.0) continue;
+        double dx = sx - cx, dy = sy - cy, d = dx*dx + dy*dy;
         if (d < best_d) { best_d = d; best_p = p; }
     }
-    return best_p ? portal_outline_maxvz(cpu, best_p) : -1.0;
+    return best_p;
 }
 
-/* View-Z for the portal a leaf is rendering. The close/dome leaves pass the
- * owning portal's skybox directly (func_8004F4BC: a0=m_Skybox; the close
- * func_8004FEA0: a0=m_Skybox+0x10), so match by that pointer for an EXACT
- * portal→depth — the screen-centre match (owning_portal_viewz) mis-binds a large,
- * screen-clamped portal whose clip-rect centre drifts onto a different portal
- * (the f2075 "portal vanished": its near dome was handed a far portal's view-Z
- * and got Z-occluded). Far/medium flat leaves carry a stack/global colour ptr
- * with no skybox link → fall back to the screen-centre match. */
-static double portal_viewz(CPUState* cpu, uint32_t a0, double rect_cx, double rect_cy) {
-    uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
-        uint32_t sb = cpu->read_word(p + 0x00);
-        if (!sb || (sb != a0 && sb != a0 - 0x10)) continue;
-        double maxvz = portal_outline_maxvz(cpu, p);     /* farthest outline point */
-        if (maxvz > 1.0) return maxvz;
+/* Single fallback view-Z (farthest outline point) for when the tilted-plane path
+ * can't be used (an outline point is behind the camera). */
+static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
+    uint32_t p = owning_portal_ptr(cpu, a0, cx, cy);
+    return p ? portal_outline_maxvz(cpu, p) : -1.0;
+}
+
+/* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
+ * count iff >=3 points and ALL are in front (so the polygon + plane are valid). */
+static int portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
+    int npts = (int32_t)cpu->read_word(p + 0x04);
+    if (npts < 3 || npts > maxn) return 0;
+    for (int k = 0; k < npts; k++) {
+        int wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
+        int wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
+        int wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
+        double sx, sy, vz = project_world(cpu, wx, wy, wz, &sx, &sy);
+        if (vz <= 1.0) return 0;                         /* a point is behind the camera */
+        poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
-    return owning_portal_viewz(cpu, rect_cx, rect_cy);   /* far/medium: no skybox link */
+    return npts;
+}
+
+/* Fit inv-vz = a*x + b*y + c over the (planar) outline — 1/w is linear in screen
+ * space for a plane, so this is the portal window's depth field. 0 if degenerate. */
+static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
+    int i0 = 0, i1 = n / 3, i2 = (2 * n) / 3;
+    if (i1 == i0) i1 = 1; if (i2 == i1) i2 = n - 1; if (i2 == i0) return 0;
+    double x0 = poly[i0].x, y0 = poly[i0].y, w0 = 1.0 / poly[i0].vz;
+    double x1 = poly[i1].x, y1 = poly[i1].y, w1 = 1.0 / poly[i1].vz;
+    double x2 = poly[i2].x, y2 = poly[i2].y, w2 = 1.0 / poly[i2].vz;
+    double det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (det > -1e-6 && det < 1e-6) return 0;            /* collinear */
+    *a = ((w1 - w0) * (y2 - y0) - (w2 - w0) * (y1 - y0)) / det;
+    *b = ((x1 - x0) * (w2 - w0) - (x2 - x0) * (w1 - w0)) / det;
+    *c = w0 - *a * x0 - *b * y0;
+    return 1;
+}
+
+/* Native depth from the portal plane at a screen point (perspective-correct via
+ * the inv-vz fit). */
+static float plane_depth(double a, double b, double c, double x, double y) {
+    double inv = a * x + b * y + c;
+    double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
+    return openpete_native_depth_from_viewz((float)vz);
+}
+
+/* Clip a gouraud polygon against one directed edge a->b, keeping the side whose
+ * cross-product sign is ksign (the interior side). Interpolates colour. */
+static int clip_edge(const pgv* in, int n, pgv* out, float ax, float ay, float bx, float by, double ksign) {
+    int m = 0;
+    double ex = bx - ax, ey = by - ay;
+    for (int i = 0; i < n; i++) {
+        const pgv* p = &in[i];
+        const pgv* q = &in[(i + 1) % n];
+        double cp = (ex * (p->y - ay) - ey * (p->x - ax)) * ksign;
+        double cq = (ex * (q->y - ay) - ey * (q->x - ax)) * ksign;
+        if (cp >= 0) out[m++] = *p;
+        if ((cp >= 0) != (cq >= 0)) {
+            double t = cp / (cp - cq);
+            pgv r;
+            r.x = p->x + (float)t * (q->x - p->x);  r.y = p->y + (float)t * (q->y - p->y);
+            r.r = p->r + (float)t * (q->r - p->r);  r.g = p->g + (float)t * (q->g - p->g);  r.b = p->b + (float)t * (q->b - p->b);
+            out[m++] = r;
+        }
+    }
+    return m;
+}
+
+/* Clip a gouraud tri to the outline polygon and fan-emit it with the portal-plane
+ * depth (so the sky sits on the tilted window plane, not one flat depth). */
+static void emit_tri_on_portal(pgv v0, pgv v1, pgv v2, const ppt* poly, int pn,
+                               double ccx, double ccy, double pa, double pb, double pc) {
+    pgv ba[24], bb[24];
+    ba[0] = v0; ba[1] = v1; ba[2] = v2;
+    pgv* cur = ba; pgv* nxt = bb; int n = 3;
+    for (int e = 0; e < pn && n >= 3; e++) {
+        float ax = poly[e].x, ay = poly[e].y, bx = poly[(e + 1) % pn].x, by = poly[(e + 1) % pn].y;
+        double ksign = ((bx - ax) * (ccy - ay) - (by - ay) * (ccx - ax)) >= 0 ? 1.0 : -1.0;
+        n = clip_edge(cur, n, nxt, ax, ay, bx, by, ksign);
+        pgv* t = cur; cur = nxt; nxt = t;
+    }
+    if (n < 3) return;
+    for (int i = 1; i + 1 < n; i++) {
+        openpete_scene_tri t;
+        memset(&t, 0, sizeof t);
+        t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_WORLD;
+        const pgv* tv[3] = { &cur[0], &cur[i], &cur[i + 1] };
+        for (int k = 0; k < 3; k++) {
+            uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
+            if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
+            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
+            t.v[k].z = plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y);
+            t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;
+        }
+        openpete_native_scene_add_tri(&t);
+    }
 }
 
 /* Far-path portal preview: the destination dome renders as a single flat colour
@@ -216,6 +308,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
      * per-vertex gradient dome is the next increment — see CARVE-OUT.) */
     uint32_t w0 = cpu->read_word(a0) & 0xFFFFFF;
     uint32_t rgb = (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
+    uint32_t rgba = rgb | 0xFF000000u;
 
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16;
     int y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
@@ -225,16 +318,36 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
     if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
     if (x1 <= x0 || y1 <= y0) return 0;                /* empty/degenerate */
 
-    /* Depth from the owning portal's true view-Z (project its outline centroid
-     * exactly as func_80017B48 does, match to this clip rect). Mapped through
-     * the shared depth_from_viewz so the quad sorts against terrain: far portals
-     * land behind the foreground hills, the near arch stays visible and is
-     * occluded by its own (nearer) stone ring, giving the arch shape. */
-    double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    if (vz <= 1.0) vz = 16384.0;                       /* fallback mid-depth */
-    float depth = openpete_native_depth_from_viewz((float)vz);
+    /* The portal opening is a tilted planar window. Fill its actual outline
+     * polygon (projected m_Points) with per-vertex depth = each point's view-Z,
+     * so at a sharp angle the near (bottom) edge keeps its near depth and the
+     * floor occludes it exactly at the frame, instead of a single flat depth
+     * that makes the floor eat the near part (f2945). */
+    uint32_t p = owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    ppt poly[16];
+    int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    if (pn >= 3) {
+        for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
+            openpete_scene_tri t;
+            memset(&t, 0, sizeof t);
+            t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_WORLD;
+            const int idx3[3] = { 0, i, i + 1 };
+            for (int k = 0; k < 3; k++) {
+                const ppt* v = &poly[idx3[k]];
+                t.v[k].sx = v->x; t.v[k].sy = v->y;
+                t.v[k].z = openpete_native_depth_from_viewz((float)v->vz);
+                t.v[k].rgba = rgba;
+            }
+            openpete_native_scene_add_tri(&t);
+        }
+        return 1;
+    }
 
-    uint32_t rgba = rgb | 0xFF000000u;
+    /* Fallback (an outline point behind the camera / no match): the axis-aligned
+     * clip rect at the farthest-outline constant depth. */
+    double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    if (vz <= 1.0) vz = 16384.0;
+    float depth = openpete_native_depth_from_viewz((float)vz);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -259,8 +372,6 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0) {
  * matrix from the GTE the leaf left (post-call, TR=0), sectors from the skybox
  * (count@+0x00, sector-array ptr@+0x04), gouraud faces Sutherland-Hodgman-clipped
  * to the arch rect at the portal depth. */
-typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex for clipping */
-
 /* Clip a convex polygon against one axis-aligned half-plane (axis 0=x,1=y;
  * keepGE: keep the >=val side). out holds up to n+1 verts. Interpolates colour. */
 static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int keepGE) {
@@ -323,9 +434,20 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox) {
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
 
-    double vz = portal_viewz(cpu, skybox, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
+    double vz = portal_viewz(cpu, skybox, cx, cy);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)vz);
+    float depth = openpete_native_depth_from_viewz((float)vz);   /* rect-fallback depth */
+
+    /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
+     * field, so each dome pixel takes the portal-plane depth (the stone frame
+     * occludes it into the arch shape even at a sharp angle, f2945). Falls back to
+     * the rect clip + constant depth when an outline point is behind the camera. */
+    uint32_t p = owning_portal_ptr(cpu, skybox, cx, cy);
+    ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    double pa = 0, pb = 0, pc = 0, ccx = 0, ccy = 0;
+    int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
+    if (use_plane) { for (int k = 0; k < pn; k++) { ccx += poly[k].x; ccy += poly[k].y; } ccx /= pn; ccy /= pn; }
 
     uint32_t cnt = cpu->read_word(skybox + 0x00), arr = cpu->read_word(skybox + 0x04);
     if (cnt > 1024) cnt = 1024;
@@ -369,7 +491,8 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox) {
             a.x = px[i0]; a.y = py[i0]; a.r = cc0 & 0xFF; a.g = (cc0 >> 8) & 0xFF; a.b = (cc0 >> 16) & 0xFF;
             b.x = px[i1]; b.y = py[i1]; b.r = cc1 & 0xFF; b.g = (cc1 >> 8) & 0xFF; b.b = (cc1 >> 16) & 0xFF;
             c.x = px[i2]; c.y = py[i2]; c.r = cc2 & 0xFF; c.g = (cc2 >> 8) & 0xFF; c.b = (cc2 >> 16) & 0xFF;
-            emit_clipped_gouraud(a, b, c, x0, y0, x1, y1, depth);
+            if (use_plane) emit_tri_on_portal(a, b, c, poly, pn, ccx, ccy, pa, pb, pc);
+            else           emit_clipped_gouraud(a, b, c, x0, y0, x1, y1, depth);
         }
     }
     return 1;
