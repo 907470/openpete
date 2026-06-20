@@ -707,7 +707,107 @@ static void terrain_abr_scan(CPUState* cpu) {
         openpete_frame, secWalked, hpFaces, abeFaces, abe[1], abe[2], abe[3], abe[4]);
 }
 
-static void terrain_build(CPUState* cpu) {
+/* OPENPETE_TERRAIN_VISDBG: falsify the widescreen candidate set's correctness
+ * invariant. Prints ONCE (once loaded): the .s's canonical 4:3 visible count
+ * (D_800771C8==0xFF) vs the occlusion candidate set, and how many visible
+ * sectors are MISSING from the candidate set. The candidate set must be a
+ * SUPERSET of the 4:3 visible set — if missing>0 the occlusion-group walk is
+ * wrong (offset/format) and widescreen would gap even at 4:3. Display-only. */
+static int s_visdbg = -1;
+static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
+                           uint32_t occCnt, const uint16_t* cand, int cn, int ws) {
+    static int s_done = 0;
+    if (s_done || openpete_frame < 1800u) return;
+    s_done = 1;
+    static char inset[1024]; memset(inset, 0, sizeof(inset));
+    for (int j = 0; j < cn; j++) if (cand[j] < 1024) inset[cand[j]] = 1;
+    int vis43 = 0, missing = 0;
+    for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
+        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        if (vis == 0xFF) { vis43++; if (!inset[i]) missing++; }
+    }
+    fprintf(stderr,
+        "[terrain-vis] frame=%u group=%d occCnt=%u candidates=%d  vis4:3=%d "
+        "missingFromCandidates=%d  (sectors=%u ws=%d)\n",
+        openpete_frame, group, occCnt, cn, vis43, missing, sectorCnt, ws);
+}
+
+/* Build the set of sector indices to render this frame.
+ *
+ * Native 4:3: use the .s's own canonical visibility verdict D_800771C8
+ * (== occlusion sublist ∩ the .s 4:3 frustum cull) directly — pixel-identical
+ * to the .s visible set, zero risk.
+ *
+ * WIDESCREEN: the .s verdict is too narrow — its 4:3 frustum cull dropped the
+ * side sectors the wider frustum now reveals (the terrain sibling of the
+ * cyclorama wide-AR gap, FIXED 2026-06-20). We re-derive the candidate set
+ * host-side from the SAME static, aspect/direction-INDEPENDENT occlusion data
+ * the .s starts from: g_Camera.m_OcclusionGroup selects a baked PVS sublist in
+ * g_Environment.m_OcclusionGroups (a conservative, direction-independent
+ * superset for the camera's region), or ALL sectors when the group is invalid
+ * (mirrors func_8002B9CC's group selection). The near-plane clip + the
+ * full-window GPU scissor + the Z-buffer then confine and depth-sort the set.
+ *
+ * DISPLAY-ONLY: reads g_Camera/g_Environment read-only, never writes
+ * D_800771C8 / m_WasDrawn (the canonical render→gameplay channel) — oracle-safe
+ * by construction. The candidate set is a SUPERSET of the 4:3 visible set
+ * (verified by OPENPETE_TERRAIN_VISDBG: every D_800771C8==0xFF sector is in the
+ * sublist), so widescreen only ADDS side sectors, never drops a visible one. A
+ * cheap per-sector wide-frustum prune of this candidate set (for the 480fps /
+ * --no-lod passes) is a follow-up; see the plan.
+ *
+ * `group` is the occlusion-group ARGUMENT the .s renderer (func_800258F0)
+ * received this frame (captured from cpu->a0 at the hook, BEFORE the real call
+ * clobbers it) — already clamped by func_8002B9CC to a valid index or -1. It is
+ * the exact input the .s used to build D_800771C8, so it's the ground truth
+ * even for the in-level/overlay callers that bypass func_8002B9CC (which a
+ * re-derivation from g_Camera.m_OcclusionGroup would miss). */
+static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group) {
+    if (sectorCnt > 1024) sectorCnt = 1024;
+    int ws = openpete_native_widescreen_factor() > 1.0001f;
+    if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
+
+    uint32_t occCnt    = rd(cpu, G_ENVIRONMENT + ENV_OCCGROUPCNT);
+    uint32_t occGroups = rd(cpu, G_ENVIRONMENT + ENV_OCCGROUPS);
+    uint32_t list = (group >= 0 && (uint32_t)group < occCnt && occGroups)
+                    ? rd(cpu, occGroups + (uint32_t)group * 4) : 0;
+
+    if (ws) {
+        int n = 0;
+        if (list) {
+            for (uint32_t k = 0; k < 2048 && n < 1024; k++) {
+                uint8_t idx = cpu->read_byte(list + k);
+                if (idx == 0xFF) break;
+                if (idx < sectorCnt) out[n++] = idx;
+            }
+        } else {
+            for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
+        }
+        if (s_visdbg) terrain_visdbg(cpu, sectorCnt, group, occCnt, out, n, ws);
+        return n;
+    }
+
+    /* native 4:3 — the canonical .s verdict */
+    int n = 0;
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        if (vis == 0xFF) out[n++] = (uint16_t)i;
+    }
+    if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
+        static uint16_t cand[1024]; int cn = 0;
+        if (list) {
+            for (uint32_t k = 0; k < 2048 && cn < 1024; k++) {
+                uint8_t idx = cpu->read_byte(list + k);
+                if (idx == 0xFF) break;
+                if (idx < sectorCnt) cand[cn++] = idx;
+            }
+        } else for (uint32_t i = 0; i < sectorCnt && cn < 1024; i++) cand[cn++] = (uint16_t)i;
+        terrain_visdbg(cpu, sectorCnt, group, occCnt, cand, cn, ws);
+    }
+    return n;
+}
+
+static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_abr_scan(cpu);
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
@@ -753,9 +853,12 @@ static void terrain_build(CPUState* cpu) {
     static lvert sv[256];
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
-    for (uint32_t i = 0; i < sectorCnt; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
-        if (vis != 0xFF) continue;
+    /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
+     * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
+    static uint16_t visidx[1024];
+    int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup);
+    for (int vi = 0; vi < nvis; vi++) {
+        uint32_t i = visidx[vi];
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         if (!s) continue;
         uint32_t w1  = rd(cpu, s + 0x04);
@@ -1253,6 +1356,11 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
+    /* Capture the occlusion-group arg BEFORE the real call clobbers a0. This is
+     * the exact input the .s uses to build D_800771C8 — the ground truth for the
+     * widescreen candidate set (terrain_vislist). */
+    int32_t occGroup = (int32_t)cpu->a0;
+
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_800258F0(cpu);                            /* run the real renderer (verdicts intact) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
@@ -1262,7 +1370,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_TERRAIN)) {
-        terrain_build(cpu);                         /* native walk + tris */
+        terrain_build(cpu, occGroup);               /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
         terrain_feed_native();                      /* push tris to the scene */
     }
@@ -1271,7 +1379,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
         static int s_reports = 0;
         if (s_reports < 8) {
             terrain_dump(cpu);
-            terrain_build(cpu);         /* native float decode + projection + faces */
+            terrain_build(cpu, occGroup); /* native float decode + projection + faces */
             terrain_compare();          /* geometry A/B vs captured prims */
             s_reports++;
         }
