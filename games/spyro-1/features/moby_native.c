@@ -125,6 +125,10 @@ static double project(const int M[3][3], const int TR[3], double vx, double vy, 
     return mac3;
 }
 
+/* Forward decl: the host-side moby record builder (widescreen reveal, below)
+ * reuses the shaded path's euler matrix composer, defined later in this file. */
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]);
+
 /* ---- ground-truth capture: decode prims F798 emitted ---------------- */
 /* Walk by OT tag length (stride=((w0>>24)+1)*4) — robust regardless of the
  * exact per-code layout. Decode XY/RGB/UV by code byte (prim[0x7]); the
@@ -294,9 +298,18 @@ typedef struct { float sx, sy, vz; int sat; int rec;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
                  the input to the specular env-reflection UV map (#1). */
 
-static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
-    uint32_t header = cpu->read_word(rec + 0x04);
-    uint32_t frameA = cpu->read_word(rec + 0x08);
+/* Field-driven decode + float-project core. Both the .s-record path
+ * (moby_project_record) and the host-built widescreen-reveal path
+ * (append_revealed_regular) feed it the SAME six fields, so a revealed moby
+ * decodes/projects bit-identically to a culled one:
+ *  header  = AnimationHeader* (m_Scale@+5, ShortShift@+6, count@+8, faces@+0x14, colors@+0x18)
+ *  frameA/frameB = AnimationFrame* keyframes (vertex stream packed in word0)
+ *  w0      = record flags word (keyframe blend factor in bits 8-15)
+ *  TR_raw  = stored translation (pre (<<2)>>m_Scale), the GTE view-space MAC
+ *  M       = model->view rotation (int16, 1.0=4096) */
+static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
+                               uint32_t frameB, uint32_t w0, const int TR_raw[3],
+                               const int M[3][3], proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
@@ -305,10 +318,9 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
      * (This is the a3 = w0&0xFF == 0 path; the rare a3!=0 GPF-TR path is a TODO.) */
     int m_scale = cpu->read_byte(header + 5) & 0xFF;
     int TR[3];
-    TR[0] = (((int32_t)cpu->read_word(rec + 0x10)) << 2) >> m_scale;
-    TR[1] = (((int32_t)cpu->read_word(rec + 0x14)) << 2) >> m_scale;
-    TR[2] = (((int32_t)cpu->read_word(rec + 0x18)) << 2) >> m_scale;
-    int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
+    TR[0] = (TR_raw[0] << 2) >> m_scale;
+    TR[1] = (TR_raw[1] << 2) >> m_scale;
+    TR[2] = (TR_raw[2] << 2) >> m_scale;
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -317,10 +329,9 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
     int count = cpu->read_byte(header + 8) & 0xFF;   /* gte_ctrl[30] sign adj = 0 here */
     if (count > cap) count = cap;
 
-    /* Keyframe blend: IR0 = (rec.w0 & 0xFF00) >> 2 (1.0=4096); frame B at +0x0C.
+    /* Keyframe blend: IR0 = (w0 & 0xFF00) >> 2 (1.0=4096); frame B at frameB.
      * 0 (or B absent) => the no-blend path (frame A only). */
-    uint32_t frameB = cpu->read_word(rec + 0x0C);
-    int blend = (int)((cpu->read_word(rec) & 0xFF00u) >> 2);
+    int blend = (int)((w0 & 0xFF00u) >> 2);
     int do_blend = (blend > 0 && frameB >= 0x80000000u);
     double t = (double)blend / 4096.0;
 
@@ -355,6 +366,19 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
     return count;
 }
 
+/* Thin wrapper: read the six fields from a live .s cull record (+0x1600). */
+static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
+    uint32_t header = cpu->read_word(rec + 0x04);
+    uint32_t frameA = cpu->read_word(rec + 0x08);
+    uint32_t frameB = cpu->read_word(rec + 0x0C);
+    uint32_t w0     = cpu->read_word(rec);
+    int TR_raw[3] = { (int32_t)cpu->read_word(rec + 0x10),
+                      (int32_t)cpu->read_word(rec + 0x14),
+                      (int32_t)cpu->read_word(rec + 0x18) };
+    int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, TR_raw, M, out, cap);
+}
+
 #define MAX_PROJ 8192
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
@@ -362,8 +386,10 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
-                 int metal; uint32_t mscol; } rec_meta;  /* metal = m_SpecularMetalColor (rec+0x30)
-                 high byte (env flag); mscol = the full word (highlight back-colour BK + spec byte) */
+                 int metal; uint32_t mscol; uint32_t moby; } rec_meta;  /* metal = m_SpecularMetalColor
+                 (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
+                 moby = Moby* (rec+0x34 for .s records; set directly for host-built reveal records,
+                 whose addr is then 0 — there is no live +0x1600 record behind them) */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
 /* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
@@ -399,13 +425,167 @@ static int project_all_records(CPUState* cpu) {
                 (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu),
                 /* full m_SpecularMetalColor: the highlight back-colour (.L80021DB4) +
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
-                cpu->read_word(rec + 0x30) };
+                cpu->read_word(rec + 0x30),
+                cpu->read_word(rec + 0x34) };
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
     }
     s_nrecs = nrec;
     return nrec;
+}
+
+/* ---- widescreen live-moby reveal (host-built records) ---------------------
+ * In widescreen the .s cull (run headless at canonical 4:3) only writes +0x1600
+ * records for 4:3-visible mobys, so enemies/fodder/Sparx/gems pop in at the
+ * screen edges. We must NOT re-run the cull (it sets m_WasDrawn — a render->
+ * gameplay leak). Instead rebuild the per-moby record FIELDS host-side from
+ * gamestate, exactly as func_8001F158 does, for the mobys the 4:3 cull skipped,
+ * and decode/project them through moby_decode_project (the same core).
+ *
+ * Validated against the .s records for in-frustum mobys (OPENPETE_MOBY_BUILDDBG):
+ * a host-built record for a moby the .s already culled in must match the .s record
+ * field-for-field (M/TR within GTE truncation, header/frameA/frameB/blend exact).
+ * Only after that A/B passes is the builder trusted on the revealed (off-4:3) set. */
+typedef struct { uint32_t header, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; int M[3][3]; } moby_fields;
+
+/* Build the REGULAR (animated) render-record fields for one moby from gamestate.
+ * Returns 1 on success, 0 if the moby has no animated model (SimpleModel =>
+ * shaded material, handled by the shaded path) or an invalid model/header. */
+static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f) {
+    uint32_t cls   = cpu->read_half(moby + 0x36);            /* m_Class */
+    uint32_t model = cpu->read_word(G_MODELS + cls * 4u);    /* g_Models[cls] */
+    if (model < 0x80000000u) return 0;
+    if ((int32_t)cpu->read_word(model + 0x00) < 0) return 0; /* m_NumAnimations<0 => SimpleModel (shaded) */
+    uint32_t anim   = cpu->read_byte(moby + 0x3C) & 0xFFu;   /* m_Animation */
+    uint32_t header = cpu->read_word(model + 0x38u + anim * 4u);  /* AnimationHeader* (Model.m_Animations[]) */
+    if (header < 0x80000000u) return 0;
+    uint32_t frm  = cpu->read_byte(moby + 0x3E) & 0xFFu;     /* m_Frame */
+    uint32_t nfrm = cpu->read_byte(moby + 0x3F) & 0xFFu;     /* m_NextFrame */
+    f->header = header;
+    f->frameA = header + 0x24u + frm  * 8u;                  /* &m_Frames[m_Frame]     (AnimationFrame, stride 8) */
+    f->frameB = header + 0x24u + nfrm * 8u;                  /* &m_Frames[m_NextFrame] */
+    uint32_t prog = cpu->read_byte(moby + 0x40) & 0xFFu;     /* m_FrameProgress -> blend bits 8-15 */
+    f->w0    = (prog << 8) & 0xFF00u;
+    f->mscol = cpu->read_word(moby + 0x4Cu);                 /* m_SpecularMetalColor */
+    f->metal = (int)((f->mscol >> 24) & 0xFFu);
+    /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
+     * path uses (verified bit-exact there); m_Rotation @ moby+0x44. */
+    int PM[3][3]; read_matrix(cpu, G_CAMERA + 0x00, PM);
+    shaded_compose_euler(cpu, PM, cpu->read_word(moby + 0x44u), f->M);
+    /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
+     * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
+     * here — moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
+    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    int32_t mx=(int32_t)cpu->read_word(moby+0x0C), my=(int32_t)cpu->read_word(moby+0x10), mz=(int32_t)cpu->read_word(moby+0x14);
+    int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
+    for (int i=0;i<3;i++)
+        f->TR_raw[i] = (PM[i][0]*Vy + PM[i][1]*Vz + PM[i][2]*Vx) >> 12;
+    return 1;
+}
+
+/* Builder A/B (OPENPETE_MOBY_BUILDDBG): for each .s record, rebuild its fields
+ * host-side from the moby and compare. A clean match => the builder reproduces the
+ * cull, so it is trusted for the off-4:3 reveal set. Prints once at the target. */
+static void moby_build_validate(CPUState* cpu) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e=getenv("OPENPETE_MOBY_BUILDDBG"); s_on = (e&&*e&&*e!='0'); }
+    if (!s_on) return;
+    /* Sample across the demo's level loads (varied class / m_scale / blend) rather
+     * than once: print on each crossing of a ~1500-frame grid, up to 12 reports. */
+    static unsigned s_next = 1850u; static int s_reports = 0;
+    if (openpete_frame < s_next || s_reports >= 12) return;
+    s_next = openpete_frame + 1500u; s_reports++;
+    int n=0, okHdr=0, okA=0, okB=0, okBl=0, okM=0, okTR=0, noModel=0, worstM=0, worstTR=0;
+    for (int r=0; r<s_nrecs; r++) {
+        uint32_t rec = s_recs[r].addr; if (rec < 0x80000000u) continue;
+        uint32_t moby = cpu->read_word(rec + 0x34);
+        moby_fields f;
+        if (!build_moby_record_fields(cpu, moby, &f)) { noModel++; continue; }
+        n++;
+        if (f.header == cpu->read_word(rec+0x04)) okHdr++;
+        if (f.frameA == cpu->read_word(rec+0x08)) okA++;
+        if (f.frameB == cpu->read_word(rec+0x0C)) okB++;
+        if ((f.w0 & 0xFF00u) == (cpu->read_word(rec) & 0xFF00u)) okBl++;
+        int sM[3][3]; read_matrix(cpu, rec+0x1C, sM);
+        int dM=0; for(int i=0;i<3;i++)for(int j=0;j<3;j++){int d=f.M[i][j]-sM[i][j]; if(d<0)d=-d; if(d>dM)dM=d;}
+        if (dM<=2) okM++; if (dM>worstM) worstM=dM;
+        int sTR[3]={(int32_t)cpu->read_word(rec+0x10),(int32_t)cpu->read_word(rec+0x14),(int32_t)cpu->read_word(rec+0x18)};
+        int dT=0; for(int i=0;i<3;i++){int d=f.TR_raw[i]-sTR[i]; if(d<0)d=-d; if(d>dT)dT=d;}
+        if (dT<=2) okTR++; if (dT>worstTR) worstTR=dT;
+        if (r < 6) fprintf(stderr,
+            "  [build r%d moby=%08X] hdr %08X/%08X A %08X/%08X B %08X/%08X bl %04X/%04X dM=%d dTR=%d\n",
+            r, moby, f.header, cpu->read_word(rec+0x04), f.frameA, cpu->read_word(rec+0x08),
+            f.frameB, cpu->read_word(rec+0x0C), (f.w0&0xFF00u), (cpu->read_word(rec)&0xFF00u), dM, dT);
+    }
+    fprintf(stderr,
+        "[moby-build f=%u] recs=%d built=%d noModel(shaded)=%d | hdr=%d frameA=%d frameB=%d blend=%d "
+        "M(<=2)=%d TR(<=2)=%d worst{M=%d TR=%d}  (== built means builder reproduces the .s cull)\n",
+        openpete_frame, s_nrecs, n, noModel, okHdr, okA, okB, okBl, okM, okTR, worstM, worstTR);
+}
+
+/* Append host-built records for mobys the 4:3 cull skipped but that fall in the
+ * widescreen reveal margins (projected centroid X outside the 4:3 [0,512] inset,
+ * inside the widened bounds). Dedups against the .s 4:3 set and only draws LIVE
+ * (animating) mobys — frozen mobys hold a stale pose (display-anim is deferred).
+ * Extends s_recs[]/s_proj[]; build_walk_tris then walks the union. Inert at 4:3. */
+static void append_revealed_regular(CPUState* cpu) {
+    float F = openpete_native_widescreen_factor();
+    if (F <= 1.0f) return;                              /* 4:3 — nothing to reveal */
+    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
+    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    int32_t spx=(int32_t)cpu->read_word(G_SPYRO+0x00), spy=(int32_t)cpu->read_word(G_SPYRO+0x04);
+    int nbase = s_nrecs;                               /* the .s 4:3 records (dedup set) */
+    int revealed = 0;
+    uint32_t m = cpu->read_word(G_LEVELMOBYS);
+    int guard = 0;
+    while (m >= 0x80000000u && guard++ < 4096) {
+        uint8_t stt = cpu->read_byte(m + 0x48);
+        if (stt == 0xFF) break;                        /* array sentinel */
+        if (stt >= 0x80) { m += 0x58; continue; }      /* dead/inactive */
+        /* dedup vs the .s 4:3 set (exact: same Moby* the cull recorded) */
+        int dup = 0;
+        for (int k = 0; k < nbase; k++) if (s_recs[k].moby == m) { dup = 1; break; }
+        if (dup) { m += 0x58; continue; }
+        /* live gate (Spyro-anchored, camera-angle-independent): m_WasDrawn grace,
+         * always-update sentinel, or within the m_UpdateDistance xy-disk of Spyro */
+        uint8_t wasDrawn = cpu->read_byte(m + 0x51), updDist = cpu->read_byte(m + 0x52);
+        int live = wasDrawn != 0;
+        if (!live && updDist != 0) {
+            if (updDist >= 0x80) live = 1;
+            else { double sdx=(double)((int32_t)cpu->read_word(m+0x0C)-spx),
+                          sdy=(double)((int32_t)cpu->read_word(m+0x10)-spy), thr=(double)updDist*1024.0;
+                   if (sdx*sdx + sdy*sdy <= thr*thr) live = 1; }
+        }
+        if (!live) { m += 0x58; continue; }
+        moby_fields f;
+        if (!build_moby_record_fields(cpu, m, &f)) { m += 0x58; continue; }  /* shaded/invalid */
+        double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
+        if (rz + 128.0 <= 0.0) { m += 0x58; continue; }                     /* behind camera */
+        double rRad = (double)(cpu->read_byte(m + 0x50) & 0xFF);
+        if (rz - rRad * 256.0 >= 0.0) { m += 0x58; continue; }              /* beyond render distance */
+        double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
+        if (sx >= 0.0 && sx <= 512.0) { m += 0x58; continue; }              /* central 4:3 — leave untouched */
+        if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
+        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
+        int off = s_proj_n;
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, f.TR_raw, f.M,
+                                      s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        if (got <= 0) { m += 0x58; continue; }
+        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
+            (f.header >= 0x80000000u) ? cpu->read_word(f.header + 0x14) : 0u, f.w0,
+            f.metal, f.mscol, m };
+        s_proj_n += got; s_nrecs++; revealed++;
+        m += 0x58;
+    }
+    static int s_logged = 0;
+    if (!s_logged && revealed > 0) {
+        s_logged = 1;
+        fprintf(stderr, "[moby-reveal-feed] frame=%u F=%.3f host-built %d revealed regular mobys "
+                "(off-4:3, live) appended to the native scene\n", openpete_frame, F, revealed);
+    }
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -1288,12 +1468,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
      * (e.g. the rescue dragon the specular cull adds to a slot a regular moby held at
      * REGULAR-read time; also the disjoint specular queue under --no-lod). */
     int is_spec = (mat && mat[0]=='S' && mat[1]=='P');
+    if (!is_spec) moby_build_validate(cpu);   /* OPENPETE_MOBY_BUILDDBG: host-builder A/B vs the .s records */
     if (!is_spec) {                           /* REGULAR runs first — snapshot its moby set */
         s_reg_moby_n = 0;
         for (int r = 0; r < nrec && s_reg_moby_n < MAX_RECORDS; r++)
-            s_reg_moby[s_reg_moby_n++] = cpu->read_word(s_recs[r].addr + 0x34);
+            s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
     }
     if (feed) {
+        if (!is_spec) append_revealed_regular(cpu);  /* widescreen: host-build records for mobys the 4:3 cull skipped */
         build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
         push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
