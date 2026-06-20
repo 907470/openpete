@@ -639,6 +639,10 @@ static int s_want_dump_this_frame(void) {
  * dump. A re-entry guard keeps a nested call (shouldn't happen for leaves)
  * from re-dumping. */
 static int s_leaf_in = 0;
+/* Portals a leaf actually rendered this frame (the on-4:3 set), so the widescreen
+ * off-4:3 reveal (feed_revealed_portals) doesn't double-draw them. Reset per frame
+ * in on_80050BE0 before the real RenderPortals runs. */
+static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
 static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) {
     int feed = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0; /* inert */
@@ -676,6 +680,14 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         feed_portal_quad(cpu, a0, backstop_bias, fog, fog_t);
         if (is_dome && a0 >= 0x80010000u && a0 < 0x80200000u)
             feed_portal_dome(cpu, a0, fog, fog_t);
+        /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
+         * so the widescreen off-4:3 reveal below doesn't double-draw it. */
+        {
+            int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
+            int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
+            uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
+            if (fp && s_fed_n < 8) s_fed_portal[s_fed_n++] = fp;
+        }
     }
     s_leaf_in = 0;
     return 1;
@@ -685,15 +697,75 @@ static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
 static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
 static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
 
+/* Widescreen off-4:3 portal reveal. The .s RenderPortals culls portals whose
+ * centroid is off the 4:3 screen, so at wide AR a portal in the side margin shows
+ * no destination-sky preview (the arch frames empty world). After the real
+ * RenderPortals has fed the on-4:3 portals via the leaves, walk g_Portals and draw
+ * a FLAT destination-sky preview for each portal that is off-4:3 but inside the
+ * widened view and was NOT already fed by a leaf. Mirrors feed_portal_quad's
+ * outline-polygon fill (tilted-plane per-vertex view-Z, front-biased) so the stone
+ * arch occludes it into the opening shape and it occludes the world behind. Flat
+ * only: a margin portal is to the SIDE, never the close one you walk into head-on
+ * (that one is centred / on-4:3), so the gradient dome isn't needed here. Inert at
+ * 4:3 (F=1). Display-only — reads g_Portals + camera, never writes PSX RAM. */
+static void feed_revealed_portals(CPUState* cpu) {
+    float F = openpete_native_widescreen_factor();
+    if (F <= 1.0f) return;
+    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
+    int revealed = 0;
+    openpete_native_scene_begin_frame(openpete_frame);   /* append; world/cyclorama began it */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t p = cpu->read_word(G_PORTALS + i * 4);
+        if (p < 0x80010000u || p >= 0x80200000u) continue;
+        int fed = 0;                                     /* skip a portal a leaf already drew (on-4:3) */
+        for (int k = 0; k < s_fed_n; k++) if (s_fed_portal[k] == p) { fed = 1; break; }
+        if (fed) continue;
+        uint32_t skybox = cpu->read_word(p + 0x00);
+        if (skybox < 0x80010000u || skybox >= 0x80200000u) continue;
+        ppt poly[16];
+        int pn = portal_outline_screen(cpu, p, poly, 16); /* >=3 iff every outline pt is in front */
+        if (pn < 3) continue;
+        double cxs = 0.0; for (int k = 0; k < pn; k++) cxs += poly[k].x; cxs /= pn;
+        if (cxs >= 0.0 && cxs <= 512.0) continue;         /* on 4:3 — the .s renders it */
+        if (cxs < (double)xlo || cxs > (double)xhi) continue;  /* outside the widened view */
+        uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
+        uint32_t rgba = rgb | 0xFF000000u;
+        for (int k = 1; k + 1 < pn; k++) {                /* fan-triangulate the outline polygon */
+            openpete_scene_tri t;
+            memset(&t, 0, sizeof t);
+            t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_WORLD;
+            const int idx3[3] = { 0, k, k + 1 };
+            for (int j = 0; j < 3; j++) {
+                const ppt* v = &poly[idx3[j]];
+                t.v[j].sx = v->x; t.v[j].sy = v->y;
+                t.v[j].z = openpete_native_depth_from_viewz((float)(v->vz * PORTAL_PLANE_FRONT_BIAS));
+                t.v[j].rgba = rgba;
+            }
+            openpete_native_scene_add_tri(&t);
+        }
+        revealed++;
+    }
+    static int s_logged = 0;
+    if (!s_logged && revealed > 0) {
+        s_logged = 1;
+        fprintf(stderr, "[portal-reveal] frame=%u F=%.3f drew %d off-4:3 portal preview(s) "
+                "the .s culled\n", openpete_frame, F, revealed);
+    }
+}
+
 static int s_rp_in = 0;
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
     (void)a;
-    if (!portal_dump_enabled()) return 0;
+    int feed = openpete_native_render_enabled();
+    if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0;
     if (s_rp_in) return 0;
     s_rp_in = 1;
+    s_fed_n = 0;                              /* reset the per-frame on-4:3 fed-portal dedup set */
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 8) { dump_portal_table(cpu); s_reports++; }
-    func_80050BE0(cpu);   /* run the real RenderPortals (leaves dump inside) */
+    func_80050BE0(cpu);                       /* real RenderPortals: on-4:3 portals fed via leaves */
+    if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
     s_rp_in = 0;
     return 1;
 }
