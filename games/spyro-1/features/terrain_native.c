@@ -637,8 +637,19 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
     double s = s_hqscale;
     double sz0 = z0*s, sz1 = z1*s, sz2 = z2*s, sz3 = z3*s;
     double sum = sz0 + sz1 + sz2 + sz3;
-    if (sum <= 0.0 || sum >= 8192.0) return 0;        /* behind / not foreground (0x2000) */
-    if (word3 & 0x80) return 0;
+    if (sum <= 0.0) return 0;                          /* behind camera */
+    if (word3 & 0x80) return 0;                        /* face hard-excluded from HQ subdivide */
+    /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
+     * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
+     * canonical game switches LQ→HQ only inside the 0x2000 foreground band (the
+     * `sum < 0x2000` gate + per-corner tier checks below); under --no-lod we drop
+     * all the distance-derived gates and keep only the two that aren't distance:
+     * the behind-camera guard above and the word3 & 0x80 hard-exclusion (those
+     * faces never carry a valid HQ Tiledef). Quads only — near TRIANGLES still
+     * fall to the GT3 LQ emit (the existing detail-descriptor carve-out, see the
+     * near-dispatch site). Display-only; reads no gameplay state. */
+    if (openpete_no_lod) return 1;
+    if (sum >= 8192.0) return 0;                       /* not foreground (0x2000) */
     double mn = sz0; if (sz1<mn) mn=sz1; if (sz2<mn) mn=sz2; if (sz3<mn) mn=sz3;
     if (mn < 320.0) return 1;                          /* a corner SZ3 < 0x140 → tier 4 */
     return !(word3 & 0x40);                            /* else tier 2 unless flag 0x40 */
