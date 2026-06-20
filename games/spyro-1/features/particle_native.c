@@ -293,11 +293,14 @@ static void proj_view(double ofx, double ofy, double H,
 static int screen_rect_cull(double sxf, double syf) {
     int SX = (int)lrint(sxf), SY = (int)lrint(syf);
     int32_t v0  = (int32_t)(((uint32_t)(SY & 0xFFFF) << 16) | (uint32_t)(SX & 0xFFFF));
-    int32_t sxs = (int32_t)((uint32_t)(SX & 0xFFFF) << 16);
     if ((v0 - 0x10000) <= 0)    return 1;   /* above top / SY<=1   */
     if ((v0 - 0x1000000) >= 0)  return 1;   /* below bottom SY>=256 */
-    if (sxs <= 0)               return 1;    /* left of screen SX<=0 */
-    if ((sxs - 0x2000000) >= 0) return 1;    /* right of screen SX>=512 */
+    /* horizontal edges widen for widescreen (Hor+): [0,512] at 4:3 (exactly the
+     * .s SX<=0 / SX>=512 reject), wider when the window is. signed SX so the
+     * negative left-reveal isn't mistaken for a wrapped large value. */
+    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    if (SX <= (int)xlo)         return 1;    /* left of the screen  */
+    if (SX >= (int)xhi)         return 1;    /* right of the screen */
     return 0;
 }
 
@@ -305,15 +308,16 @@ static int screen_rect_cull(double sxf, double syf) {
  * cull only when ALL 4 corners lie outside the SAME screen edge (s4=top,
  * s5=bottom, s6=right; left = SX<=0), on the packed int32 SXY like the .s. */
 static int clip4_cull(const float* sx, const float* sy) {
+    /* horizontal edges widen for widescreen (Hor+); vertical stays 4:3. */
+    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     int top = 1, bot = 1, left = 1, right = 1;
     for (int k = 0; k < 4; k++) {
         int SX = (int)lrintf(sx[k]), SY = (int)lrintf(sy[k]);
         int32_t v   = (int32_t)(((uint32_t)(SY & 0xFFFF) << 16) | (uint32_t)(SX & 0xFFFF));
-        int32_t sxs = (int32_t)((uint32_t)(SX & 0xFFFF) << 16);
         if ((v - 0x10000) > 0)     top = 0;
         if ((v - 0x1000000) < 0)   bot = 0;
-        if (sxs > 0)               left = 0;
-        if ((sxs - 0x2000000) < 0) right = 0;
+        if (SX > (int)xlo)         left = 0;
+        if (SX < (int)xhi)         right = 0;
     }
     return top | bot | left | right;
 }

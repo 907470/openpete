@@ -260,6 +260,13 @@ static struct {
     rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
+    /* Widescreen (Hor+) widen factor = window_aspect / display_aspect, active
+     * ONLY in vk-only mode with a window wider than 4:3 (1.0 = inactive). The
+     * panel-0 content mapping (scene_to_clip via p0_hx) is UNCHANGED; widescreen
+     * is realised by un-scissoring the side strips + filling them, so the centre
+     * 4:3 region stays identical and the sides reveal more world. See the
+     * openpete_native_widescreen_* API. Computed in update_layout. */
+    float         ws_factor;
 
     /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
      * PutDispEnv thunk. The full disp is 512x240 double-buffered (origin flips
@@ -850,6 +857,18 @@ static void update_layout(void)
         fit_cell(cx, 0.0f, chx, 1.0f, fit_w, fit_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
         build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
         s_nr.p0_cx = cx; s_nr.p0_hx = hx; s_nr.p0_hy = hy; /* for the native scene map */
+
+        /* Widescreen (Hor+): vk-only, and only when the window is wider than the
+         * 4:3 content (so fit_cell pillarboxed it: hx<1 with full height hy==1).
+         * The widen factor is 1/hx = window_aspect/display_aspect. The content
+         * mapping (p0_hx) is LEFT AS-IS — widescreen just fills the side bars and
+         * reveals the off-4:3 world there (see draw_native_scene scissor / cover
+         * quads + the feeders' widened X culls). A/B and diff (s_scene_ref_compare)
+         * stay 4:3 to line up with the reference. */
+        if (!s_scene_ref_compare && hx < 0.999f && hy > 0.999f)
+            s_nr.ws_factor = 1.0f / hx;
+        else
+            s_nr.ws_factor = 1.0f;
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
      * normalized (blit uses texture()). Only in A/B mode (np >= 2). */
@@ -895,6 +914,34 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
         *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
         *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy);
     }
+}
+
+/* Widescreen (Hor+) factor for the feeders' horizontal trivial rejects. 1.0
+ * unless vk-only with a wider-than-4:3 window (set in update_layout). */
+float openpete_native_widescreen_factor(void)
+{
+    return s_nr.ws_factor > 1.0f ? s_nr.ws_factor : 1.0f;
+}
+/* Visible PSX screen-X range under the active widen factor: [0,512] at 4:3,
+ * widened symmetrically about the screen centre (256). */
+void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
+{
+    float F = openpete_native_widescreen_factor();
+    if (xlo) *xlo = 256.0f - 256.0f * F;
+    if (xhi) *xhi = 256.0f + 256.0f * F;
+}
+
+/* The clip-space rect the full-frame cover quads (background fill / fade /
+ * freeze backdrop) span. Normally panel-0's content rect; the FULL panel width
+ * in vk-only widescreen (so the revealed side strips get a background behind the
+ * sky dome / world); the whole target in full_extent (native_rtt) mode. */
+static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
+{
+    int ws = !full_extent && s_nr.ws_factor > 1.0001f;
+    *l = (full_extent || ws) ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
+    *r = (full_extent || ws) ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
+    *t = full_extent ?  1.0f : s_nr.p0_hy;
+    *b = full_extent ? -1.0f : -s_nr.p0_hy;
 }
 
 /* The scene background colour = what PsyCross actually clears the framebuffer to,
@@ -1067,10 +1114,8 @@ static bool draw_native_scene(bool full_extent)
     /* Background fill (untextured, far plane), drawn first; depth-tested actors
      * sit in front of it. Covers the panel rect (window) or the full target. */
     if (bg != 0) {
-        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
-        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
-        float t = full_extent ?  1.0f : s_nr.p0_hy;
-        float b = full_extent ? -1.0f : -s_nr.p0_hy;
+        float l, r, t, b;
+        cover_rect(full_extent, &l, &r, &t, &b);
         const rhi_vertex tl = { l, t, 1.0f, 0, 0, bg, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 0, 0, bg, 0 };
         const rhi_vertex br = { r, b, 1.0f, 0, 0, bg, 0 };
@@ -1227,10 +1272,8 @@ static bool draw_native_scene(bool full_extent)
         /* mode 0 = (B+F)/2 -> alpha 128; add/subtract ignore alpha. */
         uint32_t fa = (fade_mode == 0) ? 0x80u : 0xFFu;
         uint32_t frgba = (uint32_t)fr | ((uint32_t)fg << 8) | ((uint32_t)fb << 16) | (fa << 24);
-        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
-        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
-        float t = full_extent ?  1.0f : s_nr.p0_hy;
-        float b = full_extent ? -1.0f : -s_nr.p0_hy;
+        float l, r, t, b;
+        cover_rect(full_extent, &l, &r, &t, &b);
         const rhi_vertex tl = { l, t, 0.0f, 0, 0, frgba, 0 };
         const rhi_vertex tr = { r, t, 0.0f, 0, 0, frgba, 0 };
         const rhi_vertex br = { r, b, 0.0f, 0, 0, frgba, 0 };
@@ -1253,10 +1296,8 @@ static bool draw_native_scene(bool full_extent)
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
         uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | 0xFF000000u;  /* byte order R,G,B,A */
-        float l = full_extent ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
-        float r = full_extent ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
-        float t = full_extent ?  1.0f : s_nr.p0_hy;
-        float b = full_extent ? -1.0f : -s_nr.p0_hy;
+        float l, r, t, b;
+        cover_rect(full_extent, &l, &r, &t, &b);
         const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0 };
         const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0 };
@@ -1274,8 +1315,12 @@ static bool draw_native_scene(bool full_extent)
      * the panel instead of streaking across the window. In full_extent mode the
      * RT pass already scissors to the whole target (the frame fills it). */
     if (!full_extent) {
-        int sx = (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-        int sw = (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
+        /* Widescreen (Hor+): scissor the FULL window width so the revealed side
+         * strips aren't clipped to the 4:3 content rect (vertical bounds keep the
+         * overscan-cropped panel height). Otherwise scissor to panel 0's rect. */
+        int ws = s_nr.ws_factor > 1.0001f;
+        int sx = ws ? 0 : (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+        int sw = ws ? s_nr.win_w : (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
         int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
@@ -1552,6 +1597,22 @@ int openpete_native_render_screenshot_all(const char *base)
 {
     if (!s_nr.enabled || !base) return 1;
 
+    /* vk-only widescreen: the RTT path below renders the 4:3 CONTENT shape (the
+     * RTT is ref-sized), which doesn't show the Hor+ widening. The just-presented
+     * LIVE offscreen, however, already holds the full widescreen frame at window
+     * size — grab it now, before this function opens a new frame, and use it for
+     * the -vk image so the dump matches what the window shows. Only in vk-only
+     * (ab/diff stay 4:3 to compare against the reference). */
+    unsigned char *live = NULL; int live_w = 0, live_h = 0;
+    if (!s_scene_ref_compare && s_nr.ws_factor > 1.0001f &&
+        s_nr.win_w > 0 && s_nr.win_h > 0) {
+        size_t lcap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+        live = malloc(lcap);
+        if (live && !rhi_read_offscreen(s_nr.dev, live, lcap, &live_w, &live_h)) {
+            free(live); live = NULL;
+        }
+    }
+
     /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
@@ -1631,7 +1692,11 @@ int openpete_native_render_screenshot_all(const char *base)
     int rc = 0;
     char path[1100];
     path_with_suffix(base, "-vk", path, sizeof(path));
-    if (openpete_write_png_rgba(path, nat, W, H) == 0)
+    if (live) {   /* vk-only widescreen: the live offscreen (window-sized, Hor+) */
+        if (openpete_write_png_rgba(path, live, live_w, live_h) == 0)
+            OPL_INFO_F("native", "vk screenshot %dx%d (widescreen) -> %s", live_w, live_h, path);
+        else rc = 1;
+    } else if (openpete_write_png_rgba(path, nat, W, H) == 0)
         OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
     else rc = 1;
     path_with_suffix(base, "-ab", path, sizeof(path));
@@ -1643,7 +1708,7 @@ int openpete_native_render_screenshot_all(const char *base)
         OPL_INFO_F("native", "diff screenshot %dx%d -> %s", W, H, path);
     else rc = 1;
 
-    free(nat); free(ref); free(ab); free(dif);
+    free(nat); free(ref); free(ab); free(dif); free(live);
     return rc;
 }
 

@@ -189,9 +189,12 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
              * ~1000s of units, so this is effectively z<=0). */
             const double NEAR = 1.0;
             if (pz[i0] <= NEAR || pz[i1] <= NEAR || pz[i2] <= NEAR) continue;
-            /* trivial reject: all three verts off the same screen side. */
-            int o0l = px[i0] < 0, o1l = px[i1] < 0, o2l = px[i2] < 0;
-            int o0r = px[i0] > 512, o1r = px[i1] > 512, o2r = px[i2] > 512;
+            /* trivial reject: all three verts off the same screen side. The
+             * horizontal edges widen for widescreen (Hor+) so the side sky isn't
+             * dropped before the full-width scissor; vertical stays 4:3. */
+            float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+            int o0l = px[i0] < xlo, o1l = px[i1] < xlo, o2l = px[i2] < xlo;
+            int o0r = px[i0] > xhi, o1r = px[i1] > xhi, o2r = px[i2] > xhi;
             int o0t = py[i0] < 0, o1t = py[i1] < 0, o2t = py[i2] < 0;
             int o0b = py[i0] > 240, o1b = py[i1] > 240, o2b = py[i2] > 240;
             if ((o0l&&o1l&&o2l) || (o0r&&o1r&&o2r) || (o0t&&o1t&&o2t) || (o0b&&o1b&&o2b)) continue;

@@ -227,6 +227,29 @@ void openpete_native_scene_set_hud_under_player(int under);
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */
 
+/* ---- widescreen (Hor+) display policy --------------------------------
+ *
+ * In vk-only mode (--renderer vk), when the window is WIDER than the 4:3 PSX
+ * display, the native renderer fills the window and reveals more world at the
+ * left/right while keeping the vertical FOV unchanged (Hor+). It is purely a
+ * display policy: the .s verdict producers still run canonical 4:3 (gameplay is
+ * untouched), and the native renderer just un-scissors the side strips and maps
+ * the same projected geometry into the wider window — the centre 4:3 region is
+ * pixel-identical to the 4:3 render. The A/B and diff compare modes stay 4:3 so
+ * they line up 1:1 with the PsyCross reference; widescreen is inactive there.
+ *
+ * The widen FACTOR is window_aspect / display_aspect (1.0 = no widen, ~1.33 for
+ * 16:9). Feeders that pre-cull geometry to the 4:3 screen-X rect must widen
+ * those horizontal bounds by this factor so the revealed side geometry isn't
+ * dropped before it reaches the (now full-width) scissor. Vertical bounds stay
+ * unchanged. Determinism-safe (display-only); returns 1.0 when inactive. */
+float openpete_native_widescreen_factor(void);
+/* The visible PSX screen-X range under the active widescreen factor: [0,512] at
+ * 4:3, widened symmetrically about the screen centre (256) — e.g. ~[-85,597] at
+ * 16:9. Feeders use it as the left/right bound of their horizontal trivial
+ * reject (replacing the hard 0 / 512 edges). */
+void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
+
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does
  * NOT pump SDL events — the host loop owns the event queue, which PsyCross's
