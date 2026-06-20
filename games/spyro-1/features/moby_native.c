@@ -69,6 +69,8 @@ static uint32_t s_rec_base = D_SONY + 0x1600u;   /* per-pass; set by moby_native
 #define G_MODELS      0x80076378u   /* Model* g_Models[512] */
 #define G_CAMERA      0x80076DD0u
 #define G_CYCLORAMA   0x80078A40u
+#define G_LEVELMOBYS  0x80075828u   /* Moby* g_LevelMobys (head of the stride-0x58 array) */
+#define G_SPYRO       0x80078A58u   /* g_Spyro; m_Position @ +0x00 (update-gate anchor) */
 
 #define REC_STRIDE    0x38u
 #define MAX_RECORDS   512
@@ -1323,11 +1325,92 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     }
 }
 
+/* OPENPETE_MOBY_REVEALDBG: size the widescreen moby-reveal problem (the live-moby
+ * task's mandated first step). Walks g_LevelMobys, replicates the .s moby cone
+ * cull (spyro-moby-update-vs-render.md §3.3) at 4:3 AND at the active widescreen
+ * factor, and classifies each moby the wide cone reveals (in the wide cone, NOT
+ * the 4:3 cone) as LIVE (on the Spyro-anchored update list → animating, current
+ * pose) or FROZEN (not updating → stale pose). The update gate is camera-angle-
+ * INDEPENDENT (Spyro-anchored m_UpdateDistance xy-disk + always/never sentinels +
+ * the m_WasDrawn grace), so a revealed moby being LIVE means we can draw it at its
+ * current gameplay pose with no synthesis (the easy path); FROZEN means it needs
+ * display-only animation (the deferred path). The live/frozen ratio sizes the
+ * split. Read-only; prints once at the target frame. */
+static void moby_reveal_dbg(CPUState* cpu) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_REVEALDBG"); s_on = (e && *e && *e != '0'); }
+    if (!s_on) return;
+    static int s_done = 0;
+    if (s_done || openpete_frame < 1850u) return;
+    s_done = 1;
+
+    float F = openpete_native_widescreen_factor();   /* 1.0 at native 4:3 */
+    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* moby transform uses ProjMatrix */
+    int camx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
+    int camy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
+    int camz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+    int spx = (int32_t)cpu->read_word(G_SPYRO + 0x00);
+    int spy = (int32_t)cpu->read_word(G_SPYRO + 0x04);
+
+    uint32_t m = cpu->read_word(G_LEVELMOBYS);
+    int alive=0, drawn_s=0, in43=0, inwide=0, revealed=0, rev_live=0, rev_frozen=0;
+    int guard = 0;
+    while (m && guard++ < 4096) {
+        uint8_t st = cpu->read_byte(m + 0x48);
+        if (st == 0xFF) break;                       /* sentinel ends the array */
+        if (st >= 0x80) { m += 0x58; continue; }     /* dead/inactive */
+        alive++;
+        uint8_t wasDrawn = cpu->read_byte(m + 0x51);
+        uint8_t updDist  = cpu->read_byte(m + 0x52);
+        uint8_t rRad     = cpu->read_byte(m + 0x50);
+        if (wasDrawn) drawn_s++;
+
+        int mx = (int32_t)cpu->read_word(m + 0x0C);
+        int my = (int32_t)cpu->read_word(m + 0x10);
+        int mz = (int32_t)cpu->read_word(m + 0x14);
+        /* camera-relative, .s moby swizzle V=(dy,dz,dx)>>2 through ProjMatrix */
+        double dx = (double)((mx - camx) >> 2);
+        double dy = (double)((camy - my) >> 2);
+        double dz = (double)((camz - mz) >> 2);
+        double rx = (M[0][0]*dy + M[0][1]*dz + M[0][2]*dx) / 4096.0;
+        double rz = (M[2][0]*dy + M[2][1]*dz + M[2][2]*dx) / 4096.0;
+        double radius = (double)rRad * 256.0;        /* m_RenderRadius<<8 */
+        if (rz + 128.0 <= 0.0) { m += 0x58; continue; }   /* behind camera */
+        if (rz - radius >= 0.0) { m += 0x58; continue; }  /* beyond render distance */
+        double arx = rx < 0 ? -rx : rx;
+        /* X-cone (r_moby.s 0x80022C04): cull if 4*(|rx|-102) - 3*S*(rz+77) >= 0;
+         * S=1 → 4:3 (slope 0.75), S=F → widened horizontal half-FOV. */
+        int pass43   = (4.0*(arx-102.0) - 3.0*       (rz+77.0)) < 0.0;
+        int passwide = (4.0*(arx-102.0) - 3.0*(double)F*(rz+77.0)) < 0.0;
+        if (pass43)   in43++;
+        if (passwide) inwide++;
+        if (passwide && !pass43) {
+            revealed++;
+            int live = wasDrawn != 0;                /* render grace = on update list */
+            if (!live && updDist != 0) {             /* else the Spyro-anchored distance gate */
+                if (updDist >= 0x80) live = 1;       /* always-update sentinel */
+                else {
+                    double sdx = (double)(mx - spx), sdy = (double)(my - spy);
+                    double thr = (double)updDist * 1024.0;
+                    if (sdx*sdx + sdy*sdy <= thr*thr) live = 1;
+                }
+            }
+            if (live) rev_live++; else rev_frozen++;
+        }
+        m += 0x58;
+    }
+    fprintf(stderr,
+        "[moby-reveal] frame=%u F=%.3f alive=%d drawn(.s m_WasDrawn)=%d  "
+        "myCull{4:3=%d wide=%d}  REVEALED=%d (live=%d frozen=%d)\n",
+        openpete_frame, F, alive, drawn_s, in43, inwide, revealed, rev_live, rev_frozen);
+}
+
 static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_native_pass(cpu, func_8001F798, "REG");   /* regular material */
+    moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
     s_in = 0;
     return 1;
 }
