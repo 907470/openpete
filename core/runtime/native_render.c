@@ -1040,13 +1040,17 @@ static bool draw_native_scene(bool full_extent)
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
 
-    /* Background colour = PsyCross's actual framebuffer clear (ref corner), so it
-     * matches in every state/mode; fall back to the scene-fed colour only until a
-     * reference frame exists. (This is why an isolated path — e.g.
-     * `--render-paths spyro` — gets the real scene background on both sides,
-     * including the titlescreen, instead of a stale gamestate colour.) */
-    uint32_t bg = bg_from_ref_corner();
-    if (bg == 0) bg = scene_bg;
+    /* Background colour = the GAMESTATE cyclorama colour (scene_bg = g_Cyclorama
+     * .m_BackgroundColor), which IS exactly the PSX draw-env clear in every level
+     * and state (verified over the full 20k demo: g_Cyclorama.bg == g_DB.m_DrawEnv
+     * r0,g0,b0 on every cyclorama frame). The native renderer's principle is
+     * derive-from-gamestate, and the gamestate colour is robust where the PsyCross
+     * readback CORNER is not — in ab/diff the corner is frequently CONTENT
+     * (overscan band, the dome, HUD), which made the bg fill the wrong colour.
+     * The ref corner is only a FALLBACK for frames with no cyclorama (scene_bg==0,
+     * e.g. some menu/load states) so an isolated `--render-paths` still gets a bg. */
+    uint32_t bg = scene_bg;
+    if (bg == 0) bg = bg_from_ref_corner();
 
     /* Empty scene: normally return false so the caller re-displays the PSX VRAM
      * framebuffer (load screens, transitions, and other direct-present frames).
@@ -1277,6 +1281,22 @@ static bool draw_native_scene(bool full_extent)
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
     }
 
+    /* Background fill: the panel-rect far-plane quad built at buf[0..6) above.
+     * Drawn FIRST so all scene geometry composites over it; fills the cyclorama
+     * background colour where the sky dome / terrain don't cover the panel (the
+     * PSX draw-env clear). The off-display native_rtt receives this colour from
+     * its render-pass CLEAR, but the LIVE window offscreen is cleared to BLACK
+     * (so letterbox borders stay black) and then composes the scene over it — so
+     * without this draw the live window shows BLACK sky wherever the dome has a
+     * gap, even though screenshots (which read native_rtt) look correct. z=1.0
+     * (far) + depth-write: the dome (also z=1) overdraws it via LESS_OR_EQUAL,
+     * nearer geometry over that. */
+    if (bg != 0 && s_nr.gouraud_pipe) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, 6, 0);
+    }
+
     /* Freeze backdrop FIRST (behind world/UI): the frozen native frame sampled
      * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
      * a freeze frame the world groups are empty (the game stops rendering the
@@ -1402,7 +1422,7 @@ static bool compose_variant(int variant, bool have_ref)
 {
     int sn; uint32_t sbg, sfade, sfreeze;
     const openpete_scene_tri* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL);
-    uint32_t bg = bg_from_ref_corner(); if (bg == 0) bg = sbg;
+    uint32_t bg = sbg; if (bg == 0) bg = bg_from_ref_corner();  /* gamestate primary (== PSX clear); corner fallback */
     bool want_scene = (sn > 0) || (s_isolation && bg != 0);
 
     /* native_rtt is the OFF-DISPLAY reference-resolution render: the diff pass
@@ -1550,12 +1570,12 @@ int openpete_native_render_screenshot_all(const char *base)
     const int W = s_nr.ref_w, H = s_nr.ref_h;
     const size_t frame_px = (size_t)W * (size_t)H;
 
-    /* Background = PsyCross's framebuffer clear (ref corner), matching the live
-     * native render; clears the RTT so empty regions cancel against the ref. */
+    /* Background = the gamestate cyclorama colour (== the PSX draw-env clear),
+     * matching the live native render; corner only as a no-cyclorama fallback. */
     int scene_n; uint32_t scene_bg, scene_fade;
     (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL);
-    uint32_t bg = bg_from_ref_corner();
-    if (bg == 0) bg = scene_bg;
+    uint32_t bg = scene_bg;
+    if (bg == 0) bg = bg_from_ref_corner();
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
     const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
