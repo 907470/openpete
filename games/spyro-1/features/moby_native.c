@@ -364,6 +364,14 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  high byte (env flag); mscol = the full word (highlight back-colour BK + spec byte) */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
+/* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
+ * against this so a moby drawn by BOTH passes (the common case; .s overlaps them
+ * at one pose) is fed ONCE (by REGULAR, at its pre-specular-cull pose), while a
+ * moby UNIQUE to the specular queue (e.g. the Artisans rescue dragon cls 0xFA,
+ * which the specular cull writes into a slot a regular moby held at REGULAR-read
+ * time) is still fed by SPECULAR. Snapshotted in the REGULAR pass (runs first). */
+static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
+
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
  * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
 static int s_max_blend;   /* max keyframe-blend factor (rec.w0 IR0) across this frame's records */
@@ -491,9 +499,18 @@ static int build_walk_tris(CPUState* cpu) {
     specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
     s_wtri_n = 0;
     memset(&s_walkdiag, 0, sizeof(s_walkdiag));
+    int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
-        { uint32_t mob = cpu->read_word(R->addr + 0x34);  /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
+        uint32_t mob = cpu->read_word(R->addr + 0x34);
+        /* SPECULAR dedup: skip a moby the REGULAR pass already fed (overlap → would
+         * double at a different pose). Specular-only mobys (not in s_reg_moby) feed. */
+        if (is_spec) {
+            int dup = 0;
+            for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
+            if (dup) continue;
+        }
+        { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
         uint32_t fb = R->faceblock;
@@ -1253,8 +1270,29 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     capture_gte(cpu, start, end);
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
 
+    /* The .s runs REGULAR (func_8001F798) and SPECULAR (func_80020F34) over the
+     * same +0x1600 record queue; SPECULAR re-draws the identical geometry to overlay
+     * an additive per-face specular highlight (PSX can't bake it into one pass), so
+     * the two .s passes OVERLAP at one pose. The native bakes the specular shading
+     * per-face in build_walk_tris (#1) already, so re-feeding the same moby from the
+     * SPECULAR pass is redundant — AND wrong-pose: the native re-projects AFTER
+     * func_80020F34 (and the intervening specular cull) has advanced the per-record
+     * keyframe/blend state, so the SPEC feed paints a SECOND, different animation
+     * pose over the REGULAR one (the "death animation shows 2 frames at once"
+     * doubling — e.g. a dying moby read blend=3072 in REG, blend=0 in SPEC). So
+     * feed each moby ONCE: the REGULAR pass feeds its whole set and snapshots it
+     * (s_reg_moby); the SPECULAR pass feeds ONLY mobys REGULAR did not (build_walk_tris
+     * skips records whose moby is in s_reg_moby) — which keeps specular-ONLY mobys
+     * (e.g. the rescue dragon the specular cull adds to a slot a regular moby held at
+     * REGULAR-read time; also the disjoint specular queue under --no-lod). */
+    int is_spec = (mat && mat[0]=='S' && mat[1]=='P');
+    if (!is_spec) {                           /* REGULAR runs first — snapshot its moby set */
+        s_reg_moby_n = 0;
+        for (int r = 0; r < nrec && s_reg_moby_n < MAX_RECORDS; r++)
+            s_reg_moby[s_reg_moby_n++] = cpu->read_word(s_recs[r].addr + 0x34);
+    }
     if (feed) {
-        build_walk_tris(cpu);                 /* 3a.2b walk; SPEC env-reflection UV derived natively (#1) */
+        build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
         push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
     }
