@@ -412,12 +412,18 @@ static void particle_build(CPUState* cpu) {
             projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
             if (screen_rect_cull(c.sx, c.sy)) continue;
             if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
-            int sz3 = (int)(c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3));
-            double qd = sz3 <= 0 ? 0 : (double)H / sz3;
-            int IR0 = (int)(qd * 4096.0); if (IR0 < 0) IR0 = 0; else if (IR0 > 4096) IR0 = 4096;
+            /* GTE reciprocal-Z, kept in DOUBLE for a sub-pixel billboard footprint.
+             * The .s quantizes it to the integer IR0 (1.12 fixed, capped at 1.0)
+             * and the half-extents to whole pixels (`(sizeB*IR0)>>12`), so the
+             * sprite size jumps in pixel steps with distance even though the centre
+             * (c.sx/c.sy) is sub-pixel. The native carries the float ratio so the
+             * footprint grows smoothly. Display-only (native renderer consumer). */
+            double sz3 = c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3);
+            double qd = sz3 <= 0.0 ? 0.0 : (double)H / sz3;
+            double ir0 = qd < 0.0 ? 0.0 : (qd > 1.0 ? 1.0 : qd);   /* GTE caps the reciprocal at 1.0 */
             int sizeB = (int)((B >> 16) & 0xFF), alphaB = (int)((B >> 24) & 0xFF);
-            int a2 = (sizeB * IR0) >> 12, a3 = (alphaB * IR0) >> 12;  /* halfW, halfH */
-            int t0 = a2 >> 1, t1 = a3 >> 1;
+            double a2 = sizeB * ir0, a3 = alphaB * ir0;  /* halfW, halfH (sub-pixel) */
+            double t0 = a2 * 0.5, t1 = a3 * 0.5;
             double cx = c.sx + t0, cy = c.sy + t1;       /* rect corners (screen) */
             double X0 = cx - a2, X1 = cx, Y0 = cy - a3, Y1 = cy;
             q.sx[0]=X0; q.sy[0]=Y0; q.sx[1]=X1; q.sy[1]=Y0;
