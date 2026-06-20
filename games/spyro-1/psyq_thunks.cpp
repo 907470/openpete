@@ -617,10 +617,32 @@ void psyq_SetDefDrawEnv(CPUState* cpu) {
 }
 
 void psyq_SetDrawMode(CPUState* cpu) {
-    /* DR_MODE* p, int dfe, int dtd, int tpage, RECT16* tw — five args. */
-    SetDrawMode((DR_MODE*)PTR(cpu->a0),
-                (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
+    /* DR_MODE* p, int dfe, int dtd, int tpage, RECT16* tw — five args.
+     *
+     * The game's polybuf primitive is native PSX layout (4-byte P_TAG:
+     * addr:24 | len:8, then code[] words). PsyCross is built with
+     * USE_EXTENDED_PRIM_POINTERS, so calling SetDrawMode directly on the
+     * game's memory writes `len` at offset 8 and code[0] at offset 12 (after
+     * the 8-byte host-pointer header) — corrupting the PSX-layout DR_MODE:
+     * its tag length stays stale and the mode word lands in the wrong place.
+     * The OT walk then sees a garbage-length node, and when the stale code
+     * byte happens to be 0x_1 it mis-runs as DR_MOVE → out-of-bounds VRAM
+     * copy (the Dream Weavers crash). g4/poly prims are unaffected because
+     * the game builds those with inline setXY/setRGB/setcode macros (correct
+     * PSX layout); only the *function* call SetDrawMode was layout-wrong.
+     * See notes/plans/openpete-ot-walk-vram-oob-crash.md.
+     *
+     * Fix: run SetDrawMode into a host-local extended DR_MODE, then write the
+     * computed length + code words back in native PSX 4-byte-tag layout. Only
+     * the tag's len byte is touched; the addr/next 24 bits are set later by
+     * the game's addPrim (recompiled inline → already PSX layout). */
+    DR_MODE tmp;
+    SetDrawMode(&tmp, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                 (RECT16*)PTR(cpu->read_word(cpu->sp + 0x10)));
+    uint32_t p = cpu->a0;
+    cpu->write_byte(p + 3, (uint8_t)getlen(&tmp));  /* PSX tag len (high byte) */
+    cpu->write_word(p + 4, (uint32_t)tmp.code[0]);  /* code[0] = draw mode */
+    cpu->write_word(p + 8, (uint32_t)tmp.code[1]);  /* code[1] = tex window */
 }
 
 /* OT-translation scratch buffer.
@@ -735,6 +757,19 @@ void psyq_DrawOTag(CPUState* cpu) {
     }
 
     uint32_t addr = cpu->a0;
+    /* Root-cause probe (OPENPETE_OT_GARBAGE_TRACE=1, inert otherwise): the OT
+     * walk can derail into non-OT memory on dense frames (Dream Weavers moving
+     * forward), where a stray tag whose code byte is 0x_1 is misparsed as
+     * DR_MOVE and SEGVs the unbounded VRAM copy. Log any tag whose plen exceeds
+     * the largest real Spyro primitive (POLY_GT4 = 12 longs) together with the
+     * link that led here, so we can see where the chain jumps. */
+    static int s_otg_trace = -1;
+    if (s_otg_trace < 0) {
+        const char* e = getenv("OPENPETE_OT_GARBAGE_TRACE");
+        s_otg_trace = (e && *e && *e != '0') ? 1 : 0;
+    }
+    static int s_otg_logs = 0;
+    uint32_t prev_addr = 0u, prev_tag = 0u;
     while (g_ot_slot_count < (int)OT_MAX_SLOTS) {
         if (addr == 0u) break;
         uint8_t* host = (uint8_t*)openpete_psx_to_host_ptr(addr);
@@ -744,6 +779,15 @@ void psyq_DrawOTag(CPUState* cpu) {
         std::memcpy(&tag, host, 4);
         uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
         uint32_t next = tag & 0x00FFFFFFu;
+
+        if (s_otg_trace && plen > 32u && s_otg_logs < 80) {
+            s_otg_logs++;
+            OPL_WARN_F("thunks",
+                "OT-garbage f=%u slot=%d addr=0x%08X tag=0x%08X plen=%u "
+                "code=0x%02X next=0x%06X <- prev addr=0x%08X tag=0x%08X",
+                openpete_frame, g_ot_slot_count, addr, tag, (unsigned)plen,
+                (unsigned)host[7], next, prev_addr, prev_tag);
+        }
 
         /* --render-paths: drop geometry prims belonging to a non-selected render
          * path. Presentation-only — we just don't submit the prim; game RAM is
@@ -938,6 +982,8 @@ void psyq_DrawOTag(CPUState* cpu) {
             std::fputc('\n', dump);
         }
 
+        prev_addr = addr;
+        prev_tag  = tag;
         if (next == 0x00FFFFFFu) break;
         addr = next | 0x80000000u;
     }
