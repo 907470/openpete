@@ -109,12 +109,24 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
  * Layout: word[1]=code|rgb, [2]=xy0,[3]=xy1,[4]=xy2,[5]=xy3 (NO interleaved UV — F4
  * packs the 4 XY words consecutively, unlike FT4). XY: x=lo16,y=hi16 signed. Corners
  * TL,TR,BL,BR. `category`/`alpha`/`blend` select the layer + transparency. */
-static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend) {
+static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend,
+                    int full_width) {
     int sx[4], sy[4];
     uint32_t xyw[4];
     xyw[0]=cpu->read_word(p+0x08); xyw[1]=cpu->read_word(p+0x0C);
     xyw[2]=cpu->read_word(p+0x10); xyw[3]=cpu->read_word(p+0x14);
     for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16); }
+    /* Widescreen: a FULL-SCREEN bar (the cutscene letterbox) is authored at the PSX
+     * 4:3 width (x 0..512), which scene_to_clip maps to the centred 4:3 inset — so
+     * in a wide window the bars stop at the inset and the revealed side strips show
+     * the world at top/bottom. Widen such a bar about screen-centre 256 by the Hor+
+     * factor F so x 0->xlo and 512->xhi map to the full panel [-1,+1] (same vertical
+     * extent — the widened bar stays continuous with the central one). No-op at 4:3
+     * (F=1). Vertical bars are unchanged. */
+    if (full_width) {
+        float F = openpete_native_widescreen_factor();
+        if (F > 1.0f) for (int k=0;k<4;k++) sx[k] = 256 + (int)(((float)sx[k] - 256.0f) * F);
+    }
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
@@ -273,10 +285,10 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
                                                       (int)((w1 >> 16) & 0xFFu));
         }
         else if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
-        else if (is_f4_opaque(cpu, prim))                                       /* letterbox bars: OVERLAY, opaque */
-            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_OVERLAY, 0xFFu, 0);
+        else if (is_f4_opaque(cpu, prim))                                       /* letterbox bars: OVERLAY, opaque, full-panel-wide */
+            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1);
         else if (is_f4_semitrans(cpu, prim) && !s_in_fade)                      /* menu dark panel: under text, (B+F)/2 */
-            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_HUD_PANEL, 0x80u, 1);
+            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_HUD_PANEL, 0x80u, 1, 0);
         else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }
 
