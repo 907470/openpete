@@ -101,8 +101,11 @@ static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
  * entries — well above any level's live moby count). The queue head sits
  * at the region base; the limit is region_base + size, so the producer's
  * `(limit) - ($fp + 0x70) >= 0` check holds until the region is nearly
- * full. The producer NULL-terminates and the consumer walks to NULL, so
- * the grown region needs only to be zeroed once at setup. */
+ * full. The producer marks the end with a PARTIAL terminator (word0=0
+ * only) and, unlike canonical 4:3, nothing drains/zeroes this relocated
+ * region per frame, so it must be re-zeroed before each producer pass
+ * (no_lod_clear_moby_queue, the func_8001F158 pre-hook) — not just once
+ * at setup — or the native walk reads a stale tail (the Sparx trail). */
 #define MOBY_QUEUE_REGION_VADDR   0x80600000u
 #define MOBY_QUEUE_REGION_SIZE    0x10000u
 #define MOBY_REG_QUEUE_OFFSET       (MOBY_QUEUE_REGION_VADDR - G_SONY_IMAGE_VADDR)
@@ -201,11 +204,49 @@ static int no_lod_setup(void) {
     return 0;
 }
 
+/* === per-frame moby-queue clear (func_8001F158 pre-hook) =============
+ *
+ * The regular moby cull (func_8001F158) is the queue PRODUCER: it resets
+ * its write pointer to the head (relocated to MOBY_QUEUE_REGION_VADDR
+ * under --no-lod), writes one record per admitted moby, advances, and
+ * marks the end by writing ONLY word0=0 at the next slot (r_moby.s
+ * 0x8001F744) — it does NOT fully zero that slot.
+ *
+ * In canonical 4:3 the queue stays clean frame-to-frame because the .s
+ * REGULAR renderer (the consumer) drains it from the canonical head and
+ * zeroes entries as it goes. Under --no-lod the producer writes to the
+ * RELOCATED host region but the .s consumer still reads the (now empty)
+ * canonical 0x1600 slot, so it never drains/zeroes the relocated region.
+ * Combined with the native consumer detecting the terminator by
+ * header(+0x04)==0 && moby(+0x34)==0 (the producer's partial word0=0
+ * terminator leaves those STALE-nonzero), the relocated region accrues a
+ * stale tail: when fewer mobys are visible than a previous frame, the
+ * native walk reads past the current terminator into old records — a
+ * TRAIL of duplicate mobys (most visibly Sparx, written at a shifting
+ * slot index every frame).
+ *
+ * Fix: replicate the canonical per-frame-clean-queue invariant by
+ * zeroing the relocated region at the START of every producer pass (the
+ * producer immediately resets to the head and overwrites, so after it
+ * writes K records slots K.. stay fully zero → the terminator slot is
+ * fully zero → both consumers stop at K). Returns 0 so the real producer
+ * still runs. Host-only memory; no gameplay-readable byte touched. */
+static int no_lod_clear_moby_queue(CPUState* cpu, uint32_t addr) {
+    (void)cpu; (void)addr;
+    if (openpete_no_lod) memset(s_moby_queue_region, 0, sizeof(s_moby_queue_region));
+    return 0;  /* run the real func_8001F158 body */
+}
+
+static const feature_dispatch_entry_t no_lod_dispatch[] = {
+    { 0x8001F158u, no_lod_clear_moby_queue },  /* regular moby cull producer */
+    { 0u, NULL },
+};
+
 /* === apply_options ===================================================
- * Installs the setup hook so core/features/no_lod.c can call it. No
- * per-vaddr dispatch arms (every --no-lod intercept is recompiler-
- * level substitution, not a function-entry hook), so dispatch_table
- * is NULL. */
+ * Installs the setup hook so core/features/no_lod.c can call it. The
+ * one dispatch arm zeroes the relocated moby-queue each producer pass
+ * (see no_lod_clear_moby_queue); it is inert (returns 0, no memset)
+ * when --no-lod is off. */
 static void no_lod_apply_options_module(const openpete_options_t* opts) {
     (void)opts;
     no_lod_set_setup_hook(no_lod_setup);
@@ -214,7 +255,7 @@ static void no_lod_apply_options_module(const openpete_options_t* opts) {
 const feature_module_t no_lod_module = {
     .name           = "no_lod",
     .apply_options  = no_lod_apply_options_module,
-    .dispatch_table = NULL,
+    .dispatch_table = no_lod_dispatch,
 };
 
 /* === Recompiler-called --no-lod hooks ================================
