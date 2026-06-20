@@ -678,8 +678,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     /* --aspect / --fov derivation lives in core/features/widescreen.c.
      * Sets openpete_disp_w_factor + openpete_fov_h_override; must run
-     * before PsyX_Initialise. */
-    widescreen_apply_disp_w_factor(opts);
+     * before PsyX_Initialise.
+     *
+     * PsyCross-renderer ONLY. The native renderer (vk/ab/diff) owns widescreen
+     * as a DISPLAY policy: it reads a CANONICAL GTE (offset 256, native H) and
+     * widens Hor+ from the window aspect itself. If the PsyCross substitution
+     * also ran, the two would double-widen AND the shifted GTE offset (256->341
+     * at 16:9) would mis-map the native projection — the cause of the "stretched
+     * --aspect + vk" report. --aspect still sizes the auto window above, which is
+     * exactly what drives the native widen; the substitution stays off. (Leaving
+     * openpete_disp_w_factor at its 0.0 sentinel also no-ops
+     * widescreen_apply_runtime_knobs below.) This is a step toward retiring the
+     * PsyCross --aspect substitution entirely — see openpete-native-renderer.md. */
+    if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
+        widescreen_apply_disp_w_factor(opts);
+    } else if (opts->aspect_w_over_h > 0.0f) {
+        OPL_INFO_F("aspect", "native renderer: --aspect %.4f sizes the window + "
+                   "drives native Hor+ widescreen; PsyCross GTE/ortho "
+                   "substitution skipped (native reads a canonical GTE)",
+                   (double)opts->aspect_w_over_h);
+    }
 
     /* --no-lod: feature module owns scratch-pool relocation, queue-
      * offset / moby-LP / DBG_KILL_LP knob arming, and polybuf grow.
