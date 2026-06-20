@@ -83,6 +83,67 @@ static double project(const int M[3][3], int vx, int vy, int vz,
     return mac3;
 }
 
+/* ---- near-plane clip (mirrors terrain_native.c::clip_push_tri) -------
+ * The sky dome is a FULL 360° surround (all sectors live in RAM); at wide
+ * aspect ratio the side/wrap geometry that the canonical 4:3 path near-plane
+ * REJECTED (whole-tri drop when any vertex is behind the camera) is now on
+ * screen, so it must be CLIPPED to the near plane instead — the in-front part
+ * renders, the behind part is cut. Camera-space (m1,m2,m3); m3 = view-Z. */
+#define CYC_NEARZ 1.0
+typedef struct { double m1, m2, m3; uint32_t rgb; } cyc_cv;
+
+static cyc_cv cyc_lerp(cyc_cv a, cyc_cv b) {       /* crossing at m3 == CYC_NEARZ */
+    double t = (CYC_NEARZ - a.m3) / (b.m3 - a.m3);
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    cyc_cv r;
+    r.m1 = a.m1 + t * (b.m1 - a.m1);
+    r.m2 = a.m2 + t * (b.m2 - a.m2);
+    r.m3 = CYC_NEARZ;
+    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
+    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
+    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
+    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
+    return r;
+}
+
+/* Project an in-front cyc_cv to screen and push to s_native, applying the
+ * widescreen-aware horizontal trivial reject (vertical stays 4:3). */
+static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
+                         double ofx, double ofy, double H) {
+    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    cyc_cv v[3] = { a, b, c }; float sx[3], sy[3];
+    for (int k = 0; k < 3; k++) {
+        double z = v[k].m3 != 0.0 ? v[k].m3 : 1.0;
+        sx[k] = (float)(ofx + v[k].m1 * H / z);
+        sy[k] = (float)(ofy + v[k].m2 * H / z);
+    }
+    if ((sx[0]<xlo&&sx[1]<xlo&&sx[2]<xlo) || (sx[0]>xhi&&sx[1]>xhi&&sx[2]>xhi) ||
+        (sy[0]<0&&sy[1]<0&&sy[2]<0)       || (sy[0]>240&&sy[1]>240&&sy[2]>240)) return;
+    if (s_native_n >= MAX_TRIS) return;
+    cyc_tri* t = &s_native[s_native_n++];
+    t->gouraud = gouraud;
+    for (int k = 0; k < 3; k++) {
+        t->v[k].sx = sx[k]; t->v[k].sy = sy[k]; t->v[k].rgb = v[k].rgb; t->v[k].sat = 0;
+    }
+}
+
+/* Sutherland-Hodgman clip a gouraud tri to m3 >= CYC_NEARZ, then push the
+ * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
+ * fully behind -> dropped. */
+static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
+                          double ofx, double ofy, double H) {
+    cyc_cv in[3] = { a, b, c }, out[4]; int nout = 0;
+    for (int i = 0; i < 3; i++) {
+        cyc_cv cur = in[i], nxt = in[(i + 1) % 3];
+        int ci = cur.m3 >= CYC_NEARZ, ni = nxt.m3 >= CYC_NEARZ;
+        if (ci) out[nout++] = cur;
+        if (ci != ni && nout < 4) out[nout++] = cyc_lerp(cur, nxt);
+    }
+    if (nout < 3) return;
+    cyc_push_tri(out[0], out[1], out[2], gouraud, ofx, ofy, H);
+    if (nout == 4) cyc_push_tri(out[0], out[2], out[3], gouraud, ofx, ofy, H);
+}
+
 /* ---- native extraction (the Phase-2 deliverable) -------------------- */
 /* Reads g_Cyclorama + the two matrices + GTE OFX/OFY/H from the hook, and
  * fills s_native[]. Mirrors func_8004EBA8: phase-1 sector visibility cull
@@ -102,9 +163,15 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
     uint32_t sectorsBase = cpu->read_word(G_CYCLORAMA + 0x04);
     uint32_t occGroups   = cpu->read_word(G_CYCLORAMA + 0x0C);
 
-    /* Build the sector-pointer iteration set (mirrors func_8004EBA8 phase 0). */
+    /* Build the sector-pointer iteration set (mirrors func_8004EBA8 phase 0).
+     * In widescreen the .s's per-view occlusion GROUP (occGroups[a0]) is a 4:3
+     * selection that omits the dome sectors visible only at the widened sides,
+     * so iterate ALL sectors instead (the full 360° dome is in RAM; the
+     * per-sector radius cull below + the near-plane clip + the scissor confine
+     * it to the visible frustum). Display-only. */
+    int ws = openpete_native_widescreen_factor() > 1.0001f;
     uint32_t sectors[1024]; uint32_t nSectors = 0;
-    if ((int32_t)a0 < 0) {
+    if ((int32_t)a0 < 0 || ws) {
         if (sectorCount > 1024) sectorCount = 1024;
         for (uint32_t i = 0; i < sectorCount; i++)
             sectors[nSectors++] = cpu->read_word(sectorsBase + i * 4);
@@ -119,9 +186,7 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
         }
     }
 
-    static float    px[4096], py[4096];
-    static double   pz[4096];
-    static int      psat[4096];
+    static double   pm1[4096], pm2[4096], pz[4096];   /* camera-space MAC per vertex */
     static uint32_t col[4096];
 
     for (uint32_t si = 0; si < nSectors; si++) {
@@ -129,14 +194,19 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
         if (!S) continue;
 
         /* phase-1 cull: project the representative point with the cull
-         * matrix; visible iff MAC3 > radius. */
-        uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
-        int cull_vx = (int16_t)(c0 & 0xFFFF), cull_vy = (int16_t)(c0 >> 16);
-        int cull_vz = (int16_t)(c1 >> 16);
-        int radius  = (int16_t)(c1 & 0xFFFF);
-        double dsx, dsy;
-        double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, H, &dsx, &dsy, NULL);
-        if (cull_mac3 <= (double)radius) continue;
+         * matrix; visible iff MAC3 > radius. SKIPPED in widescreen — this is a
+         * 4:3-frustum range/behind cull that drops side sectors which are
+         * partially visible at wide FOV; the near-plane clip + trivial reject
+         * confine the kept geometry correctly instead. */
+        if (!ws) {
+            uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
+            int cull_vx = (int16_t)(c0 & 0xFFFF), cull_vy = (int16_t)(c0 >> 16);
+            int cull_vz = (int16_t)(c1 >> 16);
+            int radius  = (int16_t)(c1 & 0xFFFF);
+            double dsx, dsy;
+            double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, H, &dsx, &dsy, NULL);
+            if (cull_mac3 <= (double)radius) continue;
+        }
 
         uint32_t h8 = cpu->read_word(S + 0x08), hC = cpu->read_word(S + 0x0C);
         uint32_t hF = cpu->read_word(S + 0x10);
@@ -151,15 +221,16 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
         uint32_t colorBase = vertBase + vertexCount * 4;       /* s4 */
         uint32_t faceBase  = colorBase + faceOffByte;
 
-        /* phase-2a: unpack + project every vertex with the draw matrix. */
+        /* phase-2a: unpack + compute the camera-space MAC for every vertex (the
+         * near-plane clip interpolates in camera space, then projects). */
         for (uint32_t i = 0; i < vertexCount; i++) {
             uint32_t w = cpu->read_word(vertBase + i * 4);
             int vx = centerX - (int)((w >> 10) & 0x7FF);
             int vy = centerY - (int)(w & 0x3FF);
             int vz = centerZ + (int)(w >> 21);
-            double sx, sy;
-            pz[i] = project(Mdraw, vx, vy, vz, ofx, ofy, H, &sx, &sy, &psat[i]);
-            px[i] = (float)sx; py[i] = (float)sy;
+            pm1[i] = (Mdraw[0][0]*(double)vx + Mdraw[0][1]*(double)vy + Mdraw[0][2]*(double)vz) / 4096.0;
+            pm2[i] = (Mdraw[1][0]*(double)vx + Mdraw[1][1]*(double)vy + Mdraw[1][2]*(double)vz) / 4096.0;
+            pz[i]  = (Mdraw[2][0]*(double)vx + Mdraw[2][1]*(double)vy + Mdraw[2][2]*(double)vz) / 4096.0;
         }
         uint32_t colorCount = faceOffByte / 4;
         if (colorCount > 4096) colorCount = 4096;
@@ -179,32 +250,14 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
             uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
             uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
 
-            /* Near-plane reject: drop any triangle with a vertex at/behind the
-             * camera. Such verts sign-flip under the perspective divide (the
-             * GTE saturates them; the float doesn't), producing screen-spanning
-             * "streak" triangles. The sky dome is ~+-63deg but the screen only
-             * shows ~+-37deg, so the dropped triangles are all far off-screen
-             * (no visible gap); the panel scissor (native_render.c) clips the
-             * remaining legit off-screen extent. NEAR=1 view-unit (verts are
-             * ~1000s of units, so this is effectively z<=0). */
-            const double NEAR = 1.0;
-            if (pz[i0] <= NEAR || pz[i1] <= NEAR || pz[i2] <= NEAR) continue;
-            /* trivial reject: all three verts off the same screen side. The
-             * horizontal edges widen for widescreen (Hor+) so the side sky isn't
-             * dropped before the full-width scissor; vertical stays 4:3. */
-            float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
-            int o0l = px[i0] < xlo, o1l = px[i1] < xlo, o2l = px[i2] < xlo;
-            int o0r = px[i0] > xhi, o1r = px[i1] > xhi, o2r = px[i2] > xhi;
-            int o0t = py[i0] < 0, o1t = py[i1] < 0, o2t = py[i2] < 0;
-            int o0b = py[i0] > 240, o1b = py[i1] > 240, o2b = py[i2] > 240;
-            if ((o0l&&o1l&&o2l) || (o0r&&o1r&&o2r) || (o0t&&o1t&&o2t) || (o0b&&o1b&&o2b)) continue;
-
-            if (s_native_n >= MAX_TRIS) break;
-            cyc_tri* t = &s_native[s_native_n++];
-            t->gouraud = gouraud;
-            t->v[0].sx = px[i0]; t->v[0].sy = py[i0]; t->v[0].rgb = cc0; t->v[0].sat = (unsigned char)psat[i0];
-            t->v[1].sx = px[i1]; t->v[1].sy = py[i1]; t->v[1].rgb = cc1; t->v[1].sat = (unsigned char)psat[i1];
-            t->v[2].sx = px[i2]; t->v[2].sy = py[i2]; t->v[2].rgb = cc2; t->v[2].sat = (unsigned char)psat[i2];
+            /* Near-plane CLIP (not reject) so the dome's side/wrap geometry that
+             * straddles the camera renders its in-front part at wide aspect — the
+             * old whole-tri reject dropped it (tuned for 4:3 ±37°). cyc_push_tri
+             * applies the widescreen-aware horizontal trivial reject + scissor. */
+            cyc_cv A = { pm1[i0], pm2[i0], pz[i0], cc0 };
+            cyc_cv B = { pm1[i1], pm2[i1], pz[i1], cc1 };
+            cyc_cv C = { pm1[i2], pm2[i2], pz[i2], cc2 };
+            cyc_clip_emit(A, B, C, gouraud, ofx, ofy, H);
         }
     }
 }
