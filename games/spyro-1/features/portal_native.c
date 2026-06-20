@@ -488,6 +488,26 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     double pa = 0, pb = 0, pc = 0;
     int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
 
+    /* Widescreen un-clamp: the .s clip rect D_8007AA00 is the GPU scissor, clamped
+     * to the 4:3 framebuffer [0,512]. For a portal at the screen edge the outline
+     * (and the stone arch, which widens through scene_to_clip) extends past 512,
+     * but the dome — clipped to the clamped rect — gets cut at the 4:3 boundary,
+     * leaving the widened arch's outer part with no sky. Extend the rect to the
+     * projected-outline bbox (still a RECT clip, so depth occlusion still shapes
+     * the arch — no coverage gaps; UNION so a non-clamped 4:3 rect is unchanged →
+     * no 4:3 regression, and at 4:3 any spill past 512 is GPU-scissored anyway). */
+    if (pn >= 3) {
+        float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
+        for (int i = 1; i < pn; i++) {
+            if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
+            if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
+        }
+        if ((int)floorf(oxlo) < x0) x0 = (int)floorf(oxlo);
+        if ((int)ceilf (oxhi) > x1) x1 = (int)ceilf (oxhi);
+        if ((int)floorf(oylo) < y0) y0 = (int)floorf(oylo);
+        if ((int)ceilf (oyhi) > y1) y1 = (int)ceilf (oyhi);
+    }
+
     uint32_t cnt = cpu->read_word(skybox + 0x00), arr = cpu->read_word(skybox + 0x04);
     if (cnt > 1024) cnt = 1024;
     static float  px[4096], py[4096];
@@ -563,6 +583,25 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
             (int32_t)cpu->read_word(D_PORTAL_DEPTH), vz,
             (double)openpete_native_depth_from_viewz((float)(vz > 1.0 ? vz : 16384.0)),
             (end > start) ? (end - start) : 0, fog, ir0, (double)ir0 / 4096.0);
+    /* Widescreen bug probe: the CLAMPED .s scissor rect (above) vs the native
+     * projected-outline bbox (which widens through scene_to_clip). If the outline
+     * X extends past the rect's clamped edge, the dome/flat-fallback (clipped to
+     * the rect) is cut at the 4:3 boundary while the stone arch widens → mismatch. */
+    {
+        uint32_t pp = owning_portal_ptr(cpu, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
+        ppt poly[16]; int pn = pp ? portal_outline_screen(cpu, pp, poly, 16) : 0;
+        if (pn >= 3) {
+            float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
+            for (int i = 1; i < pn; i++) {
+                if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
+                if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
+            }
+            float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+            fprintf(stderr, "    outline-bbox x[%.0f,%.0f] y[%.0f,%.0f] (rect x[%d,%d]) wsF=%.3f visX[%.0f,%.0f]\n",
+                    oxlo, oxhi, oylo, oyhi, rx0, rx1,
+                    openpete_native_widescreen_factor(), xlo, xhi);
+        }
+    }
     /* For the dome leaf (F4BC, a0=skybox), capture everything the float walk
      * needs: the GTE transform it projected with (post-call), the skybox sector
      * table, sector0's cyclorama-format header, and the first emitted prims. */
