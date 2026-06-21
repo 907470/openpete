@@ -29,6 +29,7 @@
 #include "psx_runtime.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 
 #include <math.h>
 #include <stdint.h>
@@ -1368,6 +1369,10 @@ static unsigned terrain_verify_frame(void) {
  * widescreen mode widescreen runs the renderer + returns 1 first; the native
  * capture/feed runs at native aspect so that's fine — widescreen deletes at
  * Phase 6 anyway.) */
+/* Occlusion group from the last real render call — reused by the sub-tick
+ * re-extract (which has no a0). -1 = walk-all (valid index or -1, as the .s). */
+static int32_t s_terrain_saved_occGroup = -1;
+
 static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();
@@ -1379,6 +1384,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
      * the exact input the .s uses to build D_800771C8 — the ground truth for the
      * widescreen candidate set (terrain_vislist). */
     int32_t occGroup = (int32_t)cpu->a0;
+    s_terrain_saved_occGroup = occGroup;   /* for sub-tick re-extract */
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_800258F0(cpu);                            /* run the real renderer (verdicts intact) */
@@ -1405,6 +1411,17 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     }
     s_in = 0;
     return 1;
+}
+
+/* Sub-tick re-extract (high-FPS spine): reproduce the terrain scene from the
+ * current gamestate + the interpolated g_Camera the orchestrator has written
+ * — extract-only (no func_800258F0 call, no verdict writes). Terrain is static
+ * world geometry, so an interpolated camera alone makes it move smoothly. */
+void terrain_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (!render_path_enabled(RP_TERRAIN)) return;
+    terrain_build(cpu, s_terrain_saved_occGroup);
+    terrain_feed_native();
 }
 
 static const feature_dispatch_entry_t terrain_dispatch[] = {

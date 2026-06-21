@@ -52,6 +52,12 @@ add_library(openpete_core STATIC
     # notes/plans/openpete-fps-unlock.md.
     runtime/openpete_interp.c
 
+    # Per-object prev-state snapshot table (the INDIRECT counterpart to the
+    # singleton interp ring above). Keyed by object identity (game-supplied
+    # walk); double-buffered for sub-tick lerp/re-feed. Step 1 of the
+    # native-renderer high-FPS plan. See notes/plans/openpete-native-renderer.md.
+    runtime/openpete_interp_objs.c
+
     # World-space render cache. Populated per-vertex by psxrecomp's
     # gte_rtps_internal; consumed by PsyCross's OT walker (PsyX_GPU.cpp
     # MakeVertexTriangle/Quad) to recover world-space + matrix state at

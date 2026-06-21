@@ -36,6 +36,10 @@ static int      s_enabled     = 0;
 static uint64_t s_total_captures     = 0;
 static uint64_t s_total_dedupe_skips = 0;
 
+/* Scratch for the capture-time dedupe compare (built before committing to a
+ * ring slot, so an unchanged tick doesn't clobber the previous DISTINCT one). */
+static uint8_t s_cap_scratch[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
+
 void openpete_interp_register_regions(const openpete_interp_region_t* regions,
                                       size_t count) {
     s_regions = regions;
@@ -107,28 +111,44 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     if (!s_initialized || !s_enabled) return;
     if (!s_regions || s_region_count == 0) return;
 
-    /* Advance the head, then fill. snap[s_head] becomes "latest tick";
-     * snap[s_head ^ 1] holds "previous tick". */
+    /* Build the candidate snapshot into scratch FIRST, so we can compare it to
+     * the current head before deciding whether to advance the ring. */
+    const openpete_interp_snapshot_t* curr = &s_snap[s_head];
+    uint32_t total = curr->total_bytes;
+    for (size_t r = 0; r < s_region_count; ++r) {
+        const openpete_interp_region_t* reg = &s_regions[r];
+        void* host = openpete_psx_to_host_ptr(reg->psx_addr);
+        uint32_t off = curr->region_offsets[r];
+        if (host) memcpy(s_cap_scratch + off, host, reg->length);
+        else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped → deterministic */
+    }
+    s_total_captures++;
+
+    /* Dedupe AT CAPTURE: Spyro's logic runs at 30 Hz on a 60 Hz VBL fiber, so
+     * the transform-bearing state advances only every OTHER tick — yet this
+     * capture fires every tick. A naive 2-slot ring (advance + fill every time)
+     * then holds two SAME-frame duplicates whenever the camera updated on the
+     * other VBL, so every sub-tick query sees prev==curr and dedupes → the
+     * interpolation bracket NEVER engages (paired=0 forever; the flicker/judder
+     * the user reported). By skipping the advance when the candidate is
+     * byte-identical to the current head, the ring always holds the two most-
+     * recent DISTINCT states, and curr->tick_ns stays pinned to when that state
+     * FIRST appeared — exactly the [prev,curr] bracket alpha spans. (A truly
+     * static screen keeps the last two motion frames; the query's alpha clamps
+     * to 1 → shows curr, i.e. frozen, which is correct.) */
+    if (curr->valid && total > 0 && memcmp(s_cap_scratch, curr->data, total) == 0) {
+        s_total_dedupe_skips++;
+        return;
+    }
+
+    /* State advanced — commit to the other slot. snap[s_head] becomes "latest
+     * distinct tick"; snap[s_head ^ 1] holds the "previous distinct tick". */
     s_head ^= 1;
     openpete_interp_snapshot_t* slot = &s_snap[s_head];
     slot->tick    = tick;
     slot->tick_ns = tick_ns;
-
-    for (size_t r = 0; r < s_region_count; ++r) {
-        const openpete_interp_region_t* reg = &s_regions[r];
-        void* host = openpete_psx_to_host_ptr(reg->psx_addr);
-        uint32_t off = slot->region_offsets[r];
-        if (host) {
-            memcpy(slot->data + off, host, reg->length);
-        } else {
-            /* Unmapped address — zero the slot so dedupe behavior is
-             * deterministic. Should not happen for KSEG0 RAM ranges. */
-            memset(slot->data + off, 0, reg->length);
-        }
-    }
-
+    memcpy(slot->data, s_cap_scratch, total);
     slot->valid = 1;
-    s_total_captures++;
 }
 
 int openpete_interp_query(op_time_t now_ns,

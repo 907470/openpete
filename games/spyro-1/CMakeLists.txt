@@ -196,7 +196,9 @@ target_sources(openpete-spyro1 PRIVATE
     # Phase 2 of fps-unlock: render-side interpolation region table.
     # Hardcoded (g_Spyro + g_Camera) for v1 scaffolding; will graduate
     # to manifest-generated when mobies land in #59.
-    spyro_interp_regions.c)
+    spyro_interp_regions.c
+    # Sub-tick re-feed orchestrator (native-renderer high-FPS spine, step 2).
+    spyro_native_reextract.c)
 
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 

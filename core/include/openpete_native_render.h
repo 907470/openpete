@@ -257,6 +257,37 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
  * if the native path is disabled. */
 void openpete_native_render_frame(void);
 
+/* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
+ *
+ * For smooth presentation above the 29.97 Hz sim, the host loop presents
+ * intermediate (sub-tick) frames. Each one rebuilds the native scene against
+ * an INTERPOLATED view of gamestate (camera re-run / object lerp / animation
+ * clock-advance), keyed off the openpete_interp snapshot ring. The rebuild is
+ * game-specific (it knows g_Camera / the feeders), so the game registers a
+ * "re-extract" callback; core invokes it on each intermediate present (then
+ * presents the rebuilt scene via openpete_native_render_frame).
+ *
+ * The callback receives the host CPUState (opaque here — the game casts it).
+ * It must: query openpete_interp for prev/curr+alpha, compute the interpolated
+ * camera/objects, bracket any PSX-RAM writes (save → write-interpolated →
+ * re-extract → restore) entirely on the host fiber so the next sim tick reads
+ * canonical RAM, and rebuild s_scene. Read-only against gameplay state by the
+ * restore discipline; proven by the oracle gate. NULL disables intermediates. */
+typedef void (*openpete_native_reextract_fn)(void* cpu);
+void openpete_native_register_reextract(openpete_native_reextract_fn fn);
+openpete_native_reextract_fn openpete_native_get_reextract(void);
+
+/* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +
+ * menu-panel overlays are produced by the 2D-UI feeder during the game render
+ * and can't be re-derived sub-tick. capture_overlay() snapshots them from the
+ * live scene (call before scene_begin); apply_overlay() re-applies them after
+ * the 3D feeders (call at the end of the re-extract). See native_render.c. */
+void openpete_native_scene_capture_overlay(void);
+void openpete_native_scene_apply_overlay(double alpha);
+/* Roll the fade ramp's prev/curr — call on each CANONICAL present (before the
+ * re-extract) so apply_overlay can interpolate the fade sub-tick. */
+void openpete_native_scene_commit_fade(void);
+
 /* Capture the native A/B window (the offscreen target — both panels, the
  * native render + the reference) to a PNG at `path`. Call after
  * openpete_native_render_frame so the offscreen holds the latest frame.

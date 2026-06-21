@@ -26,6 +26,8 @@
 // by the one-shot hex dump below (falsify-before-ship), as in Phase 2.
 
 #include "feature_registry.h"
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "openpete_psx.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
@@ -75,6 +77,21 @@ static uint32_t s_rec_base = D_SONY + 0x1600u;   /* per-pass; set by moby_native
 #define REC_STRIDE    0x38u
 #define MAX_RECORDS   512
 #define SHADED_BASE   (D_SONY + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
+
+/* Sub-tick SPEC-pass scratch snapshot: D_SONY+0x1100..0x1900 (per-vertex fog
+ * colour + the specular cull queue at +0x1600). The SPECULAR pass rebuilds the
+ * +0x1600 queue with the specular set — including specular-ONLY mobys (the
+ * rescue dragon) that REGULAR didn't draw — and overwrites the colour scratch,
+ * so the REGULAR snapshot can't reproduce them. Capture it at the canonical SPEC
+ * hook and replay it in the re-extract's SPEC pass. */
+#define SPEC_SCR_LO   0x1100u
+#define SPEC_SCR_LEN  0x800u
+static uint8_t s_canon_spec[SPEC_SCR_LEN];
+static int     s_canon_spec_valid = 0;
+static void moby_native_capture_spec_scratch(CPUState* cpu) {
+    const void* h = openpete_psx_to_host_ptr(D_SONY + SPEC_SCR_LO);
+    if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1; }
+}
 #define D_SPEC_LIGHT  0x800770C8u   /* SpecularAndMetal: +0/+4/+8 = directional light dir */
 #define D_SHADE_COLTAB 0x8006E3D8u  /* shaded base-colour table, indexed by m_SpecularMetalColor>>22 */
 
@@ -467,6 +484,14 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     f->frameB = header + 0x24u + nfrm * 8u;                  /* &m_Frames[m_NextFrame] */
     uint32_t prog = cpu->read_byte(moby + 0x40) & 0xFFu;     /* m_FrameProgress -> blend bits 8-15 */
     f->w0    = (prog << 8) & 0xFF00u;
+    /* Loop-seam guard. m_NextFrame == 0 is the animation's loop sentinel: the game
+     * HOLDS a single keyframe there (its cull record carries frameB = NULL, blend
+     * factor 0) — it never blends kf[last] -> kf[0] across the seam. Without this,
+     * the high-FPS re-extraction feeds the model decode a sub-tick blend toward
+     * keyframe[0], morphing the mesh across the loop discontinuity → the warped
+     * model + cloned prim the cutscene mobys flash once per animation cycle.
+     * Mirror the game: collapse to a single keyframe at the seam. */
+    if (nfrm == 0) { f->frameB = f->frameA; f->w0 = 0; }
     f->mscol = cpu->read_word(moby + 0x4Cu);                 /* m_SpecularMetalColor */
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
@@ -684,7 +709,7 @@ static int build_walk_tris(CPUState* cpu) {
     int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
-        uint32_t mob = cpu->read_word(R->addr + 0x34);
+        uint32_t mob = R->moby;   /* set in all paths (==rec+0x34 for .s recs); host-built reveal/re-extract records have addr=0 so reading R->addr+0x34 would miss the dedup */
         /* SPECULAR dedup: skip a moby the REGULAR pass already fed (overlap → would
          * double at a different pose). Specular-only mobys (not in s_reg_moby) feed. */
         if (is_spec) {
@@ -1479,6 +1504,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
         push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
+        /* Sub-tick spine: snapshot the cull records + per-vertex fog colour
+         * scratch (both live now) so intermediates can re-derive these mobys.
+         * REGULAR feeds the shared bracket; the SPECULAR pass rebuilds the
+         * +0x1600 queue with the specular set (incl. specular-ONLY mobys like
+         * the rescue dragon that REGULAR didn't draw), so capture it separately
+         * for the re-extract's SPEC pass — else those mobys vanish on sub-ticks. */
+        if (!is_spec) spyro_native_canon_capture_range(cpu, 0x1100u, 0x800u);
+        else          moby_native_capture_spec_scratch(cpu);
     }
 
     if (verify) {
@@ -2156,6 +2189,9 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
         s_cur_mat = "SHD";
         build_shaded_walk_tris(cpu);            /* native topology (#2a) + native lighting (#2b) */
         push_scene_moby();                      /* reads zero .s prim output */
+        /* Sub-tick spine: snapshot the shaded Moby* list (live now) so
+         * intermediates can re-derive the gems/props. */
+        spyro_native_canon_capture_range(cpu, 0x2400u, 0x800u);
         /* Flat HUD/text draws OVER the player by default; UNDER it only during the
          * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
          * revealed — that runs under GS_TitleScreen (13) (the title state machine
@@ -2183,6 +2219,99 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     }
     s_in = 0;
     return 1;
+}
+
+/* Sub-tick re-extract (high-FPS spine): render the moby scene re-derived from
+ * gamestate through the (interpolated) g_Camera the orchestrator wrote, so
+ * mobys move COHERENTLY with the interpolated terrain (no swimming) instead of
+ * snapping to the baked tick-N records.
+ *
+ * Render set = the moby addresses the .s REGULAR cull recorded this tick (its
+ * frustum/LOD verdict, reused as-is — no re-cull, no m_WasDrawn write); each is
+ * REBUILT host-side via build_moby_record_fields (M/TR re-derived from
+ * g_Camera, validated bit-exact vs the .s records by OPENPETE_MOBY_BUILDDBG)
+ * and re-projected. The SHADED path (build_shaded_walk_tris → project_all_shaded)
+ * already reads g_Camera, so it interpolates for free. Per-moby own-motion
+ * (position/anim) lerp from the snapshot table is a later add (step 3b); for
+ * now each moby holds its tick-N world pose but projects through the
+ * interpolated camera — coherent with the rest of the scene. Extract-only. */
+/* One record-queue pass: read the cull records at the per-pass base, rebuild +
+ * re-project each moby through the interpolated camera, walk + push. mat="REG"
+ * snapshots s_reg_moby (no dedup); mat="SP" makes build_walk_tris dedup vs
+ * s_reg_moby (so only specular-ONLY mobys feed). Returns the record count. */
+static int reextract_record_pass(CPUState* cpu, const char* mat) {
+    int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
+    static uint32_t mobys[MAX_RECORDS]; int nm = 0;
+    s_rec_base = is_spec ? (D_SONY + 0x1600u) : REC_BASE;   /* SPEC queue not relocated */
+    for (int r = 0; r < MAX_RECORDS; r++) {
+        uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
+        if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
+        uint32_t moby = cpu->read_word(rec + 0x34);
+        if (moby >= 0x80000000u && nm < MAX_RECORDS) mobys[nm++] = moby;
+    }
+    s_cur_mat = mat;
+    s_proj_n = 0; s_nrecs = 0;
+    for (int i = 0; i < nm; i++) {
+        moby_fields f;
+        if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
+        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
+        int off = s_proj_n;
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
+                                      f.TR_raw, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        if (got <= 0) continue;
+        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
+            (f.header >= 0x80000000u) ? cpu->read_word(f.header + 0x14) : 0u,
+            f.w0, f.metal, f.mscol, mobys[i] };
+        s_proj_n += got; s_nrecs++;
+    }
+    if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
+        s_reg_moby_n = 0;
+        for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
+            s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
+    }
+    build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
+    push_scene_moby();
+    return nm;
+}
+
+void moby_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+
+    int nm = reextract_record_pass(cpu, "REG");
+    int reg_walk = s_wtri_n;
+
+    /* SPEC pass: replay the captured specular queue so specular-ONLY mobys (the
+     * rescue dragon) render on sub-ticks too. Swap the REGULAR scratch (the
+     * orchestrator's bracket restored it) for the captured SPEC scratch, run a
+     * dedup'd record pass, then restore the REGULAR scratch. */
+    int spec_walk = 0;
+    if (s_canon_spec_valid) {
+        void* h = openpete_psx_to_host_ptr(D_SONY + SPEC_SCR_LO);
+        if (h) {
+            static uint8_t saved_reg[SPEC_SCR_LEN];
+            memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */
+            memcpy(h, s_canon_spec, SPEC_SCR_LEN);    /* specular queue + colour */
+            reextract_record_pass(cpu, "SP");
+            spec_walk = s_wtri_n;
+            memcpy(h, saved_reg, SPEC_SCR_LEN);       /* restore REGULAR */
+        }
+    }
+
+    /* Shaded mobys (gems/props) — already re-derive from g_Camera. */
+    s_cur_mat = "SHD";
+    build_shaded_walk_tris(cpu);
+    push_scene_moby();
+    openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
+
+    static int feeddbg = -1;
+    if (feeddbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); feeddbg = (e && *e && *e != '0'); }
+    if (feeddbg) {
+        static unsigned last = 0xFFFFFFFFu;
+        if (openpete_frame != last) { last = openpete_frame;
+            fprintf(stderr, "[reextract-moby f=%u] recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
+                    openpete_frame, nm, reg_walk, spec_walk, s_wtri_n); }
+    }
 }
 
 static const feature_dispatch_entry_t moby_dispatch[] = {

@@ -29,6 +29,8 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_psx.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
+#include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
 #include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
@@ -250,6 +252,37 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
 
 #define SEG_SCRATCH (D_SCRATCH + 0x1900u)
 #define SEG_STRIDE  0x44u
+#define SEG_BLOCK   (3u * SEG_STRIDE)   /* 3 segments (body/head/tail) */
+
+/* --- sub-tick keyframe-blend interpolation (animation smoothness) -----------
+ * Spyro's decode (spyro_project_segment) blends keyframe A→B by
+ * blend = (seg.fd & 0xFFF)/4096, read from the per-segment scratch the .s
+ * render builds. That scratch is captured at canonical tick rate, so without
+ * sub-tick blend the animation steps at 30 Hz while movement is smooth. We
+ * roll prev/curr copies of the whole seg block at the canonical hook, then in
+ * the re-extract build a MIXED block: per segment, interpolate the blend in
+ * 0..4096 units (wrap = 4096 at a keyframe knot) — same pair → lerp; clean
+ * single advance (the stream pointers changed but the cumulative vert count is
+ * fixed) → continuous phase, picking the prev pair while phase<4096 else curr.
+ * The keyframe DATA pointers are model-static, so a prev entry decodes the prev
+ * pair correctly; only the blend (and which entry) is chosen per phase. */
+static uint8_t s_seg_prev[SEG_BLOCK], s_seg_curr[SEG_BLOCK];
+static int     s_seg_valid = 0;       /* 0 none, 1 only curr, 2 prev+curr */
+static double  s_anim_alpha = 0.0;
+static int     s_anim_on    = 0;
+
+/* Roll prev<-curr and capture curr from the live seg scratch (canonical hook). */
+static void spyro_anim_capture_seg(CPUState* cpu) {
+    const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    if (!h) return;
+    if (s_seg_valid >= 1) { memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK); }
+    memcpy(s_seg_curr, h, SEG_BLOCK);
+    s_seg_valid = (s_seg_valid >= 1) ? 2 : 1;
+}
+
+/* Orchestrator sets the sub-tick alpha + whether interpolation is active
+ * (camera bracketed). Read by spyro_player_native_reextract. */
+void spyro_native_set_anim_interp(double alpha, int on) { s_anim_alpha = alpha; s_anim_on = on ? 1 : 0; }
 
 static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
     uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
@@ -502,14 +535,19 @@ static void spyro_derive_phaseA(CPUState* cpu) {
     /* INTPL blend = IR0/4096 where IR0 = the .s's $t6 = (progress << 8) (the
      * progress byte is shifted left 8 at 80023B60 before feeding C2_IR0 at
      * .L80023E3C — NOT the raw byte). progress is 0..15 so prog<<8 <= 0xF00. */
-    int prog = cpu->read_byte(G_SPYRO+0x24);
-    int ir0 = prog << 8;                            /* .s $t6 = progress<<8 -> C2_IR0 */
+    /* INTPL blend IR0 = the seg-0 scratch fd blend (canonically == progress<<8,
+     * but the sub-tick re-extract writes a FINE interpolated fd there). Reading
+     * it (not the 16-level integer g_Spyro+0x24 progress) keeps the head/tail
+     * SEAM on the same continuous blend as the body verts — else the seam steps
+     * in coarse 1/16 increments while the verts are smooth (head/tail jitter). */
+    int ir0 = (int)(cpu->read_word(SEG_SCRATCH) & 0xFFFu);
+    int dual = (ir0 != 0);
     uint32_t curA = cpu->read_word(SEG_SCRATCH + 0x2C), curB = cpu->read_word(SEG_SCRATCH + 0x3C);
     int32_t jhA=(int32_t)cpu->read_word(curA-8), jtA=(int32_t)cpu->read_word(curA-4);
     int32_t jhB=0, jtB=0;
-    if (prog) { jhB=(int32_t)cpu->read_word(curB-8); jtB=(int32_t)cpu->read_word(curB-4); }
-    spyro_seam_tr(Mb, TRb, jhA, jhB, ir0, prog!=0, s_xf[1].TR);
-    spyro_seam_tr(Mb, TRb, jtA, jtB, ir0, prog!=0, s_xf[2].TR);
+    if (dual) { jhB=(int32_t)cpu->read_word(curB-8); jtB=(int32_t)cpu->read_word(curB-4); }
+    spyro_seam_tr(Mb, TRb, jhA, jhB, ir0, dual, s_xf[1].TR);
+    spyro_seam_tr(Mb, TRb, jtA, jtB, ir0, dual, s_xf[2].TR);
 }
 
 /* ---- matrix A/B: derived M+TR vs the scratch block (byte-exact ground truth)
@@ -601,6 +639,14 @@ static int spyro_project_all(CPUState* cpu) {
         int cur_end = (int)((fd >> 14) & 0x3FFu);
         int count = (cur_end - prev_end) >> 2; if (count < 0) count = 0;
         prev_end = cur_end;
+        {
+            static int ad = -1;
+            if (ad < 0) { const char* e = getenv("OPENPETE_ANIMDBG"); ad = (e && *e && *e != '0'); }
+            if (ad && (openpete_frame % 60u) == 0)
+                fprintf(stderr, "[spyro-anim f=%u] seg%d fd_blend=%u prog[0x%x]=%u\n",
+                        openpete_frame, s, fd & 0xFFFu, 0x24 + s,
+                        cpu->read_byte(G_SPYRO + 0x24u + (uint32_t)s));
+        }
         if (native) {
             /* Phase-A native: M + TR re-derived from gamestate (s_xf), the last
              * .s coupling for Spyro geometry retired. (Stickiness is resolved in
@@ -1076,8 +1122,8 @@ static void spyro_walk_compare(CPUState* cpu) {
  * static asset). The only remaining .s coupling is spyro_nclip reading the
  * int16 SXY scratchpad for a byte-exact cull decision; that becomes a native
  * float NCLIP at the Phase-6 switch (the .s geometry turning off). */
-static void spyro_feed_walk(CPUState* cpu) {
-    spyro_project_all(cpu);                 /* native float verts -> s_sproj */
+static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
+    if (reproject) spyro_project_all(cpu);  /* native float verts -> s_sproj (skip if caller filled it) */
     build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
     if (s_swtri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
@@ -1097,6 +1143,7 @@ static void spyro_feed_walk(CPUState* cpu) {
     }
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
+static void spyro_feed_walk(CPUState* cpu) { spyro_feed_walk_ex(cpu, 1); }
 
 /* ---- gating --------------------------------------------------------------- */
 static int spyro_verify_enabled(void) {
@@ -1125,8 +1172,20 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
 
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
 
+    static int hookdbg = -1;
+    if (hookdbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); hookdbg = (e && *e && *e != '0'); }
+    if (hookdbg && (openpete_frame % 200u) == 0)
+        fprintf(stderr, "[spyro-hook f=%u] feed=%d endp-startp=%u rp=%d\n",
+                openpete_frame, feed, endp - startp, render_path_enabled(RP_SPYRO));
+
     if (feed && endp > startp && render_path_enabled(RP_SPYRO)) {  /* native feed (if selected) */
         spyro_feed_walk(cpu);                     /* independent face-stream walk: native verts+topology+colour+UV */
+        /* Sub-tick spine: snapshot the per-segment scratch (keyframe stream
+         * pointers + vert counts) and Spyro's projected SXY (the NCLIP cull
+         * verdict), both live now, so intermediates can re-derive Spyro. */
+        spyro_native_canon_capture_range(cpu, 0x1900u, 0x100u);
+        spyro_native_canon_capture_sxy(cpu);
+        spyro_anim_capture_seg(cpu);   /* roll prev/curr seg block for sub-tick blend */
     }
 
     if (verify) {
@@ -1149,6 +1208,73 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     }
     s_in = 0;
     return 1;
+}
+
+/* Sub-tick re-extract (high-FPS spine): reproduce the player from the current
+ * gamestate + the interpolated g_Camera the orchestrator wrote — extract-only
+ * (no func_80023AC4 call, no verdict writes). spyro_feed_walk reads g_Camera
+ * (→ smooth orientation) and g_Spyro (position lerp lands in step 3). */
+void spyro_player_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+
+    /* Sub-tick animation = MODEL-space keyframe-blend interpolation (one decode,
+     * matching the smooth moby path). A two-pass "decode prev pose + curr pose,
+     * lerp the projected verts" approach jittered because spyro_derive_phaseA
+     * computes the head/tail SEAM transform from the seg scratch stream pointers
+     * — swapping the seg block per pass gave each pose a different seam while the
+     * shared interpolated prog drove it, so each pass was internally inconsistent.
+     * Instead build ONE blend-interpolated seg block and decode once: the seam
+     * (driven by the orchestrator's interpolated g_Spyro+0x24 prog) and the
+     * vertex blend then share a single consistent phase. Per segment, interpolate
+     * the blend in 0..4096 units (the blend rises monotonically within a keyframe
+     * pair, so curr<prev ⇒ a knot was crossed → continuous phase picking the prev
+     * pair while phase<4096 else curr). The bracket restores the live scratch. */
+    if (s_anim_on && s_seg_valid >= 2) {
+        void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+        if (h) {
+            double a = s_anim_alpha;
+            uint8_t mixed[SEG_BLOCK];
+            for (int s = 0; s < 3; s++) {
+                const uint8_t* pe = s_seg_prev + s * SEG_STRIDE;
+                const uint8_t* ce = s_seg_curr + s * SEG_STRIDE;
+                uint32_t fdp, fdc; memcpy(&fdp, pe, 4); memcpy(&fdc, ce, 4);
+                memcpy(mixed + s * SEG_STRIDE, ce, SEG_STRIDE);   /* default = curr */
+                if (fdc == 0) continue;                           /* terminator */
+                int bp = (int)(fdp & 0xFFFu), bc = (int)(fdc & 0xFFFu);
+                const uint8_t* src; int blend;
+                if (fdp == 0 || bc >= bp) {                       /* same pair (forward) / no prev */
+                    src = ce; blend = (int)(bp + (bc - bp) * a + 0.5);
+                } else {                                          /* keyframe knot crossed */
+                    double phase = bp + ((4096.0 + bc) - bp) * a;
+                    if (phase < 4096.0) { src = pe; blend = (int)(phase + 0.5); }
+                    else                { src = ce; blend = (int)(phase - 4096.0 + 0.5); }
+                }
+                if (blend < 0) blend = 0; else if (blend > 0xFFF) blend = 0xFFF;
+                memcpy(mixed + s * SEG_STRIDE, src, SEG_STRIDE);
+                uint32_t fd; memcpy(&fd, src, 4);
+                fd = (fd & ~0xFFFu) | (uint32_t)blend;
+                memcpy(mixed + s * SEG_STRIDE, &fd, 4);
+            }
+            memcpy(h, mixed, SEG_BLOCK);
+        }
+    }
+
+    spyro_feed_walk(cpu);
+
+    static int ad = -1;
+    if (ad < 0) { const char* e = getenv("OPENPETE_ANIMDBG"); ad = (e && *e && *e != '0'); }
+    if (ad && s_sproj_n > 20)
+        fprintf(stderr, "[anim-v f=%u] a=%.3f n=%d v10=(%.1f,%.1f) vN-8=(%.1f,%.1f)\n",
+                openpete_frame, s_anim_alpha, s_sproj_n, s_sproj[10].sx, s_sproj[10].sy,
+                s_sproj[s_sproj_n-8].sx, s_sproj[s_sproj_n-8].sy);
+    static int feeddbg = -1;
+    if (feeddbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); feeddbg = (e && *e && *e != '0'); }
+    if (feeddbg) {
+        static unsigned last = 0xFFFFFFFFu;
+        if (openpete_frame != last) { last = openpete_frame;
+            fprintf(stderr, "[reextract-spyro f=%u] sproj=%d swtri=%d\n",
+                    openpete_frame, s_sproj_n, s_swtri_n); }
+    }
 }
 
 static const feature_dispatch_entry_t spyro_dispatch[] = {

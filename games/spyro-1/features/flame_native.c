@@ -25,6 +25,7 @@
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 
 #include <math.h>
 #include <stdint.h>
@@ -671,6 +672,18 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
 
     s_in = 0;
     return 1;
+}
+
+/* Sub-tick re-extract (high-FPS spine): rebuild Spyro's flame ribbon from
+ * gamestate — extract-only. Self-gated on m_IsFlameActive (the .s renderer is
+ * only called while breathing fire, so feeding unconditionally would draw a
+ * stale ribbon). The ribbon attaches to Spyro's (bracketed) pose and projects
+ * through the interpolated g_Camera, so it stays coherent with the scene. */
+void flame_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (!render_path_enabled(RP_FLAME)) return;
+    if (cpu->read_word(G_SPYROFLAME + FL_ACTIVE) == 0) return;   /* not breathing fire */
+    flame_feed_native(cpu);
 }
 
 static const feature_dispatch_entry_t flame_dispatch[] = {

@@ -22,6 +22,7 @@
 // (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
@@ -1139,6 +1140,18 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", 1); }
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", 0); }
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", 0); }
+
+/* Sub-tick re-extract (high-FPS spine): reproduce particles, glows and
+ * sparkles from the current g_Particles pool — extract-only (no render_fn, no
+ * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
+ * stay present on intermediates (per-particle pos+=α·vel lerp lands in step 5). */
+void particle_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (!render_path_enabled(RP_PARTICLES)) return;
+    particle_feed_native(cpu);
+    glow_feed_native(cpu);
+    sparkle_feed_native(cpu);
+}
 
 static const feature_dispatch_entry_t particle_dispatch[] = {
     { 0x800573C8u, on_800573C8_particles },

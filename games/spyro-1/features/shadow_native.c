@@ -28,6 +28,7 @@
 // (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
@@ -800,6 +801,17 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     }
     s_in = 0;
     return 1;
+}
+
+/* Sub-tick re-extract (high-FPS spine): reproduce moby + Spyro drop-shadows
+ * from the current gamestate — extract-only (no render_fn, no verdicts). The
+ * shadows project under their owners onto the ground; they follow the owners'
+ * (currently tick-N) poses and the interpolated camera. */
+void shadow_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (!render_path_enabled(RP_SHADOW)) return;
+    shadow_moby_feed_native(cpu);
+    shadow_spyro_feed_native(cpu);
 }
 
 static const feature_dispatch_entry_t shadow_dispatch[] = {

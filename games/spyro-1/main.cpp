@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "game_extras.h"
 #include "spyro_interp_regions.h"
+#include "spyro_native_reextract.h"
 
 #include <cstdio>
 
@@ -38,6 +39,12 @@ int main(int argc, char** argv) {
      * — MinGW's PE/COFF linker mis-resolves weak overrides in this
      * configuration. */
     spyro_interp_register();
+
+    /* High-FPS spine: register the sub-tick re-feed orchestrator with the
+     * native renderer so intermediate presents rebuild the scene against an
+     * interpolated camera. Inert unless --renderer vk|ab|diff + --render-fps
+     * exceeds the sim rate. */
+    spyro_native_reextract_init();
 
     /* Spyro's gp comes from PSYQ's _96_init boot stub, which we don't
      * recompile (psyq___main is a no-op). main()'s prologue assumes gp is

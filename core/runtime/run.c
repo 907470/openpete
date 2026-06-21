@@ -13,6 +13,7 @@
 #include "openpete_time.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_interp.h"
+#include "openpete_interp_objs.h"
 #include "screenshot.h"
 #include "game_extras.h"
 #include "bk2_movie.h"
@@ -1418,6 +1419,35 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * is still yielded (consistent RAM). No-op unless
                  * --render-fps > sim rate. */
                 openpete_interp_capture(openpete_frame, op_now());
+
+                /* High-FPS step 1: per-object (indirect) snapshot — walks
+                 * the game's object pools (g_LevelMobys) into the keyed
+                 * prev/curr table for sub-tick lerp. Same read-only, same
+                 * --render-fps>sim gate. No-op if no game callback. */
+                openpete_interp_objs_run_capture();
+
+                /* Spine health probe (OPENPETE_INTERP_QUERYTEST): confirm the
+                 * interp ring PAIRS consecutive snapshots when gameplay state
+                 * differs (paired=1) vs dedupes a static screen (paired=0).
+                 * Verifies the one runtime-dependent piece of the sub-tick
+                 * spine in the reliable headless level-load path. Read-only. */
+                {
+                    static int qt = -1;
+                    if (qt < 0) { const char* e = getenv("OPENPETE_INTERP_QUERYTEST"); qt = (e && *e && *e != '0'); }
+                    if (qt && (openpete_frame % 120u) == 0) {
+                        double a = 0.0;
+                        const openpete_interp_snapshot_t *pv = NULL, *cv = NULL;
+                        int paired = openpete_interp_query(
+                            op_now(), (op_time_t)((OP_NS_PER_SEC * 1001) / 30000), &a, &pv, &cv);
+                        fprintf(stderr, "[interp-query f=%u] paired=%d captures=%llu dedupe=%llu\n",
+                                openpete_frame, paired,
+                                (unsigned long long)openpete_interp_total_captures(),
+                                (unsigned long long)openpete_interp_total_dedupe_skips());
+                    }
+                }
+                /* Numerical LOO gate lives game-side (it needs g_Camera/g_Spyro
+                 * addresses; core stays address-free) — see
+                 * spyro_interp_regions.c::spyro_interp_capture_objs. */
             }
         }
 
@@ -1527,6 +1557,32 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_present_pending = 0;
             did_present_this_iter = true;
 
+            /* Sub-tick spine: lag the CANONICAL native present too. The game's
+             * render just built s_scene at the LATEST pose (tick N), but the
+             * intermediates that follow present the 1-tick-lagged interpolation
+             * (prev→curr). Showing the un-lagged canonical frame between lagged
+             * intermediates makes every object jump forward one tick at the
+             * canonical present and snap back on the next intermediate → a 30 Hz
+             * strobe / ghosting (terrain AND mobys) whenever the camera moves.
+             * Re-extract the canonical present at the same lagged alpha so EVERY
+             * present sits on one continuous, 1-tick-lagged timeline. Same gates
+             * as the intermediate block below (minus the !did_present check);
+             * mutually exclusive with it (that block is gated on
+             * !did_present_this_iter, true only on non-draw iters). */
+            {
+                extern int g_openpete_interp_enabled;
+                openpete_native_reextract_fn lag_re = openpete_native_get_reextract();
+                if (lag_re && openpete_native_render_enabled() && !openpete_unlock_fps &&
+                    g_openpete_interp_enabled && opts->render_fps > 0 &&
+                    !(g_paused && !g_step_one)) {
+                    /* Roll the fade ramp prev/curr from THIS canonical render's fade
+                     * before the re-extract rebuilds, so the fade interpolates
+                     * sub-tick instead of staircasing at 30 Hz. */
+                    openpete_native_scene_commit_fade();
+                    lag_re(&g_game.cpu);
+                }
+            }
+
             /* Native renderer: present one frame to the Vulkan window now that
              * PsyCross's present FBO is freshly rendered (read back here as the
              * reference). No-op unless --renderer vk|ab|diff. */
@@ -1612,7 +1668,47 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         extern int openpete_vtrace_enabled(void);
         extern int g_openpete_interp_enabled;
         const bool headless_block = opts->headless && !openpete_vtrace_enabled();
-        if (!headless_block && !openpete_unlock_fps &&
+
+        /* Native sub-tick re-feed (high-FPS spine). When the native Vulkan
+         * renderer is the visible window (--renderer vk|ab|diff), the PsyCross
+         * window is hidden, so the legacy OT re-emit below would present to a
+         * dead surface. Instead rebuild the native scene against interpolated
+         * gamestate and present that. Same gates as the PsyCross intermediate.
+         * If this fires, the PsyCross block is skipped (mutually exclusive). */
+        openpete_native_reextract_fn native_re = openpete_native_get_reextract();
+        const bool native_intermediate =
+            !headless_block && !openpete_unlock_fps &&
+            g_openpete_interp_enabled &&
+            opts->render_fps > 0 &&
+            !did_present_this_iter &&
+            openpete_native_render_enabled() &&
+            native_re != NULL &&
+            !(g_paused && !g_step_one);
+        if (native_intermediate) {
+            native_re(&g_game.cpu);           /* rebuild s_scene @ interpolated gamestate */
+            openpete_native_render_frame();   /* present the sub-tick frame */
+
+            /* Multi-present capture of native SUB-TICK frames (smoothness check):
+             * --screenshot-presents-start/count captures consecutive presents
+             * (canonical p0 from the block above + these intermediates p1+), so
+             * viewing p0..pN shows objects at interpolated sub-tick positions. */
+            if (opts->screenshot_presents_start >= 0
+                    && (int)openpete_frame >= opts->screenshot_presents_start
+                    && s_presents_captured < opts->screenshot_presents_count) {
+                char path[1024];
+                openpete_screenshot_format_path(opts->screenshot_output,
+                                                (int)openpete_frame,
+                                                s_presents_captured, path, sizeof(path));
+                openpete_native_render_screenshot(path);
+                OPL_INFO_F("screenshot",
+                           "wrote %s on frame %u (present=%d, native-intermediate)",
+                           path, openpete_frame, s_presents_captured);
+                s_presents_captured++;
+            }
+        }
+
+        if (!native_intermediate &&
+            !headless_block && !openpete_unlock_fps &&
             g_openpete_interp_enabled &&   /* 'I' off → no intermediates → ~29.97 fps */
             opts->render_fps > 0 &&
             !did_present_this_iter &&

@@ -205,13 +205,27 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
 }
 void openpete_native_scene_set_category(int category) { s_scene_category = category; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+/* The game's fade for THIS tick + a "set this tick" flag. The flag (not the
+ * begin_frame reset of s_scene_fade) is what tells the re-extract whether the
+ * fade is actually active: the game calls func_800190D4 every tick the fade is
+ * on and simply STOPS when it ends (no explicit clear). The re-extract's own
+ * apply_overlay writes s_scene_fade, which would otherwise feed back into
+ * commit_fade and freeze the last transition's fade on screen forever. */
+static uint32_t s_game_fade = 0;
+static int      s_game_fade_seen = 0;
+
 void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
-    if (mode < 0) { s_scene_fade = 0; return; }
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
-    s_scene_fade = (1u << 31) | ((uint32_t)(mode & 3) << 24)
-                 | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    uint32_t v;
+    if (mode < 0) { v = 0; }
+    else {
+        if (r < 0) r = 0; if (r > 255) r = 255;
+        if (g < 0) g = 0; if (g > 255) g = 255;
+        if (b < 0) b = 0; if (b > 255) b = 255;
+        v = (1u << 31) | ((uint32_t)(mode & 3) << 24)
+          | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+    s_scene_fade = v;                       /* raw (no-interp) present path */
+    s_game_fade = v; s_game_fade_seen = 1;  /* the game set the fade this tick */
 }
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
     if (r < 0) { s_scene_freeze = 0; return; }
@@ -221,6 +235,67 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
     s_scene_freeze = (1u << 31) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
+
+/* --- 2D-overlay carry across sub-tick re-extracts -------------------------
+ * The fade overlay (func_800190D4) and the cutscene letterbox bars
+ * (func_80018F30, OVERLAY-category F4s) + menu panel (HUD_PANEL) are produced
+ * by the 2D-UI feeder while the game renders. They are NOT re-derivable from
+ * gamestate by the sub-tick re-extract (it has no 2D-prim chokepoint to hook),
+ * and the re-extract's scene_begin() wipes them — so without carrying them they
+ * vanish on every re-extracted present (which, since the canonical present now
+ * also routes through the re-extract for the 1-tick lag, means they vanish
+ * outright). They're screen-space and tick-constant, so capture them from the
+ * live scene before the rebuild and re-apply them after. Categories that the
+ * 3D feeders re-produce (HUD/HUD3D billboards, PLAYER near-OT text) are NOT
+ * carried — they'd double. */
+#define OVERLAY_CARRY_MAX 1024
+static openpete_scene_tri s_overlay_carry[OVERLAY_CARRY_MAX];
+static int                s_overlay_carry_n;
+static uint32_t           s_overlay_carry_freeze;
+
+/* The fade ramps per sim tick, so unlike the (static) letterbox/panel tris it is
+ * interpolated rather than held: s_fade_prev/curr are the two most-recent
+ * CANONICAL fades (rolled by commit_fade on each canonical present), and
+ * apply_overlay lerps them by the spine alpha — a 1-tick-lagged smooth ramp,
+ * consistent with the rest of the scene. Without this the fade staircases at
+ * 30 Hz (intermediates hold the previous tick's brightness). */
+static uint32_t s_fade_prev, s_fade_curr;
+
+void openpete_native_scene_commit_fade(void) {
+    s_fade_prev = s_fade_curr;
+    /* The fade is active this tick only if the game actually called set_fade
+     * since the last commit; else it ended (the game stopped calling) → off. */
+    s_fade_curr = s_game_fade_seen ? s_game_fade : 0;
+    s_game_fade_seen = 0;
+}
+
+/* Lerp two packed fade words (bit31 active, [25:24] ABR mode, [23:0] rgb). */
+static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
+    if (!(b & (1u << 31))) return 0;                         /* curr inactive → no fade */
+    if (!(a & (1u << 31))) return b;                         /* prev inactive → snap on */
+    if ((a & (3u << 24)) != (b & (3u << 24))) return b;      /* mode changed → snap */
+    int ar=(a>>16)&0xFF, ag=(a>>8)&0xFF, ab=a&0xFF;
+    int br=(b>>16)&0xFF, bg=(b>>8)&0xFF, bb=b&0xFF;
+    int r =(int)(ar+(br-ar)*t+0.5), g=(int)(ag+(bg-ag)*t+0.5), bl=(int)(ab+(bb-ab)*t+0.5);
+    return (b & 0xFF000000u) | ((uint32_t)r<<16) | ((uint32_t)g<<8) | (uint32_t)bl;
+}
+
+void openpete_native_scene_capture_overlay(void) {
+    s_overlay_carry_n = 0;
+    for (int t = 0; t < s_scene_n && s_overlay_carry_n < OVERLAY_CARRY_MAX; t++) {
+        int c = s_scene[t].category;
+        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL)
+            s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
+    }
+    s_overlay_carry_freeze = s_scene_freeze;   /* freeze is on/off (held); fade interpolates */
+}
+
+void openpete_native_scene_apply_overlay(double alpha) {
+    for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++)
+        s_scene[s_scene_n++] = s_overlay_carry[t];   /* category already stamped */
+    s_scene_freeze = s_overlay_carry_freeze;
+    s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, alpha);
+}
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
  * a reference-compare delay is set (A/B-synced with the lagged reference), else
@@ -1584,6 +1659,14 @@ static bool compose_variant(int variant, bool have_ref)
     rhi_end_offscreen(s_nr.dev);
     return false;
 }
+
+/* Game-registered sub-tick re-extract callback (high-FPS spine). Invoked by
+ * the host loop on each intermediate present; rebuilds s_scene against an
+ * interpolated gamestate view. NULL → no intermediates (present stays at sim
+ * cadence). See openpete_native_render.h. */
+static openpete_native_reextract_fn s_reextract_cb = NULL;
+void openpete_native_register_reextract(openpete_native_reextract_fn fn) { s_reextract_cb = fn; }
+openpete_native_reextract_fn openpete_native_get_reextract(void) { return s_reextract_cb; }
 
 void openpete_native_render_frame(void)
 {

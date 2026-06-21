@@ -28,6 +28,7 @@
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "render_paths.h"  /* --render-paths isolation */
+#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 
 #include <math.h>
 #include <stdint.h>
@@ -463,6 +464,11 @@ static void push_scene(CPUState* cpu) {
     }
 }
 
+/* Camera-matrix args from the last real render (cyc_extract reads the matrices
+ * at a1/a2; they persist in RAM across the tick). Reused by the sub-tick
+ * re-extract, which has no register context. */
+static uint32_t s_cyc_a0 = 0xFFFFFFFFu, s_cyc_a1 = 0, s_cyc_a2 = 0;
+
 static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
@@ -475,6 +481,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
+    s_cyc_a0 = a0; s_cyc_a1 = a1; s_cyc_a2 = a2;   /* for sub-tick re-extract */
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     func_8004EBA8(cpu);                     /* run the real renderer */
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
@@ -499,6 +506,18 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     }
     s_in = 0;
     return 1;                               /* took over (body already ran) */
+}
+
+/* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background from
+ * the saved matrices — extract-only (no func_8004EBA8 call, no verdict writes).
+ * The dome matrices are the game's tick-N cull/draw matrices, so the dome
+ * reproduces (it's the far backdrop; re-deriving from the interpolated camera
+ * is a later refinement). push_scene also re-sets the scene background. */
+void cyclorama_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (s_cyc_a1 == 0 || s_cyc_a2 == 0) return;   /* no real frame captured yet */
+    cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2);
+    push_scene(cpu);
 }
 
 static const feature_dispatch_entry_t cyc_dispatch[] = {
