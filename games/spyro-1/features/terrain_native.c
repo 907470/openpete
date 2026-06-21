@@ -262,7 +262,11 @@ typedef struct {
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
 } ttri;
-#define MAX_TTRIS 24576
+/* Local terrain-triangle cap (before the scene feed). Under --no-lod every
+ * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
+ * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
+ * case (headroom for worst-camera-angle). See MAX_SCENE_TRIS in native_render.c. */
+#define MAX_TTRIS 65536
 static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
 static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
@@ -1064,6 +1068,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
 static int s_notex = -1;   /* OPENPETE_TERRAIN_NOTEX: force untextured (debug) */
 static void terrain_feed_native(void) {
     if (s_notex < 0) { const char* e = getenv("OPENPETE_TERRAIN_NOTEX"); s_notex = (e && *e && *e != '0'); }
+    { static int s_cap = -1, s_peak = 0;
+      if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
+      if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
+          fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));

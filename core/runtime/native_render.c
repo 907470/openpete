@@ -69,7 +69,19 @@ typedef struct {
  * (cyclorama/sky from gamestate). Double-buffered isn't needed — the game
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
-#define MAX_SCENE_TRIS 16384
+/* Native scene-triangle cap. Sized for the worst-case --no-lod load: forced-HQ
+ * routes every foreground terrain cell through the 2x2 subdivide (~4x the tris)
+ * and renders every moby with no distance cull, so the densest content
+ * (gnastys_loot, the all-gems loot vault) peaks at ~43k tris vs ~10k for a
+ * typical level at stock LOD. The old 16384 cap silently dropped everything past
+ * it, and which tris dropped depended on the view → terrain that appeared/
+ * disappeared with camera angle. Worst measured across all 35 levels is
+ * beast_makers at ~63k (a homeworld: every enemy + gem + dragon rendered with no
+ * cull, plus forced-HQ terrain); 131072 is ~2x that, covering worst-camera-angle
+ * beyond the charge-path sample. The drop counter below is the permanent safety
+ * net for any outlier. (Static arrays cost ~68 MB; dynamic sizing keyed on
+ * --no-lod is a future optimisation — see the disable-lods plan.) */
+#define MAX_SCENE_TRIS 131072
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
@@ -144,9 +156,29 @@ void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
 static void alpha_census(const openpete_scene_tri* scene, int scene_n);  /* 3c instrument, defined below */
+static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
         if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
+            /* Permanent safety net: if the scene cap is ever exceeded, terrain/
+             * mobys silently vanish — warn once so the cap can be raised rather
+             * than leaving a view-dependent dropout in the wild. */
+            if (s_scene_dropped > 0) {
+                static int s_warned = 0;
+                if (!s_warned) { s_warned = 1;
+                    fprintf(stderr, "native: WARNING scene cap %d exceeded (frame=%u wanted=%d, "
+                            "%d tris dropped) — geometry will vanish view-dependently; raise MAX_SCENE_TRIS\n",
+                            MAX_SCENE_TRIS, s_scene_frame, s_scene_n + s_scene_dropped, s_scene_dropped); }
+            }
+            static int s_capdbg = -1; static int s_scene_peak = 0;
+            if (s_capdbg < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_capdbg = (e && *e && *e != '0'); }
+            if (s_capdbg) {
+                int want = s_scene_n + s_scene_dropped;   /* true demand (raised caps → dropped=0) */
+                if (want > s_scene_peak) { s_scene_peak = want;
+                    fprintf(stderr, "[scenecap] frame=%u NEW PEAK want=%d (accepted=%d/%d dropped=%d)\n",
+                            s_scene_frame, want, s_scene_n, MAX_SCENE_TRIS, s_scene_dropped); }
+            }
+            s_scene_dropped = 0;
             alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
@@ -162,10 +194,13 @@ void openpete_native_scene_begin_frame(unsigned frame) {
     }
 }
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
-    if (tri && s_scene_n < MAX_SCENE_TRIS) {
+    if (!tri) return;
+    if (s_scene_n < MAX_SCENE_TRIS) {
         s_scene[s_scene_n] = *tri;
         s_scene[s_scene_n].category = s_scene_category;  /* stamp the active layer */
         s_scene_n++;
+    } else {
+        s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
     }
 }
 void openpete_native_scene_set_category(int category) { s_scene_category = category; }
