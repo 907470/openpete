@@ -39,12 +39,10 @@ typedef struct rhi_device rhi_device;
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name);
 void        rhi_destroy(rhi_device *dev);
 
-/* Set the live-window supersampling factor (1..4; 1 = no-op). The offscreen
- * render target is sized at N× the swapchain extent per axis and the present
- * blit downsamples to the window. A change marks the swapchain for recreate so
- * it takes effect on the next frame. Does not affect render targets created via
- * rhi_create_render_target (the A/B/diff path stays at its native resolution). */
-void        rhi_set_ssaa(rhi_device *dev, int n);
+/* The GPU's maximum 2D image dimension (VkPhysicalDeviceLimits.maxImageDimension2D).
+ * The renderer uses it to cap the SSAA supersampled render target so a large
+ * --ssaa factor degrades gracefully instead of failing image creation. */
+uint32_t    rhi_max_image_dimension(const rhi_device *dev);
 
 /* Block until the GPU is idle. Call before destroying buffers/pipelines
  * that recent frames may still be using. */
@@ -184,6 +182,10 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
                             size_t out_bytes, int *out_w, int *out_h);
 
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
+
+/* The actual pixel extent of a texture (e.g. a render target, which may have
+ * been created smaller than requested if clamped to device limits). */
+void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
 
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);

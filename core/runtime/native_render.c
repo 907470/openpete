@@ -408,6 +408,17 @@ static struct {
     int           rtt_w, rtt_h;
     rhi_buffer   *diff_quad_vb;
 
+    /* SSAA (--ssaa N): the live vk scene renders into a supersampled render
+     * target (ss_factor× the window per axis), then a fragment resolve pass
+     * box-averages it in linear light into the 1× offscreen. ss_factor is the
+     * EFFECTIVE factor — capped to the GPU's max image dimension (and reduced on
+     * an allocation failure), so a large --ssaa degrades gracefully. ssaa==1 (or
+     * ss_factor==1) disables it: the scene renders straight into the offscreen. */
+    int           ssaa;             /* requested factor (opts->ssaa, >=1) */
+    rhi_pipeline *resolve_pipe;     /* psx_sample.vert + resolve.frag (box+gamma) */
+    rhi_texture  *ss_rtt;           /* supersampled scene target (ss_w × ss_h) */
+    int           ss_w, ss_h, ss_factor;
+
     /* Freeze-frame green overlay (pause / inventory / flight-results backdrop).
      * native_rtt is the canonical native frame each present; frozen_tex snapshots
      * the last WORLD frame's native render (copied from native_rtt on non-menu
@@ -597,12 +608,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         SDL_DestroyWindow(win);
         return 1;
     }
-    /* Live-window supersampling (--ssaa N, default 1=no-op). The offscreen is
-     * re-allocated at N× on the next frame; A/B/diff render targets are
-     * unaffected (they stay at reference resolution). */
-    rhi_set_ssaa(dev, opts->ssaa > 0 ? opts->ssaa : 1);
-    if (opts->ssaa > 1)
-        OPL_INFO_F("native", "SSAA %dx enabled (live window supersampled)", opts->ssaa);
+    /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
+     * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
+    s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
@@ -753,6 +761,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = 0,
     };
+    /* SSAA resolve pipeline (--ssaa N): samples the supersampled scene RT (set 0)
+     * and box-averages the N×N block in linear light into the 1× offscreen
+     * (resolve.frag). No depth, no blend; the ssaa factor rides a push constant. */
+    rhi_pipeline_desc resolve_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "resolve.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(int),
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
@@ -768,6 +785,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
+    rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
@@ -775,9 +793,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !fs_quad_vb) {
+        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
+        if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
         if (fs_quad_vb)    rhi_destroy_buffer(dev, fs_quad_vb);
@@ -826,6 +845,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.diff_pipe    = diff_pipe;
     s_nr.diff_quad_vb = diff_quad_vb;
     s_nr.freeze_overlay_pipe = freeze_overlay_pipe;
+    s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
@@ -934,6 +954,45 @@ static void ensure_native_rtt(bool want)
     s_nr.frozen_w = s_nr.ref_w; s_nr.frozen_h = s_nr.ref_h;
     if (s_nr.native_rtt)
         OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
+}
+
+/* (Re)create ss_rtt — the SSAA supersampled scene target — at the EFFECTIVE
+ * factor × the window. The requested --ssaa factor is capped to the GPU's max
+ * 2D image dimension and stepped down on an allocation failure (to 1 = SSAA
+ * off). No-op when --ssaa is 1, the window size is unknown, or it already
+ * matches. Runs OUTSIDE a frame (creates GPU resources / waits idle). */
+static void ensure_ss_rtt(void)
+{
+    int req = (s_nr.ssaa > 1) ? s_nr.ssaa : 1;
+    int win_w = s_nr.win_w, win_h = s_nr.win_h;
+    if (req <= 1 || win_w <= 0 || win_h <= 0) {              /* SSAA off → drop any RT */
+        if (s_nr.ss_rtt) {
+            rhi_wait_idle(s_nr.dev);
+            rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt); s_nr.ss_rtt = NULL;
+            s_nr.ss_w = s_nr.ss_h = 0; s_nr.ss_factor = 1;
+        }
+        return;
+    }
+    uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
+    int eff = req;
+    while (eff > 1 && ((uint32_t)(win_w * eff) > maxdim || (uint32_t)(win_h * eff) > maxdim)) eff--;
+    int want_w = win_w * eff, want_h = win_h * eff;
+    if (s_nr.ss_rtt && s_nr.ss_w == want_w && s_nr.ss_h == want_h) return;  /* unchanged */
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.ss_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt); s_nr.ss_rtt = NULL; }
+    while (eff > 1) {  /* allocation fallback: step down until it fits VRAM */
+        s_nr.ss_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)(win_w * eff), (uint32_t)(win_h * eff));
+        if (s_nr.ss_rtt) break;
+        eff--;
+    }
+    if (s_nr.ss_rtt) {
+        rhi_texture_extent(s_nr.ss_rtt, &s_nr.ss_w, &s_nr.ss_h);
+        s_nr.ss_factor = eff;
+        OPL_INFO_F("native", "SSAA %dx%s -> scene RT %dx%d (window %dx%d, GPU max dim %u)",
+                   req, (eff != req) ? " (capped)" : "", s_nr.ss_w, s_nr.ss_h, win_w, win_h, maxdim);
+    } else {
+        s_nr.ss_w = s_nr.ss_h = 0; s_nr.ss_factor = 1;   /* couldn't allocate → SSAA off */
+    }
 }
 
 /* Rebuild the panel row (VRAM | reference), each aspect-fit into its cell, so
@@ -1628,6 +1687,42 @@ static bool compose_variant(int variant, bool have_ref)
         return true;
     }
 
+    /* SSAA (--ssaa>1, vk mode): render the scene into the supersampled ss_rtt,
+     * then a fragment resolve pass box-averages it (in linear light) into the 1×
+     * offscreen — a true box filter at every factor and gamma-correct, unlike the
+     * present blit's single bilinear tap. Scoped to vk (ab/diff stay reference-
+     * resolution for the 1:1 PsyCross comparison). */
+    if (variant == NRV_VK && s_nr.ss_rtt && s_nr.ss_factor > 1 && s_nr.layout_ref_w > 0) {
+        rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+        bool drew = draw_native_scene(false);   /* scene at ss_factor× (scissor auto-scaled) */
+        rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
+
+        rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        if (drew) {
+            int n = s_nr.ss_factor;
+            rhi_bind_pipeline(s_nr.dev, s_nr.resolve_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.ss_rtt);
+            rhi_push_constants(s_nr.dev, &n, sizeof(n));
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
+            rhi_draw(s_nr.dev, 6, 0);
+        } else {
+            /* Empty scene → PSX VRAM framebuffer fallback (1× direct, no SSAA). */
+            int tx = 0, ty = 0;
+            if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
+                int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
+                tx = s_nr.disp_x; ty = s_nr.disp_y + dy;
+            }
+            const psx_material nd_mat = { tx, ty, 0, 0, 16 };
+            rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
+            rhi_draw(s_nr.dev, 6, 0);
+        }
+        rhi_end_offscreen(s_nr.dev);
+        return false;
+    }
+
     /* vk / ab (and the diff fallback on an empty scene): draw the scene DIRECTLY
      * into the window-sized offscreen at full resolution (the original display path,
      * unchanged by the freeze work). The freeze overlay — drawn inside
@@ -1695,6 +1790,7 @@ void openpete_native_render_frame(void)
     bool have_ref = sync_reference_texture();
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
+    ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
@@ -1860,12 +1956,14 @@ void openpete_native_render_shutdown(void)
     if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
+    if (s_nr.ss_rtt)       rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
+    if (s_nr.resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
     if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
