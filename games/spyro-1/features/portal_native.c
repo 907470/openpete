@@ -2,6 +2,23 @@
 // skybox previews (the destination-level sky shown inside homeworld portal
 // arches), plus its falsify-before-ship capture/dump harness.
 //
+// ┌─ KNOWN LIMITATION: BROKEN under --render-fps (high-FPS sub-tick spine) ──────┐
+// │ Portal previews work ONLY on canonical-rate frames. They are deliberately   │
+// │ deferred from the sub-tick spine (hard — see the per-feeder table in        │
+// │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row). Two    │
+// │ reasons: (1) there is no portal_native_reextract and this feeder is NOT in  │
+// │ spyro_native_reextract.c's sub-tick feeder list, so every intermediate      │
+// │ present's scene_begin clears the scene and the previews are never re-added   │
+// │ → they flicker/vanish; (2) feed_portal_dome() reads the dome rotation from   │
+// │ the GTE control regs (gte_ctrl[0..4], the matrix the canonical leaf left) —  │
+// │ NOT g_Camera — so it cannot ride the camera bracket and that GTE state is    │
+// │ not valid on the host-fiber reextract. A real fix needs a full              │
+// │ portal_native_reextract re-deriving the whole RenderPortals projection from  │
+// │ gamestate against the interpolated camera (func_80017B48 permuted-axis       │
+// │ project, per-portal clip rect + colour, Sutherland clip to the arch, the     │
+// │ shared transition-skybox dome). Not yet attempted.                          │
+// └─────────────────────────────────────────────────────────────────────────────┘
+//
 // Background. The main level sky is func_8004EBA8 (handled by
 // cyclorama_native.c). The PORTAL previews are a separate pipeline driven by
 // func_80050BD0 (RenderPortals): for each visible portal it projects the

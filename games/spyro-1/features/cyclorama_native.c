@@ -509,10 +509,13 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background from
- * the saved matrices — extract-only (no func_8004EBA8 call, no verdict writes).
- * The dome matrices are the game's tick-N cull/draw matrices, so the dome
- * reproduces (it's the far backdrop; re-deriving from the interpolated camera
- * is a later refinement). push_scene also re-sets the scene background. */
+ * the saved matrix POINTERS — extract-only (no func_8004EBA8 call, no verdict
+ * writes). The saved a1/a2 are g_Camera+0x14 (m_ViewMatrix) and +0x00
+ * (m_ProjectionMatrix) — the SAME regions the spine's camera bracket interpolates
+ * each present — and cyc_extract reads them LIVE, so the sky DOES rotate smoothly
+ * sub-tick (verified 2026-06-22: a1=cam+0x14, a2=cam+0x00; the earlier
+ * "stale tick-N / later refinement" note was wrong). push_scene also re-sets the
+ * scene background. */
 void cyclorama_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
