@@ -129,12 +129,12 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
 
 /* Float RTPS mirror WITH translation: MAC_i = TR[i] + (R_i . V)>>12 ;
  * SX = OFX + IR1*H/SZ3. Returns view-Z (MAC3). (gte.cpp gte_rtps_internal.) */
-static double project(const int M[3][3], const int TR[3], double vx, double vy, double vz,
+static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
-    double mac1 = (double)TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = (double)TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = (double)TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
+    double mac1 = TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
+    double mac2 = TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
+    double mac3 = TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
     double z = (mac3 != 0.0) ? mac3 : 1.0;
     *out_sx = ofx_px + mac1 * H / z;
     *out_sy = ofy_px + mac2 * H / z;
@@ -330,18 +330,32 @@ typedef struct { float sx, sy, vz; int sat; int rec;
  *  M       = model->view rotation (int16, 1.0=4096) */
 static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                uint32_t frameB, uint32_t w0, const int TR_raw[3],
+                               const double TR_frac[3],
                                const int M[3][3], proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
      * +0x05): 2 = identity (the common case), 1 = ×2 size, 3 = /2, etc. Without
      * this, models whose m_Scale != 2 mis-project (the multi-moby A/B residual).
-     * (This is the a3 = w0&0xFF == 0 path; the rare a3!=0 GPF-TR path is a TODO.) */
+     * (This is the a3 = w0&0xFF == 0 path; the rare a3!=0 GPF-TR path is a TODO.)
+     *
+     * TR_frac (host-rebuilt path) carries the moby-centre translation at FLOAT
+     * precision — the camera/moby delta computed as ÷4.0 instead of >>2, so the
+     * moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
+     * chunks (the same fix terrain got). Same scale as TR_raw, just fractional;
+     * the .s-record path passes NULL and keeps the byte-exact integer TR. */
     int m_scale = cpu->read_byte(header + 5) & 0xFF;
-    int TR[3];
-    TR[0] = (TR_raw[0] << 2) >> m_scale;
-    TR[1] = (TR_raw[1] << 2) >> m_scale;
-    TR[2] = (TR_raw[2] << 2) >> m_scale;
+    double TR[3];
+    if (TR_frac) {
+        double sc = 4.0 / (double)(1 << (m_scale < 0 ? 0 : (m_scale > 30 ? 30 : m_scale)));
+        TR[0] = TR_frac[0] * sc;   /* == (TR_frac << 2) >> m_scale, fractional */
+        TR[1] = TR_frac[1] * sc;
+        TR[2] = TR_frac[2] * sc;
+    } else {
+        TR[0] = (double)((TR_raw[0] << 2) >> m_scale);
+        TR[1] = (double)((TR_raw[1] << 2) >> m_scale);
+        TR[2] = (double)((TR_raw[2] << 2) >> m_scale);
+    }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -397,7 +411,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
-    return moby_decode_project(cpu, header, frameA, frameB, w0, TR_raw, M, out, cap);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, TR_raw, NULL, M, out, cap);
 }
 
 #define MAX_PROJ 8192
@@ -468,7 +482,7 @@ static int project_all_records(CPUState* cpu) {
  * a host-built record for a moby the .s already culled in must match the .s record
  * field-for-field (M/TR within GTE truncation, header/frameA/frameB/blend exact).
  * Only after that A/B passes is the builder trusted on the revealed (off-4:3) set. */
-typedef struct { uint32_t header, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; int M[3][3]; } moby_fields;
+typedef struct { uint32_t header, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3]; } moby_fields;
 
 /* Build the REGULAR (animated) render-record fields for one moby from gamestate.
  * Returns 1 on success, 0 if the moby has no animated model (SimpleModel =>
@@ -510,6 +524,14 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
     for (int i=0;i<3;i++)
         f->TR_raw[i] = (PM[i][0]*Vy + PM[i][1]*Vz + PM[i][2]*Vx) >> 12;
+    /* TR_frac: the same view-space centre, FRACTIONAL — delta as ÷4.0 (not >>2) so
+     * the moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
+     * chunks (moby analog of the terrain cam>>4 fix). Same scale as TR_raw. The
+     * native path projects in float, so this is consumed at full precision; the byte
+     * truncation in TR_raw is kept only for the .s-record verify/validate paths. */
+    double dVy=(cy-my)/4.0, dVz=(cz-mz)/4.0, dVx=(mx-cx)/4.0;
+    for (int i=0;i<3;i++)
+        f->TR_frac[i] = (PM[i][0]*dVy + PM[i][1]*dVz + PM[i][2]*dVx) / 4096.0;
     return 1;
 }
 
@@ -599,7 +621,7 @@ static void append_revealed_regular(CPUState* cpu) {
         if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, f.TR_raw, f.M,
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, f.TR_raw, f.TR_frac, f.M,
                                       s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { m += 0x58; continue; }
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -1814,10 +1836,10 @@ static void shaded_verify(CPUState* cpu) {
         /* billboard/2D vs 3D path: flag = bit7 of the low byte at m+0x50 (asm
          * `lhu a0,0x50; sll a0,24; bltz -> .L80022D1C`). */
         int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
-        int M[3][3], TR[3]; double mofx, mofy;
+        int M[3][3]; double TR[3]; double mofx, mofy;
         if (billboard) {                              /* .L80022D1C */
             M[0][0]=4096;M[0][1]=0;M[0][2]=0; M[1][0]=0;M[1][1]=2560;M[1][2]=0; M[2][0]=0;M[2][1]=0;M[2][2]=4096;
-            TR[0]=0; TR[1]=0; TR[2]=pz>>1;            /* OFX/OFY = pos.x/y; TRZ = pos.z>>1 */
+            TR[0]=0; TR[1]=0; TR[2]=(double)(pz>>1);  /* OFX/OFY = pos.x/y; TRZ = pos.z>>1 */
             mofx=(double)px; mofy=(double)py;
         } else {                                      /* 3D: R = ProjMatrix . Ry(axis0), TR = PM.(pos-cam) */
             uint32_t rot = cpu->read_word(m + 0x44u);
@@ -1828,7 +1850,7 @@ static void shaded_verify(CPUState* cpu) {
             for (int i=0;i<3;i++) for (int j=0;j<3;j++)
                 M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
             int32_t dx=px-cx, dy=py-cy, dz=pz-cz;
-            for (int i=0;i<3;i++) TR[i] = (PM[i][0]*dx + PM[i][1]*dy + PM[i][2]*dz) >> 12;
+            for (int i=0;i<3;i++) TR[i] = (double)((PM[i][0]*dx + PM[i][1]*dy + PM[i][2]*dz) >> 12);
             mofx=ofx; mofy=ofy;
         }
         for (int i=0;i<count && n<8192;i++) {
@@ -2002,14 +2024,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * layer instead of being world-depth-sorted (else nearer terrain occludes
          * them). Only billboards carry this; 3D shaded mobys keep their own depth. */
         int near_ot = billboard && (((pz >> 7) - ((int32_t)rot >> 24)) <= 0);
-        int M[3][3], TR[3]; double mofx, mofy;
+        int M[3][3]; double TR[3]; double mofx, mofy;
         double vz_scale = 1.0;   /* depth -> full-world (set for the 3D path below) */
         if (billboard) {
             /* base = [4096 0 0/0 2560 0/0 0 4096] composed with the moby euler
              * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
             shaded_compose_euler(cpu, base, m, M);
-            TR[0]=0; TR[1]=0; TR[2]=pz>>1; mofx=(double)px; mofy=(double)py;
+            TR[0]=0; TR[1]=0; TR[2]=(double)(pz>>1); mofx=(double)px; mofy=(double)py;
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
              * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
              * pz). Scale the fed depth back to full-world so billboards (e.g. the
@@ -2028,13 +2050,18 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * GPF perspective scale by m_DrawScale (moby+0x57). NOT the naive
              * PM·(pos-cam) — that swizzle/scale mismatch sank 3D mobys (gems)
              * below ground (verified: gem v0 nnPrim 35-130px -> 0.1px). */
-            int32_t Dx=(px-cx)>>2, Dy=(cy-py)>>2, Dz=(cz-pz)>>2;
-            int64_t t1=((int64_t)PM[0][0]*Dy+(int64_t)PM[0][1]*Dz+(int64_t)PM[0][2]*Dx)>>12;
-            int64_t t2=((int64_t)PM[1][0]*Dy+(int64_t)PM[1][1]*Dz+(int64_t)PM[1][2]*Dx)>>12;
-            int64_t t3=((int64_t)PM[2][0]*Dy+(int64_t)PM[2][1]*Dz+(int64_t)PM[2][2]*Dx)>>12;
-            TR[0]=(int)(t1<<1); TR[1]=(int)(t2<<1); TR[2]=(int)(t3<<1);
+            /* Delta as ÷4.0 (not >>2) so shaded mobys (gems/props) track the smooth
+             * sub-tick camera instead of stepping in 4-world-unit chunks — same fix
+             * as the regular path + terrain. TR is fractional; scale unchanged. */
+            double Dx=(px-cx)/4.0, Dy=(cy-py)/4.0, Dz=(cz-pz)/4.0;
+            double t1=(PM[0][0]*Dy+PM[0][1]*Dz+PM[0][2]*Dx)/4096.0;
+            double t2=(PM[1][0]*Dy+PM[1][1]*Dz+PM[1][2]*Dx)/4096.0;
+            double t3=(PM[2][0]*Dy+PM[2][1]*Dz+PM[2][2]*Dx)/4096.0;
+            TR[0]=t1*2.0; TR[1]=t2*2.0; TR[2]=t3*2.0;
             uint8_t p57=cpu->read_byte(m+0x57);
-            if (p57){ for(int i=0;i<3;i++){ int16_t ir=(int16_t)TR[i]; TR[i]=((int32_t)p57*ir)>>5; } }
+            /* Draw-scale (p57): preserve the GTE IR16 truncation on the rounded TR,
+             * but keep the /32 scale fractional (smoother than the old >>5). */
+            if (p57){ for(int i=0;i<3;i++){ int16_t ir=(int16_t)(int)TR[i]; TR[i]=(double)((int32_t)p57*(int32_t)ir)/32.0; } }
             mofx=ofx; mofy=ofy;
             /* TR here = trueViewZ/2 (D=(pos-cam)>>2 then MAC<<1), or x p57/32 with
              * draw-scale: scale the fed depth back to full-world so shaded mobys
@@ -2316,7 +2343,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
-                                      f.TR_raw, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                      f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
