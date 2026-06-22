@@ -1579,6 +1579,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                      * before the re-extract rebuilds, so the fade interpolates
                      * sub-tick instead of staircasing at 30 Hz. */
                     openpete_native_scene_commit_fade();
+                    /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
+                     * 2D-UI sprites/lines) from THIS canonical render's scene before
+                     * the re-extract wipes it. Captured on the CANONICAL present only
+                     * — never on sub-ticks, where s_scene holds the already-re-applied
+                     * carry set (re-capturing it accumulates unbounded). The re-extract
+                     * (here and each sub-tick) only re-applies it. */
+                    openpete_native_scene_capture_overlay();
                     lag_re(&g_game.cpu);
                 }
             }

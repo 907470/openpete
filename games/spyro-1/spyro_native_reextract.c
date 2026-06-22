@@ -428,11 +428,13 @@ static void spyro_native_reextract(void* cpu_v) {
         }
     }
 
-    /* Snapshot the 2D-UI overlay (fade + cutscene letterbox + menu panel) from
-     * the live scene BEFORE the rebuild wipes it — it's produced by the 2D-UI
-     * feeder during the game render and can't be re-derived sub-tick. Re-applied
-     * after the feeders below. */
-    openpete_native_scene_capture_overlay();
+    /* The 2D-UI overlay (fade + cutscene letterbox + menu panel + the 2D-UI
+     * sprites/lines) is snapshotted by openpete_native_scene_capture_overlay() in
+     * run.c's CANONICAL present block — right after the game render produced it,
+     * before THIS rebuild wipes it. Capturing here instead would also run on every
+     * SUB-TICK, where s_scene already holds the previous present's RE-APPLIED carry
+     * set, and re-capturing it accumulates the carry set unbounded (2D-UI cloning).
+     * The reextract only RE-APPLIES it (below), on every present. */
 
     /* Restore tick-N's transient .s render-pass scratch (cull records, colour,
      * shaded list, Spyro seg + SXY) so the read-only body feeders below find

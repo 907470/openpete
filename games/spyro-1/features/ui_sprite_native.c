@@ -86,6 +86,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
     openpete_native_scene_set_category(OPENPETE_SCENE_HUD);
+    openpete_native_scene_set_carry(1);                  /* 2D-UI: carry across sub-tick re-extracts */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
@@ -96,6 +97,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
         tri.bpp=bpp; tri.blend = abe ? 1 : 0;
         openpete_native_scene_add_tri(&tri);
     }
+    openpete_native_scene_set_carry(0);
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
@@ -164,6 +166,7 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
 
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_category(OPENPETE_SCENE_HUD);
+    openpete_native_scene_set_carry(1);                  /* 2D-UI: carry across sub-tick re-extracts */
     /* corners: a=+perp, b=-perp; colour follows the endpoint (gouraud). */
     float cx[4] = {(float)(x0+px),(float)(x1+px),(float)(x0-px),(float)(x1-px)};
     float cy[4] = {(float)(y0+py),(float)(y1+py),(float)(y0-py),(float)(y1-py)};
@@ -176,6 +179,7 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
         tri.textured=0; tri.blend=0;
         openpete_native_scene_add_tri(&tri);
     }
+    openpete_native_scene_set_carry(0);
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 

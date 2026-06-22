@@ -145,12 +145,20 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * never occluded by world geometry. Only the static g_Hud range routes here
  * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
 #define OPENPETE_SCENE_HUD3D 6
+/* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
+ * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
+ * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
+ * for tris that share a re-derivable category (the 2D-UI sprites/lines live in
+ * OPENPETE_SCENE_HUD, which the moby feeder ALSO populates with re-derived near-OT
+ * billboards). A category check can't tell them apart; this flag can. Stamped by
+ * add_tri from openpete_native_scene_set_carry (0 unless a feeder opts in). */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
     int category;
+    int carry;
 } openpete_scene_tri;
 
 /* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
@@ -184,6 +192,14 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
  * each frame's first begin_frame and by scene_begin, so a feeder that never
  * calls it always emits WORLD geometry. */
 void openpete_native_scene_set_category(int category);
+/* Mark subsequent add_tri calls as carry=1 (sub-tick-uncarryable 2D-UI: the title
+ * logo / "PRESS START" / HUD glyph FT4 sprites + UI separator lines that the 2D-UI
+ * feeder builds during the game render and the re-extract can't re-derive). The
+ * overlay-carry snapshots these (alongside OVERLAY/HUD_PANEL) so they survive the
+ * sub-tick rebuild instead of strobing at 30 Hz. Reset to 0 at each frame's first
+ * begin_frame and by scene_begin; the 2D-UI feeder brackets its HUD-sprite emit
+ * with set_carry(1) ... set_carry(0). */
+void openpete_native_scene_set_carry(int on);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
  * before the scene so uncovered areas show it instead of black, mirroring the
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).

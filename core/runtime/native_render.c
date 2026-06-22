@@ -128,6 +128,10 @@ static int scene_delay_depth(void) {
  * Reset to WORLD per frame so a non-actor feeder never inherits a stale ACTOR. */
 static int s_scene_category = OPENPETE_SCENE_WORLD;
 
+/* Carry flag stamped onto every add_tri: 1 = sub-tick-uncarryable 2D-UI (see the
+ * header). Reset to 0 per frame so a feeder that never opts in emits carry=0. */
+static int s_scene_carry = 0;
+
 /* Full-screen fade overlay for the current frame (func_800190D4). 0 = none; else
  * bit31 = active, bits[25:24] = PSX ABR mode (0..3), bits[23:0] = rgb (R in 16..23,
  * G in 8..15, B in 0..7). Reset every frame; the present draws it dead last. */
@@ -146,7 +150,7 @@ static uint32_t s_scene_freeze = 0;
  * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
 static int s_scene_hud_under = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_category = OPENPETE_SCENE_WORLD; }
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_category = OPENPETE_SCENE_WORLD; s_scene_carry = 0; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -190,7 +194,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
-        s_scene_category = OPENPETE_SCENE_WORLD;
+        s_scene_category = OPENPETE_SCENE_WORLD; s_scene_carry = 0;
     }
 }
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
@@ -198,12 +202,14 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
     if (s_scene_n < MAX_SCENE_TRIS) {
         s_scene[s_scene_n] = *tri;
         s_scene[s_scene_n].category = s_scene_category;  /* stamp the active layer */
+        s_scene[s_scene_n].carry = s_scene_carry;        /* stamp the carry flag */
         s_scene_n++;
     } else {
         s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
     }
 }
 void openpete_native_scene_set_category(int category) { s_scene_category = category; }
+void openpete_native_scene_set_carry(int on) { s_scene_carry = on ? 1 : 0; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 /* The game's fade for THIS tick + a "set this tick" flag. The flag (not the
  * begin_frame reset of s_scene_fade) is what tells the re-extract whether the
@@ -247,11 +253,23 @@ void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under =
  * outright). They're screen-space and tick-constant, so capture them from the
  * live scene before the rebuild and re-apply them after. Categories that the
  * 3D feeders re-produce (HUD/HUD3D billboards, PLAYER near-OT text) are NOT
- * carried — they'd double. */
+ * carried by category — they'd double. The 2D-UI HUD SPRITES/LINES (title logo,
+ * "PRESS START", HUD glyph text, UI separators) live in OPENPETE_SCENE_HUD too,
+ * but the 3D feeders never re-derive THEM, so they carry by an explicit per-tri
+ * flag (set_carry, stamped by add_tri) that the moby near-OT billboards leave 0. */
 #define OVERLAY_CARRY_MAX 1024
-static openpete_scene_tri s_overlay_carry[OVERLAY_CARRY_MAX];
+static openpete_scene_tri s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
 static uint32_t           s_overlay_carry_freeze;
+/* The previous canonical carry set, so apply_overlay can interpolate the SCREEN
+ * POSITION of an animated 2D-UI element across sub-ticks — the title-logo drop-in
+ * slide moves a few px/tick; held (un-interpolated) it staircases at 30 Hz just
+ * like the fade did. Rolled curr->prev by capture_overlay (canonical only); paired
+ * by index when the two captures have equal count + matching sprite identity
+ * (category/textured/uv), else that tri snaps to curr (a structural change — a
+ * blink toggling the count, a glyph swap — is discrete anyway). */
+static openpete_scene_tri s_overlay_prev[OVERLAY_CARRY_MAX];
+static int                s_overlay_prev_n;
 
 /* The fade ramps per sim tick, so unlike the (static) letterbox/panel tris it is
  * interpolated rather than held: s_fade_prev/curr are the two most-recent
@@ -281,18 +299,52 @@ static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
 }
 
 void openpete_native_scene_capture_overlay(void) {
+    /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
+     * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
+     * prev/curr are consecutive canonical captures (one sim tick apart). */
+    if (s_overlay_carry_n > 0)
+        memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
+    s_overlay_prev_n = s_overlay_carry_n;
     s_overlay_carry_n = 0;
     for (int t = 0; t < s_scene_n && s_overlay_carry_n < OVERLAY_CARRY_MAX; t++) {
-        int c = s_scene[t].category;
-        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL)
+        int c = s_scene[t].category, cy = s_scene[t].carry;
+        /* carry==2 = a tri RE-APPLIED by apply_overlay last present. The canonical
+         * game render appends to the prior sub-tick's (un-wiped) scene, so those
+         * re-applied tris are still here — skip them or the carry set accumulates
+         * unbounded (the 2D-UI logo cloning). Only the GAME RENDER's fresh emission
+         * is captured: OVERLAY/HUD_PANEL by category, 2D-UI sprites/lines by carry==1
+         * (see openpete_native_scene_set_carry). Capture runs on the CANONICAL present
+         * only (run.c), so a clear here is correct (sub-ticks hold the set). */
+        if (cy == 2) continue;
+        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1)
             s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
     }
     s_overlay_carry_freeze = s_scene_freeze;   /* freeze is on/off (held); fade interpolates */
 }
 
 void openpete_native_scene_apply_overlay(double alpha) {
-    for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++)
-        s_scene[s_scene_n++] = s_overlay_carry[t];   /* category already stamped */
+    /* Pair curr with prev by index only when the two captures are structurally the
+     * same (equal count) — a count change (a blink toggling, a glyph added) makes
+     * index pairing meaningless, so snap to curr that present. */
+    int pairable = (s_overlay_prev_n == s_overlay_carry_n);
+    for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
+        openpete_scene_tri tri = s_overlay_carry[t];   /* curr; category already stamped */
+        if (pairable) {
+            const openpete_scene_tri *p = &s_overlay_prev[t];
+            /* Same sprite? A rigid screen translation (the slide) keeps the texture
+             * region, so category + textured + the first vertex's UV identify it; a
+             * glyph swap at the same slot differs in UV and snaps to curr. */
+            if (p->category == tri.category && p->textured == tri.textured &&
+                p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v) {
+                for (int k = 0; k < 3; k++) {
+                    tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * alpha);
+                    tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * alpha);
+                }
+            }
+        }
+        tri.carry = 2;                             /* mark re-applied so the next capture skips it */
+        s_scene[s_scene_n++] = tri;
+    }
     s_scene_freeze = s_overlay_carry_freeze;
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, alpha);
 }
