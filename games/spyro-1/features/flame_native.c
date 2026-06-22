@@ -36,6 +36,18 @@
 extern void     func_80058D64(CPUState* cpu);  /* the real FLAME renderer */
 extern unsigned openpete_frame;
 
+/* Sub-keyframe slide (0..1): the fractional part of the per-strand counter the
+ * spine is advancing this present. The counter selects the ribbon's window into
+ * the STATIC cross-section spine (one 8-byte record per counter step); this frac
+ * slides each cross-section between record[p] and record[p+8] so the ribbon
+ * animates BELOW the keyframe grid (matching Spyro's keyframe-lerp smoothness)
+ * instead of stepping one record at a time. Set by the spine orchestrator before
+ * each sub-tick re-extract; 0 on the canonical render (exact keyframes). */
+static double s_flame_subframe = 0.0;
+void flame_native_set_subframe(double frac) {
+    s_flame_subframe = (frac < 0.0) ? 0.0 : (frac > 1.0 ? 1.0 : frac);
+}
+
 /* ---- gamestate addresses (psx.map) --------------------------------------- */
 #define G_SPYROFLAME  0x800786C8u   /* flame struct; attach matrix @ +0xB8     */
 #define G_CAMERA      0x80076DD0u   /* m_ProjectionMatrix +0x00, m_Position +0x28 */
@@ -282,16 +294,42 @@ static void flame_project(const int R[3][3], const int TR[3], double ofx, double
     *sx = (float)x; *sy = (float)y; *sz = (float)mac3;
 }
 
+/* Read one spine cross-section record (Xraw/Z/idx/sIdx), sub-keyframe-lerping
+ * toward the NEXT record (p+8, the tip direction) by s_flame_subframe so the
+ * ribbon slides smoothly between the static keyframes. The counter advance moves
+ * the window by one 8-byte record per step, so record[p+8] is exactly where the
+ * next integer counter would read this cross-section → frac=1 converges on it.
+ * Guarded: skip the lerp at a Z discontinuity (Z went backward / jumped — the
+ * read crossed into the next strand's spine at max extension). */
+static void flame_read_cross(CPUState* cpu, uint32_t p,
+                             int* Xraw, int* Z, int* idx, int* sIdx) {
+    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
+    int X0 = s16(w0 >> 16), Z0 = s16(w0 & 0xFFFF), i0 = s16(w1 & 0xFFFF);
+    int s0 = (int)((w1 >> 15) & 0x1FEu);
+    double f = s_flame_subframe;
+    if (f > 0.0) {
+        uint32_t w0b = cpu->read_word(p + 8), w1b = cpu->read_word(p + 12);
+        int X1 = s16(w0b >> 16), Z1 = s16(w0b & 0xFFFF), i1 = s16(w1b & 0xFFFF);
+        int s1 = (int)((w1b >> 15) & 0x1FEu);
+        int dZ = Z1 - Z0;
+        if (dZ >= 0 && dZ < 200) {          /* continuous spine — lerp */
+            X0 += (int)((X1 - X0) * f + (X1 >= X0 ? 0.5 : -0.5));
+            Z0 += (int)(dZ * f + 0.5);
+            i0 += (int)((i1 - i0) * f + (i1 >= i0 ? 0.5 : -0.5));
+            int ds = s1 - s0; if (ds > 256) ds -= 512; else if (ds < -256) ds += 512;
+            s0 = (s0 + (int)(ds * f + (ds >= 0 ? 0.5 : -0.5))) & 0x1FE;
+        }   /* else: discontinuity (crossed into next strand) — keep record[p] */
+    }
+    *Xraw = X0; *Z = Z0; *idx = i0; *sIdx = s0;
+}
+
 /* one ribbon cross-section: spine vert at `p` -> two edge verts (float screen) */
 typedef struct { float sx, sy, sz; } fpt;
 static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
                                 const int R[3][3], const int TR[3],
                                 double ofx, double ofy, double H, fpt* e0, fpt* e1) {
-    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
-    int Xraw = s16(w0 >> 16);          /* high16(word0) */
-    int Z    = s16(w0 & 0xFFFF);       /* low16(word0)  */
-    int idx  = s16(w1 & 0xFFFF);       /* low16(word1)  */
-    int sIdx = (int)((w1 >> 15) & 0x1FEu);
+    int Xraw, Z, idx, sIdx;
+    flame_read_cross(cpu, p, &Xraw, &Z, &idx, &sIdx);
     int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx + 0x80);
     int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx);
     int co = (amp * cosv) >> 11;

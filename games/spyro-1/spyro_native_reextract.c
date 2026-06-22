@@ -8,6 +8,7 @@
 #include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "psx_runtime.h"            /* CPUState (read_word) */
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -259,6 +260,7 @@ static void spyro_native_reextract(void* cpu_v) {
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
+    double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */
     static moby_save_t s_moby_save[MOBY_SAVE_MAX];
     int      moby_save_n = 0;
     double   alpha = 0.0;
@@ -367,18 +369,28 @@ static void spyro_native_reextract(void* cpu_v) {
                 lerp_vec3  (fl, pfl, fl_saved, FLAME_POS_OFF, alpha);
                 lerp_matrix(fl, pfl, fl_saved, FLAME_ATT_OFF, alpha);
                 /* Per-strand keyframe counter: advance fractionally so the ribbon
-                 * extends/scrolls at the present rate. Lerp prev→curr per strand,
-                 * but SNAP on a large jump — the flame periodically reseeds (the
-                 * counter wraps 30→0), and lerping across that would collapse the
-                 * ribbon through zero. |Δ|≤8 cleanly separates the continuous
-                 * advance/retract (g_DeltaTime 2..4) from the wrap (~30). */
+                 * extends/scrolls at the present rate. The counter selects the
+                 * ribbon's window into the static cross-section spine (one 8-byte
+                 * record per step); write the FLOOR of the interpolated counter as
+                 * the window and hand the fractional part to the flame feeder as a
+                 * SUB-KEYFRAME slide (record[p]→record[p+8] lerp) so the ribbon
+                 * animates below the keyframe grid — as smooth as Spyro's anim
+                 * lerp, not stepping one record at a time. SNAP on a large jump —
+                 * the flame periodically reseeds (the counter wraps 30→0), and
+                 * lerping across that collapses the ribbon through zero. |Δ|≤8
+                 * separates the continuous advance/retract (g_DeltaTime 2..4) from
+                 * the wrap (~30). The advance is the same for every (non-snapped)
+                 * strand (all += g_DeltaTime from an integer prev), so the frac is
+                 * shared; take it from the first advancing strand. */
                 for (int s = 0; s < 8; s++) {
                     int pcnt = pfl[FLAME_CNT_OFF + s], ccnt = fl_saved[FLAME_CNT_OFF + s];
                     int d = ccnt - pcnt;
                     if (d > -8 && d < 8) {
-                        int v = pcnt + (int)((double)d * alpha + (d >= 0 ? 0.5 : -0.5));
-                        if (v < 0) v = 0;
+                        double fadv = (double)pcnt + (double)d * alpha;
+                        double ffloor = floor(fadv);
+                        int v = (int)ffloor; if (v < 0) v = 0;
                         fl[FLAME_CNT_OFF + s] = (uint8_t)v;
+                        if (fl_subframe == 0.0 && d > 0) fl_subframe = fadv - ffloor;
                     }   /* else keep curr (wrap/reseed — already in fl) */
                 }
                 fl_bracketed = 1;
@@ -573,6 +585,11 @@ static void spyro_native_reextract(void* cpu_v) {
      * is active (camera bracketed). The feeder builds a blend-interpolated seg
      * scratch so Spyro's animation is as smooth as its movement. */
     spyro_native_set_anim_interp(alpha, cam_bracketed);
+    /* Flame sub-keyframe slide: the fractional part of the counter advance (the
+     * integer part is already written to FL_CNT). The flame feeder lerps each
+     * cross-section between adjacent spine records by this, so the ribbon animates
+     * below the keyframe grid. 0 when not bracketed (exact keyframes). */
+    flame_native_set_subframe(fl_subframe);
 
     /* Rebuild the scene against the (now interpolated) gamestate. scene_begin
      * resets s_scene without bumping the frame id, so the feeders' own
@@ -596,6 +613,7 @@ static void spyro_native_reextract(void* cpu_v) {
     spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
+    flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
 
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */

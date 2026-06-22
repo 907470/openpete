@@ -34,6 +34,14 @@ struct CPUState;
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
 void spyro_native_set_anim_interp(double alpha, int on);
 
+/* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
+ * counter advance for this sub-tick present. The flame feeder lerps each ribbon
+ * cross-section between adjacent static spine records by this, so the ribbon
+ * animates below the keyframe grid. Set by the orchestrator before
+ * flame_native_reextract; reset to 0 after (the canonical render uses exact
+ * keyframes). Defined in features/flame_native.c. */
+void flame_native_set_subframe(double frac);
+
 void cyclorama_native_reextract(struct CPUState* cpu);
 void terrain_native_reextract(struct CPUState* cpu);
 void moby_native_reextract(struct CPUState* cpu);
