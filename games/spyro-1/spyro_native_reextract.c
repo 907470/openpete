@@ -40,6 +40,18 @@ extern unsigned openpete_frame;
 #define MOBY_SAVE_MAX 1024
 typedef struct { uint32_t addr; uint8_t bytes[MOBY_STRIDE]; } moby_save_t;
 
+/* g_Particles pool (smoke / triangles / line particles): stride-0x20 array behind
+ * a pointer; pos = X@lo16(+0x04), Y@hi16(+0x04), Z@lo16(+0x08) (int16, world/4).
+ * The spine lerps each active particle's position by its per-object alpha (keyed
+ * by slot address in the interp-objs table) so they animate at the present rate.
+ * Only +0x04/+0x08 are bracketed (saved/restored). */
+#define G_PARTICLES     0x80075824u  /* Particle[] base POINTER (deref) */
+#define PART_STRIDE     0x20u
+#define PART_HDR_SEL    8u           /* (hdr>>8)&0xFF: 0xFF=end, &0x80=inactive */
+#define PART_POS_OFF    0x04u        /* X(lo16)/Y(hi16) word; Z(lo16) at +0x08 */
+#define PART_SAVE_MAX   512
+typedef struct { uint32_t addr, w1, w2; } part_save_t;  /* +0x04, +0x08 */
+
 /* g_Camera field offsets (verified in camera.h / the feeders):
  *   +0x00 m_ProjectionMatrix (SHORTMATRIX: short[3][3]+pad)
  *   +0x14 m_ViewMatrix       (SHORTMATRIX)
@@ -263,6 +275,8 @@ static void spyro_native_reextract(void* cpu_v) {
     double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */
     static moby_save_t s_moby_save[MOBY_SAVE_MAX];
     int      moby_save_n = 0;
+    static part_save_t s_part_save[PART_SAVE_MAX];
+    int      part_save_n = 0;
     double   alpha = 0.0;
 
     /* Discontinuity guard: if the camera jumped this tick (level transition,
@@ -568,6 +582,62 @@ static void spyro_native_reextract(void* cpu_v) {
         }
     }
 
+    /* Per-particle interpolation (g_Particles pool): lerp each active particle's
+     * position by its OWN distinct-roll alpha so smoke / triangles / line
+     * particles move at the present rate instead of stepping at 30 Hz. Keyed by
+     * slot address in the interp-objs table (same store as the mobys); particles
+     * spawn into inactive slots → have_prev=0 → snap (no streak from a stale slot),
+     * despawns are evicted. Pure LERP of two observed states → never calls the
+     * particle update's rand() (which would break gameplay 1:1), so it's safe for
+     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life, carved
+     * out) or glows (they ride their owner moby). Teleport-guard a slot reused by a
+     * new particle mid-flight. */
+    {
+        op_time_t now = op_now();
+        uint8_t* pbase = (uint8_t*)openpete_psx_to_host_ptr(G_PARTICLES);
+        uint32_t ppool = 0; if (pbase) memcpy(&ppool, pbase, 4);
+        if (ppool >= 0x80000000u) {
+            for (uint32_t i = 0; i < 320u && part_save_n < PART_SAVE_MAX; i++) {
+                uint32_t pa = ppool + i * PART_STRIDE;
+                uint8_t* ph = (uint8_t*)openpete_psx_to_host_ptr(pa);
+                if (!ph) break;
+                uint32_t hdr; memcpy(&hdr, ph, 4);
+                uint8_t sel = (uint8_t)((hdr >> PART_HDR_SEL) & 0xFFu);
+                if (sel == 0xFFu) break;            /* end of pool */
+                if (sel & 0x80u) continue;          /* inactive slot */
+                const openpete_interp_obj_t* o = openpete_interp_objs_find(pa);
+                if (!o || !o->have_prev) continue;  /* spawn → snap (curr) */
+                op_time_t period = o->curr_ns - o->prev_ns;
+                if (o->prev_ns == 0 || period <= 0) continue;
+                double pa_alpha = (double)(now - o->curr_ns) / (double)period;
+                if (pa_alpha < 0.0) pa_alpha = 0.0; else if (pa_alpha > 1.0) pa_alpha = 1.0;
+                uint32_t pw1, pw2, cw1, cw2;
+                memcpy(&pw1, o->prev + PART_POS_OFF, 4); memcpy(&pw2, o->prev + 0x08u, 4);
+                memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
+                int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
+                int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
+                /* teleport guard: a slot reused by a new particle mid-flight jumps
+                 * far in one tick — snap. Generous (8000) so genuine fast particle
+                 * motion (≤ a few thousand/tick) still interpolates. */
+                double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
+                if (dX*dX + dY*dY + dZ*dZ > 8000.0 * 8000.0) continue;
+                uint32_t live1, live2;
+                memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
+                s_part_save[part_save_n].addr = pa;
+                s_part_save[part_save_n].w1 = live1;
+                s_part_save[part_save_n].w2 = live2;
+                part_save_n++;
+                int16_t lX = lerp16((int16_t)pX, (int16_t)cX, pa_alpha);
+                int16_t lY = lerp16((int16_t)pY, (int16_t)cY, pa_alpha);
+                int16_t lZ = lerp16((int16_t)pZ, (int16_t)cZ, pa_alpha);
+                uint32_t nw1 = (uint32_t)(uint16_t)lX | ((uint32_t)(uint16_t)lY << 16);
+                uint32_t nw2 = (live2 & 0xFFFF0000u) | (uint32_t)(uint16_t)lZ;
+                memcpy(ph + PART_POS_OFF, &nw1, 4);
+                memcpy(ph + 0x08u, &nw2, 4);
+            }
+        }
+    }
+
     /* The 2D-UI overlay (fade + cutscene letterbox + menu panel + the 2D-UI
      * sprites/lines) is snapshotted by openpete_native_scene_capture_overlay() in
      * run.c's CANONICAL present block — right after the game render produced it,
@@ -628,6 +698,11 @@ static void spyro_native_reextract(void* cpu_v) {
     for (int i = 0; i < moby_save_n; i++) {
         uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
+    }
+    for (int i = 0; i < part_save_n; i++) {
+        uint8_t* ph = (uint8_t*)openpete_psx_to_host_ptr(s_part_save[i].addr);
+        if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
+                  memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);

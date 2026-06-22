@@ -73,6 +73,10 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
 #define MOBY_STATE_OFF 0x48u         /* +0x48: 0xFF = array sentinel, >=0x80 dead */
 #define G_HUD_ICONS    0x80077FECu   /* g_Hud.m_Mobys[12] — static 3D HUD icons (stride 0x58) */
 #define G_HUD_COUNT    12u           /* gem/dragon/Spyro-head/key/digit icons (they spin) */
+#define G_PARTICLES    0x80075824u   /* Particle[] base POINTER (deref); stride 0x20 */
+#define PART_STRIDE    0x20u         /* particle record stride */
+#define PART_HDR_SEL   8u            /* (hdr>>8)&0xFF: m_Type/sel; 0xFF=end, &0x80=inactive */
+#define PART_MAX       320u          /* pool walk bound */
 
 extern unsigned openpete_frame;
 
@@ -112,6 +116,27 @@ static void spyro_interp_capture_objs(void) {
         uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
         const void* host = openpete_psx_to_host_ptr(m);
         if (host) openpete_interp_objs_capture(m, host, OPENPETE_INTERP_OBJ_BLOB_BYTES);
+    }
+
+    /* g_Particles pool (smoke / triangles / line particles around the flame and
+     * elsewhere): a stride-0x20 array behind a pointer. Capture each ACTIVE slot
+     * keyed by its PSX address so the sub-tick spine can lerp particle positions.
+     * Particles spawn into INACTIVE slots, so a fresh particle gets have_prev=0
+     * (snap, no streak); despawned slots go unseen → evicted. NOT g_Sparkles
+     * (separate pool, rand m_Life — carved out) or glows (derive from their owner
+     * moby). Capture 0x20 = the full record (pos @ +0x04 X/Y, +0x08 Z). */
+    uint32_t ppool = rd32(G_PARTICLES);
+    if (ppool >= 0x80000000u) {
+        for (uint32_t i = 0; i < PART_MAX; ++i) {
+            uint32_t pa = ppool + i * PART_STRIDE;
+            const void* host = openpete_psx_to_host_ptr(pa);
+            if (!host) break;
+            uint32_t hdr; memcpy(&hdr, host, 4);
+            uint8_t sel = (uint8_t)((hdr >> PART_HDR_SEL) & 0xFFu);
+            if (sel == 0xFFu) break;            /* end of pool */
+            if (sel & 0x80u) continue;          /* inactive slot */
+            openpete_interp_objs_capture(pa, host, PART_STRIDE);
+        }
     }
 
     openpete_interp_objs_end_tick();
