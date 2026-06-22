@@ -30,6 +30,8 @@
 #include "openpete_psx.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
+#include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 
@@ -143,8 +145,10 @@ static double project(const int M[3][3], const int TR[3], double vx, double vy, 
 }
 
 /* Forward decl: the host-side moby record builder (widescreen reveal, below)
- * reuses the shaded path's euler matrix composer, defined later in this file. */
-static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]);
+ * reuses the shaded path's euler matrix composer, defined later in this file.
+ * Takes the moby vaddr (not the raw rotation word) so the composer can look up
+ * the moby's prev/curr snapshots for sub-tick float rotation interpolation. */
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]);
 
 /* ---- ground-truth capture: decode prims F798 emitted ---------------- */
 /* Walk by OT tag length (stride=((w0>>24)+1)*4) — robust regardless of the
@@ -497,7 +501,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
      * path uses (verified bit-exact there); m_Rotation @ moby+0x44. */
     int PM[3][3]; read_matrix(cpu, G_CAMERA + 0x00, PM);
-    shaded_compose_euler(cpu, PM, cpu->read_word(moby + 0x44u), f->M);
+    shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
      * here — moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
@@ -1720,11 +1724,65 @@ static void mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
  * (sin may be negative). VERIFIED bit-exact vs the live RT registers: base·Ry =
  * gte_ctrl[0..4] for a billboard moby (cliff_town cls 0x3A). Euler indices:
  * Y=(rot>>15)&0x1FE, X=(rot&0xFF00)>>7, Z=(rot&0xFF)<<1 (rot=m_Rotation@+0x44). */
-static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]) {
-    uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
-    int sy=(int16_t)cpu->read_half(SINCOS_TABLE+iy), cy=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iy);
-    int sx=(int16_t)cpu->read_half(SINCOS_TABLE+ix), cx=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+ix);
-    int sz=(int16_t)cpu->read_half(SINCOS_TABLE+iz), cz=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iz);
+/* Sub-tick moby ROTATION interpolation state (set by moby_native_set_rot_interp,
+ * declared in spyro_native_reextract.h). s_rot_now is the present's op_now()
+ * timestamp, captured once when enabled so every moby composed this present uses
+ * one consistent clock (each still gets its OWN per-object alpha from its distinct
+ * prev/curr roll timestamps). 0 = inactive → byte-exact path (canonical render,
+ * or --render-fps off where the snapshot table is empty anyway). */
+static op_time_t s_rot_now = 0;
+void moby_native_set_rot_interp(int on) { s_rot_now = on ? op_now() : 0; }
+
+static int rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
+
+/* sin/cos at SUB-BYTE angle resolution: linearly interpolate adjacent entries of
+ * the game's in-RAM sin/cos table. The table is 256/circle at the integer grid
+ * (index = byte<<1, int16 Q12); blending adjacent entries is exact at integer
+ * angles and smooth between, so the rendered rotation is no longer locked to the
+ * 1.4°/step byte grid. fb is a byte-angle in [0,256) after wrap. */
+static void sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
+    while (fb < 0.0) fb += 256.0;
+    while (fb >= 256.0) fb -= 256.0;
+    int b0 = (int)fb; double frac = fb - (double)b0;
+    uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
+    double s0=(int16_t)cpu->read_half(SINCOS_TABLE+i0),       s1=(int16_t)cpu->read_half(SINCOS_TABLE+i1);
+    double c0=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+i1);
+    *s_out = rnd_i(s0 + (s1 - s0) * frac);
+    *c_out = rnd_i(c0 + (c1 - c0) * frac);
+}
+
+/* Shortest-arc interpolated byte angle (256/circle) between two byte endpoints. */
+static double lerp_byte_angle(int prev_b, int curr_b, double t) {
+    int d = curr_b - prev_b;
+    if (d > 128) d -= 256; else if (d < -128) d += 256;
+    return (double)prev_b + (double)d * t;
+}
+
+static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
+    int sy, cy, sx, cx, sz, cz;
+    /* When rotation interp is active and this moby has a paired prev/curr snapshot,
+     * render its rotation at float precision (Z=+0x44, X=+0x45, Y=+0x46 euler bytes);
+     * else fall back to the canonical byte-exact table lookup (spawn with no prev,
+     * or interp off). The high byte (+0x47) is the OT-bias overlay flag, not a
+     * rotation axis — untouched either way. */
+    const openpete_interp_obj_t* o =
+        s_rot_now ? openpete_interp_objs_find(moby) : NULL;
+    if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
+        double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+        double fZ = lerp_byte_angle(o->prev[0x44], o->curr[0x44], t);
+        double fX = lerp_byte_angle(o->prev[0x45], o->curr[0x45], t);
+        double fY = lerp_byte_angle(o->prev[0x46], o->curr[0x46], t);
+        sincos_interp(cpu, fY, &sy, &cy);
+        sincos_interp(cpu, fX, &sx, &cx);
+        sincos_interp(cpu, fZ, &sz, &cz);
+    } else {
+        uint32_t rot = cpu->read_word(moby + 0x44u);
+        uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
+        sy=(int16_t)cpu->read_half(SINCOS_TABLE+iy); cy=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iy);
+        sx=(int16_t)cpu->read_half(SINCOS_TABLE+ix); cx=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+ix);
+        sz=(int16_t)cpu->read_half(SINCOS_TABLE+iz); cz=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iz);
+    }
     int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
     int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
     int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
@@ -1950,7 +2008,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             /* base = [4096 0 0/0 2560 0/0 0 4096] composed with the moby euler
              * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
-            shaded_compose_euler(cpu, base, rot, M);
+            shaded_compose_euler(cpu, base, m, M);
             TR[0]=0; TR[1]=0; TR[2]=pz>>1; mofx=(double)px; mofy=(double)py;
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
              * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
@@ -1963,7 +2021,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         } else {
             /* model->view = PM (camera ProjMatrix) composed with the full moby
              * euler rotation (block_80022CE4 PM start, then the same chain). */
-            shaded_compose_euler(cpu, PM, rot, M);
+            shaded_compose_euler(cpu, PM, m, M);
             /* TR (moby centre in view space) = the .s's swizzled centre MVMVA
              * (block_80022B40..80022D18): IR=((cam.y-my)>>2,(cam.z-mz)>>2,(mx-cam.x)>>2)
              * loaded as (IR1,IR2,IR3); MAC=(PM·IR)>>12; TR=MAC<<1; then an optional

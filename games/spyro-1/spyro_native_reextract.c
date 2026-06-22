@@ -536,17 +536,15 @@ static void spyro_native_reextract(void* cpu_v) {
                                     }
                                 }
                             }
-                            /* Rotation: shortest-arc lerp of m_Rotation (+0x44,
-                             * Vector3D8 = 3 × 8-bit angle, 256/circle) — the gamestate
-                             * resolution is 8-bit, so build_moby_record_fields reads
-                             * (and composes) the byte euler; wrap each axis to the
-                             * short way round. */
-                            for (int k = 0; k < 3; k++) {
-                                int d = (int)o->curr[0x44 + k] - (int)o->prev[0x44 + k];
-                                if (d > 128) d -= 256; else if (d < -128) d += 256;
-                                int r = (int)o->prev[0x44 + k] + (int)((double)d * ma + (d >= 0 ? 0.5 : -0.5));
-                                mh[0x44 + k] = (uint8_t)(r & 0xFF);
-                            }
+                            /* Rotation (m_Rotation @ +0x44, Vector3D8) is NOT lerped
+                             * into RAM here: a byte write would re-quantize to the
+                             * 1.4°/step grid (256/circle) and the sub-tick interp
+                             * couldn't subdivide below it — the residual stair-step on
+                             * slow rotators (gems/dragons). Instead the moby euler
+                             * composer (shaded_compose_euler) reads this moby's
+                             * prev/curr snapshots and renders the rotation at FLOAT
+                             * precision (table-interpolated sin/cos). Enabled for the
+                             * feeder pass via moby_native_set_rot_interp below. */
                         }
                     }
                 }
@@ -686,6 +684,12 @@ static void spyro_native_reextract(void* cpu_v) {
      * cross-section between adjacent spine records by this, so the ribbon animates
      * below the keyframe grid. 0 when not bracketed (exact keyframes). */
     flame_native_set_subframe(fl_subframe);
+    /* Moby rotation: render at float precision (table-interpolated sin/cos over the
+     * per-moby prev/curr euler snapshots) for this feeder pass, so slow rotators
+     * (gems, idle dragons, HUD icons) don't stair-step on the 1.4° byte grid.
+     * Per-object self-gated inside the composer; reset after the feeders so the
+     * canonical inline render stays byte-exact. */
+    moby_native_set_rot_interp(1);
 
     /* Rebuild the scene against the (now interpolated) gamestate. scene_begin
      * resets s_scene without bumping the frame id, so the feeders' own
@@ -710,6 +714,7 @@ static void spyro_native_reextract(void* cpu_v) {
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
     flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
+    moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
 
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */

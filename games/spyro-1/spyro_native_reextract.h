@@ -34,6 +34,17 @@ struct CPUState;
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
 void spyro_native_set_anim_interp(double alpha, int on);
 
+/* Sub-tick moby ROTATION interpolation toggle. When on, the moby euler composer
+ * (shaded_compose_euler) renders each moby's rotation at FLOAT precision —
+ * shortest-arc interpolating the m_Rotation byte euler (256/circle) between the
+ * moby's prev/curr interp-objs snapshots at its per-object alpha, with the
+ * sin/cos sampled by linear interpolation of the in-RAM table — instead of the
+ * byte-quantized angle. Removes the 1.4°/step stair-stepping on slowly-rotating
+ * mobys (gems, idle dragons, HUD icons). Set by the orchestrator around the
+ * feeder re-extract; reset (off) so the canonical inline render stays byte-exact.
+ * Defined in features/moby_native.c. */
+void moby_native_set_rot_interp(int on);
+
 /* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
  * counter advance for this sub-tick present. The flame feeder lerps each ribbon
  * cross-section between adjacent static spine records by this, so the ribbon
