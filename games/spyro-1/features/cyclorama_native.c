@@ -515,6 +515,12 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
  * is a later refinement). push_scene also re-sets the scene background. */
 void cyclorama_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
+    /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
+     * states (e.g. the black level-name flyby) the saved matrices are stale; the
+     * draw-env clear (black) shows through instead. The sky-having transitions
+     * (the "ENTERING X" card over a sky) keep RP_CYCLORAMA set, so they're
+     * unaffected. */
+    if (!render_path_canon_drawn(RP_CYCLORAMA)) return;
     if (s_cyc_a1 == 0 || s_cyc_a2 == 0) return;   /* no real frame captured yet */
     cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2);
     push_scene(cpu);

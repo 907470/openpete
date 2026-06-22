@@ -558,6 +558,7 @@ void psyq_MoveImage(CPUState* cpu) {
  * pulling the core header into this thunk file. No-ops when disabled. */
 extern "C" void openpete_native_set_display_rect(int x, int y, int w, int h);
 extern "C" void openpete_native_set_draw_clip(int x, int y, int w, int h);
+extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
@@ -574,6 +575,13 @@ void psyq_PutDrawEnv(CPUState* cpu) {
     DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
     PutDrawEnv(env);
     openpete_native_set_draw_clip(env->clip.x, env->clip.y, env->clip.w, env->clip.h);
+    /* The actually-cleared framebuffer background = the gamestate draw-env clear
+     * colour (r0,g0,b0) when auto-clear (isbg) is on. This is the faithful bg for
+     * the native renderer in EVERY state — unlike g_Cyclorama.m_BackgroundColor,
+     * which equals the clear only on frames that draw the cyclorama and goes stale
+     * during cyclorama-less states (e.g. the black level-name flyby, where the
+     * clear is black but g_Cyclorama still holds the previous level's sky). */
+    openpete_native_set_clear_color(env->isbg, env->r0, env->g0, env->b0);
     /* Real PutDrawEnv @0x8005FDD8: sp -= 32; sw s0,16; s1,20; s2,24; ra,28. */
     PsxStackPush p[] = {
         {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2},

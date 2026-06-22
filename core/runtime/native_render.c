@@ -212,6 +212,20 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
 void openpete_native_scene_set_category(int category) { s_scene_category = category; }
 void openpete_native_scene_set_carry(int on) { s_scene_carry = on ? 1 : 0; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+
+/* Gamestate draw-env clear colour (the framebuffer background the canonical
+ * render auto-clears to). Captured from the PutDrawEnv thunk; the primary bg
+ * source in draw_native_scene (preferred over g_Cyclorama, which is stale in
+ * cyclorama-less states). rgba R,G,B,A; 0 = unset / no auto-clear → fall back to
+ * the scene-fed colour. Persists across sub-tick presents (PutDrawEnv only fires
+ * on canonical frames). */
+static uint32_t s_drawenv_clear = 0;
+void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
+    s_drawenv_clear = isbg
+        ? (0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
+                       | ((uint32_t)(b & 0xFF) << 16))
+        : 0u;   /* no auto-clear → defer to the scene-fed bg / ref corner */
+}
 /* The game's fade for THIS tick + a "set this tick" flag. The flag (not the
  * begin_frame reset of s_scene_fade) is what tells the re-extract whether the
  * fade is actually active: the game calls func_800190D4 every tick the fade is
@@ -1338,16 +1352,16 @@ static bool draw_native_scene(bool full_extent)
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
 
-    /* Background colour = the GAMESTATE cyclorama colour (scene_bg = g_Cyclorama
-     * .m_BackgroundColor), which IS exactly the PSX draw-env clear in every level
-     * and state (verified over the full 20k demo: g_Cyclorama.bg == g_DB.m_DrawEnv
-     * r0,g0,b0 on every cyclorama frame). The native renderer's principle is
-     * derive-from-gamestate, and the gamestate colour is robust where the PsyCross
-     * readback CORNER is not — in ab/diff the corner is frequently CONTENT
-     * (overscan band, the dome, HUD), which made the bg fill the wrong colour.
-     * The ref corner is only a FALLBACK for frames with no cyclorama (scene_bg==0,
-     * e.g. some menu/load states) so an isolated `--render-paths` still gets a bg. */
-    uint32_t bg = scene_bg;
+    /* Background colour = the GAMESTATE draw-env clear (s_drawenv_clear, captured
+     * from PutDrawEnv) — the colour the canonical render actually auto-clears the
+     * framebuffer to, correct in EVERY state. Preferred over scene_bg
+     * (g_Cyclorama.m_BackgroundColor), which equals the clear only on frames that
+     * draw the cyclorama and goes stale in cyclorama-less states (e.g. the black
+     * level-name flyby: clear is black, g_Cyclorama still holds the old sky). Both
+     * are gamestate (derive-from-gamestate principle holds); the draw-env clear is
+     * just the more robust source. scene_bg is the fallback (no auto-clear), then
+     * the PsyCross readback corner (ab/diff harness / isolated --render-paths). */
+    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
 
     /* Empty scene: normally return false so the caller re-displays the PSX VRAM
@@ -1931,11 +1945,11 @@ int openpete_native_render_screenshot_all(const char *base)
     const int W = s_nr.ref_w, H = s_nr.ref_h;
     const size_t frame_px = (size_t)W * (size_t)H;
 
-    /* Background = the gamestate cyclorama colour (== the PSX draw-env clear),
-     * matching the live native render; corner only as a no-cyclorama fallback. */
+    /* Background = the gamestate draw-env clear (matching the live native render);
+     * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
     int scene_n; uint32_t scene_bg, scene_fade;
     (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL);
-    uint32_t bg = scene_bg;
+    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;

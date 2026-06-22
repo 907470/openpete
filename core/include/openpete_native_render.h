@@ -205,6 +205,14 @@ void openpete_native_scene_set_carry(int on);
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).
  * Reset to 0 by openpete_native_scene_begin. */
 void openpete_native_scene_set_bg(uint32_t rgba);
+/* Capture the gamestate draw-env clear colour (the framebuffer background the
+ * canonical render auto-clears to) from the PutDrawEnv path. `isbg` is the PSX
+ * DRAWENV auto-clear flag (0 = no clear → defer to the scene-fed bg); r/g/b are
+ * the clear colour 0..255. This is the PRIMARY background source in the native
+ * renderer (preferred over openpete_native_scene_set_bg / g_Cyclorama, which is
+ * stale in cyclorama-less states like the black level-name flyby). Persists
+ * across sub-tick presents (PutDrawEnv only fires on canonical frames). */
+void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 /* Full-screen fade overlay (the game's func_800190D4): every transition the game
  * darkens/brightens the WHOLE frame with one semi-transparent full-screen POLY_F4
  * whose ABR mode is the fade direction — mode 2 (B-F, subtractive) fades to BLACK,
