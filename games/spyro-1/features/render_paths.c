@@ -69,6 +69,34 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     s_iv_n++;
 }
 
+/* "Canon drawn" mask — latched from the per-frame intervals once per canonical
+ * render (before frame_reset clears them). A path is "drawn" iff it recorded at
+ * least one non-empty polybuf interval this frame; render_path_record already
+ * drops empty ranges, so a path that ran its render fn but emitted nothing (fully
+ * culled / suppressed during a transition) reads as NOT drawn — which is what the
+ * spine wants (reproduce only what the canonical frame actually painted). */
+static uint32_t s_canon_mask = 0;
+
+void render_paths_canon_snapshot(void) {
+    uint32_t m = 0;
+    for (int i = 0; i < s_iv_n; i++) m |= (1u << (unsigned)s_iv[i].path);
+    s_canon_mask = m;
+}
+
+bool render_path_canon_drawn(render_path_t p) {
+    if (p < 0 || p >= RP_COUNT) return false;
+    return (s_canon_mask & (1u << (unsigned)p)) != 0;
+}
+
+/* Per-canonical-present commit, registered with the core host present loop
+ * (openpete_native_register_commit). Runs once per canonical render, after the
+ * game fiber's render + DrawOTag, before the sub-tick re-extract: latch the
+ * canon-drawn mask, then clear the intervals for the next frame. */
+static void render_paths_commit(void) {
+    render_paths_canon_snapshot();
+    render_paths_frame_reset();
+}
+
 bool render_path_addr_visible(uint32_t addr) {
     for (int i = 0; i < s_iv_n; i++) {
         if (addr >= s_iv[i].start && addr < s_iv[i].end)
@@ -105,6 +133,9 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
     /* In isolation, an empty native scene must show the background, not the
      * unfiltered PSX VRAM framebuffer (which would show every path). */
     openpete_native_set_isolation(render_paths_active());
+    /* Drive the per-frame canon-mask latch + interval reset from the host present
+     * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
+    openpete_native_register_commit(render_paths_commit);
 }
 
 const feature_module_t render_paths_module = {

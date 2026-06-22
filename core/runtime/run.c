@@ -1566,6 +1566,22 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_present_pending = 0;
             did_present_this_iter = true;
 
+            /* Per-canonical-frame commit: the game latches which render paths this
+             * frame drew (the "canon drawn" mask the sub-tick spine gates each
+             * reextract feeder on) and clears its per-frame interval table for the
+             * next frame. Driven here — once per canonical present, renderer-
+             * agnostic — via a registered callback rather than psyq_DrawOTag, so it
+             * survives the planned removal of the PsyCross OT submission. The game
+             * fiber's DrawOTag (which ran before this host-loop iteration) already
+             * consumed the intervals via the OT-walk filter; the feeder hooks that
+             * recorded them keyed off the render functions, not DrawOTag, so the
+             * mask stays valid without it. Unconditional (not inside the spine gate
+             * below) so the bookkeeping runs every frame even with the spine off. */
+            {
+                openpete_native_commit_fn commit = openpete_native_get_commit();
+                if (commit) commit();
+            }
+
             /* Sub-tick spine: lag the CANONICAL native present too. The game's
              * render just built s_scene at the LATEST pose (tick N), but the
              * intermediates that follow present the 1-tick-lagged interpolation

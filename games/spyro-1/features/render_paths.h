@@ -55,6 +55,19 @@ bool render_path_enabled(render_path_t p);
 void render_paths_frame_reset(void);
 void render_path_record(render_path_t p, uint32_t start, uint32_t end);
 
+/* "Canon drawn" mask — which paths emitted geometry in the MOST RECENT canonical
+ * render. render_paths_canon_snapshot() latches the current per-frame interval
+ * set into this persistent mask (call once per canonical frame, right before
+ * render_paths_frame_reset() clears the intervals). render_path_canon_drawn()
+ * reads it. The high-FPS sub-tick spine gates each reextract feeder on this so an
+ * intermediate present reproduces exactly the path set the canonical frame drew —
+ * e.g. during a level transition the game stops rendering terrain, so the spine
+ * must not replay stale level geometry over the cyclorama. Independent of the
+ * --render-paths selection (the intervals are recorded whenever the native feed
+ * is active). */
+void render_paths_canon_snapshot(void);
+bool render_path_canon_drawn(render_path_t p);
+
 /* OT-walk filter: should a geometry prim at this PSX polybuf address be drawn?
  * True iff `addr` is inside a SELECTED path's recorded interval. Untracked
  * geometry (no interval) returns false (dropped) when a selection is active.

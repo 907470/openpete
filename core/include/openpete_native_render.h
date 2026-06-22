@@ -293,6 +293,18 @@ typedef void (*openpete_native_reextract_fn)(void* cpu);
 void openpete_native_register_reextract(openpete_native_reextract_fn fn);
 openpete_native_reextract_fn openpete_native_get_reextract(void);
 
+/* Optional per-canonical-present commit callback. The host present loop invokes
+ * it ONCE per canonical present (after the game render, before the sub-tick
+ * re-extract), for per-frame render bookkeeping the GAME owns but that must be
+ * driven from the renderer-agnostic host boundary rather than a game-internal
+ * one. Spyro uses it to latch which render paths the canonical frame drew (the
+ * mask the spine gates each feeder on) and clear its per-frame interval table —
+ * deliberately NOT done inside psyq_DrawOTag so it survives the planned removal
+ * of the PsyCross OT submission. NULL = no commit step. */
+typedef void (*openpete_native_commit_fn)(void);
+void openpete_native_register_commit(openpete_native_commit_fn fn);
+openpete_native_commit_fn openpete_native_get_commit(void);
+
 /* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +
  * menu-panel overlays are produced by the 2D-UI feeder during the game render
  * and can't be re-derived sub-tick. capture_overlay() snapshots them from the

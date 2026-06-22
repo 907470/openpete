@@ -990,9 +990,13 @@ void psyq_DrawOTag(CPUState* cpu) {
     if (dump) std::fflush(dump);
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
-     * frame's render pass and consumed by the walk above; clear them so the next
-     * frame's paths record fresh. (Spyro issues one DrawOTag per frame.) */
-    render_paths_frame_reset();
+     * frame's render pass and consumed by the walk above. The "canon drawn" mask
+     * latch + the per-frame interval clear are NOT done here — they live in the
+     * host present loop (core/runtime/run.c), once per canonical present, so they
+     * survive the planned removal of this PsyCross OT submission (the feeder hooks
+     * that record the intervals fire on the render functions, independent of
+     * DrawOTag). The walk above has already consumed this frame's intervals; the
+     * present loop snapshots + clears them before the next frame records fresh. */
 
     /* Patch each slot's addr to point at the next slot's host pointer; last
      * slot terminates with `prim_terminator`. */

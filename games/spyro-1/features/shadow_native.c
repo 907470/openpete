@@ -810,6 +810,9 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
 void shadow_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_SHADOW)) return;
+    /* Skip when the canonical frame drew no shadows (e.g. a level transition) —
+     * else the spine replays stale moby/Spyro shadows over the cyclorama. */
+    if (!render_path_canon_drawn(RP_SHADOW)) return;
     shadow_moby_feed_native(cpu);
     shadow_spyro_feed_native(cpu);
 }

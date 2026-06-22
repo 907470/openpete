@@ -1420,6 +1420,12 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
 void terrain_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
+    /* Reproduce terrain ONLY if the canonical frame drew it. During a level
+     * transition the game stops calling func_800258F0 (no world to render), but
+     * s_terrain_saved_occGroup + the level data still in RAM are stale; replaying
+     * them paints the old level's geometry over the cyclorama. The canon-drawn
+     * mask is clear for RP_TERRAIN on those frames, so we skip. */
+    if (!render_path_canon_drawn(RP_TERRAIN)) return;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native();
 }

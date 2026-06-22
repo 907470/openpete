@@ -1148,6 +1148,10 @@ static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; ret
 void particle_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_PARTICLES)) return;
+    /* Skip when the canonical frame drew no particles (e.g. a level transition) —
+     * else the spine replays the previous level's particle pool over the
+     * cyclorama. */
+    if (!render_path_canon_drawn(RP_PARTICLES)) return;
     particle_feed_native(cpu);
     glow_feed_native(cpu);
     sparkle_feed_native(cpu);

@@ -1845,6 +1845,10 @@ static openpete_native_reextract_fn s_reextract_cb = NULL;
 void openpete_native_register_reextract(openpete_native_reextract_fn fn) { s_reextract_cb = fn; }
 openpete_native_reextract_fn openpete_native_get_reextract(void) { return s_reextract_cb; }
 
+static openpete_native_commit_fn s_commit_cb = NULL;
+void openpete_native_register_commit(openpete_native_commit_fn fn) { s_commit_cb = fn; }
+openpete_native_commit_fn openpete_native_get_commit(void) { return s_commit_cb; }
+
 void openpete_native_render_frame(void)
 {
     if (!s_nr.enabled)

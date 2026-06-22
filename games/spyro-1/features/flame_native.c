@@ -682,6 +682,10 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
 void flame_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_FLAME)) return;
+    /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
+     * flame if the canonical frame drew it (skips stale ribbons during a level
+     * transition where the active flag could lag the suppressed render). */
+    if (!render_path_canon_drawn(RP_FLAME)) return;
     if (cpu->read_word(G_SPYROFLAME + FL_ACTIVE) == 0) return;   /* not breathing fire */
     flame_feed_native(cpu);
 }

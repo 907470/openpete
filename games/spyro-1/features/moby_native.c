@@ -2278,6 +2278,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
 
 void moby_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
+    /* Only replay mobys the canonical frame actually drew. During a level
+     * transition the moby render path may not fire (or only for the collected-gem
+     * mobys); gating on the canon-drawn mask reproduces exactly that set instead
+     * of replaying the previous level's mobys from stale cull records. */
+    if (!render_path_canon_drawn(RP_MOBY)) return;
 
     int nm = reextract_record_pass(cpu, "REG");
     int reg_walk = s_wtri_n;
