@@ -97,9 +97,6 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
     for (int i = 0; i < 3; ++i) pl[i] = lerp32(pp[i], pc[i], t);
 }
 
-/* Lerp a packed 3×8-bit euler word (Spyro rotation: Z=bits0-7, X=8-15,
- * Y=16-23 — see spyro_compose_euler). Shortest-arc per byte (256/circle);
- * byte 3 preserved from curr. */
 /* ---- transient .s render-pass scratch bracket --------------------------------
  * The moby + Spyro BODY feeders re-derive geometry from PERSISTENT gamestate
  * (g_LevelMobys / g_Spyro / the models) BUT key off a small set of TRANSIENT
@@ -247,18 +244,6 @@ static void scratch_bracket_leave(CPUState* cpu) {
         cpu->write_word(SXY_BASE + i * 4u, s_live_sxy[i]);
 }
 
-static uint32_t lerp_euler8x3(uint32_t prev, uint32_t curr, double t) {
-    uint32_t out = curr & 0xFF000000u;
-    for (int b = 0; b < 3; ++b) {
-        int pv = (int)((prev >> (b * 8)) & 0xFF), cv = (int)((curr >> (b * 8)) & 0xFF);
-        int d = cv - pv;
-        if (d > 128) d -= 256; else if (d < -128) d += 256;
-        int r = pv + (int)((double)d * t + (d >= 0 ? 0.5 : -0.5));
-        out |= (uint32_t)(r & 0xFF) << (b * 8);
-    }
-    return out;
-}
-
 static void spyro_native_reextract(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
 
@@ -275,6 +260,8 @@ static void spyro_native_reextract(void* cpu_v) {
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
+    int      sp_rot_active[3] = {0,0,0};   /* per-segment (body/head/tail) float-rot gate */
+    double   sp_rot_ang[3][3] = {{0}};     /* [seg][Z,X,Y] sub-tick float byte-angles */
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
     double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */
     uint8_t* sh = NULL; uint8_t sh_saved[SHADOW_SAVE]; int sh_bracketed = 0;
@@ -345,15 +332,23 @@ static void spyro_native_reextract(void* cpu_v) {
                     sp[prog[s]] = (uint8_t)la;
                 }
             }
-            /* Body/head/tail rotation (packed 3×8-bit euler @ +0xC/+0x10/+0x14).
-             * Body always lerps; head/tail are a 0-sentinel ("use body") so lerp
-             * only when both endpoints are real (nonzero) — else snap. */
-            uint32_t pb, cb;
-            memcpy(&pb, psp + 0x0C, 4); memcpy(&cb, sp_saved + 0x0C, 4);
-            { uint32_t lv = lerp_euler8x3(pb, cb, alpha); memcpy(sp + 0x0C, &lv, 4); }
-            for (int r = 0x10; r <= 0x14; r += 4) {
-                uint32_t pr, cr; memcpy(&pr, psp + r, 4); memcpy(&cr, sp_saved + r, 4);
-                if (pr != 0 && cr != 0) { uint32_t lv = lerp_euler8x3(pr, cr, alpha); memcpy(sp + r, &lv, 4); }
+            /* Body/head/tail rotation (packed 3×8-bit euler @ +0xC/+0x10/+0x14):
+             * computed at FLOAT precision and handed to the Spyro euler composer
+             * (spyro_native_set_rot_interp) — NOT written back to the byte euler,
+             * which would re-quantize to the 256/circle (1.4°/step) grid the same
+             * way the moby path did. Body (s=0) always interpolates; head/tail carry
+             * a 0-sentinel ("use body") so interpolate only when both endpoints are
+             * real — else leave that segment on the byte-exact path (snap). */
+            for (int s = 0; s < 3; s++) {
+                uint32_t off = 0x0Cu + (uint32_t)s * 4u;
+                uint32_t pr, cr; memcpy(&pr, psp + off, 4); memcpy(&cr, sp_saved + off, 4);
+                if (s != 0 && (pr == 0 || cr == 0)) continue;   /* sticky / transition → byte path */
+                for (int k = 0; k < 3; k++) {
+                    int pbk = (int)((pr >> (k*8)) & 0xFFu), cbk = (int)((cr >> (k*8)) & 0xFFu);
+                    int d = cbk - pbk; if (d > 128) d -= 256; else if (d < -128) d += 256;
+                    sp_rot_ang[s][k] = (double)pbk + (double)d * alpha;
+                }
+                sp_rot_active[s] = 1;
             }
             sp_bracketed = 1;
         }
@@ -596,13 +591,11 @@ static void spyro_native_reextract(void* cpu_v) {
                         memcpy(mh + MOBY_POS + k * 4, &lv, 4);
                     }
             }
-            /* Rotation (m_Rotation +0x44, shortest-arc per 8-bit axis). */
-            for (int k = 0; k < 3; k++) {
-                int d = (int)o->curr[0x44 + k] - (int)o->prev[0x44 + k];
-                if (d > 128) d -= 256; else if (d < -128) d += 256;
-                int r = (int)o->prev[0x44 + k] + (int)((double)d * ha + (d >= 0 ? 0.5 : -0.5));
-                mh[0x44 + k] = (uint8_t)(r & 0xFF);
-            }
+            /* Rotation (m_Rotation +0x44): NOT lerped here — the HUD icons route
+             * through the moby euler composer (shaded_compose_euler), which now
+             * renders rotation at float precision from their prev/curr interp-objs
+             * snapshots (moby_native_set_rot_interp). A byte write here would
+             * re-quantize to the 256/circle grid and be ignored by that float path. */
         }
     }
 
@@ -679,6 +672,11 @@ static void spyro_native_reextract(void* cpu_v) {
      * is active (camera bracketed). The feeder builds a blend-interpolated seg
      * scratch so Spyro's animation is as smooth as its movement. */
     spyro_native_set_anim_interp(alpha, cam_bracketed);
+    /* Spyro body/head/tail rotation at float precision (same fix as the mobys):
+     * the per-segment float byte-angles computed above feed spyro_compose_euler so
+     * Spyro's turn/sway renders below the 8-bit euler grid. Inactive segments
+     * (head/tail sticky/transition, or not bracketed) fall back to byte-exact. */
+    spyro_native_set_rot_interp(sp_bracketed ? sp_rot_active : NULL, &sp_rot_ang[0][0]);
     /* Flame sub-keyframe slide: the fractional part of the counter advance (the
      * integer part is already written to FL_CNT). The flame feeder lerps each
      * cross-section between adjacent spine records by this, so the ribbon animates
@@ -715,6 +713,7 @@ static void spyro_native_reextract(void* cpu_v) {
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
     flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
+    spyro_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
 
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */

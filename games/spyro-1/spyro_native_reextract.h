@@ -34,6 +34,17 @@ struct CPUState;
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
 void spyro_native_set_anim_interp(double alpha, int on);
 
+/* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
+ * interpolates g_Spyro's packed byte euler (+0xC/+0x10/+0x14) at FLOAT precision
+ * (shortest-arc per axis) between the prev/curr snapshots and hands the result
+ * here, so spyro_compose_euler renders the rotation below the 8-bit euler grid
+ * (256/circle = 1.4°/step) instead of stepping on it — the same fix the moby
+ * composer got. `active[s]` (s=0 body / 1 head / 2 tail) gates each segment
+ * (head/tail off when sticky / mid-transition → byte-exact path); `ang` is a
+ * row-major 3×3 of float byte-angles [seg][Z,X,Y]. active=NULL resets (off), so
+ * the canonical inline render stays byte-exact. Defined in features/spyro_native.c. */
+void spyro_native_set_rot_interp(const int* active, const double* ang);
+
 /* Sub-tick moby ROTATION interpolation toggle. When on, the moby euler composer
  * (shaded_compose_euler) renders each moby's rotation at FLOAT precision —
  * shortest-arc interpolating the m_Rotation byte euler (256/circle) between the

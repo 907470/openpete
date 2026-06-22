@@ -284,6 +284,21 @@ static void spyro_anim_capture_seg(CPUState* cpu) {
  * (camera bracketed). Read by spyro_player_native_reextract. */
 void spyro_native_set_anim_interp(double alpha, int on) { s_anim_alpha = alpha; s_anim_on = on ? 1 : 0; }
 
+/* Sub-tick ROTATION interpolation: per-segment float byte-angles (body=0, head=1,
+ * tail=2; axis k=0 Z / 1 X / 2 Y) the orchestrator interpolates from g_Spyro's
+ * prev/curr euler snapshots, handed in so spyro_compose_euler renders the rotation
+ * below the 8-bit euler grid (256/circle) instead of stepping on it. s_rot_active[s]
+ * gates each segment (head/tail off when sticky / mid-transition → byte path). */
+static int    s_rot_active[3] = {0,0,0};
+static double s_rot_ang[3][3];
+void spyro_native_set_rot_interp(const int* active, const double* ang /*3x3, row-major*/) {
+    if (!active) { s_rot_active[0]=s_rot_active[1]=s_rot_active[2]=0; return; }
+    for (int s = 0; s < 3; s++) {
+        s_rot_active[s] = active[s];
+        for (int k = 0; k < 3; k++) s_rot_ang[s][k] = ang[s*3 + k];
+    }
+}
+
 static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
     uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
     uint32_t w2 = cpu->read_word(p + 8), w3 = cpu->read_word(p + 12);
@@ -464,13 +479,40 @@ static void spyro_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
         O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] + (int64_t)A[i][2]*B[2][j]) >> 12);
 }
 
+static int spyro_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
+
+/* sin/cos at SUB-BYTE angle resolution: linearly interpolate adjacent entries of
+ * the in-RAM sin/cos table (256/circle at the integer grid; index = byte<<1, int16
+ * Q12) so the composed matrix renders below the 1.4°/step byte grid. fb is a
+ * byte-angle in [0,256) after wrap. (Twin of moby_native's sincos_interp.) */
+static void spyro_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
+    while (fb < 0.0) fb += 256.0;
+    while (fb >= 256.0) fb -= 256.0;
+    int b0 = (int)fb; double frac = fb - (double)b0;
+    uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
+    double s0=(int16_t)cpu->read_half(D_SIN_TABLE+i0),       s1=(int16_t)cpu->read_half(D_SIN_TABLE+i1);
+    double c0=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i1);
+    *s_out = spyro_rnd_i(s0 + (s1 - s0) * frac);
+    *c_out = spyro_rnd_i(c0 + (c1 - c0) * frac);
+}
+
 /* M = start·Ry·Rx·Rz from a packed euler word (g_Spyro[0xC/0x10/0x14]). rot==0
- * -> identity (sin@0=0, cos@0=4096) so M=start (the sticky / no-rotation case). */
-static void spyro_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3]) {
-    uint32_t iy = (rot>>15)&0x1FEu, ix = (rot&0xFF00u)>>7, iz = (rot&0xFFu)<<1;
-    int sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy),       cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
-    int sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix),       cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
-    int sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz),       cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
+ * -> identity (sin@0=0, cos@0=4096) so M=start (the sticky / no-rotation case).
+ * `seg` (0 body / 1 head / 2 tail; -1 = none) selects the sub-tick float angles
+ * the orchestrator handed in when s_rot_active[seg] is set — rendering rotation
+ * below the byte grid; otherwise the canonical byte-exact table lookup is used. */
+static void spyro_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3], int seg) {
+    int sy, cy, sx, cx, sz, cz;
+    if (seg >= 0 && seg < 3 && s_rot_active[seg]) {
+        spyro_sincos_interp(cpu, s_rot_ang[seg][0], &sz, &cz);   /* Z (+0 byte) */
+        spyro_sincos_interp(cpu, s_rot_ang[seg][1], &sx, &cx);   /* X (+1 byte) */
+        spyro_sincos_interp(cpu, s_rot_ang[seg][2], &sy, &cy);   /* Y (+2 byte) */
+    } else {
+        uint32_t iy = (rot>>15)&0x1FEu, ix = (rot&0xFF00u)>>7, iz = (rot&0xFFu)<<1;
+        sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy);       cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
+        sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix);       cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
+        sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz);       cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
+    }
     int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
     int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
     int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
@@ -521,11 +563,11 @@ static void spyro_derive_phaseA(CPUState* cpu) {
     int TRb[3];
     for (int i = 0; i < 3; i++)
         TRb[i] = (int)(((int64_t)PM[i][0]*IR1 + (int64_t)PM[i][1]*IR2 + (int64_t)PM[i][2]*IR3) >> 12);
-    int Mb[3][3]; spyro_compose_euler(cpu, PM, cpu->read_word(G_SPYRO+0xC), Mb);
+    int Mb[3][3]; spyro_compose_euler(cpu, PM, cpu->read_word(G_SPYRO+0xC), Mb, 0);
     memcpy(s_xf[0].M, Mb, sizeof Mb); memcpy(s_xf[0].TR, TRb, sizeof TRb); s_xf[0].present = 1;
     uint32_t rotH = cpu->read_word(G_SPYRO+0x10), rotT = cpu->read_word(G_SPYRO+0x14);
-    if (rotH) spyro_compose_euler(cpu, Mb, rotH, s_xf[1].M); else memcpy(s_xf[1].M, Mb, sizeof Mb);
-    if (rotT) spyro_compose_euler(cpu, Mb, rotT, s_xf[2].M); else memcpy(s_xf[2].M, Mb, sizeof Mb);
+    if (rotH) spyro_compose_euler(cpu, Mb, rotH, s_xf[1].M, 1); else memcpy(s_xf[1].M, Mb, sizeof Mb);
+    if (rotT) spyro_compose_euler(cpu, Mb, rotT, s_xf[2].M, 2); else memcpy(s_xf[2].M, Mb, sizeof Mb);
     s_xf[1].present = s_xf[2].present = 1;
     /* seam joints: body kfA(/kfB) stream words [0x10] (head) / [0x14] (tail).
      * a0 = (2-byte cursor) - 0x18 (.s: cursor = a0+0x18); t2=*(a0+0x10), t3=*(a0+0x14)
