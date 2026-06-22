@@ -326,7 +326,20 @@ static void spyro_native_reextract(void* cpu_v) {
                             int frA_c = o->curr[0x3E], frB_c = o->curr[0x3F];
                             double bp = (double)(o->prev[0x40] << 6);   /* prev blend 0..4096 */
                             double bc = (double)(o->curr[0x40] << 6);   /* curr blend 0..4096 */
-                            if (frA_p == frA_c && frB_p == frB_c) {
+                            /* Animation-switch guard. m_Frame/m_NextFrame are indices
+                             * into m_Animation's keyframe table; across an m_Animation
+                             * change (a loop that reseeds a NEW clip) the indices are
+                             * not comparable. The clip's last frame holds m_NextFrame=0,
+                             * and the new clip starts at m_Frame=0 — so frB_p==frA_c
+                             * (0==0) spuriously matches the ADV "clean advance" path and
+                             * holds the OLD clip's m_Frame (e.g. 59) while the LIVE
+                             * m_Animation (read by build_moby_record_fields) is the NEW
+                             * clip → frame 59 indexes past the new clip's table into a
+                             * garbage keyframe = the warped mesh the cutscene mobys flash
+                             * at the loop seam. Snap (leave curr live) across the switch. */
+                            if (o->prev[0x3C] != o->curr[0x3C]) {
+                                /* snap: keep curr's live m_Frame/m_NextFrame/blend */
+                            } else if (frA_p == frA_c && frB_p == frB_c) {
                                 int bl = (int)(bp + (bc - bp) * alpha + 0.5) >> 6;
                                 if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
                                 mh[0x40] = (uint8_t)bl;
