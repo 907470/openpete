@@ -964,22 +964,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * `pre - post < 2` GPU-pacing loops in draw.c and the 210-vbl Sony /
      * Universal logo waits in initialization.c. The slip-clamp resets
      * the deadline forward without firing extra yields. */
-    const op_time_t sim_period_ns    = (OP_NS_PER_SEC * 1001) / 60000;
+    /* --tick-scale F slows/speeds the WHOLE engine by dividing both the sim and
+     * the render period by F: sim_rate = F*29.97 Hz, present_rate = F*render_fps,
+     * so the count of sub-tick presents PER tick (present_rate/sim_rate) is
+     * invariant — a slow-motion view of the SAME interpolation. Pacing only: the
+     * sim still executes identical ticks (the interp alpha is wall-clock-derived
+     * from the actual tick timestamps, so it auto-stretches), and the deadlines
+     * are reset to now under unlock/headless, so this is inert in the oracle. */
+    const double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
+    const op_time_t sim_period_ns    =
+        (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
     const op_time_t render_period_ns = (opts->render_fps > 0)
-        ? (OP_NS_PER_SEC / (op_time_t)opts->render_fps)
-        : sim_period_ns;
-    const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms */
+        ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)opts->render_fps) / tick_scale)
+        : sim_period_ns;   /* sim_period_ns is already tick-scaled */
+    const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
     op_time_t next_render_ns = start_ns;
     if (opts->render_fps > 0) {
-        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (--render-fps=%d)",
+        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (--render-fps=%d, --tick-scale=%.3f)",
                    (double)sim_period_ns / 1e6,
                    (double)render_period_ns / 1e6,
-                   opts->render_fps);
+                   opts->render_fps, tick_scale);
     } else {
-        OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0)",
-                   (double)sim_period_ns / 1e6);
+        OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0, --tick-scale=%.3f)",
+                   (double)sim_period_ns / 1e6, tick_scale);
     }
 
     /* fps-unlock Phase 2 (scaffolding): bring up the interpolation
@@ -1102,10 +1111,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * See plan §1: "ship --vbl-rate=59.94 as default". */
         if (opts->render_fps > 0) {
             frame_time_log_target_period_ns =
-                (int64_t)((double)OP_NS_PER_SEC / (double)opts->render_fps);
+                (int64_t)((double)OP_NS_PER_SEC / (double)opts->render_fps / tick_scale);
         } else {
             frame_time_log_target_period_ns =
-                (OP_NS_PER_SEC * (int64_t)1001) / (int64_t)30000;
+                (int64_t)((double)((OP_NS_PER_SEC * (int64_t)1001) / (int64_t)30000) / tick_scale);
         }
         if (openpete_frame_time_log_open(&frame_time_log,
                                          opts->frame_time_log_path,

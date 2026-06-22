@@ -69,6 +69,19 @@ typedef struct {
      * notes/plans/openpete-fps-unlock.md "Phase 1". */
     int render_fps;
 
+    /* --tick-scale F (default 1.0): wall-clock SPEED multiplier for the whole
+     * engine — scales the sim cadence AND the render cadence by the same factor,
+     * so the number of interpolated sub-tick presents PER sim tick is invariant.
+     * 0.5 = half-speed slow motion (sim 14.985 Hz, present rate halved), 2.0 =
+     * double speed. A debug/inspection aid for high-FPS interpolation: slow the
+     * world down without changing how many intermediate frames render between
+     * ticks, so each interpolated frame is easy to scrutinize. Display/pacing
+     * only — every sim tick still computes byte-identical gameplay state (the
+     * tick LOGIC and count are unchanged; only their wall-clock spacing scales),
+     * so it cannot perturb gameplay vs PSX. Inert under --headless (which runs
+     * unpaced) and when there is no window. Must be > 0. */
+    double tick_scale;
+
     /* SDL window size override. 0/0 = use the per-game default (640x480
      * for Spyro). The window *height* drives the internal render resolution:
      * PsyCross sizes its present FBO from g_windowHeight (× the disp/clip

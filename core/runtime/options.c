@@ -132,6 +132,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
     opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
+    opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
     opts->record_gop          = 120;
@@ -190,6 +191,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->render_fps = atoi(v); i++;
             if (opts->render_fps < 0) {
                 fprintf(stderr, "openpete: --render-fps expects a non-negative integer\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+        } else if (strcmp(a, "--tick-scale") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->tick_scale = atof(v); i++;
+            if (!(opts->tick_scale > 0.0)) {
+                fprintf(stderr, "openpete: --tick-scale expects a positive number (e.g. 0.5), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
         } else if (strcmp(a, "--window") == 0) {
@@ -448,6 +456,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
                 "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
+                "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
+                "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
+                "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
                 "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
                 "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
                 "                             max image size / VRAM. Display-only.\n"
