@@ -277,9 +277,22 @@ static void spyro_native_reextract(void* cpu_v) {
             sp_bracketed = 1;
         }
 
-        /* (c) Per-moby position (indirect table, keyed by Moby vaddr). Walk the
-         * live moby array, lerp each paired moby's m_Position from its prev/curr
-         * snapshot; build_moby_record_fields then reads the interpolated value. */
+    }
+
+    /* Per-moby interpolation (indirect table, keyed by Moby vaddr) — runs
+     * UNCONDITIONALLY with a PER-OBJECT alpha, NOT gated on the camera bracket.
+     * The DIRECT ring dedupes the WHOLE camera+Spyro snapshot, so when BOTH are
+     * byte-static — the player idling in a homeworld while the dragons keep their
+     * idle animation running — the ring reports paired=0 and the old camera-gated
+     * moby block was skipped entirely, freezing every moby's animation/movement at
+     * 30 Hz (the bug: Artisans cutscene dragons step while the camera is still).
+     * Each moby instead sweeps across ITS OWN distinct-state interval
+     * (o->prev_ns..o->curr_ns) — identical to the camera alpha when both advance
+     * every tick (both stamped from op_now() one VBL apart, so spatial coherence
+     * with a moving camera is preserved), and keeps animating when the camera is
+     * static. Same per-object-cadence pattern as the HUD icons below. */
+    {
+        op_time_t now = op_now();
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
         uint32_t arr = 0; if (base_p) memcpy(&arr, base_p, 4);
         if (arr >= 0x80000000u) {
@@ -292,87 +305,94 @@ static void spyro_native_reextract(void* cpu_v) {
                 if (st < 0x80) {                      /* alive */
                     const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
                     if (o && o->have_prev) {
-                        int32_t pp[3], cp[3];
-                        memcpy(pp, o->prev + MOBY_POS, 12);
-                        memcpy(cp, o->curr + MOBY_POS, 12);
-                        /* per-moby teleport guard: a respawn / warp jumps far in
-                         * one tick — lerping streaks it across the screen. Snap
-                         * (leave at curr, don't bracket) when the jump is large. */
-                        double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-                        if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) { m += MOBY_STRIDE; continue; }
-                        s_moby_save[moby_save_n].addr = m;
-                        memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
-                        moby_save_n++;
-                        for (int k = 0; k < 3; k++) {
-                            int32_t lv = lerp32(pp[k], cp[k], alpha);
-                            memcpy(mh + MOBY_POS + k * 4, &lv, 4);
-                        }
-                        /* Animation clock — sub-tick keyframe blend (so the
-                         * animation is as smooth as the movement). m_FrameProgress
-                         * (+0x40) is a 0..64 phase within the (m_Frame +0x3E,
-                         * m_NextFrame +0x3F) keyframe pair; the decode consumes it
-                         * as blend = prog<<6 (0..4096). Work in those 0..4096
-                         * blend units (wrap = 4096 at a keyframe knot):
-                         *  - same pair → lerp the blend.
-                         *  - clean single advance ((A,B)→(B,C), i.e. prev's
-                         *    m_NextFrame == curr's m_Frame) → continuous phase
-                         *    across the knot: pick the prev pair while phase<4096,
-                         *    else the curr pair (already live), so the mesh morphs
-                         *    smoothly THROUGH the keyframe instead of snapping.
-                         *  - anything else (multi-advance / non-consecutive /
-                         *    loop) → leave curr (snap). */
-                        {
-                            int frA_p = o->prev[0x3E], frB_p = o->prev[0x3F];
-                            int frA_c = o->curr[0x3E], frB_c = o->curr[0x3F];
-                            double bp = (double)(o->prev[0x40] << 6);   /* prev blend 0..4096 */
-                            double bc = (double)(o->curr[0x40] << 6);   /* curr blend 0..4096 */
-                            /* Animation-switch guard. m_Frame/m_NextFrame are indices
-                             * into m_Animation's keyframe table; across an m_Animation
-                             * change (a loop that reseeds a NEW clip) the indices are
-                             * not comparable. The clip's last frame holds m_NextFrame=0,
-                             * and the new clip starts at m_Frame=0 — so frB_p==frA_c
-                             * (0==0) spuriously matches the ADV "clean advance" path and
-                             * holds the OLD clip's m_Frame (e.g. 59) while the LIVE
-                             * m_Animation (read by build_moby_record_fields) is the NEW
-                             * clip → frame 59 indexes past the new clip's table into a
-                             * garbage keyframe = the warped mesh the cutscene mobys flash
-                             * at the loop seam. Snap (leave curr live) across the switch. */
-                            if (o->prev[0x3C] != o->curr[0x3C]) {
-                                /* snap: keep curr's live m_Frame/m_NextFrame/blend */
-                            } else if (frA_p == frA_c && frB_p == frB_c) {
-                                int bl = (int)(bp + (bc - bp) * alpha + 0.5) >> 6;
-                                if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
-                                mh[0x40] = (uint8_t)bl;
-                            } else if (frB_p == frA_c) {
-                                double phase = bp + ((4096.0 + bc) - bp) * alpha;
-                                if (phase < 4096.0) {        /* still finishing the prev pair */
-                                    mh[0x3E] = (uint8_t)frA_p; mh[0x3F] = (uint8_t)frB_p;
-                                    int bl = (int)(phase + 0.5) >> 6; if (bl > 64) bl = 64;
-                                    mh[0x40] = (uint8_t)bl;
-                                } else {                     /* into the curr pair (already live) */
-                                    int bl = (int)((phase - 4096.0) + 0.5) >> 6;
+                        /* Per-object alpha from the moby's OWN distinct-roll
+                         * timestamps (sweeps across the static ticks between
+                         * distinct states; clamps to curr once it settles). */
+                        op_time_t period_ns = o->curr_ns - o->prev_ns;
+                        if (o->prev_ns != 0 && period_ns > 0) {
+                            double ma = (double)(now - o->curr_ns) / (double)period_ns;
+                            if (ma < 0.0) ma = 0.0; else if (ma > 1.0) ma = 1.0;
+                            int32_t pp[3], cp[3];
+                            memcpy(pp, o->prev + MOBY_POS, 12);
+                            memcpy(cp, o->curr + MOBY_POS, 12);
+                            /* per-moby teleport guard: a respawn / warp jumps far in
+                             * one tick — lerping streaks it across the screen. Snap
+                             * (leave at curr, don't bracket) when the jump is large. */
+                            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) { m += MOBY_STRIDE; continue; }
+                            s_moby_save[moby_save_n].addr = m;
+                            memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
+                            moby_save_n++;
+                            for (int k = 0; k < 3; k++) {
+                                int32_t lv = lerp32(pp[k], cp[k], ma);
+                                memcpy(mh + MOBY_POS + k * 4, &lv, 4);
+                            }
+                            /* Animation clock — sub-tick keyframe blend (so the
+                             * animation is as smooth as the movement). m_FrameProgress
+                             * (+0x40) is a 0..64 phase within the (m_Frame +0x3E,
+                             * m_NextFrame +0x3F) keyframe pair; the decode consumes it
+                             * as blend = prog<<6 (0..4096). Work in those 0..4096
+                             * blend units (wrap = 4096 at a keyframe knot):
+                             *  - same pair → lerp the blend.
+                             *  - clean single advance ((A,B)→(B,C), i.e. prev's
+                             *    m_NextFrame == curr's m_Frame) → continuous phase
+                             *    across the knot: pick the prev pair while phase<4096,
+                             *    else the curr pair (already live), so the mesh morphs
+                             *    smoothly THROUGH the keyframe instead of snapping.
+                             *  - anything else (multi-advance / non-consecutive /
+                             *    loop) → leave curr (snap). */
+                            {
+                                int frA_p = o->prev[0x3E], frB_p = o->prev[0x3F];
+                                int frA_c = o->curr[0x3E], frB_c = o->curr[0x3F];
+                                double bp = (double)(o->prev[0x40] << 6);   /* prev blend 0..4096 */
+                                double bc = (double)(o->curr[0x40] << 6);   /* curr blend 0..4096 */
+                                /* Animation-switch guard. m_Frame/m_NextFrame are indices
+                                 * into m_Animation's keyframe table; across an m_Animation
+                                 * change (a loop that reseeds a NEW clip) the indices are
+                                 * not comparable. The clip's last frame holds m_NextFrame=0,
+                                 * and the new clip starts at m_Frame=0 — so frB_p==frA_c
+                                 * (0==0) spuriously matches the ADV "clean advance" path and
+                                 * holds the OLD clip's m_Frame (e.g. 59) while the LIVE
+                                 * m_Animation (read by build_moby_record_fields) is the NEW
+                                 * clip → frame 59 indexes past the new clip's table into a
+                                 * garbage keyframe = the warped mesh the cutscene mobys flash
+                                 * at the loop seam. Snap (leave curr live) across the switch. */
+                                if (o->prev[0x3C] != o->curr[0x3C]) {
+                                    /* snap: keep curr's live m_Frame/m_NextFrame/blend */
+                                } else if (frA_p == frA_c && frB_p == frB_c) {
+                                    int bl = (int)(bp + (bc - bp) * ma + 0.5) >> 6;
                                     if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
                                     mh[0x40] = (uint8_t)bl;
+                                } else if (frB_p == frA_c) {
+                                    double phase = bp + ((4096.0 + bc) - bp) * ma;
+                                    if (phase < 4096.0) {        /* still finishing the prev pair */
+                                        mh[0x3E] = (uint8_t)frA_p; mh[0x3F] = (uint8_t)frB_p;
+                                        int bl = (int)(phase + 0.5) >> 6; if (bl > 64) bl = 64;
+                                        mh[0x40] = (uint8_t)bl;
+                                    } else {                     /* into the curr pair (already live) */
+                                        int bl = (int)((phase - 4096.0) + 0.5) >> 6;
+                                        if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
+                                        mh[0x40] = (uint8_t)bl;
+                                    }
                                 }
                             }
-                        }
-                        /* Rotation: shortest-arc lerp of m_Rotation (+0x44,
-                         * Vector3D8 = 3 × 8-bit angle, 256/circle) — the gamestate
-                         * resolution is 8-bit, so build_moby_record_fields reads
-                         * (and composes) the byte euler; wrap each axis to the
-                         * short way round. */
-                        for (int k = 0; k < 3; k++) {
-                            int d = (int)o->curr[0x44 + k] - (int)o->prev[0x44 + k];
-                            if (d > 128) d -= 256; else if (d < -128) d += 256;
-                            int r = (int)o->prev[0x44 + k] + (int)((double)d * alpha + (d >= 0 ? 0.5 : -0.5));
-                            mh[0x44 + k] = (uint8_t)(r & 0xFF);
+                            /* Rotation: shortest-arc lerp of m_Rotation (+0x44,
+                             * Vector3D8 = 3 × 8-bit angle, 256/circle) — the gamestate
+                             * resolution is 8-bit, so build_moby_record_fields reads
+                             * (and composes) the byte euler; wrap each axis to the
+                             * short way round. */
+                            for (int k = 0; k < 3; k++) {
+                                int d = (int)o->curr[0x44 + k] - (int)o->prev[0x44 + k];
+                                if (d > 128) d -= 256; else if (d < -128) d += 256;
+                                int r = (int)o->prev[0x44 + k] + (int)((double)d * ma + (d >= 0 ? 0.5 : -0.5));
+                                mh[0x44 + k] = (uint8_t)(r & 0xFF);
+                            }
                         }
                     }
                 }
                 m += MOBY_STRIDE;
             }
         }
-
     }
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) live OUTSIDE g_LevelMobys (so the
