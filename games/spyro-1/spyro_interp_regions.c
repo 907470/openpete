@@ -57,6 +57,13 @@
 static const openpete_interp_region_t s_spyro_interp_regions[] = {
     { "g_Camera", 0x80076DD0, 0x110 },
     { "g_Spyro",  0x80078A58, 0x2A4 },
+    /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
+     * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the
+     * flame-attach matrix (+0xB8), both updated at the 30 Hz tick — captured so
+     * the sub-tick spine can lerp the flame POSE to track the (also-interpolated)
+     * Spyro instead of snapping each tick. Read-only; rendered only while
+     * breathing fire. */
+    { "g_SpyroFlame", 0x800786C8, 0xD0 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */

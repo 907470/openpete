@@ -27,6 +27,12 @@ extern unsigned openpete_frame;
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
 #define SPYRO_REGION  1u            /* index in s_spyro_interp_regions (after g_Camera) */
 #define SPYRO_SAVE    0x28u         /* g_Spyro bytes bracketed: pos(0x00) + per-seg anim(..0x26) */
+#define G_FLAME       0x800786C8u   /* g_SpyroFlame: m_Position @ +0x00, attach matrix @ +0xB8 */
+#define FLAME_REGION  2u            /* index in s_spyro_interp_regions (after g_Spyro) */
+#define FLAME_SAVE    0xD0u         /* flame bytes bracketed (covers pos + attach @ 0xB8..0xCC) */
+#define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
+#define FLAME_CNT_OFF 0x20u         /* per-strand keyframe counter [8] (u8, += g_DeltaTime/tick) */
+#define FLAME_ATT_OFF 0xB8u         /* flame-attach SHORTMATRIX (9 int16 + pad) */
 
 /* Per-moby RAM bracket save slots — restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
@@ -252,6 +258,7 @@ static void spyro_native_reextract(void* cpu_v) {
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
+    uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
     static moby_save_t s_moby_save[MOBY_SAVE_MAX];
     int      moby_save_n = 0;
     double   alpha = 0.0;
@@ -328,6 +335,54 @@ static void spyro_native_reextract(void* cpu_v) {
                 if (pr != 0 && cr != 0) { uint32_t lv = lerp_euler8x3(pr, cr, alpha); memcpy(sp + r, &lv, 4); }
             }
             sp_bracketed = 1;
+        }
+
+        /* (c) Flame breath pose (singleton, region FLAME_REGION). The ribbon is
+         * rigidly attached to Spyro's mouth/head: m_Position (origin) + the
+         * flame-attach matrix both advance at the 30 Hz tick, so without this the
+         * flame snaps to its tick-N pose while the (interpolated) Spyro it should
+         * sit on moves smoothly — the 30 Hz look. Lerp both at the same alpha as
+         * Spyro so the flame tracks him.
+         *
+         * The ribbon ANIMATION (not just the pose) is the plan's RE-RUN recipe:
+         * the strip is `flameMatrix·keyframe[counter]` over a STATIC keyframe
+         * template (D_FLAME_GEOM — proven byte-constant across ticks), indexed by
+         * the per-strand counter FL_CNT which advances by g_DeltaTime (2..4) each
+         * tick. Re-running flame_build_strip with a sub-tick-advanced counter walks
+         * the template at the present rate → genuinely high-FPS flame animation
+         * (NOT a lerp of two shapes). An intermediate counter is a legitimate game
+         * state — it occurs naturally at g_DeltaTime=1 — and flame_build_strip is
+         * fully data-driven by it, so the intermediate ribbon is faithful.
+         *
+         * Teleport-guard the flame's first active tick (prev pose stale from
+         * before activation): snap when the origin jumps far. */
+        fl = (uint8_t*)openpete_psx_to_host_ptr(G_FLAME);
+        if (fl) {
+            const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION];
+            const int32_t* pp = (const int32_t*)(pfl + FLAME_POS_OFF);
+            const int32_t* cp = (const int32_t*)(fl  + FLAME_POS_OFF);
+            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+            if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
+                memcpy(fl_saved, fl, FLAME_SAVE);                 /* curr (live) */
+                lerp_vec3  (fl, pfl, fl_saved, FLAME_POS_OFF, alpha);
+                lerp_matrix(fl, pfl, fl_saved, FLAME_ATT_OFF, alpha);
+                /* Per-strand keyframe counter: advance fractionally so the ribbon
+                 * extends/scrolls at the present rate. Lerp prev→curr per strand,
+                 * but SNAP on a large jump — the flame periodically reseeds (the
+                 * counter wraps 30→0), and lerping across that would collapse the
+                 * ribbon through zero. |Δ|≤8 cleanly separates the continuous
+                 * advance/retract (g_DeltaTime 2..4) from the wrap (~30). */
+                for (int s = 0; s < 8; s++) {
+                    int pcnt = pfl[FLAME_CNT_OFF + s], ccnt = fl_saved[FLAME_CNT_OFF + s];
+                    int d = ccnt - pcnt;
+                    if (d > -8 && d < 8) {
+                        int v = pcnt + (int)((double)d * alpha + (d >= 0 ? 0.5 : -0.5));
+                        if (v < 0) v = 0;
+                        fl[FLAME_CNT_OFF + s] = (uint8_t)v;
+                    }   /* else keep curr (wrap/reseed — already in fl) */
+                }
+                fl_bracketed = 1;
+            }
         }
 
     }
@@ -556,6 +611,7 @@ static void spyro_native_reextract(void* cpu_v) {
         uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
     }
+    if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed) memcpy(cam, cam_saved, CAM_BYTES);
 
