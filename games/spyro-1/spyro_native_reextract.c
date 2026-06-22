@@ -34,6 +34,10 @@ extern unsigned openpete_frame;
 #define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
 #define FLAME_CNT_OFF 0x20u         /* per-strand keyframe counter [8] (u8, += g_DeltaTime/tick) */
 #define FLAME_ATT_OFF 0xB8u         /* flame-attach SHORTMATRIX (9 int16 + pad) */
+#define G_SHADOW      0x8007AA10u   /* SpyroShadow: ground anchor m_Position @ +0x10 */
+#define SHADOW_REGION 3u            /* index in s_spyro_interp_regions (after g_SpyroFlame) */
+#define SHADOW_SAVE   0x1Cu         /* shadow bytes bracketed (covers anchor @ 0x10..0x1C) */
+#define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
 
 /* Per-moby RAM bracket save slots — restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
@@ -273,6 +277,7 @@ static void spyro_native_reextract(void* cpu_v) {
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
     double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */
+    uint8_t* sh = NULL; uint8_t sh_saved[SHADOW_SAVE]; int sh_bracketed = 0;
     static moby_save_t s_moby_save[MOBY_SAVE_MAX];
     int      moby_save_n = 0;
     static part_save_t s_part_save[PART_SAVE_MAX];
@@ -408,6 +413,27 @@ static void spyro_native_reextract(void* cpu_v) {
                     }   /* else keep curr (wrap/reseed — already in fl) */
                 }
                 fl_bracketed = 1;
+            }
+        }
+
+        /* (d) Spyro drop-shadow ground anchor (singleton, region SHADOW_REGION).
+         * The canonical shadow render caches the anchor (m_Position @ +0x10) each
+         * tick; it tracks Spyro's ground projection but lives in a scratch global
+         * the spine doesn't otherwise touch, so without this the shadow steps at
+         * 30 Hz under the (interpolated) Spyro. Lerp it at the same alpha as Spyro
+         * so the shadow tracks him; teleport-guard a jump (level transition / warp
+         * / a frame Spyro lifts off → re-grounds). (Moby shadows need no bracket —
+         * they re-derive from each moby's already-interpolated m_Position.) */
+        sh = (uint8_t*)openpete_psx_to_host_ptr(G_SHADOW);
+        if (sh) {
+            const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION];
+            const int32_t* pp = (const int32_t*)(psh + SHADOW_POS_OFF);
+            const int32_t* cp = (const int32_t*)(sh  + SHADOW_POS_OFF);
+            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+            if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
+                memcpy(sh_saved, sh, SHADOW_SAVE);            /* curr (live) */
+                lerp_vec3(sh, psh, sh_saved, SHADOW_POS_OFF, alpha);
+                sh_bracketed = 1;
             }
         }
 
@@ -704,6 +730,7 @@ static void spyro_native_reextract(void* cpu_v) {
         if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
+    if (sh_bracketed)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed) memcpy(cam, cam_saved, CAM_BYTES);

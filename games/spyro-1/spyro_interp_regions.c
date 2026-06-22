@@ -64,6 +64,13 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
      * Spyro instead of snapping each tick. Read-only; rendered only while
      * breathing fire. */
     { "g_SpyroFlame", 0x800786C8, 0xD0 },
+    /* SpyroShadow (0x28 captured): the player's drop-shadow scratch. Its ground
+     * anchor (m_Position @ +0x10, int32 x/y/z) is computed each tick by the
+     * canonical shadow render and tracks Spyro's ground projection — captured so
+     * the sub-tick spine can lerp it to follow the (interpolated) Spyro instead of
+     * stepping at 30 Hz. (Moby shadows need no capture: they re-derive from each
+     * moby's already-interpolated m_Position.) Read-only. */
+    { "g_SpyroShadow", 0x8007AA10, 0x28 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */
