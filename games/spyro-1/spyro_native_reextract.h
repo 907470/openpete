@@ -49,6 +49,10 @@ void flame_native_reextract(struct CPUState* cpu);
  *   _sxy:   Spyro's projected SXY in the PSX scratchpad (the NCLIP verdict). */
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
 void spyro_native_canon_capture_sxy(void* cpu);
+/* _recs: the FULL regular cull-record region, captured at the moby hook before
+ * the Spyro pass reuses the overlapping 0x1900 seg-scratch bytes (so records at
+ * queue index >=14 aren't lost — see the .c for the temporal-reuse overlap). */
+void spyro_native_canon_capture_recs(void* cpu);
 
 /* Register the orchestrator with the core sub-tick spine. Call once at boot,
  * after the feeders are registered. */

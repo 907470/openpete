@@ -106,17 +106,35 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
 #define SXY_BASE         0x1F800000u          /* PSX hardware scratchpad (Spyro SXY) */
 #define SXY_WORDS        0x100u               /* full 1 KB scratchpad */
 
-/* Captured sub-ranges (offset from DSONY, length). Disjoint; each filled at its
- * producer hook. Records sit in [0x1100,0x1900) with the colour scratch; the
- * seg scratch is 0x1900; the shaded list is 0x2400. */
-static const struct { uint32_t off, len; } s_canon_ranges[] = {
-    { 0x1100u, 0x800u },   /* colour scratch + REGULAR cull records (moby regular hook) */
-    { 0x1900u, 0x100u },   /* Spyro per-segment scratch (spyro hook) */
-    { 0x2400u, 0x800u },   /* shaded Moby* list + lit scratch (shaded hook) */
-};
+/* Captured sub-regions are filled at their producer hooks (colour+records at the
+ * moby hook, seg at the Spyro hook, shaded at the shaded hook) into s_canon_dsony
+ * by offset; the explicit COLOUR/RECS/SEG/SHADED constants below drive the
+ * staged restore. The regular records are ALSO captured in full into s_canon_recs
+ * (see the overlap note there). */
 static uint8_t  s_canon_dsony[DSONY_SPAN], s_live_dsony[DSONY_SPAN];
 static uint32_t s_canon_sxy[SXY_WORDS],    s_live_sxy[SXY_WORDS];
 static int      s_canon_scratch_valid = 0;
+
+/* Explicit scratch sub-regions (offsets from DSONY). The REGULAR cull-record
+ * region [0x1600,0x2400) and the Spyro per-segment scratch [0x1900,0x1A00)
+ * OVERLAP — the .s reuses 0x1900 temporally (the moby pass fills the records
+ * there, then the Spyro pass overwrites them with its seg scratch once the
+ * records are consumed). The reextract reproduces that ordering: it restores the
+ * FULL records for the moby feeder, then overlays the seg scratch for the Spyro
+ * feeder (scratch_bracket_seg_restore). The old single-shot restore captured the
+ * records only up to 0x1900 and then wrote the seg scratch over records at queue
+ * index >=14 (they start at 0x1910), so any moby parked there — Sparx, distant
+ * chests — was clobbered and vanished on sub-tick presents. */
+#define COLOUR_OFF  0x1100u
+#define COLOUR_LEN  0x500u    /* [0x1100,0x1600) per-vertex fog-lit colour scratch */
+#define RECS_OFF    0x1600u
+#define RECS_LEN    0xE00u    /* [0x1600,0x2400) full REGULAR cull records (≤64 @ 0x38) */
+#define SEG_OFF     0x1900u
+#define SEG_LEN     0x100u    /* [0x1900,0x1A00) Spyro per-segment scratch (overlaps recs) */
+#define SHADED_OFF  0x2400u
+#define SHADED_LEN  0x800u    /* [0x2400,0x2C00) shaded Moby* list + lit scratch */
+static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
+static int      s_canon_recs_valid = 0;
 
 /* Capture a DSONY sub-range at its producer hook (called from the canonical
  * moby/spyro render hooks while the scratch is still live). */
@@ -142,31 +160,66 @@ void spyro_native_canon_capture_sxy(void* cpu_v) {
     s_canon_scratch_valid = 1;
 }
 
+/* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook —
+ * while the records are still live, BEFORE the later Spyro pass reuses 0x1900 for
+ * its seg scratch. Stored separately from s_canon_dsony (whose seg sub-range is
+ * captured later at the Spyro hook and would otherwise overwrite records 14+).
+ * Restored for the moby feeder by scratch_bracket_enter. */
+void spyro_native_canon_capture_recs(void* cpu_v) {
+    (void)cpu_v;
+    const void* h = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
+    if (!h) return;
+    memcpy(s_canon_recs, h, RECS_LEN);
+    s_canon_recs_valid = 1;
+}
+
 /* On an intermediate: save the live scratch, overwrite with the captured canon,
- * so the read-only feeders that follow see valid tick-N render-pass inputs. */
+ * so the read-only feeders that follow see valid tick-N render-pass inputs.
+ *
+ * The seg scratch [0x1900,0x1A00) is NOT restored here — it overlaps the regular
+ * records (records 14+ start at 0x1910) which the .s reuses temporally. We give
+ * the moby feeder the FULL records first; scratch_bracket_seg_restore then
+ * overlays the seg scratch for the Spyro feeder (called between them). */
 static void scratch_bracket_enter(CPUState* cpu) {
     if (!s_canon_scratch_valid) return;
-    for (size_t r = 0; r < sizeof(s_canon_ranges)/sizeof(s_canon_ranges[0]); ++r) {
-        uint32_t off = s_canon_ranges[r].off, len = s_canon_ranges[r].len;
-        void* h = openpete_psx_to_host_ptr(DSONY + off);
-        if (!h) continue;
-        memcpy(s_live_dsony + (off - DSONY_LO), h, len);            /* save live */
-        memcpy(h, s_canon_dsony + (off - DSONY_LO), len);           /* write canon */
-    }
+    void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
+    void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
+    void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);
+    /* Save TRUE live (before any restore). The records region [0x1600,0x2400)
+     * spans the seg sub-range, so this one save/restore covers the seg too. */
+    if (hc) memcpy(s_live_dsony + (COLOUR_OFF - DSONY_LO), hc, COLOUR_LEN);
+    if (hr) memcpy(s_live_recs, hr, RECS_LEN);
+    if (hs) memcpy(s_live_dsony + (SHADED_OFF - DSONY_LO), hs, SHADED_LEN);
+    /* Restore canon for the MOBY + shadow feeders: colour, FULL records, shaded. */
+    if (hc) memcpy(hc, s_canon_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
+    if (hr && s_canon_recs_valid) memcpy(hr, s_canon_recs, RECS_LEN);
+    if (hs) memcpy(hs, s_canon_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
     for (uint32_t i = 0; i < SXY_WORDS; ++i) {
         s_live_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
         cpu->write_word(SXY_BASE + i * 4u, s_canon_sxy[i]);
     }
 }
 
-/* Restore the live scratch before the game fiber resumes (determinism). */
+/* After the moby + shadow feeders have consumed the regular records, overlay the
+ * Spyro per-segment scratch over the (now-consumed) records 14+ at 0x1900 — the
+ * same temporal reuse the .s does — so the Spyro body feeder sees its seg scratch. */
+static void scratch_bracket_seg_restore(CPUState* cpu) {
+    (void)cpu;
+    if (!s_canon_scratch_valid) return;
+    void* h = openpete_psx_to_host_ptr(DSONY + SEG_OFF);
+    if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
+}
+
+/* Restore the live scratch before the game fiber resumes (determinism). The
+ * records-region restore [0x1600,0x2400) covers the seg sub-range too. */
 static void scratch_bracket_leave(CPUState* cpu) {
     if (!s_canon_scratch_valid) return;
-    for (size_t r = 0; r < sizeof(s_canon_ranges)/sizeof(s_canon_ranges[0]); ++r) {
-        uint32_t off = s_canon_ranges[r].off, len = s_canon_ranges[r].len;
-        void* h = openpete_psx_to_host_ptr(DSONY + off);
-        if (h) memcpy(h, s_live_dsony + (off - DSONY_LO), len);
-    }
+    void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
+    void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
+    void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);
+    if (hc) memcpy(hc, s_live_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
+    if (hr) memcpy(hr, s_live_recs, RECS_LEN);
+    if (hs) memcpy(hs, s_live_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
     for (uint32_t i = 0; i < SXY_WORDS; ++i)
         cpu->write_word(SXY_BASE + i * 4u, s_live_sxy[i]);
 }
@@ -480,6 +533,11 @@ static void spyro_native_reextract(void* cpu_v) {
     terrain_native_reextract(cpu);        /* interpolated camera → smooth terrain */
     moby_native_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
     shadow_native_reextract(cpu);         /* drop-shadows under mobys + Spyro */
+    /* The moby + shadow feeders have now consumed the FULL regular cull records;
+     * overlay the Spyro seg scratch over the (consumed) records 14+ at 0x1900 —
+     * the .s's own temporal reuse — so the Spyro body feeder sees its seg scratch
+     * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
+    scratch_bracket_seg_restore(cpu);
     spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
