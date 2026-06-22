@@ -23,6 +23,7 @@
 #include "openpete_native_render.h"
 
 #include "openpete_log.h"
+#include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
 
@@ -270,6 +271,14 @@ static uint32_t           s_overlay_carry_freeze;
  * blink toggling the count, a glyph swap — is discrete anyway). */
 static openpete_scene_tri s_overlay_prev[OVERLAY_CARRY_MAX];
 static int                s_overlay_prev_n;
+/* Wall-clock timestamps of the two most-recent CANONICAL overlay captures, so
+ * apply_overlay computes the position/fade interpolation alpha from the OVERLAY's
+ * OWN cadence — NOT the camera-bracket alpha, which the re-extract leaves at 0
+ * whenever the camera+Spyro ring dedupes (a STATIC camera: the title screen, a
+ * pause menu). The logo drop-in slides while the title camera is still, so without
+ * a camera-independent alpha it staircased at the canonical tick rate. (Same trap
+ * the 3D HUD-icon spin/slide hit — fixed there with per-object timestamps.) */
+static op_time_t          s_overlay_curr_ns, s_overlay_prev_ns;
 
 /* The fade ramps per sim tick, so unlike the (static) letterbox/panel tris it is
  * interpolated rather than held: s_fade_prev/curr are the two most-recent
@@ -305,6 +314,8 @@ void openpete_native_scene_capture_overlay(void) {
     if (s_overlay_carry_n > 0)
         memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
     s_overlay_prev_n = s_overlay_carry_n;
+    s_overlay_prev_ns = s_overlay_curr_ns;   /* roll the capture timestamp too */
+    s_overlay_curr_ns = op_now();
     s_overlay_carry_n = 0;
     for (int t = 0; t < s_scene_n && s_overlay_carry_n < OVERLAY_CARRY_MAX; t++) {
         int c = s_scene[t].category, cy = s_scene[t].carry;
@@ -323,6 +334,19 @@ void openpete_native_scene_capture_overlay(void) {
 }
 
 void openpete_native_scene_apply_overlay(double alpha) {
+    /* The passed `alpha` is the camera-bracket alpha — 0 when the camera ring
+     * dedupes (static camera). Animated 2D-UI (the logo drop-in) moves while the
+     * camera is still, so derive the overlay's own alpha from its capture cadence:
+     * 1-tick-lagged (now≈curr_ns ⇒ show prev, advance to curr over the next
+     * capture period), exactly the camera bracket's convention but from the
+     * overlay's timestamps. Falls back to the camera alpha if the timestamps
+     * aren't primed yet (first frames). */
+    double oalpha = alpha;
+    if (s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0) {
+        double period = (double)(s_overlay_curr_ns - s_overlay_prev_ns);
+        oalpha = (double)(op_now() - s_overlay_curr_ns) / period;
+        if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
+    }
     /* Pair curr with prev by index only when the two captures are structurally the
      * same (equal count) — a count change (a blink toggling, a glyph added) makes
      * index pairing meaningless, so snap to curr that present. */
@@ -337,8 +361,8 @@ void openpete_native_scene_apply_overlay(double alpha) {
             if (p->category == tri.category && p->textured == tri.textured &&
                 p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v) {
                 for (int k = 0; k < 3; k++) {
-                    tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * alpha);
-                    tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * alpha);
+                    tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * oalpha);
+                    tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * oalpha);
                 }
             }
         }
@@ -346,7 +370,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
         s_scene[s_scene_n++] = tri;
     }
     s_scene_freeze = s_overlay_carry_freeze;
-    s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, alpha);
+    s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
 
 /* The scene buffer the present should draw: the depth-frames-back snapshot when
