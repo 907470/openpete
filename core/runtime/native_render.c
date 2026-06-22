@@ -597,6 +597,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         SDL_DestroyWindow(win);
         return 1;
     }
+    /* Live-window supersampling (--ssaa N, default 1=no-op). The offscreen is
+     * re-allocated at N× on the next frame; A/B/diff render targets are
+     * unaffected (they stay at reference resolution). */
+    rhi_set_ssaa(dev, opts->ssaa > 0 ? opts->ssaa : 1);
+    if (opts->ssaa > 1)
+        OPL_INFO_F("native", "SSAA %dx enabled (live window supersampled)", opts->ssaa);
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */

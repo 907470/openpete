@@ -131,6 +131,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
     opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
     opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
+    opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
     opts->record_gop          = 120;
@@ -175,6 +176,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--render-paths") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_paths = v; i++;
+        } else if (strcmp(a, "--ssaa") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->ssaa = atoi(v); i++;
+            if (opts->ssaa < 1 || opts->ssaa > 32) {
+                fprintf(stderr, "openpete: --ssaa expects 1..32 (1 = off), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;
         } else if (strcmp(a, "--render-fps") == 0) {
@@ -440,6 +448,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
                 "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
                 "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
+                "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
+                "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
+                "                             max image size / VRAM. Display-only.\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"

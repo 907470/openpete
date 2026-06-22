@@ -59,7 +59,11 @@ struct rhi_device {
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
 
-    /* Offscreen color target (== swapchain extent for 1a) */
+    /* Offscreen color target. Sized at ssaa× the swapchain extent (supersampling):
+     * the scene renders into off_extent and the present blit downsamples to
+     * sc_extent. ssaa==1 ⇒ off_extent==sc_extent (the original 1:1 path). */
+    uint32_t       ssaa;        /* live-window supersampling factor (>=1) */
+    VkExtent2D     off_extent;  /* = sc_extent * ssaa */
     VkRenderPass   off_rp;
     /* Render-to-texture pass: same attachment formats as off_rp (so off_rp-built
      * pipelines are compatible) but the color attachment ends in
@@ -531,13 +535,45 @@ static bool create_rt_render_pass(rhi_device *dev)
 
 static bool create_offscreen(rhi_device *dev)
 {
-    /* For 1a the offscreen target matches the swapchain extent. Later it
-     * becomes a fixed native/internal resolution and the blit scales. */
+    /* Offscreen render target = swapchain extent × ssaa (supersampling). The
+     * scene renders here at off_extent; rhi_blit_to_swapchain downsamples it to
+     * the sc_extent swapchain image on present. ssaa==1 ⇒ off_extent==sc_extent
+     * and the blit is 1:1 (the original behaviour).
+     *
+     * dev->ssaa is the REQUESTED factor; the effective factor `s` is capped to
+     * what the GPU can actually allocate so a large --ssaa never hard-fails:
+     *   (1) per-axis ≤ maxImageDimension2D (else vkCreateImage is illegal), and
+     *   (2) color+depth (8 B/texel) ≤ half the largest device-local heap.
+     * The factor stays uniform on both axes (square samples). off_extent is the
+     * single source of truth for the downsample factor (scissor/readback derive
+     * it as off_extent/sc_extent), so dev->ssaa is left at the request. */
+    uint32_t req = dev->ssaa ? dev->ssaa : 1u;
+    VkPhysicalDeviceProperties props; vkGetPhysicalDeviceProperties(dev->phys, &props);
+    uint32_t maxdim = props.limits.maxImageDimension2D;
+    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+    VkDeviceSize heap = 0;
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+        if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            mp.memoryHeaps[i].size > heap) heap = mp.memoryHeaps[i].size;
+    VkDeviceSize budget = heap ? heap / 2 : 0;
+    uint32_t s = req;
+    while (s > 1) {
+        uint64_t w = (uint64_t)dev->sc_extent.width  * s;
+        uint64_t h = (uint64_t)dev->sc_extent.height * s;
+        uint64_t bytes = w * h * 8u;   /* B8G8R8A8 color + D32 depth */
+        if (w <= maxdim && h <= maxdim && (budget == 0 || bytes <= budget)) break;
+        s--;
+    }
+    if (s != req)
+        RHI_LOG("ssaa %ux requested but capped to %ux (max image dim %u, device-local heap %lluMB)\n",
+                req, s, maxdim, (unsigned long long)(heap >> 20));
+    dev->off_extent.width  = dev->sc_extent.width  * s;
+    dev->off_extent.height = dev->sc_extent.height * s;
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = dev->sc_format,
-        .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+        .extent = { dev->off_extent.width, dev->off_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -586,7 +622,7 @@ static bool create_offscreen(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_D32_SFLOAT,
-        .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+        .extent = { dev->off_extent.width, dev->off_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -635,8 +671,8 @@ static bool create_offscreen(rhi_device *dev)
         .renderPass = dev->off_rp,
         .attachmentCount = 2,
         .pAttachments = fb_atts,
-        .width = dev->sc_extent.width,
-        .height = dev->sc_extent.height,
+        .width = dev->off_extent.width,
+        .height = dev->off_extent.height,
         .layers = 1,
     };
     if (vkCreateFramebuffer(dev->device, &fci, NULL, &dev->off_fb) != VK_SUCCESS) {
@@ -798,6 +834,7 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
     rhi_device *dev = calloc(1, sizeof(*dev));
     if (!dev) return NULL;
     dev->window = window;
+    dev->ssaa = 1;   /* no supersampling until rhi_set_ssaa raises it */
 
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
@@ -918,24 +955,24 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_rp,
         .framebuffer = dev->off_fb,
-        .renderArea = { .offset = {0, 0}, .extent = dev->sc_extent },
+        .renderArea = { .offset = {0, 0}, .extent = dev->off_extent },
         .clearValueCount = 2,
         .pClearValues = cv,
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
-    dev->cur_extent = dev->sc_extent;   /* render area of this (offscreen) pass */
+    dev->cur_extent = dev->off_extent;  /* render area of this (offscreen) pass */
 
     /* Y-flipped viewport (Vulkan clip-space Y is down) so NDC/UV match the
      * GL/texture convention the ported PSX shaders assume. Dynamic so a
-     * resize needs no pipeline rebuild. */
+     * resize needs no pipeline rebuild. Spans the full off_extent (ssaa×). */
     VkViewport vp = {
         .x = 0.0f,
-        .y = (float)dev->sc_extent.height,
-        .width = (float)dev->sc_extent.width,
-        .height = -(float)dev->sc_extent.height,
+        .y = (float)dev->off_extent.height,
+        .width = (float)dev->off_extent.width,
+        .height = -(float)dev->off_extent.height,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->sc_extent };
+    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->off_extent };
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
 }
@@ -981,9 +1018,12 @@ void rhi_blit_to_swapchain(rhi_device *dev)
                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
+    /* off_image (off_extent = ssaa×) -> swapchain (sc_extent): the differing
+     * src/dst extents make this the SSAA downsample. VK_FILTER_LINEAR is an
+     * exact 2×2 box at ssaa==2; ssaa==1 is a 1:1 copy. */
     VkImageBlit region = {
         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+        .srcOffsets = { {0,0,0}, {(int32_t)dev->off_extent.width, (int32_t)dev->off_extent.height, 1} },
         .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
         .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
     };
@@ -1038,6 +1078,17 @@ void rhi_end_frame(rhi_device *dev)
 void rhi_notify_resize(rhi_device *dev)
 {
     if (dev) dev->needs_recreate = true;
+}
+
+void rhi_set_ssaa(rhi_device *dev, int n)
+{
+    if (!dev) return;
+    if (n < 1) n = 1;
+    if (n > 32) n = 32;   /* requested ceiling; create_offscreen further caps to
+                           * what the device can allocate (max image dim + VRAM) */
+    if ((uint32_t)n == dev->ssaa) return;  /* unchanged (incl. the 1==1 no-op) */
+    dev->ssaa = (uint32_t)n;
+    dev->needs_recreate = true;            /* re-alloc the offscreen next frame */
 }
 
 const char *rhi_device_name(const rhi_device *dev)
@@ -1436,7 +1487,13 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
 bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h)
 {
+    /* Output is at WINDOW (swapchain) resolution; the offscreen is off_extent
+     * (ssaa× larger). Read the full off_image and box-downsample ssaa×ssaa
+     * blocks so the screenshot matches what the present blit puts on screen. */
     int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    int sw = (int)dev->off_extent.width, sh = (int)dev->off_extent.height;
+    int s = (w > 0) ? (sw / w) : 1;   /* effective factor (may be capped < ssaa) */
+    if (s < 1) s = 1;
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
     size_t need = (size_t)w * (size_t)h * 4u;
@@ -1444,32 +1501,47 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
 
     /* The offscreen target is in TRANSFER_SRC_OPTIMAL after a rendered frame
      * (rhi_end_offscreen transitions it, the blit reads it as src). Wait for
-     * that frame's GPU work, then copy image -> host buffer. */
+     * that frame's GPU work, then copy image -> host buffer (at off_extent). */
     vkDeviceWaitIdle(dev->device);
-    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    size_t src_bytes = (size_t)sw * (size_t)sh * 4u;
+    rhi_buffer *rb = create_host_buffer(dev, src_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     if (!rb) return false;
 
     VkCommandBuffer cb = one_shot_begin(dev);
     VkBufferImageCopy region = {
         .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+        .imageExtent = { (uint32_t)sw, (uint32_t)sh, 1 },
     };
     vkCmdCopyImageToBuffer(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            rb->buffer, 1, &region);
     one_shot_end(dev, cb);
 
     /* The swapchain/offscreen format is B8G8R8A8 (see the format pick); the
-     * caller wants R,G,B,A. Swizzle and force opaque alpha. */
+     * caller wants R,G,B,A. Swizzle, force opaque alpha, and average the
+     * s×s supersample block per output pixel (s==1 ⇒ a plain copy). */
     const uint8_t *src = (const uint8_t *)rb->mapped;
     uint8_t *dst = (uint8_t *)out;
     int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
                    dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
-    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
-        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
-        dst[i*4+0] = swap_rb ? c2 : c0;
-        dst[i*4+1] = c1;
-        dst[i*4+2] = swap_rb ? c0 : c2;
-        dst[i*4+3] = 0xFF;
+    for (int oy = 0; oy < h; oy++) {
+        for (int ox = 0; ox < w; ox++) {
+            unsigned a0 = 0, a1 = 0, a2 = 0; int cnt = 0;
+            for (int dy = 0; dy < s; dy++) {
+                int syp = oy * s + dy; if (syp >= sh) break;
+                for (int dx = 0; dx < s; dx++) {
+                    int sxp = ox * s + dx; if (sxp >= sw) break;
+                    const uint8_t *p = src + ((size_t)syp * sw + sxp) * 4u;
+                    a0 += p[0]; a1 += p[1]; a2 += p[2]; cnt++;
+                }
+            }
+            if (cnt == 0) cnt = 1;
+            uint8_t c0 = (uint8_t)(a0 / cnt), c1 = (uint8_t)(a1 / cnt), c2 = (uint8_t)(a2 / cnt);
+            uint8_t *o = dst + ((size_t)oy * w + ox) * 4u;
+            o[0] = swap_rb ? c2 : c0;
+            o[1] = c1;
+            o[2] = swap_rb ? c0 : c2;
+            o[3] = 0xFF;
+        }
     }
     rhi_destroy_buffer(dev, rb);
     return true;
@@ -1798,12 +1870,23 @@ void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)
 void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h)
 {
     if (!dev->frame_active) return;
+    /* Callers pass swapchain/window pixels. When the bound pass is the
+     * supersampled offscreen (cur_extent == off_extent), scale the rect by the
+     * effective factor (derived from the actual extents, which may be capped
+     * below the request) so the panel scissor still confines the N×-resolution
+     * scene. (No-op at 1×; render-target passes have cur_extent != off_extent.) */
+    int eff = dev->sc_extent.width ? (int)(dev->off_extent.width / dev->sc_extent.width) : 1;
+    if (eff > 1 &&
+        dev->cur_extent.width  == dev->off_extent.width &&
+        dev->cur_extent.height == dev->off_extent.height) {
+        x *= eff; y *= eff; w *= eff; h *= eff;
+    }
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (w < 0) w = 0;
     if (h < 0) h = 0;
-    if (x + w > (int)dev->sc_extent.width)  w = (int)dev->sc_extent.width  - x;
-    if (y + h > (int)dev->sc_extent.height) h = (int)dev->sc_extent.height - y;
+    if (x + w > (int)dev->cur_extent.width)  w = (int)dev->cur_extent.width  - x;
+    if (y + h > (int)dev->cur_extent.height) h = (int)dev->cur_extent.height - y;
     VkRect2D s = { .offset = { x, y }, .extent = { (uint32_t)(w > 0 ? w : 0),
                                                    (uint32_t)(h > 0 ? h : 0) } };
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &s);
@@ -1812,6 +1895,6 @@ void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h)
 void rhi_reset_scissor(rhi_device *dev)
 {
     if (!dev->frame_active) return;
-    VkRect2D s = { .offset = { 0, 0 }, .extent = dev->sc_extent };
+    VkRect2D s = { .offset = { 0, 0 }, .extent = dev->cur_extent };
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &s);
 }

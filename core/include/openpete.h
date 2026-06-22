@@ -225,6 +225,17 @@ typedef struct {
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
+    /* --ssaa N (default 1): supersampling factor for the native vk LIVE window.
+     * The offscreen render target is allocated at N× the swapchain extent per
+     * axis (N² samples/pixel) and the present blit box-downsamples to the
+     * window. 1 = no-op (the offscreen matches the swapchain, a 1:1 blit).
+     * Range 1..32, auto-capped to the GPU's max image size / device-local VRAM
+     * (so a large value degrades gracefully). Display-only — no gameplay effect;
+     * under --headless and on --renderer psycross. The native_rtt that backs
+     * the -vk/-ab/-diff screenshots + DIFF mode stays at reference resolution
+     * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
+    int ssaa;
+
     /* --render-stats (debug): in --renderer diff, read the per-pixel diff back
      * each frame and log colour-closeness statistics (per-channel mean/max abs
      * diff, % within tolerance, differing-pixel count) over the panel, plus an

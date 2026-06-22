@@ -39,6 +39,13 @@ typedef struct rhi_device rhi_device;
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name);
 void        rhi_destroy(rhi_device *dev);
 
+/* Set the live-window supersampling factor (1..4; 1 = no-op). The offscreen
+ * render target is sized at N× the swapchain extent per axis and the present
+ * blit downsamples to the window. A change marks the swapchain for recreate so
+ * it takes effect on the next frame. Does not affect render targets created via
+ * rhi_create_render_target (the A/B/diff path stays at its native resolution). */
+void        rhi_set_ssaa(rhi_device *dev, int n);
+
 /* Block until the GPU is idle. Call before destroying buffers/pipelines
  * that recent frames may still be using. */
 void rhi_wait_idle(rhi_device *dev);
