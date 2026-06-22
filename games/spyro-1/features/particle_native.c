@@ -387,9 +387,13 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
 static void particle_build(CPUState* cpu) {
     s_fq_n = 0; s_pline_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
-    int s7 = (int)cpu->read_word(G_CAMERA+0x28) >> 2;   /* camX/4 */
-    int t8 = (int)cpu->read_word(G_CAMERA+0x2C) >> 2;   /* camY/4 */
-    int t9 = (int)cpu->read_word(G_CAMERA+0x30) >> 2;   /* camZ/4 */
+    /* Camera at FRACTIONAL /4 (not >>2): the particle positions (A/B) are int16
+     * world/4 gameplay storage we can't change, but flooring the CAMERA to /4
+     * added a camera-correlated step on EVERY particle under panning. Carrying the
+     * camera's low 2 bits (÷4.0) tracks the smooth sub-tick camera. */
+    double s7 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;   /* camX/4 */
+    double t8 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;   /* camY/4 */
+    double t9 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0;   /* camZ/4 */
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -403,9 +407,9 @@ static void particle_build(CPUState* cpu) {
         if (mtype & 0x80) continue;                     /* inactive slot (skip, not stop) */
         int sel = mtype;
         uint32_t A = cpu->read_word(pp + 4), B = cpu->read_word(pp + 8);
-        int VXb = (int)(A & 0xFFFF) - s7;               /* GTE-Z */
-        int VYb = t8 - (int)(A >> 16);                  /* GTE-X */
-        int VZb = t9 - (int)(B & 0xFFFF);               /* GTE-Y */
+        double VXb = (double)(int)(A & 0xFFFF) - s7;    /* GTE-Z */
+        double VYb = t8 - (double)(int)(A >> 16);       /* GTE-X */
+        double VZb = t9 - (double)(int)(B & 0xFFFF);    /* GTE-Y */
         int texsub_hi = (int)(cpu->read_word(pp + 0x10) & 0xFFFF) >> 8;
         fquad q; q.sel = sel;
 
@@ -932,9 +936,9 @@ static void sparkle_build(CPUState* cpu) {
         uint32_t color = cpu->read_word(sp + 0x10) & 0xFFFFFF;
         int px = (int)cpu->read_word(sp + 0), py = (int)cpu->read_word(sp + 4), pz = (int)cpu->read_word(sp + 8);
         /* centre RTPS: swizzle (camera-relative >>2), TR=0, camera matrix */
-        double VXg = (double)((camY - py) >> 2);     /* GTE-X */
-        double VYg = (double)((camZ - pz) >> 2);     /* GTE-Y */
-        double VZg = (double)((px - camX) >> 2);     /* GTE-Z */
+        double VXg = (double)(camY - py) / 4.0;      /* GTE-X (÷4 fractional, not >>2) */
+        double VYg = (double)(camZ - pz) / 4.0;      /* GTE-Y */
+        double VZg = (double)(px - camX) / 4.0;      /* GTE-Z */
         projres c; proj2(R, ofx, ofy, H, VXg, VYg, VZg, &c);
         if (c.m3 <= 0.0) continue;
 

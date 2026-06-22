@@ -266,20 +266,18 @@ static void mvmva_ir(const int R[3][3], int vx, int vy, int vz, int ir[3]) {
 }
 
 /* integer ground TR (the GTE's MAC after RTPS of the swizzled vector, TR=0). */
-static void ground_tr(const int C[3][3], int vx, int vy, int vz, int TR[3]) {
-    for (int i = 0; i < 3; i++) {
-        int64_t m = (int64_t)C[i][0]*vx + (int64_t)C[i][1]*vy + (int64_t)C[i][2]*vz;
-        TR[i] = (int)(m >> 12);
-    }
+static void ground_tr(const int C[3][3], double vx, double vy, double vz, double TR[3]) {
+    for (int i = 0; i < 3; i++)
+        TR[i] = (C[i][0]*vx + C[i][1]*vy + C[i][2]*vz) / 4096.0;
 }
 
 /* RTPS one local vertex through R + integer TR (shift 12) -> float screen + view-Z */
 typedef struct { float sx, sy, sz; } spt;
-static void sh_proj(const int R[3][3], const int TR[3], double ofx, double ofy, double H,
+static void sh_proj(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
                     double vx, double vy, double vz, spt* o) {
-    double mac1 = (double)TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
-    double mac2 = (double)TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
-    double mac3 = (double)TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
+    double mac1 = TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
+    double mac2 = TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
+    double mac3 = TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
     double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
     double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
     double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
@@ -347,9 +345,12 @@ static void shadow_moby_build(CPUState* cpu) {
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
-    int cam0 = (int)((uint32_t)cpu->read_word(G_CAMERA+0x28) >> 2);
-    int cam1 = (int)((uint32_t)cpu->read_word(G_CAMERA+0x2C) >> 2);
-    int cam2 = (int)((uint32_t)cpu->read_word(G_CAMERA+0x30) >> 2);
+    /* Camera at FRACTIONAL /4 (not >>2): the moby BODY got the ÷4.0 delta fix but
+     * its drop-shadow still floored cam+pos to /4 integers, so the shadow stepped
+     * in 4-world-unit chunks under camera motion. Carry the low 2 bits. */
+    double cam0 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;
+    double cam1 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;
+    double cam2 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0;
     /* FT3 material (constant across the fan): UV0=uv0, UV1=uv1, UV2=uv0+0x1F00 */
     int u0=(int)(uv0&0xFF), v0t=(int)((uv0>>8)&0xFF);
     int u1=(int)(uv1&0xFF), v1t=(int)((uv1>>8)&0xFF);
@@ -358,7 +359,7 @@ static void shadow_moby_build(CPUState* cpu) {
     int tpx=(tpage&0xF)*64, tpy=((tpage>>4)&1)*256;
     int mode=(tpage>>7)&3, bpp=(mode==0)?4:(mode==1)?8:16;
     int clx=(clut&0x3F)*16, cly=(clut>>6)&0x1FF;
-    int ZERO[3] = {0,0,0};
+    double ZERO[3] = {0,0,0};
 
     for (uint32_t e = DRAWN_LIST; e < list_end; e += 8) {
         uint32_t mob = cpu->read_word(e + 0);
@@ -369,11 +370,11 @@ static void shadow_moby_build(CPUState* cpu) {
         uint32_t sd   = cpu->read_word(mob + MOBY_SHADOWDIST);
         int sdlo = (int)(sd & 0xFFFF);
         if (sdlo == 0) continue;
-        int vx = s16(cam1 - (int)((uint32_t)posY >> 2));
-        int vy = s16(cam2 - sdlo);
-        int vz = s16((int)((uint32_t)posX >> 2) - cam0);
-        int TR[3]; ground_tr(C, vx, vy, vz, TR);
-        if (TR[2] - 0x1000 >= 0) continue;                  /* Z cull */
+        double vx = cam1 - (double)(int32_t)posY / 4.0;
+        double vy = cam2 - (double)sdlo;
+        double vz = (double)(int32_t)posX / 4.0 - cam0;
+        double TR[3]; ground_tr(C, vx, vy, vz, TR);
+        if (TR[2] - 4096.0 >= 0.0) continue;                /* Z cull (floor(x)>=N ⟺ x>=N) */
         spt anchor; sh_proj(C, ZERO, ofx, ofy, H, vx, vy, vz, &anchor);
 
         int idxB = (int)((sd >> 16) & 0x3F);
@@ -551,8 +552,8 @@ static void shadow_spyro_build(CPUState* cpu) {
     int avx = s16(camy - sposy);     /* VX0 */
     int avy = s16(camz - sposz);     /* VY0 */
     int avz = s16(sposx - camx);     /* VZ0 */
-    int TR[3]; ground_tr(C, avx, avy, avz, TR);
-    int ZERO[3] = {0,0,0};
+    double TR[3]; ground_tr(C, avx, avy, avz, TR);   /* avx/avy/avz stay s16 (faithful, 1-unit) */
+    double ZERO[3] = {0,0,0};
     spt anchor; sh_proj(C, ZERO, ofx, ofy, H, avx, avy, avz, &anchor);
 
     /* heading matrix */

@@ -2059,9 +2059,12 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double t3=(PM[2][0]*Dy+PM[2][1]*Dz+PM[2][2]*Dx)/4096.0;
             TR[0]=t1*2.0; TR[1]=t2*2.0; TR[2]=t3*2.0;
             uint8_t p57=cpu->read_byte(m+0x57);
-            /* Draw-scale (p57): preserve the GTE IR16 truncation on the rounded TR,
-             * but keep the /32 scale fractional (smoother than the old >>5). */
-            if (p57){ for(int i=0;i<3;i++){ int16_t ir=(int16_t)(int)TR[i]; TR[i]=(double)((int32_t)p57*(int32_t)ir)/32.0; } }
+            /* Draw-scale (p57): apply to the FRACTIONAL TR directly — no int16 round.
+             * (The earlier int16 truncation here re-quantized the just-fractional TR
+             * back to a ~1-unit grid for draw-scaled shaded mobys, undoing the ÷4.0
+             * delta fix for exactly those props. The GTE's IR16 saturation only
+             * matters for off-screen/huge TR, which project()'s sat flag culls.) */
+            if (p57){ for(int i=0;i<3;i++){ TR[i]=(double)p57 * TR[i] / 32.0; } }
             mofx=ofx; mofy=ofy;
             /* TR here = trueViewZ/2 (D=(pos-cam)>>2 then MAC<<1), or x p57/32 with
              * draw-scale: scale the fed depth back to full-world so shaded mobys

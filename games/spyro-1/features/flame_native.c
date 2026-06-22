@@ -230,7 +230,7 @@ static void flame_report(CPUState* cpu) {
  * the scaffold we only need TR[2] = the camera-space depth. */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
-static void flame_origin_tr(CPUState* cpu, int tr[3]) {
+static void flame_origin_tr(CPUState* cpu, double tr[3]) {
     int fx = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 0);
     int fy = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 4);
     int fz = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 8);
@@ -248,8 +248,12 @@ static void flame_origin_tr(CPUState* cpu, int tr[3]) {
         { s16(w1 >> 16),    s16(w2 & 0xFFFF), s16(w2 >> 16) },
         { s16(w3 & 0xFFFF), s16(w3 >> 16), s16(w4 & 0xFFFF) },
     };
+    /* Fractional matrix-scale (÷4096.0, not >>12) so the ribbon's camera-space
+     * origin tracks the smooth sub-tick camera instead of stepping ~1 view-unit
+     * per present (same fix as the moby/terrain deltas; the s16 IR delta above is
+     * the faithful GTE int16 load and the dominant loss was this final truncation). */
     for (int i = 0; i < 3; i++)
-        tr[i] = (R[i][0]*ir1 + R[i][1]*ir2 + R[i][2]*ir3) >> 12;
+        tr[i] = (R[i][0]*ir1 + R[i][1]*ir2 + R[i][2]*ir3) / 4096.0;
 }
 
 /* ---- native gamestate walk (3b.1: float geometry for HD + frame-gen) ------
@@ -279,11 +283,11 @@ static void flame_load_matrix(CPUState* cpu, uint32_t base, int R[3][3]) {
 }
 
 /* RTPS one local vertex through R + TR (shift 12) -> screen (float) + view-Z */
-static void flame_project(const int R[3][3], const int TR[3], double ofx, double ofy, double H,
+static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
                           double vx, double vy, double vz, float* sx, float* sy, float* sz) {
-    double mac1 = (double)TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
-    double mac2 = (double)TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
-    double mac3 = (double)TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
+    double mac1 = TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
+    double mac2 = TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
+    double mac3 = TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
     double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
     double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
     double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
@@ -326,7 +330,7 @@ static void flame_read_cross(CPUState* cpu, uint32_t p,
 /* one ribbon cross-section: spine vert at `p` -> two edge verts (float screen) */
 typedef struct { float sx, sy, sz; } fpt;
 static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
-                                const int R[3][3], const int TR[3],
+                                const int R[3][3], const double TR[3],
                                 double ofx, double ofy, double H, fpt* e0, fpt* e1) {
     int Xraw, Z, idx, sIdx;
     flame_read_cross(cpu, p, &Xraw, &Z, &idx, &sIdx);
@@ -381,7 +385,7 @@ static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
  * Returns 1 if the strand is near-culled (SZ3>>7 - 2 < 0 -> .s skips the whole
  * strand: no caps AND no strip). */
 static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
-                            const int R[3][3], const int TR[3],
+                            const int R[3][3], const double TR[3],
                             double ofx, double ofy, double H) {
     uint32_t w0c = cpu->read_word(s7), w1c = cpu->read_word(s7 + 4);
     int Xc = s16(w0c >> 16), Zc = s16(w0c & 0xFFFF), idxc = s16(w1c & 0xFFFF);
@@ -422,7 +426,7 @@ static void flame_build_strip(CPUState* cpu) {
     s_fcap_n = 0;
     uint32_t fb = G_SPYROFLAME;
     int super = (int)cpu->read_word(fb + FL_SUPER) != 0;
-    int R[3][3], TR[3];
+    int R[3][3]; double TR[3];
     flame_load_matrix(cpu, fb + FL_ATTACH, R);
     flame_origin_tr(cpu, TR);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
@@ -593,7 +597,7 @@ static void flame_strip_compare(CPUState* cpu) {
  * native walk gives per-vertex Z). */
 static void flame_feed_scaffold(CPUState* cpu) {
     if (s_gte_n <= 0) return;
-    int tr[3]; flame_origin_tr(cpu, tr);
+    double tr[3]; flame_origin_tr(cpu, tr);
     float vz = (float)tr[2];
     float depth = openpete_native_depth_from_viewz(vz);
     openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
