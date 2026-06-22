@@ -239,11 +239,11 @@ static double s_ofx, s_ofy, s_H;
 /* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12. SX/SY = OFX/OFY +
  * MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs HP-world/4 scale cancels in
  * the MAC1/MAC3 ratio, so V can be built in any consistent unit (world/16). */
-static void project(const int M[3][3], int vx, int vy, int vz,
+static void project(const int M[3][3], double vx, double vy, double vz,
                     double* m1, double* m2, double* m3) {
-    *m1 = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
-    *m2 = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
-    *m3 = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
+    *m1 = (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
+    *m2 = (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
+    *m3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
 }
 static void proj_screen(double m1, double m2, double m3, float* sx, float* sy) {
     double z = (m3 > 1e-9) ? m3 : 1e-9;
@@ -850,9 +850,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
-    int camx = (int32_t)rd(cpu, G_CAMERA + 0x28) >> 4;
-    int camy = (int32_t)rd(cpu, G_CAMERA + 0x2C) >> 4;
-    int camz = (int32_t)rd(cpu, G_CAMERA + 0x30) >> 4;
+    /* Camera position in world/16 units at FRACTIONAL precision (÷16.0, not >>4).
+     * The .s projects terrain in world/16 to fit the GTE's 16-bit range, so it
+     * truncates the camera to 16-unit steps — fine at the 30 Hz lockstep, but under
+     * sub-tick interpolation it makes the whole terrain frame jump in 16-world-unit
+     * chunks while mobys/Spyro (full-precision camera) move smoothly = the terrain
+     * jitter, worst under rotation (distant terrain sweeps fast). The native path
+     * projects in float, so carrying the low 4 bits costs nothing and tracks the
+     * smooth camera. Scale is unchanged (still /16), so depth / near-clip / fog are
+     * untouched; only the camera reference gains sub-16 precision. */
+    double camx = (double)(int32_t)rd(cpu, G_CAMERA + 0x28) / 16.0;
+    double camy = (double)(int32_t)rd(cpu, G_CAMERA + 0x2C) / 16.0;
+    double camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
     uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
@@ -882,7 +891,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
         int flags   = (int)(w1 & 0xE000);
         int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
-        int s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
+        double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
 
         int noHP = (flags & 0x4000) != 0;
         int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
