@@ -486,13 +486,18 @@ static struct {
     rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
     rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
-    float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) */
-    /* Widescreen (Hor+) widen factor = window_aspect / display_aspect, active
-     * ONLY in vk-only mode with a window wider than 4:3 (1.0 = inactive). The
-     * panel-0 content mapping (scene_to_clip via p0_hx) is UNCHANGED; widescreen
-     * is realised by un-scissoring the side strips + filling them, so the centre
-     * 4:3 region stays identical and the sides reveal more world. See the
-     * openpete_native_widescreen_* API. Computed in update_layout. */
+    float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
+    /* Target display aspect (W/H), from --aspect (0 → default 4:3). Drives the
+     * Hor+ render aspect independently of the window: the scene renders at this
+     * aspect and is letterboxed/pillarboxed into the window (like PsyCross), NOT
+     * stretched/auto-widened to fill it. Set at init from opts->aspect_w_over_h. */
+    float         aspect_wh;
+    /* Widescreen (Hor+) widen factor = render_aspect / 4:3, i.e. how much MORE
+     * horizontal world the --aspect view reveals vs 4:3 (1.0 = plain 4:3). Now
+     * driven by --aspect (FIXED per run), not the window. The panel-0 content
+     * mapping (scene_to_clip via p0_hx) is the centred 4:3 sub-rect; the reveal
+     * extends to ±p0_hx*ws_factor (the --aspect rect), which fit_cell fits into
+     * the window with bars. vk-only (ab/diff stay 4:3). See update_layout. */
     float         ws_factor;
 
     /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
@@ -686,6 +691,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     bool diff_mode = (opts->renderer == OPENPETE_RENDERER_DIFF);
     s_nr.ab_mode  = ab_mode;
     s_nr.diff_mode = diff_mode;
+    /* Render aspect from --aspect (W/H); 0 → default 4:3. Drives the Hor+ amount
+     * + letterbox/pillarbox (vk-only; ab/diff stay 4:3 vs the reference). */
+    s_nr.aspect_wh = (opts->aspect_w_over_h > 0.0f) ? opts->aspect_w_over_h : 0.0f;
     s_nr.stats_enabled = diff_mode && opts->render_stats;  /* per-frame diff readback */
     s_nr.n_panels = ab_mode ? 2 : 1;   /* vk/diff are single full-window panels */
     /* Delay the native scene one frame whenever we compare against the lagged
@@ -1151,24 +1159,35 @@ static void update_layout(void)
         int have_clip = (s_nr.disp_w > 0 && s_nr.clip_h > 0);
         int uv_w  = have_clip ? s_nr.disp_w : NR_VRAM_W;  /* sampled region size */
         int uv_h  = have_clip ? s_nr.clip_h : NR_VRAM_H;
-        int fit_w = have_clip ? s_nr.ref_w  : NR_VRAM_W;  /* display shape */
+        int fit_w = have_clip ? s_nr.ref_w  : NR_VRAM_W;  /* 4:3 display shape */
         int fit_h = have_clip ? s_nr.ref_h  : NR_VRAM_H;
-        float cx = -1.0f + chx, hx, hy;
-        fit_cell(cx, 0.0f, chx, 1.0f, fit_w, fit_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
-        build_panel(&verts[0], cx, 0.0f, hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
-        s_nr.p0_cx = cx; s_nr.p0_hx = hx; s_nr.p0_hy = hy; /* for the native scene map */
 
-        /* Widescreen (Hor+): vk-only, and only when the window is wider than the
-         * 4:3 content (so fit_cell pillarboxed it: hx<1 with full height hy==1).
-         * The widen factor is 1/hx = window_aspect/display_aspect. The content
-         * mapping (p0_hx) is LEFT AS-IS — widescreen just fills the side bars and
-         * reveals the off-4:3 world there (see draw_native_scene scissor / cover
-         * quads + the feeders' widened X culls). A/B and diff (s_scene_ref_compare)
-         * stay 4:3 to line up with the reference. */
-        if (!s_scene_ref_compare && hx < 0.999f && hy > 0.999f)
-            s_nr.ws_factor = 1.0f / hx;
-        else
-            s_nr.ws_factor = 1.0f;
+        /* Hor+ widen factor from --aspect (FIXED per run): how much wider the
+         * --aspect view is than 4:3. vk-only; ab/diff stay 4:3 vs the reference.
+         * Clamp ≥1 — Hor+ only ADDS world; a narrower --aspect just renders 4:3
+         * and the window letterboxes. */
+        float wf = 1.0f;
+        if (!s_scene_ref_compare && s_nr.aspect_wh > 0.0f) {
+            wf = s_nr.aspect_wh / (4.0f / 3.0f);
+            if (wf < 1.0f) wf = 1.0f;
+        }
+        s_nr.ws_factor = wf;
+
+        /* Fit the FULL --aspect display rect (4:3 content widened by wf) into the
+         * window → letterbox/pillarbox bars where the window ≠ --aspect. The 4:3
+         * CONTENT sub-rect (what scene_to_clip maps the canonical 512-wide screen
+         * onto, unstretched) is 1/wf of that width and centred; the Hor+ reveal
+         * fills the rest of the --aspect rect. (Replaces the old window-driven
+         * auto-Hor+ that filled the whole window — now --aspect controls the render
+         * shape and the window only adds bars, matching PsyCross.) */
+        float cx = -1.0f + chx, hx, hy;
+        fit_cell(cx, 0.0f, chx, 1.0f, (int)((float)fit_w * wf + 0.5f), fit_h,
+                 s_nr.win_w, s_nr.win_h, &hx, &hy);
+        s_nr.p0_cx = cx; s_nr.p0_hx = hx / wf; s_nr.p0_hy = hy; /* 4:3 sub-rect for the scene map */
+        /* VRAM fallback panel (loading screens / OT-empty): the canonical 4:3
+         * framebuffer, shown at the 4:3 sub-rect (unstretched, pillarboxed within
+         * the --aspect area). */
+        build_panel(&verts[0], cx, 0.0f, s_nr.p0_hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
     }
     /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
      * normalized (blit uses texture()). Only in A/B mode (np >= 2). */
@@ -1232,14 +1251,15 @@ void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
 }
 
 /* The clip-space rect the full-frame cover quads (background fill / fade /
- * freeze backdrop) span. Normally panel-0's content rect; the FULL panel width
- * in vk-only widescreen (so the revealed side strips get a background behind the
- * sky dome / world); the whole target in full_extent (native_rtt) mode. */
+ * freeze backdrop) span. The --aspect RENDER rect (4:3 sub-rect widened by the
+ * Hor+ factor) so the revealed side strips get a background behind the sky dome /
+ * world — but NOT the letterbox/pillarbox bars beyond it (they stay black). The
+ * whole target in full_extent (native_rtt) mode. */
 static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
 {
-    int ws = !full_extent && s_nr.ws_factor > 1.0001f;
-    *l = (full_extent || ws) ? -1.0f : s_nr.p0_cx - s_nr.p0_hx;
-    *r = (full_extent || ws) ?  1.0f : s_nr.p0_cx + s_nr.p0_hx;
+    float fhx = s_nr.p0_hx * s_nr.ws_factor;   /* --aspect rect half-width (= p0_hx at 4:3) */
+    *l = full_extent ? -1.0f : s_nr.p0_cx - fhx;
+    *r = full_extent ?  1.0f : s_nr.p0_cx + fhx;
     *t = full_extent ?  1.0f : s_nr.p0_hy;
     *b = full_extent ? -1.0f : -s_nr.p0_hy;
 }
@@ -1615,12 +1635,14 @@ static bool draw_native_scene(bool full_extent)
      * the panel instead of streaking across the window. In full_extent mode the
      * RT pass already scissors to the whole target (the frame fills it). */
     if (!full_extent) {
-        /* Widescreen (Hor+): scissor the FULL window width so the revealed side
-         * strips aren't clipped to the 4:3 content rect (vertical bounds keep the
-         * overscan-cropped panel height). Otherwise scissor to panel 0's rect. */
-        int ws = s_nr.ws_factor > 1.0001f;
-        int sx = ws ? 0 : (int)(((s_nr.p0_cx - s_nr.p0_hx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-        int sw = ws ? s_nr.win_w : (int)((s_nr.p0_hx) * (float)s_nr.win_w + 0.5f);
+        /* Scissor to the --aspect render rect: the 4:3 content sub-rect (p0_hx)
+         * widened by the Hor+ factor (ws_factor). The revealed side world fills
+         * out to this rect; everything beyond is the letterbox/pillarbox bars
+         * (left clear → black/bg), so the render respects --aspect instead of
+         * stretching to the window. ws_factor==1 → exactly the 4:3 rect. */
+        float fhx = s_nr.p0_hx * s_nr.ws_factor;
+        int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+        int sw = (int)((fhx) * (float)s_nr.win_w + 0.5f);
         int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
         rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
