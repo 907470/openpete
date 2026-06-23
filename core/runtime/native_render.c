@@ -234,6 +234,12 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
  * commit_fade and freeze the last transition's fade on screen forever. */
 static uint32_t s_game_fade = 0;
 static int      s_game_fade_seen = 0;
+/* Same "active only if the game set it this tick" tracking for the freeze backdrop
+ * (pause/inventory/flight-results). Without it the carry fed back into itself
+ * (apply_overlay re-set s_scene_freeze from the carry, capture read it back) and the
+ * freeze never cleared when the menu closed → the world stayed hidden on unpause. */
+static uint32_t s_game_freeze = 0;
+static int      s_game_freeze_seen = 0;
 
 void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     uint32_t v;
@@ -254,6 +260,7 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
     if (g < 0) g = 0; if (g > 255) g = 255;
     if (b < 0) b = 0; if (b > 255) b = 255;
     s_scene_freeze = (1u << 31) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
 
@@ -308,6 +315,12 @@ void openpete_native_scene_commit_fade(void) {
      * since the last commit; else it ended (the game stopped calling) → off. */
     s_fade_curr = s_game_fade_seen ? s_game_fade : 0;
     s_game_fade_seen = 0;
+    /* Same one-tick liveness for the freeze backdrop carry: held while the game keeps
+     * emitting the freeze FT4, cleared the tick it stops (menu closed → unpause), so
+     * the spine's apply_overlay turns the backdrop off and the world reappears. (This
+     * replaces capturing it from s_scene_freeze, which fed back into itself.) */
+    s_overlay_carry_freeze = s_game_freeze_seen ? s_game_freeze : 0;
+    s_game_freeze_seen = 0;
 }
 
 /* Lerp two packed fade words (bit31 active, [25:24] ABR mode, [23:0] rgb). */
@@ -344,7 +357,11 @@ void openpete_native_scene_capture_overlay(void) {
         if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1)
             s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
     }
-    s_overlay_carry_freeze = s_scene_freeze;   /* freeze is on/off (held); fade interpolates */
+    /* NOTE: the freeze backdrop carry is committed in commit_fade (the per-tick
+     * overlay-signal commit), NOT here — capturing it from s_scene_freeze created a
+     * feedback loop (apply_overlay re-set s_scene_freeze from the carry, so capture
+     * read it straight back and the freeze never died after the menu closed → the
+     * world stayed hidden on unpause). See s_game_freeze_seen. */
 }
 
 void openpete_native_scene_apply_overlay(double alpha) {
