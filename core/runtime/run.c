@@ -1597,8 +1597,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             /* --record: capture this presented game frame before EndScene
              * stamps the FPS overlay. PTS is the wall-clock capture instant
              * in microseconds; the first frame anchors t=0. Reads the present
-             * FBO at internal resolution (bars-free). No-op when disabled. */
-            openpete_record_capture_frame((uint64_t)(op_now() / 1000));
+             * FBO at internal resolution (bars-free). No-op when disabled.
+             * Only the PsyCross path here — when the native renderer owns the
+             * display, the on-screen frame is captured after its present below
+             * (openpete_native_render_capture_record), so a vk recording holds
+             * the native SSAA/widescreen frame, not the PsyCross reference. */
+            if (!openpete_native_render_enabled())
+                openpete_record_capture_frame((uint64_t)(op_now() / 1000));
             PsyX_EndScene();
             openpete_present_pending = 0;
             did_present_this_iter = true;
@@ -1662,6 +1667,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * PsyCross's present FBO is freshly rendered (read back here as the
              * reference). No-op unless --renderer vk|ab|diff. */
             openpete_native_render_frame();
+            /* --record: capture the on-screen native frame (no-op unless native
+             * is the display AND recording is active). */
+            openpete_native_render_capture_record((uint64_t)(op_now() / 1000));
 
             /* Native screenshots: on the same --screenshot-on-frame targets,
              * dump every native variant — "<out>-vk.png", "<out>-ab.png",
@@ -1762,6 +1770,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (native_intermediate) {
             native_re(&g_game.cpu);           /* rebuild s_scene @ interpolated gamestate */
             openpete_native_render_frame();   /* present the sub-tick frame */
+            /* --record: capture this sub-tick frame too, so a --render-fps N vk
+             * recording is genuinely ~N fps VFR (each present carries its own PTS). */
+            openpete_native_render_capture_record((uint64_t)(op_now() / 1000));
 
             /* Multi-present capture of native SUB-TICK frames (smoothness check):
              * --screenshot-presents-start/count captures consecutive presents

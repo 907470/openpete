@@ -22,6 +22,7 @@
 #define OPENPETE_NATIVE_RENDER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "openpete.h" /* openpete_options_t */
 
@@ -335,6 +336,13 @@ void openpete_native_scene_commit_fade(void);
  * openpete_native_render_frame so the offscreen holds the latest frame.
  * Returns 0 on success, nonzero if disabled or on failure. */
 int openpete_native_render_screenshot(const char *path);
+
+/* --record: read the just-presented native offscreen back and submit it to the
+ * video encoder (so a vk recording captures the on-screen SSAA/widescreen/sub-tick
+ * frame, not the PsyCross reference). Call from the host loop after each native
+ * present (canonical + sub-tick). No-op unless the native renderer is the display
+ * AND recording is active. `pts_us` = wall-clock capture instant (microseconds). */
+void openpete_native_render_capture_record(uint64_t pts_us);
 
 /* Dump every native renderer variant for one --screenshot-on-frame target,
  * regardless of the live --renderer mode: re-renders the scene as vk (single

@@ -36,6 +36,18 @@ int  openpete_record_init(const openpete_options_t* opts);
  * present FBO's native dimensions and spawns the encoder thread. */
 void openpete_record_capture_frame(uint64_t pts_us);
 
+/* True while recording is armed and not failed — gate the (non-trivial) native
+ * offscreen readback on this so it only runs when actually recording. */
+int  openpete_record_active(void);
+
+/* Graphics-API-agnostic frame submit for the native renderer: hand a CPU RGBA
+ * buffer (w x h, `top_down` = 1 for the Vulkan offscreen) at wall-clock `pts_us`.
+ * Lazy-builds the encoder + locks even dims on the first frame; copies into the
+ * encoder ring (the encoder thread encodes off the host fiber). Keeps record.c
+ * free of any Vulkan/GL knowledge. No-op if recording is disabled. */
+void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
+                                  int top_down, uint64_t pts_us);
+
 /* Flush the encoder, write the container trailer, and tear everything down.
  * Safe to call unconditionally (no-op if recording was never armed or no
  * frame was ever captured). */

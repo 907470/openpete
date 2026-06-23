@@ -108,6 +108,10 @@ static struct {
      * encoded; at most one row/column is dropped. */
     int          native_w, native_h;
     int          w, h;
+    /* Source row order: 0 = bottom-up (PsyCross GL present FBO), 1 = top-down
+     * (native Vulkan offscreen via rhi_read_offscreen). Set at lazy-init from
+     * the first frame's source; rec_encode_one flips accordingly. */
+    int          src_top_down;
 
     /* libav* */
     AVFormatContext* fmt;
@@ -155,16 +159,24 @@ static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
     if (buf) {
         if (av_frame_make_writable(g_rec.frame) < 0)
             return -1;
-        /* Encode the bottom-left g_rec.w x g_rec.h sub-rectangle of the
-         * native buffer. Rows are bottom-up (GL origin): start at native row
-         * (h-1) and walk down with a negated stride to flip to top-down, so
-         * the encoder reads native rows [0..h-1] (the bottom h rows). The
-         * row pitch is the *native* width; sws takes only w pixels per row. */
+        /* Encode the g_rec.w x g_rec.h sub-rectangle of the native buffer; the
+         * row pitch is the *native* width, sws takes only w pixels per row.
+         * Bottom-up source (PsyCross GL FBO): start at native row (h-1) and walk
+         * down with a negated stride → reads the bottom h rows top-to-bottom (the
+         * visible region after overscan crop). Top-down source (native Vulkan
+         * offscreen): start at row 0 with a positive stride → reads the top h
+         * rows as-is. */
         const size_t native_pitch = (size_t)g_rec.native_w * 4u;
-        const uint8_t* src[4] = {
-            buf + (size_t)(g_rec.h - 1) * native_pitch, NULL, NULL, NULL
-        };
-        const int src_stride[4] = { -(int)native_pitch, 0, 0, 0 };
+        const uint8_t* src[4];
+        int src_stride[4] = { 0, 0, 0, 0 };
+        if (g_rec.src_top_down) {
+            src[0] = buf;
+            src_stride[0] = (int)native_pitch;
+        } else {
+            src[0] = buf + (size_t)(g_rec.h - 1) * native_pitch;
+            src_stride[0] = -(int)native_pitch;
+        }
+        src[1] = src[2] = src[3] = NULL;
         sws_scale(g_rec.sws, src, src_stride, 0, g_rec.h,
                   g_rec.frame->data, g_rec.frame->linesize);
         g_rec.frame->pts = (int64_t)(pts_us - g_rec.start_us);
@@ -355,9 +367,10 @@ static int rec_thread_main(void* unused) {
 
 static void rec_teardown(void);  /* fwd */
 
-static int rec_lazy_init(int native_w, int native_h, uint64_t first_pts_us) {
+static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t first_pts_us) {
     g_rec.native_w = native_w;
     g_rec.native_h = native_h;
+    g_rec.src_top_down = top_down;
     g_rec.pbo_depth = GR_PresentPBO_RingDepth();
     if (g_rec.pbo_depth > REC_PBO_PTS_MAX) g_rec.pbo_depth = REC_PBO_PTS_MAX;
     g_rec.pbo_pts_tail = 0;
@@ -582,7 +595,7 @@ void openpete_record_capture_frame(uint64_t pts_us) {
         return;  /* present FBO not ready yet; try next frame */
 
     if (!g_rec.initialized) {
-        if (rec_lazy_init(w, h, pts_us) != 0) {
+        if (rec_lazy_init(w, h, /*top_down=*/0, pts_us) != 0) {  /* PsyCross FBO is bottom-up */
             OPL_ERROR_F("record", "init failed; recording disabled");
             g_rec.failed = 1;
             rec_teardown();
@@ -619,6 +632,42 @@ void openpete_record_capture_frame(uint64_t pts_us) {
         g_rec.pbo_pts[slot] = pts_us;
         g_rec.pbo_pts_count++;
     }
+}
+
+int openpete_record_active(void) {
+    return g_rec.enabled && !g_rec.failed;
+}
+
+/* Graphics-API-agnostic frame submit (the native Vulkan renderer reads its
+ * offscreen back via rhi_read_offscreen — top-down — and hands the CPU RGBA
+ * buffer here, so record.c gains no Vulkan knowledge). Unlike the PsyCross PBO
+ * path this is a SYNCHRONOUS publish: the buffer is already in CPU memory, so it
+ * copies straight into the encoder ring (the encoder thread still does the encode
+ * off the host fiber). Lazy-builds the encoder + locks even dims on the first
+ * frame; a mid-record size change is dropped + warned. */
+void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
+                                  int top_down, uint64_t pts_us) {
+    if (!g_rec.enabled || g_rec.failed || !rgba || w <= 0 || h <= 0)
+        return;
+    if (!g_rec.initialized) {
+        if (rec_lazy_init(w, h, top_down, pts_us) != 0) {
+            OPL_ERROR_F("record", "init failed; recording disabled");
+            g_rec.failed = 1;
+            rec_teardown();
+            return;
+        }
+    }
+    if (w != g_rec.native_w || h != g_rec.native_h) {
+        if (!g_rec.warned_resize) {
+            OPL_WARN_F("record",
+                       "native size changed %dx%d -> %dx%d mid-record; dropping",
+                       g_rec.native_w, g_rec.native_h, w, h);
+            g_rec.warned_resize = 1;
+        }
+        g_rec.dropped++;
+        return;
+    }
+    rec_publish(rgba, pts_us);
 }
 
 /* Free everything (idempotent). Encoder thread must already be joined. */
@@ -711,6 +760,13 @@ int openpete_record_init(const openpete_options_t* opts)
 }
 
 void openpete_record_capture_frame(uint64_t pts_us) { (void)pts_us; }
+
+int  openpete_record_active(void) { return 0; }
+
+void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
+                                  int top_down, uint64_t pts_us) {
+    (void)rgba; (void)w; (void)h; (void)top_down; (void)pts_us;
+}
 
 void openpete_record_shutdown(void) {}
 

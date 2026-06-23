@@ -24,6 +24,7 @@
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
+#include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
 
@@ -1833,6 +1834,7 @@ static int ovl_build_text(rhi_vertex* buf, int n, const char* text, int ox, int 
 static void draw_fps_overlay(void) {
     if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 ||
         !s_nr.overlay_vb || !s_nr.gouraud_hud_pipe) return;
+    if (openpete_record_active()) return;   /* keep the debug overlay out of recordings */
     char text[24];
     snprintf(text, sizeof(text), "FPS:%d", s_fps_value);
     int cell = s_nr.win_h / 150; if (cell < 2) cell = 2;   /* readable at any res */
@@ -2199,6 +2201,30 @@ int openpete_native_render_screenshot(const char *path)
     if (rc == 0)
         OPL_INFO_F("native", "A/B screenshot %dx%d -> %s", w, h, path);
     return rc;
+}
+
+/* --record capture: read the just-presented native offscreen back and hand it to
+ * the encoder (so a vk recording contains the on-screen SSAA/widescreen/sub-tick
+ * frame, not the PsyCross reference). Called from the host loop after every native
+ * present (canonical + sub-tick). Gated on openpete_record_active() so the readback
+ * only runs while recording. The offscreen is top-down RGBA (like the screenshot
+ * path). Reuses a persistent buffer; record.c locks dims on the first frame. */
+void openpete_native_render_capture_record(uint64_t pts_us)
+{
+    if (!s_nr.enabled || !openpete_record_active())
+        return;
+    static unsigned char *s_recbuf = NULL;
+    static size_t         s_reccap = 0;
+    size_t need = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    if (need == 0) return;
+    if (need > s_reccap) {
+        unsigned char *nb = realloc(s_recbuf, need);
+        if (!nb) return;
+        s_recbuf = nb; s_reccap = need;
+    }
+    int w = 0, h = 0;
+    if (rhi_read_offscreen(s_nr.dev, s_recbuf, s_reccap, &w, &h) && w > 0 && h > 0)
+        openpete_record_submit_frame(s_recbuf, w, h, /*top_down=*/1, pts_us);
 }
 
 void openpete_native_render_shutdown(void)
