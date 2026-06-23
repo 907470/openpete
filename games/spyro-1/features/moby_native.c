@@ -47,6 +47,10 @@ extern void     func_80022A2C(CPUState* cpu);  /* the real SHADED moby renderer 
 extern unsigned openpete_frame;
 
 static const char* s_cur_mat = "REG";   /* material tag for the current pass (REG/SPEC) */
+/* Clip-switch crossfade census (OPENPETE_MOBY_ANIMSW_DBG): how often a sub-tick moby
+ * shape-lerp spans a clip switch (prev m_Animation != curr) — crossfaded when the two
+ * clips share vertex count, snapped when they don't. Pure instrument, no behaviour. */
+static long s_animsw_cross = 0, s_animsw_snap = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
@@ -335,13 +339,23 @@ typedef struct { float sx, sy, vz; int sat; int rec;
  * in MODEL space by blend_alpha before projecting once. This interpolates between
  * two poses the game ACTUALLY drew — never a synthesized/extrapolated keyframe blend
  * (the stretched-poly bug the Spyro path hit; see spyro_native.c). frameA_p==0 (the
- * canonical render + the .s-verify path) keeps the single-pose decode. The caller
- * guarantees prev & curr share the same animation header (it snaps on a clip switch),
- * so count/s5/m_Scale are common. */
+ * canonical render + the .s-verify path) keeps the single-pose decode.
+ *
+ * header_p = the PREV pose's animation header. WITHIN one clip prev==curr header so
+ * count/s5/m_Scale are common (pass header_p==header, or 0 → falls back to header).
+ * ACROSS a clip switch the prev pose lives in a DIFFERENT keyframe table: the caller
+ * (moby_prev_keyframe) only crossfades when both clips share the same vertex COUNT —
+ * i.e. they deform one shared mesh, so vertex i is the same physical vertex in both
+ * (the fixed-topology argument that makes Spyro's cross-clip lerp safe, applied per
+ * moby). The two clips' ShortShift (s5) MAY differ freely: the prev streams decode
+ * with header_p's own s5 (so they reconstruct real model-space coords) while the curr
+ * streams use header's; the lerp of two real same-topology model-space poses is always
+ * on-model. m_Scale only feeds TR (shared, curr) so a mismatch is irrelevant to the
+ * shape lerp. */
 static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                uint32_t frameA_p, uint32_t frameB_p, uint32_t w0_p,
-                               double blend_alpha, const int TR_raw[3],
+                               uint32_t header_p, double blend_alpha, const int TR_raw[3],
                                const double TR_frac[3],
                                const int M[3][3], proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
@@ -382,8 +396,11 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     int do_blend = (blend > 0 && frameB >= 0x80000000u);
     double t = (double)blend / 4096.0;
 
-    /* Optional prev pose (two-pass sub-tick shape lerp). */
+    /* Optional prev pose (two-pass sub-tick shape lerp). The prev streams decode
+     * with the PREV clip's own ShortShift (s5_p) — equal to s5 within a clip, but
+     * may differ across a count-matched clip switch (see the header doc). */
     int two = (frameA_p >= 0x80000000u);
+    int s5_p = (header_p >= 0x80000000u) ? ((cpu->read_byte(header_p + 6) & 0xFF) + 1) : s5;
     int blend_p = (int)((w0_p & 0xFF00u) >> 2);
     int do_blend_p = two && (blend_p > 0 && frameB_p >= 0x80000000u);
     double tp = (double)blend_p / 4096.0;
@@ -391,7 +408,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     vstream A, B, Ap, Bp;
     vstream_init(cpu, &A, frameA, s5);
     if (do_blend) vstream_init(cpu, &B, frameB, s5);
-    if (two) { vstream_init(cpu, &Ap, frameA_p, s5); if (do_blend_p) vstream_init(cpu, &Bp, frameB_p, s5); }
+    if (two) { vstream_init(cpu, &Ap, frameA_p, s5_p); if (do_blend_p) vstream_init(cpu, &Bp, frameB_p, s5_p); }
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -445,7 +462,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
-    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
 }
 
 #define MAX_PROJ 8192
@@ -663,7 +680,7 @@ static void append_revealed_regular(CPUState* cpu) {
         if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0.0, f.TR_raw, f.TR_frac, f.M,
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, f.TR_raw, f.TR_frac, f.M,
                                       s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { m += 0x58; continue; }
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -2362,17 +2379,25 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
 
 /* Compute the PREV rendered keyframe pose for a moby — the second input to the
  * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns 1 (and fills
- * frameA_p/frameB_p/w0_p + alpha) when the moby has a paired prev snapshot in the
- * SAME animation; 0 when it should snap to the curr pose: interp off, spawn / no
- * prev interval, or a clip switch (across an m_Animation change the prev frame
- * indices point into a different keyframe table → not lerpable). Mirrors
- * build_moby_record_fields' keyframe-pointer + loop-seam math, but reads the prev
- * snapshot blob instead of live RAM. Uses the SAME per-object clock (s_rot_now) and
- * distinct-roll alpha as the moby rotation interp, so shape/rotation/position all
- * interpolate on one timeline. header_curr must match the prev header (common
- * count/stride). */
+ * frameA_p/frameB_p/w0_p/hdr_p + alpha) when the moby has a lerpable prev snapshot;
+ * 0 when it should snap to the curr pose: interp off, spawn / no prev interval, or a
+ * clip switch into a DIFFERENT-topology animation. Mirrors build_moby_record_fields'
+ * keyframe-pointer + loop-seam math, but reads the prev snapshot blob instead of live
+ * RAM. Uses the SAME per-object clock (s_rot_now) and distinct-roll alpha as the moby
+ * rotation interp, so shape/rotation/position all interpolate on one timeline.
+ *
+ * Clip switches (prev m_Animation != curr) ARE crossfaded when the two animations
+ * share the same vertex COUNT — a moby model's animations deform one shared mesh, so
+ * an equal count means vertex i is the same physical vertex in both keyframe tables,
+ * and a model-space lerp prev→curr stays on-model (the fixed-topology argument that
+ * makes Spyro's cross-clip lerp safe, applied per moby). When the counts differ the
+ * meshes genuinely differ → snap. The prev keyframe pointers are computed into the
+ * PREV header's table and hdr_p carries that header so the decoder can use the prev
+ * clip's own ShortShift (the two clips' s5 may differ; the decoded coords are real
+ * model-space either way). */
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
-                              uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p, double* alpha) {
+                              uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p,
+                              uint32_t* hdr_p, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
@@ -2381,13 +2406,21 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     if (model < 0x80000000u) return 0;
     uint32_t anim_p   = o->prev[0x3C] & 0xFFu;                 /* m_Animation (prev) */
     uint32_t header_p = cpu->read_word(model + 0x38u + anim_p * 4u);
-    if (header_p < 0x80000000u || header_p != header_curr) return 0;  /* clip switch → snap */
+    if (header_p < 0x80000000u) return 0;
+    if (header_p != header_curr) {                            /* clip switch */
+        /* crossfade only when the two clips share vertex topology (same count) */
+        int count_c = cpu->read_byte(header_curr + 8) & 0xFFu;
+        int count_p = cpu->read_byte(header_p   + 8) & 0xFFu;
+        if (count_c != count_p) { s_animsw_snap++; return 0; } /* different mesh → snap */
+        s_animsw_cross++;
+    }
     uint32_t frm  = o->prev[0x3E] & 0xFFu;                     /* m_Frame (prev)      */
     uint32_t nfrm = o->prev[0x3F] & 0xFFu;                     /* m_NextFrame (prev)  */
     uint32_t prog = o->prev[0x40] & 0xFFu;                     /* m_FrameProgress (prev) */
     *fa_p = header_p + 0x24u + frm  * 8u;
     *fb_p = header_p + 0x24u + nfrm * 8u;
     *w0_p = (prog << 8) & 0xFF00u;
+    *hdr_p = header_p;                                         /* prev clip's header (its own s5) */
     if (nfrm == 0) { *fb_p = *fa_p; *w0_p = 0; }               /* loop-seam: hold a single keyframe */
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -2432,11 +2465,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int off = s_proj_n;
         /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the
          * spine no longer writes m_FrameProgress); add the prev REAL pose and lerp
-         * the two in model space. Snaps to curr (fap=0) on spawn / clip switch. */
-        uint32_t fap = 0, fbp = 0, w0p = 0; double balpha = 0.0;
-        moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &balpha);
+         * the two in model space. Crossfades within a clip AND across a clip switch
+         * when the two animations share vertex topology; snaps to curr (fap=0) on
+         * spawn or a topology-changing clip switch. */
+        uint32_t fap = 0, fbp = 0, w0p = 0, hdrp = 0; double balpha = 0.0;
+        moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &hdrp, &balpha);
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
-                                      fap, fbp, w0p, balpha,
+                                      fap, fbp, w0p, hdrp, balpha,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -2496,6 +2531,16 @@ void moby_native_reextract(CPUState* cpu) {
         if (openpete_frame != last) { last = openpete_frame;
             fprintf(stderr, "[reextract-moby f=%u] recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
                     openpete_frame, nm, reg_walk, spec_walk, s_wtri_n); }
+    }
+    static int animswdbg = -1;
+    if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
+    if (animswdbg) {
+        static long last_cross = -1, last_snap = -1;
+        if (s_animsw_cross != last_cross || s_animsw_snap != last_snap) {
+            last_cross = s_animsw_cross; last_snap = s_animsw_snap;
+            fprintf(stderr, "[moby-animsw f=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld\n",
+                    openpete_frame, s_animsw_cross, s_animsw_snap);
+        }
     }
 }
 
