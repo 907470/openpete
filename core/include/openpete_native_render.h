@@ -41,6 +41,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);
 
+/* FPS overlay (vk live window). Default on; drawn only on the live vk present
+ * (never ab/diff/screenshots). set() forces a state; toggle() flips and returns
+ * the new state (for the F11 hotkey). Display-only. */
+void openpete_native_set_fps_overlay(int on);
+int  openpete_native_toggle_fps_overlay(void);
+
 /* Path-isolation mode (--render-paths). When on, a frame with no native scene
  * geometry presents the scene background instead of re-displaying the PSX VRAM
  * framebuffer — the VRAM is the UNFILTERED frame, so falling back to it would

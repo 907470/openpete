@@ -805,6 +805,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
     (void)openpete_native_render_init(opts, win_w, win_h);
+    openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (F11 toggles live) */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
      * Only a pure, successfully-brought-up native vk display with no comparison/
@@ -1232,6 +1233,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_dbg_key = false;
     bool prev_blk_key = false;
     bool prev_i_key = false;
+    bool prev_fps_key = false;
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -1401,6 +1403,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            g_openpete_interp_enabled ? "ON" : "OFF");
             }
             prev_i_key = i_k;
+
+            /* F11: live-toggle the native vk FPS overlay. */
+            bool fps_k = kbd_pre && kbd_pre[SDL_SCANCODE_F11];
+            if (fps_k && !prev_fps_key) {
+                int on = openpete_native_toggle_fps_overlay();
+                OPL_INFO_F("render", "fps-overlay -> %s", on ? "ON" : "OFF");
+            }
+            prev_fps_key = fps_k;
         }
 
         PsyX_UpdateInput();

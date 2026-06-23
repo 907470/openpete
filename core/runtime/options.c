@@ -133,6 +133,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
     opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
+    opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --no-fps-overlay / F11 */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
@@ -187,6 +188,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;
+        } else if (strcmp(a, "--no-fps-overlay") == 0) {
+            opts->fps_overlay = false;
         } else if (strcmp(a, "--render-fps") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->render_fps = atoi(v); i++;
@@ -463,6 +466,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
                 "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
                 "                             max image size / VRAM. Display-only.\n"
+                "  --no-fps-overlay           start with the native vk FPS overlay off (F11 toggles live)\n"
                 "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
                 "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
                 "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"

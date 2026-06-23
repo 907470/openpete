@@ -84,6 +84,7 @@ typedef struct {
  * --no-lod is a future optimisation — see the disable-lods plan.) */
 #define MAX_SCENE_TRIS 131072
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
+#define OVL_MAX_VERTS 4096   /* FPS overlay glyph-quad vertex cap (see draw_fps_overlay) */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
@@ -546,6 +547,7 @@ static struct {
     bool          frozen_valid;       /* a world frame has been captured */
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
+    rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -909,15 +911,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    rhi_buffer   *overlay_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb) {
+        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
         if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
+        if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
         if (fs_quad_vb)    rhi_destroy_buffer(dev, fs_quad_vb);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (diff_quad_vb)  rhi_destroy_buffer(dev, diff_quad_vb);
@@ -966,6 +970,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.freeze_overlay_pipe = freeze_overlay_pipe;
     s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
+    s_nr.overlay_vb   = overlay_vb;
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
 
@@ -1756,6 +1761,95 @@ static bool draw_native_scene(bool full_extent)
     return true;
 }
 
+/* ---- native FPS overlay (vk live window) --------------------------------
+ * The legacy GL FPS counter (fps_overlay.cpp) stamps PsyCross's hidden window —
+ * invisible in vk, and in pure-vk PsyCross never even presents. This is its
+ * native equivalent: a 5x7 bitmap-font readout drawn as solid NDC quads through
+ * the untextured depth-off HUD pipeline, on top of the composed frame. Pure
+ * display: drawn only on the LIVE vk present (not screenshots, ab, or diff, so
+ * the comparison images stay clean). Toggle at runtime (F11) or start off with
+ * --no-fps-overlay. */
+static int s_fps_overlay  = 1;   /* enabled (default on) */
+static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
+static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
+static int      s_fps_frames    = 0;
+static int      s_fps_value     = 0;
+
+void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
+int  openpete_native_toggle_fps_overlay(void) { s_fps_overlay = !s_fps_overlay; return s_fps_overlay; }
+
+/* 5x7 bitmap glyphs (low 5 bits per row, bit4 = leftmost pixel). Only the cells
+ * "FPS:" + digits need; everything else is blank. */
+static const uint8_t s_ovl_space[7] = {0, 0, 0, 0, 0, 0, 0};
+static const uint8_t s_ovl_digit[10][7] = {
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},
+};
+static const uint8_t s_ovl_colon[7] = {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
+static const uint8_t s_ovl_F[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+static const uint8_t s_ovl_P[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+static const uint8_t s_ovl_S[7] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
+static const uint8_t* ovl_glyph(char c) {
+    if (c >= '0' && c <= '9') return s_ovl_digit[c - '0'];
+    switch (c) { case ':': return s_ovl_colon; case 'F': return s_ovl_F;
+                 case 'P': return s_ovl_P; case 'S': return s_ovl_S; default: return s_ovl_space; }
+}
+
+#define OVL_RGBA(r,g,b,a) ((uint32_t)(r) | ((uint32_t)(g)<<8) | ((uint32_t)(b)<<16) | ((uint32_t)(a)<<24))
+static int ovl_push_quad(rhi_vertex* buf, int n, float x0, float y0, float x1, float y1, uint32_t c) {
+    if (n + 6 > OVL_MAX_VERTS) return n;
+    rhi_vertex a = { x0, y0, 0.0f, 0, 0, c, 0 }, b = { x1, y0, 0.0f, 0, 0, c, 0 };
+    rhi_vertex d = { x1, y1, 0.0f, 0, 0, c, 0 }, e = { x0, y1, 0.0f, 0, 0, c, 0 };
+    buf[n] = a; buf[n+1] = b; buf[n+2] = d; buf[n+3] = a; buf[n+4] = d; buf[n+5] = e;
+    return n + 6;
+}
+/* Append `text` at window-pixel origin (ox,oy), `cell` px per font cell, offset
+ * (dx,dy), colour c. Each lit cell becomes a solid NDC quad. */
+static int ovl_build_text(rhi_vertex* buf, int n, const char* text, int ox, int oy,
+                          int cell, int dx, int dy, uint32_t c, int winw, int winh) {
+    const int adv = (5 + 1) * cell;
+    for (int ci = 0; text[ci]; ci++) {
+        const uint8_t* g = ovl_glyph(text[ci]);
+        int gx = ox + ci * adv;
+        for (int row = 0; row < 7; row++) {
+            uint8_t m = g[row]; if (!m) continue;
+            for (int col = 0; col < 5; col++) {
+                if (!(m & (1u << (4 - col)))) continue;
+                int px = gx + col * cell + dx, py = oy + row * cell + dy;
+                float x0 = (float)px / winw * 2.0f - 1.0f;
+                float x1 = (float)(px + cell) / winw * 2.0f - 1.0f;
+                float y0 = 1.0f - (float)py / winh * 2.0f;
+                float y1 = 1.0f - (float)(py + cell) / winh * 2.0f;
+                n = ovl_push_quad(buf, n, x0, y0, x1, y1, c);
+            }
+        }
+    }
+    return n;
+}
+/* Draw the FPS readout into the currently-open offscreen pass (top-left). */
+static void draw_fps_overlay(void) {
+    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 ||
+        !s_nr.overlay_vb || !s_nr.gouraud_hud_pipe) return;
+    char text[24];
+    snprintf(text, sizeof(text), "FPS:%d", s_fps_value);
+    int cell = s_nr.win_h / 150; if (cell < 2) cell = 2;   /* readable at any res */
+    static rhi_vertex buf[OVL_MAX_VERTS];
+    int n = 0;
+    n = ovl_build_text(buf, n, text, 8, 8, cell, cell >= 3 ? 2 : 1, cell >= 3 ? 2 : 1,
+                       OVL_RGBA(0, 0, 0, 255), s_nr.win_w, s_nr.win_h);     /* shadow */
+    n = ovl_build_text(buf, n, text, 8, 8, cell, 0, 0,
+                       OVL_RGBA(255, 235, 64, 255), s_nr.win_w, s_nr.win_h); /* warm yellow */
+    if (n <= 0) return;
+    rhi_update_buffer(s_nr.overlay_vb, buf, (size_t)n * sizeof(rhi_vertex));
+    rhi_reset_scissor(s_nr.dev);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.overlay_vb);
+    rhi_draw(s_nr.dev, (uint32_t)n, 0);
+}
+
 /* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all
  * three (see openpete_native_render_screenshot_all). */
 enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
@@ -1847,6 +1941,7 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 0);
         }
+        if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         rhi_end_offscreen(s_nr.dev);
         return false;
     }
@@ -1885,6 +1980,10 @@ static bool compose_variant(int variant, bool have_ref)
         }
     }
 
+    /* FPS overlay — vk live present only (kept off ab/diff so comparison images
+     * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
+    if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
+
     rhi_end_offscreen(s_nr.dev);
     return false;
 }
@@ -1906,6 +2005,19 @@ void openpete_native_render_frame(void)
     if (!s_nr.enabled)
         return;
 
+    /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
+     * + sub-tick intermediates), so it reflects the true on-screen present rate. */
+    {
+        uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
+        if (s_fps_win_start == 0) s_fps_win_start = now;
+        s_fps_frames++;
+        uint64_t el = now - s_fps_win_start;
+        if (freq > 0 && el >= freq / 2u) {
+            s_fps_value = (int)((double)s_fps_frames * (double)freq / (double)el + 0.5);
+            s_fps_win_start = now; s_fps_frames = 0;
+        }
+    }
+
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;
@@ -1917,12 +2029,16 @@ void openpete_native_render_frame(void)
     }
 
     /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
-     * their own one-shot GPU submits, kept clear of our render pass. The PsyCross
-     * reference readback is only meaningful for the compare modes (ab/diff); in
-     * pure vk PsyCross no longer renders the OT, so skip the readback (NRV_VK
-     * never samples have_ref anyway). Screenshots take their own reference sync. */
+     * their own one-shot GPU submits, kept clear of our render pass. Called
+     * UNCONDITIONALLY: sync_reference_texture self-no-ops when PsyCross hasn't
+     * produced a scene (pure vk — the OT isn't rasterized — so GR_GetPresentSceneSize
+     * returns 0 → early false), so it's free there; whenever PsyCross IS rendering
+     * (ab/diff/screenshot) it must run, both to upload the reference AND because its
+     * GL readback orders the GPU work the screenshot's rhi_read_offscreen then reads
+     * (gating it off for vk blanked the captured native-intermediate frames). NRV_VK
+     * never samples have_ref, so the value itself only matters for ab/diff. */
     sync_vram_texture();
-    bool have_ref = s_scene_ref_compare ? sync_reference_texture() : false;
+    bool have_ref = sync_reference_texture();
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
@@ -1931,7 +2047,9 @@ void openpete_native_render_frame(void)
         return; /* swapchain recreating or window minimized — skip this present */
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
+    s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
     bool did_diff = compose_variant(variant, have_ref);
+    s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
 
     rhi_blit_to_swapchain(s_nr.dev);
     rhi_end_frame(s_nr.dev);
@@ -2095,6 +2213,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
+    if (s_nr.overlay_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);

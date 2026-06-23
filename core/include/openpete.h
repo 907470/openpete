@@ -254,6 +254,10 @@ typedef struct {
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
     int ssaa;
 
+    /* FPS overlay on the native vk window (default on; --no-fps-overlay to start
+     * off, F11 to toggle live). Display-only; ignored under --headless / psycross. */
+    bool fps_overlay;
+
     /* --render-stats (debug): in --renderer diff, read the per-pixel diff back
      * each frame and log colour-closeness statistics (per-channel mean/max abs
      * diff, % within tolerance, differing-pixel count) over the panel, plus an
