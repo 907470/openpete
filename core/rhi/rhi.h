@@ -84,6 +84,30 @@ const char *rhi_device_name(const rhi_device *dev);
 bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h);
 
+/* ---- async frame readback ring (--record real-speed capture) -------------
+ *
+ * rhi_read_offscreen blocks the GPU (vkDeviceWaitIdle) every call, which
+ * collapses pipelining and forces recording into slow motion. This ring
+ * records the offscreen->host copy INTO the frame's OWN command buffer (no
+ * extra wait — it rides the frame's existing fence) and retrieves the pixels a
+ * couple of presents later, once that fence has naturally signaled. `tag` is an
+ * opaque token (the caller's PTS) carried with each frame so the out-of-band
+ * pixels keep their timestamp.
+ *
+ * Call rhi_cycle_readback ONCE per frame, between rhi_blit_to_swapchain and
+ * rhi_end_frame (while the frame slot is still current). It queues this frame's
+ * capture (tagged `tag`) and, if a frame captured RHI_FRAMES_IN_FLIGHT presents
+ * ago is ready, swizzles it into `out` (RGBA8, opaque alpha), writes its extent
+ * + originating tag, and returns true. Returns false until the ring fills.
+ *
+ * At record shutdown, call rhi_drain_readback repeatedly (it blocks once via
+ * vkDeviceWaitIdle, then returns the still-queued frames oldest-first by tag)
+ * until it returns false, so the final presents aren't lost. */
+bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_bytes,
+                        int *out_w, int *out_h, uint64_t *out_tag);
+bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
+                        int *out_w, int *out_h, uint64_t *out_tag);
+
 /* ---- buffers, pipelines, draws (milestone 1b) --------------------- */
 
 /* Native vertex format — one fixed layout for all renderer geometry, so a

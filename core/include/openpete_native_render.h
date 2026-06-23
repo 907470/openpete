@@ -285,8 +285,14 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does
  * NOT pump SDL events — the host loop owns the event queue, which PsyCross's
  * input path depends on; window-size changes are detected by polling. No-op
- * if the native path is disabled. */
-void openpete_native_render_frame(void);
+ * if the native path is disabled.
+ *
+ * `record_pts_us` is the wall-clock capture instant (microseconds) tagged onto
+ * this present for --record: the frame is queued into the async readback ring
+ * here (between the blit and present) and retrieved a couple presents later, so
+ * a vk recording captures the on-screen SSAA/widescreen/sub-tick frame at real
+ * speed. Unused when recording is inactive. */
+void openpete_native_render_frame(uint64_t record_pts_us);
 
 /* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
  *
@@ -337,12 +343,12 @@ void openpete_native_scene_commit_fade(void);
  * Returns 0 on success, nonzero if disabled or on failure. */
 int openpete_native_render_screenshot(const char *path);
 
-/* --record: read the just-presented native offscreen back and submit it to the
- * video encoder (so a vk recording captures the on-screen SSAA/widescreen/sub-tick
- * frame, not the PsyCross reference). Call from the host loop after each native
- * present (canonical + sub-tick). No-op unless the native renderer is the display
- * AND recording is active. `pts_us` = wall-clock capture instant (microseconds). */
-void openpete_native_render_capture_record(uint64_t pts_us);
+/* --record shutdown drain: flush the async readback ring's still-queued tail
+ * frames to the encoder (in PTS order) before openpete_record_shutdown()
+ * finalizes the file. Call once, after the run loop, while the native device is
+ * still alive. No-op unless the native renderer is the display AND recording is
+ * active. Blocks (the device is torn down right after). */
+void openpete_native_render_record_flush(void);
 
 /* Dump every native renderer variant for one --screenshot-on-frame target,
  * regardless of the live --renderer mode: re-renders the scene as vk (single

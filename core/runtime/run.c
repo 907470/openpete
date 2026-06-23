@@ -1602,8 +1602,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * in microseconds; the first frame anchors t=0. Reads the present
              * FBO at internal resolution (bars-free). No-op when disabled.
              * Only the PsyCross path here — when the native renderer owns the
-             * display, the on-screen frame is captured after its present below
-             * (openpete_native_render_capture_record), so a vk recording holds
+             * display, the on-screen frame is captured by the async readback ring
+             * inside openpete_native_render_frame below, so a vk recording holds
              * the native SSAA/widescreen frame, not the PsyCross reference. */
             if (!openpete_native_render_enabled())
                 openpete_record_capture_frame((uint64_t)(op_now() / 1000));
@@ -1669,10 +1669,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             /* Native renderer: present one frame to the Vulkan window now that
              * PsyCross's present FBO is freshly rendered (read back here as the
              * reference). No-op unless --renderer vk|ab|diff. */
-            openpete_native_render_frame();
-            /* --record: capture the on-screen native frame (no-op unless native
-             * is the display AND recording is active). */
-            openpete_native_render_capture_record((uint64_t)(op_now() / 1000));
+            /* The PTS arg tags this present for --record: the frame is queued
+             * into the async readback ring inside (no GPU stall), so a vk
+             * recording captures the on-screen frame at real speed. No-op unless
+             * native is the display AND recording is active. */
+            openpete_native_render_frame((uint64_t)(op_now() / 1000));
 
             /* Native screenshots: on the same --screenshot-on-frame targets,
              * dump every native variant — "<out>-vk.png", "<out>-ab.png",
@@ -1772,10 +1773,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             !(g_paused && !g_step_one);
         if (native_intermediate) {
             native_re(&g_game.cpu);           /* rebuild s_scene @ interpolated gamestate */
-            openpete_native_render_frame();   /* present the sub-tick frame */
-            /* --record: capture this sub-tick frame too, so a --render-fps N vk
-             * recording is genuinely ~N fps VFR (each present carries its own PTS). */
-            openpete_native_render_capture_record((uint64_t)(op_now() / 1000));
+            /* Present the sub-tick frame, tagged with its own PTS so a --render-fps
+             * N vk recording is genuinely ~N fps VFR (each present's frame is
+             * queued into the async readback ring with its capture instant). */
+            openpete_native_render_frame((uint64_t)(op_now() / 1000));
 
             /* Multi-present capture of native SUB-TICK frames (smoothness check):
              * --screenshot-presents-start/count captures consecutive presents
@@ -2100,9 +2101,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (bk2_recording) {
         bk2_record_finalize();
     }
-    /* --record: flush the encoder + write the container trailer. Safe to
-     * call unconditionally (no-op if recording was never armed). Reaching
-     * here on SIGTERM/Ctrl-C still produces a playable file. */
+    /* --record: drain the native async readback ring's queued tail frames to the
+     * encoder (while the Vulkan device is still alive), THEN flush the encoder +
+     * write the container trailer. Both safe unconditionally (no-op if recording
+     * was never armed / native isn't the display). Reaching here on SIGTERM/Ctrl-C
+     * still produces a playable file. */
+    openpete_native_render_record_flush();
     openpete_record_shutdown();
     if (position_log_fp) {
         fclose(position_log_fp);

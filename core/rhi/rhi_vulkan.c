@@ -102,10 +102,23 @@ struct rhi_device {
     VkDescriptorPool      desc_pool;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
 
-    /* Reusable host-visible staging buffer for rhi_read_offscreen. Persistent so
-     * the per-frame --record capture doesn't vkAllocateMemory/free each call
-     * (that + a full device-wait was the slow path); grown on demand. */
+    /* Reusable host-visible staging buffer for rhi_read_offscreen (the blocking
+     * screenshot path). Persistent so it doesn't vkAllocateMemory/free each call;
+     * grown on demand. */
     rhi_buffer           *readback_buf;
+
+    /* Async readback ring for --record (rhi_cycle_readback): one slot per frame
+     * in flight. The copy into slot i rides cmd[i] under fence in_flight[i], so
+     * begin_frame's existing wait on in_flight[frame] guarantees slot[frame]'s
+     * previous copy has completed by the time that slot is cycled again — the
+     * pixels are retrieved with NO added GPU stall (unlike rhi_read_offscreen's
+     * vkDeviceWaitIdle), which is what lets recording run at real speed. */
+    struct {
+        rhi_buffer *staging;   /* host-visible TRANSFER_DST; grown on demand */
+        bool        pending;   /* a copy was queued into cmd[i], not yet retrieved */
+        int         w, h;      /* extent captured into staging */
+        uint64_t    tag;       /* opaque caller token (the PTS) for this capture */
+    } readback_ring[RHI_FRAMES_IN_FLIGHT];
 };
 
 struct rhi_buffer {
@@ -438,7 +451,7 @@ static bool create_render_pass(rhi_device *dev)
         .pColorAttachments = &ref,
         .pDepthStencilAttachment = &depth_ref,
     };
-    VkSubpassDependency deps[2] = {
+    VkSubpassDependency deps[3] = {
         { /* external -> subpass: acquire color + depth attachments */
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
@@ -458,6 +471,20 @@ static bool create_render_pass(rhi_device *dev)
             .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         },
+        { /* external -> subpass (WAR): off_image is a SINGLE shared target, so
+           * the next frame's color write must wait for the PREVIOUS frame's
+           * transfer reads of it — the blit AND the async --record copy
+           * (rhi_cycle_readback) — to finish, or an in-flight frame would
+           * overwrite pixels still being read back. (The old blocking record
+           * path's vkDeviceWaitIdle masked this overlap; the async ring needs it
+           * explicit so recordings stay tear-free.) WAR ⇒ execution dependency. */
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        },
     };
     VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rci = {
@@ -466,7 +493,7 @@ static bool create_render_pass(rhi_device *dev)
         .pAttachments = atts,
         .subpassCount = 1,
         .pSubpasses = &sub,
-        .dependencyCount = 2,
+        .dependencyCount = 3,
         .pDependencies = deps,
     };
     VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->off_rp);
@@ -846,6 +873,12 @@ void rhi_destroy(rhi_device *dev)
     if (dev->device) vkDeviceWaitIdle(dev->device);
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
+        if (dev->readback_ring[i].staging) {
+            rhi_destroy_buffer(dev, dev->readback_ring[i].staging);
+            dev->readback_ring[i].staging = NULL;
+        }
+    }
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
@@ -1455,6 +1488,25 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
     update_image(dev, tex, pixels);
 }
 
+/* Copy a host-visible readback staging buffer (raw swapchain-format pixels) into
+ * the caller's RGBA8 out buffer: swizzle B8G8R8A8 -> R,G,B,A and force opaque
+ * alpha. Shared by the blocking screenshot path and the async --record ring. */
+static void readback_swizzle(const rhi_device *dev, const void *src_, void *dst_,
+                             int w, int h)
+{
+    const uint8_t *src = (const uint8_t *)src_;
+    uint8_t *dst = (uint8_t *)dst_;
+    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
+        dst[i*4+0] = swap_rb ? c2 : c0;
+        dst[i*4+1] = c1;
+        dst[i*4+2] = swap_rb ? c0 : c2;
+        dst[i*4+3] = 0xFF;
+    }
+}
+
 bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h)
 {
@@ -1492,19 +1544,94 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     one_shot_end(dev, cb);
 
     /* The swapchain/offscreen format is B8G8R8A8 (see the format pick); the
-     * caller wants R,G,B,A. Swizzle and force opaque alpha. */
-    const uint8_t *src = (const uint8_t *)rb->mapped;
-    uint8_t *dst = (uint8_t *)out;
-    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
-                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
-    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
-        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
-        dst[i*4+0] = swap_rb ? c2 : c0;
-        dst[i*4+1] = c1;
-        dst[i*4+2] = swap_rb ? c0 : c2;
-        dst[i*4+3] = 0xFF;
+     * caller wants R,G,B,A. rb is dev->readback_buf — persistent; freed in
+     * rhi_destroy. */
+    readback_swizzle(dev, rb->mapped, out, w, h);
+    return true;
+}
+
+/* ---- async frame readback ring (--record real-speed capture) ------------- */
+
+bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_bytes,
+                        int *out_w, int *out_h, uint64_t *out_tag)
+{
+    if (!dev || !dev->frame_active) return false;
+    uint32_t fi = dev->frame;
+
+    /* (1) Retrieve the capture queued the LAST time this slot was used. The copy
+     * rode cmd[fi]/in_flight[fi]; rhi_begin_frame already waited on in_flight[fi]
+     * this frame, so it has completed and its host-coherent staging is safe to
+     * read with no extra GPU wait. */
+    bool got = false;
+    if (dev->readback_ring[fi].pending && dev->readback_ring[fi].staging &&
+        dev->readback_ring[fi].w > 0 && dev->readback_ring[fi].h > 0) {
+        int pw = dev->readback_ring[fi].w, ph = dev->readback_ring[fi].h;
+        size_t need = (size_t)pw * (size_t)ph * 4u;
+        if (out && out_bytes >= need) {
+            readback_swizzle(dev, dev->readback_ring[fi].staging->mapped, out, pw, ph);
+            if (out_w)   *out_w   = pw;
+            if (out_h)   *out_h   = ph;
+            if (out_tag) *out_tag = dev->readback_ring[fi].tag;
+            got = true;
+        }
+        dev->readback_ring[fi].pending = false;   /* consumed (or dropped if out too small) */
     }
-    /* rb is dev->readback_buf — persistent; freed in rhi_destroy. */
+
+    /* (2) Queue THIS frame's copy into the slot. off_image is TRANSFER_SRC here
+     * (render-pass final layout, already read by the blit); another transfer
+     * read needs no barrier. The off_rp WAR dependency keeps the next frame from
+     * overwriting off_image before this copy runs. */
+    int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    if (w > 0 && h > 0) {
+        size_t need = (size_t)w * (size_t)h * 4u;
+        rhi_buffer **slot_staging = &dev->readback_ring[fi].staging;
+        if (!*slot_staging || (*slot_staging)->size < need) {
+            if (*slot_staging) rhi_destroy_buffer(dev, *slot_staging);
+            *slot_staging = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        }
+        if (*slot_staging) {
+            VkBufferImageCopy region = {
+                .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+                .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+            };
+            vkCmdCopyImageToBuffer(dev->cmd[fi], dev->off_image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   (*slot_staging)->buffer, 1, &region);
+            dev->readback_ring[fi].pending = true;
+            dev->readback_ring[fi].w = w;
+            dev->readback_ring[fi].h = h;
+            dev->readback_ring[fi].tag = tag;
+        }
+    }
+    return got;
+}
+
+bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
+                        int *out_w, int *out_h, uint64_t *out_tag)
+{
+    if (!dev) return false;
+    /* Shutdown only: block until every queued copy is complete, then hand back
+     * the still-pending slots oldest-first (by tag) so the final frames keep
+     * monotonic PTS. Called ≤ RHI_FRAMES_IN_FLIGHT times; the wait is cheap once
+     * the device is already idle. */
+    vkDeviceWaitIdle(dev->device);
+    int best = -1;
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
+        if (dev->readback_ring[i].pending && dev->readback_ring[i].staging &&
+            dev->readback_ring[i].w > 0 && dev->readback_ring[i].h > 0) {
+            if (best < 0 || dev->readback_ring[i].tag < dev->readback_ring[best].tag)
+                best = i;
+        }
+    }
+    if (best < 0) return false;
+    int w = dev->readback_ring[best].w, h = dev->readback_ring[best].h;
+    size_t need = (size_t)w * (size_t)h * 4u;
+    dev->readback_ring[best].pending = false;
+    if (!out || out_bytes < need) return false;
+    readback_swizzle(dev, dev->readback_ring[best].staging->mapped, out, w, h);
+    if (out_w)   *out_w   = w;
+    if (out_h)   *out_h   = h;
+    if (out_tag) *out_tag = dev->readback_ring[best].tag;
     return true;
 }
 

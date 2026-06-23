@@ -2024,7 +2024,37 @@ static openpete_native_commit_fn s_commit_cb = NULL;
 void openpete_native_register_commit(openpete_native_commit_fn fn) { s_commit_cb = fn; }
 openpete_native_commit_fn openpete_native_get_commit(void) { return s_commit_cb; }
 
-void openpete_native_render_frame(void)
+/* --record async capture: persistent host buffer the readback ring swizzles
+ * into before handing off to the encoder thread. Process-lifetime; freed in
+ * shutdown. Shared by the per-present cycle and the shutdown drain. */
+static unsigned char *s_recbuf = NULL;
+static size_t         s_reccap = 0;
+static unsigned char *recbuf_ensure(size_t need)
+{
+    if (need == 0) return NULL;
+    if (need > s_reccap) {
+        unsigned char *nb = realloc(s_recbuf, need);
+        if (!nb) return NULL;
+        s_recbuf = nb; s_reccap = need;
+    }
+    return s_recbuf;
+}
+
+/* Queue this present for async readback (tagged with its wall-clock PTS) and, if
+ * a frame captured a couple presents ago is ready, hand it to the encoder. Rides
+ * the frame's own fence — NO GPU stall, so the recording runs at real speed
+ * (unlike the screenshot path's blocking rhi_read_offscreen). Called between the
+ * blit and end_frame, while the frame slot is still current. */
+static void record_cycle(uint64_t pts_us)
+{
+    unsigned char *buf = recbuf_ensure((size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u);
+    if (!buf) return;
+    int w = 0, h = 0; uint64_t tag = 0;
+    if (rhi_cycle_readback(s_nr.dev, pts_us, buf, s_reccap, &w, &h, &tag) && w > 0 && h > 0)
+        openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
+}
+
+void openpete_native_render_frame(uint64_t record_pts_us)
 {
     if (!s_nr.enabled)
         return;
@@ -2094,6 +2124,14 @@ void openpete_native_render_frame(void)
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
 
     rhi_blit_to_swapchain(s_nr.dev);
+
+    /* --record: capture the on-screen native frame via the async ring (no-op
+     * unless recording is active). MUST run before end_frame, while this frame
+     * slot is still current — the copy is appended to the frame's command
+     * buffer. */
+    if (openpete_record_active())
+        record_cycle(record_pts_us);
+
     rhi_end_frame(s_nr.dev);
 
     if (did_diff && s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
@@ -2243,28 +2281,19 @@ int openpete_native_render_screenshot(const char *path)
     return rc;
 }
 
-/* --record capture: read the just-presented native offscreen back and hand it to
- * the encoder (so a vk recording contains the on-screen SSAA/widescreen/sub-tick
- * frame, not the PsyCross reference). Called from the host loop after every native
- * present (canonical + sub-tick). Gated on openpete_record_active() so the readback
- * only runs while recording. The offscreen is top-down RGBA (like the screenshot
- * path). Reuses a persistent buffer; record.c locks dims on the first frame. */
-void openpete_native_render_capture_record(uint64_t pts_us)
+/* --record shutdown drain: the async ring still holds the last few presents
+ * (queued but not yet cycled out). Flush them to the encoder, in PTS order,
+ * before openpete_record_shutdown() finalizes the file — otherwise the tail of
+ * the recording is lost. Blocks once (the device is torn down right after). */
+void openpete_native_render_record_flush(void)
 {
     if (!s_nr.enabled || !openpete_record_active())
         return;
-    static unsigned char *s_recbuf = NULL;
-    static size_t         s_reccap = 0;
-    size_t need = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
-    if (need == 0) return;
-    if (need > s_reccap) {
-        unsigned char *nb = realloc(s_recbuf, need);
-        if (!nb) return;
-        s_recbuf = nb; s_reccap = need;
-    }
-    int w = 0, h = 0;
-    if (rhi_read_offscreen(s_nr.dev, s_recbuf, s_reccap, &w, &h) && w > 0 && h > 0)
-        openpete_record_submit_frame(s_recbuf, w, h, /*top_down=*/1, pts_us);
+    unsigned char *buf = recbuf_ensure((size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u);
+    if (!buf) return;
+    int w = 0, h = 0; uint64_t tag = 0;
+    while (rhi_drain_readback(s_nr.dev, buf, s_reccap, &w, &h, &tag) && w > 0 && h > 0)
+        openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
 
 void openpete_native_render_shutdown(void)
@@ -2302,6 +2331,7 @@ void openpete_native_render_shutdown(void)
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
     free(s_nr.vram_mirror);
+    free(s_recbuf); s_recbuf = NULL; s_reccap = 0;   /* --record async ring host buffer */
 
     /* --render-stats aggregate over the whole run. */
     if (s_diff_stats.frames > 0 && s_diff_stats.n > 0) {
