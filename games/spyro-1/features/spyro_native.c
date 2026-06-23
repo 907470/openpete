@@ -270,29 +270,15 @@ static uint8_t s_seg_prev[SEG_BLOCK], s_seg_curr[SEG_BLOCK];
 static int     s_seg_valid = 0;       /* 0 none, 1 only curr, 2 prev+curr */
 static double  s_anim_alpha = 0.0;
 static int     s_anim_on    = 0;
-/* Per-segment keyframe-pair indices (g_Spyro frameA/frameB) captured alongside the
- * seg scratch. The mix below needs them to detect a keyframe-PAIR advance: the seg
- * scratch's blend (fd&0xFFF) alone can't — a fast animation advances the pair every
- * tick at a CONSTANT blend (e.g. the L1/R1 roll: one keyframe/tick, prog held), so
- * bc==bp and the blend-monotonicity test mistook it for "same pair" and snapped to
- * the curr keyframe (30 Hz choppy). The actual indices are the ground truth. */
-static uint8_t s_seg_fr_prev[3][2], s_seg_fr_curr[3][2];   /* [seg][0]=frameA [1]=frameB */
-static const int k_seg_frA_off[3] = { 0x1E, 0x20, 0x22 };
-static const int k_seg_frB_off[3] = { 0x1F, 0x21, 0x23 };
 
-/* Roll prev<-curr and capture curr from the live seg scratch (canonical hook). */
+/* Roll prev<-curr and capture curr from the live seg scratch (canonical hook).
+ * The two pose snapshots feed the two-pass shape lerp in the re-extract. */
 static void spyro_anim_capture_seg(CPUState* cpu) {
+    (void)cpu;
     const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
     if (!h) return;
-    if (s_seg_valid >= 1) {
-        memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK);
-        memcpy(s_seg_fr_prev, s_seg_fr_curr, sizeof s_seg_fr_prev);
-    }
+    if (s_seg_valid >= 1) memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK);
     memcpy(s_seg_curr, h, SEG_BLOCK);
-    for (int s = 0; s < 3; s++) {
-        s_seg_fr_curr[s][0] = (uint8_t)cpu->read_byte(G_SPYRO + (uint32_t)k_seg_frA_off[s]);
-        s_seg_fr_curr[s][1] = (uint8_t)cpu->read_byte(G_SPYRO + (uint32_t)k_seg_frB_off[s]);
-    }
     s_seg_valid = (s_seg_valid >= 1) ? 2 : 1;
 }
 
@@ -369,6 +355,7 @@ static inline int32_t sra_field(int32_t v, int lsh, int rsh) {
 typedef struct { float sx, sy, vz; int sat, seg; } spxy;
 #define MAX_SPROJ 2048
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
+static spxy s_sproj_prev[MAX_SPROJ];   /* prev-pose projection for the two-pass shape lerp */
 static int s_lastseg_start, s_lastseg_n, s_lastseg_id;  /* last segment's s_sproj range */
 
 /* 3b.4 face-stream walk — forward decls (the aggregate verdict uses these; the
@@ -1290,66 +1277,48 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
 void spyro_player_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
 
-    /* Sub-tick animation = MODEL-space keyframe-blend interpolation (one decode,
-     * matching the smooth moby path). A two-pass "decode prev pose + curr pose,
-     * lerp the projected verts" approach jittered because spyro_derive_phaseA
-     * computes the head/tail SEAM transform from the seg scratch stream pointers
-     * — swapping the seg block per pass gave each pose a different seam while the
-     * shared interpolated prog drove it, so each pass was internally inconsistent.
-     * Instead build ONE blend-interpolated seg block and decode once: the seam
-     * (driven by the orchestrator's interpolated g_Spyro+0x24 prog) and the
-     * vertex blend then share a single consistent phase. Per segment, interpolate
-     * the blend in 0..4096 units (the blend rises monotonically within a keyframe
-     * pair, so curr<prev ⇒ a knot was crossed → continuous phase picking the prev
-     * pair while phase<4096 else curr). The bracket restores the live scratch. */
+    /* Sub-tick animation = two-pass keyframe-SHAPE interpolation. The earlier
+     * one-decode "mixed seg block" approach interpolated by decoding a keyframe
+     * pair at sub-tick blends the game NEVER rendered. For a fast animation (the
+     * L1/R1 roll advances a whole keyframe per tick) that whipped seam-relative
+     * verts off-model — stretched body/head/tail polys (whichever segment moved
+     * fastest that tick), worst near the keyframe knot. The seg entries are also
+     * cumulatively chained (fd[23:14] is a running scratchpad offset), so a
+     * per-segment prev/curr mix corrupts the vertex counts.
+     *
+     * Instead decode the two REAL rendered poses — the prev seg block at its real
+     * blend and the curr seg block at its real blend, each a pose the game
+     * actually drew with its own internally-consistent seam — and LERP the
+     * projected vertices. No un-rendered blend, no per-segment seam/count mismatch.
+     * Rotation + position interpolate via their own brackets (applied identically
+     * to both passes), so this lerps only the SHAPE; the lerp of two real poses is
+     * always on-model. */
+    int two_pass = 0;
     if (s_anim_on && s_seg_valid >= 2) {
         void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
         if (h) {
-            double a = s_anim_alpha;
-            uint8_t mixed[SEG_BLOCK];
-            for (int s = 0; s < 3; s++) {
-                const uint8_t* pe = s_seg_prev + s * SEG_STRIDE;
-                const uint8_t* ce = s_seg_curr + s * SEG_STRIDE;
-                uint32_t fdp, fdc; memcpy(&fdp, pe, 4); memcpy(&fdc, ce, 4);
-                memcpy(mixed + s * SEG_STRIDE, ce, SEG_STRIDE);   /* default = curr */
-                if (fdc == 0) continue;                           /* terminator */
-                int bp = (int)(fdp & 0xFFFu), bc = (int)(fdc & 0xFFFu);
-                /* Detect a keyframe-PAIR change from the captured frame indices — the
-                 * ground truth. The old `bc >= bp` blend-monotonicity proxy failed when
-                 * the pair advances at a constant blend (fast anim like the roll: one
-                 * keyframe/tick, prog held → bc==bp), snapping to the curr keyframe. */
-                int frA_p = s_seg_fr_prev[s][0], frB_p = s_seg_fr_prev[s][1];
-                int frA_c = s_seg_fr_curr[s][0], frB_c = s_seg_fr_curr[s][1];
-                int pair_same = (frA_p == frA_c && frB_p == frB_c);
-                const uint8_t* src; int blend;
-                if (fdp == 0 || pair_same) {                      /* same pair / no prev → lerp blend */
-                    src = ce; blend = (int)(bp + (bc - bp) * a + 0.5);
-                } else if (s == 0 && frB_p == frA_c) {            /* BODY clean advance → continuous phase */
-                    /* Decoding the PREV keyframe pair (phase<4096) at an un-rendered
-                     * blend is only safe for the body. The head/tail vertices hang off
-                     * the body's seam (spyro_derive_phaseA / spyro_seam_tr), and decoding
-                     * their prev pair at a mid blend whips a cluster of seam-relative
-                     * verts off-model (thin stretched slivers — the L1/R1 roll). They
-                     * follow the body's smooth seam regardless, so snap their own
-                     * keyframe morph to curr instead (minor 30 Hz internal step, no
-                     * stretch). */
-                    double phase = bp + ((4096.0 + bc) - bp) * a;
-                    if (phase < 4096.0) { src = pe; blend = (int)(phase + 0.5); }
-                    else                { src = ce; blend = (int)(phase - 4096.0 + 0.5); }
-                } else {                                          /* head/tail advance, multi-advance, non-consecutive, clip switch → snap */
-                    src = ce; blend = bc;
+            uint8_t live[SEG_BLOCK];
+            memcpy(live, h, SEG_BLOCK);                 /* the canonical (curr) seg block */
+            memcpy(h, s_seg_prev, SEG_BLOCK);           /* pass 1: PREV rendered pose */
+            spyro_project_all(cpu);
+            int pn = s_sproj_n;
+            memcpy(s_sproj_prev, s_sproj, (size_t)pn * sizeof(s_sproj[0]));
+            memcpy(h, s_seg_curr, SEG_BLOCK);           /* pass 2: CURR rendered pose */
+            spyro_project_all(cpu);                     /* s_sproj = curr */
+            if (s_sproj_n == pn) {                      /* index-matched (same mesh/order) → lerp shape */
+                double a = s_anim_alpha;
+                for (int i = 0; i < pn; i++) {
+                    s_sproj[i].sx = (float)(s_sproj_prev[i].sx + (s_sproj[i].sx - s_sproj_prev[i].sx) * a);
+                    s_sproj[i].sy = (float)(s_sproj_prev[i].sy + (s_sproj[i].sy - s_sproj_prev[i].sy) * a);
+                    s_sproj[i].vz = (float)(s_sproj_prev[i].vz + (s_sproj[i].vz - s_sproj_prev[i].vz) * a);
                 }
-                if (blend < 0) blend = 0; else if (blend > 0xFFF) blend = 0xFFF;
-                memcpy(mixed + s * SEG_STRIDE, src, SEG_STRIDE);
-                uint32_t fd; memcpy(&fd, src, 4);
-                fd = (fd & ~0xFFFu) | (uint32_t)blend;
-                memcpy(mixed + s * SEG_STRIDE, &fd, 4);
             }
-            memcpy(h, mixed, SEG_BLOCK);
+            memcpy(h, live, SEG_BLOCK);                 /* restore the live scratch */
+            spyro_feed_walk_ex(cpu, 0);                 /* build + emit from the lerped s_sproj (no reproject) */
+            two_pass = 1;
         }
     }
-
-    spyro_feed_walk(cpu);
+    if (!two_pass) spyro_feed_walk(cpu);
 
     static int ad = -1;
     if (ad < 0) { const char* e = getenv("OPENPETE_ANIMDBG"); ad = (e && *e && *e != '0'); }
