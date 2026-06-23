@@ -206,6 +206,15 @@ typedef struct {
 static portal_cap_t s_pcap[PORTAL_CAP_MAX];
 static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
+static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
+/* Per-canonical-present "RenderPortals ran" latch (staleness gate, see
+ * portal_native_reextract). s_pcap_ran is set in on_80050BE0 while the canonical
+ * frame renders; portal_native_commit (chained onto the host present commit) latches
+ * it into s_pcap_canon_drawn and resets it once per canonical present, BEFORE the
+ * sub-tick reextract reads it. When RenderPortals stops (load transition) the latch
+ * goes false next present and the reextract stops replaying the stale capture. */
+static int          s_pcap_ran = 0;
+static int          s_pcap_canon_drawn = 0;
 
 /* Float-project a world point exactly as func_80017B48 (the routine that
  * projects the portal outline → clip rect). It uses the g_Camera+0x00 rotation
@@ -898,9 +907,29 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it
      * usable so portal_native_reextract replays it on the intermediate presents.
      * (s_pcap_n may be 0 in a portal-less level — the reextract then no-ops.) */
-    if (feed) s_pcap_valid = 1;
+    if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame; s_pcap_ran = 1; }
     s_rp_in = 0;
     return 1;
+}
+
+/* Chained host-present commit: latch "RenderPortals ran this canonical present"
+ * (s_pcap_ran, set above during the game render) into s_pcap_canon_drawn and reset
+ * it, then call the previously-registered commit (render_paths'). Runs once per
+ * canonical present, after the game render, before the sub-tick reextract — so the
+ * reextract's staleness gate sees this present's verdict, not last present's. */
+static openpete_native_commit_fn s_prev_commit = NULL;
+static void portal_native_commit(void) {
+    s_pcap_canon_drawn = s_pcap_ran;
+    s_pcap_ran = 0;
+    if (s_prev_commit) s_prev_commit();
+}
+
+/* Chain our commit onto whatever's already registered (render_paths registers
+ * earlier in the feature list, so get_commit returns its fn here). */
+static void portal_native_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    s_prev_commit = openpete_native_get_commit();
+    openpete_native_register_commit(portal_native_commit);
 }
 
 /* ---- sub-tick re-extract (high-FPS spine) --------------------------------
@@ -913,7 +942,19 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
  * gameplay RAM, and never runs headless (the spine doesn't run headless). */
 void portal_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
-    if (!s_pcap_valid || s_pcap_n == 0) return;
+    if (s_pcap_n == 0) return;
+    /* Don't replay a STALE capture. During a level-load transition (e.g. warping
+     * THROUGH a portal — "ENTERING STONE HILL…") the normal draw loop stops, so
+     * canonical RenderPortals (on_80050BE0) no longer runs and s_pcap freezes at
+     * the last homeworld frame (a screen-filling close portal). Replaying it paints
+     * a flat 4:3 backdrop-colour quad over everything on every intermediate present.
+     * (The main cyclorama IS still drawn during the transition by a non-RenderPortals
+     * path, so render_path_canon_drawn(RP_CYCLORAMA) is NOT a valid proxy here —
+     * proven by instrument: the stale replay kept firing with RP_CYCLORAMA true.)
+     * s_pcap_canon_drawn is latched per canonical present (portal_native_commit)
+     * from whether on_80050BE0 actually ran this present, so it goes false the
+     * moment RenderPortals stops — exactly the staleness signal we need. */
+    if (!s_pcap_canon_drawn) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
 
     /* The camera proj matrix the spine has interpolated this present (live). */
@@ -955,18 +996,27 @@ void portal_native_reextract(CPUState* cpu) {
             cpu->gte_ctrl[4] = (uint32_t)(uint16_t)dm[2][2];
         }
 
-        /* Self-check (OPENPETE_PORTAL_REEXTRACT_DBG): a valid recomposed dome
-         * matrix is a rotation — each row magnitude ≈ 4096 (Q12). A packing/algebra
-         * bug shows wildly wrong magnitudes (and a garbage dome on screen). */
+        /* Self-check (OPENPETE_PORTAL_REEXTRACT_DBG): per-cap replay trace. For a
+         * dome, a valid recomposed matrix is a rotation — each row magnitude ≈ 4096
+         * (Q12); a packing/algebra bug shows wild magnitudes. Also reports the
+         * captured clip rect + capture-frame so a STALE replay (canonical
+         * RenderPortals stopped firing during a load transition while s_pcap kept
+         * its last value) is visible as a frozen s_pcap_frame. */
         static int s_dbg = -1;
         if (s_dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_REEXTRACT_DBG"); s_dbg = (e && *e && *e != '0'); }
-        if (s_dbg && c->is_dome && (openpete_frame % 120u) == 0) {
-            int dm00 = (int16_t)(cpu->gte_ctrl[0] & 0xFFFF), dm01 = (int16_t)(cpu->gte_ctrl[0] >> 16);
-            int dm02 = (int16_t)(cpu->gte_ctrl[1] & 0xFFFF);
-            int dm12 = (int16_t)(cpu->gte_ctrl[2] >> 16), dm22 = (int16_t)(cpu->gte_ctrl[4] & 0xFFFF);
-            double rowmag = sqrt((double)dm00*dm00 + (double)dm01*dm01 + (double)dm02*dm02);
-            fprintf(stderr, "[portal-reextract f=%u] caps=%d replaying dome p=%08X row0=(%d,%d,%d) |row0|=%.0f (≈4096?) dm12=%d dm22=%d\n",
-                    openpete_frame, s_pcap_n, c->portal, dm00, dm01, dm02, rowmag, dm12, dm22);
+        if (s_dbg && (openpete_frame % 20u) == 0) {
+            double rowmag = 0.0;
+            if (c->is_dome) {
+                int dm00 = (int16_t)(cpu->gte_ctrl[0] & 0xFFFF), dm01 = (int16_t)(cpu->gte_ctrl[0] >> 16);
+                int dm02 = (int16_t)(cpu->gte_ctrl[1] & 0xFFFF);
+                rowmag = sqrt((double)dm00*dm00 + (double)dm01*dm01 + (double)dm02*dm02);
+            }
+            fprintf(stderr, "[portal-reextract f=%u capframe=%u] cap %d/%d %s p=%08X rgb=%06X clip y[%d,%d] x[%d,%d]%s\n",
+                    openpete_frame, s_pcap_frame, n, s_pcap_n,
+                    c->is_dome ? "DOME" : "flat", c->portal, c->flat_rgb,
+                    c->clip[0], c->clip[1], c->clip[2], c->clip[3],
+                    c->is_dome ? "" : "");
+            if (c->is_dome) fprintf(stderr, "    |dome row0|=%.0f (≈4096?)\n", rowmag);
         }
 
         /* Same emit the canonical leaf used, driven by the captured decision. */
@@ -990,6 +1040,6 @@ static const feature_dispatch_entry_t portal_dispatch[] = {
 
 const feature_module_t portal_native_module = {
     .name           = "portal_native",
-    .apply_options  = NULL,
+    .apply_options  = portal_native_apply_options,
     .dispatch_table = portal_dispatch,
 };
