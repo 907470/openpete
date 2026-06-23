@@ -270,13 +270,29 @@ static uint8_t s_seg_prev[SEG_BLOCK], s_seg_curr[SEG_BLOCK];
 static int     s_seg_valid = 0;       /* 0 none, 1 only curr, 2 prev+curr */
 static double  s_anim_alpha = 0.0;
 static int     s_anim_on    = 0;
+/* Per-segment keyframe-pair indices (g_Spyro frameA/frameB) captured alongside the
+ * seg scratch. The mix below needs them to detect a keyframe-PAIR advance: the seg
+ * scratch's blend (fd&0xFFF) alone can't — a fast animation advances the pair every
+ * tick at a CONSTANT blend (e.g. the L1/R1 roll: one keyframe/tick, prog held), so
+ * bc==bp and the blend-monotonicity test mistook it for "same pair" and snapped to
+ * the curr keyframe (30 Hz choppy). The actual indices are the ground truth. */
+static uint8_t s_seg_fr_prev[3][2], s_seg_fr_curr[3][2];   /* [seg][0]=frameA [1]=frameB */
+static const int k_seg_frA_off[3] = { 0x1E, 0x20, 0x22 };
+static const int k_seg_frB_off[3] = { 0x1F, 0x21, 0x23 };
 
 /* Roll prev<-curr and capture curr from the live seg scratch (canonical hook). */
 static void spyro_anim_capture_seg(CPUState* cpu) {
     const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
     if (!h) return;
-    if (s_seg_valid >= 1) { memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK); }
+    if (s_seg_valid >= 1) {
+        memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK);
+        memcpy(s_seg_fr_prev, s_seg_fr_curr, sizeof s_seg_fr_prev);
+    }
     memcpy(s_seg_curr, h, SEG_BLOCK);
+    for (int s = 0; s < 3; s++) {
+        s_seg_fr_curr[s][0] = (uint8_t)cpu->read_byte(G_SPYRO + (uint32_t)k_seg_frA_off[s]);
+        s_seg_fr_curr[s][1] = (uint8_t)cpu->read_byte(G_SPYRO + (uint32_t)k_seg_frB_off[s]);
+    }
     s_seg_valid = (s_seg_valid >= 1) ? 2 : 1;
 }
 
@@ -1298,13 +1314,22 @@ void spyro_player_native_reextract(CPUState* cpu) {
                 memcpy(mixed + s * SEG_STRIDE, ce, SEG_STRIDE);   /* default = curr */
                 if (fdc == 0) continue;                           /* terminator */
                 int bp = (int)(fdp & 0xFFFu), bc = (int)(fdc & 0xFFFu);
+                /* Detect a keyframe-PAIR change from the captured frame indices — the
+                 * ground truth. The old `bc >= bp` blend-monotonicity proxy failed when
+                 * the pair advances at a constant blend (fast anim like the roll: one
+                 * keyframe/tick, prog held → bc==bp), snapping to the curr keyframe. */
+                int frA_p = s_seg_fr_prev[s][0], frB_p = s_seg_fr_prev[s][1];
+                int frA_c = s_seg_fr_curr[s][0], frB_c = s_seg_fr_curr[s][1];
+                int pair_same = (frA_p == frA_c && frB_p == frB_c);
                 const uint8_t* src; int blend;
-                if (fdp == 0 || bc >= bp) {                       /* same pair (forward) / no prev */
+                if (fdp == 0 || pair_same) {                      /* same pair / no prev → lerp blend */
                     src = ce; blend = (int)(bp + (bc - bp) * a + 0.5);
-                } else {                                          /* keyframe knot crossed */
+                } else if (frB_p == frA_c) {                      /* clean single advance → continuous phase */
                     double phase = bp + ((4096.0 + bc) - bp) * a;
                     if (phase < 4096.0) { src = pe; blend = (int)(phase + 0.5); }
                     else                { src = ce; blend = (int)(phase - 4096.0 + 0.5); }
+                } else {                                          /* multi-advance / non-consecutive / clip switch → snap */
+                    src = ce; blend = bc;
                 }
                 if (blend < 0) blend = 0; else if (blend > 0xFFF) blend = 0xFFF;
                 memcpy(mixed + s * SEG_STRIDE, src, SEG_STRIDE);
