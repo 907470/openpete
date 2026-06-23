@@ -1596,7 +1596,18 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * the rescue dragon that REGULAR didn't draw), so capture it separately
          * for the re-extract's SPEC pass — else those mobys vanish on sub-ticks. */
         if (!is_spec) { spyro_native_canon_capture_range(cpu, 0x1100u, 0x800u);
-                        spyro_native_canon_capture_recs(cpu); }  /* full records (>13 overflow 0x1900) */
+                        spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
+                        /* Invalidate the SPECULAR capture at the START of each canonical
+                         * moby render (REGULAR runs first every frame). The game only calls
+                         * func_80020F34 when there ARE specular mobys to draw; once the last
+                         * one goes (e.g. the rescue-dragon CRYSTAL statue, cls 0xFA, whose
+                         * moby flips to state 0xFD when the dragon breaks out), the SPEC pass
+                         * stops firing and never re-captures — so without this clear the
+                         * re-extract would replay the last frozen s_canon_spec FOREVER,
+                         * leaving the crystal statue drawn on every sub-tick present after the
+                         * dragon is freed. The SPEC pass below re-validates it iff it runs
+                         * this frame; if it doesn't, the re-extract correctly skips SPEC. */
+                        s_canon_spec_valid = 0; }
         else          moby_native_capture_spec_scratch(cpu);
     }
 
