@@ -2,21 +2,24 @@
 // skybox previews (the destination-level sky shown inside homeworld portal
 // arches), plus its falsify-before-ship capture/dump harness.
 //
-// ┌─ KNOWN LIMITATION: BROKEN under --render-fps (high-FPS sub-tick spine) ──────┐
-// │ Portal previews work ONLY on canonical-rate frames. They are deliberately   │
-// │ deferred from the sub-tick spine (hard — see the per-feeder table in        │
-// │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row). Two    │
-// │ reasons: (1) there is no portal_native_reextract and this feeder is NOT in  │
-// │ spyro_native_reextract.c's sub-tick feeder list, so every intermediate      │
-// │ present's scene_begin clears the scene and the previews are never re-added   │
-// │ → they flicker/vanish; (2) feed_portal_dome() reads the dome rotation from   │
-// │ the GTE control regs (gte_ctrl[0..4], the matrix the canonical leaf left) —  │
-// │ NOT g_Camera — so it cannot ride the camera bracket and that GTE state is    │
-// │ not valid on the host-fiber reextract. A real fix needs a full              │
-// │ portal_native_reextract re-deriving the whole RenderPortals projection from  │
-// │ gamestate against the interpolated camera (func_80017B48 permuted-axis       │
-// │ project, per-portal clip rect + colour, Sutherland clip to the arch, the     │
-// │ shared transition-skybox dome). Not yet attempted.                          │
+// ┌─ HIGH-FPS sub-tick spine: SUPPORTED (portal_native_reextract, 2026-06-22) ───┐
+// │ Portal previews now ride the high-FPS sub-tick spine like every other        │
+// │ feeder. The two original blockers are closed by a CAPTURE-AND-REPLAY design: │
+// │ (1) on each canonical RenderPortals the leaf hooks record every drawn        │
+// │ portal's decision (owning portal, flat/dome kind, resolved colour, fog,      │
+// │ clip rect) into s_pcap[]; portal_native_reextract (in the spine's feeder     │
+// │ list, after cyclorama) replays them on every intermediate present, so the    │
+// │ previews are re-added each sub-tick instead of vanishing. (2) The dome       │
+// │ rotation matrix is no longer read from the live GTE on the reextract (it is  │
+// │ stale on the host fiber). Instead the canonical hook captures it as a DELTA  │
+// │ relative to g_Camera+0x00 (the proj matrix the spine interpolates):          │
+// │ delta = dome_M · camMᵀ. The reextract recomposes dome_M = delta · camM       │
+// │ against the INTERPOLATED g_Camera+0x00, so the dome rotates smoothly with    │
+// │ the camera (the portal's slow animated spin is baked into delta, frozen at   │
+// │ tick-N — imperceptible at ~0.18°/tick). The clip rect + outline depth come   │
+// │ from project_world, which already reads the interpolated camera live. See    │
+// │ portal_native_reextract() below + the per-feeder table in                    │
+// │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row.         │
 // └─────────────────────────────────────────────────────────────────────────────┘
 //
 // Background. The main level sky is func_8004EBA8 (handled by
@@ -49,6 +52,7 @@
 #include "psx_runtime.h"
 #include "openpete_native_render.h"
 #include "render_paths.h"
+#include "spyro_native_reextract.h"   /* portal_native_reextract export */
 
 #include <math.h>
 #include <stdint.h>
@@ -142,6 +146,66 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
     M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
     M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
 }
+
+/* Resolve the flat-fill colour a leaf carries in a0 (see feed_portal_quad): the
+ * far/medium leaves pass a pointer whose [0] IS the colour (high bytes set); the
+ * close DOME leaf passes the skybox struct whose colour is at +0x18. Returns the
+ * raw 0x00BBGGRR (pre-fog); 0 if a0 isn't a RAM pointer. Shared by the canonical
+ * feed and the sub-tick capture so both resolve the colour identically. */
+static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0) {
+    if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;
+    uint32_t w0 = cpu->read_word(a0) & 0xFFFFFF;
+    return (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
+}
+
+/* Capture the close-dome rotation as a DELTA relative to g_Camera+0x00, so the
+ * sub-tick reextract can recompose it against the interpolated camera (the live
+ * GTE matrix is stale on the host fiber — see the banner). The dome matrix the
+ * leaf left in the GTE (gte_ctrl[0..4]) is the camera euler ⊗ the portal's
+ * animated spin; g_Camera+0x00 (proj) is the camera-only matrix the spine
+ * interpolates. Both are Q12 rotation matrices (orthonormal → inverse =
+ * transpose), so delta_real = dome_real · camMᵀ_real = (dome_int · camM_intᵀ)/4096².
+ * Reapplying delta to the interpolated camM in the reextract yields a dome matrix
+ * that rides the camera bracket while carrying the (tick-N) portal spin. */
+static void capture_dome_delta(CPUState* cpu, double delta[3][3]) {
+    uint32_t w0 = cpu->gte_ctrl[0], w1 = cpu->gte_ctrl[1], w2 = cpu->gte_ctrl[2];
+    uint32_t w3 = cpu->gte_ctrl[3], w4 = cpu->gte_ctrl[4];
+    int dome[3][3];
+    dome[0][0] = (int16_t)(w0 & 0xFFFF); dome[0][1] = (int16_t)(w0 >> 16); dome[0][2] = (int16_t)(w1 & 0xFFFF);
+    dome[1][0] = (int16_t)(w1 >> 16);    dome[1][1] = (int16_t)(w2 & 0xFFFF); dome[1][2] = (int16_t)(w2 >> 16);
+    dome[2][0] = (int16_t)(w3 & 0xFFFF); dome[2][1] = (int16_t)(w3 >> 16);  dome[2][2] = (int16_t)(w4 & 0xFFFF);
+    int cam[3][3];
+    read_matrix(cpu, G_CAMERA + 0x00, cam);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            double s = 0.0;
+            for (int k = 0; k < 3; k++) s += (double)dome[i][k] * (double)cam[j][k]; /* camMᵀ[k][j]=cam[j][k] */
+            delta[i][j] = s / (4096.0 * 4096.0);
+        }
+}
+
+/* ---- sub-tick capture-and-replay ------------------------------------------
+ * The canonical RenderPortals leaf hooks record each DRAWN portal's high-level
+ * decision here (the transient clip rect / colour / GTE matrix are live only
+ * during the leaf call); portal_native_reextract replays them on every
+ * intermediate present, re-projecting the geometry against the interpolated
+ * camera. One entry per leaf call = one flat quad (+ optional dome). */
+typedef struct {
+    uint32_t portal;        /* owning Portal* (outline re-projection)            */
+    uint32_t flat_a0;       /* the leaf's a0 (skybox-link check; may be stale)    */
+    uint32_t flat_rgb;      /* resolved raw flat colour (a0 is stale on replay)   */
+    uint32_t skybox;        /* skybox ptr for the dome walk (is_dome only)        */
+    int      is_dome;       /* leaf emitted a gradient dome (kind != FLAT)        */
+    double   backstop_bias; /* flat depth push-back (dome backstop vs flat preview)*/
+    uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
+    double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
+    int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
+    double   delta[3][3];   /* dome rotation delta (camera-relative); is_dome only*/
+} portal_cap_t;
+#define PORTAL_CAP_MAX 16
+static portal_cap_t s_pcap[PORTAL_CAP_MAX];
+static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
+static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 
 /* Float-project a world point exactly as func_80017B48 (the routine that
  * projects the portal outline → clip rect). It uses the g_Camera+0x00 rotation
@@ -317,19 +381,27 @@ static float plane_depth(double a, double b, double c, double x, double y) {
  * gaps (still far nearer than the through-hole terrain, so it never reveals the hill
  * behind). A far/medium flat (a0 = a stack/global colour ptr, NOT skybox-linked) IS
  * the whole preview — it stays on the portal plane (bias 1.0, backstop_bias ignored). */
-static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
+/* rgb_override == PORTAL_RGB_RESOLVE means "resolve the colour from a0" (the
+ * canonical leaf path, where a0 is live); any other value is used directly (the
+ * sub-tick reextract path, where a0 may be a stale stack/transient pointer so the
+ * captured raw colour is supplied instead). portal_hint != 0 likewise supplies the
+ * owning portal directly (captured) instead of re-matching a possibly-stale a0. */
+#define PORTAL_RGB_RESOLVE 0xFFFFFFFFu
+static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
+                            uint32_t rgb_override, double backstop_bias,
                             uint32_t fog_rgb, double fog_t) {
-    if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;   /* not a RAM pointer */
+    if (rgb_override == PORTAL_RGB_RESOLVE &&
+        (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
     /* The flat-fill colour. Far/medium leaves (func_8004FEA0/80050240) pass a
      * pointer whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or
      * the close-pass skybox+0x10 bg colour) — all have high bytes set. The close
      * DOME leaf (func_8004F4BC) passes the skybox struct itself, whose [0] is the
      * small sector COUNT, not a colour; there the m_BackgroundColor lives at
-     * skybox+0x18. Discriminate by magnitude so one path handles both.
-     * (This fills the arch with the destination sky's base colour; the full
-     * per-vertex gradient dome is the next increment — see CARVE-OUT.) */
-    uint32_t w0 = cpu->read_word(a0) & 0xFFFFFF;
-    uint32_t rgb = (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
+     * skybox+0x18. portal_flat_raw_rgb discriminates by magnitude. On the reextract
+     * a0/D_800757D4 are stale, so the captured raw colour is passed in directly. */
+    uint32_t rgb = (rgb_override != PORTAL_RGB_RESOLVE)
+                       ? (rgb_override & 0xFFFFFF)
+                       : portal_flat_raw_rgb(cpu, a0);
     rgb = blend_to_fog(rgb, fog_rgb, fog_t);     /* blended-medium: fade the base toward the fog colour */
     uint32_t rgba = rgb | 0xFF000000u;
 
@@ -346,7 +418,8 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, double backstop_bias,
      * so at a sharp angle the near (bottom) edge keeps its near depth and the
      * floor occludes it exactly at the frame, instead of a single flat depth
      * that makes the floor eat the near part (f2945). */
-    uint32_t p = owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    uint32_t p = portal_hint ? portal_hint
+                             : owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     /* Only a skybox-linked flat is a dome backstop (close FEA0 a0=skybox+0x10, or
      * the dome's own a0=skybox) — push it behind the dome. Far/medium previews
      * (a0 = stack/global colour) are the whole sky and stay on the plane. */
@@ -694,16 +767,31 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * backstop (×1.0625) [< F4BC safety ×1.125]. All far nearer than the
          * through-hole terrain. (Fixes the bg z-fight at f1910.) */
         double backstop_bias = (kind == PORTAL_DOME) ? 1.125 : 1.0625;
-        feed_portal_quad(cpu, a0, backstop_bias, fog, fog_t);
-        if (is_dome && a0 >= 0x80010000u && a0 < 0x80200000u)
+        int is_skybox_a0 = (a0 >= 0x80010000u && a0 < 0x80200000u);
+        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, backstop_bias, fog, fog_t);
+        if (is_dome && is_skybox_a0)
             feed_portal_dome(cpu, a0, fog, fog_t);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
-         * so the widescreen off-4:3 reveal below doesn't double-draw it. */
+         * so the widescreen off-4:3 reveal below doesn't double-draw it. Also the
+         * sub-tick capture (replayed by portal_native_reextract every present). */
         {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
             uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
             if (fp && s_fed_n < 8) s_fed_portal[s_fed_n++] = fp;
+            if (s_pcap_n < PORTAL_CAP_MAX) {
+                portal_cap_t* c = &s_pcap[s_pcap_n++];
+                c->portal        = fp;
+                c->flat_a0       = a0;
+                c->flat_rgb      = portal_flat_raw_rgb(cpu, a0);   /* raw, pre-fog */
+                c->is_dome       = (is_dome && is_skybox_a0);
+                c->skybox        = c->is_dome ? a0 : 0;
+                c->backstop_bias = backstop_bias;
+                c->fog_rgb       = fog;
+                c->fog_t         = fog_t;
+                c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
+                if (c->is_dome) capture_dome_delta(cpu, c->delta);
+            }
         }
     }
     s_leaf_in = 0;
@@ -762,6 +850,29 @@ static void feed_revealed_portals(CPUState* cpu) {
             openpete_native_scene_add_tri(&t);
         }
         revealed++;
+        /* Capture this off-4:3 reveal for the sub-tick replay too (else it
+         * flickers like the on-4:3 leaves did). Flat, portal-plane, no fog; the
+         * base clip rect is the projected-outline bbox (RenderPortals set no
+         * D_CLIPRECT for a culled portal). feed_portal_quad re-projects the
+         * outline against the interpolated camera on replay. */
+        if (s_pcap_n < PORTAL_CAP_MAX) {
+            float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
+            for (int k = 1; k < pn; k++) {
+                if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
+                if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
+            }
+            portal_cap_t* c = &s_pcap[s_pcap_n++];
+            c->portal        = p;
+            c->flat_a0       = 0;
+            c->flat_rgb      = rgb;
+            c->is_dome       = 0;
+            c->skybox        = 0;
+            c->backstop_bias = 1.0;
+            c->fog_rgb       = 0;
+            c->fog_t         = 0.0;
+            c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
+            c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
+        }
     }
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
@@ -779,12 +890,94 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     if (s_rp_in) return 0;
     s_rp_in = 1;
     s_fed_n = 0;                              /* reset the per-frame on-4:3 fed-portal dedup set */
+    s_pcap_n = 0;                             /* reset the per-frame sub-tick capture set */
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 8) { dump_portal_table(cpu); s_reports++; }
     func_80050BE0(cpu);                       /* real RenderPortals: on-4:3 portals fed via leaves */
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
+    /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it
+     * usable so portal_native_reextract replays it on the intermediate presents.
+     * (s_pcap_n may be 0 in a portal-less level — the reextract then no-ops.) */
+    if (feed) s_pcap_valid = 1;
     s_rp_in = 0;
     return 1;
+}
+
+/* ---- sub-tick re-extract (high-FPS spine) --------------------------------
+ * Replays the captured per-portal decisions on each intermediate present,
+ * re-projecting against the spine-interpolated camera. Brackets the two
+ * transient inputs the feeders read from RAM/GTE (the per-portal clip rect in
+ * D_8007AA00 and, for a close dome, the GTE rotation matrix) with values
+ * recomposed from the capture, runs the same feed_portal_quad/feed_portal_dome
+ * the canonical path uses, then restores them. Display-only: never perturbs
+ * gameplay RAM, and never runs headless (the spine doesn't run headless). */
+void portal_native_reextract(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    if (!s_pcap_valid || s_pcap_n == 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
+
+    /* The camera proj matrix the spine has interpolated this present (live). */
+    int camI[3][3];
+    read_matrix(cpu, G_CAMERA + 0x00, camI);
+
+    /* Save the transient inputs we overwrite; restore before returning so the
+     * game fiber resumes on canonical CPU/RAM state. */
+    uint32_t save_clip[4], save_gte[5];
+    for (int i = 0; i < 4; i++) save_clip[i] = cpu->read_word(D_CLIPRECT + i * 4);
+    for (int i = 0; i < 5; i++) save_gte[i]  = cpu->gte_ctrl[i];
+
+    for (int n = 0; n < s_pcap_n; n++) {
+        const portal_cap_t* c = &s_pcap[n];
+        /* Write the captured base clip rect (the feeders union it with the live
+         * projected-outline bbox, so the scissor still rides the camera). */
+        cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)c->clip[0] << 16);
+        cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)c->clip[1] << 16);
+        cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)c->clip[2] << 16);
+        cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)c->clip[3] << 16);
+
+        if (c->is_dome) {
+            /* dome_M = delta · interpolated camM (Q12). delta carries the portal's
+             * spin + the convention offset from g_Camera+0x00; recomposing it
+             * against the interpolated camM makes the dome ride the camera bracket. */
+            int dm[3][3];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) {
+                    double s = 0.0;
+                    for (int k = 0; k < 3; k++) s += c->delta[i][k] * (double)camI[k][j];
+                    long v = (long)(s >= 0.0 ? s + 0.5 : s - 0.5);
+                    if (v >  32767) v =  32767; else if (v < -32768) v = -32768;
+                    dm[i][j] = (int)v;
+                }
+            cpu->gte_ctrl[0] = (uint32_t)(uint16_t)dm[0][0] | ((uint32_t)(uint16_t)dm[0][1] << 16);
+            cpu->gte_ctrl[1] = (uint32_t)(uint16_t)dm[0][2] | ((uint32_t)(uint16_t)dm[1][0] << 16);
+            cpu->gte_ctrl[2] = (uint32_t)(uint16_t)dm[1][1] | ((uint32_t)(uint16_t)dm[1][2] << 16);
+            cpu->gte_ctrl[3] = (uint32_t)(uint16_t)dm[2][0] | ((uint32_t)(uint16_t)dm[2][1] << 16);
+            cpu->gte_ctrl[4] = (uint32_t)(uint16_t)dm[2][2];
+        }
+
+        /* Self-check (OPENPETE_PORTAL_REEXTRACT_DBG): a valid recomposed dome
+         * matrix is a rotation — each row magnitude ≈ 4096 (Q12). A packing/algebra
+         * bug shows wildly wrong magnitudes (and a garbage dome on screen). */
+        static int s_dbg = -1;
+        if (s_dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_REEXTRACT_DBG"); s_dbg = (e && *e && *e != '0'); }
+        if (s_dbg && c->is_dome && (openpete_frame % 120u) == 0) {
+            int dm00 = (int16_t)(cpu->gte_ctrl[0] & 0xFFFF), dm01 = (int16_t)(cpu->gte_ctrl[0] >> 16);
+            int dm02 = (int16_t)(cpu->gte_ctrl[1] & 0xFFFF);
+            int dm12 = (int16_t)(cpu->gte_ctrl[2] >> 16), dm22 = (int16_t)(cpu->gte_ctrl[4] & 0xFFFF);
+            double rowmag = sqrt((double)dm00*dm00 + (double)dm01*dm01 + (double)dm02*dm02);
+            fprintf(stderr, "[portal-reextract f=%u] caps=%d replaying dome p=%08X row0=(%d,%d,%d) |row0|=%.0f (≈4096?) dm12=%d dm22=%d\n",
+                    openpete_frame, s_pcap_n, c->portal, dm00, dm01, dm02, rowmag, dm12, dm22);
+        }
+
+        /* Same emit the canonical leaf used, driven by the captured decision. */
+        feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb,
+                         c->backstop_bias, c->fog_rgb, c->fog_t);
+        if (c->is_dome)
+            feed_portal_dome(cpu, c->skybox, c->fog_rgb, c->fog_t);
+    }
+
+    for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);
+    for (int i = 0; i < 5; i++) cpu->gte_ctrl[i] = save_gte[i];
 }
 
 static const feature_dispatch_entry_t portal_dispatch[] = {
