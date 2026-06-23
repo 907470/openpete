@@ -1104,9 +1104,17 @@ const char *rhi_device_name(const rhi_device *dev)
 /* Buffers                                                            */
 /* ------------------------------------------------------------------ */
 
-/* Host-visible, coherent, persistently-mapped buffer with the given usage. */
+/* Host-visible, coherent, persistently-mapped buffer with the given usage.
+ * prefer_cached: also request HOST_CACHED (falling back to plain coherent if no
+ * such type exists). Set it for GPU->CPU READBACK buffers — the CPU reads them
+ * back, and on discrete GPUs the default host-visible|coherent type is
+ * write-combined, where CPU READS are glacially slow (tens of ms for a frame's
+ * worth of pixels — that, not the device-wait, is what capped --record). Leave
+ * it false for CPU->GPU upload buffers (vertex/staging), which the CPU only
+ * writes (write-combined is ideal there). Coherent in both cases ⇒ no manual
+ * flush/invalidate around the mapping. */
 static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
-                                      VkBufferUsageFlags usage)
+                                      VkBufferUsageFlags usage, bool prefer_cached)
 {
     rhi_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
@@ -1123,9 +1131,19 @@ static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
     }
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(dev->device, b->buffer, &mr);
-    uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    const VkMemoryPropertyFlags base = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uint32_t mt = UINT32_MAX;
+    if (prefer_cached) {
+        mt = find_memtype(dev->phys, mr.memoryTypeBits,
+                          base | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        RHI_LOG("readback buffer (%zu bytes): %s\n", bytes,
+                mt != UINT32_MAX ? "HOST_CACHED (fast CPU read)"
+                                 : "no HOST_CACHED type — falling back to "
+                                   "write-combined (slow CPU read)");
+    }
+    if (mt == UINT32_MAX)
+        mt = find_memtype(dev->phys, mr.memoryTypeBits, base);
     if (mt == UINT32_MAX) {
         RHI_LOG("no host-visible memory type\n");
         vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
@@ -1146,7 +1164,8 @@ static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
 
 rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
 {
-    return create_host_buffer(dev, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    return create_host_buffer(dev, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                              /*prefer_cached=*/false);
 }
 
 void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
@@ -1229,7 +1248,8 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
     }
 
     t->staging = create_host_buffer(dev, (size_t)width * height * bpp,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                    /*prefer_cached=*/false);
     if (!t->staging) { RHI_LOG("staging alloc failed\n"); goto fail; }
 
     /* Allocate + point a descriptor set at (this view, the shared sampler). */
@@ -1529,7 +1549,8 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     vkDeviceWaitIdle(dev->device);
     if (!dev->readback_buf || dev->readback_buf->size < need) {
         if (dev->readback_buf) rhi_destroy_buffer(dev, dev->readback_buf);
-        dev->readback_buf = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        dev->readback_buf = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                               /*prefer_cached=*/true);
     }
     rhi_buffer *rb = dev->readback_buf;
     if (!rb) return false;
@@ -1587,7 +1608,8 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
         rhi_buffer **slot_staging = &dev->readback_ring[fi].staging;
         if (!*slot_staging || (*slot_staging)->size < need) {
             if (*slot_staging) rhi_destroy_buffer(dev, *slot_staging);
-            *slot_staging = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            *slot_staging = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                               /*prefer_cached=*/true);
         }
         if (*slot_staging) {
             VkBufferImageCopy region = {
@@ -1649,7 +1671,8 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
      * frame that rendered it, transition to TRANSFER_SRC, copy to a host buffer,
      * then restore SHADER_READ_ONLY so it stays sampleable / safe to destroy. */
     vkDeviceWaitIdle(dev->device);
-    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        /*prefer_cached=*/true);
     if (!rb) return false;
 
     VkCommandBuffer cb = one_shot_begin(dev);
