@@ -101,6 +101,11 @@ struct rhi_device {
     VkDescriptorSetLayout vram_set_layout;
     VkDescriptorPool      desc_pool;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
+
+    /* Reusable host-visible staging buffer for rhi_read_offscreen. Persistent so
+     * the per-frame --record capture doesn't vkAllocateMemory/free each call
+     * (that + a full device-wait was the slow path); grown on demand. */
+    rhi_buffer           *readback_buf;
 };
 
 struct rhi_buffer {
@@ -840,6 +845,7 @@ void rhi_destroy(rhi_device *dev)
     if (!dev) return;
     if (dev->device) vkDeviceWaitIdle(dev->device);
 
+    if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
@@ -1461,10 +1467,19 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
 
     /* The offscreen target is in TRANSFER_SRC_OPTIMAL after a rendered frame
-     * (rhi_end_offscreen transitions it, the blit reads it as src). Wait for
-     * that frame's GPU work, then copy image -> host buffer. */
+     * (rhi_end_offscreen transitions it, the blit reads it as src). Wait for the
+     * render to finish before copying — without a submission dependency the copy
+     * could race the render's writes to off_image (queue submission order does not
+     * guarantee completion order). Keep the device-wait for that correctness; the
+     * big per-frame --record cost was the staging buffer allocated+freed EVERY
+     * call, so reuse a persistent, grown-on-demand one instead. (A future async
+     * readback ring removes the per-frame wait entirely for true real-speed.) */
     vkDeviceWaitIdle(dev->device);
-    rhi_buffer *rb = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!dev->readback_buf || dev->readback_buf->size < need) {
+        if (dev->readback_buf) rhi_destroy_buffer(dev, dev->readback_buf);
+        dev->readback_buf = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    }
+    rhi_buffer *rb = dev->readback_buf;
     if (!rb) return false;
 
     VkCommandBuffer cb = one_shot_begin(dev);
@@ -1489,7 +1504,7 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
         dst[i*4+2] = swap_rb ? c0 : c2;
         dst[i*4+3] = 0xFF;
     }
-    rhi_destroy_buffer(dev, rb);
+    /* rb is dev->readback_buf — persistent; freed in rhi_destroy. */
     return true;
 }
 

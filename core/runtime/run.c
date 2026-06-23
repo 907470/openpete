@@ -810,12 +810,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
      * Only a pure, successfully-brought-up native vk display with no comparison/
      * capture consumer lets us skip the redundant GL submission. Everything else
-     * (headless, ab/diff, native bring-up failure, --record, --screenshot) keeps
-     * PsyCross rendering. */
+     * (headless, ab/diff, native bring-up failure, --screenshot) keeps PsyCross
+     * rendering. NOTE: --record does NOT force it on for the native display — the
+     * native --record path reads the native offscreen directly (rhi_read_offscreen,
+     * self-synchronizing), so forcing PsyCross to ALSO render every frame just
+     * doubled the GPU work and throttled the capture to ~8 fps. (Headless --record
+     * still uses PsyCross — native is disabled there, so the first term is true.) */
     openpete_psycross_renders =
         !openpete_native_render_enabled()                  /* headless / psycross / bring-up failed */
         || opts->renderer != OPENPETE_RENDERER_VK          /* ab/diff need the PsyCross reference */
-        || opts->record_path != NULL                       /* --record reads the PsyCross present FBO */
         || opts->screenshot_frame_count > 0                /* -og + native -ab/-diff variants */
         || opts->screenshot_presents_start >= 0;           /* present-sequence capture (-og leg) */
     OPL_INFO_F("boot", "PsyCross OT rasterization: %s (renderer=%d native=%d)",
