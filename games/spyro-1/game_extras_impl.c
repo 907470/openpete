@@ -16,6 +16,7 @@
 #include "psx_runtime.h"
 #include "openpete_render_cache.h"
 #include "features/widescreen.h"
+#include "features/text_moby_native.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -585,6 +586,10 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
                                           0x80077FECu + 12u * 0x58u);
     }
 
+    /* Build the FPS overlay from Spyro's own 3D HUD text mobys (digits 260-269,
+     * letters 426-451, punctuation) when the native renderer is showing it. Pure
+     * presentation: reads model geometry from RAM, never writes gameplay state. */
+    text_moby_native_fps_overlay(cpu);
 
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp

@@ -85,7 +85,7 @@ typedef struct {
  * --no-lod is a future optimisation — see the disable-lods plan.) */
 #define MAX_SCENE_TRIS 131072
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
-#define OVL_MAX_VERTS 4096   /* FPS overlay glyph-quad vertex cap (see draw_fps_overlay) */
+#define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
@@ -1787,11 +1787,11 @@ static bool draw_native_scene(bool full_extent)
 /* ---- native FPS overlay (vk live window) --------------------------------
  * The legacy GL FPS counter (fps_overlay.cpp) stamps PsyCross's hidden window —
  * invisible in vk, and in pure-vk PsyCross never even presents. This is its
- * native equivalent: a 5x7 bitmap-font readout drawn as solid NDC quads through
- * the untextured depth-off HUD pipeline, on top of the composed frame. Pure
- * display: drawn only on the LIVE vk present (not screenshots, ab, or diff, so
- * the comparison images stay clean). Toggle at runtime (F11) or start off with
- * --no-fps-overlay. */
+ * native equivalent: the FPS counter drawn with Spyro's OWN 3D HUD text mobys
+ * (the gold extruded glyph models), built game-side by text_moby_native and
+ * pushed via openpete_native_set_overlay_glyphs. Pure display: drawn only on the
+ * LIVE vk present (not screenshots, ab, or diff, so the comparison images stay
+ * clean). Toggle at runtime (F11) or start off with --no-fps-overlay. */
 static int s_fps_overlay  = 1;   /* enabled (default on) */
 static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
 static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
@@ -1800,78 +1800,71 @@ static int      s_fps_value     = 0;
 
 void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
 int  openpete_native_toggle_fps_overlay(void) { s_fps_overlay = !s_fps_overlay; return s_fps_overlay; }
+int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
+int  openpete_native_fps_value(void) { return s_fps_value; }
 
-/* 5x7 bitmap glyphs (low 5 bits per row, bit4 = leftmost pixel). Only the cells
- * "FPS:" + digits need; everything else is blank. */
-static const uint8_t s_ovl_space[7] = {0, 0, 0, 0, 0, 0, 0};
-static const uint8_t s_ovl_digit[10][7] = {
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},
-};
-static const uint8_t s_ovl_colon[7] = {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00};
-static const uint8_t s_ovl_F[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
-static const uint8_t s_ovl_P[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
-static const uint8_t s_ovl_S[7] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
-static const uint8_t* ovl_glyph(char c) {
-    if (c >= '0' && c <= '9') return s_ovl_digit[c - '0'];
-    switch (c) { case ':': return s_ovl_colon; case 'F': return s_ovl_F;
-                 case 'P': return s_ovl_P; case 'S': return s_ovl_S; default: return s_ovl_space; }
+/* Overlay geometry built from Spyro's own 3D HUD text mobys (see
+ * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
+ * triangle list each frame; draw_fps_overlay draws it on the live present, or
+ * nothing when empty (the game side caches the glyph models, so this is empty
+ * only before the font has ever loaded — there is no bitmap fallback). Currently
+ * the FPS counter; reusable for other text overlays. */
+static openpete_hud_vert s_overlay_glyph_verts[OVL_MAX_VERTS];
+static int               s_overlay_glyph_n = 0;
+void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts) {
+    if (nverts < 0) nverts = 0;
+    if (nverts > OVL_MAX_VERTS) nverts = OVL_MAX_VERTS;
+    if (nverts > 0 && verts) memcpy(s_overlay_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
+    s_overlay_glyph_n = nverts;
 }
 
-#define OVL_RGBA(r,g,b,a) ((uint32_t)(r) | ((uint32_t)(g)<<8) | ((uint32_t)(b)<<16) | ((uint32_t)(a)<<24))
-static int ovl_push_quad(rhi_vertex* buf, int n, float x0, float y0, float x1, float y1, uint32_t c) {
-    if (n + 6 > OVL_MAX_VERTS) return n;
-    rhi_vertex a = { x0, y0, 0.0f, 0, 0, c, 0 }, b = { x1, y0, 0.0f, 0, 0, c, 0 };
-    rhi_vertex d = { x1, y1, 0.0f, 0, 0, c, 0 }, e = { x0, y1, 0.0f, 0, 0, c, 0 };
-    buf[n] = a; buf[n+1] = b; buf[n+2] = d; buf[n+3] = a; buf[n+4] = d; buf[n+5] = e;
-    return n + 6;
-}
-/* Append `text` at window-pixel origin (ox,oy), `cell` px per font cell, offset
- * (dx,dy), colour c. Each lit cell becomes a solid NDC quad. */
-static int ovl_build_text(rhi_vertex* buf, int n, const char* text, int ox, int oy,
-                          int cell, int dx, int dy, uint32_t c, int winw, int winh) {
-    const int adv = (5 + 1) * cell;
-    for (int ci = 0; text[ci]; ci++) {
-        const uint8_t* g = ovl_glyph(text[ci]);
-        int gx = ox + ci * adv;
-        for (int row = 0; row < 7; row++) {
-            uint8_t m = g[row]; if (!m) continue;
-            for (int col = 0; col < 5; col++) {
-                if (!(m & (1u << (4 - col)))) continue;
-                int px = gx + col * cell + dx, py = oy + row * cell + dy;
-                float x0 = (float)px / winw * 2.0f - 1.0f;
-                float x1 = (float)(px + cell) / winw * 2.0f - 1.0f;
-                float y0 = 1.0f - (float)py / winh * 2.0f;
-                float y1 = 1.0f - (float)(py + cell) / winh * 2.0f;
-                n = ovl_push_quad(buf, n, x0, y0, x1, y1, c);
-            }
-        }
-    }
-    return n;
-}
-/* Draw the FPS readout into the currently-open offscreen pass (top-left). */
-static void draw_fps_overlay(void) {
-    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 ||
-        !s_nr.overlay_vb || !s_nr.gouraud_hud_pipe) return;
-    if (openpete_record_active()) return;   /* keep the debug overlay out of recordings */
-    char text[24];
-    snprintf(text, sizeof(text), "FPS:%d", s_fps_value);
-    int cell = s_nr.win_h / 150; if (cell < 2) cell = 2;   /* readable at any res */
+/* Draw the overlay built from Spyro's own 3D HUD text mobys, fed each frame by
+ * the game side (text_moby_native -> openpete_native_set_overlay_glyphs). Verts
+ * arrive in window-height-fraction overlay space (origin top-left, +y down) with
+ * a depth in [0,1); map to NDC (x via win_h so glyphs stay square) and draw
+ * depth-tested through the opaque gouraud pipe after a local depth clear, so the
+ * glyphs z-sort among their own faces yet sit on top of the whole frame — the
+ * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
+static bool draw_overlay_glyphs_3d(void) {
+    if (s_overlay_glyph_n < 3 || !s_nr.gouraud_pipe || !s_nr.overlay_vb) return false;
     static rhi_vertex buf[OVL_MAX_VERTS];
     int n = 0;
-    n = ovl_build_text(buf, n, text, 8, 8, cell, cell >= 3 ? 2 : 1, cell >= 3 ? 2 : 1,
-                       OVL_RGBA(0, 0, 0, 255), s_nr.win_w, s_nr.win_h);     /* shadow */
-    n = ovl_build_text(buf, n, text, 8, 8, cell, 0, 0,
-                       OVL_RGBA(255, 235, 64, 255), s_nr.win_w, s_nr.win_h); /* warm yellow */
-    if (n <= 0) return;
+    const float winw = (float)s_nr.win_w, winh = (float)s_nr.win_h;
+    for (int i = 0; i < s_overlay_glyph_n && n < OVL_MAX_VERTS; i++) {
+        const openpete_hud_vert *v = &s_overlay_glyph_verts[i];
+        float px = v->x * winh;   /* both axes scaled by win_h -> square glyphs */
+        float py = v->y * winh;
+        buf[n].x = px / winw * 2.0f - 1.0f;
+        buf[n].y = 1.0f - py / winh * 2.0f;
+        buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].tex = 0;
+        n++;
+    }
+    n -= n % 3;
+    if (n <= 0) return false;
     rhi_update_buffer(s_nr.overlay_vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
-    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+    rhi_clear_depth(s_nr.dev);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.overlay_vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
+    return true;
+}
+
+/* Draw the FPS overlay (top-left) into the currently-open offscreen pass: the 3D
+ * Spyro text-moby glyphs the game side built, or nothing if it built none. */
+static void draw_fps_overlay(void) {
+    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || !s_nr.overlay_vb) return;
+    /* Keep the overlay out of recordings — unless OPENPETE_FPS_IN_RECORD is set
+     * (lets the live look be captured for verification, since the overlay is
+     * otherwise live-window-only and never lands in screenshots/records). */
+    if (openpete_record_active()) {
+        static int s_in_rec = -1;
+        if (s_in_rec < 0) { const char *e = getenv("OPENPETE_FPS_IN_RECORD");
+                            s_in_rec = (e && *e && *e != '0') ? 1 : 0; }
+        if (!s_in_rec) return;
+    }
+    draw_overlay_glyphs_3d();
 }
 
 /* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all

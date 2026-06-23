@@ -48,6 +48,30 @@ bool openpete_native_render_enabled(void);
 void openpete_native_set_fps_overlay(int on);
 int  openpete_native_toggle_fps_overlay(void);
 
+/* Is the FPS overlay currently on? The game-side digit-model emitter reads this
+ * to skip building geometry when the overlay is off. */
+int  openpete_native_fps_overlay_enabled(void);
+/* The current rolling FPS value the overlay displays. The game-side emitter
+ * reads it to know which digit glyphs (0-9) to build. */
+int  openpete_native_fps_value(void);
+
+/* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
+ * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
+ * so x and y share one scale → digits stay square at any aspect); z is a depth
+ * in [0,1) for the overlay's own mini depth pass (smaller = nearer). rgba is
+ * byte order R,G,B,A. */
+typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
+
+/* Hand the native renderer overlay geometry built from Spyro's own 3D HUD text
+ * mobys (the gold extruded glyph models, g_Models[260..269] digits / 426..451
+ * letters / punctuation). `verts` is a triangle list (3 verts per tri), built
+ * each game frame by the game-side emitter (text_moby_native). The renderer
+ * copies them and draws them (depth-tested, on top) on the live vk present in
+ * place of the 5x7 bitmap FPS font. nverts==0 → fall back to the bitmap font
+ * (e.g. before the glyph models have loaded). Currently the FPS counter; reusable
+ * for other text overlays. Display-only; never touches gameplay state. */
+void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
+
 /* Path-isolation mode (--render-paths). When on, a frame with no native scene
  * geometry presents the scene background instead of re-displaying the PSX VRAM
  * framebuffer — the VRAM is the UNFILTERED frame, so falling back to it would
