@@ -762,7 +762,7 @@ static void spyro_native_reextract(void* cpu_v) {
      * (terrain, Spyro) + the re-derived mobys interpolate via the brackets; sky
      * reproduces tick-N (far backdrop). Every feeder runs → nothing vanishes. */
     cyclorama_native_reextract(cpu);      /* sky dome + background */
-    portal_native_reextract(cpu);         /* homeworld portal previews (replay captured decisions) */
+    portal_native_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev→curr) */
     terrain_native_reextract(cpu);        /* interpolated camera → smooth terrain */
     moby_native_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
     shadow_native_reextract(cpu);         /* drop-shadows under mobys + Spyro */

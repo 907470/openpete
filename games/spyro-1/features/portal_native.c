@@ -11,16 +11,17 @@
 // │ list, after cyclorama) replays them on every intermediate present, so the    │
 // │ previews are re-added each sub-tick instead of vanishing. (2) The dome       │
 // │ rotation matrix is no longer read from the live GTE on the reextract (it is  │
-// │ stale on the host fiber). Instead the canonical hook captures BOTH the dome  │
-// │ matrix (dm_canon) and the camera matrix it was paired with (cam_canon =      │
-// │ g_Camera+0x00, the proj matrix the spine interpolates); the reextract rotates│
-// │ the dome by the camera's sub-tick rotation INCREMENT: ΔR = camM_interp ·     │
-// │ cam_canonᵀ, dome = ΔR · dm_canon. This is exact for a pure yaw or pure pitch │
-// │ change (dome and camera share the camera orientation, so the same world-space│
-// │ ΔR rotates both) and only second-order off for combined rotation — a FROZEN  │
-// │ portal-vs-camera delta was first-order wrong in the full-circle portal yaw   │
-// │ under camera pitch and skewed the dome's horizon. Clip rect + outline depth  │
-// │ come from project_world, which already reads the interpolated camera live. See│
+// │ stale on the host fiber). Instead the canonical hook snapshots the shared    │
+// │ dome matrix prev+curr each canonical tick, and the reextract LERPS prev→curr │
+// │ componentwise by the spine's sub-tick alpha — identical to how the spine     │
+// │ interpolates the camera matrix (lerp_matrix). Both the camera rotation and   │
+// │ the portal's own spin (D_80075858/D_800758FC) are baked into the snapshots,  │
+// │ so both interpolate smoothly at any framerate with NO extrapolation. (Earlier │
+// │ attempts that EXTRAPOLATED a single frozen snapshot — a relative delta, then  │
+// │ a camera-increment ΔR — skewed/wobbled/squished because the camera never sits │
+// │ still and the spin wasn't interpolated; interpolating two real snapshots is   │
+// │ the fix.) Clip rect + outline depth come from project_world, which already    │
+// │ reads the interpolated camera live. See                                      │
 // │ portal_native_reextract() below + the per-feeder table in                    │
 // │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row.         │
 // └─────────────────────────────────────────────────────────────────────────────┘
@@ -161,29 +162,15 @@ static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0) {
     return (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
 }
 
-/* Capture the close-dome rotation matrix AND the camera matrix it was paired with,
- * so the sub-tick reextract can rotate the dome by the camera's sub-tick rotation
- * INCREMENT (the live GTE matrix is stale on the host fiber — see the banner).
- *   dm_canon = the matrix the leaf left in the GTE (gte_ctrl[0..4]): the camera
- *              euler ⊗ the portal's animated spin (D_80075858 yaw, D_800758FC pitch).
- *   cam_canon = g_Camera+0x00 (the proj matrix the spine interpolates) at this frame.
- * The reextract forms ΔR = camM_interp · cam_canonᵀ (the camera's world-space rotation
- * since capture) and applies dome = ΔR · dm_canon. This is EXACT for a pure yaw or
- * pure pitch change (the dome and the camera share the camera orientation, so the
- * same world-space ΔR rotates both) and only second-order off for combined rotation
- * — far better than reapplying a FROZEN portal-vs-camera delta, which is first-order
- * wrong in the (large, full-circle) portal yaw whenever the camera pitches and
- * skewed the dome's horizon. Both are Q12 (orthonormal). */
+/* Decode the GTE rotation registers (gte_ctrl[0..4], Q12) into a 3x3 — the dome
+ * matrix RenderPortals' leaf left there (camera euler ⊗ the portal's animated spin
+ * D_80075858 yaw / D_800758FC pitch). Snapshotted prev+curr per tick and lerped. */
 static void read_gte_rotmatrix(CPUState* cpu, int M[3][3]) {
     uint32_t w0 = cpu->gte_ctrl[0], w1 = cpu->gte_ctrl[1], w2 = cpu->gte_ctrl[2];
     uint32_t w3 = cpu->gte_ctrl[3], w4 = cpu->gte_ctrl[4];
     M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
     M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
     M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-static void capture_dome_matrices(CPUState* cpu, int dm_canon[3][3], int cam_canon[3][3]) {
-    read_gte_rotmatrix(cpu, dm_canon);
-    read_matrix(cpu, G_CAMERA + 0x00, cam_canon);
 }
 
 /* ---- sub-tick capture-and-replay ------------------------------------------
@@ -202,8 +189,6 @@ typedef struct {
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
     int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
-    int      dm_canon[3][3];  /* captured dome rotation (gte_ctrl), Q12; is_dome only */
-    int      cam_canon[3][3]; /* g_Camera+0x00 at capture (for the ΔR sub-tick rotation) */
 } portal_cap_t;
 #define PORTAL_CAP_MAX 16
 static portal_cap_t s_pcap[PORTAL_CAP_MAX];
@@ -218,6 +203,18 @@ static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating Render
  * goes false next present and the reextract stops replaying the stale capture. */
 static int          s_pcap_ran = 0;
 static int          s_pcap_canon_drawn = 0;
+
+/* Shared dome rotation matrix, snapshotted prev+curr per canonical tick. RenderPortals
+ * builds ONE dome matrix per frame (byte-identical across all portals — the GTEmat
+ * the leaves load), so a single pair suffices. The reextract LERPS prev→curr by the
+ * spine's sub-tick alpha (componentwise, like the camera's lerp_matrix) — both the
+ * camera rotation AND the portal's own spin are baked in, so both interpolate
+ * smoothly with no extrapolation (the old frozen-snapshot recompose skewed/wobbled).
+ * Rolled curr→prev at the top of each canonical RenderPortals; curr refilled when a
+ * dome leaf fires. prev is valid only if the immediately-preceding canonical frame
+ * also drew a dome (consecutive), else the reextract snaps to curr. */
+static int          s_dome_prev[3][3], s_dome_curr[3][3];
+static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
 
 /* Float-project a world point exactly as func_80017B48 (the routine that
  * projects the portal outline → clip rect). It uses the g_Camera+0x00 rotation
@@ -802,7 +799,9 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
-                if (c->is_dome) capture_dome_matrices(cpu, c->dm_canon, c->cam_canon);
+                /* Snapshot the shared dome matrix (same for every dome leaf this
+                 * frame); the prev copy was rolled in on_80050BE0. */
+                if (c->is_dome) { read_gte_rotmatrix(cpu, s_dome_curr); s_dome_curr_valid = 1; }
             }
         }
     }
@@ -903,6 +902,12 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_rp_in = 1;
     s_fed_n = 0;                              /* reset the per-frame on-4:3 fed-portal dedup set */
     s_pcap_n = 0;                             /* reset the per-frame sub-tick capture set */
+    /* Roll the shared dome matrix curr→prev for this canonical tick; the leaves
+     * below refill curr. prev is valid iff the previous canonical frame drew a dome
+     * (so prev/curr are consecutive ticks → a valid one-tick lerp). */
+    memcpy(s_dome_prev, s_dome_curr, sizeof s_dome_prev);
+    s_dome_prev_valid = s_dome_curr_valid;
+    s_dome_curr_valid = 0;
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 8) { dump_portal_table(cpu); s_reports++; }
     func_80050BE0(cpu);                       /* real RenderPortals: on-4:3 portals fed via leaves */
@@ -937,13 +942,15 @@ static void portal_native_apply_options(const openpete_options_t* opts) {
 
 /* ---- sub-tick re-extract (high-FPS spine) --------------------------------
  * Replays the captured per-portal decisions on each intermediate present,
- * re-projecting against the spine-interpolated camera. Brackets the two
- * transient inputs the feeders read from RAM/GTE (the per-portal clip rect in
- * D_8007AA00 and, for a close dome, the GTE rotation matrix) with values
- * recomposed from the capture, runs the same feed_portal_quad/feed_portal_dome
- * the canonical path uses, then restores them. Display-only: never perturbs
- * gameplay RAM, and never runs headless (the spine doesn't run headless). */
-void portal_native_reextract(CPUState* cpu) {
+ * re-projecting against the spine-interpolated camera. The dome rotation matrix
+ * is the prev→curr snapshot pair LERPED by the spine's sub-tick alpha (so the
+ * camera rotation AND the portal spin, both baked into the snapshots, interpolate
+ * smoothly with no extrapolation). Brackets the two transient inputs the feeders
+ * read from RAM/GTE (the per-portal clip rect in D_8007AA00 and the GTE rotation
+ * matrix), runs the same feed_portal_quad/feed_portal_dome the canonical path uses,
+ * then restores them. Display-only: never perturbs gameplay RAM, never runs
+ * headless (the spine doesn't run headless). */
+void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_render_enabled()) return;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
@@ -960,9 +967,39 @@ void portal_native_reextract(CPUState* cpu) {
     if (!s_pcap_canon_drawn) return;
     openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
 
-    /* The camera proj matrix the spine has interpolated this present (live). */
-    int camI[3][3];
-    read_matrix(cpu, G_CAMERA + 0x00, camI);
+    /* Sub-tick dome matrix = lerp(prev, curr, alpha), componentwise (like the
+     * spine's camera lerp_matrix). Both the camera rotation and the portal's spin
+     * are baked into the two snapshots, so both interpolate smoothly — no
+     * extrapolation. Snap to curr when the camera isn't bracketed (paused/loading),
+     * the prev snapshot is missing, or the two tick endpoints diverge implausibly
+     * (a cut the spine didn't catch — keep the lerp from rotating the long way). */
+    int dome_M[3][3];
+    int dome_ready = s_dome_curr_valid;
+    if (dome_ready) {
+        int do_lerp = interp_on && s_dome_prev_valid;
+        if (do_lerp) {
+            /* one-tick component delta sanity: a continuous dome (camera + ~0.18°/tick
+             * spin) moves a few hundred Q12 units/tick at most; a far larger jump is a
+             * discontinuity → snap to curr. */
+            long worst = 0;
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) {
+                    long d = (long)s_dome_curr[i][j] - s_dome_prev[i][j];
+                    if (d < 0) d = -d; if (d > worst) worst = d;
+                }
+            if (worst > 1200) do_lerp = 0;
+        }
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) {
+                if (do_lerp) {
+                    double v = (double)s_dome_prev[i][j] +
+                               ((double)s_dome_curr[i][j] - s_dome_prev[i][j]) * alpha;
+                    dome_M[i][j] = (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
+                } else {
+                    dome_M[i][j] = s_dome_curr[i][j];
+                }
+            }
+    }
 
     /* Save the transient inputs we overwrite; restore before returning so the
      * game fiber resumes on canonical CPU/RAM state. */
@@ -979,33 +1016,13 @@ void portal_native_reextract(CPUState* cpu) {
         cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)c->clip[2] << 16);
         cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)c->clip[3] << 16);
 
-        if (c->is_dome) {
-            /* Rotate the captured dome by the camera's sub-tick rotation INCREMENT:
-             * ΔR = camM_interp · cam_canonᵀ (world-space rotation since capture), then
-             * dome = ΔR · dm_canon. Exact for pure yaw/pitch, second-order for combined
-             * — vs the old frozen-delta recompose, which skewed the dome's horizon
-             * (first-order wrong in the full-circle portal yaw under camera pitch). */
-            double dR[3][3];
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++) {
-                    double s = 0.0;
-                    for (int k = 0; k < 3; k++) s += (double)camI[i][k] * (double)c->cam_canon[j][k];
-                    dR[i][j] = s / (4096.0 * 4096.0);   /* camM_interp · cam_canonᵀ (real) */
-                }
-            int dm[3][3];
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++) {
-                    double s = 0.0;
-                    for (int k = 0; k < 3; k++) s += dR[i][k] * (double)c->dm_canon[k][j];
-                    long v = (long)(s >= 0.0 ? s + 0.5 : s - 0.5);
-                    if (v >  32767) v =  32767; else if (v < -32768) v = -32768;
-                    dm[i][j] = (int)v;
-                }
-            cpu->gte_ctrl[0] = (uint32_t)(uint16_t)dm[0][0] | ((uint32_t)(uint16_t)dm[0][1] << 16);
-            cpu->gte_ctrl[1] = (uint32_t)(uint16_t)dm[0][2] | ((uint32_t)(uint16_t)dm[1][0] << 16);
-            cpu->gte_ctrl[2] = (uint32_t)(uint16_t)dm[1][1] | ((uint32_t)(uint16_t)dm[1][2] << 16);
-            cpu->gte_ctrl[3] = (uint32_t)(uint16_t)dm[2][0] | ((uint32_t)(uint16_t)dm[2][1] << 16);
-            cpu->gte_ctrl[4] = (uint32_t)(uint16_t)dm[2][2];
+        if (c->is_dome && dome_ready) {
+            /* Write the sub-tick-lerped shared dome matrix (computed once above). */
+            cpu->gte_ctrl[0] = (uint32_t)(uint16_t)dome_M[0][0] | ((uint32_t)(uint16_t)dome_M[0][1] << 16);
+            cpu->gte_ctrl[1] = (uint32_t)(uint16_t)dome_M[0][2] | ((uint32_t)(uint16_t)dome_M[1][0] << 16);
+            cpu->gte_ctrl[2] = (uint32_t)(uint16_t)dome_M[1][1] | ((uint32_t)(uint16_t)dome_M[1][2] << 16);
+            cpu->gte_ctrl[3] = (uint32_t)(uint16_t)dome_M[2][0] | ((uint32_t)(uint16_t)dome_M[2][1] << 16);
+            cpu->gte_ctrl[4] = (uint32_t)(uint16_t)dome_M[2][2];
         }
 
         /* Self-check (OPENPETE_PORTAL_REEXTRACT_DBG): per-cap replay trace. For a

@@ -80,7 +80,10 @@ void flame_native_set_subframe(double frac);
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
 void cyclorama_native_reextract(struct CPUState* cpu);
-void portal_native_reextract(struct CPUState* cpu);
+/* Portal previews: the dome rotation matrix is captured prev+curr per canonical
+ * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
+ * matrix); `interp_on` = camera bracketed (else snap to curr). */
+void portal_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
 void terrain_native_reextract(struct CPUState* cpu);
 void moby_native_reextract(struct CPUState* cpu);
 void shadow_native_reextract(struct CPUState* cpu);
