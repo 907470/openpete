@@ -107,7 +107,11 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
  * hands it back so feeders use the smooth path for their camera/object-relative
  * deltas instead of re-reading the floored RAM. Rebuilt every present, valid for
  * the duration of the feeder run (which executes inside reextract). */
-#define FPOS_MAX 320
+/* Must cover every fpos_set caller in one present: camera + Spyro + the moby walk
+ * (≤ MOBY_SAVE_MAX) + the HUD icons (G_HUD_COUNT). Undersizing silently drops the
+ * fractional position for the overflow mobys → they fall back to the 1-unit RAM
+ * floor (sub-pixel, not corruption), so keep this ≥ MOBY_SAVE_MAX + a little. */
+#define FPOS_MAX (MOBY_SAVE_MAX + G_HUD_COUNT + 4)
 static struct { uint32_t key; double p[3]; } s_fpos[FPOS_MAX];
 static int s_fpos_n = 0;
 /* The table is built + consumed entirely within a single sub-tick re-extract
@@ -544,55 +548,20 @@ static void spyro_native_reextract(void* cpu_v) {
                              * look it up so the moby's own motion is continuous too
                              * (not just the camera component). */
                             fpos_set(m, pp, cp, ma);
-                            /* Animation clock — sub-tick keyframe blend (so the
-                             * animation is as smooth as the movement). m_FrameProgress
-                             * (+0x40) is a 0..64 phase within the (m_Frame +0x3E,
-                             * m_NextFrame +0x3F) keyframe pair; the decode consumes it
-                             * as blend = prog<<6 (0..4096). Work in those 0..4096
-                             * blend units (wrap = 4096 at a keyframe knot):
-                             *  - same pair → lerp the blend.
-                             *  - clean single advance ((A,B)→(B,C), i.e. prev's
-                             *    m_NextFrame == curr's m_Frame) → continuous phase
-                             *    across the knot: pick the prev pair while phase<4096,
-                             *    else the curr pair (already live), so the mesh morphs
-                             *    smoothly THROUGH the keyframe instead of snapping.
-                             *  - anything else (multi-advance / non-consecutive /
-                             *    loop) → leave curr (snap). */
-                            {
-                                int frA_p = o->prev[0x3E], frB_p = o->prev[0x3F];
-                                int frA_c = o->curr[0x3E], frB_c = o->curr[0x3F];
-                                double bp = (double)(o->prev[0x40] << 6);   /* prev blend 0..4096 */
-                                double bc = (double)(o->curr[0x40] << 6);   /* curr blend 0..4096 */
-                                /* Animation-switch guard. m_Frame/m_NextFrame are indices
-                                 * into m_Animation's keyframe table; across an m_Animation
-                                 * change (a loop that reseeds a NEW clip) the indices are
-                                 * not comparable. The clip's last frame holds m_NextFrame=0,
-                                 * and the new clip starts at m_Frame=0 — so frB_p==frA_c
-                                 * (0==0) spuriously matches the ADV "clean advance" path and
-                                 * holds the OLD clip's m_Frame (e.g. 59) while the LIVE
-                                 * m_Animation (read by build_moby_record_fields) is the NEW
-                                 * clip → frame 59 indexes past the new clip's table into a
-                                 * garbage keyframe = the warped mesh the cutscene mobys flash
-                                 * at the loop seam. Snap (leave curr live) across the switch. */
-                                if (o->prev[0x3C] != o->curr[0x3C]) {
-                                    /* snap: keep curr's live m_Frame/m_NextFrame/blend */
-                                } else if (frA_p == frA_c && frB_p == frB_c) {
-                                    int bl = (int)(bp + (bc - bp) * ma + 0.5) >> 6;
-                                    if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
-                                    mh[0x40] = (uint8_t)bl;
-                                } else if (frB_p == frA_c) {
-                                    double phase = bp + ((4096.0 + bc) - bp) * ma;
-                                    if (phase < 4096.0) {        /* still finishing the prev pair */
-                                        mh[0x3E] = (uint8_t)frA_p; mh[0x3F] = (uint8_t)frB_p;
-                                        int bl = (int)(phase + 0.5) >> 6; if (bl > 64) bl = 64;
-                                        mh[0x40] = (uint8_t)bl;
-                                    } else {                     /* into the curr pair (already live) */
-                                        int bl = (int)((phase - 4096.0) + 0.5) >> 6;
-                                        if (bl < 0) bl = 0; else if (bl > 64) bl = 64;
-                                        mh[0x40] = (uint8_t)bl;
-                                    }
-                                }
-                            }
+                            /* Animation: NOT synthesized into RAM here anymore. The
+                             * old approach wrote an interpolated m_FrameProgress (and,
+                             * across a knot, an extended "continuous-phase" blend) into
+                             * mh[0x3E/0x3F/0x40], which the moby decode then sampled —
+                             * decoding a keyframe pair at a blend the game never
+                             * rendered, stretching fast-animating mobys off-model (the
+                             * same bug the Spyro player path hit). The moby decode now
+                             * does a TWO-PASS shape lerp instead: moby_decode_project
+                             * reconstructs the prev REAL pose (moby_prev_keyframe reads
+                             * this moby's o->prev frames) and the curr REAL pose and
+                             * lerps them in model space at this same per-object alpha.
+                             * So we leave mh's m_Frame/m_NextFrame/m_FrameProgress at the
+                             * canonical curr values (the decode reads them as the curr
+                             * pose) and let the feeder handle the interpolation. */
                             /* Rotation (m_Rotation @ +0x44, Vector3D8) is NOT lerped
                              * into RAM here: a byte write would re-quantize to the
                              * 1.4°/step grid (256/circle) and the sub-tick interp
@@ -696,10 +665,13 @@ static void spyro_native_reextract(void* cpu_v) {
                 int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
                 int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
                 /* teleport guard: a slot reused by a new particle mid-flight jumps
-                 * far in one tick — snap. Generous (8000) so genuine fast particle
-                 * motion (≤ a few thousand/tick) still interpolates. */
+                 * far in one tick — snap. Particle positions are world/4 (int16), so
+                 * the threshold is in world/4 too: 1250 world/4 == 5000 full-world,
+                 * matching the moby/camera/shadow guards. (The old 8000 was 32000
+                 * full-world — ~6.5× looser — so a slot reused within ~32k units
+                 * streaked across two different particles instead of snapping.) */
                 double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
-                if (dX*dX + dY*dY + dZ*dZ > 8000.0 * 8000.0) continue;
+                if (dX*dX + dY*dY + dZ*dZ > 1250.0 * 1250.0) continue;
                 uint32_t live1, live2;
                 memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
                 s_part_save[part_save_n].addr = pa;

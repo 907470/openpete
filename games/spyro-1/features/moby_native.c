@@ -328,8 +328,20 @@ typedef struct { float sx, sy, vz; int sat; int rec;
  *  w0      = record flags word (keyframe blend factor in bits 8-15)
  *  TR_raw  = stored translation (pre (<<2)>>m_Scale), the GTE view-space MAC
  *  M       = model->view rotation (int16, 1.0=4096) */
+/* frameA_p/frameB_p/w0_p + blend_alpha = OPTIONAL second (prev) keyframe pose for
+ * the high-FPS sub-tick SHAPE interpolation. When frameA_p is a valid pointer, the
+ * decoder reconstructs BOTH the prev rendered pose (frameA_p,frameB_p at blend w0_p)
+ * and the curr rendered pose (frameA,frameB at blend w0), then lerps the two poses
+ * in MODEL space by blend_alpha before projecting once. This interpolates between
+ * two poses the game ACTUALLY drew — never a synthesized/extrapolated keyframe blend
+ * (the stretched-poly bug the Spyro path hit; see spyro_native.c). frameA_p==0 (the
+ * canonical render + the .s-verify path) keeps the single-pose decode. The caller
+ * guarantees prev & curr share the same animation header (it snaps on a clip switch),
+ * so count/s5/m_Scale are common. */
 static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
-                               uint32_t frameB, uint32_t w0, const int TR_raw[3],
+                               uint32_t frameB, uint32_t w0,
+                               uint32_t frameA_p, uint32_t frameB_p, uint32_t w0_p,
+                               double blend_alpha, const int TR_raw[3],
                                const double TR_frac[3],
                                const int M[3][3], proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
@@ -370,9 +382,16 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     int do_blend = (blend > 0 && frameB >= 0x80000000u);
     double t = (double)blend / 4096.0;
 
-    vstream A, B;
+    /* Optional prev pose (two-pass sub-tick shape lerp). */
+    int two = (frameA_p >= 0x80000000u);
+    int blend_p = (int)((w0_p & 0xFF00u) >> 2);
+    int do_blend_p = two && (blend_p > 0 && frameB_p >= 0x80000000u);
+    double tp = (double)blend_p / 4096.0;
+
+    vstream A, B, Ap, Bp;
     vstream_init(cpu, &A, frameA, s5);
     if (do_blend) vstream_init(cpu, &B, frameB, s5);
+    if (two) { vstream_init(cpu, &Ap, frameA_p, s5); if (do_blend_p) vstream_init(cpu, &Bp, frameB_p, s5); }
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -381,6 +400,21 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
             vx += t * (B.VX - A.VX);
             vy += t * (B.VY - A.VY);
             vz += t * (B.VZ - A.VZ);
+        }
+        if (two) {
+            /* curr pose is in (vx,vy,vz); reconstruct the prev pose the same way and
+             * lerp prev->curr by blend_alpha (the moby's per-object sub-tick alpha). */
+            vstream_next(cpu, &Ap, i == 0);
+            double vxp = Ap.VX, vyp = Ap.VY, vzp = Ap.VZ;
+            if (do_blend_p) {
+                vstream_next(cpu, &Bp, i == 0);
+                vxp += tp * (Bp.VX - Ap.VX);
+                vyp += tp * (Bp.VY - Ap.VY);
+                vzp += tp * (Bp.VZ - Ap.VZ);
+            }
+            vx = vxp + (vx - vxp) * blend_alpha;
+            vy = vyp + (vy - vyp) * blend_alpha;
+            vz = vzp + (vz - vzp) * blend_alpha;
         }
         double sx, sy; int sat;
         double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
@@ -411,7 +445,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
-    return moby_decode_project(cpu, header, frameA, frameB, w0, TR_raw, NULL, M, out, cap);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
 }
 
 #define MAX_PROJ 8192
@@ -629,7 +663,7 @@ static void append_revealed_regular(CPUState* cpu) {
         if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, f.TR_raw, f.TR_frac, f.M,
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0.0, f.TR_raw, f.TR_frac, f.M,
                                       s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { m += 0x58; continue; }
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -2326,6 +2360,41 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/* Compute the PREV rendered keyframe pose for a moby — the second input to the
+ * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns 1 (and fills
+ * frameA_p/frameB_p/w0_p + alpha) when the moby has a paired prev snapshot in the
+ * SAME animation; 0 when it should snap to the curr pose: interp off, spawn / no
+ * prev interval, or a clip switch (across an m_Animation change the prev frame
+ * indices point into a different keyframe table → not lerpable). Mirrors
+ * build_moby_record_fields' keyframe-pointer + loop-seam math, but reads the prev
+ * snapshot blob instead of live RAM. Uses the SAME per-object clock (s_rot_now) and
+ * distinct-roll alpha as the moby rotation interp, so shape/rotation/position all
+ * interpolate on one timeline. header_curr must match the prev header (common
+ * count/stride). */
+static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
+                              uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p, double* alpha) {
+    if (!s_rot_now) return 0;                                  /* interp off → snap */
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby);
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    uint32_t cls   = cpu->read_half(moby + 0x36);
+    uint32_t model = cpu->read_word(G_MODELS + cls * 4u);
+    if (model < 0x80000000u) return 0;
+    uint32_t anim_p   = o->prev[0x3C] & 0xFFu;                 /* m_Animation (prev) */
+    uint32_t header_p = cpu->read_word(model + 0x38u + anim_p * 4u);
+    if (header_p < 0x80000000u || header_p != header_curr) return 0;  /* clip switch → snap */
+    uint32_t frm  = o->prev[0x3E] & 0xFFu;                     /* m_Frame (prev)      */
+    uint32_t nfrm = o->prev[0x3F] & 0xFFu;                     /* m_NextFrame (prev)  */
+    uint32_t prog = o->prev[0x40] & 0xFFu;                     /* m_FrameProgress (prev) */
+    *fa_p = header_p + 0x24u + frm  * 8u;
+    *fb_p = header_p + 0x24u + nfrm * 8u;
+    *w0_p = (prog << 8) & 0xFF00u;
+    if (nfrm == 0) { *fb_p = *fa_p; *w0_p = 0; }               /* loop-seam: hold a single keyframe */
+    double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    *alpha = t;
+    return 1;
+}
+
 /* Sub-tick re-extract (high-FPS spine): render the moby scene re-derived from
  * gamestate through the (interpolated) g_Camera the orchestrator wrote, so
  * mobys move COHERENTLY with the interpolated terrain (no swimming) instead of
@@ -2361,7 +2430,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
+        /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the
+         * spine no longer writes m_FrameProgress); add the prev REAL pose and lerp
+         * the two in model space. Snaps to curr (fap=0) on spawn / clip switch. */
+        uint32_t fap = 0, fbp = 0, w0p = 0; double balpha = 0.0;
+        moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &balpha);
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
+                                      fap, fbp, w0p, balpha,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;

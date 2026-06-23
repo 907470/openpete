@@ -1597,13 +1597,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             {
                 extern int g_openpete_interp_enabled;
                 openpete_native_reextract_fn lag_re = openpete_native_get_reextract();
+                /* Commit the per-tick fade/freeze liveness on EVERY canonical present,
+                 * renderer-agnostic (outside the spine gate below). commit_fade rolls
+                 * the fade prev/curr AND clears the s_game_fade_seen / s_game_freeze_seen
+                 * one-tick flags. Those flags are set by set_fade/set_freeze_backdrop
+                 * every canonical tick, so if the only thing that clears them sat inside
+                 * the spine gate, toggling interp/unlock/pause mid-fade would latch a
+                 * flag stale and flash the fade/freeze for one tick when the spine
+                 * re-engages. The raw (spine-off) present path doesn't read what this
+                 * writes, so an unconditional commit is harmless there. */
+                openpete_native_scene_commit_fade();
                 if (lag_re && openpete_native_render_enabled() && !openpete_unlock_fps &&
                     g_openpete_interp_enabled && opts->render_fps > 0 &&
                     !(g_paused && !g_step_one)) {
-                    /* Roll the fade ramp prev/curr from THIS canonical render's fade
-                     * before the re-extract rebuilds, so the fade interpolates
-                     * sub-tick instead of staircasing at 30 Hz. */
-                    openpete_native_scene_commit_fade();
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
                      * 2D-UI sprites/lines) from THIS canonical render's scene before
                      * the re-extract wipes it. Captured on the CANONICAL present only
