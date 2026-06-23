@@ -126,6 +126,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
+    opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = true;  /* silent by default; --mute off to enable audio */
     opts->pgxp_enable         = -1;    /* -1 = unset; defaults applied at boot */
     opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
@@ -445,9 +446,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
-                "  --renderer MODE            display renderer: psycross (default) | vk (native, full-window) |\n"
+                "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
                 "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff).\n"
-                "                             Native modes ignored with --headless. In any native mode,\n"
+                "                             Native modes ignored with --headless (falls back to psycross). In any native mode,\n"
                 "                             --screenshot-on-frame dumps every variant: <out>-og/-vk/-ab/-diff.png.\n"
                 "  --render-paths LIST        debug: render ONLY these paths in both renderers, e.g.\n"
                 "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"

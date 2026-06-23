@@ -707,9 +707,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (ab_mode && opts->window_w <= 0)
         w *= 2;
 
+    /* vk (the default display) wears the game's own name; the dev compare modes
+     * keep a descriptive label so the A/B / diff windows are self-identifying. */
     const char *title = ab_mode   ? "openpete — native renderer (A/B)"
                       : diff_mode ? "openpete — native renderer (diff)"
-                                  : "openpete — native renderer";
+                      : (opts->display_name && opts->display_name[0])
+                                  ? opts->display_name
+                                  : "Spyro the Dragon";
     SDL_Window *win = SDL_CreateWindow(title, w, h,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!win) {
@@ -1913,9 +1917,12 @@ void openpete_native_render_frame(void)
     }
 
     /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
-     * their own one-shot GPU submits, kept clear of our render pass. */
+     * their own one-shot GPU submits, kept clear of our render pass. The PsyCross
+     * reference readback is only meaningful for the compare modes (ab/diff); in
+     * pure vk PsyCross no longer renders the OT, so skip the readback (NRV_VK
+     * never samples have_ref anyway). Screenshots take their own reference sync. */
     sync_vram_texture();
-    bool have_ref = sync_reference_texture();
+    bool have_ref = s_scene_ref_compare ? sync_reference_texture() : false;
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */

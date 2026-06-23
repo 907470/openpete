@@ -1040,17 +1040,29 @@ void psyq_DrawOTag(CPUState* cpu) {
                            s_max_slot_count, s_max_scratch / 1024);
             }
         }
-        if (PsyX_BeginScene()) {
-            ClearSplits();
+        /* When the native Vulkan renderer is the sole display (pure --renderer vk),
+         * PsyCross does not rasterize the OT at all — the native renderer draws
+         * everything from gamestate. Skip the GL walk entirely (and don't open a
+         * PsyX scene, so PsyX_EndScene auto-no-ops via begin_scene_flag → no
+         * GR_StoreFrameBuffer, no second vsync swap on the hidden window). Keep
+         * ONLY the sim-tick timing pin that walk_lagged_ot would normally set, so
+         * the native interpolation alpha still has a correct origin. */
+        extern int openpete_psycross_renders;
+        if (openpete_psycross_renders) {
+            if (PsyX_BeginScene()) {
+                ClearSplits();
+            }
+            /* Sim-due display walk. We just captured OT#N into g_ot_cur;
+             * walk_lagged(1) DISPLAYS the lagged g_ot_prev (OT#(N-1)) and
+             * lerps toward OT#N's positions via the matcher. mark_now() (in
+             * walk_lagged) pins the sim-tick origin to this moment so the
+             * sim-due render reads alpha ≈ 0 = the lagged frame exactly;
+             * intermediate re-walks ramp alpha 0→1 from here. */
+            extern void openpete_render_walk_lagged_ot(int sim_due);
+            openpete_render_walk_lagged_ot(/*sim_due=*/1);
+        } else {
+            openpete_render_sim_tick_mark_now();
         }
-        /* Sim-due display walk. We just captured OT#N into g_ot_cur;
-         * walk_lagged(1) DISPLAYS the lagged g_ot_prev (OT#(N-1)) and
-         * lerps toward OT#N's positions via the matcher. mark_now() (in
-         * walk_lagged) pins the sim-tick origin to this moment so the
-         * sim-due render reads alpha ≈ 0 = the lagged frame exactly;
-         * intermediate re-walks ramp alpha 0→1 from here. */
-        extern void openpete_render_walk_lagged_ot(int sim_due);
-        openpete_render_walk_lagged_ot(/*sim_due=*/1);
         /* Point run.c's intermediate-render gate at the buffer we
          * actually display (the lagged one once it exists). */
         {

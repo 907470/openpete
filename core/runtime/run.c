@@ -81,6 +81,18 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
     }
 }
 
+/* Does the PsyCross GL renderer still rasterize the ordering table this run?
+ * Computed once at boot (after the native renderer's bring-up). When the native
+ * Vulkan renderer is the sole display (pure --renderer vk, windowed) PsyCross
+ * does NOT walk/submit the OT — psyq_DrawOTag skips the GL rasterization (keeping
+ * only the sim-tick timing pin) and PsyX_EndScene auto-no-ops via begin_scene_flag,
+ * so there's no redundant GL draw and no second vsync swap on the hidden window.
+ * It STAYS true (PsyCross renders) whenever the native renderer isn't the display
+ * or its output is still needed: headless / psycross|ab|diff modes / native
+ * bring-up failure / --record (taps the PsyCross present FBO) / --screenshot
+ * (the -og + native -ab/-diff reference variants). Read by psyq_DrawOTag. */
+int openpete_psycross_renders = 1;
+
 /* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
  * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
@@ -793,6 +805,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
     (void)openpete_native_render_init(opts, win_w, win_h);
+
+    /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
+     * Only a pure, successfully-brought-up native vk display with no comparison/
+     * capture consumer lets us skip the redundant GL submission. Everything else
+     * (headless, ab/diff, native bring-up failure, --record, --screenshot) keeps
+     * PsyCross rendering. */
+    openpete_psycross_renders =
+        !openpete_native_render_enabled()                  /* headless / psycross / bring-up failed */
+        || opts->renderer != OPENPETE_RENDERER_VK          /* ab/diff need the PsyCross reference */
+        || opts->record_path != NULL                       /* --record reads the PsyCross present FBO */
+        || opts->screenshot_frame_count > 0                /* -og + native -ab/-diff variants */
+        || opts->screenshot_presents_start >= 0;           /* present-sequence capture (-og leg) */
+    OPL_INFO_F("boot", "PsyCross OT rasterization: %s (renderer=%d native=%d)",
+               openpete_psycross_renders ? "ON" : "OFF (native vk owns display)",
+               (int)opts->renderer, (int)openpete_native_render_enabled());
 
     /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
      * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling

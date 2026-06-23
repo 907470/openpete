@@ -26,20 +26,25 @@ typedef enum {
     OPENPETE_LOG_JSON  = 1,
 } openpete_log_format_t;
 
-/* Active renderer / display mode (--renderer). PSYCROSS is the default: the
- * original PsyCross GL renderer drives the single visible window, no native
- * Vulkan window. The other three bring up the native Vulkan renderer's window
- * (and start PsyCross hidden, rendering only to its FBO):
- *   VK   — native renderer is the sole, full-window display.
+/* Active renderer / display mode (--renderer). VK (the native Vulkan renderer)
+ * is the DEFAULT visible display; the PsyCross GL window is started hidden and,
+ * in pure-vk mode, does NOT rasterize the ordering table at all (the native
+ * renderer draws everything from gamestate). PSYCROSS selects the legacy GL
+ * path as the sole visible window. AB/DIFF bring up the native window AND keep
+ * PsyCross rendering (to its hidden FBO) so the native output can be compared
+ * against it:
+ *   VK   — native renderer is the sole, full-window display (default).
+ *   PSYCROSS — legacy: PsyCross GL drives the single visible window.
  *   AB   — native | PsyCross side-by-side, for visual comparison.
  *   DIFF — native renderer live full-window; --screenshot-on-frame writes a
  *          per-pixel colour diff of native vs the PsyCross reference.
  * All native modes are pure display consumers — they never perturb gameplay
- * state. Native modes are ignored under --headless. See
- * notes/plans/openpete-native-renderer.md. */
+ * state. Native modes are ignored under --headless (PsyCross renders instead),
+ * so the oracle / determinism gates (which run headless) are unaffected by the
+ * default. See notes/plans/openpete-native-renderer.md. */
 typedef enum {
-    OPENPETE_RENDERER_PSYCROSS = 0,  /* default: PsyCross GL, no native window */
-    OPENPETE_RENDERER_VK,            /* native Vulkan renderer, sole display */
+    OPENPETE_RENDERER_PSYCROSS = 0,  /* legacy: PsyCross GL, no native window */
+    OPENPETE_RENDERER_VK,            /* default: native Vulkan renderer, sole display */
     OPENPETE_RENDERER_AB,            /* native | PsyCross side-by-side */
     OPENPETE_RENDERER_DIFF,          /* native live; screenshot = colour diff */
 } openpete_renderer_t;
