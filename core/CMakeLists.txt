@@ -180,16 +180,42 @@ target_link_libraries(openpete_core PUBLIC openpete_rhi)
 # libav to link anyway, so when cross-compiling we compile --record out
 # (record.c falls back to a stub that reports the feature unavailable).
 option(OPENPETE_ENABLE_RECORD "Build --record gameplay video capture (needs libav*)" ON)
-if(OPENPETE_ENABLE_RECORD AND NOT CMAKE_CROSSCOMPILING)
+# For the windows-mingw cross build there is no system libav to link, so
+# scripts/setup_mingw_ffmpeg.sh cross-builds a STATIC FFmpeg into this prefix and
+# we link it here. Absent -> --record compiles to the stub (the old behaviour).
+set(OPENPETE_FFMPEG_MINGW_PREFIX "${CMAKE_SOURCE_DIR}/third_party/ffmpeg-mingw"
+    CACHE PATH "Prefix of the cross-built static FFmpeg for windows-mingw --record")
+if(NOT OPENPETE_ENABLE_RECORD)
+    message(STATUS "openpete: --record disabled (OPENPETE_ENABLE_RECORD=OFF); record.c is a stub")
+elseif(NOT CMAKE_CROSSCOMPILING)
+    # Native (linux): host libav via pkg-config.
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
         libavformat libavcodec libavutil libswscale libswresample)
     target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_LIBAV=1)
+elseif(EXISTS "${OPENPETE_FFMPEG_MINGW_PREFIX}/lib/libavcodec.a")
+    # Cross (windows-mingw): static-link the FFmpeg from setup_mingw_ffmpeg.sh.
+    # pkg_check_modules ignores the cross sysroot, so isolate pkg-config to OUR
+    # prefix via PKG_CONFIG_LIBDIR; --static then resolves the full dep chain
+    # (avformat..avutil + x264 + bcrypt/ole32/user32/m). --start-group wraps the
+    # archives so inter-library refs resolve regardless of order. Static GPL
+    # FFmpeg (x264) => the resulting .exe is GPL.
+    find_package(PkgConfig REQUIRED)
+    set(ENV{PKG_CONFIG_LIBDIR} "${OPENPETE_FFMPEG_MINGW_PREFIX}/lib/pkgconfig")
+    pkg_check_modules(LIBAV REQUIRED
+        libavformat libavcodec libavutil libswscale libswresample)
+    target_include_directories(openpete_core PUBLIC ${LIBAV_STATIC_INCLUDE_DIRS})
+    target_link_directories(openpete_core PUBLIC ${LIBAV_STATIC_LIBRARY_DIRS})
+    target_link_libraries(openpete_core PUBLIC
+        -Wl,--start-group ${LIBAV_STATIC_LIBRARIES} -Wl,--end-group)
+    target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_LIBAV=1)
+    message(STATUS "openpete: --record ENABLED for windows-mingw via static FFmpeg "
+                   "at ${OPENPETE_FFMPEG_MINGW_PREFIX} (GPL: the .exe becomes GPL)")
 else()
-    message(STATUS "openpete: --record video capture disabled "
-                   "(${CMAKE_CROSSCOMPILING}=cross / OPENPETE_ENABLE_RECORD=${OPENPETE_ENABLE_RECORD}); "
-                   "record.c builds as a stub")
+    message(STATUS "openpete: --record disabled for this cross build — no static "
+                   "FFmpeg at ${OPENPETE_FFMPEG_MINGW_PREFIX} "
+                   "(run scripts/setup_mingw_ffmpeg.sh to enable); record.c is a stub")
 endif()
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by

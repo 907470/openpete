@@ -23,3 +23,7 @@ screenshot*.bmp
 # Local tooling not part of the build (cloned reference emulators, scratch
 # binaries, traces). Kept around for the GTE trace-vs-PsyCross workflow.
 .tools/
+
+# Cross-built static FFmpeg for windows-mingw --record (see scripts/setup_mingw_ffmpeg.sh)
+third_party/ffmpeg-mingw/
+third_party/ffmpeg-mingw-build/
