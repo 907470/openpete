@@ -1324,11 +1324,19 @@ void spyro_player_native_reextract(CPUState* cpu) {
                 const uint8_t* src; int blend;
                 if (fdp == 0 || pair_same) {                      /* same pair / no prev → lerp blend */
                     src = ce; blend = (int)(bp + (bc - bp) * a + 0.5);
-                } else if (frB_p == frA_c) {                      /* clean single advance → continuous phase */
+                } else if (s == 0 && frB_p == frA_c) {            /* BODY clean advance → continuous phase */
+                    /* Decoding the PREV keyframe pair (phase<4096) at an un-rendered
+                     * blend is only safe for the body. The head/tail vertices hang off
+                     * the body's seam (spyro_derive_phaseA / spyro_seam_tr), and decoding
+                     * their prev pair at a mid blend whips a cluster of seam-relative
+                     * verts off-model (thin stretched slivers — the L1/R1 roll). They
+                     * follow the body's smooth seam regardless, so snap their own
+                     * keyframe morph to curr instead (minor 30 Hz internal step, no
+                     * stretch). */
                     double phase = bp + ((4096.0 + bc) - bp) * a;
                     if (phase < 4096.0) { src = pe; blend = (int)(phase + 0.5); }
                     else                { src = ce; blend = (int)(phase - 4096.0 + 0.5); }
-                } else {                                          /* multi-advance / non-consecutive / clip switch → snap */
+                } else {                                          /* head/tail advance, multi-advance, non-consecutive, clip switch → snap */
                     src = ce; blend = bc;
                 }
                 if (blend < 0) blend = 0; else if (blend > 0xFFF) blend = 0xFFF;
