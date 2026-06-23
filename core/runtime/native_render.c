@@ -409,14 +409,22 @@ static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
     return s_scene;
 }
 
-/* True if the presented scene holds any WORLD/ACTOR/PLAYER (non-UI) geometry —
- * i.e. a real world frame worth snapshotting into frozen_tex. Menu/transition
- * frames (only HUD/OVERLAY tris, or empty) return false, so the snapshot keeps
- * the last gameplay frame to freeze. */
+/* True if the presented scene holds real WORLD or ACTOR geometry — i.e. a full
+ * gameplay frame worth snapshotting into frozen_tex (the pause/inventory freeze
+ * backdrop). Menu/transition frames (only HUD/OVERLAY tris, or empty) return false,
+ * so the snapshot keeps the last gameplay frame to freeze.
+ *
+ * PLAYER (Spyro) alone does NOT qualify: at the pause-start transition the world
+ * feeders cut out one present before the freeze FT4 is emitted, leaving a degenerate
+ * frame with only Spyro's body (W=0, Ac=0, Pl>0, freeze not yet set). Counting that
+ * as a world frame snapshots a near-empty image into frozen_tex — the "residual
+ * framebuffer instead of the cyclorama" under the high-FPS spine's pause menu. A real
+ * gameplay frame always carries terrain (WORLD) and/or mobys (ACTOR), so gate on
+ * those and the transition frame is rejected, preserving the last full world. */
 static bool scene_has_world(const openpete_scene_tri* scene, int n) {
     for (int t = 0; t < n; t++) {
         int c = scene[t].category;
-        if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR || c == OPENPETE_SCENE_PLAYER)
+        if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR)
             return true;
     }
     return false;
@@ -1633,6 +1641,15 @@ static bool draw_native_scene(bool full_extent)
      * player Spyro drawn next still covers it (Spyro flies in front of the intro
      * text). Matches the PSX moby OT: near-slot UI over other mobys, player on top. */
     for (int gi = 0; gi < 6; gi++) {
+        /* Freeze backdrop active (pause / inventory / flight-results): the world is
+         * frozen INTO the backdrop (drawn above), and the canonical game render emits
+         * no world/actor/player/shadow/transparent geometry while a menu is up — only
+         * the HUD menu (text mobys, panel, 3D icons) on top. The high-FPS spine, by
+         * contrast, blindly re-extracts the still-in-RAM gameplay actors every present;
+         * drawing them here would paint full-colour Spyro/mobys over the green-tinted
+         * backdrop (a ghost double-image). Skip the gameplay groups; the HUD layers
+         * below still draw, so the animated menu stays smooth at the present rate. */
+        if (freeze_first >= 0) continue;
         const struct scene_group *g = &groups[gi];
         if (g->utex && ut_count[gi] > 0) {
             rhi_bind_pipeline(s_nr.dev, g->utex);
