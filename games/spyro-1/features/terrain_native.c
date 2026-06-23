@@ -859,9 +859,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * projects in float, so carrying the low 4 bits costs nothing and tracks the
      * smooth camera. Scale is unchanged (still /16), so depth / near-clip / fog are
      * untouched; only the camera reference gains sub-16 precision. */
-    double camx = (double)(int32_t)rd(cpu, G_CAMERA + 0x28) / 16.0;
-    double camy = (double)(int32_t)rd(cpu, G_CAMERA + 0x2C) / 16.0;
-    double camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
+    /* Sub-tick floor fix: when a re-extract bracket is active, use the FRACTIONAL
+     * interpolated camera position (un-rounded) so terrain — which is purely
+     * camera-driven — is TRULY continuous, not just stepped at the 1-world-unit
+     * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
+    double camx, camy, camz;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) {
+          camx = cf[0] / 16.0; camy = cf[1] / 16.0; camz = cf[2] / 16.0;
+      } else {
+          camx = (double)(int32_t)rd(cpu, G_CAMERA + 0x28) / 16.0;
+          camy = (double)(int32_t)rd(cpu, G_CAMERA + 0x2C) / 16.0;
+          camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
+      } }
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
     uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */

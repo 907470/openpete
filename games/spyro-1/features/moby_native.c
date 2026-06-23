@@ -528,8 +528,16 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
      * the moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
      * chunks (moby analog of the terrain cam>>4 fix). Same scale as TR_raw. The
      * native path projects in float, so this is consumed at full precision; the byte
-     * truncation in TR_raw is kept only for the .s-record verify/validate paths. */
-    double dVy=(cy-my)/4.0, dVz=(cz-mz)/4.0, dVx=(mx-cx)/4.0;
+     * truncation in TR_raw is kept only for the .s-record verify/validate paths.
+     * Sub-tick floor fix: prefer the FRACTIONAL interpolated camera + moby
+     * positions (un-rounded) over the floored RAM, so neither the camera component
+     * nor the moby's own motion steps on the 1-world-unit lerp32 grid. */
+    double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
+    double mfx=(double)mx, mfy=(double)my, mfz=(double)mz;
+    { double cf[3], mf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; }
+      if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
+    double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
     for (int i=0;i<3;i++)
         f->TR_frac[i] = (PM[i][0]*dVy + PM[i][1]*dVz + PM[i][2]*dVx) / 4096.0;
     return 1;
@@ -1996,6 +2004,10 @@ static shaded_rec s_shrecs[256]; static int s_nshrecs;
 static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    /* Sub-tick floor fix: fractional interpolated camera (un-rounded) for the
+     * camera-relative delta below; falls back to the floored RAM at 30 Hz. */
+    double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
+    { double cf[3]; if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; } }
     double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
     double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
     /* directional light dir (int16-truncated on ctc2 into the LCM), refreshed
@@ -2052,8 +2064,12 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * below ground (verified: gem v0 nnPrim 35-130px -> 0.1px). */
             /* Delta as ÷4.0 (not >>2) so shaded mobys (gems/props) track the smooth
              * sub-tick camera instead of stepping in 4-world-unit chunks — same fix
-             * as the regular path + terrain. TR is fractional; scale unchanged. */
-            double Dx=(px-cx)/4.0, Dy=(cy-py)/4.0, Dz=(cz-pz)/4.0;
+             * as the regular path + terrain. TR is fractional; scale unchanged.
+             * Floor fix: also prefer the FRACTIONAL interpolated moby position so the
+             * moby's own motion is continuous (not just the camera component). */
+            double mfx=(double)px, mfy=(double)py, mfz=(double)pz;
+            { double mf[3]; if (openpete_native_interp_pos(m, mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
+            double Dx=(mfx-cfx)/4.0, Dy=(cfy-mfy)/4.0, Dz=(cfz-mfz)/4.0;
             double t1=(PM[0][0]*Dy+PM[0][1]*Dz+PM[0][2]*Dx)/4096.0;
             double t2=(PM[1][0]*Dy+PM[1][1]*Dz+PM[1][2]*Dx)/4096.0;
             double t3=(PM[2][0]*Dy+PM[2][1]*Dz+PM[2][2]*Dx)/4096.0;

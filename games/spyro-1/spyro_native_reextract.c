@@ -97,6 +97,46 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
     for (int i = 0; i < 3; ++i) pl[i] = lerp32(pp[i], pc[i], t);
 }
 
+/* ---- fractional interpolated-position table (the lerp32 1-unit floor fix) -----
+ * lerp_vec3 writes the interpolated camera/object position to int32 RAM, which
+ * ROUNDS to the 1-world-unit grid. Feeders that project against those positions
+ * read the rounded RAM and inherit a uniform 1-unit positional floor (sub-pixel,
+ * but it caps near-geometry continuity under sub-tick interpolation). For every
+ * bracket we ALSO stash the SAME interpolation at DOUBLE precision (un-rounded),
+ * keyed by vaddr (G_CAMERA / G_SPYRO / a moby vaddr); openpete_native_interp_pos
+ * hands it back so feeders use the smooth path for their camera/object-relative
+ * deltas instead of re-reading the floored RAM. Rebuilt every present, valid for
+ * the duration of the feeder run (which executes inside reextract). */
+#define FPOS_MAX 320
+static struct { uint32_t key; double p[3]; } s_fpos[FPOS_MAX];
+static int s_fpos_n = 0;
+/* The table is built + consumed entirely within a single sub-tick re-extract
+ * present. The feeders are SHARED with the canonical 30 Hz render path, which
+ * never refreshes the table — so the resolver MUST report "no entry" there (else
+ * the canonical render reads stale fractional positions frozen at the last
+ * sub-tick present: terrain/Spyro freeze while moby keyframe animation, a
+ * separate channel, keeps going). s_fpos_active is 1 only during the re-extract
+ * body; the canonical path sees it 0 and every feeder falls back to live RAM. */
+static int s_fpos_active = 0;
+static void fpos_reset(void) { s_fpos_n = 0; }
+static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, double t) {
+    if (s_fpos_n >= FPOS_MAX) return;
+    s_fpos[s_fpos_n].key = key;
+    for (int i = 0; i < 3; ++i)
+        s_fpos[s_fpos_n].p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
+    s_fpos_n++;
+}
+int openpete_native_interp_pos(unsigned int key, double out[3]) {
+    if (!s_fpos_active) return 0;   /* canonical render path → use live RAM */
+    for (int i = 0; i < s_fpos_n; ++i) {
+        if (s_fpos[i].key == (uint32_t)key) {
+            out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- transient .s render-pass scratch bracket --------------------------------
  * The moby + Spyro BODY feeders re-derive geometry from PERSISTENT gamestate
  * (g_LevelMobys / g_Spyro / the models) BUT key off a small set of TRANSIENT
@@ -255,6 +295,14 @@ static void spyro_native_reextract(void* cpu_v) {
     const openpete_interp_snapshot_t *prev = NULL, *curr = NULL;
     int paired = openpete_interp_query(op_now(), TICK_PERIOD_NS, &qa, &prev, &curr);
 
+    /* Rebuild the fractional interpolated-position table for this present (the
+     * lerp32 1-unit floor fix). Empty until a bracket below populates it; feeders
+     * fall back to reading the (floored) RAM for any key with no entry. Active for
+     * the duration of this present only (cleared at the end) so the canonical
+     * render path never reads a stale table. */
+    fpos_reset();
+    s_fpos_active = 1;
+
     /* Bracket targets (all written then restored on the host fiber). */
     uint8_t* cam = (uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
     uint8_t  cam_saved[CAM_BYTES];
@@ -299,6 +347,12 @@ static void spyro_native_reextract(void* cpu_v) {
         lerp_matrix(cam, pcam, cam_saved, CAM_OFF_VIEW, alpha);
         lerp_vec3  (cam, pcam, cam_saved, CAM_OFF_POS,  alpha);
         cam_bracketed = 1;
+        /* Fractional camera position (un-rounded) for the floor fix — same lerp,
+         * double precision. prev = pcam+POS, curr = cam_saved (the live curr we
+         * saved before the lerp overwrote RAM). */
+        fpos_set(G_CAMERA,
+                 (const int32_t*)(pcam      + CAM_OFF_POS),
+                 (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
 
         /* Per-present trace (OPENPETE_LAG_TRACE): the interpolated camera pos
          * presented THIS frame. Across the present sequence it must progress
@@ -318,6 +372,8 @@ static void spyro_native_reextract(void* cpu_v) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
             memcpy(sp_saved, sp, SPYRO_SAVE);          /* curr (live) */
             lerp_vec3(sp, psp, sp_saved, 0, alpha);    /* +0x00 m_Position */
+            /* Fractional Spyro position (un-rounded) for the floor fix. */
+            fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
             /* Per-segment (body/head/tail) animation clock: lerp each
              * m_FrameProgress (0x24/0x25/0x26) when its keyframe pair
              * (frameA 0x1E/0x20/0x22, frameB 0x1F/0x21/0x23) is unchanged —
@@ -482,6 +538,12 @@ static void spyro_native_reextract(void* cpu_v) {
                                 int32_t lv = lerp32(pp[k], cp[k], ma);
                                 memcpy(mh + MOBY_POS + k * 4, &lv, 4);
                             }
+                            /* Fractional moby position (un-rounded) for the floor
+                             * fix — keyed by the moby vaddr, at this moby's own
+                             * per-object alpha. The body / shaded / shadow feeders
+                             * look it up so the moby's own motion is continuous too
+                             * (not just the camera component). */
+                            fpos_set(m, pp, cp, ma);
                             /* Animation clock — sub-tick keyframe blend (so the
                              * animation is as smooth as the movement). m_FrameProgress
                              * (+0x40) is a 0..64 phase within the (m_Frame +0x3E,
@@ -738,6 +800,8 @@ static void spyro_native_reextract(void* cpu_v) {
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed) memcpy(cam, cam_saved, CAM_BYTES);
+
+    s_fpos_active = 0;   /* leave the resolver inert for the canonical render path */
 
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_DBG"); dbg = (e && *e && *e != '0'); }

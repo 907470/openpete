@@ -391,9 +391,14 @@ static void particle_build(CPUState* cpu) {
      * world/4 gameplay storage we can't change, but flooring the CAMERA to /4
      * added a camera-correlated step on EVERY particle under panning. Carrying the
      * camera's low 2 bits (÷4.0) tracks the smooth sub-tick camera. */
-    double s7 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;   /* camX/4 */
-    double t8 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;   /* camY/4 */
-    double t9 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0;   /* camZ/4 */
+    /* Sub-tick floor fix: prefer the FRACTIONAL interpolated camera (un-rounded)
+     * so particles don't gain a camera-correlated 1-unit step under panning. */
+    double s7, t8, t9;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { s7 = cf[0]/4.0; t8 = cf[1]/4.0; t9 = cf[2]/4.0; }
+      else { s7 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;   /* camX/4 */
+             t8 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;   /* camY/4 */
+             t9 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0; } /* camZ/4 */ }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -783,9 +788,14 @@ static gtri s_gtri[MAX_GTRI]; static int s_gtri_n;
 static void glow_build(CPUState* cpu) {
     s_gtri_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
-    int camX = (int)cpu->read_word(G_CAMERA+0x28);    /* RAW world units (no >>2) */
-    int camY = (int)cpu->read_word(G_CAMERA+0x2C);
-    int camZ = (int)cpu->read_word(G_CAMERA+0x30);
+    /* RAW world units (no >>2); fractional interpolated camera when bracketed
+     * (sub-tick floor fix), else floored RAM. */
+    double camX, camY, camZ;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
+      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
+             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
+             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -917,9 +927,14 @@ static sline s_sline[MAX_SLINE]; static int s_sline_n;
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
-    int camX = (int)cpu->read_word(G_CAMERA+0x28);   /* RAW; the .s shifts the diff >>2 */
-    int camY = (int)cpu->read_word(G_CAMERA+0x2C);
-    int camZ = (int)cpu->read_word(G_CAMERA+0x30);
+    /* RAW (the .s shifts the diff >>2); fractional interpolated camera when
+     * bracketed (sub-tick floor fix), else floored RAM. */
+    double camX, camY, camZ;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
+      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
+             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
+             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);

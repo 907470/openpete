@@ -64,6 +64,21 @@ void moby_native_set_rot_interp(int on);
  * keyframes). Defined in features/flame_native.c. */
 void flame_native_set_subframe(double frac);
 
+/* Sub-tick FRACTIONAL interpolated world-position resolver (the lerp32 1-unit
+ * floor fix). On each sub-tick present the orchestrator brackets every
+ * interpolated object (camera / Spyro / each moby) by writing the lerped
+ * position to int32 RAM — which ROUNDS to the 1-world-unit grid. Feeders that
+ * project against those positions read the rounded RAM and inherit a uniform
+ * 1-unit positional floor (sub-pixel, but it caps near-geometry continuity).
+ * This returns the SAME interpolation at DOUBLE precision (un-rounded) for the
+ * given `key` (G_CAMERA, G_SPYRO, or a moby vaddr): feeders use it for their
+ * camera/object-relative deltas instead of re-reading the floored RAM, so the
+ * projection tracks the smooth sub-tick path. Returns 1 + fills out[3] when a
+ * bracket is active for `key` this present; 0 otherwise (feeder falls back to
+ * reading RAM, which equals the canonical curr at the 30 Hz lockstep). Defined
+ * in spyro_native_reextract.c. */
+int openpete_native_interp_pos(unsigned int key, double out[3]);
+
 void cyclorama_native_reextract(struct CPUState* cpu);
 void terrain_native_reextract(struct CPUState* cpu);
 void moby_native_reextract(struct CPUState* cpu);

@@ -347,10 +347,15 @@ static void shadow_moby_build(CPUState* cpu) {
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
     /* Camera at FRACTIONAL /4 (not >>2): the moby BODY got the ÷4.0 delta fix but
      * its drop-shadow still floored cam+pos to /4 integers, so the shadow stepped
-     * in 4-world-unit chunks under camera motion. Carry the low 2 bits. */
-    double cam0 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;
-    double cam1 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;
-    double cam2 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0;
+     * in 4-world-unit chunks under camera motion. Carry the low 2 bits. Sub-tick
+     * floor fix: prefer the FRACTIONAL interpolated camera (un-rounded) so the
+     * shadow tracks the smooth camera below the 1-world-unit lerp32 grid too. */
+    double cam0, cam1, cam2;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { cam0 = cf[0]/4.0; cam1 = cf[1]/4.0; cam2 = cf[2]/4.0; }
+      else { cam0 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;
+             cam1 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;
+             cam2 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0; } }
     /* FT3 material (constant across the fan): UV0=uv0, UV1=uv1, UV2=uv0+0x1F00 */
     int u0=(int)(uv0&0xFF), v0t=(int)((uv0>>8)&0xFF);
     int u1=(int)(uv1&0xFF), v1t=(int)((uv1>>8)&0xFF);
@@ -370,9 +375,13 @@ static void shadow_moby_build(CPUState* cpu) {
         uint32_t sd   = cpu->read_word(mob + MOBY_SHADOWDIST);
         int sdlo = (int)(sd & 0xFFFF);
         if (sdlo == 0) continue;
-        double vx = cam1 - (double)(int32_t)posY / 4.0;
+        /* Floor fix: prefer the FRACTIONAL interpolated moby position so the shadow
+         * tracks the smooth body (which uses the same source) under sub-tick. */
+        double pfx = (double)(int32_t)posX, pfy = (double)(int32_t)posY;
+        { double mf[3]; if (openpete_native_interp_pos(mob, mf)) { pfx = mf[0]; pfy = mf[1]; } }
+        double vx = cam1 - pfy / 4.0;
         double vy = cam2 - (double)sdlo;
-        double vz = (double)(int32_t)posX / 4.0 - cam0;
+        double vz = pfx / 4.0 - cam0;
         double TR[3]; ground_tr(C, vx, vy, vz, TR);
         if (TR[2] - 4096.0 >= 0.0) continue;                /* Z cull (floor(x)>=N ⟺ x>=N) */
         spt anchor; sh_proj(C, ZERO, ofx, ofy, H, vx, vy, vz, &anchor);
