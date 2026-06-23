@@ -2041,6 +2041,24 @@ void openpete_native_render_frame(void)
      * never samples have_ref, so the value itself only matters for ab/diff. */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
+
+    /* Reference resolution (the display shape for the window aspect-fit + the
+     * native_rtt/freeze size) normally comes from PsyCross's present FBO via
+     * sync_reference_texture. In pure vk PsyCross no longer rasterizes the OT, so
+     * that returns nothing and ref_w/ref_h would stay 0 → update_layout bails →
+     * compose draws nothing → black. Derive it from GAMESTATE instead: the
+     * bars-free PSX display is 4:3 corrected for the vertical overscan crop
+     * (aspect = 4/3 * disp_h/clip_h), at a ~2x-internal reference so the
+     * off-display RT stays crisp. Only the aspect matters to the layout (fit_cell
+     * cancels the absolute scale); the size feeds native_rtt. Gated vk-only —
+     * ab/diff genuinely need the PsyCross reference, so they wait for it. */
+    if (!have_ref && !s_scene_ref_compare) {
+        int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
+        int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+        int rh = ch * 2;
+        int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
+        if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
+    }
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
