@@ -11,13 +11,16 @@
 // │ list, after cyclorama) replays them on every intermediate present, so the    │
 // │ previews are re-added each sub-tick instead of vanishing. (2) The dome       │
 // │ rotation matrix is no longer read from the live GTE on the reextract (it is  │
-// │ stale on the host fiber). Instead the canonical hook captures it as a DELTA  │
-// │ relative to g_Camera+0x00 (the proj matrix the spine interpolates):          │
-// │ delta = dome_M · camMᵀ. The reextract recomposes dome_M = delta · camM       │
-// │ against the INTERPOLATED g_Camera+0x00, so the dome rotates smoothly with    │
-// │ the camera (the portal's slow animated spin is baked into delta, frozen at   │
-// │ tick-N — imperceptible at ~0.18°/tick). The clip rect + outline depth come   │
-// │ from project_world, which already reads the interpolated camera live. See    │
+// │ stale on the host fiber). Instead the canonical hook captures BOTH the dome  │
+// │ matrix (dm_canon) and the camera matrix it was paired with (cam_canon =      │
+// │ g_Camera+0x00, the proj matrix the spine interpolates); the reextract rotates│
+// │ the dome by the camera's sub-tick rotation INCREMENT: ΔR = camM_interp ·     │
+// │ cam_canonᵀ, dome = ΔR · dm_canon. This is exact for a pure yaw or pure pitch │
+// │ change (dome and camera share the camera orientation, so the same world-space│
+// │ ΔR rotates both) and only second-order off for combined rotation — a FROZEN  │
+// │ portal-vs-camera delta was first-order wrong in the full-circle portal yaw   │
+// │ under camera pitch and skewed the dome's horizon. Clip rect + outline depth  │
+// │ come from project_world, which already reads the interpolated camera live. See│
 // │ portal_native_reextract() below + the per-feeder table in                    │
 // │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row.         │
 // └─────────────────────────────────────────────────────────────────────────────┘
@@ -158,30 +161,29 @@ static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0) {
     return (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
 }
 
-/* Capture the close-dome rotation as a DELTA relative to g_Camera+0x00, so the
- * sub-tick reextract can recompose it against the interpolated camera (the live
- * GTE matrix is stale on the host fiber — see the banner). The dome matrix the
- * leaf left in the GTE (gte_ctrl[0..4]) is the camera euler ⊗ the portal's
- * animated spin; g_Camera+0x00 (proj) is the camera-only matrix the spine
- * interpolates. Both are Q12 rotation matrices (orthonormal → inverse =
- * transpose), so delta_real = dome_real · camMᵀ_real = (dome_int · camM_intᵀ)/4096².
- * Reapplying delta to the interpolated camM in the reextract yields a dome matrix
- * that rides the camera bracket while carrying the (tick-N) portal spin. */
-static void capture_dome_delta(CPUState* cpu, double delta[3][3]) {
+/* Capture the close-dome rotation matrix AND the camera matrix it was paired with,
+ * so the sub-tick reextract can rotate the dome by the camera's sub-tick rotation
+ * INCREMENT (the live GTE matrix is stale on the host fiber — see the banner).
+ *   dm_canon = the matrix the leaf left in the GTE (gte_ctrl[0..4]): the camera
+ *              euler ⊗ the portal's animated spin (D_80075858 yaw, D_800758FC pitch).
+ *   cam_canon = g_Camera+0x00 (the proj matrix the spine interpolates) at this frame.
+ * The reextract forms ΔR = camM_interp · cam_canonᵀ (the camera's world-space rotation
+ * since capture) and applies dome = ΔR · dm_canon. This is EXACT for a pure yaw or
+ * pure pitch change (the dome and the camera share the camera orientation, so the
+ * same world-space ΔR rotates both) and only second-order off for combined rotation
+ * — far better than reapplying a FROZEN portal-vs-camera delta, which is first-order
+ * wrong in the (large, full-circle) portal yaw whenever the camera pitches and
+ * skewed the dome's horizon. Both are Q12 (orthonormal). */
+static void read_gte_rotmatrix(CPUState* cpu, int M[3][3]) {
     uint32_t w0 = cpu->gte_ctrl[0], w1 = cpu->gte_ctrl[1], w2 = cpu->gte_ctrl[2];
     uint32_t w3 = cpu->gte_ctrl[3], w4 = cpu->gte_ctrl[4];
-    int dome[3][3];
-    dome[0][0] = (int16_t)(w0 & 0xFFFF); dome[0][1] = (int16_t)(w0 >> 16); dome[0][2] = (int16_t)(w1 & 0xFFFF);
-    dome[1][0] = (int16_t)(w1 >> 16);    dome[1][1] = (int16_t)(w2 & 0xFFFF); dome[1][2] = (int16_t)(w2 >> 16);
-    dome[2][0] = (int16_t)(w3 & 0xFFFF); dome[2][1] = (int16_t)(w3 >> 16);  dome[2][2] = (int16_t)(w4 & 0xFFFF);
-    int cam[3][3];
-    read_matrix(cpu, G_CAMERA + 0x00, cam);
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            double s = 0.0;
-            for (int k = 0; k < 3; k++) s += (double)dome[i][k] * (double)cam[j][k]; /* camMᵀ[k][j]=cam[j][k] */
-            delta[i][j] = s / (4096.0 * 4096.0);
-        }
+    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
+    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
+    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
+}
+static void capture_dome_matrices(CPUState* cpu, int dm_canon[3][3], int cam_canon[3][3]) {
+    read_gte_rotmatrix(cpu, dm_canon);
+    read_matrix(cpu, G_CAMERA + 0x00, cam_canon);
 }
 
 /* ---- sub-tick capture-and-replay ------------------------------------------
@@ -200,7 +202,8 @@ typedef struct {
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
     int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
-    double   delta[3][3];   /* dome rotation delta (camera-relative); is_dome only*/
+    int      dm_canon[3][3];  /* captured dome rotation (gte_ctrl), Q12; is_dome only */
+    int      cam_canon[3][3]; /* g_Camera+0x00 at capture (for the ΔR sub-tick rotation) */
 } portal_cap_t;
 #define PORTAL_CAP_MAX 16
 static portal_cap_t s_pcap[PORTAL_CAP_MAX];
@@ -799,7 +802,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
-                if (c->is_dome) capture_dome_delta(cpu, c->delta);
+                if (c->is_dome) capture_dome_matrices(cpu, c->dm_canon, c->cam_canon);
             }
         }
     }
@@ -977,14 +980,23 @@ void portal_native_reextract(CPUState* cpu) {
         cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)c->clip[3] << 16);
 
         if (c->is_dome) {
-            /* dome_M = delta · interpolated camM (Q12). delta carries the portal's
-             * spin + the convention offset from g_Camera+0x00; recomposing it
-             * against the interpolated camM makes the dome ride the camera bracket. */
+            /* Rotate the captured dome by the camera's sub-tick rotation INCREMENT:
+             * ΔR = camM_interp · cam_canonᵀ (world-space rotation since capture), then
+             * dome = ΔR · dm_canon. Exact for pure yaw/pitch, second-order for combined
+             * — vs the old frozen-delta recompose, which skewed the dome's horizon
+             * (first-order wrong in the full-circle portal yaw under camera pitch). */
+            double dR[3][3];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) {
+                    double s = 0.0;
+                    for (int k = 0; k < 3; k++) s += (double)camI[i][k] * (double)c->cam_canon[j][k];
+                    dR[i][j] = s / (4096.0 * 4096.0);   /* camM_interp · cam_canonᵀ (real) */
+                }
             int dm[3][3];
             for (int i = 0; i < 3; i++)
                 for (int j = 0; j < 3; j++) {
                     double s = 0.0;
-                    for (int k = 0; k < 3; k++) s += c->delta[i][k] * (double)camI[k][j];
+                    for (int k = 0; k < 3; k++) s += dR[i][k] * (double)c->dm_canon[k][j];
                     long v = (long)(s >= 0.0 ? s + 0.5 : s - 0.5);
                     if (v >  32767) v =  32767; else if (v < -32768) v = -32768;
                     dm[i][j] = (int)v;
