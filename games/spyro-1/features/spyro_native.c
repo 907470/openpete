@@ -1276,6 +1276,14 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
  * (→ smooth orientation) and g_Spyro (position lerp lands in step 3). */
 void spyro_player_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
+    /* Only re-extract the gameplay Spyro on sub-ticks if the canonical frame
+     * actually drew him (func_80023AC4 emitted prims → RP_SPYRO recorded). In
+     * dragon-rescue cutscenes the gameplay-Spyro render is SUPPRESSED and Spyro is
+     * shown as a moby (cls 511) instead; without this gate the spine would re-extract
+     * the gameplay Spyro from g_Spyro state on every intermediate present, painting a
+     * SECOND Spyro over the cutscene moby (same position, different pose) — the
+     * duplicate-Spyro ghost. Mirrors moby_native_reextract's RP_MOBY gate. */
+    if (!render_path_canon_drawn(RP_SPYRO)) return;
 
     /* Sub-tick animation = two-pass keyframe-SHAPE interpolation. The earlier
      * one-decode "mixed seg block" approach interpolated by decoding a keyframe
