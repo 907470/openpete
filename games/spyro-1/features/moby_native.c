@@ -2079,6 +2079,17 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     for (int r=0; r<256; r++) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
         if (m < 0x80000000u) break;
+        /* Dormant/uninit-moby skip. SHADED_BASE is a pre-built list that the .s
+         * shaded renderer (func_80022A2C) walks; for each moby it reads
+         * m_RenderRadius (+0x50) as the cull half-width `a0` and keeps it only if
+         * -a0 < (mx-camx)>>2 < a0. m_RenderRadius==0 makes that band degenerate
+         * (every position fails one side), so the game ALWAYS skips a radius-0 moby
+         * — the mechanism behind in-spawner objects that are dormant until released
+         * (e.g. cliff-town's cauldron gems, which sit at m_RenderRadius 0 until you
+         * flame the cauldron). The list still contains them, so replicate the skip
+         * here, else they render as ghost gems beside their spawner. (m_RenderRadius
+         * & 0x80 is the billboard/HUD flag, handled below — nonzero, so it passes.) */
+        if (cpu->read_byte(m + 0x50) == 0) continue;
         uint32_t cls = cpu->read_half(m + 0x36);
         uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
         uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
