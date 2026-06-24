@@ -137,7 +137,14 @@ static void trail_build_and_feed(CPUState* cpu) {
         tset* ts = &s_sets[s];
         int    havePrev = 0, emitted = 0;
         double pc0x=0,pc0y=0,pc1x=0,pc1y=0,pvz=0; uint32_t pcol = 0;
-        for (int i = 0; i < ts->count; i++) {
+        /* The .s ribbon loop runs s6 = 0..count-2 (block_80018A9C requires
+         * count>=2; block_80018EB4 continues while s6 < count-1). The last
+         * point (count-1) is projected in the pre-pass but only consumed as the
+         * direction target for point count-2's segment — never drawn. Point
+         * count-2 takes width 0 (the tip pinch), so the final segment tapers to
+         * a point. Iterating to count-1 here would emit an extra full-width
+         * segment whose reversed neighbour direction crosses over past the tip. */
+        for (int i = 0; i < ts->count - 1; i++) {
             int f = ts->pt[i].f;
             if (f >= 81) continue;            /* fully faded -> skip (prev unchanged) */
             double sx, sy, vz;
