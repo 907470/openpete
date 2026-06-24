@@ -688,6 +688,24 @@ static void spyro_native_reextract(void* cpu_v) {
                  * full-world — ~6.5× looser — so a slot reused within ~32k units
                  * streaked across two different particles instead of snapping.) */
                 double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
+                /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
+                 * ADDRESS, so a slot a NEW particle respawns into within one tick — a
+                 * shatter/burst churning the pool faster than slots free — still reads
+                 * have_prev=1 and gets lerped between TWO DIFFERENT particles: a long
+                 * line streaks from the old position to the new one. The distance guard
+                 * below only catches FAR reuses; a burst clustered near its emitter
+                 * reuses well within it. Detect identity from the particle header word:
+                 * m_Class (byte0) + sel/type (byte1) is the stable type, and m_Life
+                 * (byte2) is an age counter that INCREMENTS every tick for a CONTINUING
+                 * particle (measured across the run: outside spawn bursts 100% of
+                 * have_prev particles have life strictly increasing; reuse — type change,
+                 * life reset, or life held — appears only inside bursts). So lerp only a
+                 * genuinely continuing particle; otherwise snap (present curr, no streak). */
+                {
+                    uint32_t ph, ch; memcpy(&ph, o->prev, 4); memcpy(&ch, o->curr, 4);
+                    if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) continue;              /* m_Class/sel changed → reuse */
+                    if (((ch >> 16) & 0xFFu) <= ((ph >> 16) & 0xFFu)) continue;  /* m_Life didn't advance → reuse */
+                }
                 if (dX*dX + dY*dY + dZ*dZ > 1250.0 * 1250.0) continue;
                 uint32_t live1, live2;
                 memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
