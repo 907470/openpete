@@ -472,11 +472,30 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
-                 int metal; uint32_t mscol; uint32_t moby; } rec_meta;  /* metal = m_SpecularMetalColor
+                 int metal; uint32_t mscol; uint32_t moby; int zsf4; } rec_meta;  /* metal = m_SpecularMetalColor
                  (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
                  moby = Moby* (rec+0x34 for .s records; set directly for host-built reveal records,
-                 whose addr is then 0 — there is no live +0x1600 record behind them) */
+                 whose addr is then 0 — there is no live +0x1600 record behind them);
+                 zsf4 = per-moby colour fade level (high16 of the cull record's matrix word @+0x2C,
+                 cfc2 gte_ctrl[30]); see moby_color_fade_ir0 */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
+
+/* Per-moby ZSF4 (colour-fade) snapshot, keyed by Moby*. Filled from the live .s
+ * cull records during the canonical pass; the high-FPS sub-tick re-extract builds
+ * host-side records (no live cull record to read +0x2C from) and looks the fade up
+ * here, so fading effect mobys (ring puffs) fade on intermediate presents too
+ * instead of flickering back to full brightness. Cleared once per canonical frame. */
+static struct { uint32_t moby; int zsf4; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
+static void fade_snap_clear(void) { s_fade_snap_n = 0; }
+static void fade_snap_put(uint32_t moby, int zsf4) {
+    if (moby < 0x80000000u) return;
+    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; return; }
+    if (s_fade_snap_n < MAX_RECORDS) { s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4; s_fade_snap_n++; }
+}
+static int fade_snap_get(uint32_t moby) {
+    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4;
+    return 0;
+}
 
 /* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
  * against this so a moby drawn by BOTH passes (the common case; .s overlaps them
@@ -512,7 +531,10 @@ static int project_all_records(CPUState* cpu) {
                 /* full m_SpecularMetalColor: the highlight back-colour (.L80021DB4) +
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
                 cpu->read_word(rec + 0x30),
-                cpu->read_word(rec + 0x34) };
+                cpu->read_word(rec + 0x34),
+                /* ZSF4 colour-fade = high16 of the matrix word @rec+0x2C (gte_ctrl[30]) */
+                (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16) };
+            fade_snap_put(s_recs[nrec].moby, s_recs[nrec].zsf4);
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -784,6 +806,57 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv);
 static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
 static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (highlight) */
 
+/* GTE DPCS (depth-cue) on one 8-bit colour channel toward a 12-bit far colour by
+ * IR0/4096. Bit-exact mirror of the runner's color_depth_cue_finish (gte.cpp):
+ *   mac    = c<<16
+ *   ir_d   = sat16(((fc<<12) - mac) >> 12)
+ *   total  = mac + IR0*ir_d
+ *   out    = sat8((total>>12) >> 4)
+ * Verified vs the live GTE: dpcs_ch(255, 2032, 1312) == 214. */
+static int dpcs_ch(int c8, int fc12, int ir0) {
+    long mac = (long)c8 << 16;
+    long ird = (((long)fc12 << 12) - mac) >> 12;
+    if (ird >  32767) ird =  32767;
+    if (ird < -32768) ird = -32768;
+    long out = ((mac + (long)ir0 * ird) >> 12) >> 4;
+    if (out < 0)   out = 0;
+    if (out > 255) out = 255;
+    return (int)out;
+}
+
+/* Per-moby colour depth-cue fade (the .s moby colour pass, func_8001FA1C
+ * block_8001FDD0+). The cull record overloads the high 16 bits of its matrix
+ * word at +0x2C (the M[2][2] pad) as a per-moby fade level ZSF4 (cfc2 gte_ctrl[30]).
+ *   ZSF4 <= 0     -> near tier: raw colour (the common case; pad is 0 / sign-ext)
+ *   0 < ZSF4<1024 -> DPCS toward the far colour (header+0x20) by IR0=(1024-ZSF4)*4
+ *   ZSF4 >= 1024  -> full-bright tier: raw colour
+ * Effect mobys (e.g. the dream-weavers fireball's ring puffs, cls 0x77) drop ZSF4
+ * 1024->0 over their last frames, so they FADE OUT instead of popping. Returns
+ * IR0 (0 = no fade) and the far-colour base. zsf4 is the per-moby fade level
+ * (rec+0x2C high16 for canonical records, the snapshot for sub-tick records). */
+static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_t* farbase) {
+    *farbase = 0;
+    if (header < 0x80000000u) return 0;
+    if (zsf4 <= 0 || zsf4 >= 1024) return 0;
+    uint32_t fb = cpu->read_word(header + 0x20);
+    if (fb < 0x80000000u) return 0;
+    *farbase = fb;
+    return (1024 - zsf4) * 4;
+}
+
+/* Read a per-vertex moby colour (cbase + byte-offset ci), applying the DPCS fade
+ * when ir0 != 0. far colour is the per-vertex 16-bit packed entry at farbase+ci,
+ * expanded to 12-bit channels exactly as the .s does (8001FE14-FE2C). */
+static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase, int ir0, uint32_t ci) {
+    uint32_t col = cpu->read_word(cbase + ci) & 0xFFFFFFu;
+    if (!ir0) return col;
+    int r = (int)(col & 0xFFu), g = (int)((col >> 8) & 0xFFu), b = (int)((col >> 16) & 0xFFu);
+    uint32_t fw = cpu->read_word(farbase + ci);
+    int fcr = (int)((fw << 4) & 0xFF0u), fcg = (int)((fw >> 4) & 0xFF0u), fcb = (int)((fw >> 12) & 0xFF0u);
+    r = dpcs_ch(r, fcr, ir0); g = dpcs_ch(g, fcg, ir0); b = dpcs_ch(b, fcb, ir0);
+    return (uint32_t)(r | (g << 8) | (b << 16));
+}
+
 /* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
  * No backface cull yet (the winding sign is determined from the A/B's nclip
  * split first); quads emit both sub-tris when quad-enable is set. */
@@ -820,6 +893,9 @@ static int build_walk_tris(CPUState* cpu) {
          * record is fog-tier its colour will mismatch in the A/B and flag it.) */
         uint32_t cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x18) : 0u;
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
+        /* Per-moby colour depth-cue fade (effect mobys fade out instead of popping). */
+        uint32_t farbase = 0;
+        int dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
         int guard = 0;
         while (fp + 8u <= end && guard++ < 8192) {
             uint32_t w0 = cpu->read_word(fp);
@@ -881,11 +957,12 @@ static int build_walk_tris(CPUState* cpu) {
             }
             if (!emit_a && !emit_b) { fp += adv; continue; }
 
-            /* per-vertex colour: cbase indexed by w1f (NOT w0f). */
+            /* per-vertex colour: cbase indexed by w1f (NOT w0f). DPCS-faded when
+             * the moby carries a fade level (effect ring puffs, etc). */
             uint32_t w1 = cpu->read_word(fp + 4);
-            uint32_t c0 = cpu->read_word(cbase + ((w1 >> 17) & 0x7FCu)) & 0xFFFFFFu;
-            uint32_t c1 = cpu->read_word(cbase + ((w1 >>  8) & 0x7FCu)) & 0xFFFFFFu;
-            uint32_t c2 = cpu->read_word(cbase + ((w1 <<  1) & 0x7FCu)) & 0xFFFFFFu;
+            uint32_t c0 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 >> 17) & 0x7FCu);
+            uint32_t c1 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 >>  8) & 0x7FCu);
+            uint32_t c2 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 <<  1) & 0x7FCu);
             /* v3 (4th-vertex) gouraud colour: its index is the HIGH field of the
              * fp+8 word ((v4w>>9)&0x7FC), the sibling of the SXY index in the low
              * field. Previously approximated as c2, which forced every quad's 2nd
@@ -893,7 +970,7 @@ static int build_walk_tris(CPUState* cpu) {
              * — a broken gouraud gradient that rendered as hard facets on ~all
              * quad faces (51/face-stream here). Reading the real colour restores
              * the smooth per-vertex shading. */
-            uint32_t c3 = cpu->read_word(cbase + ((v4w >> 9) & 0x7FCu)) & 0xFFFFFFu;
+            uint32_t c3 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (v4w >> 9) & 0x7FCu);
 
             int tpx=0,tpy=0,clx=0,cly=0,bpp=16, abr=0, u[4]={0,0,0,0}, v[4]={0,0,0,0};
             if (textured) {
@@ -1734,6 +1811,7 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
+    fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_native_pass(cpu, func_8001F798, "REG");   /* regular material */
     moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
     s_in = 0;
@@ -2512,7 +2590,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             (f.header >= 0x80000000u) ? cpu->read_word(f.header + 0x14) : 0u,
-            f.w0, f.metal, f.mscol, mobys[i] };
+            f.w0, f.metal, f.mscol, mobys[i],
+            fade_snap_get(mobys[i]) };   /* fade from the last canonical pass (sub-tick reuse) */
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
