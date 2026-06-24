@@ -334,6 +334,23 @@ static void spyro_native_reextract(void* cpu_v) {
         const int32_t* cp = (const int32_t*)(cam + CAM_OFF_POS);
         double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
         if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
+        /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
+         * far — e.g. the dragon-rescue close-up, which flips the camera ~180° while
+         * position barely changes) slips past the position threshold above. Linearly
+         * lerping a large rotation matrix drives it through a near-singular midpoint
+         * (determinant collapses) → severe scene warping on the intermediate presents.
+         * Detect via the rotation angle between prev/curr camera matrices (orthonormal
+         * Q12): cos(angle) = (trace(Rp^T·Rc) - 1)/2, and trace(Rp^T·Rc) is just the
+         * Frobenius inner product of the two 3x3s / 4096^2. Snap when the camera turned
+         * more than 90°/tick (cos<0 ⇒ frob<4096^2) — no smooth camera move does that
+         * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
+         * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
+        if (!cam_cut) {
+            const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
+            const int16_t* cm = (const int16_t*)(cam + CAM_OFF_PROJ);
+            double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
+            if (frob < 4096.0 * 4096.0) cam_cut = 1;   /* angle > 90° per tick */
+        }
     }
 
     if (paired && cam && prev && curr && !cam_cut) {
