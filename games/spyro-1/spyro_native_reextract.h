@@ -90,6 +90,7 @@ void shadow_native_reextract(struct CPUState* cpu);
 void spyro_player_native_reextract(struct CPUState* cpu);
 void particle_native_reextract(struct CPUState* cpu);
 void flame_native_reextract(struct CPUState* cpu);
+void trail_native_reextract(struct CPUState* cpu);
 
 /* Canonical-scratch capture, called from the canonical render hooks while the
  * transient .s render-pass scratch is still live (the sub-tick re-extract
