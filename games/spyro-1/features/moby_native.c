@@ -895,7 +895,7 @@ static int build_walk_tris(CPUState* cpu) {
              * the smooth per-vertex shading. */
             uint32_t c3 = cpu->read_word(cbase + ((v4w >> 9) & 0x7FCu)) & 0xFFFFFFu;
 
-            int tpx=0,tpy=0,clx=0,cly=0,bpp=16, u[4]={0,0,0,0}, v[4]={0,0,0,0};
+            int tpx=0,tpy=0,clx=0,cly=0,bpp=16, abr=0, u[4]={0,0,0,0}, v[4]={0,0,0,0};
             if (textured) {
                 uint32_t td0 = cpu->read_word(fp + adv - 0xCu);
                 uint32_t td1 = cpu->read_word(fp + adv - 0x8u);
@@ -906,6 +906,7 @@ static int build_walk_tris(CPUState* cpu) {
                 u[3]=(int)((td2>>16)&0xFFu); v[3]=(int)((td2>>24)&0xFFu);   /* quad u3v3 */
                 tpx=(int)(tp&0xFu)*64; tpy=(int)((tp>>4)&1u)*256;
                 int mode=(int)((tp>>7)&3u); bpp=(mode==0)?4:(mode==1)?8:16;
+                abr=(int)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
                 clx=(int)(cl&0x3Fu)*16; cly=(int)((cl>>6)&0x1FFu);
             }
             /* #1 SPECULAR per-face shading. The .s gives ONLY strip faces (!fresh)
@@ -981,7 +982,19 @@ static int build_walk_tris(CPUState* cpu) {
                 }
               }
             }
-            int blend = 0;   /* ABE bit not in word0; 3a.3 sets it from tpage */
+            /* Semi-transparency (ABE). The .s moby renderer (r_moby.s F798 emit
+             * paths .L80020530 / .L8002066C) builds each GPU command word as
+             *   code | RGB | ((w1 & 1) << 25)
+             * i.e. bit 25 (the GPU ABE / semi-transparency-enable bit) comes from
+             * bit0 of the per-face colour-index word w1 (fp+4) — deliberately the
+             * bit the &0x7FC colour-index masks drop. When ABE is set the blend
+             * MODE is the texpage ABR field (bits 5-6); untextured ABE faces have
+             * no texpage of their own so they take the GPU's default ABR 0 (50%).
+             * Mapping mirrors particle_native: 0=ABR0(B/2+F/2), 1=ABR1(add),
+             * 2=ABR2(subtract), 3=ABR3(B+F/4 -> additive). */
+            int blend = 0;
+            if (w1 & 1u)
+                blend = (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 2;
 
             if (emit_a)
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
