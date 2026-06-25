@@ -9,7 +9,8 @@
 //   0x80075684            = active tracer-SET count (then zeroed)
 //   0x800772C8 + set*4     = per-set point count
 //   0x80078658 + set*4     = per-set points-base pointer
-//   0x8007596C             = width config (==63 -> width >>2)
+//   0x8007596C             = g_LevelId (==63 Gnasty Gnorc boss: width>>2 + R<->G
+//                            colour swap, i.e. the white->red gradient -> green)
 //   each point = 28-byte record: world XYZ @+0/+4/+8, fade @+24
 //     (+12/+16/+20 are the .s's int16 SX/SY/viewZ — we re-project instead).
 //
@@ -18,10 +19,11 @@
 //     V = (camY-Y, camZ-Z, X-camX); MAC = camRot * V / 4096; viewZ = MAC3;
 //     SX = OFX + MAC1*H/MAC3, SY = OFY + MAC2*H/MAC3   (pure float, no GTE clamp)
 //   per point i (fade f, skipped when f>=81):
-//     width   = (625*i)<<5   (>>2 if cfg==63)
+//     width   = (625*i)<<5   (>>2 if g_LevelId==63)
 //     dir     = next point screen delta (dx,dy); len = hypot(dx,dy)
 //     perp    = (dy,-dx) * width / (viewZ*len)        (perspective ribbon)
-//     corners = P +/- perp ; colour = (150-2f, 150-4f, 150-10f) clamped
+//     corners = P +/- perp ; colour = (150-2f, 150-4f, 150-10f) clamped,
+//               R<->G swapped at g_LevelId==63 (Gnasty's green tracers)
 //   emit a gouraud G4 (additive, ABR1) spanning prev corners -> curr corners,
 //   once >=2 points emitted and viewZ < 256000.
 //
@@ -46,7 +48,7 @@ extern unsigned openpete_frame;
 #define TRACER_COUNT    0x80075684u   /* active set count (drained to 0 by the .s) */
 #define TRACER_CNTTAB   0x800772C8u   /* per-set point count                       */
 #define TRACER_BASETAB  0x80078658u   /* per-set points-base pointer               */
-#define TRACER_WIDTHCFG 0x8007596Cu   /* ==63 -> width >>2                          */
+#define G_LEVELID       0x8007596Cu   /* g_LevelId; ==63 (Gnasty) -> width>>2 + R<->G swap */
 
 #define MAX_SETS 16
 #define MAX_PTS  72
@@ -129,7 +131,8 @@ static void tracer_build_and_feed(CPUState* cpu) {
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
-    int wshift = (cpu->read_word(TRACER_WIDTHCFG) == 63u) ? 2 : 0;
+    int is_gnasty = (cpu->read_word(G_LEVELID) == 63u);   /* level 63: thin + green */
+    int wshift    = is_gnasty ? 2 : 0;
 
     openpete_native_scene_begin_frame(openpete_frame);
 
@@ -175,6 +178,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
             }
             int Rc = 150 - 2 * f, Gc = 150 - 4 * f, Bc = 150 - 10 * f;
             if (Rc < 0) Rc = 0; if (Gc < 0) Gc = 0; if (Bc < 0) Bc = 0;
+            if (is_gnasty) { int t = Rc; Rc = Gc; Gc = t; }  /* func_800189F8: g_LevelId==63 swaps R<->G */
             uint32_t col = (uint32_t)(Rc | (Gc << 8) | (Bc << 16));
             double c0x = sx + px, c0y = sy + py;
             double c1x = sx - px, c1y = sy - py;
