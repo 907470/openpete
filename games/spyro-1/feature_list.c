@@ -18,7 +18,7 @@ extern const feature_module_t spyro_native_module;
 extern const feature_module_t flame_native_module;
 extern const feature_module_t shadow_native_module;
 extern const feature_module_t particle_native_module;
-extern const feature_module_t trail_native_module;
+extern const feature_module_t tracer_native_module;
 extern const feature_module_t terrain_native_module;
 extern const feature_module_t ui_sprite_native_module;
 extern const feature_module_t portal_native_module;
@@ -64,12 +64,12 @@ const feature_module_t* const openpete_features[] = {
      * mode; inert otherwise. Records the RP_PARTICLES polybuf range itself (so
      * the render_paths thin bracket on func_800573C8 is retired). */
     &particle_native_module,
-    /* Phase 3b.5 native-renderer TRAIL/beam: the additive gouraud quad-strip
-     * trail (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
+    /* Phase 3b.5 native-renderer TRACER/beam: the additive gouraud quad-strip
+     * tracer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
      * glowing streak. Capture-and-feed: runs the real renderer (verdict) then
      * feeds the additive strip it emitted into the native scene's additive
      * layer. Was previously unhooked, so the whole beam was absent. */
-    &trail_native_module,
+    &tracer_native_module,
     /* Phase 4 native-renderer TERRAIN/world: hooks the env-render dispatch
      * func_8002B9CC (-> func_800258F0 world renderer) only under
      * OPENPETE_TERRAIN_VERIFY or a native renderer mode; inert otherwise.

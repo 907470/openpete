@@ -97,7 +97,7 @@ add_executable(openpete-spyro1
     features/flame_native.c
     features/shadow_native.c
     features/particle_native.c
-    features/trail_native.c
+    features/tracer_native.c
     features/terrain_native.c
     features/ui_sprite_native.c
     features/portal_native.c

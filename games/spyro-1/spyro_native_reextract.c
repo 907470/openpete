@@ -781,7 +781,7 @@ static void spyro_native_reextract(void* cpu_v) {
     spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
-    trail_native_reextract(cpu);          /* additive trail/beam (replay snapshot, interp camera) */
+    tracer_native_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
     flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     spyro_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */

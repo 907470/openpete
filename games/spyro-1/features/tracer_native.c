@@ -1,12 +1,12 @@
-// trail_native.c — native gamestate re-derivation of the additive "trail/beam"
+// tracer_native.c — native gamestate re-derivation of the additive "tracer/beam"
 // renderer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
-// glowing streak. Re-derived in FLOAT from the trail-point gamestate (no
+// glowing streak. Re-derived in FLOAT from the tracer-point gamestate (no
 // capture of the .s's already-projected int16 prims), so it has true per-vertex
 // view-Z depth, high-FPS sub-tick support, and no quantization.
 //
-// Trail data (drained + zeroed by the .s every frame, so snapshot at hook
+// Tracer data (drained + zeroed by the .s every frame, so snapshot at hook
 // entry before the real renderer runs):
-//   0x80075684            = active trail-SET count (then zeroed)
+//   0x80075684            = active tracer-SET count (then zeroed)
 //   0x800772C8 + set*4     = per-set point count
 //   0x80078658 + set*4     = per-set points-base pointer
 //   0x8007596C             = width config (==63 -> width >>2)
@@ -26,7 +26,7 @@
 //   once >=2 points emitted and viewZ < 256000.
 //
 // Display-only: the real renderer still runs (verdict/state), we read only the
-// trail-point gamestate and feed the native scene. Oracle inert.
+// tracer-point gamestate and feed the native scene. Oracle inert.
 
 #include <math.h>
 #include <stdint.h>
@@ -39,14 +39,14 @@
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* sub-tick re-extract entry */
 
-extern void     func_800189F0(CPUState* cpu);   /* the real trail/beam renderer */
+extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
 
 #define G_CAMERA       0x80076DD0u
-#define TRAIL_COUNT    0x80075684u   /* active set count (drained to 0 by the .s) */
-#define TRAIL_CNTTAB   0x800772C8u   /* per-set point count                       */
-#define TRAIL_BASETAB  0x80078658u   /* per-set points-base pointer               */
-#define TRAIL_WIDTHCFG 0x8007596Cu   /* ==63 -> width >>2                          */
+#define TRACER_COUNT    0x80075684u   /* active set count (drained to 0 by the .s) */
+#define TRACER_CNTTAB   0x800772C8u   /* per-set point count                       */
+#define TRACER_BASETAB  0x80078658u   /* per-set points-base pointer               */
+#define TRACER_WIDTHCFG 0x8007596Cu   /* ==63 -> width >>2                          */
 
 #define MAX_SETS 16
 #define MAX_PTS  72
@@ -58,13 +58,13 @@ static int  s_nsets;                 /* sets captured at the last canonical fram
 
 static int s16i(uint32_t v) { return (int)(int16_t)(uint16_t)v; }
 
-/* Snapshot the trail-point gamestate before the .s drains it. */
-static void trail_snapshot(CPUState* cpu) {
+/* Snapshot the tracer-point gamestate before the .s drains it. */
+static void tracer_snapshot(CPUState* cpu) {
     s_nsets = 0;
-    uint32_t nsets = cpu->read_word(TRAIL_COUNT);
+    uint32_t nsets = cpu->read_word(TRACER_COUNT);
     for (uint32_t s = 0; s < nsets && s_nsets < MAX_SETS; s++) {
-        int count = (int)cpu->read_word(TRAIL_CNTTAB + s * 4u);
-        uint32_t base = cpu->read_word(TRAIL_BASETAB + s * 4u);
+        int count = (int)cpu->read_word(TRACER_CNTTAB + s * 4u);
+        uint32_t base = cpu->read_word(TRACER_BASETAB + s * 4u);
         if (count <= 0 || base < 0x80000000u) continue;
         if (count > MAX_PTS) count = MAX_PTS;
         tset* ts = &s_sets[s_nsets++];
@@ -81,7 +81,7 @@ static void trail_snapshot(CPUState* cpu) {
 
 /* func_80017B48 in float: world point -> screen (sx,sy) + true full-scale
  * view-Z. Permuted/negated axes; pure float (no GTE int16 clamp / div cap). */
-static int trail_project(const double R[3][3], const double cam[3],
+static int tracer_project(const double R[3][3], const double cam[3],
                          double ofx, double ofy, double H,
                          int X, int Y, int Z,
                          double* sx, double* sy, double* vz) {
@@ -114,7 +114,7 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
 
 /* Project the snapshot points (against the CURRENT camera — interpolated on
  * sub-ticks) and feed the additive ribbon with true per-vertex depth. */
-static void trail_build_and_feed(CPUState* cpu) {
+static void tracer_build_and_feed(CPUState* cpu) {
     if (s_nsets <= 0) return;
     double R[3][3], cam[3];
     uint32_t w0 = cpu->read_word(G_CAMERA + 0),  w1 = cpu->read_word(G_CAMERA + 4),
@@ -129,7 +129,7 @@ static void trail_build_and_feed(CPUState* cpu) {
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
-    int wshift = (cpu->read_word(TRAIL_WIDTHCFG) == 63u) ? 2 : 0;
+    int wshift = (cpu->read_word(TRACER_WIDTHCFG) == 63u) ? 2 : 0;
 
     openpete_native_scene_begin_frame(openpete_frame);
 
@@ -148,14 +148,14 @@ static void trail_build_and_feed(CPUState* cpu) {
             int f = ts->pt[i].f;
             if (f >= 81) continue;            /* fully faded -> skip (prev unchanged) */
             double sx, sy, vz;
-            if (!trail_project(R, cam, ofx, ofy, H, ts->pt[i].x, ts->pt[i].y, ts->pt[i].z, &sx, &sy, &vz))
+            if (!tracer_project(R, cam, ofx, ofy, H, ts->pt[i].x, ts->pt[i].y, ts->pt[i].z, &sx, &sy, &vz))
                 continue;
             /* screen direction to the neighbouring point (next; backward at the end) */
             int j = (i + 1 < ts->count) ? i + 1 : i - 1;
             double dx = 0.0, dy = 0.0;
             if (j >= 0) {
                 double nx, ny, nvz;
-                if (trail_project(R, cam, ofx, ofy, H, ts->pt[j].x, ts->pt[j].y, ts->pt[j].z, &nx, &ny, &nvz)) {
+                if (tracer_project(R, cam, ofx, ofy, H, ts->pt[j].x, ts->pt[j].y, ts->pt[j].z, &nx, &ny, &nvz)) {
                     dx = nx - sx; dy = ny - sy;
                 }
             }
@@ -191,9 +191,9 @@ static void trail_build_and_feed(CPUState* cpu) {
     }
 }
 
-/* Dispatch hook: snapshot the trail gamestate (before the .s drains it), run
+/* Dispatch hook: snapshot the tracer gamestate (before the .s drains it), run
  * the real renderer (verdict), then re-derive + feed natively. */
-static int on_800189F0_trail(CPUState* cpu, uint32_t addr) {
+static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_render_enabled();
     if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
@@ -202,28 +202,28 @@ static int on_800189F0_trail(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
 
-    if (feed) trail_snapshot(cpu);                        /* capture before the drain */
+    if (feed) tracer_snapshot(cpu);                        /* capture before the drain */
     func_800189F0(cpu);                                   /* real renderer (verdict) */
     if (feed && s_nsets > 0 && render_path_enabled(RP_PARTICLES))
-        trail_build_and_feed(cpu);
+        tracer_build_and_feed(cpu);
     s_in = 0;
     return 1;
 }
 
 /* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
-void trail_native_reextract(CPUState* cpu) {
+void tracer_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_PARTICLES)) return;
-    trail_build_and_feed(cpu);
+    tracer_build_and_feed(cpu);
 }
 
-static const feature_dispatch_entry_t trail_dispatch[] = {
-    { 0x800189F0u, on_800189F0_trail },
+static const feature_dispatch_entry_t tracer_dispatch[] = {
+    { 0x800189F0u, on_800189F0_tracer },
     { 0u, NULL },
 };
 
-const feature_module_t trail_native_module = {
-    .name           = "trail_native",
+const feature_module_t tracer_native_module = {
+    .name           = "tracer_native",
     .apply_options  = NULL,
-    .dispatch_table = trail_dispatch,
+    .dispatch_table = tracer_dispatch,
 };
