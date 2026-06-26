@@ -1063,7 +1063,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * slots (0,1,2)+(1,2,3) = (i0,i1,i3)+(i1,i3,i2) — diagonal i1-i3
              * (NOT a FAN i0-i2: affine texture/colour warp is diagonal-dependent,
              * the cause of the "slanted textures"). A tri is just (i0,i1,i2). */
-            if (quad) {
+            if (quad && faceStride == 8) {
+                /* LP (untextured G4) quad: the .s LP loop (r_environment .L80026390)
+                 * NCLIPs tri(i0,i1,i2) then tri(i3,i1,i2) — a plain GPU strip with
+                 * diagonal i1-i2 and NO i2/i3 slot swap. (HP's GT4 swaps i2/i3 below;
+                 * applying that swap to LP's scanline-ordered corners bowties the quad
+                 * → overlapping tris + gouraud-colour bleed = the missing distant-
+                 * terrain polys + brown artifacts.) Untextured, so corner UVs unused. */
+                emit_tri(sv, i0, i1, i2, k0, k1, k2, &mat);
+                emit_tri(sv, i1, i2, i3, k1, k2, k3, &mat);
+            } else if (quad) {
                 emit_tri(sv, i0, i1, i3, k0, k1, k3, &mat);
                 emit_tri(sv, i1, i3, i2, k1, k3, k2, &mat);
             } else {
