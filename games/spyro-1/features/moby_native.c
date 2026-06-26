@@ -2350,6 +2350,12 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         uint32_t mtab = D_METAL_COLTAB + (uint32_t)((int32_t)mscolor >> 21);
         uint32_t metal_w0 = cpu->read_word(mtab) & 0xFFFFFFu;
         uint32_t metal_w1 = cpu->read_word(mtab + 4u) & 0xFFFFFFu;
+        /* flat-basic ABE (func_80022A2C block_8002363C): a flat-shaded moby whose flat
+         * colour-table index (m_SpecularMetalColor>>22) is 0 emits its faces
+         * semi-transparent (the .s adds 0x02000000 = the GPU ABE bit). Per-moby, not
+         * depth-gated. (Metal-face ABE is depth(SZ3>=2048)/NCLIP-keyed and intertwined
+         * with the far-darkening approximation — deferred to a calibrated pass.) */
+        int flat_abe = (((int32_t)mscolor) >> 22) == 0;
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_wtri_n < MAX_NTRI; f++, fp += 8u) {
             uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
@@ -2377,19 +2383,23 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                 c2 = j2<pcn?pcol[j2]:0x808080u; c3 = j3<pcn?pcol[j3]:0x808080u;
                 mode = 0;
             }
+            /* flat-basic faces inherit the moby's flat ABE (mode 1 only); gouraud
+             * (mode 0) and metal (mode 2) stay opaque here (metal ABE deferred).
+             * blend=1 == ABR0 (50% B/2+F/2), the untextured-ABE default. */
+            int sh_blend = (mode == 1 && flat_abe) ? 1 : 0;
             int mt0 = s_wtri_n;
             proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
             double ncl1 = tri_nclip_i(p0, p1, p2);
             if (i2 == i3) {                                       /* TRI */
                 if (ncl1 > 0.0)
-                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
             } else if (i3 < vc) {                                 /* QUAD */
                 proj_xy* p3 = &base[i3];
                 double ncl2 = tri_nclip_i(p3, p1, p2);
                 if (ncl1 > 0.0 || ncl2 < 0.0) {
-                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                     if (s_wtri_n < MAX_NTRI)
-                        emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,0);
+                        emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                 }
             }
             for (int t = mt0; t < s_wtri_n; t++) s_wtri_mode[t] = mode;

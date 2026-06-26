@@ -1074,7 +1074,15 @@ static int build_spyro_walk(CPUState* cpu) {
         int tpx=(int)(tp&0xFu)*64, tpy=(int)((tp>>4)&1u)*256;
         int mode=(int)((tp>>7)&3u), bpp=(mode==0)?4:(mode==1)?8:16;
         int clx=(int)(cl&0x3Fu)*16, cly=(int)((cl>>6)&0x1FFu);
-        int blend=0;   /* Spyro prims are 0x34/0x3C (ABE bit clear) — opaque */
+        /* func_80024404 GT4@0x80024E3C / GT3@0x80024FD8: word1 bit0 -> GPU ABE bit
+         * (<<25), so the prim code 0x3C->0x3E / 0x34->0x36 (semi-transparent). Mirror
+         * the regular moby walk (build_walk_tris): map the texpage ABR mode. No-op when
+         * bit0 is clear (the common opaque case), so it can't regress normal Spyro. */
+        int blend=0;
+        if (w1 & 1u) {
+            int abr=(int)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
+            blend = (abr==0) ? 1 : (abr==1) ? 2 : (abr==2) ? 3 : 2;
+        }
         if (fresh) {
             uint32_t w2 = cpu->read_word(fp + 8);
             int i3 = (int)(w2 & 0x7FCu)>>2;
