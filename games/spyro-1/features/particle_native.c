@@ -228,7 +228,6 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * (block_800574F8). sel 0 (TILE), sel 1/4 (lines), sel 5 (affine matrix),
  * glows + sparkles still TODO. */
 #define GTE_DIV_CAP   (131071.0 / 65536.0)
-#define GTE_SXY_BOUND 1024.0
 /* WORLD particles project through proj2 with camera-relative coords shifted >>2
  * (world/4), so their view-Z (cz) is 1/4 the shared full-world scale that
  * depth_from_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
@@ -243,11 +242,6 @@ static int rd_s16(CPUState* cpu, uint32_t addr) {
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
 }
 static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
-static double clampSXY(double x) {
-    if (x < -GTE_SXY_BOUND) return -GTE_SXY_BOUND;
-    if (x > GTE_SXY_BOUND-1.0) return GTE_SXY_BOUND-1.0;
-    return x;
-}
 
 /* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
 static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
@@ -276,8 +270,8 @@ static void proj2(const int R[3][3], double ofx, double ofy, double H,
     o->m1 = mac1; o->m2 = mac2; o->m3 = mac3;
     double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
     double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    o->sx = clampSXY(ofx + clamp16(mac1) * q);
-    o->sy = clampSXY(ofy + clamp16(mac2) * q);
+    o->sx = ofx + clamp16(mac1) * q;   /* no ±1024 SXY saturation — float, widescreen reveal needs the true X */
+    o->sy = ofy + clamp16(mac2) * q;
 }
 
 static void proj_view(double ofx, double ofy, double H,
@@ -285,8 +279,8 @@ static void proj_view(double ofx, double ofy, double H,
     o->m1 = X; o->m2 = Y; o->m3 = Z;
     double sz3 = Z < 0.0 ? 0.0 : (Z > 65535.0 ? 65535.0 : Z);
     double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    o->sx = clampSXY(ofx + clamp16(X) * q);
-    o->sy = clampSXY(ofy + clamp16(Y) * q);
+    o->sx = ofx + clamp16(X) * q;
+    o->sy = ofy + clamp16(Y) * q;
 }
 
 /* the .s screen-rect reject of the projected centre (s4=0x10000 s5=0x1000000
@@ -458,8 +452,8 @@ static void particle_build(CPUState* cpu) {
             for (int k = 0; k < 4; k++) {                /* R'=diag(4096,2560,4096)+TR */
                 double m1 = C[k][0] + TR0;
                 double m2 = C[k][1]*2560.0/4096.0 + TR1;
-                q.sx[k] = (float)clampSXY(ofx + clamp16(m1)*qd);
-                q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
+                q.sx[k] = (float)(ofx + clamp16(m1)*qd);
+                q.sy[k] = (float)(ofy + clamp16(m2)*qd);
                 q.sz[k] = (float)TR2;
             }
             q.cz = (float)c.m3 * PART_VZ_WORLD4;          /* world/4 -> full-world (centre depth, not TR2) */
@@ -581,8 +575,8 @@ static void particle_build(CPUState* cpu) {
             for (int k = 0; k < 4; k++) {                /* diag(4096,2560,4096) + TR */
                 double m1 = Cc[k][0] + TR0;
                 double m2 = Cc[k][1]*2560.0/4096.0 + TR1;
-                q.sx[k] = (float)clampSXY(ofx + clamp16(m1)*qd);
-                q.sy[k] = (float)clampSXY(ofy + clamp16(m2)*qd);
+                q.sx[k] = (float)(ofx + clamp16(m1)*qd);
+                q.sy[k] = (float)(ofy + clamp16(m2)*qd);
                 q.sz[k] = (float)TR2;
             }
             q.cz = (float)TR2;
@@ -980,8 +974,8 @@ static void sparkle_build(CPUState* cpu) {
         for (int k = 0; k < 4; k++) {
             double m1 = TR0 + a3 * T[k][0] / 4096.0;
             double m2 = TR1 + a3 * T[k][1] / 4096.0;
-            sx[k] = clampSXY(ofx + clamp16(m1)*qd);
-            sy[k] = clampSXY(ofy + clamp16(m2)*qd);
+            sx[k] = ofx + clamp16(m1)*qd;
+            sy[k] = ofy + clamp16(m2)*qd;
         }
         /* line 1 = T0→T3, line 2 = T1→T2 */
         sline* l0 = &s_sline[s_sline_n++];

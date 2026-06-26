@@ -288,11 +288,14 @@ static void sh_proj(const int R[3][3], const double TR[3], double ofx, double of
     o->sx = (float)x; o->sy = (float)y; o->sz = (float)mac3;
 }
 
-/* signed 2*area on the int16-rounded SXY (== GTE NCLIP MAC0 sign). */
+/* signed 2*area on the native FLOAT SXY == GTE NCLIP MAC0 sign, WITHOUT the GTE's
+ * int16 floor. Flooring (the old lrintf) flips a near-zero-area fan's sign at grazing
+ * angles, culling the whole moby drop-shadow so it pops/vanishes — same bug fixed in
+ * moby_native (tri_nclip). Precise float here; the Z-buffer/decal handles the rest. */
 static double sh_nclip(const spt* a, const spt* b, const spt* c) {
-    double ax = lrintf(a->sx), ay = lrintf(a->sy);
-    double bx = lrintf(b->sx), by = lrintf(b->sy);
-    double cx = lrintf(c->sx), cy = lrintf(c->sy);
+    double ax = a->sx, ay = a->sy;
+    double bx = b->sx, by = b->sy;
+    double cx = c->sx, cy = c->sy;
     return ax*(by - cy) + bx*(cy - ay) + cx*(ay - by);
 }
 

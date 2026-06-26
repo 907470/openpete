@@ -1015,14 +1015,17 @@ typedef struct {
 #define MAX_SWTRI (MAX_SPROJ * 4)
 static swtri s_swtri[MAX_SWTRI]; static int s_swtri_n;
 
-/* signed 2*area on the .s's int16 SXY (scratchpad), == the GTE NCLIP sign. */
-static double spyro_nclip(CPUState* cpu, int i0, int i1, int i2) {
-    uint32_t w0=cpu->read_word(SCRATCHPAD+(uint32_t)i0*4);
-    uint32_t w1=cpu->read_word(SCRATCHPAD+(uint32_t)i1*4);
-    uint32_t w2=cpu->read_word(SCRATCHPAD+(uint32_t)i2*4);
-    double ax=(int16_t)(w0&0xFFFF), ay=(int16_t)(w0>>16);
-    double bx=(int16_t)(w1&0xFFFF), by=(int16_t)(w1>>16);
-    double cx=(int16_t)(w2&0xFFFF), cy=(int16_t)(w2>>16);
+/* signed 2*area on the native FLOAT screen coords == GTE NCLIP sign, WITHOUT the
+ * GTE's int16 floor. The floored version (the old .s-scratchpad read) flips a
+ * near-zero-area face's sign at grazing angles, culling genuinely front-facing thin
+ * segments (Spyro's tail-tip / head / wing edges) so the background shows through —
+ * the same bug fixed in moby_native (tri_nclip). s_sproj[] is the same vertex-index
+ * space the emit reads; the Z-buffer sorts the survivors. */
+static double spyro_nclip(int i0, int i1, int i2) {
+    if (i0>=s_sproj_n || i1>=s_sproj_n || i2>=s_sproj_n) return -1.0;
+    double ax=s_sproj[i0].sx, ay=s_sproj[i0].sy;
+    double bx=s_sproj[i1].sx, by=s_sproj[i1].sy;
+    double cx=s_sproj[i2].sx, cy=s_sproj[i2].sy;
     return (bx-ax)*(cy-ay) - (cx-ax)*(by-ay);
 }
 
@@ -1103,8 +1106,8 @@ static int build_spyro_walk(CPUState* cpu) {
                  *   n1>=0 & n2<=0 -> skip
                  *   n1<0  & n2>0  -> QUAD (v0,v1,v2)+(v1,v3,v2)
                  *   n1<0  & n2<=0 -> tri (v0,v1,v2) */
-                double n1 = spyro_nclip(cpu,i0,i1,i2);
-                double n2 = (i3 < s_sproj_n) ? spyro_nclip(cpu,i3,i1,i2) : -1.0;
+                double n1 = spyro_nclip(i0,i1,i2);
+                double n2 = (i3 < s_sproj_n) ? spyro_nclip(i3,i1,i2) : -1.0;
                 if (n1 >= 0.0) {
                     if (n2 > 0.0)   /* single tri (v3,v1,v2) */
                         emit_swtri(i3,i1,i2, c3,c1,c2, u3,v3,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
@@ -1117,7 +1120,7 @@ static int build_spyro_walk(CPUState* cpu) {
                 }
             }
         } else {   /* strip: single tri, keep if (bit0 ? always : NCLIP1>0) */
-            double n1 = spyro_nclip(cpu,i0,i1,i2);
+            double n1 = spyro_nclip(i0,i1,i2);
             if (bit0 || n1 > 0.0)
                 emit_swtri(i0,i1,i2, c0,c1,c2, u0,v0,u1,v1,u2,v2, 1,tpx,tpy,clx,cly,bpp,blend);
         }
