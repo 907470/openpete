@@ -941,30 +941,24 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
         int hpVertsOff = (int)((hpw >> 24) & 0xFF);
 
-        /* Tier selection. The PSX uses a per-frame DISTANCE LOD (the
-         * r_environment binning pass @0x80025940 builds an LP list ($s0) and an
-         * HP list ($t7) by distance, so a sector near the LOD threshold swaps /
-         * overlaps between them) — but a distance LOD means visible POP-IN as
-         * each sector crosses the threshold. The native path has a real Z-buffer
-         * and prefers stability over PSX-faithfulness here (same call as
-         * --no-lod), so the decision is DISTANCE-INDEPENDENT and draws BOTH
-         * tiers wherever they exist:
-         *   HP: drawn wherever the sector HAS HP geometry (the fine layer, wins
-         *       the Z-test in front).
-         *   LP: drawn wherever the sector HAS LP geometry (unless 0x2000 forbids
-         *       it). Pushed 3% back in depth (feed LP_DEPTH_BIAS), so where a
-         *       sector also has HP the LP is hidden behind it — but it stays
-         *       present as the BACKING layer that (a) fills the LP↔HP hole on
-         *       0x8000 force-LP sectors whose HP is a sparse overlay (stone-hill,
-         *       sector 79 = 3 HP vs 12 LP faces), and (b) tiles with adjacent
-         *       0x4000 LP-only sectors at the LOD boundary so the fine HP edge of
-         *       a transitional sector doesn't leave a T-junction gap against its
-         *       coarse LP-only neighbour (artisans distant water seam). Both sets
-         *       are fixed per sector (no distance term) → no tier ever pops.
-         * (Flag semantics, confirmed vs the binning pass: 0x4000=no-HP [the old
-         *  noHP], 0x2000=no-LP, 0x8000=force-LP.) */
+        /* Tier selection, distance-INDEPENDENT (no pop-in). HP is drawn wherever
+         * a sector HAS HP geometry (the fine layer, all distances). LP is drawn
+         * ONLY where there is no HP (the 0x4000 backdrop hills) OR where the
+         * sector FORCES it (0x8000, whose HP is a sparse near-detail overlay —
+         * stone-hill sector 79 = 3 HP vs 12 LP faces; HP-only there left the
+         * LP↔HP hole). Those LP sets are a small, fixed handful, so the LP that
+         * rides behind HP (3% LP_DEPTH_BIAS) only fills genuine gaps and isn't a
+         * broad overlay.
+         *   NB: drawing LP behind HP for EVERY sector (an earlier attempt to also
+         *   close the artisans distant-water T-junction seam) made the low-poly
+         *   LP poke THROUGH the HP on non-flat sectors at close range — the
+         *   coarse mesh bulges in front of the HP detail and the depth bias can't
+         *   hold it back. So LP stays restricted to the no-HP / force-LP sets;
+         *   the distant-water seam is left for a poke-free fix (stencil hole-fill).
+         * (Flags, confirmed vs the binning pass: 0x4000=no-HP [old noHP],
+         * 0x2000=no-LP, 0x8000=force-LP.) */
         int drawHP = !(flags & 0x4000) && nHpF > 0;
-        int drawLP = !(flags & 0x2000) && nLpF > 0;
+        int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
 
         s_walk_sectors++;
 
