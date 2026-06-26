@@ -947,17 +947,24 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * overlaps between them) — but a distance LOD means visible POP-IN as
          * each sector crosses the threshold. The native path has a real Z-buffer
          * and prefers stability over PSX-faithfulness here (same call as
-         * --no-lod), so the decision is DISTANCE-INDEPENDENT:
-         *   HP: drawn at ALL distances wherever the sector HAS HP geometry.
-         *   LP: only where there is NO HP (the 0x4000 "no-HP" sectors — the far
-         *       backdrop hills) OR where the sector FORCES LP (flag 0x8000,
-         *       whose HP is a sparse near-detail overlay, e.g. 3 HP vs 12 LP
-         *       faces — HP-only there was the original LP↔HP seam/hole). 0x2000
-         *       forbids LP. Both LP sets are fixed per sector (not distance), so
-         *       no tier ever pops. (Flag semantics: 0x4000=no-HP [old noHP],
-         *       0x2000=no-LP, 0x8000=force-LP — confirmed vs the binning pass.) */
+         * --no-lod), so the decision is DISTANCE-INDEPENDENT and draws BOTH
+         * tiers wherever they exist:
+         *   HP: drawn wherever the sector HAS HP geometry (the fine layer, wins
+         *       the Z-test in front).
+         *   LP: drawn wherever the sector HAS LP geometry (unless 0x2000 forbids
+         *       it). Pushed 3% back in depth (feed LP_DEPTH_BIAS), so where a
+         *       sector also has HP the LP is hidden behind it — but it stays
+         *       present as the BACKING layer that (a) fills the LP↔HP hole on
+         *       0x8000 force-LP sectors whose HP is a sparse overlay (stone-hill,
+         *       sector 79 = 3 HP vs 12 LP faces), and (b) tiles with adjacent
+         *       0x4000 LP-only sectors at the LOD boundary so the fine HP edge of
+         *       a transitional sector doesn't leave a T-junction gap against its
+         *       coarse LP-only neighbour (artisans distant water seam). Both sets
+         *       are fixed per sector (no distance term) → no tier ever pops.
+         * (Flag semantics, confirmed vs the binning pass: 0x4000=no-HP [the old
+         *  noHP], 0x2000=no-LP, 0x8000=force-LP.) */
         int drawHP = !(flags & 0x4000) && nHpF > 0;
-        int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
+        int drawLP = !(flags & 0x2000) && nLpF > 0;
 
         s_walk_sectors++;
 
