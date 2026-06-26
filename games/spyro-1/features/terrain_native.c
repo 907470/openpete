@@ -251,6 +251,18 @@ static void proj_screen(double m1, double m2, double m3, float* sx, float* sy) {
     *sy = (float)(s_ofy + m2 * s_H / z);
 }
 
+/* point-in-triangle (sign test) — used only by the OPENPETE_TERRAIN_SECTORDUMP
+ * coverage-gap grid to attribute cyclorama-bleed pixels to a sector. */
+static int pt_in_tri(float px, float py, float ax, float ay,
+                     float bx, float by, float cx, float cy) {
+    float d1 = (px-bx)*(ay-by) - (ax-bx)*(py-by);
+    float d2 = (px-cx)*(by-cy) - (bx-cx)*(py-cy);
+    float d3 = (px-ax)*(cy-ay) - (cx-ax)*(py-ay);
+    int neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    int pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+}
+
 #define MAX_TVERTS 16384
 static float s_tvx[MAX_TVERTS], s_tvy[MAX_TVERTS];
 static double s_tvz[MAX_TVERTS];
@@ -262,7 +274,9 @@ typedef struct {
     float sx[3], sy[3]; double vz[3]; uint32_t rgb[3];
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
+    int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
 } ttri;
+static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -270,6 +284,17 @@ typedef struct {
 #define MAX_TTRIS 65536
 static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+
+/* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
+typedef struct {
+    int idx, flags, noHP, nLpV, nLpF, nHpV, nHpF, nv, nf, tris, vfront;
+    int ox, oy, oz;
+    double m3min, m3max;
+    float bx0, by0, bx1, by1;
+} secrec;
+static secrec s_sd[1024]; static int s_sd_n;
+static int s_sectordump = -1;
+static int s_sd_active = 0;
 static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
 static void terrain_dbg_init(void) {
     /* Backface cull is OFF by default: a native Z-buffer hides occluded
@@ -440,6 +465,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     }
     t->textured=m->textured; t->tpx=m->tpx; t->tpy=m->tpy;
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
+    t->tier = s_emit_noHP;
     if (m->textured) s_tex_tris++;
 }
 
@@ -828,6 +854,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
+    if (s_sectordump < 0) { const char* e = getenv("OPENPETE_TERRAIN_SECTORDUMP"); s_sectordump = (e && *e && *e != '0'); }
+    s_sd_n = 0;
+    /* Fire the sector dump once, on the target frame (OPENPETE_TERRAIN_VERIFY_FRAME). */
+    { static int s_sd_fired = 0; static unsigned s_sd_frame = 0xFFFFFFFFu;
+      if (s_sd_frame == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_TERRAIN_VERIFY_FRAME");
+                                       s_sd_frame = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
+      s_sd_active = (s_sectordump > 0 && !s_sd_fired && openpete_frame >= s_sd_frame);
+      if (s_sd_active) s_sd_fired = 1; }
     if (s_caldbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_CALDBG"); s_caldbg = (e && *e && *e != '0'); }
     if (s_nearq == -2) { const char* e = getenv("OPENPETE_TERRAIN_NEARQ"); s_nearq = (e && *e && *e != '0') ? 1 : -1; }
     s_cal_qn = 0; s_cal_qsum_max = 0; s_cal_qmin_max = 0; s_cal_nqsum_min = 1e18;
@@ -903,14 +937,47 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
         double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
 
-        int noHP = (flags & 0x4000) != 0;
         int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
         int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
         int hpVertsOff = (int)((hpw >> 24) & 0xFF);
 
+        /* Two-list LOD decision — mirrors the r_environment binning pass
+         * (func @0x80025940): the PSX builds an LP list ($s0) and an HP list
+         * ($t7) INDEPENDENTLY, so a sector straddling the LOD distance is drawn
+         * at BOTH tiers — the coarse LP layer fills the gaps the finer HP mesh
+         * doesn't reach (the LP↔HP seam that exposed the backdrop). centerZ =
+         * projected bounding-centre view-Z; radius = sectorWord & 0x1FFF; lodThr
+         * = g_Environment[0x24]>>4. The native used only one tier per sector
+         * (noHP?LP:HP), so it never emitted the LP layer for 0x0000/0x8000
+         * sectors → the hole.
+         *   LP ($s0): !(flags&0x2000) && ((flags&0x8000) || lodThr<centerZ+radius+0x100)
+         *   HP ($t7): !(flags&0x4000) && (lodThr>centerZ-radius)
+         * (0x4000 == the old noHP predicate; 0x8000 forces LP; 0x2000 forbids LP.) */
+        int radius = (int)(w1 & 0x1FFF);
+        uint32_t bxy = rd(cpu, s + 0x00);
+        int bX = (int)(bxy >> 16), bY = (int)(bxy & 0xFFFF), bZ = (int)(w1 >> 16);
+        double bm1, bm2, centerZ;
+        project(M, camy - bY, camz - bZ, bX - camx, &bm1, &bm2, &centerZ);
+        double lodThr = (double)((int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 4);
+        int drawLP = !(flags & 0x2000) && ((flags & 0x8000) || (lodThr < centerZ + radius + 256.0)) && nLpF > 0;
+        int drawHP = !(flags & 0x4000) && (lodThr > centerZ - radius) && nHpF > 0;
+
+        s_walk_sectors++;
+
+        /* per-sector accounting for OPENPETE_TERRAIN_SECTORDUMP (spans both passes) */
+        int sd_triBefore = s_tri_n;
+        double sd_m3min = 1e18, sd_m3max = -1e18;
+        float sd_bx0 = 1e18f, sd_by0 = 1e18f, sd_bx1 = -1e18f, sd_by1 = -1e18f;
+        int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
+
+      for (int pass = 0; pass < 2; pass++) {
+        int passLP = (pass == 0);                 /* LP first → drawn behind HP */
+        if (passLP && !drawLP) continue;
+        if (!passLP && !drawHP) continue;
+
         uint32_t verts, faces; int nv, nf, faceStride;
         uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* §9/§10 colour arrays */
-        if (noHP) {
+        if (passLP) {
             verts = s + 0x1C;                                       nv = nLpV;
             faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;         nf = nLpF; faceStride = 8;
             lpColBase = s + 0x1C + (uint32_t)nLpV * 4;          /* LP colours (4B, no fog) */
@@ -921,7 +988,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             farBase  = nearBase + (uint32_t)nHpC * 4;          /* HP far  colours (4B) */
         }
         if (nv > 256) nv = 256;
-        s_walk_sectors++;
+        s_emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
+        sd_nv += nv; sd_nf += nf;
 
         for (int k = 0; k < nv; k++) {
             uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
@@ -930,6 +998,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             project(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
             sv[k].m1 = m1; sv[k].m2 = m2; sv[k].m3 = m3; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
             proj_screen(m1, m2, m3, &sv[k].sx, &sv[k].sy);
+            if (m3 > 0.0) {
+                sd_vfront++;
+                if (m3 < sd_m3min) sd_m3min = m3;
+                if (m3 > sd_m3max) sd_m3max = m3;
+                if (sv[k].sx < sd_bx0) sd_bx0 = sv[k].sx;
+                if (sv[k].sy < sd_by0) sd_by0 = sv[k].sy;
+                if (sv[k].sx > sd_bx1) sd_bx1 = sv[k].sx;
+                if (sv[k].sy > sd_by1) sd_by1 = sv[k].sy;
+            }
             if (m3 > 0.0 && s_tv_n < MAX_TVERTS) {       /* feed the geometry A/B */
                 s_tvx[s_tv_n] = sv[k].sx; s_tvy[s_tv_n] = sv[k].sy; s_tvz[s_tv_n] = m3; s_tv_n++;
             }
@@ -1044,10 +1121,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
-            uint32_t rc0 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
-            uint32_t rc1 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
-            uint32_t rc2 = terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
-            uint32_t rc3 = quad ? terrain_color(cpu, noHP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            uint32_t rc0 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
+            uint32_t rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
+            uint32_t rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
+            uint32_t rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
             /* UV corners. decode_tiledef gives tu/tv[0..3] = [TL,TR,BL,BR]. A QUAD
              * (GT4) uses them directly via the .s slot reorder (i0→TL, i1→TR,
              * i3→BL, i2→BR). A TRIANGLE (GT3) carries a 2-bit UV ORIENTATION in
@@ -1088,6 +1165,86 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 emit_tri(sv, i0, i1, i2, t0, t1, t2, &mat);
             }
         }
+      }  /* pass (LP / HP) */
+        if (s_sd_active && s_sd_n < 1024) {
+            secrec* r = &s_sd[s_sd_n++];
+            r->idx = (int)i; r->flags = flags;
+            r->noHP = (drawLP ? 1 : 0) | (drawHP ? 2 : 0);   /* 1=LP 2=HP 3=BOTH */
+            r->nLpV = nLpV; r->nLpF = nLpF; r->nHpV = nHpV; r->nHpF = nHpF;
+            r->nv = sd_nv; r->nf = sd_nf; r->tris = s_tri_n - sd_triBefore; r->vfront = sd_vfront;
+            r->ox = originX; r->oy = originY; r->oz = originZ;
+            r->m3min = sd_m3min; r->m3max = sd_m3max;
+            r->bx0 = sd_bx0; r->by0 = sd_by0; r->bx1 = sd_bx1; r->by1 = sd_by1;
+        }
+    }
+
+    /* ---- LP↔HP gap probe (OPENPETE_TERRAIN_SECTORDUMP) -------------------- */
+    if (s_sd_active && s_sd_n > 0) {
+        fprintf(stderr, "\n[sectordump] frame=%u  visible=%d  nativeTris=%d  capturedPrims=%d\n",
+                openpete_frame, s_sd_n, s_tri_n, s_gte_n);
+        fprintf(stderr, "  %-4s %-5s %-3s %5s %5s %5s %5s %5s %6s  %-10s  %-9s  %-21s\n",
+                "vi", "flags", "nHP", "nLpV", "nLpF", "nHpV", "nHpF", "tris", "vfront",
+                "m3[min..max]", "tier", "screen-bbox");
+        for (int j = 0; j < s_sd_n; j++) {
+            secrec* r = &s_sd[j];
+            const char* tlab = r->noHP == 3 ? "BOTH" : r->noHP == 1 ? "LP" : r->noHP == 2 ? "HP" : "-";
+            fprintf(stderr,
+                "  %-4d %04X  %-3d %5d %5d %5d %5d %5d %6d  %5.0f..%-5.0f  %-9s  %4.0f,%-4.0f %4.0f,%-4.0f\n",
+                r->idx, r->flags, r->noHP, r->nLpV, r->nLpF, r->nHpV, r->nHpF, r->tris, r->vfront,
+                r->m3min, r->m3max, tlab,
+                r->bx0, r->by0, r->bx1, r->by1);
+        }
+        /* coverage-gap grid: cells covered by captured (PSX) prims but NOT by any
+         * native tri = the cyclorama-bleed band. Grid over the 4:3 screen. */
+        enum { GW = 64, GH = 36 };
+        static uint8_t cap_cov[GW*GH], nat_cov[GW*GH];
+        memset(cap_cov, 0, sizeof(cap_cov)); memset(nat_cov, 0, sizeof(nat_cov));
+        const float SW = 512.0f, SH = 256.0f;   /* PSX 4:3 framebuffer extent */
+        /* mark native tris — SKIP near-clip giant slivers (any vertex far
+         * off-screen). Those don't rasterize across the visible band on the GPU
+         * but a raw point-in-tri test would falsely mark them as coverage and
+         * hide the real hole. */
+        int skipped_giant = 0;
+        for (int t = 0; t < s_tri_n; t++) {
+            ttri* T = &s_tri[t];
+            float mx = 0;
+            for (int k = 0; k < 3; k++) {
+                float ax = T->sx[k] < 0 ? -T->sx[k] : T->sx[k];
+                float ay = T->sy[k] < 0 ? -T->sy[k] : T->sy[k];
+                if (ax > mx) mx = ax; if (ay > mx) mx = ay;
+            }
+            if (mx > 1500.0f) { skipped_giant++; continue; }
+            for (int gy = 0; gy < GH; gy++) for (int gx = 0; gx < GW; gx++) {
+                float px = (gx + 0.5f) * SW / GW, py = (gy + 0.5f) * SH / GH;
+                if (pt_in_tri(px, py, T->sx[0],T->sy[0], T->sx[1],T->sy[1], T->sx[2],T->sy[2]))
+                    nat_cov[gy*GW+gx] = 1;
+            }
+        }
+        fprintf(stderr, "  (skipped %d giant/near-clip tris from native coverage)\n", skipped_giant);
+        /* mark captured prims (quad → two tris) */
+        for (int p = 0; p < s_gte_n; p++) {
+            prim_t* g = &s_gte[p];
+            for (int gy = 0; gy < GH; gy++) for (int gx = 0; gx < GW; gx++) {
+                float px = (gx + 0.5f) * SW / GW, py = (gy + 0.5f) * SH / GH;
+                int hit = pt_in_tri(px,py, g->x[0],g->y[0], g->x[1],g->y[1], g->x[2],g->y[2]);
+                if (!hit && g->nv == 4)
+                    hit = pt_in_tri(px,py, g->x[1],g->y[1], g->x[2],g->y[2], g->x[3],g->y[3]);
+                if (hit) cap_cov[gy*GW+gx] = 1;
+            }
+        }
+        int gap = 0;
+        fprintf(stderr, "  gap map ('#'=PSX-only/missing, '.'=native-ok, ' '=neither, 'o'=native-extra):\n");
+        for (int gy = 0; gy < GH; gy++) {
+            fprintf(stderr, "  ");
+            for (int gx = 0; gx < GW; gx++) {
+                int c = cap_cov[gy*GW+gx], n = nat_cov[gy*GW+gx];
+                char ch = (c && !n) ? '#' : (c && n) ? '.' : (!c && n) ? 'o' : ' ';
+                if (c && !n) gap++;
+                fputc(ch, stderr);
+            }
+            fputc('\n', stderr);
+        }
+        fprintf(stderr, "  gap cells (PSX-covered, native-missing): %d / %d\n", gap, GW*GH);
     }
 }
 
@@ -1095,16 +1252,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
  * mirror via the Tiledef material (modulated by the per-vertex DPCS-fogged
  * colour); untextured faces are gouraud. Colour = native RGB888 + DPCS fog. */
 static int s_notex = -1;   /* OPENPETE_TERRAIN_NOTEX: force untextured (debug) */
+static int s_tiercolor = -1;  /* OPENPETE_TERRAIN_TIERCOLOR: LP=red, HP=blue */
+static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only */
 static void terrain_feed_native(void) {
     if (s_notex < 0) { const char* e = getenv("OPENPETE_TERRAIN_NOTEX"); s_notex = (e && *e && *e != '0'); }
+    if (s_tiercolor < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIERCOLOR"); s_tiercolor = (e && *e && *e != '0'); }
+    if (s_tieronly == -2) { const char* e = getenv("OPENPETE_TERRAIN_TIERONLY"); s_tieronly = e ? atoi(e) : 0; }
     { static int s_cap = -1, s_peak = 0;
       if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
           fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
+        if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
+        if (s_tieronly == 2 &&  t->tier) continue;   /* HP only */
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
-        int tex = (!s_flat && !s_notex) ? t->textured : 0;
+        int tex = (!s_flat && !s_notex && !s_tiercolor) ? t->textured : 0;
         tri.textured = tex; tri.blend = tex ? t->blend : 0;
         tri.tpage_x = t->tpx; tri.tpage_y = t->tpy;
         tri.clut_x = t->clx; tri.clut_y = t->cly; tri.bpp = t->bpp;
@@ -1113,13 +1276,23 @@ static void terrain_feed_native(void) {
             /* Terrain view-Z is in world/16 units (cam>>4, verts /16); the
              * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
              * scale, so ×16 to match — else terrain's depth is ~16× too small
-             * (always nearest) and draws on top of every actor. */
-            tri.v[k].z  = openpete_native_depth_from_viewz((float)t->vz[k] * 16.0f);
+             * (always nearest) and draws on top of every actor.
+             * LP_DEPTH_BIAS: the coarse LP layer is pushed slightly BEHIND the
+             * HP layer (PSX draws LP first, HP overwrites it) so where a sector
+             * carries both tiers the fine HP mesh wins the depth test and the LP
+             * shows only in the seam gaps HP doesn't reach. Harmless for pure-LP
+             * far sectors (still far in front of the cyclorama). */
+            float vzf = (float)t->vz[k] * 16.0f;
+            if (t->tier) vzf *= 1.03f;   /* tier==1 → LP */
+            tri.v[k].z  = openpete_native_depth_from_viewz(vzf);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:
-             * the gouraud colour; s_flat = a debug coverage colour. */
-            tri.v[k].rgba = s_flat ? 0xFF20C040u : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
+             * the gouraud colour; s_flat = a debug coverage colour;
+             * s_tiercolor = LP red / HP blue. */
+            tri.v[k].rgba = s_tiercolor ? (t->tier ? 0xFF0000FFu : 0xFFFF0000u)
+                          : s_flat       ? 0xFF20C040u
+                          : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
         openpete_native_scene_add_tri(&tri);
     }
