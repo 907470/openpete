@@ -762,11 +762,6 @@ static int     s_cur_ui;              /* set per-record by the walks before emit
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
 }
-/* Same but on FLOORED coords, mirroring the GTE's int16 SXY NCLIP (op 0x06) so
- * the quad/tri/skip sign decisions match the .s exactly at near-zero areas. */
-static double tri_nclip_i(const proj_xy* a, const proj_xy* b, const proj_xy* c) {
-    return tri_nclip(floorf(a->sx),floorf(a->sy), floorf(b->sx),floorf(b->sy), floorf(c->sx),floorf(c->sy));
-}
 
 static struct {   /* walk diagnostics (printed by compare_walk_vs_prims) */
     int faces, emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad;
@@ -934,8 +929,13 @@ static int build_walk_tris(CPUState* cpu) {
              * recall 64%->99%. The earlier inverted map drew one half of every quad.)
              * STRIPS (.L8002031C) are single triangles, keep if NCLIP>0. */
             proj_xy* p3 = (i3 < vcount) ? &s_proj[base+i3] : NULL;
-            double ncl1 = tri_nclip_i(p0,p1,p2);
-            double ncl2 = p3 ? tri_nclip_i(p3,p1,p2) : -1.0;
+            /* Backface NCLIP on the precise FLOAT screen coords (NOT the GTE's floored
+             * int16): the 1px floor flips a near-zero-area face's sign at grazing angles,
+             * culling genuinely front-facing thin-moby tops (Artisans water platforms,
+             * cls 0x12 → waterfall showed THROUGH the disc). Float is exact there, and the
+             * native Z-buffer sorts what survives. (PSX/PsyCross floor here and show gaps.) */
+            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);
+            double ncl2 = p3 ? tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy) : -1.0;
             int emit_a = 0, emit_b = 0, b_is_v3tri = 0;
             if (fresh) {
                 int bit0 = (int)(w0 & 1u);
@@ -2389,13 +2389,13 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             int sh_blend = (mode == 1 && flat_abe) ? 1 : 0;
             int mt0 = s_wtri_n;
             proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
-            double ncl1 = tri_nclip_i(p0, p1, p2);
+            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);  /* float backface cull (see build_walk_tris) */
             if (i2 == i3) {                                       /* TRI */
                 if (ncl1 > 0.0)
                     emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
             } else if (i3 < vc) {                                 /* QUAD */
                 proj_xy* p3 = &base[i3];
-                double ncl2 = tri_nclip_i(p3, p1, p2);
+                double ncl2 = tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy);
                 if (ncl1 > 0.0 || ncl2 < 0.0) {
                     emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                     if (s_wtri_n < MAX_NTRI)
