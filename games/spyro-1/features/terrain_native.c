@@ -941,26 +941,23 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
         int hpVertsOff = (int)((hpw >> 24) & 0xFF);
 
-        /* Two-list LOD decision — mirrors the r_environment binning pass
-         * (func @0x80025940): the PSX builds an LP list ($s0) and an HP list
-         * ($t7) INDEPENDENTLY, so a sector straddling the LOD distance is drawn
-         * at BOTH tiers — the coarse LP layer fills the gaps the finer HP mesh
-         * doesn't reach (the LP↔HP seam that exposed the backdrop). centerZ =
-         * projected bounding-centre view-Z; radius = sectorWord & 0x1FFF; lodThr
-         * = g_Environment[0x24]>>4. The native used only one tier per sector
-         * (noHP?LP:HP), so it never emitted the LP layer for 0x0000/0x8000
-         * sectors → the hole.
-         *   LP ($s0): !(flags&0x2000) && ((flags&0x8000) || lodThr<centerZ+radius+0x100)
-         *   HP ($t7): !(flags&0x4000) && (lodThr>centerZ-radius)
-         * (0x4000 == the old noHP predicate; 0x8000 forces LP; 0x2000 forbids LP.) */
-        int radius = (int)(w1 & 0x1FFF);
-        uint32_t bxy = rd(cpu, s + 0x00);
-        int bX = (int)(bxy >> 16), bY = (int)(bxy & 0xFFFF), bZ = (int)(w1 >> 16);
-        double bm1, bm2, centerZ;
-        project(M, camy - bY, camz - bZ, bX - camx, &bm1, &bm2, &centerZ);
-        double lodThr = (double)((int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 4);
-        int drawLP = !(flags & 0x2000) && ((flags & 0x8000) || (lodThr < centerZ + radius + 256.0)) && nLpF > 0;
-        int drawHP = !(flags & 0x4000) && (lodThr > centerZ - radius) && nHpF > 0;
+        /* Tier selection. The PSX uses a per-frame DISTANCE LOD (the
+         * r_environment binning pass @0x80025940 builds an LP list ($s0) and an
+         * HP list ($t7) by distance, so a sector near the LOD threshold swaps /
+         * overlaps between them) — but a distance LOD means visible POP-IN as
+         * each sector crosses the threshold. The native path has a real Z-buffer
+         * and prefers stability over PSX-faithfulness here (same call as
+         * --no-lod), so the decision is DISTANCE-INDEPENDENT:
+         *   HP: drawn at ALL distances wherever the sector HAS HP geometry.
+         *   LP: only where there is NO HP (the 0x4000 "no-HP" sectors — the far
+         *       backdrop hills) OR where the sector FORCES LP (flag 0x8000,
+         *       whose HP is a sparse near-detail overlay, e.g. 3 HP vs 12 LP
+         *       faces — HP-only there was the original LP↔HP seam/hole). 0x2000
+         *       forbids LP. Both LP sets are fixed per sector (not distance), so
+         *       no tier ever pops. (Flag semantics: 0x4000=no-HP [old noHP],
+         *       0x2000=no-LP, 0x8000=force-LP — confirmed vs the binning pass.) */
+        int drawHP = !(flags & 0x4000) && nHpF > 0;
+        int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
 
         s_walk_sectors++;
 
