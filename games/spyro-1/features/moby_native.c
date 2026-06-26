@@ -2571,19 +2571,41 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
  * s_reg_moby (so only specular-ONLY mobys feed). Returns the record count. */
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
-    static uint32_t mobys[MAX_RECORDS]; int nm = 0;
+    static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     s_rec_base = is_spec ? (D_SONY + 0x1600u) : REC_BASE;   /* SPEC queue not relocated */
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
         uint32_t moby = cpu->read_word(rec + 0x34);
-        if (moby >= 0x80000000u && nm < MAX_RECORDS) mobys[nm++] = moby;
+        if (moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = moby; nm++; }
     }
     s_cur_mat = mat;
     s_proj_n = 0; s_nrecs = 0;
     for (int i = 0; i < nm; i++) {
         moby_fields f;
         if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
+        /* Re-apply any render-time per-row scale the .s baked into the cull-record
+         * matrix (rec+0x1C) that build_moby_record_fields' euler rebuild can't see —
+         * notably the dragon-rescue disappear (g_DragonCutscene state 5,
+         * draw.c:1924-1938 scales the record's M rows by a shrink (D_8006F3C0[ticks])
+         * + squash (Cos)). The rebuild is a pure camera·euler rotation, so
+         * |rebuild row| == |UNSCALED record row|; the ratio |record row|/|rebuild row|
+         * is exactly that render-time scale (camera-independent — both are rotations).
+         * Without it, cutscene mobys that squash/shrink render full-size on every
+         * sub-tick present (--render-fps), i.e. they "don't animate out". The deadband
+         * leaves normal mobys (ratio≈1, only Q12 truncation noise) untouched. */
+        {
+            int rM[3][3]; read_matrix(cpu, recs[i] + 0x1Cu, rM);
+            for (int row = 0; row < 3; row++) {
+                double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
+                double mb = sqrt((double)f.M[row][0]*f.M[row][0] + (double)f.M[row][1]*f.M[row][1] + (double)f.M[row][2]*f.M[row][2]);
+                if (mb > 1.0) {
+                    double sc = mr / mb;
+                    if (sc < 0.99 || sc > 1.01)       /* a real render-time scale, not truncation noise */
+                        for (int c = 0; c < 3; c++) f.M[row][c] = (int)lround(f.M[row][c] * sc);
+                }
+            }
+        }
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the
