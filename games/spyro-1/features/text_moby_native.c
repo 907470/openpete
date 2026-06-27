@@ -48,8 +48,8 @@
 
 /* --- glyph metrics (model units) + layout (window-height fractions) --- */
 #define TXT_MODEL_H   152.0f   /* glyph y-extent (-76..76) the cap-height maps to */
-#define TXT_GAP       0.008f   /* gap between glyphs (window-height frac) */
-#define TXT_SPACE     0.022f   /* advance for a space / missing glyph (frac) */
+#define TXT_GAP       0.004f   /* gap between glyphs (window-height frac) */
+#define TXT_SPACE     0.011f   /* advance for a space / missing glyph (frac) */
 
 /* depth band: map model VZ (~±24) to a thin slice around the middle so a glyph's
  * own faces z-sort (front, +VZ, nearer = smaller depth) without being huge. */
