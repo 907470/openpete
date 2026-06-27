@@ -350,12 +350,33 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * and can flicker. (The backstop push-back in feed_portal_quad is a SEPARATE
  * mechanism that keeps the flat backstop behind the dome — unaffected by this.) */
 
+/* A small CONSTANT offset in NDC depth-buffer space (0..1) pulling the portal sky a
+ * hair toward the camera, so it consistently wins the z-fight against the thin
+ * decorative "inner frame" band many arches carry coincident with the opening
+ * plane. This is the "offset the Z" fix — and crucially it is a fixed offset in
+ * DEPTH-BUFFER units, NOT the removed PORTAL_PLANE_FRONT_BIAS which scaled VIEW-Z (a
+ * distance-proportional, multi-pixel nudge that beat the much-nearer arch stone at
+ * the rim and poked the sky out past the SIDES). A constant NDC offset is tiny
+ * everywhere, so the rim sliver where it beats the stone stays sub-pixel at any
+ * distance or angle, while still clearing the coincident-frame z-fight. Applied to
+ * the WHOLE portal sky (dome, flat preview, AND backstop) so all paths shift
+ * together and the far↔medium↔close distance crossfade has no discontinuity; the
+ * backstop's separate relative push-back (`backstop_bias`) rides on top and is
+ * preserved. (A hardware slope-scaled polygon offset — pipeline `depthBias` — is the
+ * fuller version, but it needs the shared `native_render.c` draw path; this
+ * feeder-side constant is the equivalent that touches only this file.) Tunable. */
+#define PORTAL_SKY_DEPTH_OFFSET 0.0015f
+static float portal_sky_depth(double vz) {
+    float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_SKY_DEPTH_OFFSET;
+    return z < 0.0f ? 0.0f : z;
+}
+
 /* Native depth from the portal plane at a screen point (perspective-correct via
- * the inv-vz fit). */
+ * the inv-vz fit), pulled forward by the constant portal-sky depth offset. */
 static float plane_depth(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
-    return openpete_native_depth_from_viewz((float)vz);
+    return portal_sky_depth(vz);
 }
 
 /* Far-path portal preview: the destination dome renders as a single flat colour
@@ -437,7 +458,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = openpete_native_depth_from_viewz((float)(v->vz * depth_bias));
+                t.v[k].z = portal_sky_depth(v->vz * depth_bias);
                 t.v[k].rgba = rgba;
             }
             openpete_native_scene_add_tri(&t);
@@ -449,7 +470,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * clip rect at the farthest-outline constant depth. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)(vz * depth_bias));
+    float depth = portal_sky_depth(vz * depth_bias);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -561,7 +582,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
     double vz = portal_viewz(cpu, skybox, cx, cy);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = openpete_native_depth_from_viewz((float)vz);   /* rect-fallback depth (on the plane) */
+    float depth = portal_sky_depth(vz);   /* rect-fallback depth, pulled forward by the sky offset */
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
@@ -840,7 +861,7 @@ static void feed_revealed_portals(CPUState* cpu) {
             for (int j = 0; j < 3; j++) {
                 const ppt* v = &poly[idx3[j]];
                 t.v[j].sx = v->x; t.v[j].sy = v->y;
-                t.v[j].z = openpete_native_depth_from_viewz((float)v->vz);
+                t.v[j].z = portal_sky_depth(v->vz);
                 t.v[j].rgba = rgba;
             }
             openpete_native_scene_add_tri(&t);
