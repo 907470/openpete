@@ -86,6 +86,14 @@ typedef struct {
 #define MAX_SCENE_TRIS 131072
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
 #define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
+/* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
+ * RGBA target covering the top-left OVL_REGION_W × OVL_REGION_H of the frame (in
+ * win_h-fraction units, matching the glyph layout's win_h-relative coords), then
+ * box-downsample + alpha-blend onto the frame so the corner counter is crisp at
+ * any resolution. The region is generous enough for "FPS: 9999". */
+#define OVL_SS_FACTOR  4
+#define OVL_REGION_W   0.30f
+#define OVL_REGION_H   0.05f
 static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
@@ -554,6 +562,17 @@ static struct {
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
+
+    /* FPS-overlay 4× supersample: the glyphs render into ovl_ss (RGBA,
+     * OVL_SS_FACTOR× the overlay region), then ovl_resolve_pipe box-downsamples +
+     * straight-alpha-blends them onto the offscreen via the ovl_quad rect — so the
+     * corner counter is anti-aliased regardless of window/render res. See
+     * draw_fps_overlay. */
+    rhi_texture  *ovl_ss;
+    int           ovl_ss_w, ovl_ss_h;
+    rhi_pipeline *ovl_resolve_pipe;   /* overlay_resolve.frag, box + straight alpha, RHI_BLEND_ALPHA */
+    rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
+    int           ovl_quad_win_w, ovl_quad_win_h;
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -900,6 +919,16 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = sizeof(int),
     };
+    /* FPS-overlay supersample resolve: like resolve_desc but alpha-aware
+     * (overlay_resolve.frag) and alpha-blended, to composite the downsampled
+     * glyphs over the scene. Optional — draw_fps_overlay falls back to a direct
+     * 1× draw if this (or ovl_quad_vb) didn't come up. */
+    rhi_pipeline_desc ovl_resolve_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "overlay_resolve.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(int),
+    };
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
@@ -921,6 +950,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *overlay_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
+    /* Optional overlay-supersample resources (graceful fallback if NULL). */
+    rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
+    rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
@@ -980,6 +1012,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.overlay_vb   = overlay_vb;
+    s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL → 1× fallback */
+    s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL → 1× fallback */
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
 
@@ -1843,17 +1877,18 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
  * depth-tested through the opaque gouraud pipe after a local depth clear, so the
  * glyphs z-sort among their own faces yet sit on top of the whole frame — the
  * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
-static bool draw_overlay_glyphs_3d(void) {
+static bool draw_overlay_glyphs_3d(float ax, float ay) {
     if (s_overlay_glyph_n < 3 || !s_nr.gouraud_pipe || !s_nr.overlay_vb) return false;
     static rhi_vertex buf[OVL_MAX_VERTS];
     int n = 0;
-    const float winw = (float)s_nr.win_w, winh = (float)s_nr.win_h;
     for (int i = 0; i < s_overlay_glyph_n && n < OVL_MAX_VERTS; i++) {
         const openpete_hud_vert *v = &s_overlay_glyph_verts[i];
-        float px = v->x * winh;   /* both axes scaled by win_h -> square glyphs */
-        float py = v->y * winh;
-        buf[n].x = px / winw * 2.0f - 1.0f;
-        buf[n].y = 1.0f - py / winh * 2.0f;
+        /* Glyph coords are win_h-relative; ax/ay map them into the target's NDC.
+         * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/OVL_REGION_W,
+         * ay=2/OVL_REGION_H — both keep glyphs square (ax/ay carry the same
+         * win_h scale through the target's pixel dims). */
+        buf[n].x = v->x * ax - 1.0f;
+        buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].tex = 0;
         n++;
@@ -1869,20 +1904,87 @@ static bool draw_overlay_glyphs_3d(void) {
     return true;
 }
 
-/* Draw the FPS overlay (top-left) into the currently-open offscreen pass: the 3D
- * Spyro text-moby glyphs the game side built, or nothing if it built none. */
-static void draw_fps_overlay(void) {
-    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || !s_nr.overlay_vb) return;
-    /* Keep the overlay out of recordings — unless OPENPETE_FPS_IN_RECORD is set
-     * (lets the live look be captured for verification, since the overlay is
-     * otherwise live-window-only and never lands in screenshots/records). */
+/* True when the FPS overlay should render this frame: glyphs built, enabled, and
+ * not suppressed by the record gating (kept out of recordings unless
+ * OPENPETE_FPS_IN_RECORD lets the live look be captured for verification). */
+static bool fps_overlay_should_draw(void) {
+    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
     if (openpete_record_active()) {
         static int s_in_rec = -1;
         if (s_in_rec < 0) { const char *e = getenv("OPENPETE_FPS_IN_RECORD");
                             s_in_rec = (e && *e && *e != '0') ? 1 : 0; }
-        if (!s_in_rec) return;
+        if (!s_in_rec) return false;
     }
-    draw_overlay_glyphs_3d();
+    return true;
+}
+
+/* True when the 4× supersample path is usable (all resources up). */
+static bool ovl_ss_ready(void) {
+    return s_nr.ovl_resolve_pipe && s_nr.ovl_quad_vb && s_nr.ovl_ss;
+}
+
+/* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
+ * composite quad on a window resize. Creates GPU resources / waits idle — call
+ * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
+ * failed at init (draw_fps_overlay then falls back to the 1× path). */
+static void ensure_ovl_ss(void) {
+    if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    int rw = (int)(OVL_REGION_W * (float)s_nr.win_h + 0.5f);
+    int rh = (int)(OVL_REGION_H * (float)s_nr.win_h + 0.5f);
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
+    int want_w = rw * OVL_SS_FACTOR, want_h = rh * OVL_SS_FACTOR;
+    uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
+    if ((uint32_t)want_w > maxdim) want_w = (int)maxdim;
+    if ((uint32_t)want_h > maxdim) want_h = (int)maxdim;
+    if (!s_nr.ovl_ss || s_nr.ovl_ss_w != want_w || s_nr.ovl_ss_h != want_h) {
+        rhi_wait_idle(s_nr.dev);
+        if (s_nr.ovl_ss) { rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss); s_nr.ovl_ss = NULL; }
+        s_nr.ovl_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+        s_nr.ovl_ss_w = want_w; s_nr.ovl_ss_h = want_h;
+        if (s_nr.ovl_ss)
+            OPL_INFO_F("native", "FPS overlay SS target %dx%d (%d×)", want_w, want_h, OVL_SS_FACTOR);
+    }
+    /* Composite quad — the overlay's screen rect (top-left) in offscreen NDC.
+     * Rect width is win_h-relative (glyph x uses win_h), so its NDC width scales
+     * by win_h/win_w; UV 0..1 maps the whole SS target (v0 top, top-down). */
+    if (s_nr.ovl_quad_win_w != s_nr.win_w || s_nr.ovl_quad_win_h != s_nr.win_h) {
+        float rw_ndc = OVL_REGION_W * (float)s_nr.win_h / (float)s_nr.win_w * 2.0f;
+        float rh_ndc = OVL_REGION_H * 2.0f;
+        rhi_vertex q[6];
+        build_panel(q, -1.0f + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
+                    rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f);
+        rhi_update_buffer(s_nr.ovl_quad_vb, q, sizeof(q));
+        s_nr.ovl_quad_win_w = s_nr.win_w; s_nr.ovl_quad_win_h = s_nr.win_h;
+    }
+}
+
+/* Pre-pass: render the FPS glyphs at OVL_SS_FACTOR× into ovl_ss (cleared
+ * transparent). Its own render-target pass, so call it BEFORE the offscreen pass
+ * opens (no nested render passes). No-op unless the SS path is ready. */
+static void prepare_fps_overlay_ss(void) {
+    if (!ovl_ss_ready() || !fps_overlay_should_draw()) return;
+    rhi_begin_render_target(s_nr.dev, s_nr.ovl_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
+    draw_overlay_glyphs_3d(2.0f / OVL_REGION_W, 2.0f / OVL_REGION_H);
+    rhi_end_render_target(s_nr.dev, s_nr.ovl_ss);
+}
+
+/* Composite the FPS overlay into the currently-open offscreen pass. SS path:
+ * box-downsample + straight-alpha-blend the ovl_ss the pre-pass built. Fallback:
+ * draw the glyphs directly at 1× (the original crisp-but-aliased path). */
+static void draw_fps_overlay(void) {
+    if (!fps_overlay_should_draw()) return;
+    if (ovl_ss_ready()) {
+        int factor = OVL_SS_FACTOR;
+        rhi_reset_scissor(s_nr.dev);
+        rhi_bind_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.ovl_ss);
+        rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.ovl_quad_vb);
+        rhi_draw(s_nr.dev, 6, 0);
+    } else {
+        draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f);
+    }
 }
 
 /* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all
@@ -2125,12 +2227,17 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
+    ensure_ovl_ss();           /* FPS-overlay supersample target + composite quad */
 
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
     s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
+    /* Render the FPS glyphs at OVL_SS_FACTOR× into ovl_ss now — its own render
+     * pass, so it must precede compose_variant's offscreen pass. compose's
+     * draw_fps_overlay then composites the downsampled result. */
+    prepare_fps_overlay_ss();
     bool did_diff = compose_variant(variant, have_ref);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
 
@@ -2316,6 +2423,9 @@ void openpete_native_render_shutdown(void)
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
     if (s_nr.ss_rtt)       rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
+    if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);
+    if (s_nr.ovl_quad_vb)  rhi_destroy_buffer(s_nr.dev, s_nr.ovl_quad_vb);
+    if (s_nr.ovl_resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
