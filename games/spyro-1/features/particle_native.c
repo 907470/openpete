@@ -36,6 +36,7 @@
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
 extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
 extern void     func_800584C4(CPUState* cpu);  /* RenderSparkles   */
+extern void     func_80058864(CPUState* cpu);  /* RenderDragonStar (free-a-dragon flash) */
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map / the format notes) --------------- */
@@ -243,15 +244,17 @@ static int rd_s16(CPUState* cpu, uint32_t addr) {
 }
 static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
 
-/* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
-static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
-    uint32_t w0 = cpu->read_word(G_CAMERA+0), w1 = cpu->read_word(G_CAMERA+4);
-    uint32_t w2 = cpu->read_word(G_CAMERA+8), w3 = cpu->read_word(G_CAMERA+12);
-    uint32_t w4 = cpu->read_word(G_CAMERA+16);
+/* generic SHORTMATRIX loader (5 packed words -> 9 int16) at an arbitrary base */
+static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
+    uint32_t w0 = cpu->read_word(base+0), w1 = cpu->read_word(base+4);
+    uint32_t w2 = cpu->read_word(base+8), w3 = cpu->read_word(base+12);
+    uint32_t w4 = cpu->read_word(base+16);
     R[0][0]=s16(w0&0xFFFF); R[0][1]=s16(w0>>16); R[0][2]=s16(w1&0xFFFF);
     R[1][0]=s16(w1>>16);    R[1][1]=s16(w2&0xFFFF); R[1][2]=s16(w2>>16);
     R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
 }
+/* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
+static void load_cam_matrix(CPUState* cpu, int R[3][3]) { load_matrix_at(cpu, G_CAMERA, R); }
 
 /* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
 typedef struct { double sx, sy, m1, m2, m3; } projres;
@@ -1045,6 +1048,142 @@ static void sparkle_compare(CPUState* cpu) {
             openpete_frame, s_sline_n, prim_line, nn?sum/nn:0, worst);
 }
 
+/* ---- dragon-rescue star flash (func_80058864) — float walk + feed + A/B ---- *
+ * The "free a dragon" 8-point star sparkle (e.g. Nestor in Artisans). Unlike the
+ * particle/glow/sparkle pools this is a SINGLE gamestate record D_80076248,
+ * decoded from the recompiled C (block_80058864) cross-checked against the
+ * captured prims:
+ *   +0x00 gate (active flag; skip when 0)   +0x04 Vector3D world position
+ *   +0x10 SHORTMATRIX (per-effect rotation; built each frame by
+ *         RotVec8ToMatrix(rot8,mat,g_Camera.projMat) so it already folds in the
+ *         camera projection -> RTPS through it maps local spoke -> view space)
+ *   +0x24 spoke size      +0x2B centre colour byte (broadcast to (c,c,c))
+ * The .s sets TR = view-space centre = camR·(camY-py,camZ-pz,px-camX) (the same
+ * swizzle particles/glows use), projects the centre (V=0), then RTPS-projects 16
+ * ring spokes through `matrix`+TR. Ring radius alternates: even points
+ * (sin/cos·size)>>12, odd points >>10 (4x farther) -> an 8-point star. Each PSX
+ * prim is a FLAT tri (code 0x22 = F3+STP) of one colour (c,c,c); a separate
+ * 0xE1000620 draw-mode prim makes the whole effect ABR mode 1 ADDITIVE. Output
+ * OT = g_HudOT (over the world). Display-only & determinism-safe: the .s writes
+ * no gameplay-readable byte (the producer func_8002F3E4 animates D_80076248). */
+#define D_DRAGONSTAR  0x80076248u
+
+static gtri s_dstri[16]; static int s_dstri_n;
+
+static void dragonstar_build(CPUState* cpu) {
+    s_dstri_n = 0;
+    if (cpu->read_word(D_DRAGONSTAR + 0x00) == 0) return;       /* inactive */
+
+    int Rc[3][3]; load_cam_matrix(cpu, Rc);
+    double camX, camY, camZ;
+    { double cf[3];
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
+      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
+             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
+             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
+    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
+    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
+    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+
+    int px = (int)cpu->read_word(D_DRAGONSTAR+0x04);
+    int py = (int)cpu->read_word(D_DRAGONSTAR+0x08);
+    int pz = (int)cpu->read_word(D_DRAGONSTAR+0x0C);
+
+    /* TR = view-space centre (camera matrix · swizzle); project it (V=0). */
+    projres c; proj2(Rc, ofx, ofy, H, (double)(camY-py), (double)(camZ-pz), (double)(px-camX), &c);
+    double trx = c.m1, try_ = c.m2, trz = c.m3;
+    if (trz <= 0.0) return;                                     /* behind camera */
+
+    int Me[3][3]; load_matrix_at(cpu, D_DRAGONSTAR+0x10, Me);   /* per-effect rotation */
+    int size = (int)cpu->read_word(D_DRAGONSTAR+0x24);
+    uint32_t cc = cpu->read_word(D_DRAGONSTAR+0x28) >> 24;      /* +0x2B colour byte */
+    cc &= 0xFF;
+    uint32_t color = cc | (cc<<8) | (cc<<16);
+
+    /* 16 ring points in angular order: idx = m*16; even m -> outer (>>12), odd m
+     * -> inner (>>10). spoke local = ((sin·size)>>shift, 0, (cos·size)>>shift),
+     * RTPS through the per-effect matrix + TR. COSINE_8 = SINE_8 + 0x80. */
+    double rx[16], ry[16];
+    for (int m = 0; m < 16; m++) {
+        int idx   = m * 16;
+        int sinv  = rd_s16(cpu, D_SIN_TABLE        + (uint32_t)idx*2);
+        int cosv  = rd_s16(cpu, D_SIN_TABLE + 0x80 + (uint32_t)idx*2);
+        /* spoke radius: even points >>12, odd >>10 — kept as FLOAT division (not
+         * the .s integer arithmetic shift) so the spoke length carries sub-pixel
+         * precision. The native renderer's whole point is no positional
+         * quantization; the int floor is the .s artefact we improve on. */
+        double rscale = (m & 1) ? 1024.0 : 4096.0;
+        double vx = (double)sinv * (double)size / rscale;
+        double vz = (double)cosv * (double)size / rscale;
+        double mac1 = (Me[0][0]*vx + Me[0][2]*vz)/4096.0 + trx;
+        double mac2 = (Me[1][0]*vx + Me[1][2]*vz)/4096.0 + try_;
+        double mac3 = (Me[2][0]*vx + Me[2][2]*vz)/4096.0 + trz;
+        double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
+        double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
+        rx[m] = ofx + clamp16(mac1) * q;
+        ry[m] = ofy + clamp16(mac2) * q;
+    }
+
+    for (int m = 0; m < 16; m++) {                              /* centre fan */
+        int n = (m + 1) & 15;
+        gtri* t = &s_dstri[s_dstri_n++];
+        t->sx[0]=(float)c.sx;  t->sy[0]=(float)c.sy;  t->rgb[0]=color;   /* centre */
+        t->sx[1]=(float)rx[m]; t->sy[1]=(float)ry[m]; t->rgb[1]=color;
+        t->sx[2]=(float)rx[n]; t->sy[2]=(float)ry[n]; t->rgb[2]=color;
+        t->cz = (float)trz;
+    }
+}
+
+/* Feed the star fan into the scene — untextured flat tris, ADDITIVE (blend 2).
+ * Drawn at the effect-centre view-Z so the native Z-buffer sorts it against the
+ * world (the PSX bucketed it in g_HudOT, always on top). Display-only. */
+static void dragonstar_feed_native(CPUState* cpu) {
+    dragonstar_build(cpu);
+    if (s_dstri_n <= 0) return;
+    openpete_native_scene_begin_frame(openpete_frame);
+    /* g_HudOT overlay: the PSX links this into the HUD OT, drawn OVER the whole 3D
+     * scene. blend=2 puts it in the native additive group (drawn last, over the
+     * player); z=0 (near plane) so the depth test never rejects a spike that
+     * crosses nearer ground/Spyro — the additive pipe is depth_write_off, so this
+     * is an on-top additive overlay, mirroring the PSX HUD-OT order. */
+    float depth = 0.0f;
+    for (int i = 0; i < s_dstri_n; i++) {
+        gtri* t = &s_dstri[i];
+        openpete_scene_tri st;
+        for (int k = 0; k < 3; k++) {
+            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
+            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
+            st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
+        }
+        st.textured = 0;
+        st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
+        st.blend = 2;                                  /* ABR mode 1 (additive) */
+        openpete_native_scene_add_tri(&st);
+    }
+}
+
+/* A/B the native star fan vs the captured F3-STP prims (code 0x22): per-vertex
+ * NN (order-independent) over all native verts -> nearest .s F3 vertex. */
+static void dragonstar_compare(CPUState* cpu) {
+    dragonstar_build(cpu);
+    int prim22 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x22) prim22++;
+    double sum = 0, worst = 0; int nn = 0;
+    for (int t = 0; t < s_dstri_n; t++) for (int k = 0; k < 3; k++) {
+        double ax = s_dstri[t].sx[k], ay = s_dstri[t].sy[k], best = 1e9;
+        for (int p = 0; p < s_prim_n; p++) {
+            if (s_prim[p].code != 0x22) continue;
+            for (int mv = 0; mv < 3; mv++) {
+                double dx = ax - s_prim[p].x[mv], dy = ay - s_prim[p].y[mv];
+                double d = (dx<0?-dx:dx) + (dy<0?-dy:dy);
+                if (d < best) best = d;
+            }
+        }
+        if (best < 1e8) { sum += best; if (best > worst) worst = best; nn++; }
+    }
+    fprintf(stderr, "[dstar-ab f=%u] native_tri=%d prim22=%d nn=%.2f worst=%.1fpx\n",
+            openpete_frame, s_dstri_n, prim22, nn?sum/nn:0, worst);
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int verify_enabled(void) {
     static int v = -1;
@@ -1154,6 +1293,34 @@ static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; ret
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", 0); }
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", 0); }
 
+/* Dragon-rescue star flash (func_80058864): a single-record effect, not in the
+ * particle pools, so it gets its own thin hook (no census, no RP_PARTICLES
+ * bracket). Run the real renderer (g_HudOT prims for the PsyCross path), capture
+ * its F3 prims for the A/B, then feed the float star. Display-only. */
+static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    int verify = verify_enabled();
+    int feed   = openpete_native_render_enabled();
+    if (!verify && !feed) return 0;                /* inert: normal dispatch */
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+
+    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    func_80058864(cpu);                            /* run the real renderer */
+    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+
+    if ((feed || verify) && endp > startp) { s_prim_n = 0; capture_prims(cpu, startp, endp); }
+    if (feed) dragonstar_feed_native(cpu);
+
+    if (verify && endp > startp && openpete_frame >= verify_frame()) {
+        static int s_dumped = 0;
+        if (!s_dumped) { dump_prims(cpu, "dstar", startp, endp); s_dumped = 1; }
+        static int s_reports = 0;
+        if (s_reports < 2000) { dragonstar_compare(cpu); s_reports++; }
+    }
+    s_in = 0;
+    return 1;
+}
+
 /* Sub-tick re-extract (high-FPS spine): reproduce particles, glows and
  * sparkles from the current g_Particles pool — extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
@@ -1168,12 +1335,14 @@ void particle_native_reextract(CPUState* cpu) {
     particle_feed_native(cpu);
     glow_feed_native(cpu);
     sparkle_feed_native(cpu);
+    dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag */
 }
 
 static const feature_dispatch_entry_t particle_dispatch[] = {
     { 0x800573C8u, on_800573C8_particles },
     { 0x800580F4u, on_800580F4_glows },
     { 0x800584C4u, on_800584C4_sparkles },
+    { 0x80058864u, on_80058864_dragonstar },
     { 0u, NULL },
 };
 
