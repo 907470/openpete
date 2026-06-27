@@ -1001,6 +1001,24 @@ bool openpete_native_render_enabled(void)
     return s_nr.enabled;
 }
 
+/* Toggle the native window between windowed and borderless-desktop fullscreen.
+ * Bound to Alt+Enter and double-click in run.c (moved out of PsyCross, which
+ * only ever drove its now-hidden GL window). SDL3 decides the fullscreen *kind*
+ * by the window's fullscreen mode: NULL = borderless desktop (no video-mode
+ * switch), which is what we want — so force it NULL before entering. The present
+ * path re-reads the window size every frame (SDL_GetWindowSizeInPixels) and the
+ * RHI recreates the swapchain on resize, so layout + swapchain follow with no
+ * extra work here. No-op until the native window is up. */
+void openpete_native_toggle_fullscreen(void)
+{
+    if (!s_nr.enabled || !s_nr.window) return;
+    bool fs = (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
+    if (!fs)
+        SDL_SetWindowFullscreenMode(s_nr.window, NULL);  /* borderless desktop */
+    SDL_SetWindowFullscreen(s_nr.window, !fs);
+    OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
+}
+
 void openpete_native_set_display_rect(int x, int y, int w, int h)
 {
     /* Log size changes only; the disp origin flips every frame (double buffer). */

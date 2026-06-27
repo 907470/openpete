@@ -100,11 +100,21 @@ int openpete_psycross_renders = 1;
  * the game fiber and vblank thread still mid-flight). */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
+/* Set by the SDL event filter on a window double-click; consumed once per host
+ * loop iteration to toggle native-window fullscreen. Kept as a flag so the
+ * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */
+static volatile sig_atomic_t g_native_fs_toggle_request = 0;
+
 static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
     (void)userdata;
     if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
         return false;  /* drop so PsyX_Sys_DoPollEvent never sees it */
+    }
+    /* Double-click toggles native-window fullscreen (see the host loop). */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        ev->button.button == SDL_BUTTON_LEFT && ev->button.clicks == 2) {
+        g_native_fs_toggle_request = 1;
     }
     if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         g_shutdown_requested = 1;
@@ -1243,6 +1253,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_blk_key = false;
     bool prev_i_key = false;
     bool prev_fps_key = false;
+    bool prev_alt_enter = false;
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -1429,6 +1440,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 OPL_INFO_F("render", "fps-overlay -> %s", on ? "ON" : "OFF");
             }
             prev_fps_key = fps_k;
+
+            /* Alt+Enter (either Alt) or a window double-click toggles the
+             * native window between windowed and borderless fullscreen. Moved
+             * here from PsyCross, which only ever drove its now-hidden GL
+             * window; openpete_native_toggle_fullscreen is a no-op in headless
+             * / PsyCross-only runs. The PsyCross g_altKeyState gate still stops
+             * the Enter from registering as Start while Alt is held. */
+            bool alt_enter = kbd_pre && kbd_pre[SDL_SCANCODE_RETURN] &&
+                             (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+            if ((alt_enter && !prev_alt_enter) || g_native_fs_toggle_request) {
+                g_native_fs_toggle_request = 0;
+                openpete_native_toggle_fullscreen();
+            }
+            prev_alt_enter = alt_enter;
         }
 
         PsyX_UpdateInput();

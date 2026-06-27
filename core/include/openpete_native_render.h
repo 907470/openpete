@@ -42,6 +42,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);
 
+/* Toggle the native window between windowed and borderless-desktop fullscreen.
+ * Bound to Alt+Enter and double-click by run.c. No-op until the native window
+ * is up (so it's inert in headless / PsyCross-only runs). */
+void openpete_native_toggle_fullscreen(void);
+
 /* FPS overlay (vk live window). Default on; drawn only on the live vk present
  * (never ab/diff/screenshots). set() forces a state; toggle() flips and returns
  * the new state (for the F11 hotkey). Display-only. */
