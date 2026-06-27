@@ -499,7 +499,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
                 "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
                 "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
-                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 digital pad)\n"
+                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
                 "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
                 "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
                 "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"

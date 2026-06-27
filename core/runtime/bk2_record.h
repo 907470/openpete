@@ -7,8 +7,8 @@
  * "Header.txt" so the file round-trips through BizHawk and through our
  * own bk2_movie_load.
  *
- * Only P1 digital buttons are recorded (analog axes default to 128).
- * Same scope as the replay path — see openpete-bk2-input.md.
+ * P1 digital buttons and the 4 analog axes are recorded, plus the analog-
+ * mode flag (MODE column) — see openpete-bk2-input.md.
  */
 #ifndef OPENPETE_BK2_RECORD_H
 #define OPENPETE_BK2_RECORD_H
@@ -25,9 +25,10 @@ extern "C" {
  * the file is not opened until then. */
 int  bk2_record_begin(const char* path);
 
-/* Append the current frame's PSX pad bitfield (released=1, pressed=0).
+/* Append the current frame: PSX pad bitfield (released=1, pressed=0) and the
+ * 4 analog axis bytes (LX, LY, RX, RY; 128 = centre, NULL = all centre).
  * No-op if recording isn't active. */
-void bk2_record_append(uint16_t bits);
+void bk2_record_append(uint16_t bits, const uint8_t axes[4]);
 
 /* Write the .bk2 zip and free the buffer. No-op if recording isn't
  * active. Returns 0 on success, non-zero on write failure. Always safe

@@ -9,14 +9,15 @@
  *
  * - Segment 0 ("    1,...") is constant: disc-select=1 plus three
  *   '.' for Open|Close|Reset. We never emit disc-swap or reset events.
- * - Segment 1 starts with 4 analog axes always at default 128 (we
- *   only record digital), followed by 16 digital chars + 1 MODE char.
+ * - Segment 1 starts with the 4 analog axes (LX, LY, RX, RY), followed
+ *   by 16 digital chars + 1 MODE char ('M' when the pad was analog).
  * - Each digital char is '.' when released, the BizHawk display
  *   letter when pressed (U/D/L/R/s/S/Q/T/O/X/l/r/L/R/L/R) — only the
  *   '.'-vs-non-'.' distinction matters to bk2_movie_load, but the
  *   letters mean the file round-trips through BizHawk too.
  */
 #include "bk2_record.h"
+#include "bk2_movie.h"   /* bk2_frame_t */
 #include "openpete_log.h"
 
 #include "miniz.h"
@@ -37,12 +38,12 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
 };
 
 static struct {
-    char*     path;
-    uint16_t* frames;
-    int       count;
-    int       capacity;
-    int       active;
-    uint16_t  prev_bits;  /* last bits seen, for press/release diff logging */
+    char*        path;
+    bk2_frame_t* frames;
+    int          count;
+    int          capacity;
+    int          active;
+    uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
 
 int bk2_record_begin(const char* path) {
@@ -52,7 +53,7 @@ int bk2_record_begin(const char* path) {
     }
     s_rec.path = strdup(path);
     s_rec.capacity = 16 * 1024;
-    s_rec.frames = (uint16_t*)malloc((size_t)s_rec.capacity * sizeof(uint16_t));
+    s_rec.frames = (bk2_frame_t*)malloc((size_t)s_rec.capacity * sizeof(bk2_frame_t));
     if (!s_rec.path || !s_rec.frames) {
         OPL_ERROR_F("bk2-record", "out of memory at begin");
         free(s_rec.path); free(s_rec.frames);
@@ -80,7 +81,7 @@ void bk2_format_button_diff(uint16_t prev, uint16_t cur,
     release_out[rn] = '\0';
 }
 
-void bk2_record_append(uint16_t bits) {
+void bk2_record_append(uint16_t bits, const uint8_t axes[4]) {
     if (!s_rec.active) return;
     /* Diff against the previous frame and log press/release transitions
      * so a debug-level run shows the same input timeline that lands in
@@ -94,7 +95,7 @@ void bk2_record_append(uint16_t bits) {
     s_rec.prev_bits = bits;
     if (s_rec.count == s_rec.capacity) {
         int new_cap = s_rec.capacity * 2;
-        uint16_t* g = (uint16_t*)realloc(s_rec.frames, (size_t)new_cap * sizeof(uint16_t));
+        bk2_frame_t* g = (bk2_frame_t*)realloc(s_rec.frames, (size_t)new_cap * sizeof(bk2_frame_t));
         if (!g) {
             /* Drop the frame rather than terminating the run. The recorded
              * movie will just be truncated; better than crashing the game. */
@@ -106,19 +107,28 @@ void bk2_record_append(uint16_t bits) {
         s_rec.frames = g;
         s_rec.capacity = new_cap;
     }
-    s_rec.frames[s_rec.count++] = bits;
+    bk2_frame_t* fr = &s_rec.frames[s_rec.count++];
+    fr->buttons = bits;
+    if (axes) {
+        fr->axes[0] = axes[0]; fr->axes[1] = axes[1];
+        fr->axes[2] = axes[2]; fr->axes[3] = axes[3];
+    } else {
+        fr->axes[0] = fr->axes[1] = fr->axes[2] = fr->axes[3] = 128;
+    }
 }
 
 /* Render one frame line into `out` (must hold >= 64 chars). Returns
- * bytes written (excluding NUL). */
-static int format_frame(char* out, uint16_t bits) {
-    /* Constant segment 0 + 4 analog defaults. */
-    int n = sprintf(out, "|    1,...|  128,  128,  128,  128,");
-    /* 16 digital chars + 1 MODE ('.') + closing pipe + newline. */
+ * bytes written (excluding NUL). The 4 axes are emitted %5d (fixed width,
+ * matching Octoshock's "  128" columns) so every line is the same length. */
+static int format_frame(char* out, const bk2_frame_t* fr) {
+    /* Constant segment 0 + 4 analog axes. */
+    int n = sprintf(out, "|    1,...|%5d,%5d,%5d,%5d,",
+                    fr->axes[0], fr->axes[1], fr->axes[2], fr->axes[3]);
+    /* 16 digital chars + 1 MODE + closing pipe + newline. */
     for (int i = 0; i < 16; i++) {
-        out[n++] = (bits & kButtonChars[i].mask) ? '.' : kButtonChars[i].letter;
+        out[n++] = (fr->buttons & kButtonChars[i].mask) ? '.' : kButtonChars[i].letter;
     }
-    out[n++] = '.';   /* MODE — we don't track analog toggles */
+    out[n++] = '.';   /* MODE column — replay is always analog, no toggle */
     out[n++] = '|';
     out[n++] = '\n';
     out[n] = '\0';
@@ -153,7 +163,8 @@ int bk2_record_finalize(void) {
      * = 32, then 16 digital + 1 MODE + '|' + '\n' = 19. Total 51 + '\r' for
      * BizHawk-style CRLF? We write LF; readers we care about handle either.) */
     char frame_buf[64];
-    int  frame_line_len = format_frame(frame_buf, 0xFFFF);
+    bk2_frame_t probe = { 0xFFFF, {128, 128, 128, 128} };
+    int  frame_line_len = format_frame(frame_buf, &probe);
     size_t log_size = key_len
                     + (size_t)s_rec.count * (size_t)frame_line_len
                     + trailer_len;
@@ -167,7 +178,7 @@ int bk2_record_finalize(void) {
     char* p = log;
     memcpy(p, kLogKey, key_len); p += key_len;
     for (int i = 0; i < s_rec.count; i++) {
-        int n = format_frame(p, s_rec.frames[i]);
+        int n = format_frame(p, &s_rec.frames[i]);
         p += n;
     }
     memcpy(p, kInputTrailer, trailer_len); p += trailer_len;

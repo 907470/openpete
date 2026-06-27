@@ -1,13 +1,17 @@
 /* core/runtime/bk2_movie.h — BizHawk (.bk2) movie reader.
  *
- * v1: Octoshock PSX core, P1 digital pad only. Analog axes and the second
- * controller are parsed-then-ignored (see openpete-bk2-input.md).
+ * Octoshock PSX core, P1 pad. Digital buttons + the 4 analog axes (LStick
+ * X/Y, RStick X/Y) are decoded; the second controller is ignored (see
+ * openpete-bk2-input.md/§10).
  *
- * The decoded per-frame value is a 16-bit PSX pad bitfield in the same
- * "released = 1, pressed = 0" convention PsyCross's
- * PsyX_Pad_UpdateKeyboardInput returns — so the host loop can drop it
- * straight into the keyboard-override slot and the rest of the pad
- * pipeline is unchanged.
+ * Each frame decodes to a bk2_frame_t: a 16-bit PSX pad bitfield in the
+ * same "released = 1, pressed = 0" convention PsyCross's
+ * PsyX_Pad_UpdateKeyboardInput returns (so the host loop can drop it
+ * straight into the keyboard-override slot) plus the 4 analog axis bytes
+ * (128 = centre). The pad is always replayed in analog mode (id 0x73) —
+ * Spyro behaves identically in digital vs analog mode except that analog
+ * actually drives the stick, so legacy digital-only movies (axes = 128)
+ * replay unchanged.
  */
 #ifndef OPENPETE_BK2_MOVIE_H
 #define OPENPETE_BK2_MOVIE_H
@@ -20,10 +24,15 @@ extern "C" {
 #endif
 
 typedef struct {
-    uint16_t* frames;            /* PSX pad bitfields, 0xFFFF = all released */
-    int       frame_count;
-    int       first_input_frame; /* index of first frame with any button down,
-                                  * or frame_count if the movie has no input */
+    uint16_t buttons;  /* PSX pad bitfield, 0xFFFF = all released */
+    uint8_t  axes[4];  /* LStick X, LStick Y, RStick X, RStick Y; 128 = centre */
+} bk2_frame_t;
+
+typedef struct {
+    bk2_frame_t* frames;
+    int          frame_count;
+    int          first_input_frame; /* index of first frame with any button down,
+                                      * or frame_count if the movie has no input */
 } bk2_movie_t;
 
 /* Load a .bk2 zip. Reads "Input Log.txt", parses Octoshock P1 digital

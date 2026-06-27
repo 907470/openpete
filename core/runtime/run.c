@@ -1286,8 +1286,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (sim_due && bk2_active) {
             int bk2_frame = (int)openpete_frame - bk2_offset;
             unsigned short bits = 0xFFFF;
+            int ovr_active = 0;
             if (bk2_frame >= 0 && bk2_frame < bk2.frame_count) {
-                bits = bk2.frames[bk2_frame];
+                const bk2_frame_t* fr = &bk2.frames[bk2_frame];
+                bits = fr->buttons;
+                /* bk2 axis order is LX,LY,RX,RY; PSX pad->analog is RX,RY,LX,LY. */
+                g_PsyX_Pad_AnalogOverride[0] = fr->axes[2]; /* RStick X */
+                g_PsyX_Pad_AnalogOverride[1] = fr->axes[3]; /* RStick Y */
+                g_PsyX_Pad_AnalogOverride[2] = fr->axes[0]; /* LStick X */
+                g_PsyX_Pad_AnalogOverride[3] = fr->axes[1]; /* LStick Y */
+                ovr_active = 1;
             } else if (bk2_frame >= bk2.frame_count && opts->bk2_stop_on_end) {
                 quit = 1;
                 exit_reason = "bk2-end";
@@ -1306,6 +1314,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 last_bits = bits;
             }
             g_PsyX_Pad_InputOverride = bits;
+            g_PsyX_Pad_OverrideActive = ovr_active;
         }
 
         /* Drain SDL events + refresh pad state before the game runs. PsyCross's
@@ -1531,8 +1540,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (bk2_recording && ticked_this_iter) {
             unsigned ticks = openpete_frame - frame_before_yield;
             uint16_t bits = PsyX_Pad_GetLastP1Bits();
+            unsigned char ax[4];                 /* PSX pad->analog order: RX,RY,LX,LY */
+            PsyX_Pad_GetLastP1Analog(ax);
+            unsigned char bk2axes[4] = { ax[2], ax[3], ax[0], ax[1] };  /* -> LX,LY,RX,RY */
             for (unsigned t = 0; t < ticks; t++) {
-                bk2_record_append(bits);
+                bk2_record_append(bits, bk2axes);
             }
         }
 
@@ -2103,6 +2115,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     if (bk2_active) {
         bk2_movie_free(&bk2);
         g_PsyX_Pad_InputOverride = 0xFFFF;
+        g_PsyX_Pad_OverrideActive = 0;
+        g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+        g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
     }
     if (bk2_recording) {
         bk2_record_finalize();

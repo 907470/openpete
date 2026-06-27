@@ -55,14 +55,15 @@ static const uint16_t kBk2P1DigitalMask[16] = {
     /* index 16 is MODE — not a PSX bit; handled by stopping the loop at 16. */
 };
 
-/* Decode one input line into a PSX pad bitfield.
+/* Decode one input line into a bk2_frame_t (buttons + 4 analog axes).
  *
  * The line shape we care about is a "|...|...|" frame with at least two
- * pipe-delimited segments. The first 4 commas in segment 1 separate the
- * analog ints from the 17-char digital tail; we walk to the digital tail
- * and read up to 16 chars (skipping MODE at index 16). */
-static int bk2_decode_frame(const char* line, size_t line_len, uint16_t* out) {
-    *out = 0xFFFF;
+ * pipe-delimited segments. Segment 1 (P1) starts with 4 comma-terminated
+ * analog ints (LX, LY, RX, RY — 0..255, 128 = centre), then a 17-char
+ * digital tail (16 buttons + MODE). */
+static int bk2_decode_frame(const char* line, size_t line_len, bk2_frame_t* out) {
+    out->buttons = 0xFFFF;
+    out->axes[0] = out->axes[1] = out->axes[2] = out->axes[3] = 128;
 
     /* Find segment boundaries — bounded scan, no NUL assumption. */
     if (line_len < 3 || line[0] != '|') return -1;
@@ -76,18 +77,26 @@ static int bk2_decode_frame(const char* line, size_t line_len, uint16_t* out) {
     if (!seg1_end) return -1;
     size_t seg1_len = (size_t)(seg1_end - seg1);
 
-    /* Walk past the 4 analog axes (4 commas). Octoshock always emits all 4
-     * even for non-analog controllers — they default to 128. */
+    /* Parse the 4 analog axes, each an int up to its comma. Octoshock always
+     * emits all 4 (default 128); clamp into the PSX 0..255 range. */
     const char* p = seg1;
     const char* end = seg1 + seg1_len;
-    int commas = 0;
-    while (p < end && commas < 4) {
-        if (*p == ',') commas++;
-        p++;
+    for (int a = 0; a < 4; a++) {
+        while (p < end && (*p == ' ' || *p == '\t')) p++;
+        int neg = 0;
+        if (p < end && (*p == '-' || *p == '+')) { neg = (*p == '-'); p++; }
+        int val = 0, digits = 0;
+        while (p < end && *p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); digits++; p++; }
+        while (p < end && *p != ',') p++;       /* to the comma */
+        if (digits == 0 || p >= end) return -1; /* missing value or comma */
+        p++;                                    /* past the comma */
+        if (neg) val = -val;
+        if (val < 0) val = 0;
+        if (val > 255) val = 255;
+        out->axes[a] = (uint8_t)val;
     }
-    if (commas < 4) return -1;
 
-    /* Digital tail — up to 16 chars we care about, then optionally MODE. */
+    /* Digital tail — 16 buttons, then MODE at index 16. */
     size_t tail_len = (size_t)(end - p);
     if (tail_len < 16) return -1;
 
@@ -97,7 +106,8 @@ static int bk2_decode_frame(const char* line, size_t line_len, uint16_t* out) {
             bits &= (uint16_t)~kBk2P1DigitalMask[i];
         }
     }
-    *out = bits;
+    out->buttons = bits;
+    /* MODE column (index 16) is ignored — the pad is always replayed analog. */
     return 0;
 }
 
@@ -124,7 +134,7 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
         return -1;
     }
 
-    out->frames = (uint16_t*)malloc((size_t)capacity * sizeof(uint16_t));
+    out->frames = (bk2_frame_t*)malloc((size_t)capacity * sizeof(bk2_frame_t));
     if (!out->frames) {
         OPL_ERROR_F("bk2", "out of memory (%d frames)", capacity);
         return -1;
@@ -144,17 +154,23 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
         if (line_len > 0 && p[line_len - 1] == '\r') line_len--;
 
         if (line_len > 0 && p[0] == '|' && (line_len < 2 || p[1] != '[')) {
-            uint16_t bits;
-            if (bk2_decode_frame(p, line_len, &bits) != 0) {
+            bk2_frame_t fr;
+            if (bk2_decode_frame(p, line_len, &fr) != 0) {
                 if (errors < 3) {
                     OPL_ERROR_F("bk2", "malformed frame at index %d (skipped)",
                                 frame_count);
                 }
                 errors++;
-                bits = 0xFFFF;
+                fr.buttons = 0xFFFF;
+                fr.axes[0] = fr.axes[1] = fr.axes[2] = fr.axes[3] = 128;
             }
-            out->frames[frame_count] = bits;
-            if (first_input < 0 && bits != 0xFFFF) first_input = frame_count;
+            out->frames[frame_count] = fr;
+            /* "Has input" for first-input offset detection: a button down OR
+             * any stick off-centre (an analog-only movie still has a start). */
+            int has_input = (fr.buttons != 0xFFFF) ||
+                            fr.axes[0] != 128 || fr.axes[1] != 128 ||
+                            fr.axes[2] != 128 || fr.axes[3] != 128;
+            if (first_input < 0 && has_input) first_input = frame_count;
             frame_count++;
         }
         if (!nl) break;
