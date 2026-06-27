@@ -447,7 +447,7 @@ static void particle_build(CPUState* cpu) {
             int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
             int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
             int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            int a2 = (sizeB * sinv) >> 10, a3 = (sizeB * cosv) >> 10;
+            double a2 = (double)sizeB * sinv / 1024.0, a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
             double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
             double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
             double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
@@ -467,9 +467,9 @@ static void particle_build(CPUState* cpu) {
             int angIdx = (int)((B >> 23) & 0x1FE);
             int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
             int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            int eS = (sizeB * sinv) >> 12, eC = (sizeB * cosv) >> 12;
-            double cx[4] = { (double)(VYb-eS), (double)(VYb+eC), (double)(VYb-eC), (double)(VYb+eS) };
-            double cz[4] = { (double)(VXb+eC), (double)(VXb+eS), (double)(VXb-eS), (double)(VXb-eC) };
+            double eS = (double)sizeB * sinv / 4096.0, eC = (double)sizeB * cosv / 4096.0;  /* float (not >>12): sub-pixel corner extent */
+            double cx[4] = { (double)VYb-eS, (double)VYb+eC, (double)VYb-eC, (double)VYb+eS };
+            double cz[4] = { (double)VXb+eC, (double)VXb+eS, (double)VXb-eS, (double)VXb-eC };
             projres pr[4]; double zsum = 0;
             for (int k = 0; k < 4; k++) {
                 proj2(R, ofx, ofy, H, cx[k], (double)VZb, cz[k], &pr[k]);
@@ -571,7 +571,7 @@ static void particle_build(CPUState* cpu) {
             int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
             int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
             int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            int a2 = (sizeB * sinv) >> 10, a3 = (sizeB * cosv) >> 10;
+            double a2 = (double)sizeB * sinv / 1024.0, a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
             double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
             double sz3 = TR2 > 65535 ? 65535 : TR2;
             double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;

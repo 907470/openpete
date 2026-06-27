@@ -619,9 +619,12 @@ static void shadow_spyro_build(CPUState* cpu) {
     for (int k = 0; k < 16; k++) {
         uint32_t rw = cpu->read_word(D_RING + (uint32_t)k*4);
         int rlo = s16(rw & 0xFFFF), rhi = s16(rw >> 16);
-        int VX = s16((ring_r[k] * rhi) >> 10);
-        int VY = s16(ring_y[k] * 4);
-        int VZ = s16((ring_r[k] * rlo) >> 10);
+        /* float (not the .s >>10 int floor): sub-pixel ring-corner local offset.
+         * ring_r/ring_y stay byte-domain (genuine silhouette source); only the
+         * direction scale is floated, like the dragon-star spoke. */
+        double VX = (double)ring_r[k] * rhi / 1024.0;
+        double VY = (double)ring_y[k] * 4.0;
+        double VZ = (double)ring_r[k] * rlo / 1024.0;
         sh_proj(Rh, TR, ofx, ofy, H, VX, VY, VZ, &strip[k]);
     }
 
