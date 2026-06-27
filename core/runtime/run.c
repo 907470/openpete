@@ -110,12 +110,13 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;
     }
-    /* Escape quits — but not while a gamepad is connected, so a controller's
-     * phantom desktop-config keystroke can't kill the game. The window-close
-     * path above still quits. */
+    /* Escape quits. (We used to gate this on !SDL_HasGamepad() so a
+     * Steam-Input phantom keystroke couldn't kill the game, but that also
+     * broke Escape-to-quit for everyone playing on a normal controller — see
+     * openpete_keyboard_state below for the trade-off we re-accepted.) The
+     * window-close path above quits too. */
     if (ev->type == SDL_EVENT_KEY_DOWN &&
-        ev->key.scancode == SDL_SCANCODE_ESCAPE &&
-        !SDL_HasGamepad()) {
+        ev->key.scancode == SDL_SCANCODE_ESCAPE) {
         g_shutdown_requested = 1;
         return false;
     }
@@ -123,22 +124,27 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
 }
 
 /* Host hotkeys (Tab fast-forward, 1/2/3 savestates, F7-F10, I) read the
- * keyboard directly. A connected controller can inject phantom keystrokes —
- * the Steam Controller's Steam-Input desktop config does exactly this — and
- * SDL surfaces them with which==0, indistinguishable from a real keyboard.
- * So while a gamepad is connected we suppress the keyboard for hotkeys,
- * EXCEPT keys that no controller config emits and which are therefore always
- * a genuine press. Tab (fast-forward) is the one such key today; add more to
- * the allowlist below if they prove phantom-safe. Returns a buffer indexed
- * exactly like SDL_GetKeyboardState's array; all callers already null-check. */
+ * keyboard directly. This is a pass-through: the real keyboard always drives
+ * the hotkeys, including while a gamepad is connected.
+ *
+ * We previously zeroed the keyboard (allowlisting only Tab) whenever a gamepad
+ * was present, so a Steam-Input desktop config couldn't fire a hotkey via a
+ * phantom keystroke (SDL surfaces those with which==0, so the *polled*
+ * SDL_GetKeyboardState array can't tell them from a real press). But that
+ * penalised every controller user — testers reported keyboard hotkeys dead
+ * whenever any pad was plugged in — to defend an esoteric, Steam-only
+ * misconfiguration. Re-accepted trade-off: a Steam Input config that maps a
+ * button to a keyboard key can trip a hotkey; the cure is Steam-side (remap
+ * the button / disable Steam Input), as run.c's earlier revert (036381d) noted.
+ * Note the PSX *gameplay* pad is unaffected either way — PsyCross already gates
+ * keyboard-as-pad to gamepad-free slots, so phantom keys can't reach gameplay.
+ *
+ * Kept as the seam for the correct fix if this ever bites a real user: build
+ * keyboard state from the SDL_EVENT_KEY_* stream and drop events whose `which`
+ * is not a physical keyboard, instead of polling the merged array. Returns a
+ * buffer indexed like SDL_GetKeyboardState's; callers already null-check. */
 static const bool* openpete_keyboard_state(void) {
-    const bool* sdl = SDL_GetKeyboardState(NULL);
-    if (!sdl || !SDL_HasGamepad())
-        return sdl;
-    static bool filtered[SDL_SCANCODE_COUNT];
-    memset(filtered, 0, sizeof(filtered));
-    filtered[SDL_SCANCODE_TAB] = sdl[SDL_SCANCODE_TAB];  /* phantom-safe */
-    return filtered;
+    return SDL_GetKeyboardState(NULL);
 }
 
 static void openpete_on_sigint(int sig) {
