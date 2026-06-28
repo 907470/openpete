@@ -22,7 +22,7 @@ extern const feature_module_t tracer_native_module;
 extern const feature_module_t terrain_native_module;
 extern const feature_module_t ui_sprite_native_module;
 extern const feature_module_t portal_native_module;
-extern const feature_module_t transition_probe_native_module;
+extern const feature_module_t transition_native_module;
 
 const feature_module_t* const openpete_features[] = {
     &widescreen_module,
@@ -91,12 +91,14 @@ const feature_module_t* const openpete_features[] = {
      * OPENPETE_PORTAL_DUMP now; float extraction + clip + feed are the next
      * increment. Inert unless a native renderer mode or the dump is set. */
     &portal_native_module,
-    /* TEMPORARY diagnostic: red-logs the two unfed level-transition draw
-     * functions (func_8004F000 edge-fill/cross-fade, func_8001C694 GS_ExitLevel
-     * grayscale) when they fire, so the in-game moments can be found + recorded
-     * as bk2s. Log-only (returns 0, inert); opt-in via OPENPETE_TRANSITION_PROBE=1.
-     * Remove once feeders land. */
-    &transition_probe_native_module,
+    /* Native feeder for the level-transition / balloonist cross-fade backdrop
+     * (func_8004F000): captures the screen-space gouraud mesh it emits into the
+     * shared polybuf and feeds it as the backmost layer, so the soft gradient
+     * shows during the balloonist screen / level exit instead of a flat clear.
+     * Also keeps a thin red probe for the still-unfed GS_ExitLevel grayscale
+     * screen (func_8001C694), opt-in via OPENPETE_TRANSITION_PROBE=1. Chains a
+     * present-commit (after portal's) for the sub-tick staleness latch. */
+    &transition_native_module,
 };
 
 const size_t openpete_feature_count =

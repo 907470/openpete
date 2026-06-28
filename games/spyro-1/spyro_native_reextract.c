@@ -768,6 +768,7 @@ static void spyro_native_reextract(void* cpu_v) {
     /* Re-extract each feeder in canonical scene order. Camera-direct feeders
      * (terrain, Spyro) + the re-derived mobys interpolate via the brackets; sky
      * reproduces tick-N (far backdrop). Every feeder runs → nothing vanishes. */
+    transition_native_reextract(cpu);     /* level-transition / balloonist cross-fade backdrop (backmost) */
     cyclorama_native_reextract(cpu);      /* sky dome + background */
     portal_native_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev→curr) */
     terrain_native_reextract(cpu);        /* interpolated camera → smooth terrain */

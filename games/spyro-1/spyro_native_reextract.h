@@ -91,6 +91,10 @@ void spyro_player_native_reextract(struct CPUState* cpu);
 void particle_native_reextract(struct CPUState* cpu);
 void flame_native_reextract(struct CPUState* cpu);
 void tracer_native_reextract(struct CPUState* cpu);
+/* Level-transition / balloonist cross-fade backdrop: replays the captured
+ * screen-space gouraud mesh (gated on whether func_8004F000 ran this canonical
+ * present) so the gradient holds across sub-tick presents instead of strobing. */
+void transition_native_reextract(struct CPUState* cpu);
 
 /* Canonical-scratch capture, called from the canonical render hooks while the
  * transient .s render-pass scratch is still live (the sub-tick re-extract
