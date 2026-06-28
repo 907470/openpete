@@ -1668,8 +1668,28 @@ static bool draw_native_scene(bool full_extent)
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
         uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | 0xFF000000u;  /* byte order R,G,B,A */
+        /* The freeze backdrop is a captured framebuffer (frozen_tex) at the native
+         * trimmed aspect frozen_w:frozen_h. It must display at THAT aspect, fit into
+         * the window centred (letterbox/pillarbox) — never stretched to fill a box of
+         * a different shape. Stretching is exactly the bug: at the native window size
+         * the box already matches so it looks fine, but any other window stretches it
+         * in whichever direction the window grew. So fit frozen_w:frozen_h into the
+         * panel cell against the LIVE window size (recomputed every present, so it
+         * tracks resizes), independent of the --aspect Hor+ rect (the frozen image has
+         * no side world to reveal). full_extent (native_rtt) is already frozen's aspect
+         * → fill it. */
         float l, r, t, b;
-        cover_rect(full_extent, &l, &r, &t, &b);
+        if (full_extent) {
+            cover_rect(1, &l, &r, &t, &b);
+        } else {
+            int np = s_nr.n_panels > 0 ? s_nr.n_panels : 1;
+            float fhx = 1.0f, fhy = 1.0f;
+            if (s_nr.frozen_w > 0 && s_nr.frozen_h > 0)
+                fit_cell(0.0f, 0.0f, 1.0f / (float)np, 1.0f,
+                         s_nr.frozen_w, s_nr.frozen_h, s_nr.win_w, s_nr.win_h, &fhx, &fhy);
+            l = s_nr.p0_cx - fhx; r = s_nr.p0_cx + fhx;
+            t = fhy;             b = -fhy;
+        }
         const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0 };
         const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0 };
