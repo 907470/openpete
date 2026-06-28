@@ -54,6 +54,17 @@ typedef struct { float sx[3], sy[3]; uint32_t rgb[3]; int blend; } xtri;
 #define MAX_XTRI 8192
 static xtri s_cross[MAX_XTRI];
 static int  s_cross_n;
+/* Backdrop for the warp-pinch gaps. The warp mesh is a 4:3 shape that pinches
+ * inward at the bottom sides, so in widescreen (Hor+) its bottom corners don't
+ * reach the widened frame and the background clear leaks through. Behind the
+ * mesh we draw (1) a flat full-panel quad in the mesh's average colour (catches
+ * any area beyond the mesh's bbox at extreme aspects), then (2) a bilinear
+ * gradient quad spanning the mesh's bbox with its four CORNER colours — so the
+ * fill matches the mesh seamlessly where the warp boundary cuts the corner. */
+static uint32_t s_cross_corner[4];   /* TL, TR, BL, BR (PSX 0xBBGGRR) */
+static uint32_t s_cross_avg;
+static float    s_cross_bbox[4];     /* minx, miny, maxx, maxy */
+static int      s_cross_have_bg;
 
 /* Staleness gate (mirrors portal_native): set while the canonical render runs,
  * latched per canonical present by a chained commit, reset there — so the
@@ -124,6 +135,45 @@ static void crossfade_capture(CPUState* cpu, uint32_t start, uint32_t end) {
         if (next == p) break;                             /* self-loop guard */
         p = next;
     }
+
+    /* Backdrop colours: the mesh bbox, its four corner-quadrant average colours
+     * (for the bilinear gradient quad), and the overall average (for the flat
+     * backstop). Corner quadrants are the 40% nearest each bbox corner in both
+     * axes; an empty quadrant falls back to the overall average. */
+    s_cross_have_bg = 0;
+    if (s_cross_n > 0) {
+        float minx=1e9f,maxx=-1e9f,miny=1e9f,maxy=-1e9f;
+        for (int i = 0; i < s_cross_n; i++)
+            for (int k = 0; k < 3; k++) {
+                float X=s_cross[i].sx[k], Y=s_cross[i].sy[k];
+                if(X<minx)minx=X; if(X>maxx)maxx=X; if(Y<miny)miny=Y; if(Y>maxy)maxy=Y;
+            }
+        float spanx = maxx-minx; if (spanx<1.0f) spanx=1.0f;
+        float spany = maxy-miny; if (spany<1.0f) spany=1.0f;
+        float xlo = minx + spanx*0.4f, xhi = maxx - spanx*0.4f;   /* quadrant thresholds */
+        float ylo = miny + spany*0.4f, yhi = maxy - spany*0.4f;
+        double sr[4]={0,0,0,0}, sg[4]={0,0,0,0}, sb[4]={0,0,0,0}; int sn[4]={0,0,0,0};
+        double ar=0, ag=0, ab=0; int an=0;
+        for (int i = 0; i < s_cross_n; i++)
+            for (int k = 0; k < 3; k++) {
+                uint32_t c = s_cross[i].rgb[k];
+                double r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+                ar+=r; ag+=g; ab+=b; an++;
+                float X=s_cross[i].sx[k], Y=s_cross[i].sy[k];
+                int left = X <= xlo, right = X >= xhi, top = Y <= ylo, bot = Y >= yhi;
+                int q = -1;
+                if (top && left) q=0; else if (top && right) q=1;
+                else if (bot && left) q=2; else if (bot && right) q=3;
+                if (q>=0) { sr[q]+=r; sg[q]+=g; sb[q]+=b; sn[q]++; }
+            }
+        if (an==0) an=1;
+        s_cross_avg = (uint32_t)(ar/an) | ((uint32_t)(ag/an)<<8) | ((uint32_t)(ab/an)<<16);
+        for (int q = 0; q < 4; q++)
+            s_cross_corner[q] = sn[q] ? ((uint32_t)(sr[q]/sn[q]) | ((uint32_t)(sg[q]/sn[q])<<8) | ((uint32_t)(sb[q]/sn[q])<<16))
+                                      : s_cross_avg;
+        s_cross_bbox[0]=minx; s_cross_bbox[1]=miny; s_cross_bbox[2]=maxx; s_cross_bbox[3]=maxy;
+        s_cross_have_bg = 1;
+    }
 }
 
 /* Feed the captured backdrop mesh as the backmost layer: WORLD-category, far
@@ -135,6 +185,46 @@ static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
+
+    /* Backdrop behind the mesh: a 3x3 quad grid that EDGE-CLAMP-extends the
+     * mesh's bilinear corner gradient outward to a huge scissor-clipped rect.
+     * The centre cell spans the mesh bbox with the real 4-corner gradient (so it
+     * continues the mesh seamlessly into the warp-pinch corner gaps); the 8 outer
+     * cells repeat the nearest edge/corner colour, so the gradient fills a frame
+     * of ANY width — including super-ultrawide (96:9) — with no flat block and no
+     * background-clear leak. Hor+ keeps the vertical FOV, so only the horizontal
+     * extent ever needs the extension; the verticals are safety margin. */
+    if (s_cross_have_bg) {
+        const float BIGX = 16384.0f, BIGY = 4096.0f;
+        float gx[4] = { -BIGX, s_cross_bbox[0], s_cross_bbox[2], BIGX };
+        float gy[4] = { -BIGY, s_cross_bbox[1], s_cross_bbox[3], BIGY };
+        /* grid-vertex colour = nearest bbox corner (col 0/1 -> left, 2/3 -> right;
+         * row 0/1 -> top, 2/3 -> bottom). s_cross_corner: TL=0,TR=1,BL=2,BR=3. */
+        const float bz = 0.9995f;
+        int qi[2][3] = { {0,1,2}, {1,3,2} };
+        for (int ci = 0; ci < 3; ci++)
+            for (int ri = 0; ri < 3; ri++) {
+                float cx[4] = { gx[ci], gx[ci+1], gx[ci], gx[ci+1] };
+                float cy[4] = { gy[ri], gy[ri], gy[ri+1], gy[ri+1] };
+                int col[4] = { ci, ci+1, ci, ci+1 }, row[4] = { ri, ri, ri+1, ri+1 };
+                for (int ti = 0; ti < 2; ti++) {
+                    openpete_scene_tri st;
+                    for (int k = 0; k < 3; k++) {
+                        int vi = qi[ti][k];
+                        int corner = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
+                        st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz;
+                        st.v[k].u = 0.0f; st.v[k].v = 0.0f;
+                        st.v[k].rgba = (s_cross_corner[corner] & 0xFFFFFFu) | 0xFF000000u;
+                    }
+                    st.textured = 0;
+                    st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
+                    st.blend = 0;
+                    st.category = OPENPETE_SCENE_WORLD;
+                    openpete_native_scene_add_tri(&st);
+                }
+            }
+    }
+
     const float depth = 0.999f;                           /* far backdrop, still < 1.0 clear */
     for (int i = 0; i < s_cross_n; i++) {
         xtri* t = &s_cross[i];
