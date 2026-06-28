@@ -1,6 +1,6 @@
-// games/spyro-1/features/transition_native.c — native feeder for the level
-// transition / balloonist cross-fade backdrop (func_8004F000), + a thin probe
-// for the still-unfed GS_ExitLevel grayscale screen (func_8001C694).
+// games/spyro-1/features/transition_native.c — native feeders for the level
+// transition presentation layer: the balloonist / level-exit cross-fade backdrop
+// (func_8004F000) and the GS_ExitLevel grayscale freeze (func_8001C694).
 //
 // func_8004F000 ("cross-fade / edge-fill"): during a level transition or a
 // balloonist take-off (GS_Balloonist func_8001E24C, and GS_ExitLevel
@@ -25,10 +25,13 @@
 // gameplay verdict + g_SonyImage state); we only read the prims it left in the
 // polybuf and draw our own copy.
 //
-// func_8001C694 (GS_ExitLevel grayscale screen, 4x POLY_FT4 tiles + a black
-// line via the unhooked world-OT add func_800168A0) is still unfed — kept here
-// as an opt-in red probe (OPENPETE_TRANSITION_PROBE=1) until its own bk2 fixture
-// is recorded. See notes/plans/openpete-native-renderer.md.
+// func_8001C694 (GS_ExitLevel): case 0 is the green-tinted grayscale freeze of
+// the level being exited — the SAME effect as the pause/inventory freeze
+// backdrop, reproduced from the native renderer's own last world frame via
+// openpete_native_scene_set_freeze_backdrop (its FT4s go through the unhooked
+// world-OT add func_800168A0, so native never showed them); case 1 is the
+// cross-fade, fed by the func_8004F000 hook. The OPENPETE_TRANSITION_PROBE=1 red
+// probe is retained as a diagnostic. See notes/plans/openpete-native-renderer.md.
 
 #include "feature_registry.h"
 #include "psx_runtime.h"            /* CPUState */
@@ -42,9 +45,14 @@
 #include <string.h>
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
+extern void     func_8001C694(CPUState* cpu);   /* the real GS_ExitLevel screen */
 extern unsigned openpete_frame;
 
 #define POLYBUF_CURSOR 0x800757B0u
+/* D_800758B8: func_8001C694's case selector — 0 = the green-tinted grayscale
+ * freeze of the level being exited; 1 = the colour cross-fade (-> func_8004F000,
+ * already fed). (The decomp names it "pause text rotation ticks"; reused here.) */
+#define D_GS_EXIT_MODE 0x800758B8u
 
 #define CRED   "\033[1;31m"
 #define CRESET "\033[0m"
@@ -325,12 +333,36 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* GS_ExitLevel grayscale screen — still unfed; probe only (returns 0 inert). */
+/* GS_ExitLevel screen (func_8001C694): case 0 is the green-tinted grayscale
+ * FREEZE of the level being exited (4x POLY_FT4 sampling the frozen framebuffer
+ * through a grayscale CLUT, tinted setRGB0(0x4C,0x80,0x40), emitted via the
+ * unhooked world-OT add func_800168A0 — so native never showed it, just the
+ * clear). It is the SAME effect as the pause / inventory / flight-results freeze
+ * backdrop, which the native renderer already reproduces from its OWN last world
+ * frame (openpete_native_scene_set_freeze_backdrop) — that path just isn't
+ * triggered here. So: run the real renderer (verdict + the FT4s for PsyCross),
+ * then drive the native freeze backdrop with case 0's hardcoded green tint. The
+ * existing overlay carry re-applies it across sub-tick presents. Case 1 (the
+ * cross-fade) calls func_8004F000, fed by its own hook above. */
 static int on_8001C694(CPUState* cpu, uint32_t addr) {
     (void)addr;
+    int feed = openpete_native_render_enabled();
     static unsigned last = 0xFFFFFFFFu;
-    probe_log("func_8001C694", "GS_ExitLevel grayscale screen (UNFED)", cpu, &last);
-    return 0;
+    probe_log("func_8001C694", "GS_ExitLevel grayscale freeze + cross-fade", cpu, &last);
+    if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
+
+    static int s_in = 0;
+    if (s_in) return 0;                                   /* re-entrancy guard */
+    s_in = 1;
+
+    func_8001C694(cpu);                                   /* real renderer (case 1 nests func_8004F000) */
+
+    if (feed && cpu->read_word(D_GS_EXIT_MODE) == 0) {    /* case 0: grayscale freeze */
+        openpete_native_scene_begin_frame(openpete_frame);
+        openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40);
+    }
+    s_in = 0;
+    return 1;
 }
 
 /* ---- sub-tick re-extract (high-FPS spine): replay the captured backdrop ----
