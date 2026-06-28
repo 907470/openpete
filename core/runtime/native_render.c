@@ -579,6 +579,12 @@ static struct {
  * (clip -1..1) instead of panel-0's window rect — used when rendering into
  * native_rtt for the diff pass (native_rtt IS the frame, no panel inset). */
 static int s_render_full_extent = 0;
+/* Horizontal divisor for the full-extent mapping. 1.0 = the 4:3 view fills the
+ * target (native_rtt / diff). >1.0 = the Hor+ WIDESCREEN view fills the target:
+ * the 4:3 content compresses to the centre (1/wf) and the revealed side world
+ * fills out to ±1 — used to capture the freeze backdrop at the widescreen extent
+ * so the pause/exit backdrop fills a widescreen window (not pillarboxed). */
+static float s_render_freeze_wf = 1.0f;
 
 /* Path-isolation mode (--render-paths, set by the game). When on, an empty
  * native scene presents the background instead of re-displaying the PSX VRAM
@@ -1278,8 +1284,11 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     float nx = sx / disp_w;             /* 0..1 across the frame width */
     float ny = (sy - band) / clip_h;    /* 0..1 down the visible band  */
     if (s_render_full_extent) {
-        /* native_rtt IS the frame: map to the full target, clip -1..1. */
-        *cx = -1.0f + nx * 2.0f;
+        /* The render target IS the frame: map to the full target, clip -1..1.
+         * Divide x by s_render_freeze_wf so a widescreen freeze capture (wf>1)
+         * compresses the 4:3 content to the centre and the Hor+ sides fill ±1
+         * (wf==1 → the plain 4:3 full-extent for native_rtt / diff). */
+        *cx = (-1.0f + nx * 2.0f) / s_render_freeze_wf;
         *cy =  1.0f - ny * 2.0f;        /* screen y down -> clip y up */
     } else {
         *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
@@ -1668,28 +1677,14 @@ static bool draw_native_scene(bool full_extent)
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
         uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | 0xFF000000u;  /* byte order R,G,B,A */
-        /* The freeze backdrop is a captured framebuffer (frozen_tex) at the native
-         * trimmed aspect frozen_w:frozen_h. It must display at THAT aspect, fit into
-         * the window centred (letterbox/pillarbox) — never stretched to fill a box of
-         * a different shape. Stretching is exactly the bug: at the native window size
-         * the box already matches so it looks fine, but any other window stretches it
-         * in whichever direction the window grew. So fit frozen_w:frozen_h into the
-         * panel cell against the LIVE window size (recomputed every present, so it
-         * tracks resizes), independent of the --aspect Hor+ rect (the frozen image has
-         * no side world to reveal). full_extent (native_rtt) is already frozen's aspect
-         * → fill it. */
+        /* Fill the render rect (cover_rect = the --aspect display rect, fit into the
+         * window). frozen_tex is captured at the MATCHING aspect — 4:3 in the default
+         * /A-B path, or the Hor+ widescreen view in vk-widescreen (see compose_variant)
+         * — so this fills with no stretch and no pillarbox. cover_rect is the --aspect
+         * rect fit into the window, so a non-matching window letter/pillarboxes (bars,
+         * not stretch); it recomputes each present, tracking live resizes. */
         float l, r, t, b;
-        if (full_extent) {
-            cover_rect(1, &l, &r, &t, &b);
-        } else {
-            int np = s_nr.n_panels > 0 ? s_nr.n_panels : 1;
-            float fhx = 1.0f, fhy = 1.0f;
-            if (s_nr.frozen_w > 0 && s_nr.frozen_h > 0)
-                fit_cell(0.0f, 0.0f, 1.0f / (float)np, 1.0f,
-                         s_nr.frozen_w, s_nr.frozen_h, s_nr.win_w, s_nr.win_h, &fhx, &fhy);
-            l = s_nr.p0_cx - fhx; r = s_nr.p0_cx + fhx;
-            t = fhy;             b = -fhy;
-        }
+        cover_rect(full_extent, &l, &r, &t, &b);
         const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0 };
         const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0 };
         const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0 };
@@ -2035,10 +2030,15 @@ static bool compose_variant(int variant, bool have_ref)
      * freeze, never the menu drawn over it). */
     bool world_frame = want_scene && !(sfreeze & (1u << 31)) && scene_has_world(scene, sn);
     bool rtt_drew = false;
-    if (s_nr.native_rtt && want_scene && (variant == NRV_DIFF || world_frame)) {
-        float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
-        float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
-        float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+    float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
+    float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
+    float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+    /* vk-widescreen: capture the freeze backdrop at the Hor+ extent (so the pause /
+     * exit backdrop FILLS a widescreen window instead of pillarboxing), rendered
+     * straight into frozen_tex. native_rtt stays 4:3 (the diff/ab compare source),
+     * and in vk-widescreen it's only used for the freeze — so it's skipped here. */
+    bool vk_ws = (variant == NRV_VK && s_nr.ws_factor > 1.0f);
+    if (s_nr.native_rtt && want_scene && (variant == NRV_DIFF || (world_frame && !vk_ws))) {
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
         rtt_drew = draw_native_scene(true);
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
@@ -2052,6 +2052,17 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_end_render_target(s_nr.dev, s_nr.frozen_tex);
             s_nr.frozen_valid = true;
         }
+    } else if (vk_ws && want_scene && world_frame && s_nr.frozen_tex) {
+        /* Render the Hor+ (widescreen) view straight into frozen_tex: the 4:3
+         * content compresses to the centre and the revealed side world fills the
+         * rest, so the freeze quad (cover_rect = the --aspect rect) shows it filling
+         * the widescreen window with no pillarbox and no stretch. */
+        s_render_freeze_wf = s_nr.ws_factor;
+        rhi_begin_render_target(s_nr.dev, s_nr.frozen_tex, br, bgc, bb, 1.0f);
+        bool drew = draw_native_scene(true);
+        rhi_end_render_target(s_nr.dev, s_nr.frozen_tex);
+        s_render_freeze_wf = 1.0f;
+        if (drew) s_nr.frozen_valid = true;
     }
 
     /* Diff: |native_rtt - reference| into the offscreen (panel-0 rect). */
