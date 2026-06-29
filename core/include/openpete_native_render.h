@@ -272,8 +272,12 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b);
  * signature), calls this with the FT4's r/g/b tint, and SKIPS feeding the FT4. Call
  * every frame the backdrop is active; it auto-clears each frame (reset by
  * scene_begin / begin_frame). Pass r<0 to clear explicitly. Determinism-safe
- * (display-only). */
-void openpete_native_scene_set_freeze_backdrop(int r, int g, int b);
+ * (display-only).
+ *
+ * `fade` is the fade-to-black shift in 0..127 (subtractive luma shift x127, the
+ * GS_ExitLevel case-0 fade where the game shrinks the grayscale CLUT each tick).
+ * Pass 0 for the static pause / inventory / flight-results backdrop. */
+void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade);
 
 /* Flat 2D HUD/text draw order vs the player for this frame. Default (0) draws the
  * flat HUD/text OVER the player (Spyro behind the HUD/text) — the normal case. Pass

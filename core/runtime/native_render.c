@@ -171,6 +171,7 @@ void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
 static void alpha_census(const openpete_scene_tri* scene, int scene_n);  /* 3c instrument, defined below */
+static bool scene_has_world(const openpete_scene_tri* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
@@ -264,12 +265,14 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     s_scene_fade = v;                       /* raw (no-interp) present path */
     s_game_fade = v; s_game_fade_seen = 1;  /* the game set the fade this tick */
 }
-void openpete_native_scene_set_freeze_backdrop(int r, int g, int b) {
+void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     if (r < 0) { s_scene_freeze = 0; return; }
     if (r > 255) r = 255;
     if (g < 0) g = 0; if (g > 255) g = 255;
     if (b < 0) b = 0; if (b > 255) b = 255;
-    s_scene_freeze = (1u << 31) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    if (fade < 0) fade = 0; if (fade > 127) fade = 127;   /* 7-bit fade shift in bits 24-30 */
+    s_scene_freeze = (1u << 31) | ((uint32_t)fade << 24)
+                   | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
@@ -329,7 +332,29 @@ void openpete_native_scene_commit_fade(void) {
      * emitting the freeze FT4, cleared the tick it stops (menu closed → unpause), so
      * the spine's apply_overlay turns the backdrop off and the world reappears. (This
      * replaces capturing it from s_scene_freeze, which fed back into itself.) */
-    s_overlay_carry_freeze = s_game_freeze_seen ? s_game_freeze : 0;
+    uint32_t prev_freeze = s_overlay_carry_freeze;
+    uint32_t new_freeze  = s_game_freeze_seen ? s_game_freeze : 0;
+    /* Bridge a 1-frame freeze gap at the GS_Paused -> GS_ExitLevel handoff: the pause
+     * menu stops emitting its freeze FT4 the frame it closes, but GS_ExitLevel's
+     * func_8001C694 hasn't drawn its own freeze yet — so for exactly one canonical
+     * tick neither sets the freeze and the carry would drop, letting the spine's
+     * re-extracted (reset) Spyro + bg flash through. The game doesn't flicker because
+     * its frozen framebuffer persists in VRAM. A handoff frame carries only the reset
+     * Spyro (PLAYER) + bg with no real WORLD/ACTOR geometry, so when the freeze is
+     * dropping but the scene has no world, hold the previous freeze. A genuine unpause
+     * rebuilds terrain (WORLD) that same tick, so scene_has_world is true and the
+     * freeze drops correctly — the world reappears with no lag. */
+    if (new_freeze == 0 && prev_freeze != 0 && !scene_has_world(s_scene, s_scene_n)) {
+        new_freeze = prev_freeze;
+        /* The canonical present of this degenerate tick may show the RAW game-fiber
+         * scene (the sub-tick re-extract that re-applies the carry is skipped on a
+         * stuck/transition tick), which left the live s_scene_freeze at 0 — so force
+         * it too, and drop the degenerate geometry (reset Spyro + bg) so only the
+         * held freeze shows, exactly as on a settled freeze frame. */
+        s_scene_freeze = new_freeze;
+        s_scene_n = 0;
+    }
+    s_overlay_carry_freeze = new_freeze;
     s_game_freeze_seen = 0;
 }
 
@@ -1676,7 +1701,12 @@ static bool draw_native_scene(bool full_extent)
         && n + 6 <= SCENE_VB_VERTS) {
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
-        uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | 0xFF000000u;  /* byte order R,G,B,A */
+        /* Fade-to-black shift (bits 24-30, 0..127) rides the vertex alpha as 0..1; the
+         * freeze_overlay shader subtracts it from the desaturated luma (GS_ExitLevel
+         * case 0). 0 for the static pause/inventory backdrop -> alpha 0 -> no shift. */
+        uint32_t fade7 = (scene_freeze >> 24) & 0x7Fu;
+        uint32_t ta8 = (fade7 * 255u + 63u) / 127u;    /* 0..127 -> 0..255 (rounded) */
+        uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | (ta8 << 24);  /* byte order R,G,B,A */
         /* Fill the render rect (cover_rect = the --aspect display rect, fit into the
          * window). frozen_tex is captured at the MATCHING aspect — 4:3 in the default
          * /A-B path, or the Hor+ widescreen view in vk-widescreen (see compose_variant)

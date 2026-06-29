@@ -286,7 +286,8 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
             openpete_native_scene_begin_frame(openpete_frame);  /* idempotent within a frame */
             openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
                                                       (int)((w1 >> 8) & 0xFFu),
-                                                      (int)((w1 >> 16) & 0xFFu));
+                                                      (int)((w1 >> 16) & 0xFFu),
+                                                      0);   /* static: no fade-to-black */
         }
         else if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
         else if (is_f4_opaque(cpu, prim))                                       /* letterbox bars: OVERLAY, opaque, full-panel-wide */

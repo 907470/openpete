@@ -53,6 +53,19 @@ extern unsigned openpete_frame;
  * freeze of the level being exited; 1 = the colour cross-fade (-> func_8004F000,
  * already fed). (The decomp names it "pause text rotation ticks"; reused here.) */
 #define D_GS_EXIT_MODE 0x800758B8u
+/* D_8007568C: the per-case fade tick, 0..31 (func_8002E084 increments it each tick,
+ * resets at 32 and advances the case). In case 0 it shrinks the grayscale CLUT load
+ * (setRECT width 32-tick), fading the frozen level to black. */
+#define D_GS_EXIT_TICK 0x8007568Cu
+/* g_Cyclorama.m_BackgroundColor (g_Cyclorama @0x80078A40 + 0x10): the destination
+ * homeworld's flat background colour. In case 1 the game clears the framebuffer to
+ * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) — a linear fade-in from black, drawn
+ * BEHIND the cyclorama mesh. */
+#define G_CYCLORAMA_BG_COLOR 0x80078A50u
+/* func_8001C694's address span [start, next fn) — to tell the exit-level's nested
+ * func_8004F000 call (ra inside this range) from the balloonist's standalone one. */
+#define GS_EXIT_FN_LO 0x8001C694u
+#define GS_EXIT_FN_HI 0x8001CA38u
 
 #define CRED   "\033[1;31m"
 #define CRESET "\033[0m"
@@ -73,6 +86,14 @@ static uint32_t s_cross_corner[4];   /* TL, TR, BL, BR (PSX 0xBBGGRR) */
 static uint32_t s_cross_avg;
 static float    s_cross_bbox[4];     /* minx, miny, maxx, maxy */
 static int      s_cross_have_bg;
+/* Flat backdrop override for the GS_ExitLevel cyclorama fade (case 1). The mesh
+ * corner colours used for the widescreen edge-fill are the DPCS-faded cyclorama,
+ * near-black early in the fade — so the backdrop grid covers the lerped clear and
+ * the homeworld bg appears too late. For the exit-level the true backdrop IS flat
+ * (the game clears to ColorLerp(cyclorama_bg, 0)=bg*tick/32), so override the grid
+ * with that colour. Bit 31 = set; low 24 = PSX 0xBBGGRR. 0 (balloonist) = use the
+ * mesh corners. */
+static uint32_t s_cross_bg_flat;
 
 /* Staleness gate (mirrors portal_native): set while the canonical render runs,
  * latched per canonical present by a chained commit, reset there — so the
@@ -207,7 +228,14 @@ static void crossfade_feed_native(void) {
         float gx[4] = { -BIGX, s_cross_bbox[0], s_cross_bbox[2], BIGX };
         float gy[4] = { -BIGY, s_cross_bbox[1], s_cross_bbox[3], BIGY };
         /* grid-vertex colour = nearest bbox corner (col 0/1 -> left, 2/3 -> right;
-         * row 0/1 -> top, 2/3 -> bottom). s_cross_corner: TL=0,TR=1,BL=2,BR=3. */
+         * row 0/1 -> top, 2/3 -> bottom). s_cross_corner: TL=0,TR=1,BL=2,BR=3.
+         * Exit-level case 1 overrides all four with the flat lerped cyclorama bg. */
+        uint32_t corner[4] = { s_cross_corner[0], s_cross_corner[1],
+                               s_cross_corner[2], s_cross_corner[3] };
+        if (s_cross_bg_flat & (1u << 31)) {
+            uint32_t f = s_cross_bg_flat & 0xFFFFFFu;
+            corner[0] = corner[1] = corner[2] = corner[3] = f;
+        }
         const float bz = 0.9995f;
         int qi[2][3] = { {0,1,2}, {1,3,2} };
         for (int ci = 0; ci < 3; ci++)
@@ -219,10 +247,10 @@ static void crossfade_feed_native(void) {
                     openpete_scene_tri st;
                     for (int k = 0; k < 3; k++) {
                         int vi = qi[ti][k];
-                        int corner = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
+                        int cidx = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
                         st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz;
                         st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-                        st.v[k].rgba = (s_cross_corner[corner] & 0xFFFFFFu) | 0xFF000000u;
+                        st.v[k].rgba = (corner[cidx] & 0xFFFFFFu) | 0xFF000000u;
                     }
                     st.textured = 0;
                     st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
@@ -285,6 +313,12 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     static int s_in = 0;
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
+
+    /* Balloonist take-off (standalone func_8004F000, ra outside func_8001C694) uses
+     * the mesh-corner edge-fill backdrop, not the exit-level's flat cyclorama bg —
+     * clear any stale override left from a prior GS_ExitLevel. The exit-level's
+     * nested call (ra inside func_8001C694) keeps the override on_8001C694 just set. */
+    if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_8004F000(cpu);                                   /* real renderer (verdict + g_SonyImage) */
@@ -355,11 +389,36 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
 
+    /* Case 1 backdrop: the game clears to ColorLerp(g_Cyclorama.m_BackgroundColor,
+     * 0, D_8007575C). D_8007575C = (0x20-tick)*0x80, and ColorLerp (GTE DPCS toward
+     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32) — a linear fade-
+     * in from black. Set the flat backdrop BEFORE the nested func_8004F000 feed so
+     * the captured cyclorama mesh sits over the lerped homeworld bg (not the near-
+     * black faded-mesh corners), making the bg appear as early as the reference. */
+    if (feed && cpu->read_word(D_GS_EXIT_MODE) == 1) {    /* case 1: cyclorama fade-in */
+        uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
+        if (tick > 31) tick = 31;
+        uint32_t bg = cpu->read_word(G_CYCLORAMA_BG_COLOR);
+        uint32_t r = (bg & 0xFFu) * tick / 32u;
+        uint32_t g = ((bg >> 8) & 0xFFu) * tick / 32u;
+        uint32_t b = ((bg >> 16) & 0xFFu) * tick / 32u;
+        s_cross_bg_flat = (1u << 31) | r | (g << 8) | (b << 16);
+    } else {
+        s_cross_bg_flat = 0;                              /* case 0: freeze owns the screen */
+    }
+
     func_8001C694(cpu);                                   /* real renderer (case 1 nests func_8004F000) */
 
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 0) {    /* case 0: grayscale freeze */
+        /* Fade the frozen level to black over the 32-tick case, matching PSX: the
+         * game shrinks the grayscale CLUT load each tick, so a frozen pixel of luma-
+         * index i samples palette[i-tick] (subtractive shift). tick = D_8007568C in
+         * 0..31 -> shift = tick/31, packed as 0..127 for set_freeze_backdrop. */
+        uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
+        if (tick > 31) tick = 31;
+        int fade = (int)((tick * 127u + 15u) / 31u);      /* 0..31 -> 0..127 (rounded) */
         openpete_native_scene_begin_frame(openpete_frame);
-        openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40);
+        openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40, fade);
     }
     s_in = 0;
     return 1;

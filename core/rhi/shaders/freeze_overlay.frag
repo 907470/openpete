@@ -16,7 +16,8 @@
 layout(set = 0, binding = 0) uniform sampler2D u_tex;   /* frozen native frame */
 
 layout(location = 0) in vec2 vUV;
-layout(location = 1) in vec4 vColor; /* green tint (setRGB0 0x4C,0x80,0x40) */
+layout(location = 1) in vec4 vColor; /* rgb = green tint (setRGB0 0x4C,0x80,0x40);
+                                      * a   = fade-to-black shift (0 = none) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -33,6 +34,12 @@ const vec3 PSX_GRAY = vec3(4.0, 3.0, 1.0) / 8.0;
 void main()
 {
     float lum = dot(texture(u_tex, vUV).rgb, PSX_GRAY);
+    /* Fade-to-black (GS_ExitLevel case 0). The game shrinks the grayscale CLUT load
+     * each tick (setRECT width 32-tick at x 512+tick), so a frozen pixel of luma-index
+     * i samples palette[i-tick] — a SUBTRACTIVE luma shift, not a multiply (darks reach
+     * black first, then mids, then highlights). vColor.a carries shift = tick/31 (0 for
+     * the static pause/inventory backdrop). Continuous here, like the luma above. */
+    lum = max(0.0, lum - vColor.a);
     /* PSX texture modulation: grey * colour / 128 (colour 0x80 == 1.0x), the same
      * (255/128) factor psx_scene.frag uses. The green tint rides the vertex colour. */
     vec3 rgb = clamp(vec3(lum) * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
