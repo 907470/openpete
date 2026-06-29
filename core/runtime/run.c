@@ -604,6 +604,24 @@ static void game_fiber_entry(void) {
     while (1) co_switch((cothread_t)openpete_host_fiber);
 }
 
+/* Frame-time-log: write one 32-byte record per ACTUAL present — both the
+ * canonical sim-tick present and each high-FPS sub-tick (intermediate) present.
+ * The deadline advances by one target period per present (records_written), so
+ * with --render-fps N the log captures the true ~N Hz present cadence; before,
+ * only canonical presents were logged, so a 480 fps run read as ~30 Hz. The
+ * `frame` field carries openpete_frame as cross-reference metadata (it repeats
+ * across a tick's sub-ticks; measure-pacing.py keys off op_now_ns deltas). */
+static void ftl_record_present(openpete_frame_time_log_t* log,
+                               int64_t start_ns, int64_t period_ns,
+                               uint32_t frame)
+{
+    if (!log->fp) return;
+    int64_t now_ns      = op_now();
+    int64_t deadline_ns = start_ns + (int64_t)log->records_written * period_ns;
+    openpete_frame_time_log_record(log, frame, 0u, now_ns,
+                                   deadline_ns, deadline_ns - now_ns);
+}
+
 static int run_recomp_fiber(const openpete_options_t* opts) {
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
@@ -1750,18 +1768,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * record's `frame` field still carries openpete_frame as
              * metadata for cross-referencing with position-log /
              * gameplay-hash-log. */
-            if (frame_time_log.fp) {
-                int64_t now_ns      = op_now();
-                int64_t deadline_ns = frame_time_log_start_ns +
-                                      (int64_t)frame_time_log.records_written *
-                                      frame_time_log_target_period_ns;
-                openpete_frame_time_log_record(&frame_time_log,
-                                               openpete_frame,
-                                               0u,
-                                               now_ns,
-                                               deadline_ns,
-                                               deadline_ns - now_ns);
-            }
+            ftl_record_present(&frame_time_log, frame_time_log_start_ns,
+                               frame_time_log_target_period_ns, openpete_frame);
         }
 
         /* Renderer-foundation Phase 2.1 — intermediate render between
@@ -1820,6 +1828,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * N vk recording is genuinely ~N fps VFR (each present's frame is
              * queued into the async readback ring with its capture instant). */
             openpete_native_render_frame((uint64_t)(op_now() / 1000));
+
+            /* Log this sub-tick present too, so --frame-time-log sees the real
+             * present cadence at --render-fps>30 (not just the ~30 Hz canon). */
+            ftl_record_present(&frame_time_log, frame_time_log_start_ns,
+                               frame_time_log_target_period_ns, openpete_frame);
 
             /* Multi-present capture of native SUB-TICK frames (smoothness check):
              * --screenshot-presents-start/count captures consecutive presents
