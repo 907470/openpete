@@ -24,18 +24,18 @@
       "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
         "CMAKE_C_FLAGS": "-march=x86-64-v3",
         "CMAKE_CXX_FLAGS": "-march=x86-64-v3"
       }
     },
     {
       "name": "windows-mingw-opt",
-      "displayName": "Windows x64 MinGW + -march=native (this machine; max perf)",
+      "displayName": "Windows x64 MinGW + LTO + -march=native (this machine; max perf, slow link)",
       "inherits": "windows-mingw",
       "binaryDir": "${sourceDir}/build/windows-mingw-opt",
       "cacheVariables": {
         "OPENPETE_SKIP_DECOMP": "ON",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
         "CMAKE_C_FLAGS": "-march=native -mtune=native",
         "CMAKE_CXX_FLAGS": "-march=native -mtune=native"
       }
