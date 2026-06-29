@@ -2033,17 +2033,20 @@ static bool compose_variant(int variant, bool have_ref)
     float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
     float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
-    /* vk-widescreen: capture the freeze backdrop at the Hor+ extent (so the pause /
-     * exit backdrop FILLS a widescreen window instead of pillarboxing), rendered
-     * straight into frozen_tex. native_rtt stays 4:3 (the diff/ab compare source),
-     * and in vk-widescreen it's only used for the freeze — so it's skipped here. */
-    bool vk_ws = (variant == NRV_VK && s_nr.ws_factor > 1.0f);
-    if (s_nr.native_rtt && want_scene && (variant == NRV_DIFF || (world_frame && !vk_ws))) {
+    /* native_rtt is the off-display, reference-resolution render consumed by the
+     * diff pass (every frame) and the ab freeze-backdrop snapshot (world frames).
+     * The vk freeze backdrop is NOT captured from here: this full-extent render
+     * skews window-dependently — it squished the pause/inventory freeze at
+     * non-native window sizes — so vk snapshots the freeze from the clean,
+     * correctly-projected windowed offscreen instead (rhi_snapshot_offscreen_to_rt
+     * after the offscreen pass below). */
+    if (s_nr.native_rtt && want_scene &&
+        (variant == NRV_DIFF || (variant == NRV_AB && world_frame))) {
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
         rtt_drew = draw_native_scene(true);
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
 
-        if (rtt_drew && world_frame && s_nr.frozen_tex) {
+        if (variant == NRV_AB && rtt_drew && world_frame && s_nr.frozen_tex) {
             rhi_begin_render_target(s_nr.dev, s_nr.frozen_tex, 0.0f, 0.0f, 0.0f, 1.0f);
             rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.native_rtt);
@@ -2052,17 +2055,6 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_end_render_target(s_nr.dev, s_nr.frozen_tex);
             s_nr.frozen_valid = true;
         }
-    } else if (vk_ws && want_scene && world_frame && s_nr.frozen_tex) {
-        /* Render the Hor+ (widescreen) view straight into frozen_tex: the 4:3
-         * content compresses to the centre and the revealed side world fills the
-         * rest, so the freeze quad (cover_rect = the --aspect rect) shows it filling
-         * the widescreen window with no pillarbox and no stretch. */
-        s_render_freeze_wf = s_nr.ws_factor;
-        rhi_begin_render_target(s_nr.dev, s_nr.frozen_tex, br, bgc, bb, 1.0f);
-        bool drew = draw_native_scene(true);
-        rhi_end_render_target(s_nr.dev, s_nr.frozen_tex);
-        s_render_freeze_wf = 1.0f;
-        if (drew) s_nr.frozen_valid = true;
     }
 
     /* Diff: |native_rtt - reference| into the offscreen (panel-0 rect). */
@@ -2153,6 +2145,26 @@ static bool compose_variant(int variant, bool have_ref)
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
 
     rhi_end_offscreen(s_nr.dev);
+
+    /* Capture the freeze backdrop from the CLEAN windowed offscreen we just drew
+     * (correctly projected/pillarboxed at every window size), rather than the
+     * off-display full-extent native_rtt (which skews window-dependently and
+     * squished the freeze). On WORLD frames, hardware-blit the offscreen's 4:3
+     * content region (cover_rect = the p0 sub-rect widened by ws_factor) into
+     * frozen_tex; the pause/inventory/exit freeze present then samples a clean
+     * snapshot. Skip menu/freeze frames so the snapshot is the gameplay frame to
+     * freeze, not the menu drawn over it. */
+    if (variant == NRV_VK && world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0) {
+        float fhx = s_nr.p0_hx * s_nr.ws_factor;
+        int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+        int sw = (int)(fhx * (float)s_nr.win_w + 0.5f);
+        int sy = (int)(((1.0f - s_nr.p0_hy) * 0.5f) * (float)s_nr.win_h + 0.5f);
+        int sh = (int)(s_nr.p0_hy * (float)s_nr.win_h + 0.5f);
+        if (sw > 0 && sh > 0) {
+            rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex, sx, sy, sw, sh);
+            s_nr.frozen_valid = true;
+        }
+    }
     return false;
 }
 

@@ -1038,6 +1038,32 @@ void rhi_blit_to_swapchain(rhi_device *dev)
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
+void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
+                                  int sx, int sy, int sw, int sh)
+{
+    if (!dev->frame_active || !dst || !dst->is_rt) return;
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    /* off_image is TRANSFER_SRC (offscreen render-pass final layout). Flip dst
+     * from shader-read to transfer-dst, hardware-blit the source region (scaled
+     * to fill dst), then flip dst back to shader-read so it stays sampleable. */
+    image_barrier(cb, dst->image, dst->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { { sx, sy, 0 }, { sx + sw, sy + sh, 1 } },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { { 0, 0, 0 }, { (int32_t)dst->width, (int32_t)dst->height, 1 } },
+    };
+    vkCmdBlitImage(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+    image_barrier(cb, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 void rhi_end_frame(rhi_device *dev)
 {
     if (!dev->frame_active) return;

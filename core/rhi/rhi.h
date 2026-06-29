@@ -205,6 +205,15 @@ void rhi_clear_depth(rhi_device *dev);
 bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
                             size_t out_bytes, int *out_w, int *out_h);
 
+/* Hardware-blit a pixel region [sx,sy,sw,sh] of the (clean, window-sized)
+ * offscreen into a render target, scaled to fill it. The native freeze backdrop
+ * is captured this way — from the correctly-projected windowed render that's
+ * already on screen — instead of from the off-display full-extent render target.
+ * Call after rhi_end_offscreen (offscreen is TRANSFER_SRC), before
+ * rhi_blit_to_swapchain; leaves dst in shader-read layout. */
+void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
+                                  int sx, int sy, int sw, int sh);
+
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
 /* The actual pixel extent of a texture (e.g. a render target, which may have
