@@ -354,6 +354,34 @@ static VkExtent2D choose_extent(rhi_device *dev, const VkSurfaceCapabilitiesKHR 
     return e;
 }
 
+/* Swapchain present mode. Default FIFO (vsync — always supported, locks present
+ * to the monitor refresh). OPENPETE_PRESENT_MODE=immediate|mailbox selects a
+ * vsync-OFF mode for low latency or uncapped-throughput benchmarking (FIFO
+ * otherwise hides the real frame rate behind the refresh ceiling). Falls back to
+ * FIFO with a log if the requested mode isn't supported by the surface. */
+static VkPresentModeKHR choose_present_mode(rhi_device *dev)
+{
+    const char *env = getenv("OPENPETE_PRESENT_MODE");
+    VkPresentModeKHR want = VK_PRESENT_MODE_FIFO_KHR;
+    if (env && !strcmp(env, "immediate")) want = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    else if (env && !strcmp(env, "mailbox")) want = VK_PRESENT_MODE_MAILBOX_KHR;
+    if (want == VK_PRESENT_MODE_FIFO_KHR) return want;  /* always supported */
+
+    uint32_t n = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, dev->surface, &n, NULL);
+    VkPresentModeKHR *modes = calloc(n ? n : 1, sizeof(*modes));
+    vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, dev->surface, &n, modes);
+    bool ok = false;
+    for (uint32_t i = 0; i < n; i++) if (modes[i] == want) { ok = true; break; }
+    free(modes);
+    if (!ok) {
+        RHI_LOG("present mode '%s' unsupported by surface; using FIFO (vsync)\n", env);
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+    RHI_LOG("present mode: %s (vsync OFF)\n", env);
+    return want;
+}
+
 static bool create_swapchain(rhi_device *dev)
 {
     VkSurfaceCapabilitiesKHR caps;
@@ -395,7 +423,7 @@ static bool create_swapchain(rhi_device *dev)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR, /* always supported (vsync) */
+        .presentMode = choose_present_mode(dev), /* FIFO (vsync) unless OPENPETE_PRESENT_MODE */
         .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE,
     };
