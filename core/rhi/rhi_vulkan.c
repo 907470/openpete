@@ -14,6 +14,7 @@
  */
 
 #include "rhi.h"
+#include "rhi_embedded_shaders.h" /* g_rhi_embedded_shaders[] — generated */
 
 #include "volk.h"          /* dynamic Vulkan loader; pulls in vulkan.h with
                             * VK_NO_PROTOTYPES. Must precede SDL_vulkan.h. */
@@ -1787,46 +1788,83 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 /* Pipelines                                                          */
 /* ------------------------------------------------------------------ */
 
-static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
+/* Build a shader module from an in-memory SPIR-V blob. vkCreateShaderModule
+ * requires pCode 4-byte aligned, which an embedded `unsigned char[]` is not
+ * guaranteed to be, so we always feed a fresh malloc copy (malloc is suitably
+ * aligned). The blobs are tiny and this runs once at startup. */
+static VkShaderModule create_shader_module(rhi_device *dev, const void *spv,
+                                           size_t n, const char *name)
 {
-    char path[1024];
-    FILE *f = NULL;
-    /* Primary: a "shaders/" dir beside the executable (works on Windows and
-     * in the build tree on Linux, since the exe dir's shaders/ == the .spv
-     * output dir). SDL3's base path is owned by SDL — do not free. */
-    const char *base = SDL_GetBasePath();
-    if (base) {
-        snprintf(path, sizeof(path), "%sshaders/%s", base, filename);
-        f = fopen(path, "rb");
+    if (n == 0 || (n % 4) != 0) {
+        RHI_LOG("bad SPIR-V size %zu: %s\n", n, name); return VK_NULL_HANDLE;
     }
-    /* Fallback: the baked build-tree path, for dev runs from another cwd. */
-    if (!f) {
-        snprintf(path, sizeof(path), "%s/%s", RHI_SHADER_DIR, filename);
-        f = fopen(path, "rb");
-    }
-    if (!f) { RHI_LOG("cannot open shader: %s\n", path); return VK_NULL_HANDLE; }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n <= 0 || (n % 4) != 0) {
-        RHI_LOG("bad SPIR-V size %ld: %s\n", n, path); fclose(f); return VK_NULL_HANDLE;
-    }
-    uint32_t *code = malloc((size_t)n);
-    if (!code || fread(code, 1, (size_t)n, f) != (size_t)n) {
-        RHI_LOG("read failed: %s\n", path); fclose(f); free(code); return VK_NULL_HANDLE;
-    }
-    fclose(f);
+    uint32_t *code = malloc(n);
+    if (!code) { RHI_LOG("oom for shader: %s\n", name); return VK_NULL_HANDLE; }
+    memcpy(code, spv, n);
     VkShaderModuleCreateInfo ci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = (size_t)n,
+        .codeSize = n,
         .pCode = code,
     };
     VkShaderModule m = VK_NULL_HANDLE;
     if (vkCreateShaderModule(dev->device, &ci, NULL, &m) != VK_SUCCESS) {
-        RHI_LOG("vkCreateShaderModule failed: %s\n", filename); m = VK_NULL_HANDLE;
+        RHI_LOG("vkCreateShaderModule failed: %s\n", name); m = VK_NULL_HANDLE;
     }
     free(code);
     return m;
+}
+
+/* Look up an embedded SPIR-V blob by its .spv filename (the same string the
+ * pipeline descs use). Returns NULL if not found. */
+static const void *find_embedded_shader(const char *filename, size_t *out_size)
+{
+    for (unsigned i = 0; i < g_rhi_embedded_shader_count; ++i) {
+        if (strcmp(g_rhi_embedded_shaders[i].name, filename) == 0) {
+            *out_size = g_rhi_embedded_shaders[i].size;
+            return g_rhi_embedded_shaders[i].data;
+        }
+    }
+    return NULL;
+}
+
+static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
+{
+    /* Dev/modding override: OPENPETE_SHADER_DIR=<dir> loads loose .spv from
+     * disk (e.g. the build's core/rhi/shaders) so a shader edit applies on the
+     * next launch without relinking. Unset in shipping builds, where the
+     * embedded SPIR-V baked in at build time is used and the binary needs no
+     * shaders/ dir. A missing/unreadable file falls through to embedded. */
+    const char *dir = getenv("OPENPETE_SHADER_DIR");
+    if (dir && dir[0]) {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", dir, filename);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (n > 0) {
+                void *buf = malloc((size_t)n);
+                if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) {
+                    fclose(f);
+                    VkShaderModule m = create_shader_module(dev, buf, (size_t)n, path);
+                    free(buf);
+                    return m;
+                }
+                free(buf);
+            }
+            fclose(f);
+            RHI_LOG("OPENPETE_SHADER_DIR: failed to read %s; using embedded\n", path);
+        } else {
+            RHI_LOG("OPENPETE_SHADER_DIR: %s not found; using embedded\n", path);
+        }
+    }
+
+    /* Default/shipping path: the SPIR-V embedded in the binary. */
+    size_t n = 0;
+    const void *spv = find_embedded_shader(filename, &n);
+    if (!spv) { RHI_LOG("no embedded shader: %s\n", filename); return VK_NULL_HANDLE; }
+    return create_shader_module(dev, spv, n, filename);
 }
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc)

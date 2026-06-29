@@ -163,7 +163,7 @@ target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);
 # runtime/native_render.c is the only consumer for now and is inert unless
-# --native-ab is passed. PUBLIC so the RHI's RHI_SHADER_DIR define + headers
+# --native-ab is passed. PUBLIC so the RHI's headers (and its embedded SPIR-V)
 # reach any downstream renderer TUs. See openpete-native-renderer.md.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 

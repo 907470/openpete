@@ -302,28 +302,11 @@ if(EMSCRIPTEN)
         VERBATIM)
 endif()
 
-# Stage the native renderer's compiled SPIR-V shaders next to the exe so the
-# RHI finds them via SDL_GetBasePath() ("shaders/" beside the binary) on a
-# relocated/Windows install. Dev runs from the build tree also resolve via the
-# RHI's baked RHI_SHADER_DIR fallback, but the beside-exe copy is the shipped
-# path. One copy command per .spv with a real DEPENDS, so a shader-only change
-# re-stages without needing the exe to relink (RHI_SHADER_SPV is exported by
-# core/rhi/CMakeLists.txt; the exe lands in this dir, so beside-exe ==
-# ${CMAKE_CURRENT_BINARY_DIR}/shaders).
-set(_spyro_staged_shaders "")
-foreach(_spv IN LISTS RHI_SHADER_SPV)
-    get_filename_component(_spv_name "${_spv}" NAME)
-    set(_spv_dst "${CMAKE_CURRENT_BINARY_DIR}/shaders/${_spv_name}")
-    add_custom_command(
-        OUTPUT  "${_spv_dst}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_spv}" "${_spv_dst}"
-        DEPENDS "${_spv}"
-        COMMENT "Staging shader ${_spv_name} next to openpete-spyro1"
-        VERBATIM)
-    list(APPEND _spyro_staged_shaders "${_spv_dst}")
-endforeach()
-add_custom_target(openpete_spyro1_stage_shaders DEPENDS ${_spyro_staged_shaders})
-add_dependencies(openpete-spyro1 openpete_spyro1_stage_shaders)
+# The native renderer's SPIR-V shaders are embedded in the binary (baked at
+# build time by core/rhi/embed_shaders.cmake), so nothing is staged beside the
+# exe — the executable is self-contained. For shader dev/modding without a
+# relink, point OPENPETE_SHADER_DIR at a dir of loose .spv (e.g. the build's
+# core/rhi/shaders). See Phase 8 of openpete-native-renderer.md.
 
 # Stage the music WAV override directory next to the executable so users
 # have a ready-made drop point, and seed it with the template manifest

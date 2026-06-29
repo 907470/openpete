@@ -31,16 +31,29 @@ foreach(s IN LISTS RHI_SHADERS)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}.spv)
 endforeach()
-add_custom_target(openpete_rhi_shaders DEPENDS ${RHI_SHADER_SPV})
-
-# Export the compiled .spv paths so per-game targets can stage them next to
-# their executable with a proper dependency (re-stages on shader change, not
-# just on relink). PARENT_SCOPE writes into the top-level scope, which sibling
-# subdirectories added later (games/<game>/) inherit.
-set(RHI_SHADER_SPV "${RHI_SHADER_SPV}" PARENT_SCOPE)
+# Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
+# the SPIR-V into a generated C source (byte arrays + a name->blob table),
+# which is compiled into the library. The renderer then loads shaders from
+# memory — the binary is self-contained, no loose shaders/ dir ships. Pure
+# CMake (file(READ ... HEX)); see embed_shaders.cmake and Phase 8 of
+# openpete-native-renderer.md. (A dev/modding file override via
+# OPENPETE_SHADER_DIR still reads loose .spv from disk — e.g. this build's
+# ${RHI_SHADER_OUT_DIR} — without a relink.)
+set(RHI_EMBED_C ${CMAKE_CURRENT_BINARY_DIR}/rhi_shaders_embedded.c)
+string(REPLACE ";" "|" RHI_SHADER_SPV_ARG "${RHI_SHADER_SPV}")
+add_custom_command(
+    OUTPUT ${RHI_EMBED_C}
+    COMMAND ${CMAKE_COMMAND}
+            -DSPV_LIST=${RHI_SHADER_SPV_ARG}
+            -DOUT_C=${RHI_EMBED_C}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
+    DEPENDS ${RHI_SHADER_SPV} ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
+    COMMENT "Embedding SPIR-V shaders -> rhi_shaders_embedded.c"
+    VERBATIM)
 
 add_library(openpete_rhi STATIC
     rhi_vulkan.c
+    ${RHI_EMBED_C}
     ${VOLK_DIR}/volk.c
 )
 target_include_directories(openpete_rhi
@@ -48,7 +61,6 @@ target_include_directories(openpete_rhi
     PRIVATE ${VULKAN_HEADERS_INC} ${VOLK_DIR}
 )
 target_compile_definitions(openpete_rhi
-    PUBLIC  RHI_SHADER_DIR="${RHI_SHADER_OUT_DIR}"
     PRIVATE VK_NO_PROTOTYPES)
 # volk dlopens the loader; on Linux that needs libdl (CMAKE_DL_LIBS), on
 # Windows it uses LoadLibrary (no extra lib).
@@ -57,7 +69,10 @@ set_target_properties(openpete_rhi PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON
 )
-add_dependencies(openpete_rhi openpete_rhi_shaders)
+# The embedded-shader source (RHI_EMBED_C) carries its own dependency on the
+# .spv via the custom command above, which in turn depends on the glslang
+# outputs — so building openpete_rhi compiles shaders and regenerates the
+# embed as needed. No explicit shader target/dependency required.
 
 # Milestone 1a/1b smoke test: a standalone Vulkan window (1a cleared the
 # offscreen target; 1b.1 also draws a vertex-colored quad). Verifies the
