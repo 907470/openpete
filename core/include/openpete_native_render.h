@@ -181,6 +181,17 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * never occluded by world geometry. Only the static g_Hud range routes here
  * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
 #define OPENPETE_SCENE_HUD3D 6
+/* PORTAL_SKY — the destination-level cyclorama preview shown inside a homeworld
+ * portal arch (portal_native.c). It is a far BACKGROUND seen through the arch
+ * window: the arch stone must occlude it, but it must never occlude actors or
+ * Spyro flying into/through the portal. Drawn in its own pass AFTER the WORLD
+ * group (so it depth-tests against the already-written arch/terrain depth) but
+ * with depth-WRITE OFF, so the actors/player drawn next are never per-pixel cut
+ * by it. This mirrors the PSX OT, where the portal sky occupies one coarse
+ * bucket and the player's whole model sorts in front of it (never intersecting
+ * it per-pixel the way a shared Z-buffer otherwise would). Untextured only;
+ * self-occlusion comes from the feeder's own far→near painter sort. */
+#define OPENPETE_SCENE_PORTAL_SKY 7
 /* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but

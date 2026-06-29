@@ -511,6 +511,7 @@ static struct {
     rhi_pipeline *gouraud_blend_pipe; /* 3b.2: semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
     rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — Spyro shadow */
     rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
+    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test ON / write OFF — portal-sky previews */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
@@ -848,6 +849,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
+    /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
+     * previews (portal_native.c, OPENPETE_SCENE_PORTAL_SKY). They are a far
+     * background seen through the arch window — the arch stone's depth (written by
+     * the WORLD group, drawn first) must occlude them, but they must never write
+     * depth, so the actors/player drawn afterward are never per-pixel cut by the
+     * portal sky as Spyro flies into/through the portal. Same quad.vert/quad.frag
+     * as the opaque pipe; only the depth-write differs. */
+    rhi_pipeline_desc gouraud_noz_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
     /* Textured scene pipeline (3a.3): samples the PSX VRAM mirror via the ported
      * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
      * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
@@ -966,6 +980,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_blend_pipe = rhi_create_pipeline(dev, &gouraud_blend_desc);
     rhi_pipeline *gouraud_sub_pipe = rhi_create_pipeline(dev, &gouraud_sub_desc);
     rhi_pipeline *gouraud_add_pipe = rhi_create_pipeline(dev, &gouraud_add_desc);
+    rhi_pipeline *gouraud_noz_pipe = rhi_create_pipeline(dev, &gouraud_noz_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
@@ -1006,6 +1021,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
+        if (gouraud_noz_pipe) rhi_destroy_pipeline(dev, gouraud_noz_pipe);
         if (gouraud_add_pipe) rhi_destroy_pipeline(dev, gouraud_add_pipe);
         if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
         if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
@@ -1028,6 +1044,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_blend_pipe = gouraud_blend_pipe;
     s_nr.gouraud_sub_pipe = gouraud_sub_pipe;
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
+    s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
@@ -1650,6 +1667,23 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[9] = n - ut_first[9];
+    /* PORTAL_SKY untextured: the destination cyclorama previews inside homeworld
+     * portal arches. Collected as their own range so they can be drawn in a
+     * dedicated depth-write-OFF pass AFTER the WORLD group but BEFORE actors/player
+     * (see the draw site). Submission order = the feeder's far→near painter sort. */
+    int portal_first = n, portal_count = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_SKY || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    portal_count = n - portal_first;
     int tx_start = n;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -1822,6 +1856,17 @@ static bool draw_native_scene(bool full_extent)
                 }
                 off += 3;  /* advance for every textured tri (verts are contiguous) */
             }
+        }
+        /* Portal-sky previews: drawn right after the WORLD group (gi==0) so they
+         * depth-test against the arch stone / terrain just written (the arch frame
+         * occludes them into the opening shape), but via the depth-WRITE-OFF pipe so
+         * the SUBTRACT/ACTOR/PLAYER groups drawn next are never per-pixel cut by the
+         * sky — Spyro flying into/through the portal always sorts on top, matching
+         * the PSX OT (portal sky = one bucket, the whole player model in front). */
+        if (gi == 0 && s_nr.gouraud_noz_pipe && portal_count > 0) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)portal_count, (uint32_t)portal_first);
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
          * after the ACTOR group (gi==2) but BEFORE the PLAYER group (gi==3) — so the
@@ -2515,6 +2560,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+    if (s_nr.gouraud_noz_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
     if (s_nr.gouraud_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_add_pipe);
     if (s_nr.gouraud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
     if (s_nr.gouraud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_blend_pipe);
