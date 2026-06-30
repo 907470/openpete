@@ -518,6 +518,7 @@ static struct {
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows */
     rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
     rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
+    rhi_pipeline *gouraud_hud_sub_pipe; /* HUD panel: UNTEXTURED subtractive gouraud, depth-test OFF (the ABR mode-2 shaded text box, B-F) */
     rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
@@ -928,6 +929,20 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = false,
         .uses_vram = false, .push_const_size = 0,
     };
+    /* HUD panel SUBTRACTIVE pipeline: untextured subtractive gouraud, depth-test OFF.
+     * The in-game "shaded box" behind HUD text (func_8001860C) and the pause/inventory
+     * menu panel (func_8001A40C) both emit their 0x2A POLY_F4 under
+     * SetDrawMode(getTPage(0, 2, ..)) = ABR mode 2 (B-F), which DARKENS the framebuffer
+     * by the box colour. (B+F)/2 alpha would instead wash it toward grey (a too-bright
+     * box) — the bug this fixes. RHI_BLEND_SUBTRACT reverse-subtracts the vertex colour
+     * (alpha ignored), exactly the PSX. The box's real ABR is read per-prim from its
+     * DR_MODE in ui_sprite_native, so the HUD-panel draw picks alpha vs subtractive. */
+    rhi_pipeline_desc gouraud_hud_sub_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
     rhi_pipeline_desc scene_tex_hud_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene.frag.spv",
@@ -987,6 +1002,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
     rhi_pipeline *gouraud_hud_blend_pipe = rhi_create_pipeline(dev, &gouraud_hud_blend_desc);
+    rhi_pipeline *gouraud_hud_sub_pipe = rhi_create_pipeline(dev, &gouraud_hud_sub_desc);
     rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
@@ -1001,11 +1017,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
         if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
+        if (gouraud_hud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_hud_sub_pipe);
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
         if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
@@ -1051,6 +1068,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
     s_nr.gouraud_hud_blend_pipe = gouraud_hud_blend_pipe;
+    s_nr.gouraud_hud_sub_pipe = gouraud_hud_sub_pipe;
     s_nr.scene_tex_hud_pipe = scene_tex_hud_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
@@ -1410,10 +1428,21 @@ static uint32_t bg_from_ref_corner(void)
 static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int n, int tx_start)
 {
-    if (s_nr.gouraud_hud_blend_pipe && ut_count[8] > 0) {           /* HUD_PANEL (alpha) */
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
+    if (ut_count[8] > 0) {                                          /* HUD_PANEL (semi-transparent 2D box) */
+        /* Each HUD-panel box carries its real PSX ABR mode in its blend field (read
+         * from the box's DR_MODE in ui_sprite_native): mode 2 (B-F) -> subtractive
+         * (blend 3), mode 0 ((B+F)/2) -> alpha (blend 1). Draw each box with the pipe
+         * matching its blend. The slot-8 VB range is in scene[] submission order, so
+         * walking scene[] for HUD_PANEL tris tracks the vertex offset in lockstep. */
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[8], (uint32_t)ut_first[8]);
+        int voff = ut_first[8], vend = ut_first[8] + ut_count[8];
+        for (int t = 0; t < scene_n && voff + 3 <= vend; t++) {
+            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
+            rhi_pipeline *pipe = (scene[t].blend == 3) ? s_nr.gouraud_hud_sub_pipe
+                                                       : s_nr.gouraud_hud_blend_pipe;
+            if (pipe) { rhi_bind_pipeline(s_nr.dev, pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
+            voff += 3;
+        }
     }
     if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
         rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
@@ -2554,6 +2583,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+    if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
     if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
     if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);

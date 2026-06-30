@@ -164,14 +164,18 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * player.) Untextured opaque; routed by the feeder. */
 #define OPENPETE_SCENE_OVERLAY 4
 /* HUD_PANEL — a semi-transparent 2D HUD-OT quad that sits UNDER the HUD text/icons
- * but OVER the world/backdrop: the dim dark panel behind the pause / inventory menu
- * text (func_8001A40C emits it as a POLY_F4 with code 0x2A, setRGB0(64,64,64) or
- * (112,112,112), via func_800168DC). Drawn alpha-blended, depth-test OFF, at the
- * START of the HUD layer (before the HUD text), so the menu text reads on top of it.
- * Distinct from OVERLAY (dead-last, over text) and from the full-screen fade (also a
- * 0x2A F4, but emitted by func_800190D4 — the feeder excludes that via a re-entry
- * flag). Untextured; alpha rides the vertex colour (128 = (B+F)/2, the PSX ABR mode 0
- * the 0x2A code selects). */
+ * but OVER the world/backdrop: the dim panel behind the pause / inventory menu text
+ * (func_8001A40C, setRGB0(64,64,64)) and the "shaded box" behind in-game HUD text
+ * (func_8001860C, setRGB0(112,112,112)), both emitted as a POLY_F4 code 0x2A via
+ * func_800168DC. Depth-test OFF, drawn at the START of the HUD layer (before the HUD
+ * text), so the text reads on top. Distinct from OVERLAY (dead-last, over text) and
+ * from the full-screen fade (also a 0x2A F4, but emitted by func_800190D4 — the
+ * feeder excludes that via a re-entry flag). Untextured. The 0x2A code only means
+ * "semi-transparent"; the actual ABR RATE comes from the box's DR_MODE (getTPage abr)
+ * — BOTH these boxes set ABR mode 2 (B-F subtractive), which DARKENS the framebuffer
+ * by the box colour (NOT (B+F)/2 alpha — that washes it toward grey). The feeder reads
+ * the ABR per-prim into `blend` (3 = subtractive, 1 = alpha), and the HUD-panel draw
+ * picks the matching pipe per box. */
 #define OPENPETE_SCENE_HUD_PANEL 5
 /* HUD3D — the in-game 3D HUD icon mobys (g_Hud.m_Mobys: the spinning gem/treasure,
  * dragon-head, Spyro-head/lives, key, and number digits). Unlike the flat 2D HUD

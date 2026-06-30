@@ -213,6 +213,11 @@ static unsigned s_pending_frame = 0;  /* openpete_frame the pending prim was rec
 static int      s_in_fade = 0;        /* set across func_800190D4's real-func call so the
                                        * on_800168DC hook can tell the fade's 0x2A F4 from a
                                        * menu dark panel's 0x2A F4 (both go via func_800168DC) */
+static int      s_last_abr = 0;       /* semi-transparency rate (ABR) of the most recent
+                                       * DR_MODE seen — the GPU draw-mode in effect for the
+                                       * next semi-transparent F4 (the game links a box's
+                                       * DR_MODE immediately before its 0x2A F4). PSX ABR:
+                                       * 0 (B+F)/2, 1 B+F, 2 B-F, 3 B+F/4. */
 
 static int is_ft4(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
@@ -238,6 +243,18 @@ static int is_f4_semitrans(CPUState* cpu, uint32_t prim) {
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
     return (uint8_t)(w1 >> 24) == 0x2A            /* POLY_F4 semi-transparent */
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
+}
+
+/* DR_MODE / DR_TPAGE (GP0 command 0xE1) — sets the GPU draw mode, incl. the
+ * semi-transparency RATE (ABR) in bits 5-6 of the tpage word (getTPage packs
+ * abr as ((abr&3)<<5)). A 2D box (func_8001860C "shaded box", func_8001A40C menu
+ * panel) links its DR_MODE via func_800168DC immediately before its 0x2A F4, so
+ * the latest DR_MODE's ABR is the blend mode in effect for the next F4. We mirror
+ * the game's own GPU state here rather than hardcode a blend. code[0] is at +4
+ * (the tag occupies +0), so the GP0 byte and the ABR live in read_word(prim+4). */
+static int is_dr_mode(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    return (uint8_t)(cpu->read_word(prim + 4) >> 24) == 0xE1;   /* code[0] = GP0 0xE1 */
 }
 
 /* Freeze-frame green-overlay backdrop FT4 (pause / inventory / flight results):
@@ -302,10 +319,22 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
                                                       0);   /* static: no fade-to-black */
         }
         else if (is_ft4(cpu, prim)) { s_pending = prim; s_pending_frame = openpete_frame; }
+        else if (is_dr_mode(cpu, prim))                                         /* track the GPU draw-mode's ABR */
+            s_last_abr = (int)((cpu->read_word(prim + 4) >> 5) & 3u);
         else if (is_f4_opaque(cpu, prim))                                       /* letterbox bars: OVERLAY, opaque, full-panel-wide */
             feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1);
-        else if (is_f4_semitrans(cpu, prim) && !s_in_fade)                      /* menu dark panel: under text, (B+F)/2 */
-            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_HUD_PANEL, 0x80u, 1, 0);
+        else if (is_f4_semitrans(cpu, prim) && !s_in_fade) {                    /* 2D box (HUD shaded box / menu panel): blend by the box's ABR */
+            /* The "shaded box" behind in-game HUD text (func_8001860C, setRGB0
+             * 112,112,112) and the pause/inventory menu panel (func_8001A40C,
+             * setRGB0 64,64,64) BOTH set getTPage(0, 2, ..) = ABR mode 2 (B-F):
+             * the box DARKENS the framebuffer by its colour. Render that with
+             * subtractive (blend 3); only ABR mode 0 ((B+F)/2) uses alpha 0x80.
+             * Modes 1 (B+F) / 3 (B+F/4) have no HUD-panel consumer in this game
+             * and fall back to alpha — add an additive HUD pipe if one ever does. */
+            int sub = (s_last_abr == 2);
+            feed_f4(cpu, prim, cpu->read_word(prim + 4), OPENPETE_SCENE_HUD_PANEL,
+                    sub ? 0xFFu : 0x80u, sub ? 3 : 1, 0);
+        }
         else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }
 
