@@ -24,6 +24,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 
@@ -478,6 +479,14 @@ static void flame_build_strip(CPUState* cpu) {
         uint32_t uv1w = cpu->read_word(base + 0x14) + ((uint32_t)byte1 << 8);
         int tpx = ((int)((uv1w >> 16) & 0xF)) * 64, tpy = ((int)((uv1w >> 20) & 1)) * 256;
         int mode = (int)((uv1w >> 23) & 3), bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+        /* ABR-FIXME (audit 2026-06-30): the flame-strip draw hardcodes blend=2 (ABR1
+         * additive); the strip tpage's ABR is data-driven (assumed additive, not
+         * statically proven). If a flame ever ships a non-additive tpage this fires —
+         * derive blend from the captured ABR instead of hardcoding. FIX flame_native.c:654 */
+        if (((uv1w >> 21) & 3) != 1)
+            OPL_ERROR_F("native", "ABR-FIXME flame strip tpage ABR=%d (feeder hardcodes "
+                        "blend=2 additive) f=%u -- FIX flame_native.c:654",
+                        (int)((uv1w >> 21) & 3), openpete_frame);
         int clx = ((int)((uv0w >> 16) & 0x3F)) * 16, cly = (int)((uv0w >> 22) & 0x1FF);
         uint32_t s4 = 0xA00u, s5step = 0x0A0A0Au;
 

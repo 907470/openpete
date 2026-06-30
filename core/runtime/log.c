@@ -25,9 +25,36 @@ static openpete_log_level_t g_default = OPL_INFO;
 
 #if defined(_WIN32)
 # include <sys/time.h>
+# include <io.h>        /* _isatty, _fileno */
 #else
 # include <sys/time.h>
+# include <unistd.h>    /* isatty, fileno */
 #endif
+
+/* ANSI colour for the plain-text log, only when stderr is an interactive
+ * terminal (piped/redirected output — grep, files, the oracle — stays clean). */
+static int stderr_is_tty(void) {
+    static int s = -1;
+    if (s < 0) {
+#if defined(_WIN32)
+        s = _isatty(_fileno(stderr)) ? 1 : 0;
+#else
+        s = isatty(fileno(stderr)) ? 1 : 0;
+#endif
+    }
+    return s;
+}
+
+static const char* level_color(openpete_log_level_t l) {
+    switch (l) {
+        case OPL_TRACE: return "\033[90m";    /* grey   */
+        case OPL_DEBUG: return "\033[36m";    /* cyan   */
+        case OPL_INFO:  return "";            /* default */
+        case OPL_WARN:  return "\033[33m";    /* yellow */
+        case OPL_ERROR: return "\033[1;31m";  /* bold red */
+    }
+    return "";
+}
 
 static double monotonic_seconds(void) {
     struct timespec ts;
@@ -161,8 +188,10 @@ void openpete_logf(openpete_log_level_t level, const char* subsystem,
         emit_json_string(stderr, msg);
         fputs("}\n", stderr);
     } else {
-        fprintf(stderr, "%8.4f [%-5s] %s: %s\n",
-                t, level_name(level), subsystem ? subsystem : "-", msg);
+        const char* col = stderr_is_tty() ? level_color(level) : "";
+        const char* rst = (col && *col) ? "\033[0m" : "";
+        fprintf(stderr, "%s%8.4f [%-5s] %s: %s%s\n",
+                col, t, level_name(level), subsystem ? subsystem : "-", msg, rst);
     }
     fflush(stderr);
 }

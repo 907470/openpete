@@ -31,6 +31,7 @@
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
@@ -366,6 +367,14 @@ static void shadow_moby_build(CPUState* cpu) {
     int clut=(int)(uv0>>16), tpage=(int)(uv1>>16);
     int tpx=(tpage&0xF)*64, tpy=((tpage>>4)&1)*256;
     int mode=(tpage>>7)&3, bpp=(mode==0)?4:(mode==1)?8:16;
+    /* ABR-FIXME (audit 2026-06-30): the moby-shadow draw hardcodes blend=3 (ABR2
+     * subtract); the shadow tpage's ABR is data-driven (observed mode 2 in tests).
+     * If a level ever ships a non-mode-2 shadow tpage this fires — derive blend
+     * from the captured ABR instead of hardcoding. FIX shadow_native.c:488 */
+    if (((tpage>>5)&3) != 2)
+        OPL_ERROR_F("native", "ABR-FIXME moby shadow tpage ABR=%d (expected 2 "
+                    "subtract); feeder hardcodes blend=3 f=%u -- FIX shadow_native.c:488",
+                    (tpage>>5)&3, openpete_frame);
     int clx=(clut&0x3F)*16, cly=(clut>>6)&0x1FF;
     double ZERO[3] = {0,0,0};
 

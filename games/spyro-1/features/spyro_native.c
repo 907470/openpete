@@ -29,6 +29,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_psx.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
 #include "render_paths.h"  /* --render-paths isolation */
@@ -1085,6 +1086,12 @@ static int build_spyro_walk(CPUState* cpu) {
         if (w1 & 1u) {
             int abr=(int)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
             blend = (abr==0) ? 1 : (abr==1) ? 2 : (abr==2) ? 3 : 2;
+            /* ABR-FIXME (audit 2026-06-30): ABR3 (B+F/4) has no native pipe -> drawn
+             * full-additive (too bright). Spam if a Spyro-body face ever hits it. */
+            if (abr == 3)
+                OPL_ERROR_F("native", "ABR-FIXME Spyro body ABR3 (B+F/4) face -> "
+                            "drawn full-additive (no quarter-add pipe) f=%u -- FIX spyro_native.c:1087",
+                            openpete_frame);
         }
         if (fresh) {
             uint32_t w2 = cpu->read_word(fp + 8);
