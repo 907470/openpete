@@ -18,6 +18,19 @@ int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;
 int          openpete_fov_h_override    = 0;
 float        openpete_disp_w_factor     = 0.0f;
+/* Hor+ factor that the GAME-SIDE culls (moby cone, env cell-bound, clip /
+ * SXY-sat thresholds, cyclorama coverage, polybuf capacity) must admit, so
+ * the wider frustum's edge geometry survives the 4:3 cull before any
+ * renderer sees it. Set in BOTH renderer modes (run.c). Distinct from
+ * openpete_disp_w_factor, which is the PROJECTION widening (GTE OFX + PsyCross
+ * GL ortho) and stays PsyCross-only — the native renderer projects
+ * canonically and widens Hor+ at clip level itself, so applying OFX widening
+ * too would double-widen. In PsyCross mode the two are equal (byte-identical);
+ * in native mode this is F = aspect/(4:3) while disp_w_factor stays 0. The
+ * render→gameplay channels (m_WasDrawn / m_03 / sector visibility) are closed
+ * at the recompiler level against the CANONICAL verdict regardless of this
+ * knob, so widening the culls stays gameplay-state-neutral. 0 = no widening. */
+float        openpete_cull_widen_factor  = 0.0f;
 /* openpete_no_lod lives in core/features/no_lod.c. */
 /* Set while GamestateDraw is on the call stack. Hor+ widening (GTE OFX,
  * moby-cone substitution) must only apply to render-pass GTE work; if it

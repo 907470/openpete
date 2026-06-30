@@ -739,13 +739,29 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * openpete_disp_w_factor at its 0.0 sentinel also no-ops
      * widescreen_apply_runtime_knobs below.) This is a step toward retiring the
      * PsyCross --aspect substitution entirely — see openpete-native-renderer.md. */
+    /* The game-side cull widening (moby cone, env bounds, clip/SXY-sat
+     * thresholds, cyclorama coverage, polybuf capacity) runs in BOTH
+     * renderer modes via openpete_cull_widen_factor, so the wider Hor+
+     * frustum's edge geometry survives the 4:3 cull before any renderer
+     * sees it. (Gameplay-safe: the render→gameplay channels — m_WasDrawn /
+     * m_03 / sector visibility — are closed at the recompiler level against
+     * the canonical verdict regardless of the cull knobs.) The PROJECTION
+     * widening (openpete_disp_w_factor: GTE OFX + PsyCross GL ortho) stays
+     * PsyCross-only: the native renderer projects canonically and widens
+     * Hor+ at clip level itself, so OFX widening too would double-widen
+     * AND mis-map the native projection. In PsyCross mode the two factors
+     * are equal (byte-identical to before this split). */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         widescreen_apply_disp_w_factor(opts);
+        openpete_cull_widen_factor = openpete_disp_w_factor;
     } else if (opts->aspect_w_over_h > 0.0f) {
+        openpete_cull_widen_factor = widescreen_capped_factor(opts);
         OPL_INFO_F("aspect", "native renderer: --aspect %.4f sizes the window + "
-                   "drives native Hor+ widescreen; PsyCross GTE/ortho "
-                   "substitution skipped (native reads a canonical GTE)",
-                   (double)opts->aspect_w_over_h);
+                   "drives native Hor+ widescreen (clip-level) + game-side cull "
+                   "widening (factor %.3f); PsyCross GTE-OFX/ortho substitution "
+                   "skipped (native projects canonically)",
+                   (double)opts->aspect_w_over_h,
+                   (double)openpete_cull_widen_factor);
     }
 
     /* --no-lod: feature module owns scratch-pool relocation, queue-

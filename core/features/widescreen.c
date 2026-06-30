@@ -111,6 +111,23 @@ uint32_t psx_runtime_polybuf_size = 0x0001C000u;
  * substitution is needed there. See psx_runtime.h for the PC list. */
 uint32_t psx_runtime_polybuf_lower = 0u;
 
+/* The capped Hor+ factor for --aspect, shared by the PsyCross
+ * disp_w_factor path (below) and the native cull-factor path (run.c).
+ * Both the projection widening and the cull widening overflow Spyro's
+ * PSX-side prim buffer the same way at high factor, so both honour the
+ * same conservative cap. Returns 0 when --aspect isn't set. */
+float widescreen_capped_factor(const openpete_options_t* opts) {
+    if (!opts || opts->aspect_w_over_h <= 0.0f) return 0.0f;
+    float f = opts->aspect_w_over_h / (4.0f / 3.0f);
+    float max_factor = 16.0f;  /* see widescreen_apply_disp_w_factor for why */
+    if (getenv("OPENPETE_MAX_ASPECT_FACTOR")) {
+        float v = (float)atof(getenv("OPENPETE_MAX_ASPECT_FACTOR"));
+        if (v > 0.0f) max_factor = v;
+    }
+    if (f > max_factor) f = max_factor;
+    return f;
+}
+
 void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
     /* --aspect: widen the framebuffer + GTE offset so the GTE projects
      * vertices across a wider screen (Hor+ widescreen). The factor
@@ -210,16 +227,27 @@ void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
 }
 
 void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
-    (void)opts;  /* derives entirely from openpete_disp_w_factor set above */
+    (void)opts;  /* derives entirely from the widening factors set above */
 
-    /* Push the host's Hor+ widening factor into PsyCross's GL ortho.
-     * Must happen after PsyX_Initialise (the symbol exists at link
+    /* PROJECTION-side: push the host's Hor+ widening factor into PsyCross's
+     * GL ortho. Must happen after PsyX_Initialise (the symbol exists at link
      * time but the GL backend's per-scene state lives behind the
-     * initialiser). 0.0f openpete sentinel = no override → leave the
-     * PsyCross default 1.0f untouched. */
+     * initialiser). Keyed on openpete_disp_w_factor (PsyCross-only): the
+     * native renderer doesn't present through PsyCross's FBO, so its ortho
+     * stays at the 1.0f default. 0.0f openpete sentinel = no override. */
     if (openpete_disp_w_factor > 0.0f) {
         g_psyx_render_aspect_factor = openpete_disp_w_factor;
+    }
 
+    /* CULL-side: every knob below is driven by openpete_cull_widen_factor so
+     * the wider Hor+ frustum's edge geometry survives the game's 4:3 cull in
+     * BOTH renderer modes (the native renderer projects canonically and
+     * widens at clip level, so it still needs the game to stop culling the
+     * edges). In PsyCross mode cull_factor == disp_w_factor, so this block is
+     * byte-identical to before the projection/cull split. The few PROJECTION-
+     * coordinate knobs inside (particle canonical-cull thresholds, 2D
+     * full-bleed width) stay gated on openpete_disp_w_factor — see below. */
+    if (openpete_cull_widen_factor > 0.0f) {
         /* Widen psxrecomp's per-vertex clip mask so the env renderer's
          * `andi SXY2, 0xFE00` cull (r_environment.s:714, 1145, 1255)
          * doesn't drop widescreen-extra primitives whose SX legitimately
@@ -265,7 +293,7 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          * canonical polybuf without overflow.
          *
          * See notes/plans/openpete-polybuf-host-redirect.md. */
-        float thresh_factor = openpete_disp_w_factor;
+        float thresh_factor = openpete_cull_widen_factor;
         if (thresh_factor > 1.5f || openpete_no_lod) {
             uint32_t size_per_slot =
                 ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
@@ -341,8 +369,17 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
         int64_t ofx_canonical_q16 = (int64_t)0x01000000;  /* 256<<16, the
             canonical PSX OFX value Spyro's renderer uses; gte.cpp scales
             this when openpete_render_pass_active && factor>0. */
+        /* PROJECTION factor, not the cull factor: the particle screen-cull
+         * substitution compares the *projected* SX against this threshold.
+         * In native mode the projection is canonical (disp_w_factor == 0), so
+         * delta_ofx must be 0 → the threshold stays the bare canonical 4:3
+         * edge (0x02000000) and the substitution computes the right verdict
+         * against the canonical SX it sees. In PsyCross mode this is
+         * thresh_factor (cull factor == the OFX widening), byte-identical. */
+        float part_proj_factor =
+            (openpete_disp_w_factor > 0.0f) ? thresh_factor : 1.0f;
         int64_t ofx_widened_q16 = (int64_t)((double)ofx_canonical_q16
-                                             * (double)thresh_factor);
+                                             * (double)part_proj_factor);
         uint32_t delta_ofx_q16 = (uint32_t)(ofx_widened_q16 - ofx_canonical_q16);
         psx_runtime_native_clip_x_in_widened_space     = 0x02000000u + delta_ofx_q16;
         psx_runtime_native_clip_x_low_in_widened_space = delta_ofx_q16;
@@ -472,12 +509,18 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          * since this is a single screen-aligned quad (no poly-buffer or
          * cull-surface coupling). See psx_runtime.h. */
         extern uint32_t psx_runtime_fullbleed_x_max;
-        /* ceil() not truncate: at 16:9 (factor 4/3) the exact width is
+        /* PROJECTION-side: these 2D prims widen to span the PsyCross ortho,
+         * which is keyed on openpete_disp_w_factor. In native mode the bars
+         * stay canonical [0,512] and the native UI feeder (ui_sprite_native.c
+         * feed_f4) re-centres + widens them itself, so leave the knob at its
+         * 512 default (disp_w_factor == 0 → fullbleed_x_max_f == 512).
+         * ceil() not truncate: at 16:9 (factor 4/3) the exact width is
          * 682.666..., and truncating to 682 leaves a 1-PSX-px / ~1-host-px
          * sliver of the right edge uncovered. PsyCross ortho extends to
          * disp.w * factor (a float); the prim's PSX-X end must be >= that
          * after the host-px mapping, so round up. */
-        float fullbleed_x_max_f = 512.0f * openpete_disp_w_factor;
+        float fullbleed_x_max_f = (openpete_disp_w_factor > 0.0f)
+            ? 512.0f * openpete_disp_w_factor : 512.0f;
         psx_runtime_fullbleed_x_max = (uint32_t)ceilf(fullbleed_x_max_f);
         OPL_INFO_F("aspect", "2D full-bleed X-max: 512 -> %u "
                    "(exact %.3f, factor=%.3f; letterbox/fade cover full "

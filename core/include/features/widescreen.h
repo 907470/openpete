@@ -34,6 +34,12 @@ extern "C" {
 void widescreen_apply_disp_w_factor(const openpete_options_t* opts);
 void widescreen_apply_runtime_knobs(const openpete_options_t* opts);
 
+/* The capped Hor+ factor for --aspect (F = aspect/(4:3), clamped to the
+ * overflow ceiling). Shared by the PsyCross disp_w_factor path and the
+ * native cull-widen-factor path so the cap can't drift. 0 if --aspect
+ * isn't set. */
+float widescreen_capped_factor(const openpete_options_t* opts);
+
 /* --- Polybuf relocation (RAM virtualization first consumer) --------------
  *
  * Spyro's double-buffered polygon buffer (0x1C000 per slot in matching

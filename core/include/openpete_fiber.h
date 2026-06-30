@@ -73,6 +73,15 @@ extern int openpete_fov_h_override;
  * projects the GTE-emitted vertices across the wider framebuffer. */
 extern float openpete_disp_w_factor;
 
+/* Hor+ factor that the game-side culls must admit, set in BOTH renderer
+ * modes. Decoupled from openpete_disp_w_factor (which is the PROJECTION
+ * widening — GTE OFX + PsyCross ortho — and stays PsyCross-only, since the
+ * native renderer projects canonically and widens at clip level itself).
+ * Equal to disp_w_factor in PsyCross mode; F = aspect/(4:3) with
+ * disp_w_factor == 0 in native mode. See the definition in
+ * core/runtime/fiber.c for the full rationale. */
+extern float openpete_cull_widen_factor;
+
 /* openpete_no_lod has moved to core/features/no_lod.h (declared there
  * and in third_party/psxrecomp/runner/include/psx_runtime.h for the
  * recompiler-generated C). */

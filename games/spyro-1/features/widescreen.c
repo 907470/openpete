@@ -32,6 +32,14 @@ extern void func_800258F0(CPUState* cpu);
 extern void func_80022A2C(CPUState* cpu);
 
 extern float    openpete_disp_w_factor;
+/* Cull-widen factor (set in BOTH renderer modes; see core/runtime/fiber.c).
+ * The render-pass / cull-widening hooks below key on this so native-vk
+ * widescreen admits the same edge geometry PsyCross does — projection stays
+ * canonical in native (disp_w_factor == 0) while the culls open up. The
+ * OFX/UI-anchoring hooks (titlescreen sprite, text-moby range) stay on
+ * disp_w_factor, since those compensate for the PsyCross OFX projection
+ * widening that native doesn't do. */
+extern float    openpete_cull_widen_factor;
 extern unsigned openpete_frame;
 extern int      openpete_render_pass_active;
 extern int32_t  psx_runtime_moby_cone_extra_q12;
@@ -93,8 +101,8 @@ static void env_trace_b(uint32_t a, uint8_t v) {
 static int on_8001ED5C_render_bracket(CPUState* cpu, uint32_t addr) {
     (void)addr;
     static int s_in_render_pass = 0;
-    if (openpete_disp_w_factor != 1.0f
-        && openpete_disp_w_factor > 0.0f
+    if (openpete_cull_widen_factor != 1.0f
+        && openpete_cull_widen_factor > 0.0f
         && !s_in_render_pass) {
         s_in_render_pass = 1;
         openpete_render_pass_active = 1;
@@ -173,8 +181,8 @@ static int on_8007CD38_titlescreen_sprite(CPUState* cpu, uint32_t addr) {
 static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
     (void)addr;
     static int s_in_env_renderer = 0;
-    if (!(openpete_disp_w_factor != 1.0f
-          && openpete_disp_w_factor > 0.0f
+    if (!(openpete_cull_widen_factor != 1.0f
+          && openpete_cull_widen_factor > 0.0f
           && !s_in_env_renderer)) {
         return 0;
     }
@@ -204,7 +212,7 @@ static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
      * (offset 0x14, 5 i32s) into CP2C[R11..R33] and runs MVMVA against
      * each cell's IR-vec to derive |IR1|/IR3 for the cone test
      * (slope 0.75 ≈ atan(256/341) = native 4:3). Scaling row 0
-     * (`m_ViewMatrix.m[0][0..2]`) by 1/disp_w_factor shrinks IR1 by
+     * (`m_ViewMatrix.m[0][0..2]`) by 1/cull_widen_factor shrinks IR1 by
      * the same factor so the cone admits cells in a wider horizontal
      * arc. Saved + restored around the call so other consumers of
      * m_ViewMatrix (collision, AI) aren't affected. */
@@ -340,7 +348,7 @@ static int on_800258F0_env_renderer(CPUState* cpu, uint32_t addr) {
     int16_t row0[3];
     for (int i = 0; i < 3; i++) {
         int16_t orig = (int16_t)cpu->read_half(vm_base + (uint32_t)(i * 2));
-        float scaled = (float)orig / openpete_disp_w_factor;
+        float scaled = (float)orig / openpete_cull_widen_factor;
         if (scaled >  32767.0f) scaled =  32767.0f;
         if (scaled < -32768.0f) scaled = -32768.0f;
         row0[i] = (int16_t)scaled;
@@ -549,7 +557,7 @@ static void rotate_view_matrix_y(CPUState* cpu, uint32_t mat_addr,
 
 static int on_8004EBA8_cyclorama_360(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (openpete_disp_w_factor <= 1.6f) return 0;  /* native */
+    if (openpete_cull_widen_factor <= 1.6f) return 0;  /* native 4:3 / ≤16:9 */
     static int s_in = 0;
     if (s_in) return 0;
     s_in = 1;
@@ -561,7 +569,7 @@ static int on_8004EBA8_cyclorama_360(CPUState* cpu, uint32_t addr) {
     uint32_t saved_a1 = cpu->a1;
     uint32_t saved_a2 = cpu->a2;
 
-    float factor = openpete_disp_w_factor;
+    float factor = openpete_cull_widen_factor;
     /* ±60° passes (2 extra) blanket every achievable aspect; never add
      * a yaw past ~90° (degenerate behind-camera projection — see the
      * header comment). */
