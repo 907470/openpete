@@ -1407,7 +1407,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (pause_k && !prev_pause_key) {
                 g_paused = !g_paused;
                 /* Enter: mute. Exit: restore the user's --mute baseline
-                 * (true by default; --mute off re-enables audio). */
+                 * (false by default = audio on; --mute 1 keeps it silent). */
                 PsyX_SPUAL_SetMute(g_paused ? 1 : (opts->mute ? 1 : 0));
                 OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
                            g_paused ? "paused" : "resumed", openpete_frame);

@@ -298,8 +298,11 @@ typedef struct {
     /* Force-mute all audio (SPU SFX + XA CD music + music WAV override)
      * at the OpenAL layer via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain +
      * music_override_set_forced_gain. Engine-level, so no game-specific
-     * globals or per-frame stamping is needed. Defaults to true so
-     * headless / CI runs are silent unless --mute off. */
+     * globals or per-frame stamping is needed. Defaults to false (audio
+     * on) — the shipping game has sound; pass --mute 1 (or drop it in an
+     * openpete.opts) to silence a dev/CI build. Note this only clamps gain
+     * on already-created AL sources; it never gates device/context init,
+     * so a headless run with no audio device is silent either way. */
     bool mute;
 
     /* Record live pad input (keyboard + gamepad, merged by PsyCross) into

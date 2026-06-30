@@ -89,9 +89,9 @@ same internal-res frame whether the window is 640 or 1280 wide; window
 
 Recordings include **audio** by default: the mixed SPU output is captured via
 an OpenAL loopback device (active only while recording — normal playback is
-unchanged) and encoded as a second AAC stream. Pass `--mute off` to actually
-hear/record sound (audio is muted by default). Use `--no-record-audio` for
-video only, or `--record-audio-encoder NAME` to pick a different encoder.
+unchanged) and encoded as a second AAC stream. Audio is on by default; pass
+`--mute 1` to silence the recording. Use `--no-record-audio` for video only,
+or `--record-audio-encoder NAME` to pick a different encoder.
 
 ```bash
 # Record the attract demo to an .mkv (recommended container).

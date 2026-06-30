@@ -164,7 +164,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ram_dump_output     = "./ram.bin";
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
-    opts->mute                = true;  /* silent by default; --mute off to enable audio */
+    opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->pgxp_enable         = -1;    /* -1 = unset; defaults applied at boot */
     opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
     opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
@@ -482,10 +482,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->psxtrace_anchor_hit = (uint32_t)strtoul(v, NULL, 0); i++;
         } else if (strcmp(a, "--mute") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if      (strcmp(v, "on")  == 0) opts->mute = true;
-            else if (strcmp(v, "off") == 0) opts->mute = false;
+            /* Accept 0|1 (preferred) plus the legacy on|off so existing
+             * scripts/movies keep working. */
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mute = true;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mute = false;
             else {
-                fprintf(stderr, "openpete: --mute expects on|off, got: %s\n", v);
+                fprintf(stderr, "openpete: --mute expects 0|1 (on|off also accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
@@ -573,7 +575,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --debug-highlight-smoothed paint actively-smoothed batches solid red (diagnostic); live-toggle F9\n"
                 "  --debug-black-intermediates present a black prim instead of the interp OT on intermediate frames (presentation test); live-toggle F10\n"
                 "                             for scripts/measure-pacing.py. Off by default.\n"
-                "  --mute on|off              mute all audio at the OpenAL layer (default on)\n",
+                "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n",
                 opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {
