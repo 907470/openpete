@@ -53,6 +53,28 @@ cmake --build build/windows-mingw -j
     --screenshot-output ./shot.bmp --max-runtime-seconds 30 --log-format json
 ```
 
+## Options file
+
+Drop an `openpete.opts` file **next to the executable** to supply default
+command-line flags, so you don't retype your preferences every launch.
+Tokens are whitespace/newline-separated and `#` starts a comment:
+
+```
+# openpete.opts — persistent defaults
+--disc games/spyro-1/spyro-1/build/SCUS-94228.cue
+--aspect 21:9
+--window 1920x1080
+--fov 90
+```
+
+Explicit command-line flags always override the file (e.g. a `--fov 70`
+on the CLI beats the file's `90`). A per-movie `<name>.bk2.args` sidecar
+sits between the two — the full precedence is `openpete.opts` < `.bk2.args`
+sidecar < explicit CLI. The entry point now defaults to SCUS-94228's `main`
+at `0x80012204` (no `--run-recomp` needed), so an `openpete.opts` that
+supplies the still-required `--disc` makes `./openpete-spyro1` runnable
+with no command-line arguments.
+
 ## Recording gameplay video
 
 `--record PATH` captures gameplay to a video file. Capture is **true VFR**:

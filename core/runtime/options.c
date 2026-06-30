@@ -7,6 +7,8 @@
 #include "openpete_log.h"
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names) */
 
+#include <SDL3/SDL.h>     /* SDL_GetBasePath — locate openpete.opts next to the exe */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +33,7 @@ static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
         if (!*p) break;
         if (*p == '#') { while (*p && *p != '\n') p++; continue; }
         if (n >= max_tokens) {
-            fprintf(stderr, "openpete: too many tokens in bk2 sidecar (max %d)\n", max_tokens);
+            fprintf(stderr, "openpete: too many tokens in args file (max %d)\n", max_tokens);
             return -1;
         }
         tokens[n++] = p;
@@ -41,17 +43,74 @@ static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
     return n;
 }
 
-/* If argv contains "--bk2 PATH" and PATH.args exists on disk, splice
- * its tokens into argv right after argv[0] so they're parsed BEFORE the
- * user's flags — user CLI then wins on scalar conflicts (last-write).
+/* Read an args file at `path` (≤4096 bytes), tokenize it (whitespace-
+ * separated, '#'..EOL comments), and splice the tokens into argv right
+ * after argv[0] so they parse BEFORE the trailing args — the trailing
+ * args (further right) then win scalar conflicts (last-write). `label`
+ * names the source in diagnostics.
  *
  * Returns:
- *    1  expanded; *out_argc / *out_argv hold the new argv (heap-owned,
+ *    1  spliced; *out_argc / *out_argv hold the new argv (heap-owned,
  *       leaked for program lifetime — token strings point into a malloc
  *       buffer that has to outlive opts).
- *    0  no --bk2 or no sidecar; caller keeps original argv.
+ *    0  file absent or empty/comments-only; caller keeps `argv`.
  *   -1  error (logged); caller should bail with SETUP_ERROR.
  */
+static int splice_args_file(const char* path, const char* label,
+                            int argc, char** argv,
+                            int* out_argc, char*** out_argv) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0; /* absent is the common no-override case */
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz < 0 || sz > 4096) {
+        fprintf(stderr, "openpete: %s %s rejected (size=%ld; cap 4096)\n",
+                label, path, sz);
+        fclose(f); return -1;
+    }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return -1; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        fprintf(stderr, "openpete: short read on %s\n", path);
+        fclose(f); free(buf); return -1;
+    }
+    buf[sz] = '\0';
+    fclose(f);
+
+    enum { MAX_SIDECAR_TOKENS = 64 };
+    char** tokens = (char**)malloc(sizeof(char*) * MAX_SIDECAR_TOKENS);
+    if (!tokens) { free(buf); return -1; }
+    int ntoks = tokenize_sidecar_args(buf, tokens, MAX_SIDECAR_TOKENS);
+    if (ntoks < 0) { free(buf); free(tokens); return -1; }
+    if (ntoks == 0) {
+        free(buf); free(tokens);
+        return 0; /* empty/comments-only — nothing to splice */
+    }
+
+    int new_argc = argc + ntoks;
+    char** new_argv = (char**)malloc(sizeof(char*) * (size_t)(new_argc + 1));
+    if (!new_argv) { free(buf); free(tokens); return -1; }
+    int o = 0;
+    new_argv[o++] = argv[0];
+    for (int i = 0; i < ntoks; i++) new_argv[o++] = tokens[i];
+    for (int i = 1; i < argc; i++)  new_argv[o++] = argv[i];
+    new_argv[o] = NULL;
+
+    fprintf(stderr, "openpete: %s %s -> %d arg(s) prepended\n",
+            label, path, ntoks);
+
+    free(tokens);
+    /* buf is intentionally retained — token pointers reference it. */
+
+    *out_argc = new_argc;
+    *out_argv = new_argv;
+    return 1;
+}
+
+/* If argv contains "--bk2 PATH" and PATH.args exists on disk, splice its
+ * tokens in after argv[0] (parsed before the user's flags — user CLI wins
+ * scalar conflicts). See splice_args_file for the return contract. */
 static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_argv) {
     int bk2_idx = -1;
     for (int i = 1; i < argc - 1; i++) {
@@ -66,54 +125,32 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
     memcpy(args_path, bk2_path, plen);
     memcpy(args_path + plen, ".args", 6);
 
-    FILE* f = fopen(args_path, "rb");
-    if (!f) { free(args_path); return 0; }
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); free(args_path); return -1; }
-    long sz = ftell(f);
-    if (sz < 0 || sz > 4096) {
-        fprintf(stderr, "openpete: bk2 sidecar %s rejected (size=%ld; cap 4096)\n",
-                args_path, sz);
-        fclose(f); free(args_path); return -1;
-    }
-    rewind(f);
-    char* buf = (char*)malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); free(args_path); return -1; }
-    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-        fprintf(stderr, "openpete: short read on %s\n", args_path);
-        fclose(f); free(args_path); free(buf); return -1;
-    }
-    buf[sz] = '\0';
-    fclose(f);
-
-    enum { MAX_SIDECAR_TOKENS = 64 };
-    char** tokens = (char**)malloc(sizeof(char*) * MAX_SIDECAR_TOKENS);
-    if (!tokens) { free(args_path); free(buf); return -1; }
-    int ntoks = tokenize_sidecar_args(buf, tokens, MAX_SIDECAR_TOKENS);
-    if (ntoks < 0) { free(args_path); free(buf); free(tokens); return -1; }
-    if (ntoks == 0) {
-        free(args_path); free(buf); free(tokens);
-        return 0; /* empty/comments-only sidecar — nothing to splice */
-    }
-
-    int new_argc = argc + ntoks;
-    char** new_argv = (char**)malloc(sizeof(char*) * (size_t)(new_argc + 1));
-    if (!new_argv) { free(args_path); free(buf); free(tokens); return -1; }
-    int o = 0;
-    new_argv[o++] = argv[0];
-    for (int i = 0; i < ntoks; i++) new_argv[o++] = tokens[i];
-    for (int i = 1; i < argc; i++)  new_argv[o++] = argv[i];
-    new_argv[o] = NULL;
-
-    fprintf(stderr, "openpete: bk2 sidecar %s -> %d arg(s) prepended\n",
-            args_path, ntoks);
-
+    int rc = splice_args_file(args_path, "bk2 sidecar", argc, argv, out_argc, out_argv);
     free(args_path);
-    free(tokens);
-    /* buf is intentionally retained — token pointers reference it. */
+    return rc;
+}
 
-    *out_argc = new_argc;
-    *out_argv = new_argv;
-    return 1;
+/* If "openpete.opts" sits next to the executable, splice its tokens in
+ * after argv[0]. These are the lowest-priority source — the bk2 sidecar
+ * and explicit CLI both override (see openpete_options_parse for the
+ * splice order). Lets a packaged build ship, or a user drop, persistent
+ * flags (renderer, FOV, aspect, …) next to the binary without retyping
+ * them every launch. Resolved via SDL_GetBasePath (the executable dir),
+ * the same convention as the music wav-override search path. */
+static int expand_options_file(int argc, char** argv, int* out_argc, char*** out_argv) {
+    const char* base = SDL_GetBasePath(); /* SDL3: owned by SDL, do not free */
+    if (!base) return 0; /* can't resolve exe dir — silently skip */
+
+    static const char name[] = "openpete.opts";
+    size_t blen = strlen(base);
+    char* path = (char*)malloc(blen + sizeof(name)); /* sizeof includes NUL */
+    if (!path) return -1;
+    memcpy(path, base, blen);
+    memcpy(path + blen, name, sizeof(name));
+
+    int rc = splice_args_file(path, "options file", argc, argv, out_argc, out_argv);
+    free(path);
+    return rc;
 }
 
 void openpete_options_init(openpete_options_t* opts) {
@@ -152,6 +189,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     int sidecar_rc = expand_bk2_sidecar(argc, argv, &sidecar_argc, &sidecar_argv);
     if (sidecar_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
     if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
+
+    /* Options file next to the executable (openpete.opts): persistent
+     * default flags. Spliced after the bk2 splice but still before argv[0]'s
+     * trailing args, so the resulting precedence (left parsed first, last
+     * write wins) is: options file < bk2 sidecar < explicit CLI. */
+    int optfile_argc = 0;
+    char** optfile_argv = NULL;
+    int optfile_rc = expand_options_file(argc, argv, &optfile_argc, &optfile_argv);
+    if (optfile_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+    if (optfile_rc == 1) { argc = optfile_argc; argv = optfile_argv; }
 
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
@@ -446,6 +493,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             fprintf(stderr,
                 "OpenPete %s\n"
                 "Usage: %s [options]\n"
+                "  An 'openpete.opts' file next to the executable supplies default flags\n"
+                "  (whitespace/newline-separated, '#' comments). Explicit CLI flags override it.\n"
                 "  --frame-limit N            exit after N rendered frames\n"
                 "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
                 "  --headless                 no on-screen window (offscreen video driver)\n"
@@ -497,7 +546,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
                 "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
                 "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
-                "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields\n"
+                "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
                 "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
                 "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
                 "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
@@ -553,15 +602,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
 
     if (!is_segv_test && !is_call_test && opts->run_recomp_addr == 0) {
         if (opts->run_recomp_hint_addr != 0) {
-            fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
-                            "point given; e.g. --run-recomp 0x%08X for %s)\n",
-                    opts->run_recomp_hint_addr,
-                    opts->display_name ? opts->display_name : "this game");
+            /* No explicit --run-recomp: dispatch the game's default entry
+             * (the per-game hint). The user can still override on the CLI. */
+            opts->run_recomp_addr = opts->run_recomp_hint_addr;
         } else {
             fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
                             "point given; pass the PSX vaddr of the game's main)\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
         }
-        return OPENPETE_EXIT_SETUP_ERROR;
     }
 
     return OPENPETE_EXIT_OK;

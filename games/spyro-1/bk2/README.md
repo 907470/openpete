@@ -74,6 +74,12 @@ explicit CLI args still override (e.g. passing `--skip-to-level 20`
 on the command line wins over a sidecar's `10`). Missing sidecar is
 not an error; it's the common case.
 
+The sidecar sits in the middle of a three-tier precedence ladder:
+`openpete.opts` (persistent defaults next to the executable) < this
+`.bk2.args` sidecar < explicit CLI. So a sidecar overrides a global
+default but yields to anything typed on the command line. See the
+"Options file" section of the top-level `README.md` for `openpete.opts`.
+
 ## Current corpus
 
 | BK2                          | What it exercises                                          |
