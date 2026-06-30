@@ -706,12 +706,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * GTE-side emit (psxrecomp gte_rtps_internal) always populates
      * the cache when USE_PGXP=1 and render_pass_active; these flags
      * decide whether the consumer (ApplyVertexPGXP) actually reads
-     * from it. Default 1 as of Day 1c (2026-05-26) — float-projected
-     * SXY in PSX pixel space passes per-level soak across all 6
-     * levels (Artisans + 4 homeworlds + Gnasty). See
-     * notes/plans/openpete-pgxp.md. */
+     * from it. Default 0: PGXP's perspective-correct UV / Z-buffer
+     * diverges from the canonical PSX look, which hurts 1:1 comparison
+     * shots, so it's opt-in (--pgxp 1). It passed the per-level soak
+     * across all 6 levels at Day 1c (2026-05-26), so enabling it is
+     * supported — it's just not the default. Display-only either way
+     * (gameplay state is identical). See notes/plans/openpete-pgxp.md. */
     {
-        int want_pgxp = (opts->pgxp_enable >= 0) ? opts->pgxp_enable : 1;
+        int want_pgxp = (opts->pgxp_enable >= 0) ? opts->pgxp_enable : 0;
         g_cfg_pgxpTextureCorrection = want_pgxp;
         g_cfg_pgxpZBuffer = want_pgxp;
         {
@@ -720,7 +722,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         OPL_INFO_F("pgxp", "consumer flags texture_correction=%d zbuffer=%d "
                    "(--pgxp %s)", want_pgxp, want_pgxp,
-                   (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 1");
+                   (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 0");
     }
 
     /* --aspect / --fov derivation lives in core/features/widescreen.c.

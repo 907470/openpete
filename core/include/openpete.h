@@ -117,8 +117,11 @@ typedef struct {
      * vertex cache that the renderer uses for perspective-correct UV
      * interpolation and a real Z-buffer (vs PSX's ordering-table-only
      * depth). When 0, the cache stays unread and rendering is bit-
-     * identical to USE_PGXP=0. Default off until visual + determinism
-     * gates clear at --pgxp 1.
+     * identical to USE_PGXP=0. Defaults to 0 (off): the perspective-
+     * correct look diverges from canonical PSX and hurts 1:1 comparison
+     * shots, so it's opt-in via --pgxp 1 (which passed the per-level soak
+     * — see the run.c boot block). Display-only; gameplay state is the
+     * same either way.
      * See notes/plans/openpete-internal-resolution.md "Phase 2". */
     int pgxp_enable;
 
