@@ -1360,23 +1360,26 @@ static void recolor_walk_from_prims(void) {
  * render-time-animated colour is corrected with zero per-effect code; the
  * returned count surfaces where it happens (see the OPL_DEBUG at the call site).
  * Display-only / oracle-inert (the .s already ran; we only recolour our tris). */
-static int adopt_prim_colors(void) {
-    build_prim_tris();   /* s_ptri[] from the captured .s prims (s_gte) */
+/* Adopt per-vertex RGB into s_wtri[] from a prim-triangle set PT[pn], matching
+ * by screen position (centroid prune + order-independent vertex distance <= tol).
+ * tol is looser on the sub-tick path (the walk is interpolated vs the canonical
+ * prims). RGB only, only-where-different; returns the count of changed tris. */
+static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
     int recoloured = 0;
     for (int wi = 0; wi < s_wtri_n; wi++) {
         ntri_t* w = &s_wtri[wi];
         double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
         double best = 1e18; int bp = -1;
-        for (int pi = 0; pi < s_ptri_n; pi++) {
-            double pcx = (s_ptri[pi].x[0] + s_ptri[pi].x[1] + s_ptri[pi].x[2]) / 3.0;
-            double pcy = (s_ptri[pi].y[0] + s_ptri[pi].y[1] + s_ptri[pi].y[2]) / 3.0;
+        for (int pi = 0; pi < pn; pi++) {
+            double pcx = (PT[pi].x[0] + PT[pi].x[1] + PT[pi].x[2]) / 3.0;
+            double pcy = (PT[pi].y[0] + PT[pi].y[1] + PT[pi].y[2]) / 3.0;
             if (fabs(pcx - wcx) > 32.0 || fabs(pcy - wcy) > 32.0) continue;   /* centroid prune */
-            double c = tri_match_cost(w, &s_ptri[pi]);
+            double c = tri_match_cost(w, &PT[pi]);
             if (c < best) { best = c; bp = pi; }
         }
-        if (bp < 0 || best > 4.0) continue;   /* no confident match -> keep native colour */
-        ptri* P = &s_ptri[bp];
+        if (bp < 0 || best > tol) continue;   /* no confident match -> keep native colour */
+        const ptri* P = &PT[bp];
         int changed = 0;
         for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
             double bd = 1e18; int bj = 0;
@@ -1393,6 +1396,32 @@ static int adopt_prim_colors(void) {
         if (changed) recoloured++;
     }
     return recoloured;
+}
+
+/* Canonical-frame snapshot of the REGULAR prim-tris, for the high-FPS sub-tick
+ * re-extract: the live capture (s_gte) is unusable at present time — the SPEC
+ * pass's capture_gte runs after REG and zeroes s_gte when there are no specular
+ * mobys, so by the intermediate present s_gte_n==0. Snapshot here while s_gte
+ * still holds the REG prims (this runs in the REG feed block, before SPEC). */
+static ptri s_canon_reg_ptri[MAX_PTRI]; static int s_canon_reg_ptri_n;
+
+/* Canonical path: build prims from the live REG capture, adopt at 4px, then
+ * snapshot for the sub-tick. */
+static int adopt_prim_colors(void) {
+    build_prim_tris();   /* s_ptri[] from the captured .s prims (s_gte) */
+    int rc = adopt_colors_from_ptri(s_ptri, s_ptri_n, 4.0);
+    int n = s_ptri_n; if (n > MAX_PTRI) n = MAX_PTRI;
+    memcpy(s_canon_reg_ptri, s_ptri, sizeof(ptri) * (size_t)n);
+    s_canon_reg_ptri_n = n;
+    return rc;
+}
+
+/* Sub-tick path: adopt from the canonical REG snapshot (live s_gte is empty by
+ * present time). 8px tolerance absorbs the interpolated-vs-canonical geometry
+ * offset; static-colour mobys stay no-ops. Best-effort: a fast-moving dynamic-
+ * colour moby whose intermediate pose drifts >8px keeps its native colour. */
+static int adopt_prim_colors_subtick(void) {
+    return adopt_colors_from_ptri(s_canon_reg_ptri, s_canon_reg_ptri_n, 8.0);
 }
 
 /* ---- specular env-reflection UV (#1), native float ---------------------
@@ -2719,12 +2748,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
-    /* Sub-tick: match the interpolated walk against the LAST canonical prims
-     * (s_gte persists between canonical frames) so render-time-animated colours
-     * (the barrier shimmer) don't flicker grey↔blue between canonical and
-     * intermediate presents. Best-effort: a fast-moving dynamic-colour moby may
-     * fall outside the match tolerance and keep its native colour that present. */
-    if (!is_spec) adopt_prim_colors();
+    /* Sub-tick: adopt render-time-animated colours (the barrier shimmer) from the
+     * canonical REG prim snapshot so they don't flicker grey↔cyan between
+     * canonical and intermediate presents. Must use the snapshot, NOT live s_gte:
+     * the canonical SPEC pass's capture_gte zeroes s_gte after REG, so it's empty
+     * by present time. */
+    if (!is_spec) adopt_prim_colors_subtick();
     push_scene_moby();
     return nm;
 }
