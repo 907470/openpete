@@ -256,7 +256,7 @@ typedef struct {
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
     int ssaa;
 
-    /* FPS overlay on the native vk window (default on; --no-fps-overlay to start
+    /* FPS overlay on the native vk window (default on; --show-fps 0 to start
      * off, F11 to toggle live). Display-only; ignored under --headless / psycross. */
     bool fps_overlay;
 

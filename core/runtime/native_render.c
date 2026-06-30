@@ -1933,7 +1933,7 @@ static bool draw_native_scene(bool full_extent)
  * (the gold extruded glyph models), built game-side by text_moby_native and
  * pushed via openpete_native_set_overlay_glyphs. Pure display: drawn only on the
  * LIVE vk present (not screenshots, ab, or diff, so the comparison images stay
- * clean). Toggle at runtime (F11) or start off with --no-fps-overlay. */
+ * clean). Toggle at runtime (F11) or start off with --show-fps 0. */
 static int s_fps_overlay  = 1;   /* enabled (default on) */
 static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
 static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
