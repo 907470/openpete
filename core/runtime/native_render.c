@@ -1425,8 +1425,46 @@ static uint32_t bg_from_ref_corner(void)
  * flyby so Spyro flies in front of the revealed text) or, by default, OVER the player
  * (after the whole scene) — see hud_under in draw_native_scene. The 3D HUD icons
  * (HUD3D) are a separate depth-isolated pass drawn after this either way. */
+/* Textured-tri material batching (see the bucket build in render_scene). The
+ * scene index of each textured block-tri, in VB order, so the draw side can read
+ * a tri's material and coalesce adjacent same-material runs into one draw. */
+static int s_txscene[MAX_SCENE_TRIS];
+static const openpete_scene_tri* s_txsort_scene;   /* qsort context (set per call) */
+static int tex_mat_cmp(const void* pa, const void* pb) {
+    const openpete_scene_tri* a = &s_txsort_scene[*(const int*)pa];
+    const openpete_scene_tri* b = &s_txsort_scene[*(const int*)pb];
+    if (a->tpage_y != b->tpage_y) return a->tpage_y < b->tpage_y ? -1 : 1;
+    if (a->tpage_x != b->tpage_x) return a->tpage_x < b->tpage_x ? -1 : 1;
+    if (a->clut_y  != b->clut_y ) return a->clut_y  < b->clut_y  ? -1 : 1;
+    if (a->clut_x  != b->clut_x ) return a->clut_x  < b->clut_x  ? -1 : 1;
+    if (a->bpp     != b->bpp    ) return a->bpp     < b->bpp     ? -1 : 1;
+    return 0;
+}
+/* Draw a bucket's textured vert range [first_vert, first_vert+vert_count),
+ * coalescing adjacent same-material tris into one rhi_draw (one push-constant per
+ * run, not per tri). Caller binds the pipeline + vram + vertex buffer. */
+static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
+                          const openpete_scene_tri* scene) {
+    int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
+    while (i < ntri) {
+        const openpete_scene_tri* s0 = &scene[s_txscene[base + i]];
+        const psx_material m = { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp };
+        rhi_push_constants(s_nr.dev, &m, sizeof m);
+        int run = 1;
+        while (i + run < ntri) {
+            const openpete_scene_tri* s1 = &scene[s_txscene[base + i + run]];
+            if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
+                s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
+            run++;
+        }
+        rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+        i += run;
+    }
+}
+
 static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
-                                const int* ut_first, const int* ut_count, int n, int tx_start)
+                                const int* ut_first, const int* ut_count, int tx_start,
+                                int hud_tex_first, int hud_tex_count)
 {
     if (ut_count[8] > 0) {                                          /* HUD_PANEL (semi-transparent 2D box) */
         /* Each HUD-panel box carries its real PSX ABR mode in its blend field (read
@@ -1444,21 +1482,11 @@ static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
             voff += 3;
         }
     }
-    if (n > tx_start && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
+    if (hud_tex_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
         rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        int off = tx_start;
-        for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-            if (!scene[t].textured) continue;
-            if (scene[t].category == OPENPETE_SCENE_HUD) {
-                const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                         scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                rhi_push_constants(s_nr.dev, &m, sizeof m);
-                rhi_draw(s_nr.dev, 3, (uint32_t)off);
-            }
-            off += 3;  /* advance for every textured tri (verts are contiguous) */
-        }
+        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene);  /* bucket 6, submission order + run-coalesce */
     }
     if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
         rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
@@ -1713,19 +1741,56 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     portal_count = n - portal_first;
+    /* Textured tris, bucketed by draw group then (for opaque groups) material-
+     * sorted, so the draw loop coalesces same-material runs into ONE vkCmdDraw.
+     * Previously each textured triangle was its own vkCmdDraw + vkCmdPushConstants
+     * (~3800 draws/present in a busy scene, ×~480/s = the high-FPS bottleneck);
+     * material-sorting collapses that ~36× (terrain/mobys share few tpages).
+     *   buckets 0..5 = the 6 layered groups (SAME partition as the draw loop)
+     *   bucket  6    = HUD 2D textured backdrops (draw_hud_flat_layer)
+     * HUD3D-textured and unmatched textured tris are not drawn by anyone (prior
+     * behaviour), so they're dropped from the block. Opaque buckets (0,2,3) are
+     * material-sorted — depth resolves visibility regardless of draw order, so it
+     * is exact. Transparent buckets (1,4,5) and HUD (6) keep submission order
+     * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
+     * backdrops want painter's order) and only coalesce already-adjacent runs. */
     int tx_start = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (!scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+    int txg_first[7], txg_count[7], txtri = 0;
+    for (int b = 0; b < 7; b++) {
+        txg_first[b] = tx_start + txtri * 3;
+        int run_start = txtri;
+        for (int t = 0; t < scene_n; t++) {
+            if (!scene[t].textured) continue;
+            if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
+            int cat = scene[t].category;
+            int belongs;
+            if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
+            else {
+                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
+                          bl == groups[b].blend &&
+                          !(groups[b].blend == 0 && groups[b].gcat >= 0 && cat != groups[b].gcat);
+            }
+            if (belongs) s_txscene[txtri++] = t;
+        }
+        if (b == 0 || b == 2 || b == 3) {   /* opaque: material-sort (depth-correct) */
+            s_txsort_scene = scene;
+            qsort(&s_txscene[run_start], (size_t)(txtri - run_start), sizeof(int), tex_mat_cmp);
+        }
+        txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
+    }
+    for (int i = 0; i < txtri; i++) {
+        const openpete_scene_tri *st = &scene[s_txscene[i]];
         for (int k = 0; k < 3; k++) {
             float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
-            o->u = scene[t].v[k].u; o->v = scene[t].v[k].v;
-            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+            scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[tx_start + i * 3 + k];
+            o->x = cx; o->y = cy; o->z = st->v[k].z;
+            o->u = st->v[k].u; o->v = st->v[k].v;
+            o->rgba = st->v[k].rgba; o->tex = 0;
         }
-        n += 3;
     }
+    n = tx_start + txtri * 3;
 
     /* Full-screen fade overlay (func_800190D4): a single full-panel quad at the
      * near plane (z=0 passes LESS_OR_EQUAL against everything), drawn dead last so
@@ -1837,10 +1902,10 @@ static bool draw_native_scene(bool full_extent)
 
     /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
      * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE). For each: the batched
-     * untextured range, then its textured tris per-tri (material push). Opaque
-     * groups write depth; the transparent groups (1/4/5) are depth_write_off (test
-     * vs opaque, never occlude each other). Per-tri material draws; material-batched
-     * draws + back-to-front transparent sort (3c) are later.
+     * untextured range, then its textured tris as material-coalesced runs
+     * (draw_tex_runs over the pre-bucketed/sorted block — one draw per material
+     * run, not per triangle). Opaque groups write depth; the transparent groups
+     * (1/4/5) are depth_write_off (test vs opaque, never occlude each other).
      *
      * The HUD/overlay layer (depth-test OFF) is drawn AFTER the ACTOR group (mobys,
      * gi==2) and BEFORE the PLAYER group (Spyro, gi==3): it ignores world depth so
@@ -1865,26 +1930,11 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
-        if (n > tx_start && s_nr.vram_tex && g->tex) {
+        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
             rhi_bind_pipeline(s_nr.dev, g->tex);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            int off = tx_start;
-            for (int t = 0; t < scene_n && off + 3 <= n; t++) {
-                if (!scene[t].textured) continue;
-                int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
-                int match = scene[t].category != OPENPETE_SCENE_HUD &&  /* HUD -> overlay pass */
-                            scene[t].category != OPENPETE_SCENE_HUD3D && /* HUD3D -> depth pass */
-                            (b == g->blend) &&
-                            !(g->blend == 0 && g->gcat >= 0 && scene[t].category != g->gcat);
-                if (match) {
-                    const psx_material m = { scene[t].tpage_x, scene[t].tpage_y,
-                                             scene[t].clut_x, scene[t].clut_y, scene[t].bpp };
-                    rhi_push_constants(s_nr.dev, &m, sizeof m);
-                    rhi_draw(s_nr.dev, 3, (uint32_t)off);
-                }
-                off += 3;  /* advance for every textured tri (verts are contiguous) */
-            }
+            draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene);
         }
         /* Portal-sky previews: drawn right after the WORLD group (gi==0) so they
          * depth-test against the arch stone / terrain just written (the arch frame
@@ -1902,14 +1952,14 @@ static bool draw_native_scene(bool full_extent)
          * fly-in Spyro draws in front of the revealed "THE ADVENTURE BEGINS" text.
          * In every other state the flat HUD draws OVER the player (after the loop). */
         if (gi == 2 && hud_under)
-            draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, n, tx_start);
+            draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
     }
 
     /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player
      * (Spyro behind the HUD/text). Only the GS_LevelTransition flyby puts it under
      * the player (handled at gi==2 above). */
     if (!hud_under)
-        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, n, tx_start);
+        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
 
     /* HUD3D layer — the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
      * digits). They are real 3D models, so depth-off (the flat HUD layer) paints
