@@ -10,7 +10,7 @@
 #include <string.h>
 
 static const char* const k_names[RP_COUNT] = {
-    "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles",
+    "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */

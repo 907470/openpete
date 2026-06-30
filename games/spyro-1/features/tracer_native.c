@@ -45,6 +45,7 @@ extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer
 extern unsigned openpete_frame;
 
 #define G_CAMERA       0x80076DD0u
+#define POLYBUF_CURSOR  0x800757B0u   /* D_800757B0: polybuf write cursor (range record) */
 #define TRACER_COUNT    0x80075684u   /* active set count (drained to 0 by the .s) */
 #define TRACER_CNTTAB   0x800772C8u   /* per-set point count                       */
 #define TRACER_BASETAB  0x80078658u   /* per-set points-base pointer               */
@@ -207,8 +208,14 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     if (feed) tracer_snapshot(cpu);                        /* capture before the drain */
+    uint32_t pb0 = cpu->read_word(POLYBUF_CURSOR);
     func_800189F0(cpu);                                   /* real renderer (verdict) */
-    if (feed && s_nsets > 0 && render_path_enabled(RP_PARTICLES))
+    /* Record the tracer's emitted polybuf range as RP_TRACER: drives the OT-filter
+     * isolation AND the canon-drawn liveness gate the sub-tick re-extract reads.
+     * Empty when no tracer drew (render_path_record drops empty ranges), so a frame
+     * with no tracer reads as "not drawn" and the spine won't replay a stale beam. */
+    render_path_record(RP_TRACER, pb0, cpu->read_word(POLYBUF_CURSOR));
+    if (feed && s_nsets > 0 && render_path_enabled(RP_TRACER))
         tracer_build_and_feed(cpu);
     s_in = 0;
     return 1;
@@ -217,7 +224,13 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
 /* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
 void tracer_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
-    if (!render_path_enabled(RP_PARTICLES)) return;
+    if (!render_path_enabled(RP_TRACER)) return;
+    /* Liveness gate (matches every other feeder): only replay if the most recent
+     * canonical frame actually drew a tracer. Without this, when the canonical
+     * tracer render pauses (sim stall, level transition) while the high-FPS spine
+     * keeps presenting, the intermediate presents replayed the last beam as a ghost
+     * over a scene whose mobys/particles had already stopped rendering. */
+    if (!render_path_canon_drawn(RP_TRACER)) return;
     tracer_build_and_feed(cpu);
 }
 

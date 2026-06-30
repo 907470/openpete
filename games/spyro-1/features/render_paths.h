@@ -32,6 +32,7 @@ typedef enum {
     RP_SHADOW,    /* moby shadows (func_80059F8C) + Spyro silhouette shadow (func_80059A48) */
     RP_FLAME,     /* Spyro's flame breath (func_80058D64) */
     RP_PARTICLES, /* particle systems (func_800573C8) */
+    RP_TRACER,    /* additive tracer/beam (func_800189F0) — charge streak, fireball trail */
     RP_COUNT
 } render_path_t;
 
