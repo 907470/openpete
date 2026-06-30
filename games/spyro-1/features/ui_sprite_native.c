@@ -124,10 +124,22 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
      * the world at top/bottom. Widen such a bar about screen-centre 256 by the Hor+
      * factor F so x 0->xlo and 512->xhi map to the full panel [-1,+1] (same vertical
      * extent — the widened bar stays continuous with the central one). No-op at 4:3
-     * (F=1). Vertical bars are unchanged. */
+     * (F=1). Vertical bars are unchanged.
+     *
+     * Over-extend each side edge a few PSX px PAST the content rect: the exact
+     * widened edge lands sub-pixel-precisely on clip ±1, where the rasteriser drops
+     * a 1px sliver along the window border (the "letterbox doesn't reach the edge"
+     * report). The scene scissor clips the overshoot, so the bleed is never visible
+     * beyond the edge — it only guarantees the border column is covered. */
     if (full_width) {
         float F = openpete_native_widescreen_factor();
-        if (F > 1.0f) for (int k=0;k<4;k++) sx[k] = 256 + (int)(((float)sx[k] - 256.0f) * F);
+        if (F > 1.0f) for (int k=0;k<4;k++) {
+            const float kBleed = 4.0f;   /* PSX px of edge bleed (scissor-clipped) */
+            float w = ((float)sx[k] - 256.0f) * F;
+            if (w < 0.0f)      w -= kBleed;
+            else if (w > 0.0f) w += kBleed;
+            sx[k] = 256 + (int)w;
+        }
     }
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
