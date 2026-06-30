@@ -759,6 +759,24 @@ static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=f
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
 static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
 
+/* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
+ * each emitted walk tri so the canonical frame can snapshot the .s's transient
+ * per-vertex colour by FACE (moby pointer + topology vertex-index triple) and the
+ * high-FPS sub-tick re-extract can REPLAY it by identity — instead of re-matching
+ * by screen position every present. The old screen-space sub-tick match was both
+ * O(walk×prim) per present (the 480→60fps moby regression) and flicker-prone
+ * (interpolated walk vs the stale canonical prim snapshot crossed the match
+ * tolerance frame-to-frame, mis-colouring neighbouring mobys). The face key is
+ * pure topology (the SXY index triple comes from the face word, identical
+ * canonical vs sub-tick regardless of pose/cull), so replay is exact and stable;
+ * colour isn't interpolated between sim ticks, so holding the canonical colour
+ * across the intermediates is correct. */
+static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
+static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
+static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
+static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
+#define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
+
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
@@ -786,6 +804,8 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
     s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
+    s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
+    s_wtri_fkey[s_wtri_n] = s_emit_fkey;
     ntri_t* t = &s_wtri[s_wtri_n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez};
@@ -871,6 +891,7 @@ static int build_walk_tris(CPUState* cpu) {
             for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
             if (dup) continue;
         }
+        s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
@@ -1082,16 +1103,21 @@ static int build_walk_tris(CPUState* cpu) {
                             "drawn full-additive (no quarter-add pipe) f=%u -- FIX moby_native.c:1074",
                             openpete_frame);
 
-            if (emit_a)
+            if (emit_a) {
+                s_emit_fkey = PACK_FKEY(i0,i1,i2);
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
+            }
             if (emit_b) {
-                if (b_is_v3tri)          /* tri-2nd (v3,v1,v2) */
+                if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
+                    s_emit_fkey = PACK_FKEY(i3,i1,i2);
                     emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
-                else                     /* quad 2nd half (v1,v3,v2) */
+                } else {                 /* quad 2nd half (v1,v3,v2) */
+                    s_emit_fkey = PACK_FKEY(i1,i3,i2);
                     emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
+                }
             }
             fp += adv;
         }
@@ -1360,10 +1386,27 @@ static void recolor_walk_from_prims(void) {
  * render-time-animated colour is corrected with zero per-effect code; the
  * returned count surfaces where it happens (see the OPL_DEBUG at the call site).
  * Display-only / oracle-inert (the .s already ran; we only recolour our tris). */
+/* Per-face transient-colour cache: one entry per walk tri the canonical adopt
+ * actually changed, keyed by face identity (moby + topology index triple). The
+ * sub-tick re-extract replays from this by identity (no screen-space re-match).
+ * Tiny in practice — only render-time-animated faces (the barrier) land here, so
+ * when it's empty the sub-tick path is O(1). */
+typedef struct { uint32_t moby, fkey, rgb[3]; } dyncol_t;
+#define MAX_DYNCOL 1024
+static dyncol_t s_dyncol[MAX_DYNCOL]; static int s_dyncol_n;
+static uint32_t s_dynmoby[32]; static int s_dynmoby_n;   /* distinct mobys present in s_dyncol (fast reject) */
+
+static void dyncol_note_moby(uint32_t m) {
+    for (int i = 0; i < s_dynmoby_n; i++) if (s_dynmoby[i] == m) return;
+    if (s_dynmoby_n < (int)(sizeof(s_dynmoby)/sizeof(s_dynmoby[0]))) s_dynmoby[s_dynmoby_n++] = m;
+}
+
 /* Adopt per-vertex RGB into s_wtri[] from a prim-triangle set PT[pn], matching
  * by screen position (centroid prune + order-independent vertex distance <= tol).
- * tol is looser on the sub-tick path (the walk is interpolated vs the canonical
- * prims). RGB only, only-where-different; returns the count of changed tris. */
+ * RGB only, only-where-different; returns the count of changed tris. Every tri it
+ * changes is appended to s_dyncol[] keyed by the tri's face identity, so the
+ * sub-tick can replay it without re-matching. Canonical-frame only (the live
+ * geometry exactly matches the prims there, tol=4px). */
 static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
     int recoloured = 0;
     for (int wi = 0; wi < s_wtri_n; wi++) {
@@ -1393,35 +1436,56 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
                 changed = 1;
             }
         }
-        if (changed) recoloured++;
+        if (changed) {
+            recoloured++;
+            if (s_dyncol_n < MAX_DYNCOL) {     /* cache by face identity for the sub-tick replay */
+                dyncol_t* d = &s_dyncol[s_dyncol_n++];
+                d->moby = s_wtri_moby[wi]; d->fkey = s_wtri_fkey[wi];
+                for (int k = 0; k < 3; k++) d->rgb[k] = w->v[k].rgb & 0xFFFFFFu;
+                dyncol_note_moby(s_wtri_moby[wi]);
+            }
+        }
     }
     return recoloured;
 }
 
-/* Canonical-frame snapshot of the REGULAR prim-tris, for the high-FPS sub-tick
- * re-extract: the live capture (s_gte) is unusable at present time — the SPEC
- * pass's capture_gte runs after REG and zeroes s_gte when there are no specular
- * mobys, so by the intermediate present s_gte_n==0. Snapshot here while s_gte
- * still holds the REG prims (this runs in the REG feed block, before SPEC). */
-static ptri s_canon_reg_ptri[MAX_PTRI]; static int s_canon_reg_ptri_n;
-
-/* Canonical path: build prims from the live REG capture, adopt at 4px, then
- * snapshot for the sub-tick. */
+/* Canonical path: build prims from the live REG capture, rebuild the per-face
+ * transient-colour cache, then adopt at 4px (which fills the cache). Runs once per
+ * sim tick (30Hz); the O(walk×prim) match it pays is amortised there, NOT on the
+ * per-present sub-tick (which replays the cache by identity, see below). */
 static int adopt_prim_colors(void) {
     build_prim_tris();   /* s_ptri[] from the captured .s prims (s_gte) */
+    s_dyncol_n = 0; s_dynmoby_n = 0;
     int rc = adopt_colors_from_ptri(s_ptri, s_ptri_n, 4.0);
-    int n = s_ptri_n; if (n > MAX_PTRI) n = MAX_PTRI;
-    memcpy(s_canon_reg_ptri, s_ptri, sizeof(ptri) * (size_t)n);
-    s_canon_reg_ptri_n = n;
     return rc;
 }
 
-/* Sub-tick path: adopt from the canonical REG snapshot (live s_gte is empty by
- * present time). 8px tolerance absorbs the interpolated-vs-canonical geometry
- * offset; static-colour mobys stay no-ops. Best-effort: a fast-moving dynamic-
- * colour moby whose intermediate pose drifts >8px keeps its native colour. */
+/* Sub-tick path: replay the canonical transient colours by FACE IDENTITY (moby +
+ * topology index triple) — no screen-space re-match. O(1) when no render-time-
+ * animated moby was on screen this tick (s_dyncol empty, the common case); else
+ * O(walk × dyncol) gated by a distinct-moby fast reject, so only the handful of
+ * dynamic mobys' tris pay the lookup. Stable across intermediates: colour is held
+ * at the canonical value (it isn't interpolated between sim ticks), so no
+ * grey↔cyan flicker and no mis-colouring of neighbouring mobys. */
 static int adopt_prim_colors_subtick(void) {
-    return adopt_colors_from_ptri(s_canon_reg_ptri, s_canon_reg_ptri_n, 8.0);
+    if (s_dyncol_n == 0) return 0;
+    int applied = 0;
+    for (int wi = 0; wi < s_wtri_n; wi++) {
+        uint32_t mob = s_wtri_moby[wi];
+        int dyn = 0;
+        for (int i = 0; i < s_dynmoby_n; i++) if (s_dynmoby[i] == mob) { dyn = 1; break; }
+        if (!dyn) continue;                          /* this moby has no transient faces */
+        uint32_t fk = s_wtri_fkey[wi];
+        for (int d = 0; d < s_dyncol_n; d++) {
+            if (s_dyncol[d].moby != mob || s_dyncol[d].fkey != fk) continue;
+            ntri_t* w = &s_wtri[wi];
+            for (int k = 0; k < 3; k++)
+                w->v[k].rgb = (w->v[k].rgb & 0xFF000000u) | (s_dyncol[d].rgb[k] & 0xFFFFFFu);
+            applied++;
+            break;
+        }
+    }
+    return applied;
 }
 
 /* ---- specular env-reflection UV (#1), native float ---------------------
@@ -2431,6 +2495,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * level-intro/RESCUED text behind Spyro). Static icons are always 3D → HUD3D;
          * a near-OT/UI billboard is HUD3D only if its model Z-extent is large. */
         int model_3d = (R->vzspread >= 96);   /* >~3× a text glyph's thickness */
+        s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
                  : 0;
