@@ -1337,6 +1337,64 @@ static void recolor_walk_from_prims(void) {
     }
 }
 
+/* Render-time-transient COLOUR adoption (REGULAR path only).
+ *
+ * A few effect mobys compute ANIMATED per-vertex gouraud colours *inside*
+ * func_8001F798 and revert the faceblock colour slot before the renderer
+ * returns — e.g. the level-boundary "invisible barrier" ripple, whose colour
+ * word at face+0x04 reads the resting 0x00000001 (→ a flat grey) both BEFORE
+ * and AFTER the render pass, holding the real blue↔black shimmer gradient only
+ * transiently DURING it. Our walk re-derives colour from the faceblock *after*
+ * the pass, so it sees the resting value and the effect renders flat/grey.
+ *
+ * The value is provably not in stable gamestate, so it can't be re-derived;
+ * the captured prims, however, hold the authoritative final colour the game
+ * actually drew. Adopt that per-vertex where it disagrees with the walk.
+ *
+ * Scoped to REGULAR (plain cbase-lookup colour): the SHADED path lights in
+ * float (higher precision than the 8-bit prim — the HDR path) and the SPECULAR
+ * pass bakes its own additive highlight; neither may be overwritten, so this is
+ * NOT called on those paths. Static-colour mobys are untouched — walk == prim,
+ * so the per-vertex "only if different" gate is a no-op for them. RGB only
+ * (geometry / UV / depth / blend stay fully native). Self-detecting: any future
+ * render-time-animated colour is corrected with zero per-effect code; the
+ * returned count surfaces where it happens (see the OPL_DEBUG at the call site).
+ * Display-only / oracle-inert (the .s already ran; we only recolour our tris). */
+static int adopt_prim_colors(void) {
+    build_prim_tris();   /* s_ptri[] from the captured .s prims (s_gte) */
+    int recoloured = 0;
+    for (int wi = 0; wi < s_wtri_n; wi++) {
+        ntri_t* w = &s_wtri[wi];
+        double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
+        double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
+        double best = 1e18; int bp = -1;
+        for (int pi = 0; pi < s_ptri_n; pi++) {
+            double pcx = (s_ptri[pi].x[0] + s_ptri[pi].x[1] + s_ptri[pi].x[2]) / 3.0;
+            double pcy = (s_ptri[pi].y[0] + s_ptri[pi].y[1] + s_ptri[pi].y[2]) / 3.0;
+            if (fabs(pcx - wcx) > 32.0 || fabs(pcy - wcy) > 32.0) continue;   /* centroid prune */
+            double c = tri_match_cost(w, &s_ptri[pi]);
+            if (c < best) { best = c; bp = pi; }
+        }
+        if (bp < 0 || best > 4.0) continue;   /* no confident match -> keep native colour */
+        ptri* P = &s_ptri[bp];
+        int changed = 0;
+        for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
+            double bd = 1e18; int bj = 0;
+            for (int j = 0; j < 3; j++) {
+                double dx = w->v[k].sx - P->x[j], dy = w->v[k].sy - P->y[j];
+                double d = dx * dx + dy * dy; if (d < bd) { bd = d; bj = j; }
+            }
+            uint32_t pc = P->rgb[bj] & 0xFFFFFFu;
+            if ((w->v[k].rgb & 0xFFFFFFu) != pc) {
+                w->v[k].rgb = (w->v[k].rgb & 0xFF000000u) | pc;   /* keep alpha byte, swap RGB */
+                changed = 1;
+            }
+        }
+        if (changed) recoloured++;
+    }
+    return recoloured;
+}
+
 /* ---- specular env-reflection UV (#1), native float ---------------------
  * The shiny-metal faces reflect the environment: the .s computes per-vertex UV
  * from refl = metalMatrix . (viewPos-TR) mapped to spherical coords (atan2 + the
@@ -1686,6 +1744,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     if (feed) {
         if (!is_spec) append_revealed_regular(cpu);  /* widescreen: host-build records for mobys the 4:3 cull skipped */
         build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
+        /* Adopt render-time-animated colours the post-render walk can't see (e.g.
+         * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
+         * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
+        if (!is_spec) {
+            int rc = adopt_prim_colors();
+            if (rc) OPL_DEBUG_F("native", "adopt_prim_colors: recoloured %d walk tri(s) from prims "
+                                "(render-time-animated colour) f=%u", rc, openpete_frame);
+        }
         push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
         /* Sub-tick spine: snapshot the cull records + per-vertex fog colour
@@ -2653,6 +2719,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
+    /* Sub-tick: match the interpolated walk against the LAST canonical prims
+     * (s_gte persists between canonical frames) so render-time-animated colours
+     * (the barrier shimmer) don't flicker grey↔blue between canonical and
+     * intermediate presents. Best-effort: a fast-moving dynamic-colour moby may
+     * fall outside the match tolerance and keep its native colour that present. */
+    if (!is_spec) adopt_prim_colors();
     push_scene_moby();
     return nm;
 }
