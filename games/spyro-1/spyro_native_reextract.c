@@ -97,6 +97,53 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
     for (int i = 0; i < 3; ++i) pl[i] = lerp32(pp[i], pc[i], t);
 }
 
+/* pred1 (predicted-tangent Hermite) on by default; OPENPETE_INTERP_LINEAR=1
+ * forces the old linear lerp (A/B + regression escape hatch). */
+static int hermite_enabled(void) {
+    static int e = -1;
+    if (e < 0) { const char* s = getenv("OPENPETE_INTERP_LINEAR"); e = (s && *s && *s != '0') ? 0 : 1; }
+    return e;
+}
+
+/* ---- pred1: predicted-tangent cubic Hermite ----------------------------------
+ * The linear lerp above is C0: velocity is constant within each 30 Hz bracket
+ * and JUMPS at every tick boundary (= the 2nd difference of the sampled path).
+ * That per-boundary velocity discontinuity is the perceived judder — measured
+ * at ~5.5% of camera speed median, tail >100% on sharp turns, and it survives
+ * any display rate (it's a 30 Hz artifact). pred1 interpolates [prev,curr] as a
+ * cubic Hermite with a CENTERED start-tangent m0 = 0.5*(curr-prev2) and a
+ * backward end-tangent m1 = (curr-prev). Same 1-tick latency as linear (no
+ * future sample used), and it ~halves the boundary velocity jump. Needs prev2;
+ * callers fall back to lerp_* when prev2 is absent or across a cut. */
+static double hermite1(double prev2, double prev, double curr, double t) {
+    double m0 = 0.5 * (curr - prev2);   /* centered tangent at prev */
+    double m1 = (curr - prev);          /* backward tangent at curr */
+    double t2 = t * t, t3 = t2 * t;
+    return (2.0*t3 - 3.0*t2 + 1.0) * prev
+         + (t3 - 2.0*t2 + t)       * m0
+         + (-2.0*t3 + 3.0*t2)      * curr
+         + (t3 - t2)               * m1;
+}
+static int16_t hround16(double v) { return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
+static int32_t hround32(double v) { return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
+
+static void herm_matrix(uint8_t* live, const uint8_t* prev2, const uint8_t* prev,
+                        const uint8_t* curr, uint32_t off, double t) {
+    const int16_t* p2 = (const int16_t*)(prev2 + off);
+    const int16_t* pp = (const int16_t*)(prev  + off);
+    const int16_t* pc = (const int16_t*)(curr  + off);
+    int16_t*       pl = (int16_t*)(live + off);
+    for (int i = 0; i < 9; ++i) pl[i] = hround16(hermite1(p2[i], pp[i], pc[i], t));
+}
+static void herm_vec3(uint8_t* live, const uint8_t* prev2, const uint8_t* prev,
+                      const uint8_t* curr, uint32_t off, double t) {
+    const int32_t* p2 = (const int32_t*)(prev2 + off);
+    const int32_t* pp = (const int32_t*)(prev  + off);
+    const int32_t* pc = (const int32_t*)(curr  + off);
+    int32_t*       pl = (int32_t*)(live + off);
+    for (int i = 0; i < 3; ++i) pl[i] = hround32(hermite1(p2[i], pp[i], pc[i], t));
+}
+
 /* ---- fractional interpolated-position table (the lerp32 1-unit floor fix) -----
  * lerp_vec3 writes the interpolated camera/object position to int32 RAM, which
  * ROUNDS to the 1-world-unit grid. Feeders that project against those positions
@@ -128,6 +175,16 @@ static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, dou
     s_fpos[s_fpos_n].key = key;
     for (int i = 0; i < 3; ++i)
         s_fpos[s_fpos_n].p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
+    s_fpos_n++;
+}
+/* pred1 (Hermite) variant of fpos_set — must match herm_vec3's math so the
+ * un-rounded fractional position feeders read agrees with the RAM we wrote. */
+static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
+                       const int32_t* curr, double t) {
+    if (s_fpos_n >= FPOS_MAX) return;
+    s_fpos[s_fpos_n].key = key;
+    for (int i = 0; i < 3; ++i)
+        s_fpos[s_fpos_n].p[i] = hermite1((double)prev2[i], (double)prev[i], (double)curr[i], t);
     s_fpos_n++;
 }
 int openpete_native_interp_pos(unsigned int key, double out[3]) {
@@ -307,8 +364,8 @@ static void spyro_native_reextract(void* cpu_v) {
      * or no pairing yet (spawn) — then we present the live (curr) scene with
      * no camera bracket. */
     double qa = 0.0;
-    const openpete_interp_snapshot_t *prev = NULL, *curr = NULL;
-    int paired = openpete_interp_query(op_now(), TICK_PERIOD_NS, &qa, &prev, &curr);
+    const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
+    int paired = openpete_interp_query3(op_now(), TICK_PERIOD_NS, &qa, &prev2, &prev, &curr);
 
     /* Rebuild the fractional interpolated-position table for this present (the
      * lerp32 1-unit floor fix). Empty until a bracket below populates it; feeders
@@ -372,19 +429,50 @@ static void spyro_native_reextract(void* cpu_v) {
         alpha = (period > 0.0) ? (double)(op_now() - curr->tick_ns) / period : 1.0;
         if (alpha < 0.0) alpha = 0.0; else if (alpha > 1.0) alpha = 1.0;
 
+        /* pred1 gate: use the cubic Hermite (centered start-tangent) only when a
+         * valid prev2 exists AND the prev2→prev step is itself continuous — a cut
+         * on that earlier step would make the centered tangent overshoot. The
+         * DIRECT-ring feeders (camera + Spyro) share this gate; mobys/anim clocks
+         * stay linear for now. Same 1-tick latency either way. */
+        int use_herm = 0;
+        const uint8_t* pcam2 = NULL;
+        if (prev2 && hermite_enabled()) {
+            pcam2 = prev2->data + prev2->region_offsets[0];
+            const int32_t* p2p = (const int32_t*)(pcam2 + CAM_OFF_POS);
+            const int32_t* pp  = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
+            double dx = (double)pp[0]-p2p[0], dy = (double)pp[1]-p2p[1], dz = (double)pp[2]-p2p[2];
+            use_herm = (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0);
+            if (use_herm) {   /* rotation cut on prev2→prev (same test as the curr guard) */
+                const int16_t* p2m = (const int16_t*)(pcam2 + CAM_OFF_PROJ);
+                const int16_t* pm  = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
+                double frob = 0; for (int i = 0; i < 9; i++) frob += (double)p2m[i] * pm[i];
+                if (frob < 4096.0 * 4096.0) use_herm = 0;
+            }
+        }
+
         /* (a) Camera: Q12 matrices + position (singleton, region 0). */
         const uint8_t* pcam = prev->data + prev->region_offsets[0];
         memcpy(cam_saved, cam, CAM_BYTES);        /* curr (live) */
-        lerp_matrix(cam, pcam, cam_saved, CAM_OFF_PROJ, alpha);
-        lerp_matrix(cam, pcam, cam_saved, CAM_OFF_VIEW, alpha);
-        lerp_vec3  (cam, pcam, cam_saved, CAM_OFF_POS,  alpha);
+        if (use_herm) {
+            herm_matrix(cam, pcam2, pcam, cam_saved, CAM_OFF_PROJ, alpha);
+            herm_matrix(cam, pcam2, pcam, cam_saved, CAM_OFF_VIEW, alpha);
+            herm_vec3  (cam, pcam2, pcam, cam_saved, CAM_OFF_POS,  alpha);
+            fpos_set_h(G_CAMERA,
+                       (const int32_t*)(pcam2     + CAM_OFF_POS),
+                       (const int32_t*)(pcam      + CAM_OFF_POS),
+                       (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
+        } else {
+            lerp_matrix(cam, pcam, cam_saved, CAM_OFF_PROJ, alpha);
+            lerp_matrix(cam, pcam, cam_saved, CAM_OFF_VIEW, alpha);
+            lerp_vec3  (cam, pcam, cam_saved, CAM_OFF_POS,  alpha);
+            /* Fractional camera position (un-rounded) for the floor fix — same lerp,
+             * double precision. prev = pcam+POS, curr = cam_saved (the live curr we
+             * saved before the lerp overwrote RAM). */
+            fpos_set(G_CAMERA,
+                     (const int32_t*)(pcam      + CAM_OFF_POS),
+                     (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
+        }
         cam_bracketed = 1;
-        /* Fractional camera position (un-rounded) for the floor fix — same lerp,
-         * double precision. prev = pcam+POS, curr = cam_saved (the live curr we
-         * saved before the lerp overwrote RAM). */
-        fpos_set(G_CAMERA,
-                 (const int32_t*)(pcam      + CAM_OFF_POS),
-                 (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
 
         /* Per-present trace (OPENPETE_LAG_TRACE): the interpolated camera pos
          * presented THIS frame. Across the present sequence it must progress
@@ -403,9 +491,27 @@ static void spyro_native_reextract(void* cpu_v) {
         if (sp) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
             memcpy(sp_saved, sp, SPYRO_SAVE);          /* curr (live) */
-            lerp_vec3(sp, psp, sp_saved, 0, alpha);    /* +0x00 m_Position */
-            /* Fractional Spyro position (un-rounded) for the floor fix. */
-            fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
+            /* pred1 for Spyro's m_Position, gated on the camera's prev2 continuity
+             * PLUS a Spyro-specific position-step check (Spyro can warp while the
+             * camera holds). Falls back to the linear lerp otherwise. */
+            int sp_herm = 0;
+            const uint8_t* psp2 = NULL;
+            if (use_herm && prev2) {
+                psp2 = prev2->data + prev2->region_offsets[SPYRO_REGION];
+                const int32_t* p2 = (const int32_t*)psp2;
+                const int32_t* pp = (const int32_t*)psp;
+                double dx=(double)pp[0]-p2[0], dy=(double)pp[1]-p2[1], dz=(double)pp[2]-p2[2];
+                sp_herm = (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0);
+            }
+            if (sp_herm) {
+                herm_vec3(sp, psp2, psp, sp_saved, 0, alpha);   /* +0x00 m_Position */
+                fpos_set_h(G_SPYRO, (const int32_t*)psp2,
+                           (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
+            } else {
+                lerp_vec3(sp, psp, sp_saved, 0, alpha);    /* +0x00 m_Position */
+                /* Fractional Spyro position (un-rounded) for the floor fix. */
+                fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
+            }
             /* Per-segment (body/head/tail) animation clock: lerp each
              * m_FrameProgress (0x24/0x25/0x26) when its keyframe pair
              * (frameA 0x1E/0x20/0x22, frameB 0x1F/0x21/0x23) is unchanged —
@@ -566,8 +672,19 @@ static void spyro_native_reextract(void* cpu_v) {
                             s_moby_save[moby_save_n].addr = m;
                             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
                             moby_save_n++;
+                            /* pred1: use the cubic Hermite (centered start-tangent)
+                             * when this moby has a valid prev2 whose prev2->prev step
+                             * is itself continuous — else the linear prev->curr lerp.
+                             * Same per-object alpha + 1-tick latency either way. */
+                            int m_herm = 0; int32_t p2[3];
+                            if (hermite_enabled() && o->have_prev2) {
+                                memcpy(p2, o->prev2 + MOBY_POS, 12);
+                                double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
+                                m_herm = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
+                            }
                             for (int k = 0; k < 3; k++) {
-                                int32_t lv = lerp32(pp[k], cp[k], ma);
+                                int32_t lv = m_herm ? hround32(hermite1(p2[k], pp[k], cp[k], ma))
+                                                    : lerp32(pp[k], cp[k], ma);
                                 memcpy(mh + MOBY_POS + k * 4, &lv, 4);
                             }
                             /* Fractional moby position (un-rounded) for the floor
@@ -575,7 +692,8 @@ static void spyro_native_reextract(void* cpu_v) {
                              * per-object alpha. The body / shaded / shadow feeders
                              * look it up so the moby's own motion is continuous too
                              * (not just the camera component). */
-                            fpos_set(m, pp, cp, ma);
+                            if (m_herm) fpos_set_h(m, p2, pp, cp, ma);
+                            else        fpos_set(m, pp, cp, ma);
                             /* Animation: NOT synthesized into RAM here anymore. The
                              * old approach wrote an interpolated m_FrameProgress (and,
                              * across a knot, an extended "continuous-phase" blend) into

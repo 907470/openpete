@@ -78,9 +78,15 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
             s_tab[i].seen = 1;
             return;                       /* unchanged — keep prev/curr + their timestamps */
         }
-        /* Existing object that moved: roll last tick's curr -> prev, write curr,
-         * and stamp the roll time so consumers interpolate over this DISTINCT
-         * interval (sweeping across the unchanged ticks in between). */
+        /* Existing object that moved: roll prev -> prev2 (for the pred1 centered
+         * tangent), then curr -> prev, write curr, and stamp the roll times so
+         * consumers interpolate over this DISTINCT interval (sweeping across the
+         * unchanged ticks in between). */
+        if (s_tab[i].have_prev) {
+            memcpy(s_tab[i].prev2, s_tab[i].prev, s_tab[i].blob_len);
+            s_tab[i].have_prev2 = 1;
+            s_tab[i].prev2_ns   = s_tab[i].prev_ns;
+        }
         memcpy(s_tab[i].prev, s_tab[i].curr, s_tab[i].blob_len);
         s_tab[i].have_prev = 1;
         s_tab[i].prev_ns   = s_tab[i].curr_ns;
@@ -90,6 +96,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         if (s_tab[i].key == 0 && s_count < (int)SLOTS) s_count++;
         s_tab[i].key       = key;
         s_tab[i].have_prev = 0;
+        s_tab[i].have_prev2 = 0;
         s_tab[i].prev_ns   = 0;
         s_tab[i].curr_ns   = op_now();
         s_stat_spawned++;

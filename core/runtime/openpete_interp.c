@@ -28,7 +28,10 @@
 static const openpete_interp_region_t* s_regions = NULL;
 static size_t                          s_region_count = 0;
 
-static openpete_interp_snapshot_t s_snap[2];
+/* 3-deep ring: keeps the last THREE distinct ticks (prev2, prev, curr) so the
+ * render side can build a cubic (Hermite/pred1) interpolant with a centered
+ * start-tangent, not just the linear prev→curr chord. s_head = newest. */
+static openpete_interp_snapshot_t s_snap[3];
 static int      s_head        = 0;   /* index of the most-recently-written slot */
 static int      s_initialized = 0;
 static int      s_enabled     = 0;
@@ -79,7 +82,7 @@ int openpete_interp_init(void) {
     }
 
     memset(s_snap, 0, sizeof(s_snap));
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         s_snap[i].total_bytes = total;
         for (size_t r = 0; r < s_region_count; ++r) {
             s_snap[i].region_offsets[r] = offsets[r];
@@ -141,9 +144,9 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
         return;
     }
 
-    /* State advanced — commit to the other slot. snap[s_head] becomes "latest
-     * distinct tick"; snap[s_head ^ 1] holds the "previous distinct tick". */
-    s_head ^= 1;
+    /* State advanced — commit to the next ring slot. snap[s_head] becomes the
+     * "latest distinct tick"; the two prior slots hold prev and prev2. */
+    s_head = (s_head + 1) % 3;
     openpete_interp_snapshot_t* slot = &s_snap[s_head];
     slot->tick    = tick;
     slot->tick_ns = tick_ns;
@@ -159,7 +162,7 @@ int openpete_interp_query(op_time_t now_ns,
     if (!s_initialized || !s_enabled) return 0;
 
     const openpete_interp_snapshot_t* curr = &s_snap[s_head];
-    const openpete_interp_snapshot_t* prev = &s_snap[s_head ^ 1];
+    const openpete_interp_snapshot_t* prev = &s_snap[(s_head + 2) % 3];
     if (!curr->valid || !prev->valid) return 0;
     if (curr->total_bytes != prev->total_bytes) return 0;
 
@@ -189,6 +192,22 @@ int openpete_interp_query(op_time_t now_ns,
     if (out_prev)  *out_prev  = prev;
     if (out_curr)  *out_curr  = curr;
     return 1;
+}
+
+int openpete_interp_query3(op_time_t now_ns,
+                           op_time_t sim_period_ns,
+                           double*   out_alpha,
+                           const openpete_interp_snapshot_t** out_prev2,
+                           const openpete_interp_snapshot_t** out_prev,
+                           const openpete_interp_snapshot_t** out_curr) {
+    int r = openpete_interp_query(now_ns, sim_period_ns, out_alpha, out_prev, out_curr);
+    if (out_prev2) {
+        /* Two ticks back from curr. NULL until the ring has 3 distinct ticks,
+         * or when the query itself didn't pair — callers fall back to linear. */
+        const openpete_interp_snapshot_t* p2 = &s_snap[(s_head + 1) % 3];
+        *out_prev2 = (r && p2->valid) ? p2 : NULL;
+    }
+    return r;
 }
 
 uint64_t openpete_interp_total_captures(void)     { return s_total_captures;     }

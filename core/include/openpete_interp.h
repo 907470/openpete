@@ -5,10 +5,13 @@
  * so the render path can later lerp between snapshots N-1 and N and
  * re-emit DrawOTag at host refresh cadence (60/144/unlimited Hz).
  *
- * Two-stage ring: snap[0] = end of tick N-1, snap[1] = end of tick N.
- * Alpha = (op_now() - snap[1].tick_ns) / sim_period_ns. Re-emission
- * shows the world at virtual time `tick(N-1) + alpha * sim_period`,
- * accepting one tick of latency in exchange for never extrapolating.
+ * Three-stage ring: the last three distinct ticks (prev2, prev, curr).
+ * Alpha = (op_now() - curr.tick_ns) / sim_period_ns. Re-emission shows
+ * the world at virtual time `prev.tick + alpha * sim_period`, accepting
+ * one tick of latency in exchange for never extrapolating. prev2 is kept
+ * so the render side can build a cubic (Hermite) interpolant with a
+ * centered start-tangent — halving the velocity discontinuity at tick
+ * boundaries vs the linear prev→curr chord (see openpete_interp_query3).
  *
  * v1 scope (this header): capture API + dedupe predicate. The lerped
  * re-emission path (snapshot-and-restore bracket around DrawOTag) is
@@ -102,6 +105,18 @@ int openpete_interp_query(op_time_t now_ns,
                           double*   out_alpha,
                           const openpete_interp_snapshot_t** out_prev,
                           const openpete_interp_snapshot_t** out_curr);
+
+/* Like openpete_interp_query, but also returns prev2 = the distinct tick BEFORE
+ * prev (two back from curr), for cubic/Hermite interpolation with a centered
+ * start-tangent. `*out_prev2` is NULL until the ring holds three distinct ticks
+ * or when the pairing fails — callers fall back to the linear prev→curr path.
+ * Return value + alpha + prev/curr semantics are identical to openpete_interp_query. */
+int openpete_interp_query3(op_time_t now_ns,
+                           op_time_t sim_period_ns,
+                           double*   out_alpha,
+                           const openpete_interp_snapshot_t** out_prev2,
+                           const openpete_interp_snapshot_t** out_prev,
+                           const openpete_interp_snapshot_t** out_curr);
 
 /* Diagnostics. */
 uint64_t openpete_interp_total_captures(void);

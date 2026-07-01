@@ -58,10 +58,14 @@ typedef struct {
     uint32_t key;        /* object identity (0 = empty slot) */
     uint8_t  have_prev;  /* 1 iff prev[] holds the previous tick's blob */
     uint8_t  seen;       /* 1 iff captured this tick (despawn eviction) */
-    uint8_t  blob_len;   /* valid bytes in prev[]/curr[] (<= BLOB_BYTES) */
-    uint8_t  pad;
+    uint8_t  blob_len;   /* valid bytes in prev/curr/prev2[] (<= BLOB_BYTES) */
+    uint8_t  have_prev2; /* 1 iff prev2[] holds the DISTINCT tick before prev
+                          * (two back from curr) — enables cubic/pred1 interp
+                          * with a centered start-tangent, else fall back to
+                          * the linear prev→curr lerp. */
     uint8_t  prev[OPENPETE_INTERP_OBJ_BLOB_BYTES];
     uint8_t  curr[OPENPETE_INTERP_OBJ_BLOB_BYTES];
+    uint8_t  prev2[OPENPETE_INTERP_OBJ_BLOB_BYTES];
     /* Wall-clock (op_now) when curr/prev were last ROLLED — i.e. when each
      * DISTINCT state was captured (unchanged ticks dedupe and do NOT update
      * these). A consumer interpolates with alpha = (now - curr_ns)/(curr_ns -
@@ -70,6 +74,7 @@ typedef struct {
      * VBL) AND clamps to curr once the object stops (curr_ns goes stale) — the
      * per-object equivalent of the DIRECT ring's tick_ns alpha. */
     op_time_t prev_ns, curr_ns;
+    op_time_t prev2_ns;   /* roll time of prev2 (for pred1's centered tangent) */
 } openpete_interp_obj_t;
 
 /* Per-tick capture callback supplied by the game. Invoked once per sim tick
