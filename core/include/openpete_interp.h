@@ -13,11 +13,21 @@
  * centered start-tangent — halving the velocity discontinuity at tick
  * boundaries vs the linear prev→curr chord (see openpete_interp_query3).
  *
- * v1 scope (this header): capture API + dedupe predicate. The lerped
- * re-emission path (snapshot-and-restore bracket around DrawOTag) is
- * task #58 and not yet exposed. Capturing is read-only against PSX RAM
- * — landing capture by itself has zero gameplay impact and is safe to
- * run unconditionally.
+ * Scope (this ring): the capture API, the dedupe predicate, and the
+ * prev2/prev/curr query (openpete_interp_query3). The lerped re-emission
+ * itself — the save-canonical → write-lerped → restore bracket around the
+ * sub-tick present — is built GAME-SIDE (e.g. spyro_native_reextract.c), NOT
+ * here: core stays address-free, and the game owns which regions/feeders it
+ * brackets plus its own restore discipline (see the game's bracket-integrity
+ * self-check, OPENPETE_BRACKET_CHECK). Capturing here is read-only against
+ * PSX RAM — landing capture alone has zero gameplay impact and is unconditional.
+ *
+ * This DIRECT ring drives the camera/Spyro alpha. Per-OBJECT (indirect pool)
+ * state uses a parallel store (openpete_interp_objs.h) with its OWN per-object
+ * alpha — intentionally independent of this ring's alpha, so an object that
+ * advanced on a tick the camera didn't (idle-homeworld dragon under a static
+ * camera, and vice-versa) still interpolates. The two can differ by up to ~1
+ * VBL on the same present; that is correct, not a bug.
  *
  * Region table is game-supplied via the weak `openpete_interp_regions`
  * symbol (parallel to `openpete_state_regions` in openpete_psx.h).

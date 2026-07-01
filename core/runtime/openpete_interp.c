@@ -1,14 +1,16 @@
 /* core/runtime/openpete_interp.c — render-side snapshot ring.
  *
- * See openpete_interp.h for the API contract. v1 scaffolding: capture
- * + dedupe predicate only; lerped re-emission lands in #58.
+ * See openpete_interp.h for the API contract. This TU provides capture +
+ * the dedupe predicate + the prev/curr query; the lerped re-emission bracket
+ * is built game-side (e.g. spyro_native_reextract.c), not here.
  *
  * Determinism notes (this TU is read-only against PSX RAM):
  *   - openpete_interp_capture() runs after ticked_this_iter; the game
  *     fiber is yielded inside VSync(0), so RAM is consistent.
- *   - No write path touches PSX RAM. Phase 2a will add a bracket
- *     (save-canonical → write-lerped → render → restore-canonical)
- *     gated entirely on the host fiber.
+ *   - No write path in THIS TU touches PSX RAM. The lerped-write bracket
+ *     (save-canonical → write-lerped → render → restore-canonical) lives
+ *     game-side and runs entirely on the host fiber, restoring canonical RAM
+ *     before the game fiber resumes; core capture stays read-only.
  */
 
 #include "openpete_interp.h"

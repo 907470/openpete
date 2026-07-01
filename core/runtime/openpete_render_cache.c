@@ -765,14 +765,21 @@ void openpete_render_sim_tick_mark_now(void) {
     g_openpete_substitute_alpha_snapshot = 0.0f;
 }
 
-/* §5 / #24 camera-cut snap. Armed per sim tick by the game-side
- * discontinuity detector (game_on_frame — the g_Camera layout is
- * game-specific, so the PSX-RAM read lives there, not in core/).
- * While armed, every intermediate render of the current display
- * cycle pins alpha to 0: the lagged OT presents unchanged instead of
- * lerping toward a post-cut frame — a clean snap, not a full-screen
- * smear. Re-evaluated (set or cleared) every tick, so the flag's
- * lifetime is exactly the one display cycle that spans the cut. */
+/* §5 / #24 camera-cut snap — LEGACY (PsyCross lagged-OT matcher) ONLY.
+ * Armed per sim tick by the game-side discontinuity detector (game_on_frame
+ * — the g_Camera layout is game-specific, so the PSX-RAM read lives there,
+ * not in core/). While armed, every intermediate render of the current
+ * display cycle pins alpha to 0: the lagged OT presents unchanged instead of
+ * lerping toward a post-cut frame — a clean snap, not a full-screen smear.
+ * Re-evaluated every tick, so the flag's lifetime is exactly the one display
+ * cycle that spans the cut.
+ *
+ * WARNING: the native vk sub-tick spine does NOT read this flag. It
+ * re-derives its OWN camera-cut detector inline (spyro_native_reextract.c:
+ * position delta + proj-matrix Frobenius > 90°/tick — which also catches the
+ * stationary rotation cuts this position-armed signal misses). Do NOT "fix" a
+ * native cut/snap bug here; this gates only the legacy OT substitute path
+ * (live when openpete_psycross_renders==1). */
 static int s_interp_snap_cycle = 0;
 
 int openpete_render_interp_snap_get(void) {
