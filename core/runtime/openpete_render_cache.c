@@ -54,6 +54,13 @@
 extern float openpete_disp_w_factor;   /* 0 / 1.0 = no Hor+ widening */
 extern int   openpete_fov_h_override;  /* 0 = no --fov H override */
 
+/* Defined in run.c. 1 while PsyCross rasterizes the OT (headless / psycross /
+ * ab / diff / screenshot / native bring-up failure); 0 only for a pure,
+ * successfully-brought-up --renderer vk display that owns the screen. When 0
+ * the render_cache's sole consumer (the PsyCross OT matcher) is bypassed, so
+ * the per-vertex emit below is dead work — see the gate in emit_vertex. */
+extern int   openpete_psycross_renders;
+
 /* Day 4 Phase 1.3 / 2.5: per-game perspective-eligibility classifier.
  * NULL = default (canonical-only). games/<game>/ registers an override
  * at boot to filter on PC. */
@@ -248,6 +255,24 @@ extern int  openpete_vstab_enabled(void);
 extern void openpete_vstab_record_vertex(int16_t v_local[3], const int32_t mac[3]);
 
 void openpete_render_cache_emit_vertex(const openpete_render_cache_entry_t* src) {
+    /* W0.2 — the render_cache is legacy screen-interp state, consumed ONLY by
+     * the PsyCross OT matcher (openpete_render_matcher.c). Under a pure native
+     * vk display that matcher is bypassed (openpete_psycross_renders==0), so
+     * building the cache per vertex — the matrix-span memcmp, the SXY hash, the
+     * projection-context observe below — is pure dead work on the GTE hot path
+     * (the dense-vista sim-tick bottleneck). Skip it in that case. EXCEPTION:
+     * the two per-vertex instruments called below (vstab / spanlog) read the
+     * emitted stream directly, so keep emitting whenever either is explicitly
+     * enabled — they must still work under --renderer vk. Determinism-neutral:
+     * this TU writes no PSX RAM. (The per-OBJECT legacy tagging — obj_id /
+     * world_geo / ui_moby _current — is recompiler-injected and much cheaper;
+     * it's left running and retires with the full stack deletion, not here.) */
+    if (!openpete_psycross_renders &&
+        !openpete_vstab_enabled() &&
+        !openpete_spanlog_enabled()) {
+        return;
+    }
+
     /* First-emit-per-yield rotate. No-op if not armed. */
     consume_pending_rotate();
 
