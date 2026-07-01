@@ -64,10 +64,27 @@ typedef struct { uint32_t addr, w1, w2; } part_save_t;  /* +0x04, +0x08 */
 #define CAM_OFF_VIEW  0x14u
 #define CAM_OFF_POS   0x28u
 
-/* Nominal sim-tick period (29.97 Hz) — passed to the ring query only to get
- * the prev/curr pairing + dedupe verdict; the actual alpha is recomputed
- * below from the snapshots' measured timestamps. */
+/* Nominal sim-tick period (29.97 Hz) — passed to the ring query for the
+ * prev/curr pairing + dedupe verdict; the alpha is recomputed below from the
+ * snapshots' measured timestamps, with the denominator capped at one tick
+ * (interp_period_ns) so a stale prev after a static stretch can't stretch a
+ * resume. */
 #define TICK_PERIOD_NS  ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+
+/* W0.6 — interp denominator, capped at ONE nominal tick. The measured
+ * distinct-state gap (curr_ns - prev_ns) balloons to K ticks when an object (or
+ * the camera) sits byte-static for K ticks and then RESUMES: the ring only
+ * "rolls" on a change, so prev_ns stays pinned K ticks back. Dividing by that
+ * gap makes the resume crawl at 1/K speed for one interval, then pop the
+ * remaining (1-1/K) at the next roll — a hitchy resume on camera un-parks, an
+ * enemy beginning to charge, a wait-then-move platform (invisible to the
+ * oracle, which is determinism-only). Interp only ever spans one tick (1-tick
+ * lag, no extrapolation), so cap it: a steady object (gap == 1 tick) is
+ * unchanged; a resume sweeps the full delta over one tick. */
+static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
+    op_time_t p = curr_ns - prev_ns;
+    return (double)(p > TICK_PERIOD_NS ? TICK_PERIOD_NS : p);
+}
 
 static int16_t lerp16(int16_t a, int16_t b, double t) {
     double v = (double)a + ((double)b - (double)a) * t;
@@ -464,7 +481,7 @@ static void spyro_native_reextract(void* cpu_v) {
         /* 1-tick-lag alpha: at the instant tick N completed (now≈curr.tick_ns)
          * show prev (N-1); advance to curr (N) over the next sim period. The
          * forward endpoint is the KNOWN canonical N → no extrapolation. */
-        double period = (double)(curr->tick_ns - prev->tick_ns);
+        double period = interp_period_ns(prev->tick_ns, curr->tick_ns);
         alpha = (period > 0.0) ? (double)(op_now() - curr->tick_ns) / period : 1.0;
         if (alpha < 0.0) alpha = 0.0; else if (alpha > 1.0) alpha = 1.0;
 
@@ -712,11 +729,13 @@ static void spyro_native_reextract(void* cpu_v) {
                         if (pcls != ccls) { m += MOBY_STRIDE; continue; }
 
                         /* Per-object alpha from the moby's OWN distinct-roll
-                         * timestamps (sweeps across the static ticks between
-                         * distinct states; clamps to curr once it settles). */
+                         * timestamps, over a denominator capped at one tick
+                         * (interp_period_ns — a stale prev after a static stretch
+                         * must not stretch the resume); clamps to curr once it
+                         * settles. */
                         op_time_t period_ns = o->curr_ns - o->prev_ns;
                         if (o->prev_ns != 0 && period_ns > 0) {
-                            double ma = (double)(now - o->curr_ns) / (double)period_ns;
+                            double ma = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
                             if (ma < 0.0) ma = 0.0; else if (ma > 1.0) ma = 1.0;
                             int32_t pp[3], cp[3];
                             memcpy(pp, o->prev + MOBY_POS, 12);
@@ -803,7 +822,7 @@ static void spyro_native_reextract(void* cpu_v) {
              * (curr_ns goes stale) so a settled icon doesn't wobble prev↔curr. */
             op_time_t period = o->curr_ns - o->prev_ns;
             if (o->prev_ns == 0 || period <= 0) continue;     /* no interval yet → show curr */
-            double ha = (double)(now - o->curr_ns) / (double)period;
+            double ha = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
             if (ha < 0.0) ha = 0.0; else if (ha > 1.0) ha = 1.0;
             s_moby_save[moby_save_n].addr = m;
             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
@@ -860,7 +879,7 @@ static void spyro_native_reextract(void* cpu_v) {
                 if (!o || !o->have_prev) continue;  /* spawn → snap (curr) */
                 op_time_t period = o->curr_ns - o->prev_ns;
                 if (o->prev_ns == 0 || period <= 0) continue;
-                double pa_alpha = (double)(now - o->curr_ns) / (double)period;
+                double pa_alpha = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
                 if (pa_alpha < 0.0) pa_alpha = 0.0; else if (pa_alpha > 1.0) pa_alpha = 1.0;
                 uint32_t pw1, pw2, cw1, cw2;
                 memcpy(&pw1, o->prev + PART_POS_OFF, 4); memcpy(&pw2, o->prev + 0x08u, 4);
