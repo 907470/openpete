@@ -1165,6 +1165,24 @@ static double tri_match_cost(const ntri_t* w, const ptri* p) {
     }
     return bestmax;
 }
+/* Squared variant (no sqrt) for the hot adopt match: returns the best (min over
+ * the 6 vertex permutations) max-squared-vertex-distance. sqrt is monotonic, so
+ * the argmin permutation/prim and the `> tol` decision are identical when the
+ * caller compares against tol*tol — just far cheaper (adopt calls this ~tens of
+ * thousands of times per canonical frame at a moby-dense vista). */
+static double tri_match_cost_sq(const ntri_t* w, const ptri* p) {
+    static const int perm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+    double bestmax=1e36;
+    for (int pi=0;pi<6;pi++){
+        double mx=0;
+        for (int k=0;k<3;k++){
+            double dx=w->v[k].sx-p->x[perm[pi][k]], dy=w->v[k].sy-p->y[perm[pi][k]];
+            double d=dx*dx+dy*dy; if(d>mx)mx=d;
+        }
+        if(mx<bestmax)bestmax=mx;
+    }
+    return bestmax;
+}
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
@@ -1407,21 +1425,53 @@ static void dyncol_note_moby(uint32_t m) {
  * changes is appended to s_dyncol[] keyed by the tri's face identity, so the
  * sub-tick can replay it without re-matching. Canonical-frame only (the live
  * geometry exactly matches the prims there, tol=4px). */
+/* Spatial hash grid over prim centroids (32px cells) so each walk tri checks only
+ * the prims in its centroid's 3x3 cell neighbourhood, not all `pn` prims. Turns
+ * the match from O(walk×prim) into ~O(walk+prim). Same RESULT: the centroid prune
+ * is 32px = the cell size, so the true nearest prim always lies in the 3x3 window
+ * (±96px); the grid only removes candidates the prune would have rejected anyway.
+ * (The canonical adopt runs inside the sim-tick, which caps the frame rate at high
+ * FPS — at a moby-dense vista the old O(walk×prim) match cost ~5.6ms/tick.) */
+#define ADG_CELL 32
+#define ADG_OFF  128      /* origin shift so mild off-screen centroids still bucket */
+#define ADG_W    24
+#define ADG_H    16
 static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
+    static int cell_head[ADG_W * ADG_H];
+    static int cell_next[MAX_PTRI];
+    static double s_pcx[MAX_PTRI], s_pcy[MAX_PTRI];   /* prim centroids, cached */
+    for (int i = 0; i < ADG_W * ADG_H; i++) cell_head[i] = -1;
+    if (pn > MAX_PTRI) pn = MAX_PTRI;
+    for (int pi = 0; pi < pn; pi++) {
+        double pcx = (PT[pi].x[0] + PT[pi].x[1] + PT[pi].x[2]) / 3.0;
+        double pcy = (PT[pi].y[0] + PT[pi].y[1] + PT[pi].y[2]) / 3.0;
+        s_pcx[pi] = pcx; s_pcy[pi] = pcy;
+        int cx = (int)((pcx + ADG_OFF) / ADG_CELL); if (cx < 0) cx = 0; else if (cx >= ADG_W) cx = ADG_W - 1;
+        int cy = (int)((pcy + ADG_OFF) / ADG_CELL); if (cy < 0) cy = 0; else if (cy >= ADG_H) cy = ADG_H - 1;
+        int c = cy * ADG_W + cx;
+        cell_next[pi] = cell_head[c]; cell_head[c] = pi;
+    }
+    double tol_sq = tol * tol;
     int recoloured = 0;
     for (int wi = 0; wi < s_wtri_n; wi++) {
         ntri_t* w = &s_wtri[wi];
         double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
-        double best = 1e18; int bp = -1;
-        for (int pi = 0; pi < pn; pi++) {
-            double pcx = (PT[pi].x[0] + PT[pi].x[1] + PT[pi].x[2]) / 3.0;
-            double pcy = (PT[pi].y[0] + PT[pi].y[1] + PT[pi].y[2]) / 3.0;
-            if (fabs(pcx - wcx) > 32.0 || fabs(pcy - wcy) > 32.0) continue;   /* centroid prune */
-            double c = tri_match_cost(w, &PT[pi]);
-            if (c < best) { best = c; bp = pi; }
+        int wcxg = (int)((wcx + ADG_OFF) / ADG_CELL); if (wcxg < 0) wcxg = 0; else if (wcxg >= ADG_W) wcxg = ADG_W - 1;
+        int wcyg = (int)((wcy + ADG_OFF) / ADG_CELL); if (wcyg < 0) wcyg = 0; else if (wcyg >= ADG_H) wcyg = ADG_H - 1;
+        double best = 1e36; int bp = -1;
+        for (int gy = wcyg - 1; gy <= wcyg + 1; gy++) {
+            if (gy < 0 || gy >= ADG_H) continue;
+            for (int gx = wcxg - 1; gx <= wcxg + 1; gx++) {
+                if (gx < 0 || gx >= ADG_W) continue;
+                for (int pi = cell_head[gy * ADG_W + gx]; pi >= 0; pi = cell_next[pi]) {
+                    if (fabs(s_pcx[pi] - wcx) > 32.0 || fabs(s_pcy[pi] - wcy) > 32.0) continue;   /* centroid prune */
+                    double c = tri_match_cost_sq(w, &PT[pi]);
+                    if (c < best) { best = c; bp = pi; }
+                }
+            }
         }
-        if (bp < 0 || best > tol) continue;   /* no confident match -> keep native colour */
+        if (bp < 0 || best > tol_sq) continue;   /* no confident match -> keep native colour */
         const ptri* P = &PT[bp];
         int changed = 0;
         for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
