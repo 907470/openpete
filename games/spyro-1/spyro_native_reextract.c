@@ -105,6 +105,31 @@ static int hermite_enabled(void) {
     return e;
 }
 
+/* ---- W0.3: bracket-integrity self-check --------------------------------------
+ * The sub-tick present below writes lerped values INTO gameplay-readable PSX RAM
+ * (the g_Camera / g_Spyro / flame / shadow spans, plus moby & particle pool
+ * slots) and restores the canonical bytes before the game fiber resumes. That
+ * restore discipline is exercised ONLY on sub-tick presents — which the headless
+ * oracle never runs — so a missed or mis-guarded restore would silently perturb
+ * gameplay state and surface only as an oracle drift days later. With
+ * OPENPETE_BRACKET_CHECK set, hash the fixed DIRECT regions before any write and
+ * re-check them after all restores; a mismatch means this present leaked into
+ * gameplay RAM, logged on the same frame. Read-only, debug-gated, inert when
+ * off. (Moby/particle pools are dynamic, so they're checked against their save
+ * tables at the end of the present, next to their restore loops.) */
+static int bracket_check_enabled(void) {
+    static int e = -1;
+    if (e < 0) { const char* s = getenv("OPENPETE_BRACKET_CHECK"); e = (s && *s && *s != '0'); }
+    return e;
+}
+static uint64_t bc_hash(uint32_t psx_addr, uint32_t len) {
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(psx_addr);
+    uint64_t x = 1469598103934665603ULL;   /* FNV-1a/64 */
+    if (!h) return 0;
+    for (uint32_t i = 0; i < len; ++i) { x ^= h[i]; x *= 1099511628211ULL; }
+    return x;
+}
+
 /* ---- pred1: predicted-tangent cubic Hermite ----------------------------------
  * The linear lerp above is C0: velocity is constant within each 30 Hz bracket
  * and JUMPS at every tick boundary (= the 2nd difference of the sampled path).
@@ -358,6 +383,20 @@ static void scratch_bracket_leave(CPUState* cpu) {
 
 static void spyro_native_reextract(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
+
+    /* W0.3 bracket-integrity: snapshot the fixed DIRECT gameplay regions BEFORE
+     * any lerp write, so they can be re-checked after all restores at the end of
+     * this present. Bracketed spans = exactly what the feeders write below. */
+    const int bc_on = bracket_check_enabled();
+    static const struct { uint32_t addr, len; const char* name; } bc_regs[] = {
+        { G_CAMERA, CAM_BYTES,   "g_Camera"      },
+        { G_SPYRO,  SPYRO_SAVE,  "g_Spyro"       },
+        { G_FLAME,  FLAME_SAVE,  "g_SpyroFlame"  },
+        { G_SHADOW, SHADOW_SAVE, "g_SpyroShadow" },
+    };
+    const int bc_n = (int)(sizeof(bc_regs) / sizeof(bc_regs[0]));
+    uint64_t bc_h0[4];
+    if (bc_on) for (int i = 0; i < bc_n; ++i) bc_h0[i] = bc_hash(bc_regs[i].addr, bc_regs[i].len);
 
     /* Pair prev/curr camera snapshots (region 0 = g_Camera). Returns 0 when
      * the world is stuck (byte-identical: paused / loading / vbl busy-wait)
@@ -939,6 +978,37 @@ static void spyro_native_reextract(void* cpu_v) {
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed) memcpy(cam, cam_saved, CAM_BYTES);
+
+    /* W0.3 bracket-integrity: every lerp write above must be undone — verify the
+     * present left gameplay RAM byte-identical to how it found it. A mismatch is
+     * a restore bug (the class the headless oracle can't see); log it same-frame.
+     * The moby/particle pool checks guard their restore loops against future
+     * regressions (a slot dropped from the loop, a stray post-restore write). */
+    if (bc_on) {
+        for (int i = 0; i < bc_n; ++i) {
+            if (bc_hash(bc_regs[i].addr, bc_regs[i].len) != bc_h0[i])
+                fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH region=%s: "
+                        "sub-tick present perturbed gameplay RAM\n",
+                        openpete_frame, bc_regs[i].name);
+        }
+        for (int i = 0; i < moby_save_n; ++i) {
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
+            if (mh && memcmp(mh, s_moby_save[i].bytes, MOBY_STRIDE) != 0)
+                fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH moby@%08x\n",
+                        openpete_frame, s_moby_save[i].addr);
+        }
+        for (int i = 0; i < part_save_n; ++i) {
+            const uint8_t* ph = (const uint8_t*)openpete_psx_to_host_ptr(s_part_save[i].addr);
+            if (ph) {
+                uint32_t w1, w2;
+                memcpy(&w1, ph + PART_POS_OFF, 4);
+                memcpy(&w2, ph + 0x08u, 4);
+                if (w1 != s_part_save[i].w1 || w2 != s_part_save[i].w2)
+                    fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH particle@%08x\n",
+                            openpete_frame, s_part_save[i].addr);
+            }
+        }
+    }
 
     s_fpos_active = 0;   /* leave the resolver inert for the canonical render path */
 
