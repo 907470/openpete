@@ -1262,6 +1262,15 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
          * pointers + vert counts) and Spyro's projected SXY (the NCLIP cull
          * verdict), both live now, so intermediates can re-derive Spyro. */
         spyro_native_canon_capture_range(cpu, 0x1900u, 0x100u);
+        /* Fairy-Kiss pre-blend colour table (D_SCRATCH+0x1D00): produced by
+         * func_80023AC4 ABOVE when g_Spyro.colorFilter.interp != 0. It lives inside
+         * the [0x1600,0x2400) record region, so the sub-tick's s_canon_recs restore
+         * (captured at the earlier MOBY hook, BEFORE this Spyro pass wrote it) leaves
+         * it STALE — Spyro's own colours then flicker at >30fps during a Fairy-Kiss.
+         * Capture it fresh HERE and overlay it for the Spyro feeder (like the seg
+         * scratch). Read range is [0x1D00,0x1EEC) (max colour index 0x1E8); 0x300
+         * covers it with margin and stays clear of SHADED@0x2400. */
+        spyro_native_canon_capture_range(cpu, 0x1D00u, 0x300u);
         spyro_native_canon_capture_sxy(cpu);
         spyro_anim_capture_seg(cpu);   /* roll prev/curr seg block for sub-tick blend */
     }

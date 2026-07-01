@@ -195,6 +195,9 @@ static int      s_canon_scratch_valid = 0;
 #define RECS_LEN    0xE00u    /* [0x1600,0x2400) full REGULAR cull records (≤64 @ 0x38) */
 #define SEG_OFF     0x1900u
 #define SEG_LEN     0x100u    /* [0x1900,0x1A00) Spyro per-segment scratch (overlaps recs) */
+#define FK_OFF      0x1D00u
+#define FK_LEN      0x300u    /* [0x1D00,0x2000) Fairy-Kiss pre-blend colour table (overlaps recs;
+                              * written by the Spyro pass AFTER the moby records, like the seg scratch) */
 #define SHADED_OFF  0x2400u
 #define SHADED_LEN  0x800u    /* [0x2400,0x2C00) shaded Moby* list + lit scratch */
 static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
@@ -272,6 +275,14 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
     if (!s_canon_scratch_valid) return;
     void* h = openpete_psx_to_host_ptr(DSONY + SEG_OFF);
     if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
+    /* Fairy-Kiss pre-blend colour table — same temporal reuse as the seg scratch:
+     * the Spyro pass wrote it over the (now-consumed) records, so overlay the fresh
+     * canon capture for the Spyro body feeder (else it reads the stale s_canon_recs
+     * value and Spyro's colours flicker at >30fps during a Fairy-Kiss). Captured at
+     * the Spyro hook (spyro_native.c); when Fairy-Kiss is inactive it's harmless
+     * (build_spyro_walk reads m_Colors, not 0x1D00). */
+    void* hf = openpete_psx_to_host_ptr(DSONY + FK_OFF);
+    if (hf) memcpy(hf, s_canon_dsony + (FK_OFF - DSONY_LO), FK_LEN);
 }
 
 /* Restore the live scratch before the game fiber resumes (determinism). The
