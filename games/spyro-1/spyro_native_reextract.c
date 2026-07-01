@@ -277,6 +277,11 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
 static uint8_t  s_canon_dsony[DSONY_SPAN], s_live_dsony[DSONY_SPAN];
 static uint32_t s_canon_sxy[SXY_WORDS],    s_live_sxy[SXY_WORDS];
 static int      s_canon_scratch_valid = 0;
+/* W0.6: the canonical frame that set _valid. A tick whose producer didn't fire
+ * would otherwise replay tick-(N-k)'s captured scratch (stale); the consumers
+ * below only honor the capture when its stamp == the current canonical frame,
+ * so "valid" means "captured THIS tick" without needing a begin-of-frame hook. */
+static uint32_t s_canon_scratch_frame = 0xFFFFFFFFu;
 
 /* Explicit scratch sub-regions (offsets from DSONY). The REGULAR cull-record
  * region [0x1600,0x2400) and the Spyro per-segment scratch [0x1900,0x1A00)
@@ -301,6 +306,7 @@ static int      s_canon_scratch_valid = 0;
 #define SHADED_LEN  0x800u    /* [0x2400,0x2C00) shaded Moby* list + lit scratch */
 static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
 static int      s_canon_recs_valid = 0;
+static uint32_t s_canon_recs_frame  = 0xFFFFFFFFu;    /* W0.6: canonical frame that set _valid */
 
 /* Capture a DSONY sub-range at its producer hook (called from the canonical
  * moby/spyro render hooks while the scratch is still live). */
@@ -311,6 +317,7 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     if (!h) return;
     memcpy(s_canon_dsony + (off - DSONY_LO), h, len);
     s_canon_scratch_valid = 1;
+    s_canon_scratch_frame = openpete_frame;
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); dbg = (e && *e && *e != '0'); }
     if (dbg && (openpete_frame % 200u) == 0) {
@@ -324,6 +331,7 @@ void spyro_native_canon_capture_sxy(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
     for (uint32_t i = 0; i < SXY_WORDS; ++i) s_canon_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
     s_canon_scratch_valid = 1;
+    s_canon_scratch_frame = openpete_frame;
 }
 
 /* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook —
@@ -337,6 +345,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
     if (!h) return;
     memcpy(s_canon_recs, h, RECS_LEN);
     s_canon_recs_valid = 1;
+    s_canon_recs_frame = openpete_frame;
 }
 
 /* On an intermediate: save the live scratch, overwrite with the captured canon,
@@ -347,7 +356,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
  * the moby feeder the FULL records first; scratch_bracket_seg_restore then
  * overlays the seg scratch for the Spyro feeder (called between them). */
 static void scratch_bracket_enter(CPUState* cpu) {
-    if (!s_canon_scratch_valid) return;
+    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
     void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
     void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
     void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);
@@ -358,7 +367,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
     if (hs) memcpy(s_live_dsony + (SHADED_OFF - DSONY_LO), hs, SHADED_LEN);
     /* Restore canon for the MOBY + shadow feeders: colour, FULL records, shaded. */
     if (hc) memcpy(hc, s_canon_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
-    if (hr && s_canon_recs_valid) memcpy(hr, s_canon_recs, RECS_LEN);
+    if (hr && s_canon_recs_valid && s_canon_recs_frame == openpete_frame) memcpy(hr, s_canon_recs, RECS_LEN);
     if (hs) memcpy(hs, s_canon_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
     for (uint32_t i = 0; i < SXY_WORDS; ++i) {
         s_live_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
@@ -371,7 +380,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
  * same temporal reuse the .s does — so the Spyro body feeder sees its seg scratch. */
 static void scratch_bracket_seg_restore(CPUState* cpu) {
     (void)cpu;
-    if (!s_canon_scratch_valid) return;
+    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
     void* h = openpete_psx_to_host_ptr(DSONY + SEG_OFF);
     if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
     /* Fairy-Kiss pre-blend colour table — same temporal reuse as the seg scratch:
@@ -387,7 +396,7 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
 /* Restore the live scratch before the game fiber resumes (determinism). The
  * records-region restore [0x1600,0x2400) covers the seg sub-range too. */
 static void scratch_bracket_leave(CPUState* cpu) {
-    if (!s_canon_scratch_valid) return;
+    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
     void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
     void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
     void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);

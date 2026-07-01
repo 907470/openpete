@@ -47,7 +47,7 @@ static uint32_t probe(uint32_t key, int* found) {
         i = (i + 1u) & (SLOTS - 1u);
     }
     *found = 0;
-    return slot_of(key);   /* table full (should never happen at load < 0.5) */
+    return SLOTS;   /* table full — caller drops rather than corrupt a colliding slot */
 }
 
 void openpete_interp_objs_begin_tick(void) {
@@ -62,6 +62,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
 
     int found;
     uint32_t i = probe(key, &found);
+    if (i >= SLOTS) return;   /* table full — drop rather than corrupt a colliding slot */
 
     if (found) {
         /* Dedupe at capture (mirrors openpete_interp_capture): if this object's
@@ -127,6 +128,7 @@ void openpete_interp_objs_end_tick(void) {
     for (int k = 0; k < nsurv; ++k) {
         int found;
         uint32_t i = probe(s_survivors[k].key, &found);
+        if (i >= SLOTS) continue;   /* defensive: never full during rehash (nsurv <= SLOTS) */
         s_tab[i] = s_survivors[k];
         s_count++;
     }

@@ -73,6 +73,11 @@ void rhi_end_frame(rhi_device *dev);
  * resize event. */
 void rhi_notify_resize(rhi_device *dev);
 
+/* Register a handler called once on an unrecoverable VK_ERROR_DEVICE_LOST
+ * (acquire/present). Lets the owning layer flag a clean shutdown; the RHI itself
+ * stays free of core-runtime symbols. NULL clears it. Global, not per-device. */
+void rhi_set_device_lost_handler(void (*fn)(void));
+
 /* Diagnostics: the selected physical device name (valid until destroy). */
 const char *rhi_device_name(const rhi_device *dev);
 

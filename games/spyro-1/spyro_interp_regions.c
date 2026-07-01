@@ -104,7 +104,13 @@ static void spyro_interp_capture_objs(void) {
     uint32_t arr = rd32(G_LEVELMOBYS);
     if (arr >= 0x80000000u) {
         uint32_t m = arr;
-        for (int guard = 0; guard < 4096; ++guard) {
+        /* Bound the walk below the store capacity (OPENPETE_INTERP_OBJ_SLOTS) so
+         * the HUD (12) + particle captures that follow this pass always fit — the
+         * store now also drops gracefully when full, but reserving here keeps
+         * mobys, not HUD/particles, the ones dropped in the (impossible for Spyro 1)
+         * overflow case. The array sentinel below stops the walk after a few
+         * hundred live mobys anyway. */
+        for (int guard = 0; guard < (int)OPENPETE_INTERP_OBJ_SLOTS - 512; ++guard) {
             const void* host = openpete_psx_to_host_ptr(m);
             if (!host) break;
             uint8_t st = ((const uint8_t*)host)[MOBY_STATE_OFF];

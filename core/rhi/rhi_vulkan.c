@@ -32,6 +32,17 @@
 
 #define RHI_LOG(...)  fprintf(stderr, "[rhi/vk] " __VA_ARGS__)
 
+/* Handler invoked on an unrecoverable VK_ERROR_DEVICE_LOST (registered by the
+ * core layer, which owns the shutdown flag) instead of spinning failed frames
+ * forever. A callback keeps openpete_rhi free of core-runtime symbols — the
+ * link goes core -> rhi, not back. */
+static void (*s_device_lost_cb)(void) = NULL;
+void rhi_set_device_lost_handler(void (*fn)(void)) { s_device_lost_cb = fn; }
+static void rhi_signal_device_lost(const char *where) {
+    RHI_LOG("FATAL: device lost on %s — requesting shutdown\n", where);
+    if (s_device_lost_cb) s_device_lost_cb();
+}
+
 #define VK_CHECK(expr)                                                       \
     do {                                                                     \
         VkResult _vr = (expr);                                               \
@@ -394,7 +405,9 @@ static bool create_swapchain(rhi_device *dev)
     /* Format: prefer B8G8R8A8_UNORM / SRGB nonlinear, else first. */
     uint32_t fn = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, NULL);
+    if (fn == 0) { RHI_LOG("create_swapchain: surface reports zero formats\n"); return false; }
     VkSurfaceFormatKHR *fmts = calloc(fn, sizeof(*fmts));
+    if (!fmts) { RHI_LOG("create_swapchain: OOM for %u surface formats\n", fn); return false; }
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, fmts);
     VkSurfaceFormatKHR pick = fmts[0];
     for (uint32_t i = 0; i < fn; i++) {
@@ -952,6 +965,9 @@ bool rhi_begin_frame(rhi_device *dev)
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
         dev->needs_recreate = true;
         return false;
+    } else if (acq == VK_ERROR_DEVICE_LOST) {
+        rhi_signal_device_lost("acquire");
+        return false;
     } else if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
         RHI_LOG("vkAcquireNextImageKHR failed: %d\n", (int)acq);
         return false;
@@ -1123,6 +1139,8 @@ void rhi_end_frame(rhi_device *dev)
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
         dev->needs_recreate = true;
+    } else if (pr == VK_ERROR_DEVICE_LOST) {
+        rhi_signal_device_lost("present");
     } else if (pr != VK_SUCCESS) {
         RHI_LOG("vkQueuePresentKHR failed: %d\n", (int)pr);
     }

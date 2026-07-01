@@ -100,6 +100,11 @@ int openpete_psycross_renders = 1;
  * the game fiber and vblank thread still mid-flight). */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
+/* Public request for a clean shutdown (the host-fiber loop polls
+ * g_shutdown_requested and tears down through the normal path). Used by the RHI
+ * on an unrecoverable VK_ERROR_DEVICE_LOST instead of spinning failed frames. */
+void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
+
 /* Set by the SDL event filter on a window double-click; consumed once per host
  * loop iteration to toggle native-window fullscreen. Kept as a flag so the
  * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */

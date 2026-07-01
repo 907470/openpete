@@ -250,7 +250,20 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
                 }
             }
             s_code_hist[code & 0xFF]++;
-            if (t->nv == 0) s_uncoded_hist[code & 0xFF]++;  /* not fed = missing polys */
+            if (t->nv == 0) {
+                s_uncoded_hist[code & 0xFF]++;  /* not fed = missing polys */
+                /* Loud-once per unknown code (extends the ABR-FIXME discipline:
+                 * silent until it matters, loud when it does). Silent-skip is only
+                 * OK for explicitly-culled geometry — never for "didn't recognize
+                 * this". Was VERIFY-census-only (report_code_hist). */
+                static uint8_t s_uncoded_warned[256];
+                if (!s_uncoded_warned[code & 0xFF]) {
+                    s_uncoded_warned[code & 0xFF] = 1;
+                    fprintf(stderr, "native: WARNING undecoded moby prim code 0x%02X (f=%u) — polys "
+                            "dropped from the native feed; add a decoder or explicitly cull\n",
+                            code & 0xFF, openpete_frame);
+                }
+            }
             s_gte_n++;
         }
         p += stride;

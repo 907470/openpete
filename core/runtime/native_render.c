@@ -379,7 +379,8 @@ void openpete_native_scene_capture_overlay(void) {
     s_overlay_prev_ns = s_overlay_curr_ns;   /* roll the capture timestamp too */
     s_overlay_curr_ns = op_now();
     s_overlay_carry_n = 0;
-    for (int t = 0; t < s_scene_n && s_overlay_carry_n < OVERLAY_CARRY_MAX; t++) {
+    int s_overlay_dropped = 0;
+    for (int t = 0; t < s_scene_n; t++) {
         int c = s_scene[t].category, cy = s_scene[t].carry;
         /* carry==2 = a tri RE-APPLIED by apply_overlay last present. The canonical
          * game render appends to the prior sub-tick's (un-wiped) scene, so those
@@ -389,8 +390,21 @@ void openpete_native_scene_capture_overlay(void) {
          * (see openpete_native_scene_set_carry). Capture runs on the CANONICAL present
          * only (run.c), so a clear here is correct (sub-ticks hold the set). */
         if (cy == 2) continue;
-        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1)
-            s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
+        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1) {
+            if (s_overlay_carry_n < OVERLAY_CARRY_MAX) s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
+            else s_overlay_dropped++;
+        }
+    }
+    /* Mirror the scene-cap warn-once: a busy title/menu that overruns the carry
+     * buffer silently loses 2D-UI sprites sub-tick with no signal — warn so the
+     * cap can be raised rather than leaving a view-dependent dropout in the wild. */
+    if (s_overlay_dropped > 0) {
+        static int s_ov_warned = 0;
+        if (!s_ov_warned) { s_ov_warned = 1;
+            fprintf(stderr, "native: WARNING OVERLAY_CARRY_MAX %d exceeded (frame=%u, %d 2D-UI carry "
+                    "tris dropped) — sprites will vanish sub-tick; raise OVERLAY_CARRY_MAX\n",
+                    OVERLAY_CARRY_MAX, s_scene_frame, s_overlay_dropped);
+        }
     }
     /* NOTE: the freeze backdrop carry is committed in commit_fade (the per-tick
      * overlay-signal commit), NOT here — capturing it from s_scene_freeze created a
@@ -790,6 +804,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         SDL_DestroyWindow(win);
         return 1;
     }
+    /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
+     * rather than spin failed frames forever (W0.6 RHI robustness). */
+    extern void openpete_request_shutdown(void);
+    rhi_set_device_lost_handler(openpete_request_shutdown);
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
     s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
