@@ -2156,6 +2156,28 @@ static void draw_fps_overlay(void) {
     }
 }
 
+/* Capture the freeze backdrop from the CLEAN windowed offscreen we just ended
+ * (correctly projected/pillarboxed at every window size, and — under --ssaa —
+ * already box-resolved back to 1× window resolution). Hardware-blit the
+ * offscreen's 4:3 content region (cover_rect = the p0 sub-rect widened by
+ * ws_factor, in window pixels) into frozen_tex; the pause/inventory/exit freeze
+ * present then samples this clean snapshot. World frames only, so the snapshot
+ * is the gameplay frame to freeze, not the menu drawn over it. Must be called
+ * after rhi_end_offscreen (off_image in TRANSFER_SRC). */
+static void capture_freeze_from_offscreen(bool world_frame)
+{
+    if (!(world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;
+    float fhx = s_nr.p0_hx * s_nr.ws_factor;
+    int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
+    int sw = (int)(fhx * (float)s_nr.win_w + 0.5f);
+    int sy = (int)(((1.0f - s_nr.p0_hy) * 0.5f) * (float)s_nr.win_h + 0.5f);
+    int sh = (int)(s_nr.p0_hy * (float)s_nr.win_h + 0.5f);
+    if (sw > 0 && sh > 0) {
+        rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex, sx, sy, sw, sh);
+        s_nr.frozen_valid = true;
+    }
+}
+
 /* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all
  * three (see openpete_native_render_screenshot_all). */
 enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
@@ -2257,6 +2279,12 @@ static bool compose_variant(int variant, bool have_ref)
         }
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         rhi_end_offscreen(s_nr.dev);
+        /* The freeze snapshot lives in the fall-through path below, which this SSAA
+         * branch skips — so capture it here too, from the box-resolved 1× offscreen
+         * (window resolution, matching the non-SSAA snapshot). Without this the
+         * pause/inventory freeze had no captured frame under --ssaa and showed the
+         * clear/cyclorama colour instead of the frozen world. */
+        capture_freeze_from_offscreen(world_frame);
         return false;
     }
 
@@ -2300,25 +2328,7 @@ static bool compose_variant(int variant, bool have_ref)
 
     rhi_end_offscreen(s_nr.dev);
 
-    /* Capture the freeze backdrop from the CLEAN windowed offscreen we just drew
-     * (correctly projected/pillarboxed at every window size), rather than the
-     * off-display full-extent native_rtt (which skews window-dependently and
-     * squished the freeze). On WORLD frames, hardware-blit the offscreen's 4:3
-     * content region (cover_rect = the p0 sub-rect widened by ws_factor) into
-     * frozen_tex; the pause/inventory/exit freeze present then samples a clean
-     * snapshot. Skip menu/freeze frames so the snapshot is the gameplay frame to
-     * freeze, not the menu drawn over it. */
-    if (variant == NRV_VK && world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0) {
-        float fhx = s_nr.p0_hx * s_nr.ws_factor;
-        int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-        int sw = (int)(fhx * (float)s_nr.win_w + 0.5f);
-        int sy = (int)(((1.0f - s_nr.p0_hy) * 0.5f) * (float)s_nr.win_h + 0.5f);
-        int sh = (int)(s_nr.p0_hy * (float)s_nr.win_h + 0.5f);
-        if (sw > 0 && sh > 0) {
-            rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex, sx, sy, sw, sh);
-            s_nr.frozen_valid = true;
-        }
-    }
+    if (variant == NRV_VK) capture_freeze_from_offscreen(world_frame);
     return false;
 }
 
