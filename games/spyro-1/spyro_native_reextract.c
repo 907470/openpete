@@ -693,6 +693,24 @@ static void spyro_native_reextract(void* cpu_v) {
                 if (st < 0x80) {                      /* alive */
                     const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
                     if (o && o->have_prev) {
+                        /* IDENTITY guard (slot reuse). The interp-objs table is keyed
+                         * by the moby SLOT ADDRESS, so a slot a DIFFERENT moby respawns
+                         * into within one tick still reads have_prev=1 and would lerp
+                         * between two unrelated objects — position AND the two-pass
+                         * keyframe shape (garbage when the models differ). The teleport
+                         * guard below only catches FAR reuses; a near respawn (same
+                         * region) slips through it. m_Class @ +0x36 (i16) is the stable
+                         * type and the model is derived from it (G_MODELS[class]), so a
+                         * class change is a different model → snap (present curr, no
+                         * bracket). Mirrors the particle class/sel guard. (Same-class
+                         * instance reuse — same model, near, a brief pose blend — is a
+                         * benign residual; catching it needs a per-instance id the moby
+                         * record doesn't carry.) */
+                        uint16_t pcls, ccls;
+                        memcpy(&pcls, o->prev + 0x36u, 2);
+                        memcpy(&ccls, o->curr + 0x36u, 2);
+                        if (pcls != ccls) { m += MOBY_STRIDE; continue; }
+
                         /* Per-object alpha from the moby's OWN distinct-roll
                          * timestamps (sweeps across the static ticks between
                          * distinct states; clamps to curr once it settles). */
