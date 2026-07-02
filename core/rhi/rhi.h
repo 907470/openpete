@@ -150,12 +150,34 @@ typedef struct rhi_texture  rhi_texture;
  * dst ONE — used by shadows (subtractive darkening). */
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT } rhi_blend_mode;
 
+/* Stencil role of a pipeline (W2.6 — the aperture-mask investment; the depth
+ * attachment is a combined depth+stencil format, stencil cleared to 0 at every
+ * pass begin):
+ *  - MARK: rasterize a mask — where the fragment passes the DEPTH test, write
+ *    stencil=1 (depth-fail leaves 0, so world geometry in front punches the
+ *    mask out). Pair with color_write_off for an invisible mask pass.
+ *  - TEST: draw only where stencil==1 (inside the mask); stencil not written.
+ * Reference is fixed at 1 — per-object isolation is done by rhi_clear_stencil
+ * between mask groups, not by reference juggling. */
+typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST } rhi_stencil_mode;
+
 typedef struct {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */
     const char    *frag_spv;
     rhi_blend_mode blend;
     bool           depth_test;  /* needs a depth attachment (added later) */
     bool           depth_write_off; /* depth_test but NO depth write (transparent: test vs opaque, don't occlude) */
+    bool           depth_bias;  /* enable the hardware polygon offset (decal
+                                 * tie-break) with DYNAMIC factors. Vulkan
+                                 * invalidates dynamic state whenever a
+                                 * pipeline with that state STATIC is bound
+                                 * (i.e. any non-depth_bias pipeline), so the
+                                 * caller MUST rhi_set_depth_bias after EVERY
+                                 * bind of a depth_bias pipeline, before its
+                                 * draws. */
+    rhi_stencil_mode stencil;   /* NONE (default) / MARK / TEST — see enum docs */
+    bool           color_write_off; /* rasterize without writing colour (an
+                                 * invisible stencil-mask pass)               */
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
@@ -213,6 +235,12 @@ void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
  * Z-sorts internally without being occluded by, or occluding, world geometry. */
 void rhi_clear_depth(rhi_device *dev);
 
+/* Clear the STENCIL aspect to 0 WITHIN the current pass (offscreen or render
+ * target). Used between per-object stencil-mask groups (e.g. one portal's
+ * aperture mask + masked draw, then clear, then the next portal's), so a fixed
+ * stencil reference of 1 isolates objects without reference juggling. */
+void rhi_clear_stencil(rhi_device *dev);
+
 /* Read a render target back into a host RGBA8 buffer (byte order R,G,B,A, alpha
  * forced opaque). The RT must be in SHADER_READ_ONLY (i.e. after
  * rhi_end_render_target + the frame that rendered it was submitted); the layout
@@ -255,6 +283,18 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
  * restores the full target. Both must be called inside the offscreen pass. */
 void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h);
 void rhi_reset_scissor(rhi_device *dev);
+/* Set the hardware depth-bias factors (vkCmdSetDepthBias order: constant,
+ * clamp, slope) for subsequent draws whose pipeline was created with
+ * desc.depth_bias. Negative values pull fragments TOWARD the camera under the
+ * LESS_OR_EQUAL compare — the decal tie-break: constant×r beats
+ * rasterization-rounding ties against coplanar geometry, slope×m grows the
+ * pull at grazing angles, clamp bounds the total. r is the minimum resolvable
+ * depth delta (~2^-24 relative for a float depth attachment). MUST be called
+ * after every bind of a depth_bias pipeline, before its draws — binding any
+ * non-depth_bias pipeline in between invalidates the dynamic state (Vulkan
+ * static-state invalidation rule). If the depthBiasClamp device feature is
+ * unavailable the clamp is forced to 0 (spec). */
+void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slope);
 /* Set the current pipeline's fragment push constants (size must match the
  * pipeline desc's push_const_size). */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);

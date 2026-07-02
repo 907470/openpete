@@ -68,6 +68,10 @@ struct rhi_device {
     /* Swapchain */
     VkSwapchainKHR swapchain;
     VkFormat       sc_format;
+    VkFormat       depth_format;  /* combined depth+stencil (W2.6): D32_SFLOAT_S8
+                                   * preferred, D24_UNORM_S8 fallback — picked at
+                                   * device selection (pick_depth_format). */
+    bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
     VkExtent2D     sc_extent;
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
@@ -282,6 +286,23 @@ static bool create_instance(rhi_device *dev, const char *app_name)
     return true;
 }
 
+/* Stencil-capable depth format (W2.6): prefer D32_SFLOAT_S8 (keeps the float
+ * depth curve the depth-model audit analysed), fall back to D24_UNORM_S8. The
+ * spec guarantees at least one of the two supports DEPTH_STENCIL_ATTACHMENT
+ * with optimal tiling. */
+static VkFormat pick_depth_format(VkPhysicalDevice phys)
+{
+    const VkFormat cand[2] = { VK_FORMAT_D32_SFLOAT_S8_UINT,
+                               VK_FORMAT_D24_UNORM_S8_UINT };
+    for (int i = 0; i < 2; i++) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(phys, cand[i], &fp);
+        if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+            return cand[i];
+    }
+    return VK_FORMAT_D32_SFLOAT_S8_UINT;  /* unreachable per spec */
+}
+
 static bool pick_physical_and_device(rhi_device *dev)
 {
     uint32_t n = 0;
@@ -342,6 +363,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     }
     dev->phys = chosen;
     dev->gfx_family = chosen_family;
+    dev->depth_format = pick_depth_format(chosen);
 
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {
@@ -350,6 +372,15 @@ static bool pick_physical_and_device(rhi_device *dev)
         .queueCount = 1,
         .pQueuePriorities = &prio,
     };
+    /* Optional features (enable only what's supported; nothing here is
+     * load-bearing): depthBiasClamp lets rhi_set_depth_bias bound the decal
+     * pull (W2.5) — without it the clamp param is forced to 0 (spec
+     * VUID-vkCmdSetDepthBias-depthBiasClamp-00790). */
+    VkPhysicalDeviceFeatures supported;
+    vkGetPhysicalDeviceFeatures(dev->phys, &supported);
+    VkPhysicalDeviceFeatures enable = {0};
+    enable.depthBiasClamp = supported.depthBiasClamp;
+    dev->has_depth_bias_clamp = (supported.depthBiasClamp == VK_TRUE);
     const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -358,6 +389,7 @@ static bool pick_physical_and_device(rhi_device *dev)
         /* No swapchain extension when there's no surface to present to. */
         .enabledExtensionCount = dev->headless ? 0u : 1u,
         .ppEnabledExtensionNames = dev->headless ? NULL : dev_ext,
+        .pEnabledFeatures = &enable,
     };
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateDevice failed: %d\n", (int)r); return false; }
@@ -482,11 +514,11 @@ static bool create_render_pass(rhi_device *dev)
         .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
     };
     VkAttachmentDescription depth = {
-        .format = VK_FORMAT_D32_SFLOAT,   /* required-supported depth format */
+        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, /* not read after the pass */
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,   /* stencil starts 0 every pass */
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -572,11 +604,11 @@ static bool create_rt_render_pass(rhi_device *dev)
         .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     VkAttachmentDescription depth = {
-        .format = VK_FORMAT_D32_SFLOAT,
+        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,   /* stencil starts 0 every pass */
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -669,11 +701,11 @@ static bool create_offscreen(rhi_device *dev)
         RHI_LOG("offscreen vkCreateImageView failed\n");
         return false;
     }
-    /* Depth attachment (3a.3): D32_SFLOAT, device-local, depth-stencil usage. */
+    /* Depth attachment (3a.3): combined depth+stencil, device-local. */
     VkImageCreateInfo dici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_D32_SFLOAT,
+        .format = dev->depth_format,
         .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -706,9 +738,10 @@ static bool create_offscreen(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = dev->off_depth_image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_D32_SFLOAT,
+        .format = dev->depth_format,
         .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            /* attachment view of a combined format must cover both aspects */
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
             .levelCount = 1, .layerCount = 1,
         },
     };
@@ -1071,6 +1104,11 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     VkRect2D scissor = { .offset = {0, 0}, .extent = dev->sc_extent };
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
+    /* Belt-only: a defined value if a depth_bias pipeline is somehow bound
+     * first in the pass. NOT a guarantee — binding any static-state pipeline
+     * invalidates dynamic depth bias, so callers must set it after every
+     * depth_bias pipeline bind (see rhi.h). */
+    vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
 }
 
 void rhi_end_offscreen(rhi_device *dev)
@@ -1490,10 +1528,10 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
         RHI_LOG("rt vkCreateImageView failed\n"); goto fail;
     }
 
-    /* Depth attachment for the RT framebuffer. */
+    /* Depth attachment for the RT framebuffer (combined depth+stencil). */
     VkImageCreateInfo dici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+        .imageType = VK_IMAGE_TYPE_2D, .format = dev->depth_format,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1514,8 +1552,9 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
     vkBindImageMemory(dev->device, t->rt_depth_image, t->rt_depth_mem, 0);
     VkImageViewCreateInfo dvci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->rt_depth_image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
-        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .levelCount = 1, .layerCount = 1 },
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = dev->depth_format,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                              .levelCount = 1, .layerCount = 1 },
     };
     if (vkCreateImageView(dev->device, &dvci, NULL, &t->rt_depth_view) != VK_SUCCESS) {
         RHI_LOG("rt depth vkCreateImageView failed\n"); goto fail;
@@ -1586,6 +1625,11 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     VkRect2D scissor = { .offset = {0, 0}, .extent = ext };
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
+    /* Belt-only: a defined value if a depth_bias pipeline is somehow bound
+     * first in the pass. NOT a guarantee — binding any static-state pipeline
+     * invalidates dynamic depth bias, so callers must set it after every
+     * depth_bias pipeline bind (see rhi.h). */
+    vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
 }
 
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
@@ -1604,6 +1648,22 @@ void rhi_clear_depth(rhi_device *dev)
     if (!dev->frame_active) return;
     VkClearAttachment att = {
         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+        .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+    };
+    VkClearRect rect = {
+        .rect = { .offset = {0, 0}, .extent = dev->cur_extent },
+        .baseArrayLayer = 0, .layerCount = 1,
+    };
+    vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
+}
+
+/* Clear the STENCIL aspect to 0 within the current pass — between per-object
+ * stencil-mask groups (fixed reference 1 + clear = per-object isolation). */
+void rhi_clear_stencil(rhi_device *dev)
+{
+    if (!dev->frame_active) return;
+    VkClearAttachment att = {
+        .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
         .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
     };
     VkClearRect rect = {
@@ -2009,6 +2069,10 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        /* Decal pipelines (desc->depth_bias) enable the hardware polygon
+         * offset with DYNAMIC factors (VK_DYNAMIC_STATE_DEPTH_BIAS below);
+         * both pass begins set the factors to 0 so state is always defined. */
+        .depthBiasEnable = desc->depth_bias ? VK_TRUE : VK_FALSE,
         .lineWidth = 1.0f,
     };
     VkPipelineMultisampleStateCreateInfo ms = {
@@ -2017,8 +2081,10 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
     };
     VkPipelineColorBlendAttachmentState cba = {
         .blendEnable = (desc->blend != RHI_BLEND_NONE) ? VK_TRUE : VK_FALSE,
-        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        /* color_write_off = an invisible pass (stencil-mask rasterization). */
+        .colorWriteMask = desc->color_write_off ? 0u :
+                          (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
         .colorBlendOp = VK_BLEND_OP_ADD, .alphaBlendOp = VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
         .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
@@ -2053,10 +2119,32 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
         .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
     };
-    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    /* Stencil roles (W2.6): MARK writes 1 where the fragment passes the depth
+     * test (depth-fail keeps 0, so nearer world geometry punches the mask
+     * out); TEST draws only where stencil==1 and never writes it. Reference is
+     * a fixed 1 — per-object isolation is rhi_clear_stencil between groups. */
+    if (desc->stencil == RHI_STENCIL_MARK) {
+        VkStencilOpState sop = {
+            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_REPLACE,
+            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_ALWAYS,
+            .compareMask = 0xFFu, .writeMask = 0xFFu, .reference = 1u,
+        };
+        dss.stencilTestEnable = VK_TRUE;
+        dss.front = sop; dss.back = sop;
+    } else if (desc->stencil == RHI_STENCIL_TEST) {
+        VkStencilOpState sop = {
+            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
+            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_EQUAL,
+            .compareMask = 0xFFu, .writeMask = 0u, .reference = 1u,
+        };
+        dss.stencilTestEnable = VK_TRUE;
+        dss.front = sop; dss.back = sop;
+    }
+    VkDynamicState dyn[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                              VK_DYNAMIC_STATE_DEPTH_BIAS };
     VkPipelineDynamicStateCreateInfo ds = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = 2, .pDynamicStates = dyn,
+        .dynamicStateCount = desc->depth_bias ? 3u : 2u, .pDynamicStates = dyn,
     };
     /* Optional VRAM sampler set (0) + a fragment-stage push-constant block
      * (the per-draw PSX material: tpage/clut/bpp). The 1b.1 quad pipeline
@@ -2187,4 +2275,16 @@ void rhi_reset_scissor(rhi_device *dev)
     if (!dev->frame_active) return;
     VkRect2D s = { .offset = { 0, 0 }, .extent = dev->cur_extent };
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &s);
+}
+
+void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slope)
+{
+    if (!dev->frame_active) return;
+    /* Only consumed by pipelines created with desc.depth_bias (the dynamic
+     * state is per-pipeline); setting it with another pipeline bound is legal
+     * and inert. Parameter order matches vkCmdSetDepthBias. Without the
+     * depthBiasClamp feature the clamp param MUST be 0.0 (spec 00790) — the
+     * pull is then bounded only by the slope term; acceptable degradation. */
+    if (!dev->has_depth_bias_clamp) clamp = 0.0f;
+    vkCmdSetDepthBias(dev->cmd[dev->frame], constant, clamp, slope);
 }
