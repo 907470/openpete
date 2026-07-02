@@ -419,6 +419,20 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * chunks (the same fix terrain got). Same scale as TR_raw, just fractional;
      * the .s-record path passes NULL and keeps the byte-exact integer TR. */
     int m_scale = cpu->read_byte(header + 5) & 0xFF;
+    /* .s far-skip [.L8001F888 / spec twin @8002103C]: records with a non-zero
+     * w0 low byte (the GPF-TR scale, m_ScaleOverride-derived) run IR0=(w0&0xFF),
+     * IR3=(TR.z<<2)>>m_Scale through GPF sf=0 and SKIP the whole record when
+     * MAC3>>5 exceeds 63000 (-31500 twice, .L800208A4) — the game draws NOTHING
+     * for them beyond that depth. Mirror it or the native draws mobys the game
+     * popped out. IR3 is an int16 GTE data reg, so the mtc2 truncates — keep
+     * that. w0&0xFF==0 records (the common case) never take this test. Host-
+     * built w0 (reveal/sub-tick rebuild) has no low byte; the sub-tick pass
+     * re-applies this check from the live record's w0 (reextract_record_pass). */
+    if ((w0 & 0xFFu) != 0u) {
+        int ir3 = (int)(int16_t)((TR_raw[2] << 2) >> m_scale);
+        int mac3 = (int)(w0 & 0xFFu) * ir3;
+        if ((mac3 >> 5) > 63000) return 0;
+    }
     double TR[3];
     if (TR_frac) {
         double sc = 4.0 / (double)(1 << (m_scale < 0 ? 0 : (m_scale > 30 ? 30 : m_scale)));
@@ -541,9 +555,9 @@ static void fade_snap_put(uint32_t moby, int zsf4) {
     for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; return; }
     if (s_fade_snap_n < MAX_RECORDS) { s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4; s_fade_snap_n++; }
 }
-static int fade_snap_get(uint32_t moby) {
+static int fade_snap_get(uint32_t moby, int dflt) {
     for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4;
-    return 0;
+    return dflt;   /* snapshot miss: caller picks the safe tier */
 }
 
 /* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
@@ -553,6 +567,44 @@ static int fade_snap_get(uint32_t moby) {
  * which the specular cull writes into a slot a regular moby held at REGULAR-read
  * time) is still fed by SPECULAR. Snapshotted in the REGULAR pass (runs first). */
 static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
+
+/* ---- LOD tier (mirrors func_8001F798 block_8001FDD0; spec twin @80021670) ----
+ * The record's ZSF4 (+0x2E, sign-extended via ctc2/cfc2 gte_ctrl[30]) is the
+ * game's own per-record LOD verdict: the cull pass computes it @8001F404 as
+ * ((moby->m_Renderer(+0x4B) & 0x3F) << 8) - viewZ (viewZ = the record's TR.z)
+ * and stores its low 16 bits. The renderer's tier ladder:
+ *   ZSF4 >= 1024    -> HP faces (hdr+0x14) + raw model colours (hdr+0x18)
+ *   0 < ZSF4 < 1024 -> HP faces + colours DPCS-faded by (1024-ZSF4)*4 toward
+ *                      the per-vertex far palette (hdr+0x20)  [.L8001FDE8]
+ *   ZSF4 <= 0       -> LP faces (hdr+0x1C) + the far palette (hdr+0x20) as-is;
+ *                      below -2048 (g_SkipLowPolyWorld > 0) DPCS-faded toward
+ *                      the cyclorama fog colour by min(-(ZSF4+2048),2047)<<1
+ *                      [.L8001FE98..FECC]
+ * The face load rides the same --no-lod knob the .s uses
+ * (psx_runtime_moby_lp_face_offset: 0x1C canonical -> m_LpFaces, 0x14 under
+ * --no-lod -> m_Faces), so native and game flip to HP-everywhere TOGETHER.
+ * Colours stay tier-faithful in both modes — the game keeps the far palette
+ * under --no-lod too (only the face pointer is hooked). */
+static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
+    if (header < 0x80000000u) return 0u;
+    uint32_t off = (zsf4 <= 0) ? psx_runtime_moby_lp_face_offset : 0x14u;
+    return cpu->read_word(header + off);
+}
+
+/* OPENPETE_MOBY_TIER_DBG: ~1/sec canonical tier census + validation that the
+ * mirror formula reproduces the stored ZSF4 (mirror bad=0 proves the decode). */
+static long s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade, s_tier_gpfskip;
+static long s_tier_mirror_ok, s_tier_mirror_bad;
+static long s_tier_adopt;   /* adopt_prim_colors recolours since last print — a far-palette
+                             * mismatch floods this (the pre-fix flicker); healthy is ~0 */
+static long s_tier_dyncol_hi, s_tier_dynmoby_hi;   /* per-tick cache high-waters vs the
+                             * MAX_DYNCOL(1024)/32 caps — an overflow means intermediates
+                             * revert to native colour = canonical-cadence flicker */
+static int tier_dbg_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_TIER_DBG"); s = (e && *e && *e != '0') ? 1 : 0; }
+    return s;
+}
 
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
  * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
@@ -571,9 +623,12 @@ static int project_all_records(CPUState* cpu) {
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = cpu->read_word(rec + 0x04);
+            /* ZSF4 LOD/colour-fade tier = high16 of the matrix word @rec+0x2C
+             * (renderer: ctc2/cfc2 gte_ctrl[30]); see moby_tier_faceblock */
+            int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
             s_recs[nrec] = (rec_meta){ rec, off, got, header,
-                /* HP face stream base = AnimationHeader+0x14 (LP path TODO) */
-                (header >= 0x80000000u) ? cpu->read_word(header + 0x14) : 0u, w0,
+                /* face stream per the record's tier (HP or LP, --no-lod-aware) */
+                moby_tier_faceblock(cpu, header, zsf4), w0,
                 /* env metal flag = high byte of m_SpecularMetalColor @rec+0x30 (specular
                  * cull pass copies it; @80020CA0 / read @8002176C srl 24, bnez .L800226F8) */
                 (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu),
@@ -581,9 +636,24 @@ static int project_all_records(CPUState* cpu) {
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
                 cpu->read_word(rec + 0x30),
                 cpu->read_word(rec + 0x34),
-                /* ZSF4 colour-fade = high16 of the matrix word @rec+0x2C (gte_ctrl[30]) */
-                (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16) };
-            fade_snap_put(s_recs[nrec].moby, s_recs[nrec].zsf4);
+                zsf4 };
+            fade_snap_put(s_recs[nrec].moby, zsf4);
+            if (tier_dbg_on()) {
+                if (zsf4 >= 1024) s_tier_near++;
+                else if (zsf4 > 0) s_tier_fog++;
+                else if (zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) s_tier_farfade++;
+                else s_tier_far++;
+                if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
+                /* mirror check: recompute ZSF4 from gamestate the way the cull
+                 * does (@8001F404) and compare with the stored verdict */
+                uint32_t mob = cpu->read_word(rec + 0x34);
+                if (mob >= 0x80000000u) {
+                    int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
+                    int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
+                             - (uint32_t)cpu->read_word(rec + 0x18)) & 0xFFFFu);
+                    if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
+                }
+            }
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -755,9 +825,16 @@ static void append_revealed_regular(CPUState* cpu) {
                                       s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { m += 0x58; continue; }
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+        /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
+         * record behind a revealed moby to read the verdict from. Validated by
+         * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records. */
+        int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
+        int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
+                    - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
-            (f.header >= 0x80000000u) ? cpu->read_word(f.header + 0x14) : 0u, f.w0,
-            f.metal, f.mscol, m };
+            moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
+            f.metal, f.mscol, m, rzsf4 };
+        fade_snap_put(m, rzsf4);
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
     }
@@ -888,15 +965,17 @@ static int dpcs_ch(int c8, int fc12, int ir0) {
     return (int)out;
 }
 
-/* Per-moby colour depth-cue fade (the .s moby colour pass, func_8001FA1C
- * block_8001FDD0+). The cull record overloads the high 16 bits of its matrix
- * word at +0x2C (the M[2][2] pad) as a per-moby fade level ZSF4 (cfc2 gte_ctrl[30]).
- *   ZSF4 <= 0     -> near tier: raw colour (the common case; pad is 0 / sign-ext)
- *   0 < ZSF4<1024 -> DPCS toward the far colour (header+0x20) by IR0=(1024-ZSF4)*4
- *   ZSF4 >= 1024  -> full-bright tier: raw colour
- * Effect mobys (e.g. the dream-weavers fireball's ring puffs, cls 0x77) drop ZSF4
- * 1024->0 over their last frames, so they FADE OUT instead of popping. Returns
- * IR0 (0 = no fade) and the far-colour base. zsf4 is the per-moby fade level
+/* FOG-band colour fade (the .s moby colour pass, block_8001FDD0/.L8001FDE8).
+ * The cull record overloads the high 16 bits of its matrix word at +0x2C as the
+ * per-record LOD tier ZSF4 (cfc2 gte_ctrl[30]) — full ladder documented at
+ * moby_tier_faceblock. This helper handles ONLY the middle band:
+ *   0 < ZSF4 < 1024 -> DPCS toward the far palette (header+0x20) by
+ *                      IR0 = (1024-ZSF4)*4
+ * ZSF4 >= 1024 (near, raw colour) and ZSF4 <= 0 (LP band — the far palette
+ * itself + cyclorama-fog fade) are the caller's tier select in build_walk_tris.
+ * Effect mobys (e.g. the dream-weavers fireball's ring puffs, cls 0x77) drop
+ * ZSF4 1024->0 over their last frames, so they FADE OUT instead of popping.
+ * Returns IR0 (0 = no fade) and the far-colour base. zsf4 is the per-moby tier
  * (rec+0x2C high16 for canonical records, the snapshot for sub-tick records). */
 static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_t* farbase) {
     *farbase = 0;
@@ -909,14 +988,21 @@ static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_
 }
 
 /* Read a per-vertex moby colour (cbase + byte-offset ci), applying the DPCS fade
- * when ir0 != 0. far colour is the per-vertex 16-bit packed entry at farbase+ci,
- * expanded to 12-bit channels exactly as the .s does (8001FE14-FE2C). */
-static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase, int ir0, uint32_t ci) {
+ * when ir0 != 0. Far colour: per-vertex 16-bit packed entry at farbase+ci (the
+ * fog band, .s 8001FE14-FE2C) — or, when fcc != NULL, a CONSTANT 12-bit-expanded
+ * colour (the LP band fades every vertex toward the one cyclorama fog colour,
+ * .s 8001FEE4-FF08). */
+static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase,
+                              const int* fcc, int ir0, uint32_t ci) {
     uint32_t col = cpu->read_word(cbase + ci) & 0xFFFFFFu;
     if (!ir0) return col;
     int r = (int)(col & 0xFFu), g = (int)((col >> 8) & 0xFFu), b = (int)((col >> 16) & 0xFFu);
-    uint32_t fw = cpu->read_word(farbase + ci);
-    int fcr = (int)((fw << 4) & 0xFF0u), fcg = (int)((fw >> 4) & 0xFF0u), fcb = (int)((fw >> 12) & 0xFF0u);
+    int fcr, fcg, fcb;
+    if (fcc) { fcr = fcc[0]; fcg = fcc[1]; fcb = fcc[2]; }
+    else {
+        uint32_t fw = cpu->read_word(farbase + ci);
+        fcr = (int)((fw << 4) & 0xFF0u); fcg = (int)((fw >> 4) & 0xFF0u); fcb = (int)((fw >> 12) & 0xFF0u);
+    }
     r = dpcs_ch(r, fcr, ir0); g = dpcs_ch(g, fcg, ir0); b = dpcs_ch(b, fcb, ir0);
     return (uint32_t)(r | (g << 8) | (b << 16));
 }
@@ -952,15 +1038,34 @@ static int build_walk_tris(CPUState* cpu) {
         uint32_t end = end_hi;                      /* generous; alignment check below */
         uint32_t fp = fb + 4u;
         int base = R->proj_off, vcount = R->proj_n;
-        /* per-vertex colour base: near tier = model colour array (AnimationHeader
-         * +0x18); fog tiers = the DPCS-lit scratch (G_SCRATCH+0x1100). Indexed by w1f.
-         * (Tier select is a ZSF4 test; near tier covers the demo mobys -- if a
-         * record is fog-tier its colour will mismatch in the A/B and flag it.) */
-        uint32_t cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x18) : 0u;
+        /* per-vertex colour base + fade by the record's LOD tier (ladder documented
+         * at moby_tier_faceblock; indexed by w1f). NEAR: model colours (hdr+0x18)
+         * raw. FOG band: model colours DPCS-faded toward the per-vertex far palette
+         * (moby_color_fade_ir0). LP/FAR band: the far palette (hdr+0x20) itself —
+         * the .s walks it with the LP faces; under --no-lod the faces flip to HP
+         * but the palette stays, so mirror both — DPCS-faded toward the ONE
+         * cyclorama fog colour once ZSF4 < -2048 while g_SkipLowPolyWorld > 0
+         * (.L8001FEA0..FECC: IR0 = min(-(ZSF4+2048), 2047) << 1). */
+        uint32_t farbase = 0; int dpcs_ir0 = 0;
+        int fogfc[3]; const int* fcc = NULL;
+        uint32_t cbase;
+        if (R->zsf4 <= 0) {
+            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x20) : 0u;
+            if (R->zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) {
+                int v = -(R->zsf4 + 2048); if (v > 2047) v = 2047;
+                dpcs_ir0 = v << 1;
+                uint32_t fog = cpu->read_word(G_CYCLORAMA_BG_COLOR);
+                fogfc[0] = (int)((fog << 4) & 0xFF0u);   /* 12-bit expand, .s 8001FEF4-FF08 */
+                fogfc[1] = (int)((fog >> 4) & 0xFF0u);
+                fogfc[2] = (int)((fog >> 12) & 0xFF0u);
+                fcc = fogfc;
+            }
+        } else {
+            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x18) : 0u;
+            /* Fog-band / effect-moby depth-cue fade (fade-out instead of popping). */
+            dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
+        }
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
-        /* Per-moby colour depth-cue fade (effect mobys fade out instead of popping). */
-        uint32_t farbase = 0;
-        int dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
         int guard = 0;
         while (fp + 8u <= end && guard++ < 8192) {
             uint32_t w0 = cpu->read_word(fp);
@@ -1030,9 +1135,9 @@ static int build_walk_tris(CPUState* cpu) {
             /* per-vertex colour: cbase indexed by w1f (NOT w0f). DPCS-faded when
              * the moby carries a fade level (effect ring puffs, etc). */
             uint32_t w1 = cpu->read_word(fp + 4);
-            uint32_t c0 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 >> 17) & 0x7FCu);
-            uint32_t c1 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 >>  8) & 0x7FCu);
-            uint32_t c2 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (w1 <<  1) & 0x7FCu);
+            uint32_t c0 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, (w1 >> 17) & 0x7FCu);
+            uint32_t c1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, (w1 >>  8) & 0x7FCu);
+            uint32_t c2 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, (w1 <<  1) & 0x7FCu);
             /* v3 (4th-vertex) gouraud colour: its index is the HIGH field of the
              * fp+8 word ((v4w>>9)&0x7FC), the sibling of the SXY index in the low
              * field. Previously approximated as c2, which forced every quad's 2nd
@@ -1040,7 +1145,7 @@ static int build_walk_tris(CPUState* cpu) {
              * — a broken gouraud gradient that rendered as hard facets on ~all
              * quad faces (51/face-stream here). Reading the real colour restores
              * the smooth per-vertex shading. */
-            uint32_t c3 = moby_color_at(cpu, cbase, farbase, dpcs_ir0, (v4w >> 9) & 0x7FCu);
+            uint32_t c3 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, (v4w >> 9) & 0x7FCu);
 
             int tpx=0,tpy=0,clx=0,cly=0,bpp=16, abr=0, u[4]={0,0,0,0}, v[4]={0,0,0,0};
             if (textured) {
@@ -1907,6 +2012,19 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
 
     capture_gte(cpu, start, end);
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
+    if (tier_dbg_on() && !(mat && mat[0]=='S' && mat[1]=='P')) {   /* ~1/sec, REG+SPEC records pooled */
+        static int s_tier_cnt = 0;
+        if (++s_tier_cnt >= 30) {
+            fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld | "
+                    "zsf4-mirror ok=%ld bad=%ld | adopt=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32\n",
+                    openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
+                    s_tier_gpfskip, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
+                    s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi);
+            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = 0;
+            s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
+            s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
+        }
+    }
 
     /* The .s runs REGULAR (func_8001F798) and SPECULAR (func_80020F34) over the
      * same +0x1600 record queue; SPECULAR re-draws the identical geometry to overlay
@@ -1938,6 +2056,9 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
         if (!is_spec) {
             int rc = adopt_prim_colors();
+            s_tier_adopt += rc;
+            if (s_dyncol_n > s_tier_dyncol_hi) s_tier_dyncol_hi = s_dyncol_n;
+            if (s_dynmoby_n > s_tier_dynmoby_hi) s_tier_dynmoby_hi = s_dynmoby_n;
             if (rc) OPL_DEBUG_F("native", "adopt_prim_colors: recoloured %d walk tri(s) from prims "
                                 "(render-time-animated colour) f=%u", rc, openpete_frame);
         }
@@ -2964,6 +3085,19 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
         moby_fields f;
         if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
+        /* .s far-skip parity: the host-rebuilt w0 has no low byte (the GPF-TR
+         * scale), so moby_decode_project's mirror of .L8001F888 can't fire on
+         * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
+         * TR.z (frozen per tick — no sub-tick boundary flicker), else a GPF-far
+         * moby the game popped out draws on intermediates only. */
+        {
+            uint32_t rw0 = cpu->read_word(recs[i]);
+            if ((rw0 & 0xFFu) != 0u && f.header >= 0x80000000u) {
+                int msc  = (int)(cpu->read_byte(f.header + 5) & 0xFFu);
+                int ir3  = (int)(int16_t)(((int32_t)cpu->read_word(recs[i] + 0x18) << 2) >> msc);
+                if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) continue;
+            }
+        }
         /* Re-apply any render-time per-row scale the .s baked into the cull-record
          * matrix (rec+0x1C) that build_moby_record_fields' euler rebuild can't see —
          * notably the dragon-rescue disappear (g_DragonCutscene state 5,
@@ -3004,10 +3138,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (got <= 0) continue;
         occl_cache_update(mobys[i], s_proj + off, got);   /* refresh cull bounds */
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+        /* LOD tier from the last canonical pass (sub-tick reuse — the tier is a
+         * per-tick verdict, held across intermediates). Miss default 1024 = the
+         * near/HP tier, today's behaviour for a moby with no canonical record. */
+        int zsf4 = fade_snap_get(mobys[i], 1024);
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
-            (f.header >= 0x80000000u) ? cpu->read_word(f.header + 0x14) : 0u,
-            f.w0, f.metal, f.mscol, mobys[i],
-            fade_snap_get(mobys[i]) };   /* fade from the last canonical pass (sub-tick reuse) */
+            moby_tier_faceblock(cpu, f.header, zsf4),
+            f.w0, f.metal, f.mscol, mobys[i], zsf4 };
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */

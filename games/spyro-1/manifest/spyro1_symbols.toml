@@ -262,6 +262,11 @@ base = 0x80078A40            # g_Cyclorama
 offset = 0x10
 note = "g_Cyclorama.m_BackgroundColor"
 
+[[symbol]]
+name = "G_SKIP_LOWPOLY_WORLD"
+addr = 0x8007591C
+note = "g_SkipLowPolyWorld; r_moby.s parks it in ZSF3 (@8001F7F8/80020F94), >0 gates the LP-band far fade (.L8001FEA0)"
+
 # ---- function addresses (validated against symbols.toml, not globals.toml) ----
 [[symbol]]
 name = "GS_EXIT_FN_LO"
