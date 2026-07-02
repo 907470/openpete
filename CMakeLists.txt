@@ -156,6 +156,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Native-vs-PsyCross fidelity ratchet (W1.3). Runs the demo headless in
+    # `--renderer diff --render-stats` (surfaceless Vulkan, W1.1) so
+    # screenshot_all emits a per-scene machine-readable diff-stats line — the
+    # native scene vs the frame-synced PsyCross reference — and fails if any
+    # scene diverges beyond a calibrated per-scene ceiling. A ratchet, not a
+    # parity gate: it locks in the current native/PsyCross divergence + headroom
+    # and preserves that fidelity signal before PsyCross is retired,
+    # complementing the bit-exact native-vs-native gate above. Skips (exit 64)
+    # if the binary / disc / Vulkan loader are absent.
+    add_test(NAME native_fidelity
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_fidelity.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(native_fidelity PROPERTIES
+        LABELS "slow;visual"
+        TIMEOUT 600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # --record video-capture smoke test. Boots the headless demo with
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,

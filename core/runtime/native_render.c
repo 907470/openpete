@@ -2606,6 +2606,29 @@ int openpete_native_render_screenshot_all(const char *base)
         dif[i * 4 + 3] = 0xFF;
     }
 
+    /* W1.3: machine-readable native-vs-PsyCross fidelity metric for the headless
+     * CI gate (scripts/check_native_fidelity.sh). Computed on the SAME
+     * frame-synced pair that -diff.png encodes (the native scene vs the PsyCross
+     * readback), so it's only meaningful in a reference-compare mode — gate on
+     * stats_enabled (= --renderer diff + --render-stats). Per-pixel max-channel
+     * abs diff, matching the live --render-stats semantics (DIFF_STATS_TOL); the
+     * line is keyed by the output path so the gate script maps it back to the
+     * (scene, frame). Reuses the just-built `dif` (abs per-channel diff). */
+    if (s_nr.stats_enabled) {
+        double sum = 0.0; int maxd = 0; uint64_t over = 0;
+        for (size_t i = 0; i < frame_px; i++) {
+            int dr = dif[i * 4 + 0], dg = dif[i * 4 + 1], db = dif[i * 4 + 2];
+            int dm = dr > dg ? dr : dg; if (db > dm) dm = db;
+            sum += dm; if (dm > maxd) maxd = dm;
+            if (dm > DIFF_STATS_TOL) over++;
+        }
+        double mean = frame_px ? sum / (double)frame_px : 0.0;
+        double pct  = frame_px ? 100.0 * (double)over / (double)frame_px : 0.0;
+        OPL_INFO_F("native",
+                   "diff-stats file=%s size=%dx%d mean=%.3f max=%d over%d=%.4f%%",
+                   base, W, H, mean, maxd, DIFF_STATS_TOL, pct);
+    }
+
     int rc = 0;
     char path[1100];
     path_with_suffix(base, "-vk", path, sizeof(path));
