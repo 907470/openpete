@@ -230,6 +230,32 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
 
+/* Like rhi_create_render_target, but the DEPTH attachment is ALSO sampleable:
+ * the target renders through a render pass whose depth is STORED and finishes
+ * SHADER_READ_ONLY, so a LATER pass in the same frame can sample the per-pixel
+ * depth (a WORLD-opaque depth PRE-PASS for shadows / decals / soft particles —
+ * per-pixel occlusion with no global depth bias). Bind the depth via
+ * rhi_bind_depth_sampler after the pre-pass has ended. Returns NULL if the
+ * device cannot sample the depth format (not spec-required for the combined
+ * depth+stencil formats; universal in practice — callers keep a fallback). */
+rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
+                                                    uint32_t width, uint32_t height);
+/* Bind a depth-sampled RT's DEPTH aspect as a combined image sampler at
+ * descriptor `set` (the consumer frag samples it as sampler2D; texel .r =
+ * depth). Only valid after rhi_end_render_target on that RT this frame (the
+ * pass's finalLayout + external dependency make the depth sample-visible).
+ * Call after rhi_bind_pipeline. */
+void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
+/* Override the current pass's viewport+scissor to a (w,h) Y-flipped rect. Used
+ * so a depth pre-pass into an OVERSIZED depth target rasterizes only the
+ * (w,h) sub-rect the consumers will map their lookups to. Recorded inside a
+ * render pass, after begin. */
+void rhi_set_viewport(rhi_device *dev, int w, int h);
+/* The current swapchain/offscreen pixel extent (the resolution the offscreen
+ * pass — rhi_begin_offscreen — renders at). Used to size a shared depth
+ * pre-pass to cover the largest scene target. */
+void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
+
 /* Clear the depth attachment to far WITHIN the current pass (offscreen or render
  * target). Used to depth-isolate a late on-top overlay (3D HUD icons) so it
  * Z-sorts internally without being occluded by, or occluding, world geometry. */

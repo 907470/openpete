@@ -83,6 +83,13 @@ struct rhi_device {
      * pipelines are compatible) but the color attachment ends in
      * SHADER_READ_ONLY_OPTIMAL so the result can be sampled the same frame. */
     VkRenderPass   rt_rp;
+    /* Depth-sampled RT pass (the shadow-decal depth pre-pass): like rt_rp but the
+     * DEPTH attachment is STORED and ends in SHADER_READ_ONLY_OPTIMAL too, so a
+     * later pass in the same frame can sample the per-pixel depth. (rt_rp's depth
+     * is storeOp=DONT_CARE — sampling it after the pass would read undefined
+     * memory per spec, even where drivers happen to preserve it.) Attachment
+     * formats match rt_rp/off_rp, so all existing pipelines are compatible. */
+    VkRenderPass   rt_ds_rp;
     VkImage        off_image;
     VkDeviceMemory off_mem;
     VkImageView    off_view;
@@ -161,12 +168,20 @@ struct rhi_texture {
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
 
     /* Render-target extras (is_rt only): a depth attachment + a framebuffer so
-     * geometry can be rendered into `image` via dev->rt_rp. */
+     * geometry can be rendered into `image` via rt_pass (rt_rp, or rt_ds_rp for a
+     * depth-sampled target). */
     bool            is_rt;
     VkImage         rt_depth_image;
     VkDeviceMemory  rt_depth_mem;
     VkImageView     rt_depth_view;
     VkFramebuffer   rt_fb;
+    VkRenderPass    rt_pass;   /* pass rhi_begin_render_target uses (NULL -> rt_rp) */
+    /* Depth-sampled RT only (rhi_create_render_target_depth_sampled): a DEPTH-
+     * aspect-only view (sampling a view with DEPTH|STENCIL aspects is illegal)
+     * + a descriptor set (sample view, vram_sampler) so the depth can be bound
+     * as a combined image sampler. NULL on a plain render target. */
+    VkImageView     rt_depth_sample_view;
+    VkDescriptorSet depth_set;
 };
 
 /* ------------------------------------------------------------------ */
@@ -648,6 +663,73 @@ static bool create_rt_render_pass(rhi_device *dev)
     return true;
 }
 
+/* Render pass for DEPTH-SAMPLED render targets (the shadow-decal depth
+ * pre-pass): identical attachment formats to rt_rp (pipeline-compatible), but
+ * the depth attachment is STORED and finishes in SHADER_READ_ONLY_OPTIMAL so a
+ * later pass in the same frame can sample the per-pixel depth. Dependencies
+ * add: (a) acquire waits on the PREVIOUS frame's fragment-shader reads of the
+ * depth (WAR — the image is re-rendered every present); (b) release makes the
+ * depth writes visible to fragment sampling. */
+static bool create_rt_ds_render_pass(rhi_device *dev)
+{
+    VkAttachmentDescription color = {
+        .format = dev->sc_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkAttachmentDescription depth = {
+        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,        /* SAMPLED after the pass */
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkAttachmentReference ref = { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_ref = { .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription sub = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1, .pColorAttachments = &ref,
+        .pDepthStencilAttachment = &depth_ref,
+    };
+    VkSubpassDependency deps[2] = {
+        { .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,   /* WAR vs last frame's sampling */
+          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+          .srcAccessMask = 0,
+          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
+        { /* subpass -> external: make color AND depth results sample-visible */
+          .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT },
+    };
+    VkAttachmentDescription atts[2] = { color, depth };
+    VkRenderPassCreateInfo rci = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 2, .pAttachments = atts,
+        .subpassCount = 1, .pSubpasses = &sub,
+        .dependencyCount = 2, .pDependencies = deps,
+    };
+    VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->rt_ds_rp);
+    if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass(rt-ds) failed: %d\n", (int)r); return false; }
+    return true;
+}
+
 static bool create_offscreen(rhi_device *dev)
 {
     /* The offscreen target matches the swapchain extent. The 3D scene composites
@@ -835,12 +917,12 @@ static bool create_descriptor_infra(rhi_device *dev)
         RHI_LOG("vkCreateDescriptorSetLayout failed\n"); return false;
     }
     VkDescriptorPoolSize ps = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 16,
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 32,
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 16, .poolSizeCount = 1, .pPoolSizes = &ps,
+        .maxSets = 32, .poolSizeCount = 1, .pPoolSizes = &ps,
     };
     if (vkCreateDescriptorPool(dev->device, &pi, NULL, &dev->desc_pool) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorPool failed\n"); return false;
@@ -956,6 +1038,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     }
     if (!create_render_pass(dev))       goto fail;
     if (!create_rt_render_pass(dev))    goto fail;
+    if (!create_rt_ds_render_pass(dev)) goto fail;
     if (!create_offscreen(dev))         goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
     if (!create_descriptor_infra(dev))  goto fail;
@@ -1000,6 +1083,7 @@ void rhi_destroy(rhi_device *dev)
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
+    if (dev->rt_ds_rp) vkDestroyRenderPass(dev->device, dev->rt_ds_rp, NULL);
 
     if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
@@ -1480,8 +1564,21 @@ rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
     return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
 }
 
-rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height)
+static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
+                                              uint32_t height, bool depth_sampleable)
 {
+    if (depth_sampleable) {
+        /* SAMPLED_IMAGE is not in the spec's REQUIRED feature set for the
+         * combined depth+stencil formats — verify before building a pipeline
+         * around sampling it (universally supported in practice; the caller
+         * falls back to a plain depth-tested pipe if this ever trips). */
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(dev->phys, dev->depth_format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
+            RHI_LOG("depth format %d not sampleable on this device\n", (int)dev->depth_format);
+            return NULL;
+        }
+    }
     rhi_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->is_rt = true;
@@ -1534,7 +1631,8 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
         .imageType = VK_IMAGE_TYPE_2D, .format = dev->depth_format,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                 (depth_sampleable ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     if (vkCreateImage(dev->device, &dici, NULL, &t->rt_depth_image) != VK_SUCCESS) {
@@ -1559,14 +1657,47 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
     if (vkCreateImageView(dev->device, &dvci, NULL, &t->rt_depth_view) != VK_SUCCESS) {
         RHI_LOG("rt depth vkCreateImageView failed\n"); goto fail;
     }
+    t->rt_pass = depth_sampleable ? dev->rt_ds_rp : dev->rt_rp;
     VkImageView fb_atts[2] = { t->view, t->rt_depth_view };
     VkFramebufferCreateInfo fci = {
-        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = dev->rt_rp,
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->rt_pass,
         .attachmentCount = 2, .pAttachments = fb_atts,
         .width = width, .height = height, .layers = 1,
     };
     if (vkCreateFramebuffer(dev->device, &fci, NULL, &t->rt_fb) != VK_SUCCESS) {
         RHI_LOG("rt vkCreateFramebuffer failed\n"); goto fail;
+    }
+    /* Depth-sampled RT: a DEPTH-aspect-only view (a sampler view must select
+     * exactly one aspect of a combined depth+stencil image) + a descriptor set
+     * so the pre-pass depth binds like any texture (texelFetch .r = depth). */
+    if (depth_sampleable) {
+        VkImageViewCreateInfo svci = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->rt_depth_image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = dev->depth_format,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                  .levelCount = 1, .layerCount = 1 },
+        };
+        if (vkCreateImageView(dev->device, &svci, NULL, &t->rt_depth_sample_view) != VK_SUCCESS) {
+            RHI_LOG("rt depth sample vkCreateImageView failed\n"); goto fail;
+        }
+        VkDescriptorSetAllocateInfo ddsi = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dev->desc_pool, .descriptorSetCount = 1,
+            .pSetLayouts = &dev->vram_set_layout,
+        };
+        if (vkAllocateDescriptorSets(dev->device, &ddsi, &t->depth_set) != VK_SUCCESS) {
+            RHI_LOG("rt depth vkAllocateDescriptorSets failed\n"); goto fail;
+        }
+        VkDescriptorImageInfo ddii = {
+            .sampler = dev->vram_sampler, .imageView = t->rt_depth_sample_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet dw = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = t->depth_set,
+            .dstBinding = 0, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ddii,
+        };
+        vkUpdateDescriptorSets(dev->device, 1, &dw, 0, NULL);
     }
 
     /* Descriptor set (this view + shared sampler) so it binds like any texture. */
@@ -1592,6 +1723,26 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
     image_barrier(cb, t->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   0, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    if (depth_sampleable) {
+        /* Same for the sampleable DEPTH image (both aspects — a combined
+         * depth+stencil image transitions as a whole without the
+         * separateDepthStencilLayouts feature). */
+        VkImageMemoryBarrier db = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = t->rt_depth_image,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
+                                                VK_IMAGE_ASPECT_STENCIL_BIT,
+                                  .levelCount = 1, .layerCount = 1 },
+        };
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &db);
+    }
     one_shot_end(dev, cb);
     t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return t;
@@ -1599,6 +1750,40 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
 fail:
     rhi_destroy_texture(dev, t);
     return NULL;
+}
+
+rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    return create_render_target_impl(dev, width, height, false);
+}
+
+rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
+                                                    uint32_t width, uint32_t height)
+{
+    return create_render_target_impl(dev, width, height, true);
+}
+
+void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set)
+{
+    if (!dev->frame_active || !rt || !rt->depth_set) return;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &rt->depth_set, 0, NULL);
+}
+
+void rhi_set_viewport(rhi_device *dev, int w, int h)
+{
+    if (!dev->frame_active) return;
+    VkViewport vp = { .x = 0.0f, .y = (float)h, .width = (float)w, .height = -(float)h,
+                      .minDepth = 0.0f, .maxDepth = 1.0f };
+    VkRect2D sc = { .offset = {0, 0}, .extent = { (uint32_t)w, (uint32_t)h } };
+    vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
+    vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &sc);
+}
+
+void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h)
+{
+    if (w) *w = dev ? (int)dev->sc_extent.width  : 0;
+    if (h) *h = dev ? (int)dev->sc_extent.height : 0;
 }
 
 void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
@@ -1612,7 +1797,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     VkExtent2D ext = { rt->width, rt->height };
     VkRenderPassBeginInfo rp = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = dev->rt_rp, .framebuffer = rt->rt_fb,
+        .renderPass = rt->rt_pass ? rt->rt_pass : dev->rt_rp, .framebuffer = rt->rt_fb,
         .renderArea = { .offset = {0, 0}, .extent = ext },
         .clearValueCount = 2, .pClearValues = cv,
     };
@@ -1918,7 +2103,9 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 {
     if (!tex) return;
-    if (tex->set)     vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
+    if (tex->set)       vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
+    if (tex->depth_set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->depth_set);
+    if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
     if (tex->staging) rhi_destroy_buffer(dev, tex->staging);
     if (tex->view)    vkDestroyImageView(dev->device, tex->view, NULL);
     if (tex->image)   vkDestroyImage(dev->device, tex->image, NULL);
