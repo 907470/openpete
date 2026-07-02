@@ -1639,6 +1639,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * flag double-presented (game frame + a spurious alpha≈0
          * interpolated frame) on every draw iter (the "+30 fps"). */
         bool did_present_this_iter = false;
+        /* World-liveness stamp: virtual-clock time of the most recent CANONICAL
+         * present. During a CD load / level transition the game fiber stops
+         * rendering (busy in CdRead/VSync waits) while the virtual clock keeps
+         * ticking — the sub-tick spine must FREEZE then (present the last
+         * composed scene) instead of re-deriving from RAM that the incoming
+         * level is actively overwriting (the "mobys across the whole level
+         * visible during the load" bug: half-loaded moby pools re-extracted
+         * against a stale camera, with no terrain feed to occlude them). The
+         * legacy PsyCross intermediate path never had this bug because it
+         * re-presents a FROZEN saved OT; this stamp gives the spine the same
+         * frozen-while-stuck semantics. 0 until the first canonical present
+         * (spine stays off until there is something real to interpolate). */
+        static op_time_t s_last_canon_present_ns = 0;
         /* Multi-present capture (--screenshot-presents-start/count):
          * shared between the canonical block immediately below and the
          * intermediate block further down so both contribute to the
@@ -1694,6 +1707,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             PsyX_EndScene();
             openpete_present_pending = 0;
             did_present_this_iter = true;
+            s_last_canon_present_ns = op_now();   /* world-liveness stamp (see the
+                                                   * native_intermediate gate) */
 
             /* Per-canonical-frame commit: the game latches which render paths this
              * frame drew (the "canon drawn" mask the sub-tick spine gates each
@@ -1846,7 +1861,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             native_re != NULL &&
             !(g_paused && !g_step_one);
         if (native_intermediate) {
-            native_re(&g_game.cpu);           /* rebuild s_scene @ interpolated gamestate */
+            /* World-liveness gate: only re-derive the scene while canonical
+             * presents are FLOWING (the last one within ~3 sim ticks on the
+             * virtual clock). When the world is stuck — CD load, level
+             * transition, any long producer stall — re-extracting reads RAM
+             * mid-overwrite (see the stamp's comment); hold the last composed
+             * scene instead and keep presenting it (a frozen frame, exactly
+             * what the legacy saved-OT re-present shows there). Legit "camera
+             * static but world animating" states (idle-homeworld dragons,
+             * cutscenes) keep canonical presents flowing every tick, so the
+             * per-object animation path is untouched by this gate. */
+            const op_time_t vbl_ns = (op_time_t)((OP_NS_PER_SEC * 1001) / 60000);
+            const bool world_live = s_last_canon_present_ns != 0 &&
+                (op_now() - s_last_canon_present_ns) <= 6 * vbl_ns; /* ~3 sim ticks */
+            if (world_live)
+                native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
             /* Present the sub-tick frame, tagged with its own PTS so a --render-fps
              * N vk recording is genuinely ~N fps VFR (each present's frame is
              * queued into the async readback ring with its capture instant). */
