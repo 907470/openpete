@@ -64,6 +64,28 @@ typedef struct {
     int32_t bpp;
 } psx_material;
 
+/* shadow_decal.frag push constant (must match the GLSL block field-for-field) —
+ * the depth-aware shadow decal's per-pixel world-Y wall rejection. The PSX
+ * screen coord rides the vertex u,v as a noperspective varying, and the
+ * pre-pass depth lookup goes through the uax..vby affine (the SAME full-extent
+ * mapping the shared pre-pass rasterized with) — no gl_FragCoord->screen math
+ * anywhere, so full-extent, panel, and SSAA paths are identical by
+ * construction. */
+typedef struct {
+    float col0x, col0y, col0z;     /* camera matrix columns (Q12 int16 as float) */
+    float col1x, col1y, col1z;
+    float col2x, col2y, col2z;
+    float cam_pos_y;
+    float ofx, ofy, h;
+    float ground_y;
+    float wall_height;
+    float steep_ny;                /* |world normal.y| below which a surface is a wall */
+    float mode;                    /* 0 = draw all, 1 = height+steep discard, 2 = viz */
+    float band;                    /* fallback view-Z band when params invalid */
+    float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
+    float pvw, pvh;                /* pre-pass raster extent (texels) */
+} shadow_decal_pc;
+
 /* How many panels the window shows (1c.3a: VRAM + reference). */
 #define NR_PANELS 2
 
@@ -523,7 +545,9 @@ static struct {
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
     rhi_pipeline *gouraud_blend_pipe; /* 3b.2: semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
-    rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — Spyro shadow */
+    rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — the Spyro shadow as a DEPTH-AWARE decal (shadow_decal.frag samples opaque_depth at set 0; depth-test OFF, the shader owns occlusion) */
+    rhi_pipeline *gouraud_sub_ztest_pipe; /* fallback subtractive pipe (plain depth test + W2.5 hw bias) when the depth pre-pass is unavailable */
+    rhi_pipeline *gouraud_sub_fade_pipe;  /* subtractive, depth-test OFF, quad.frag — the full-screen mode-2 fade (NOT the decal pipe, which would sample/discard) */
     rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
     rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test OFF + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
     rhi_pipeline *portal_mask_pipe;   /* W2.6: invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
@@ -615,6 +639,20 @@ static struct {
     rhi_pipeline *ovl_resolve_pipe;   /* overlay_resolve.frag, box + straight alpha, RHI_BLEND_ALPHA */
     rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
     int           ovl_quad_win_w, ovl_quad_win_h;
+
+    /* Depth-aware decal infrastructure: the WORLD-opaque depth PRE-PASS.
+     * Rendered ONCE per present in the FULL-EXTENT PSX mapping at
+     * max(ref, window) resolution; every consumer pass (native_rtt / SSAA /
+     * offscreen panel / screenshots) samples it by PSX screen coord through the
+     * same affine — no per-target re-render and no per-target alignment
+     * contract. opaque_depth allocates lazily on the first present whose scene
+     * carries a Spyro shadow (blend-3 untextured tris); NULL means the decal
+     * falls back to the plain depth-tested subtractive pipe. Reusable by future
+     * depth-aware passes (glow auras, soft particles). */
+    rhi_pipeline *prepass_pipe;       /* depth-only raster (colour-write-off) */
+    rhi_texture  *opaque_depth;       /* rhi_create_render_target_depth_sampled */
+    int           od_w, od_h;         /* current opaque_depth allocation */
+    rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -872,12 +910,55 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
      * reverse-subtracts the vertex colour from the framebuffer, darkening the
      * ground (the shadow grey is subtracted; black vertices leave it
-     * unchanged). depth_write_off like the other transparent passes. */
+     * unchanged).
+     * DEPTH-AWARE DECAL: shadow_decal.frag samples the WORLD-opaque pre-pass
+     * depth (opaque_depth, set 0) and rejects only pixels whose terrain stands
+     * ABOVE the shadow's ground plane by more than wall_height (a wall/ledge)
+     * — replacing the retired ×0.70 view-Z pull, which punched through walls.
+     * depth_test = false: the shader OWNS occlusion, so the flat fan never
+     * self-culls against its own bumpy/slanted ground (the artifact the pull
+     * used to mask). */
     rhi_pipeline_desc gouraud_sub_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "shadow_decal.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(shadow_decal_pc), /* set 0 = opaque_depth */
+    };
+    /* Fallback for a device whose depth format is not sampleable (the pre-pass
+     * RT can't be created): the pre-decal behaviour — plain depth test + the
+     * W2.5 hardware bias (correct against walls, may slice on steep ground). */
+    rhi_pipeline_desc gouraud_sub_ztest_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
-        .depth_bias = true, /* shadow decal: hardware coplanar tie-break (W2.5) */
+        .depth_bias = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* The full-screen mode-2 fade (func_800190D4) is also ABR-2 subtractive but
+     * is NOT a ground decal — it tints the whole frame. It used to share the
+     * shadow pipe; now that the shadow pipe is the depth-aware decal (which
+     * would sample opaque_depth and discard), the fade gets its own plain
+     * subtractive pipe (quad.frag, depth-test off — the z=0 quad passed the
+     * old LEQUAL test everywhere anyway). */
+    rhi_pipeline_desc gouraud_sub_fade_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* WORLD-opaque depth PRE-PASS pipe: rasterize the opaque world geometry
+     * depth-only (colour writes off — W2.6's invisible-pass flag) into the
+     * depth-sampled RT that shadow_decal.frag reads. prepass.vert stores TRUE
+     * PERSPECTIVE depth (z = 1 - 1/vz, screen-affine for planes) so the
+     * decal's neighbour-texel NORMAL reconstruction is exact — the canonical
+     * vz/(vz+4096) curve interpolates screen-linearly with a distorted local
+     * gradient across large terrain tris (read flat floors as
+     * fronto-parallel). */
+    rhi_pipeline_desc prepass_desc = {
+        .vert_spv = "prepass.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
     /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
@@ -1058,6 +1139,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
     rhi_pipeline *gouraud_blend_pipe = rhi_create_pipeline(dev, &gouraud_blend_desc);
     rhi_pipeline *gouraud_sub_pipe = rhi_create_pipeline(dev, &gouraud_sub_desc);
+    rhi_pipeline *gouraud_sub_ztest_pipe = rhi_create_pipeline(dev, &gouraud_sub_ztest_desc);
+    rhi_pipeline *gouraud_sub_fade_pipe = rhi_create_pipeline(dev, &gouraud_sub_fade_desc);
+    rhi_pipeline *prepass_pipe = rhi_create_pipeline(dev, &prepass_desc);
     rhi_pipeline *gouraud_add_pipe = rhi_create_pipeline(dev, &gouraud_add_desc);
     rhi_pipeline *gouraud_noz_pipe = rhi_create_pipeline(dev, &gouraud_noz_desc);
     rhi_pipeline *portal_mask_pipe = rhi_create_pipeline(dev, &portal_mask_desc);
@@ -1080,12 +1164,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb) {
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+        !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         free(mirror);
+        if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
+        if (prepass_pipe)  rhi_destroy_pipeline(dev, prepass_pipe);
+        if (gouraud_sub_fade_pipe) rhi_destroy_pipeline(dev, gouraud_sub_fade_pipe);
+        if (gouraud_sub_ztest_pipe) rhi_destroy_pipeline(dev, gouraud_sub_ztest_pipe);
         if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
         if (gouraud_hud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_hud_sub_pipe);
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
@@ -1126,6 +1215,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_pipe = gouraud_pipe;
     s_nr.gouraud_blend_pipe = gouraud_blend_pipe;
     s_nr.gouraud_sub_pipe = gouraud_sub_pipe;
+    s_nr.gouraud_sub_ztest_pipe = gouraud_sub_ztest_pipe;
+    s_nr.gouraud_sub_fade_pipe = gouraud_sub_fade_pipe;
+    s_nr.prepass_pipe = prepass_pipe;
+    s_nr.prepass_vb   = prepass_vb;
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
     s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
     s_nr.portal_mask_pipe = portal_mask_pipe;
@@ -1421,6 +1514,214 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
         *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
         *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy);
     }
+}
+
+/* ---- depth-aware shadow decal: the shared WORLD-opaque depth pre-pass ------ */
+
+/* Camera reconstruction params from the game (openpete_native_render.h); the
+ * shadow feeder refreshes them every extract (incl. the sub-tick re-extract, so
+ * they track the interpolated camera). Not snapshotted into scene history: a
+ * 1-present staleness moves the reconstruction by the camera's per-present
+ * delta (a few world units), far under the wall_height threshold. */
+static openpete_shadow_decal_params s_shadow_decal;
+void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p)
+{
+    if (p) s_shadow_decal = *p; else s_shadow_decal.valid = 0;
+}
+
+/* Per-present pre-pass state consumed by draw_native_scene's SUBTRACT group:
+ * whether the pre-pass rendered this present, the raster extent inside the
+ * (grow-only) opaque_depth allocation, and the PSX-screen→uv affine of the
+ * full-extent mapping the pre-pass rasterized with. */
+static int   s_od_ready = 0;
+static float s_od_vw = 0.0f, s_od_vh = 0.0f;
+static float s_od_uax = 0.0f, s_od_ubx = 0.0f, s_od_vay = 0.0f, s_od_vby = 0.0f;
+
+/* Fallback view-Z band for shadow_decal.frag's mode-0 path (params invalid);
+ * the height test does not use it. Env-tunable for calibration. */
+static float shadow_decal_band(void)
+{
+    static float b = -1.0f;
+    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BAND"); b = (e && *e) ? (float)atof(e) : 256.0f; }
+    return b;
+}
+
+/* Does the present scene carry a Spyro silhouette shadow? (The untextured
+ * SUBTRACT group's membership test, mirrored: blend 3, not HUD-routed.) Gates
+ * both the opaque_depth allocation and the per-present pre-pass, so menus /
+ * cutscenes / shadowless scenes pay nothing. */
+static int scene_has_spyro_shadow(const openpete_scene_tri* scene, int scene_n)
+{
+    for (int t = 0; t < scene_n; t++) {
+        int c = scene[t].category;
+        if (!scene[t].textured && scene[t].blend == 3 &&
+            c != OPENPETE_SCENE_HUD && c != OPENPETE_SCENE_HUD3D &&
+            c != OPENPETE_SCENE_HUD_PANEL)
+            return 1;
+    }
+    return 0;
+}
+
+/* (Re)create opaque_depth sized to max(reference, window) — the presented pixel
+ * grid bounds the useful discard-edge precision, so the SSAA extent is
+ * intentionally NOT covered (consumers sample by uv; a coarser pre-pass texel
+ * only quantizes the wall edge, bounded by one WINDOW pixel). Grows only.
+ * Creates GPU resources / waits idle → runs OUTSIDE a frame, beside
+ * ensure_ss_rtt. No-op until a scene actually carries a Spyro shadow. */
+static void ensure_opaque_depth(void)
+{
+    static int s_failed = 0;
+    if (s_failed) return;               /* device can't sample depth — fallback pipe */
+    int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    if (scene_n <= 0 || !scene_has_spyro_shadow(scene, scene_n)) return;
+    int want_w = s_nr.ref_w, want_h = s_nr.ref_h;
+    if (s_nr.win_w > want_w) want_w = s_nr.win_w;
+    if (s_nr.win_h > want_h) want_h = s_nr.win_h;
+    if (want_w <= 0 || want_h <= 0) return;
+    if (s_nr.opaque_depth && s_nr.od_w >= want_w && s_nr.od_h >= want_h) return;
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.opaque_depth) { rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth); s_nr.opaque_depth = NULL; }
+    s_nr.opaque_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+    if (s_nr.opaque_depth) {
+        rhi_texture_extent(s_nr.opaque_depth, &s_nr.od_w, &s_nr.od_h);
+        OPL_INFO_F("native", "opaque-depth pre-pass target %dx%d (shadow decal occlusion)",
+                   s_nr.od_w, s_nr.od_h);
+    } else {
+        s_nr.od_w = s_nr.od_h = 0;
+        s_failed = 1;
+        OPL_WARN_F("native", "depth-sampled RT unavailable; Spyro shadow uses the depth-tested fallback");
+    }
+}
+
+/* The shared WORLD-opaque depth PRE-PASS. Rasterizes the present scene's opaque
+ * WORLD geometry (terrain / walls / props — the shadow's occluder set; actors
+ * are excluded, layering handles them) depth-only into opaque_depth, ONCE per
+ * present, in the FULL-EXTENT PSX mapping. Every consumer pass then samples it
+ * by PSX screen coord through the recorded affine, so one raster serves
+ * native_rtt, SSAA, the offscreen panel, and screenshots alike. Must record
+ * before the first consumer pass (own render pass; call right after
+ * rhi_begin_frame). Display-only. */
+static void native_depth_prepass(void)
+{
+    s_od_ready = 0;
+    if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
+    int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
+    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    if (scene_n <= 0) return;
+    if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
+    if (!scene_has_spyro_shadow(scene, scene_n)) return;
+
+    /* Raster extent = the ensure_opaque_depth sizing, clamped to the allocation. */
+    int vw = s_nr.ref_w, vh = s_nr.ref_h;
+    if (s_nr.win_w > vw) vw = s_nr.win_w;
+    if (s_nr.win_h > vh) vh = s_nr.win_h;
+    if (vw > s_nr.od_w) vw = s_nr.od_w;
+    if (vh > s_nr.od_h) vh = s_nr.od_h;
+    if (vw <= 0 || vh <= 0) return;
+
+    /* Extract the opaque WORLD occluders' clip geometry with the FULL-EXTENT
+     * mapping (positions only — the pipe writes depth, never colour). */
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = 1;
+    static rhi_vertex pbuf[SCENE_VB_VERTS];
+    int m = 0;
+    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
+        int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+        if (b != 0) continue;                                    /* opaque only */
+        if (scene[t].category != OPENPETE_SCENE_WORLD) continue; /* world occluders only */
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex* o = &pbuf[m + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->tex = 0;
+        }
+        m += 3;
+    }
+    /* Record the PSX-screen→uv affine of THIS mapping for the consumers
+     * (probe the mapping itself rather than duplicating its math):
+     * u = (cx+1)/2, v = (1-cy)/2 with cx,cy affine in sx,sy. */
+    {
+        float cx0, cy0, cx1, cy1;
+        scene_to_clip(0.0f, 0.0f, &cx0, &cy0);
+        scene_to_clip(1.0f, 1.0f, &cx1, &cy1);
+        s_od_uax = (cx1 - cx0) * 0.5f; s_od_ubx = (cx0 + 1.0f) * 0.5f;
+        s_od_vay = (cy0 - cy1) * 0.5f; s_od_vby = (1.0f - cy0) * 0.5f;
+    }
+    s_render_full_extent = prev_fe;
+    rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
+
+    if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
+        static int once = 0;
+        if (!once) { once = 1;
+            fprintf(stderr, "[depth-prepass] WORLD-opaque tris=%d (of %d scene tris) raster %dx%d in %dx%d\n",
+                    m/3, scene_n, vw, vh, s_nr.od_w, s_nr.od_h); }
+    }
+    /* OPENPETE_PREPASS_RECON_DEBUG=SX,SY: reconstruct the WORLD-space vertices
+     * of terrain tris covering the given PSX screen point through the shadow
+     * decal's camera model (the pushed inverse) and print them + the implied
+     * surface normal — a CPU-side consistency check of the FED terrain
+     * geometry against the model, with no GPU in the loop. */
+    {
+        const char* pr = getenv("OPENPETE_PREPASS_RECON_DEBUG");
+        static int printed = 0;
+        if (pr && *pr && s_shadow_decal.valid && printed < 6) {
+            float psx = 300.0f, psy = 145.0f;
+            sscanf(pr, "%f,%f", &psx, &psy);
+            for (int t = 0; t < scene_n && printed < 6; t++) {
+                int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+                if (b != 0 || scene[t].category != OPENPETE_SCENE_WORLD) continue;
+                float x0 = scene[t].v[0].sx, x1 = scene[t].v[1].sx, x2 = scene[t].v[2].sx;
+                float y0 = scene[t].v[0].sy, y1 = scene[t].v[1].sy, y2 = scene[t].v[2].sy;
+                float xmin = fminf(x0, fminf(x1, x2)), xmax = fmaxf(x0, fmaxf(x1, x2));
+                float ymin = fminf(y0, fminf(y1, y2)), ymax = fmaxf(y0, fmaxf(y1, y2));
+                if (psx < xmin || psx > xmax || psy < ymin || psy > ymax) continue;
+                double W[3][3];
+                for (int i = 0; i < 3; i++) {
+                    W[0][i] = s_shadow_decal.cam_col0[i];
+                    W[1][i] = s_shadow_decal.cam_col1[i];
+                    W[2][i] = s_shadow_decal.cam_col2[i];
+                }
+                double P[3][3];
+                for (int k = 0; k < 3; k++) {
+                    double z = scene[t].v[k].z; if (z > 0.9999) z = 0.9999;
+                    double vz = 4096.0 * z / (1.0 - z); if (vz < 1.0) vz = 1.0;
+                    double M1 = (scene[t].v[k].sx - s_shadow_decal.ofx) * vz / s_shadow_decal.h;
+                    double M2 = (scene[t].v[k].sy - s_shadow_decal.ofy) * vz / s_shadow_decal.h;
+                    double V0 = (W[0][0]*M1 + W[0][1]*M2 + W[0][2]*vz) / 4096.0;
+                    double V1 = (W[1][0]*M1 + W[1][1]*M2 + W[1][2]*vz) / 4096.0;
+                    double V2 = (W[2][0]*M1 + W[2][1]*M2 + W[2][2]*vz) / 4096.0;
+                    P[k][0] = V2; P[k][1] = -V0; P[k][2] = -V1;   /* camera-relative world */
+                }
+                double e1[3] = { P[1][0]-P[0][0], P[1][1]-P[0][1], P[1][2]-P[0][2] };
+                double e2[3] = { P[2][0]-P[0][0], P[2][1]-P[0][1], P[2][2]-P[0][2] };
+                double N[3] = { e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0] };
+                double nl = sqrt(N[0]*N[0]+N[1]*N[1]+N[2]*N[2]);
+                fprintf(stderr, "[prepass-recon] tri sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f) relY=(%.0f,%.0f,%.0f) ny=%.2f\n",
+                        x0, y0, x1, y1, x2, y2,
+                        4096.0*scene[t].v[0].z/(1.0-scene[t].v[0].z),
+                        4096.0*scene[t].v[1].z/(1.0-scene[t].v[1].z),
+                        4096.0*scene[t].v[2].z/(1.0-scene[t].v[2].z),
+                        P[0][1], P[1][1], P[2][1],
+                        nl > 1e-9 ? fabs(N[1])/nl : -1.0);
+                printed++;
+            }
+        }
+    }
+
+    /* Render the opaque depth (begin clears depth to far=1.0). Even with m==0
+     * the cleared far-depth reads as "no occluder" — never a stale frame. */
+    rhi_begin_render_target(s_nr.dev, s_nr.opaque_depth, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    if (m > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.prepass_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
+        rhi_draw(s_nr.dev, (uint32_t)m, 0);
+    }
+    rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
+    s_od_vw = (float)vw; s_od_vh = (float)vh;
+    s_od_ready = 1;
 }
 
 /* Widescreen (Hor+) factor for the feeders' horizontal trivial rejects. 1.0
@@ -1783,11 +2084,18 @@ static bool draw_native_scene(bool full_extent)
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
+            /* The SUBTRACT group (gb==3 = the depth-aware Spyro shadow decal)
+             * carries its PSX screen coord in u,v so shadow_decal.frag gets the
+             * exact per-pixel screen position via a NOPERSPECTIVE varying (no
+             * mode-specific affine — identical full-extent and panel). */
+            int is_shadow = (gb == 3);
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
                 rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+                o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
+                o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             n += 3;
@@ -2092,11 +2400,50 @@ static bool draw_native_scene(bool full_extent)
          * the bias must be set AFTER each depth_bias pipeline bind, before its
          * draws — never rely on a value set earlier in the pass. */
         if (g->utex && ut_count[gi] > 0) {
-            rhi_bind_pipeline(s_nr.dev, g->utex);
             if (gi == 1) {
-                float c, s, cl;
-                shadow_hw_bias(&c, &s, &cl);
-                rhi_set_depth_bias(s_nr.dev, c, cl, s);
+                /* Untextured SUBTRACT = the Spyro silhouette shadow. Preferred
+                 * path: the DEPTH-AWARE decal (shadow_decal.frag samples the
+                 * shared WORLD-opaque pre-pass depth; per-pixel world-height
+                 * wall rejection, no bias). Fallback (pre-pass unavailable this
+                 * present / unsupported device): plain depth test + W2.5 bias. */
+                if (s_od_ready && s_nr.opaque_depth) {
+                    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
+                    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
+                    shadow_decal_pc pc;
+                    pc.col0x = s_shadow_decal.cam_col0[0];
+                    pc.col0y = s_shadow_decal.cam_col0[1];
+                    pc.col0z = s_shadow_decal.cam_col0[2];
+                    pc.col1x = s_shadow_decal.cam_col1[0];
+                    pc.col1y = s_shadow_decal.cam_col1[1];
+                    pc.col1z = s_shadow_decal.cam_col1[2];
+                    pc.col2x = s_shadow_decal.cam_col2[0];
+                    pc.col2y = s_shadow_decal.cam_col2[1];
+                    pc.col2z = s_shadow_decal.cam_col2[2];
+                    pc.cam_pos_y = s_shadow_decal.cam_pos_y;
+                    pc.ofx = s_shadow_decal.ofx; pc.ofy = s_shadow_decal.ofy;
+                    pc.h = s_shadow_decal.h;
+                    pc.ground_y = s_shadow_decal.ground_y;
+                    pc.wall_height = s_shadow_decal.wall_height;
+                    pc.steep_ny = s_shadow_decal.steep_ny;
+                    /* mode: env override for calibration; else height-test when
+                     * the game supplied valid params, else draw-all (no mask). */
+                    float mode = s_shadow_decal.valid ? 1.0f : 0.0f;
+                    const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
+                    if (mv && *mv) mode = (float)atof(mv);
+                    pc.mode = mode;
+                    pc.band = shadow_decal_band();
+                    pc.uax = s_od_uax; pc.ubx = s_od_ubx;
+                    pc.vay = s_od_vay; pc.vby = s_od_vby;
+                    pc.pvw = s_od_vw; pc.pvh = s_od_vh;
+                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+                } else {
+                    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
+                    float c, s, cl;
+                    shadow_hw_bias(&c, &s, &cl);
+                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
+                }
+            } else {
+                rhi_bind_pipeline(s_nr.dev, g->utex);
             }
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
@@ -2211,16 +2558,14 @@ static bool draw_native_scene(bool full_extent)
      * white; mode 0 ((B+F)/2) -> alpha. These pipes are depth_write_off + the quad
      * is at z=0, so it tests-passes against the whole frame and writes no depth. */
     if (fade_first >= 0) {
-        rhi_pipeline* fp = (fade_mode == 2) ? s_nr.gouraud_sub_pipe
+        /* Mode 2 uses gouraud_sub_FADE_pipe (plain subtractive, depth-off) —
+         * NOT gouraud_sub_pipe, which is now the depth-aware shadow decal (it
+         * would sample opaque_depth and height-discard, breaking the fade). */
+        rhi_pipeline* fp = (fade_mode == 2) ? s_nr.gouraud_sub_fade_pipe
                          : (fade_mode == 0) ? s_nr.gouraud_blend_pipe
                                             : s_nr.gouraud_add_pipe;  /* 1 (and 3) -> additive */
         if (fp) {
             rhi_bind_pipeline(s_nr.dev, fp);
-            /* gouraud_sub_pipe carries DYNAMIC depth bias (the shadow decal
-             * pipe) — the state must be set after this bind (see the note at
-             * the shadow group); neutral for the fullscreen fade quad. */
-            if (fp == s_nr.gouraud_sub_pipe)
-                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
@@ -2670,6 +3015,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
     ensure_ovl_ss();           /* FPS-overlay supersample target + composite quad */
+    ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
 
     /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
      * never returns (the freeze-point hang) to the exact call. Terse; one
@@ -2681,6 +3027,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
+    /* Shared WORLD-opaque depth pre-pass (its own render pass) — must record
+     * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
+    native_depth_prepass();
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
     s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
@@ -2741,6 +3090,7 @@ int openpete_native_render_screenshot_all(const char *base)
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
     ensure_native_rtt(true);
+    ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
     if (!have_ref || !s_nr.native_rtt || !s_nr.readback ||
         s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return 1;
@@ -2769,6 +3119,7 @@ int openpete_native_render_screenshot_all(const char *base)
      * The offscreen + present are kept valid with a plain bg clear so the window
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
     if (!rhi_begin_frame(s_nr.dev)) return 1;
+    native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
     rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
     draw_native_scene(true);
     rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
@@ -2899,6 +3250,11 @@ void openpete_native_render_shutdown(void)
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
     if (s_nr.ss_rtt)       rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
+    if (s_nr.opaque_depth) rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);
+    if (s_nr.prepass_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
+    if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
+    if (s_nr.gouraud_sub_ztest_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
+    if (s_nr.gouraud_sub_fade_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_fade_pipe);
     if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);
     if (s_nr.ovl_quad_vb)  rhi_destroy_buffer(s_nr.dev, s_nr.ovl_quad_vb);
     if (s_nr.ovl_resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);

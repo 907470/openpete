@@ -440,39 +440,37 @@ static void shadow_moby_build(CPUState* cpu) {
  *
  *  (2) DECAL BIAS — a shadow is a ground decal coplanar with the terrain it falls
  *      on. The .s drew it via a painter's OT (after the ground, so it always won);
- *      a true Z-buffer instead Z-fights a coplanar pair. Pull the shadow's view-Z
- *      slightly toward the camera so it reliably wins the LEQUAL test against its
- *      own ground, while terrain genuinely nearer (a ledge between camera and
- *      shadow sits at a MUCH smaller view-Z) still occludes it — the small factor
- *      never reorders those. Shadows are depth_write_off, so this can't perturb
- *      the opaque depth field. Tunable via OPENPETE_SHADOW_BIAS_SPYRO /
- *      OPENPETE_SHADOW_BIAS_MOBY (view-Z pull, below) and
- *      OPENPETE_SHADOW_HW_BIAS (the W2.5 hardware polygon offset,
- *      native_render.c). */
+ *      a true Z-buffer instead Z-fights a coplanar pair. Both multiplicative
+ *      view-Z pulls are RETIRED to 1.0 (true depth): the moby tie-break is the
+ *      W2.5 hardware polygon offset (OPENPETE_SHADOW_HW_BIAS, native_render.c),
+ *      and the Spyro fan's occlusion is the per-pixel DEPTH-AWARE DECAL
+ *      (shadow_decal.frag; see shadow_bias_spyro below). The envs
+ *      OPENPETE_SHADOW_BIAS_SPYRO / _MOBY remain for A/B only. Shadows are
+ *      depth-write-off/depth-free, so none of this can perturb the opaque
+ *      depth field. */
 static float shadow_depth(float viewz, float scale, float bias) {
     return openpete_native_depth_from_viewz(viewz * scale * bias);
 }
-/* Two separate biases (they historically wanted opposite things on uneven
- * terrain):
- *  - SPYRO shadow: large + near + on the HQ-subdivided ground right under the
- *    hero, so its big flat fan slices badly through the bumps -> needs a STRONG
- *    bias (~0.7) to drape over them. This compensates real NON-COPLANARITY
- *    (bumps genuinely poking above the fan plane), which no constant/slope
- *    offset can express — it stays until the fan is draped onto sampled
- *    terrain height or stencil-masked (plan W2.6). A ledge in front of Spyro
- *    sits at a MUCH smaller view-Z, so even 0.7 never reorders genuine
- *    occluders.
+/* Both view-Z pulls are RETIRED to 1.0 defaults (true depth); the envs remain
+ * for A/B against the old behaviour:
+ *  - SPYRO shadow: was ×0.70 — it compensated real NON-COPLANARITY (bumps
+ *    genuinely poking above the flat fan plane), but the distance-proportional
+ *    pull also beat WALLS in front of the shadow (dark-hollow f2700: Spyro
+ *    occluded by the wall, his shadow painted ON it). Occlusion is now owned
+ *    per-pixel by the DEPTH-AWARE DECAL (shadow_decal.frag + the WORLD-opaque
+ *    depth pre-pass, native_render.c): terrain standing above the shadow's
+ *    ground plane by more than OPENPETE_SHADOW_WALL_HEIGHT (default 400) is
+ *    rejected (a wall), everything else keeps the fan (bumps/slopes drape).
+ *    The fan feeds TRUE depth; its pipe is depth-test OFF.
  *  - MOBY shadows: small + distant — a textbook coplanar-decal tie-break,
  *    handled since W2.5 by the HARDWARE slope-scaled depth bias on the
  *    subtractive pipelines (native_render.c shadow_hw_bias,
  *    OPENPETE_SHADOW_HW_BIAS). The old ×0.96 multiplicative view-Z pull was
  *    distance-PROPORTIONAL (2026-07-01 depth audit: the wrong dimension for a
- *    tie-break — a 10×-further shadow got a 10×-bigger world-space nudge) and
- *    is retired to a 1.0 default; OPENPETE_SHADOW_BIAS_MOBY remains for A/B
- *    against the old behaviour. */
+ *    tie-break — a 10×-further shadow got a 10×-bigger world-space nudge). */
 static float shadow_bias_spyro(void) {
     static float b = -1.0f;
-    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 0.70f; }
+    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 1.0f; }
     return b;
 }
 static float shadow_bias_moby(void) {
@@ -580,6 +578,84 @@ static void shadow_spyro_build(CPUState* cpu) {
     double TR[3]; ground_tr(C, avx, avy, avz, TR);   /* avx/avy/avz stay s16 (faithful, 1-unit) */
     double ZERO[3] = {0,0,0};
     spt anchor; sh_proj(C, ZERO, ofx, ofy, H, avx, avy, avz, &anchor);
+
+    /* Hand the depth-aware shadow decal the camera reconstruction params (so the
+     * shader can recover each terrain pixel's world-Y from the depth pre-pass and
+     * discard wall pixels by HEIGHT above the shadow's ground plane — keeping the
+     * flat fan's look while fixing wall punch-through). Display-only (never
+     * written back to PSX RAM); refreshed every extract incl. the sub-tick
+     * re-extract, so it tracks the interpolated camera. cam_col0 = camera matrix
+     * column 0; worldY = cam_pos_y - (Cᵀ·MAC)[0]/4096 (validated: recovers
+     * SpyroShadow.Y to ~0.04%). */
+    {
+        openpete_shadow_decal_params p;
+        /* The shader computes V_j = (pushed_colJ · MAC) / 4096 — i.e. it wants
+         * pushed_colJ[i] = 4096² · C⁻¹[j][i]. For an orthonormal-×4096 GTE
+         * matrix that reduces to the plain transpose (C[i][j]), BUT the Spyro
+         * camera matrix is NOT orthonormal: its Y row is scaled ~0.625 (the
+         * PSX aspect correction baked into GTE row 1 — measured row norms
+         * 4096/2560/4096). The transpose-inverse under-weights every MAC2 term
+         * 2.56×, which biased positions by ~25-200 units (previously read as
+         * GTE noise) and DESTROYED the differential normal reconstruction
+         * (flat floors read fronto-parallel, ny≈0.08). A true numerical
+         * inverse handles any baked scale exactly. */
+        {
+            double a = C[0][0], b = C[0][1], c = C[0][2];
+            double d = C[1][0], e = C[1][1], f = C[1][2];
+            double g = C[2][0], hh = C[2][1], ii = C[2][2];
+            double det = a*(e*ii - f*hh) - b*(d*ii - f*g) + c*(d*hh - e*g);
+            if (det > -1e-6 && det < 1e-6) det = det < 0.0 ? -1e-6 : 1e-6;
+            double k = 4096.0 * 4096.0 / det;   /* 4096² · C⁻¹ via the adjugate */
+            double inv[3][3] = {
+                { (e*ii - f*hh) * k, (c*hh - b*ii) * k, (b*f - c*e) * k },
+                { (f*g  - d*ii) * k, (a*ii - c*g)  * k, (c*d - a*f) * k },
+                { (d*hh - e*g)  * k, (b*g  - a*hh) * k, (a*e - b*d) * k },
+            };
+            for (int i = 0; i < 3; i++) {
+                p.cam_col0[i] = (float)inv[0][i];
+                p.cam_col1[i] = (float)inv[1][i];
+                p.cam_col2[i] = (float)inv[2][i];
+            }
+        }
+        p.cam_pos_y   = (float)camy;
+        p.ofx = (float)ofx; p.ofy = (float)ofy; p.h = (float)H;
+        p.ground_y    = (float)sposy;
+        const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
+        p.wall_height = (wh && *wh) ? (float)atof(wh) : 400.0f;
+        /* |world normal.y| below which a surface counts as a wall face
+         * (walkable Spyro slopes stay under ~50°, ny > 0.64; wall faces ~0).
+         * DEFAULT 0 = orientation tests OFF: the shader's normal reconstruction
+         * is exact (validated against the anchor + synthetic fields) but the
+         * TERRAIN feeder's fed view-Z is skewed off-anchor vs the camera model
+         * (the depth audit's suspected cross-class skew — first measured here),
+         * so normals misread flat floors as steep. Blocked on W2.3 (shared
+         * project() / unified feeder depth); until then the decal runs the
+         * height-only test, leaving the small wall-base-notch carve-out. */
+        const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
+        p.steep_ny    = (sn && *sn) ? (float)atof(sn) : 0.0f;
+        p.valid = 1;
+        openpete_native_set_shadow_decal_params(&p);
+        /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
+         * (all three camera columns + swizzle inverse) CPU-side against the
+         * anchor's known world position — the shader runs the same formulas. */
+        if (getenv("OPENPETE_SHADOW_DECAL_DEBUG")) {
+            /* Validate with the PUSHED inverse — the same math the shader runs. */
+            spt a2; sh_proj(C, ZERO, ofx, ofy, H, avx, avy, avz, &a2);
+            double vz = a2.sz;
+            double M1 = (a2.sx - ofx) * vz / H, M2 = (a2.sy - ofy) * vz / H, M3 = vz;
+            double V0 = (p.cam_col0[0]*M1 + p.cam_col0[1]*M2 + p.cam_col0[2]*M3) / 4096.0;
+            double V1 = (p.cam_col1[0]*M1 + p.cam_col1[1]*M2 + p.cam_col1[2]*M3) / 4096.0;
+            double V2 = (p.cam_col2[0]*M1 + p.cam_col2[1]*M2 + p.cam_col2[2]*M3) / 4096.0;
+            static int n = 0;
+            if ((n++ % 64) == 0) {
+                fprintf(stderr, "[shdecal-dbg] recon=(%.0f %.0f %.0f) truth=(%d %d %d) sxy=(%.0f %.0f) vz=%.0f\n",
+                        camx + V2, camy - V0, camz - V1, sposx, sposy, sposz, a2.sx, a2.sy, vz);
+                fprintf(stderr, "[shdecal-dbg] C=[%d %d %d; %d %d %d; %d %d %d] of=(%.0f %.0f) h=%.0f camy=%d gy=%d\n",
+                        C[0][0], C[0][1], C[0][2], C[1][0], C[1][1], C[1][2],
+                        C[2][0], C[2][1], C[2][2], ofx, ofy, H, camy, sposy);
+            }
+        }
+    }
 
     /* heading matrix */
     int heading = (int)cpu->read_byte(G_SPYRO + 0x0E);

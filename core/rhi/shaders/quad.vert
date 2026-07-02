@@ -18,6 +18,11 @@ layout(location = 2) in vec4 inColor;  /* R8G8B8A8_UNORM -> 0..1 */
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
+/* PSX screen coord (inUV, for the shadow decal) interpolated SCREEN-LINEAR, so
+ * shadow_decal.frag recovers each fragment's exact PSX screen position with no
+ * mode-specific gl_FragCoord->screen affine. noperspective: screen position is
+ * affine in screen space, not perspective-correct. Other frags ignore it. */
+layout(location = 2) noperspective out vec2 vScreenPSX;
 
 void main()
 {
@@ -27,4 +32,5 @@ void main()
     gl_Position = vec4(inPos.xy * W, z * W, W);
     vColor = inColor;
     vUV = inUV;
+    vScreenPSX = inUV;
 }
