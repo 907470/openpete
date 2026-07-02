@@ -1669,6 +1669,29 @@ static void native_depth_prepass(void)
     s_render_full_extent = 1;
     static rhi_vertex pbuf[SCENE_VB_VERTS];
     int m = 0;
+    /* Far BACKSTOP: a fullscreen quad at z=0.999 (view-Z ≈ 4.09M — decodes as
+     * the far sentinel) drawn under everything, so every pre-pass texel is
+     * DEFINED. Without it, texels no WORLD tri covers (sky, cyclorama gaps)
+     * hold only the pass CLEAR — and sampling never-drawn cleared depth
+     * returned 0.0 (= nearest possible!) on lavapipe, making the SKY an
+     * infinitely-near occluder: every moby seen against sky was culled (the
+     * stone-hill tree flicker). Same driver-dependence class as the June
+     * storeOp=DONT_CARE trap — make it explicit, not implicit.
+     * z must stay comfortably below the 0.9999 clamp: prepass.vert's
+     * W = 4096z/(1-z) at z=0.9999 is ~4.1e7 where fp32's ulp is 4 — W-1
+     * rounds back to W, NDC depth lands on EXACTLY 1.0 and every fragment
+     * fails the LESS test against the 1.0 clear (a silent no-op backstop).
+     * At z=0.999, W ≈ 4.09e6, depth ≈ 1-2.4e-7 < 1.0 — draws everywhere. */
+    {
+        static const float bq[6][2] =
+            { {-1,-1}, {1,-1}, {1,1}, {-1,-1}, {1,1}, {-1,1} };
+        for (int k = 0; k < 6; k++) {
+            rhi_vertex* o = &pbuf[m + k];
+            o->x = bq[k][0]; o->y = bq[k][1]; o->z = 0.999f;
+            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->tex = 0;
+        }
+        m += 6;
+    }
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
         int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
         if (b != 0) continue;                                    /* opaque only */
@@ -1749,6 +1772,34 @@ static void native_depth_prepass(void)
                         P[0][1], P[1][1], P[2][1],
                         nl > 1e-9 ? fabs(N[1])/nl : -1.0);
                 printed++;
+            }
+        }
+    }
+
+    /* OPENPETE_OCCL_TRIDUMP=SX,SY[,MINFRAME]: print EVERY scene tri covering
+     * the given PSX point — category/blend/textured + per-vert view-Z — the
+     * direct "what is actually fed at this pixel" comparison for occlusion
+     * triage. MINFRAME filters on openpete_frame (default 0). */
+    {
+        extern unsigned openpete_frame;
+        const char* td = getenv("OPENPETE_OCCL_TRIDUMP");
+        static int td_prints = 0;
+        if (td && *td && td_prints < 40) {
+            float psx = 0, psy = 0; unsigned fmin = 0;
+            if (sscanf(td, "%f,%f,%u", &psx, &psy, &fmin) >= 2 && openpete_frame >= fmin) {
+                for (int t = 0; t < scene_n && td_prints < 40; t++) {
+                    float x0 = scene[t].v[0].sx, x1 = scene[t].v[1].sx, x2 = scene[t].v[2].sx;
+                    float y0 = scene[t].v[0].sy, y1 = scene[t].v[1].sy, y2 = scene[t].v[2].sy;
+                    if (psx < fminf(x0, fminf(x1, x2)) || psx > fmaxf(x0, fmaxf(x1, x2))) continue;
+                    if (psy < fminf(y0, fminf(y1, y2)) || psy > fmaxf(y0, fmaxf(y1, y2))) continue;
+                    fprintf(stderr, "[occl-tri f=%u] cat=%d blend=%d tex=%d sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f)\n",
+                            s_scene_frame, scene[t].category, scene[t].blend, scene[t].textured,
+                            x0, y0, x1, y1, x2, y2,
+                            4096.0f * scene[t].v[0].z / (1.0f - scene[t].v[0].z),
+                            4096.0f * scene[t].v[1].z / (1.0f - scene[t].v[1].z),
+                            4096.0f * scene[t].v[2].z / (1.0f - scene[t].v[2].z));
+                    td_prints++;
+                }
             }
         }
     }
@@ -1847,6 +1898,40 @@ static void native_occl_downsample(void)
         s_occl_vay = m->vay; s_occl_vby = m->vby;
         s_occl_stamp = m->stamp;
         s_occl_have = 1;
+        /* OPENPETE_OCCL_GRID_DUMP=MINFRAME: write the decoded grid as a PGM
+         * (bright = near, black = far/sky) once, plus the affine — lining it
+         * up against a same-frame screenshot exposes orientation/alignment
+         * bugs instantly. */
+        {
+            extern unsigned openpete_frame;
+            static int dumped = 0;
+            const char* gd = getenv("OPENPETE_OCCL_GRID_DUMP");
+            if (gd && *gd && !dumped && openpete_frame >= (unsigned)atoi(gd)) {
+                dumped = 1;
+                FILE* f = fopen("/tmp/occl-grid.pgm", "wb");
+                if (f) {
+                    fprintf(f, "P5\n%d %d\n255\n", OCCL_GW, OCCL_GH);
+                    for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
+                        float vz = s_occl_vz[i];
+                        int px = (vz > 1e30f) ? 0 : (int)(255.0f * 8192.0f / (vz + 8192.0f));
+                        fputc(px < 0 ? 0 : px > 255 ? 255 : px, f);
+                    }
+                    fclose(f);
+                    fprintf(stderr, "[occl-grid-dump f=%u] /tmp/occl-grid.pgm  affine uax=%g ubx=%g vay=%g vby=%g  psx(440,51)->uv(%.3f,%.3f)->cell(%d,%d)\n",
+                            openpete_frame, s_occl_uax, s_occl_ubx, s_occl_vay, s_occl_vby,
+                            s_occl_uax * 440.0f + s_occl_ubx, s_occl_vay * 51.0f + s_occl_vby,
+                            (int)floorf((s_occl_uax * 440.0f + s_occl_ubx) * OCCL_GW),
+                            (int)floorf((s_occl_vay * 51.0f + s_occl_vby) * OCCL_GH));
+                    static const int probes[][2] = { {55,9}, {60,2}, {32,40}, {5,5}, {32,20} };
+                    for (int p = 0; p < 5; p++) {
+                        int i = probes[p][1] * OCCL_GW + probes[p][0];
+                        fprintf(stderr, "[occl-grid-cell] (%d,%d) raw RGBA=%02x %02x %02x %02x -> vz=%g\n",
+                                probes[p][0], probes[p][1],
+                                raw[i*4+0], raw[i*4+1], raw[i*4+2], raw[i*4+3], s_occl_vz[i]);
+                    }
+                }
+            }
+        }
         /* OPENPETE_OCCL_SELFTEST: end-to-end depth-path probe — a screen-centre
          * rect at effectively infinite view-Z must read CULLED whenever the
          * centre cells hold opaque terrain (they do in normal gameplay; a
@@ -1877,6 +1962,7 @@ static void native_occl_downsample(void)
 }
 
 static long s_occl_qstat[OPENPETE_OCCL_Q_COUNT];   /* query-outcome census */
+static float s_occl_last_scan_max;                 /* diagnostics (last CULLED scan) */
 
 int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near)
 {
@@ -1908,14 +1994,21 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
     if (cx1 >= OCCL_GW) cx1 = OCCL_GW - 1;
     if (cy1 >= OCCL_GH) cy1 = OCCL_GH - 1;
+    float scan_max = 0.0f;
     for (int cy = cy0; cy <= cy1; cy++)
-        for (int cx = cx0; cx <= cx1; cx++)
-            if (s_occl_vz[cy * OCCL_GW + cx] >= need) {
+        for (int cx = cx0; cx <= cx1; cx++) {
+            float c = s_occl_vz[cy * OCCL_GW + cx];
+            if (c > scan_max) scan_max = c;
+            if (c >= need) {
                 s_occl_qstat[OPENPETE_OCCL_Q_VISIBLE]++; return 0;
             }
+        }
+    s_occl_last_scan_max = scan_max;   /* diagnostics: farthest cell in the culled rect */
     s_occl_qstat[OPENPETE_OCCL_Q_CULLED]++;
     return 1;
 }
+
+float openpete_native_occl_last_scan_max(void) { return s_occl_last_scan_max; }
 
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
 {

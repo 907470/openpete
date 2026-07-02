@@ -459,6 +459,9 @@ enum { OPENPETE_OCCL_Q_NOGRID = 0, OPENPETE_OCCL_Q_SUSPENDED, OPENPETE_OCCL_Q_ST
        OPENPETE_OCCL_Q_TOONEAR, OPENPETE_OCCL_Q_EDGE, OPENPETE_OCCL_Q_VISIBLE,
        OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_COUNT };
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
+/* Diagnostics: the farthest grid view-Z seen in the last CULLED rect scan
+ * (how decisively the depth verdict held). Valid right after a query→1. */
+float openpete_native_occl_last_scan_max(void);
 
 /* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
  *

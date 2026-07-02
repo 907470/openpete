@@ -2877,18 +2877,26 @@ static int occl_record_culled(uint32_t moby) {
     int culled = openpete_native_occl_query(e->x0 - inf, e->y0 - inf,
                                             e->x1 + inf, e->y1 + inf,
                                             e->vz_min - 600.0f * aged);
-    /* OPENPETE_MOBY_OCCL_DUMP: rate-limited raw-rect dump (diagnosis). */
+    /* OPENPETE_MOBY_OCCL_DUMP: rate-limited raw-rect dump (diagnosis). CULLED
+     * verdicts print with the comparison values (need vs the farthest grid
+     * cell in the scanned rect) so a wrong cull names its own cause: vz_min
+     * way off scale, or grid cells implausibly near, or a thin margin. */
     {
         static int dump = -1;
         if (dump < 0) { const char* e2 = getenv("OPENPETE_MOBY_OCCL_DUMP"); dump = (e2 && *e2 && *e2 != '0'); }
         if (dump) {
-            static uint64_t t0 = 0; static int n = 0;
+            static uint64_t t0 = 0; static int n = 0, nc = 0;
             uint64_t now = openpete_phase_now_us();
-            if (now - t0 >= 1000000u) { t0 = now; n = 0; }
-            if (n < 16) {
+            if (now - t0 >= 1000000u) { t0 = now; n = 0; nc = 0; }
+            if (culled && nc < 64) {
+                nc++;
+                fprintf(stderr, "[occl-CULL f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f age=%u scan_max=%.0f need=%.0f\n",
+                        openpete_frame, moby, e->x0, e->y0, e->x1, e->y1, e->vz_min, inf, age,
+                        openpete_native_occl_last_scan_max(), e->vz_min - 600.0f * aged - 1500.0f);
+            } else if (!culled && n < 8) {
                 n++;
-                fprintf(stderr, "[occl-rect f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f pan=%.1f age=%u -> %d\n",
-                        openpete_frame, moby, e->x0, e->y0, e->x1, e->y1, e->vz_min, inf, s_occl_pan_px, age, culled);
+                fprintf(stderr, "[occl-rect f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f pan=%.1f age=%u -> 0\n",
+                        openpete_frame, moby, e->x0, e->y0, e->x1, e->y1, e->vz_min, inf, s_occl_pan_px, age);
             }
         }
     }
