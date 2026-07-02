@@ -429,6 +429,65 @@ typedef void (*openpete_native_commit_fn)(void);
 void openpete_native_register_commit(openpete_native_commit_fn fn);
 openpete_native_commit_fn openpete_native_get_commit(void);
 
+/* ---- moby occlusion culling (native-side, display-only) ---------------------
+ *
+ * A per-present GPU reduction of the WORLD-opaque depth pre-pass (the shadow
+ * decal's pre-pass, shared) into a coarse conservative "farthest view-Z per
+ * cell" grid, ring-read-back to the CPU a few presents later. The moby feeder
+ * queries it BEFORE re-extracting a cull record: a moby whose whole
+ * (conservatively inflated) screen rect is provably behind nearer terrain is
+ * skipped — no model walk, no scene tris, no draws — because the depth test
+ * would erase every pixel of it anyway. The CANONICAL cull pass and every
+ * gameplay-readable byte it writes are untouched (this only skips native
+ * drawing), so it is determinism-safe by construction.
+ *
+ * openpete_native_occl_query: sx/sy in PSX screen px (the scene_vert space),
+ * vz_near = the moby's nearest possible view-Z (centre − radius, full-world
+ * units). Returns 1 ⇒ provably occluded (safe to skip), 0 ⇒ visible/unknown.
+ * Conservative under grid staleness: rect inflation, view-Z slack
+ * (OPENPETE_MOBY_OCCL_SLACK), edge/age refusal. OPENPETE_MOBY_OCCLUSION=0
+ * disables. openpete_native_occl_suspend(n) disables culling for the next n
+ * presents — the feeder calls it on camera cuts/teleports, where a
+ * few-presents-old grid is wrong everywhere. */
+int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near);
+void openpete_native_occl_suspend(int presents);
+/* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
+ * because the rect lies fully outside the visible extent (native frustum cull
+ * — the game's cull cone is wider than the screen, so it queues off-screen
+ * mobys that contribute zero pixels); CULLED = culled by the depth grid. */
+enum { OPENPETE_OCCL_Q_NOGRID = 0, OPENPETE_OCCL_Q_SUSPENDED, OPENPETE_OCCL_Q_STALE,
+       OPENPETE_OCCL_Q_TOONEAR, OPENPETE_OCCL_Q_EDGE, OPENPETE_OCCL_Q_VISIBLE,
+       OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_COUNT };
+void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
+
+/* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
+ *
+ * Perf diagnosis: where does a present's CPU time go? Feeders/host-loop add
+ * per-phase µs into the current present; openpete_native_render_frame rolls
+ * the present into a ring and prints a p50/p99/max summary once per second
+ * (stderr), plus the worst-present counts (moby records, scene tris, draw
+ * calls). Everything below is inert (single branch) unless the env is set.
+ * Diagnostic-only; never touches gameplay state. */
+enum {
+    OPPT_REX_TOTAL = 0,  /* whole sub-tick re-extract callback (run.c)          */
+    OPPT_REX_TERRAIN,    /* terrain feeder pass                                 */
+    OPPT_REX_MOBY,       /* moby feeder pass (REG+SPEC+SHD walks)               */
+    OPPT_REX_SHADOW,     /* shadow feeder pass                                  */
+    OPPT_REX_SPYRO,      /* Spyro player feeder pass                            */
+    OPPT_PREPASS,        /* WORLD-opaque depth pre-pass record                  */
+    OPPT_COMPOSE,        /* scene bucket + material qsort + draw recording      */
+    OPPT_GPU_SYNC,       /* begin_frame fence/acquire + blit + end_frame submit */
+    OPPT_SIM_TICK,       /* game-fiber yield: game logic + canonical .s render +
+                          * feeder-hook extraction (30Hz cost, folded into the
+                          * canonical present; NOT reducible by native culling) */
+    OPPT_COUNT
+};
+enum { OPPC_MOBYS = 0, OPPC_TRIS, OPPC_DRAWS, OPPC_CULLED, OPPC_COUNT };
+int      openpete_phase_timers_on(void);
+uint64_t openpete_phase_now_us(void);
+void     openpete_phase_add(int phase, uint64_t us);
+void     openpete_phase_set_count(int which, int n);
+
 /* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +
  * menu-panel overlays are produced by the 2D-UI feeder during the game render
  * and can't be re-derived sub-tick. capture_overlay() snapshots them from the

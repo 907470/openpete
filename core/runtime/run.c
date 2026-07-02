@@ -1538,7 +1538,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 extern void openpete_render_cache_arm_rotate(void);
                 openpete_render_cache_arm_rotate();
             }
-            co_switch((cothread_t)openpete_game_fiber);
+            {
+                uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+                co_switch((cothread_t)openpete_game_fiber);
+                if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
+            }
             ticked_this_iter = (openpete_frame != frame_before_yield);
 
             if (ticked_this_iter) {
@@ -1761,7 +1765,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                      * carry set (re-capturing it accumulates unbounded). The re-extract
                      * (here and each sub-tick) only re-applies it. */
                     openpete_native_scene_capture_overlay();
+                    uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                     lag_re(&g_game.cpu);
+                    if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
                 }
             }
 
@@ -1874,8 +1880,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             const op_time_t vbl_ns = (op_time_t)((OP_NS_PER_SEC * 1001) / 60000);
             const bool world_live = s_last_canon_present_ns != 0 &&
                 (op_now() - s_last_canon_present_ns) <= 6 * vbl_ns; /* ~3 sim ticks */
-            if (world_live)
+            if (world_live) {
+                uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                 native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+                if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
+            }
             /* Present the sub-tick frame, tagged with its own PTS so a --render-fps
              * N vk recording is genuinely ~N fps VFR (each present's frame is
              * queued into the async readback ring with its capture instant). */

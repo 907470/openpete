@@ -539,6 +539,38 @@ static void spyro_native_reextract(void* cpu_v) {
         }
     }
 
+    /* Moby occlusion-cull steering: suspend culling around camera cuts (the
+     * few-presents-old occlusion grid is wrong everywhere across a cut) and
+     * feed the measured per-tick pan speed (in screen px) so the feeder's
+     * cached rects inflate with real camera motion. Unpaired presents (spawn /
+     * world-stuck) get a short suspension — the camera may have moved
+     * arbitrarily relative to the grid capture. */
+    if (cam_cut) openpete_native_occl_suspend(12);
+    if (paired && cam && prev && curr && !cam_cut) {
+        /* Per-tick rotation = the max angle any ROW direction moved, from the
+         * per-row NORMALIZED dot products. NOT the trace formula — the Spyro
+         * camera matrix is rows-orthogonal but NOT orthonormal (the Y row
+         * bakes a ~0.625 aspect scale), so acos((trace-1)/2) reads ~0.8 rad for IDENTICAL
+         * matrices and would inflate every rect off the grid. */
+        const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
+        const int16_t* cm = (const int16_t*)(cam + CAM_OFF_PROJ);
+        double worst = 1.0;
+        for (int rw = 0; rw < 3; rw++) {
+            double dp = 0, np = 0, nc = 0;
+            for (int k = 0; k < 3; k++) {
+                double a = pm[rw*3+k], b = cm[rw*3+k];
+                dp += a * b; np += a * a; nc += b * b;
+            }
+            double denom = sqrt(np * nc);
+            double c = denom > 0.0 ? dp / denom : 1.0;
+            if (c < worst) worst = c;
+        }
+        if (worst > 1.0) worst = 1.0; else if (worst < -1.0) worst = -1.0;
+        moby_native_set_occl_pan((float)(acos(worst) * 400.0)); /* rad/tick → px/tick (H≈288 + margin) */
+    } else if (!cam_cut) {
+        openpete_native_occl_suspend(2);
+    }
+
     if (paired && cam && prev && curr && !cam_cut) {
         /* 1-tick-lag alpha: at the instant tick N completed (now≈curr.tick_ns)
          * show prev (N-1); advance to curr (N) over the next sim period. The
@@ -1035,18 +1067,26 @@ static void spyro_native_reextract(void* cpu_v) {
     /* Re-extract each feeder in canonical scene order. Camera-direct feeders
      * (terrain, Spyro) + the re-derived mobys interpolate via the brackets; sky
      * reproduces tick-N (far backdrop). Every feeder runs → nothing vanishes. */
+    const int pt_on = openpete_phase_timers_on();   /* per-feeder phase timing */
+    uint64_t pt_t0 = 0, pt_t1;
     transition_native_reextract(cpu);     /* level-transition / balloonist cross-fade backdrop (backmost) */
     cyclorama_native_reextract(cpu);      /* sky dome + background */
     portal_native_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev→curr) */
+    if (pt_on) pt_t0 = openpete_phase_now_us();
     terrain_native_reextract(cpu);        /* interpolated camera → smooth terrain */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     moby_native_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_MOBY, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     shadow_native_reextract(cpu);         /* drop-shadows under mobys + Spyro */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SHADOW, pt_t1 - pt_t0); }
     /* The moby + shadow feeders have now consumed the FULL regular cull records;
      * overlay the Spyro seg scratch over the (consumed) records 14+ at 0x1900 —
      * the .s's own temporal reuse — so the Spyro body feeder sees its seg scratch
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
+    if (pt_on) pt_t0 = openpete_phase_now_us();
     spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
     tracer_native_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */

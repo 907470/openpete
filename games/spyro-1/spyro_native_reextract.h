@@ -58,6 +58,14 @@ void spyro_native_set_rot_interp(const int* active, const double* ang);
  * Defined in features/moby_native.c. */
 void moby_native_set_rot_interp(int on);
 
+/* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
+ * screen-pixel motion (rad/tick × ~px-per-radian, overestimated). The moby
+ * feeder inflates cached screen rects by it per tick of cache age, so a pan
+ * cannot cull a moby whose stale rect has swept toward a wall edge. Set by
+ * the orchestrator each re-extract from the prev/curr camera matrices.
+ * Defined in features/moby_native.c. */
+void moby_native_set_occl_pan(float px_per_tick);
+
 /* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
  * counter advance for this sub-tick present. The flame feeder lerps each ribbon
  * cross-section between adjacent static spine records by this, so the ribbon

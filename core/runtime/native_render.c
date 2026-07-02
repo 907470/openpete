@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <math.h>    /* fminf/fmaxf/floorf (prepass recon + occlusion grid) */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>   /* snprintf */
@@ -107,6 +108,12 @@ typedef struct {
  * --no-lod is a future optimisation — see the disable-lods plan.) */
 #define MAX_SCENE_TRIS 131072
 #define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
+
+/* Moby occlusion-culling grid extent (cells over the PSX screen: ~8×5 PSX px
+ * per cell at 512×240). Coarse on purpose — the CPU reads it back per present
+ * (OCCL_GW*OCCL_GH*4 = 12 KB) and tests whole-moby screen rects against it. */
+#define OCCL_GW 64
+#define OCCL_GH 48
 #define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
 /* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
  * RGBA target covering the top-left OVL_REGION_W × OVL_REGION_H of the frame (in
@@ -653,6 +660,8 @@ static struct {
     rhi_texture  *opaque_depth;       /* rhi_create_render_target_depth_sampled */
     int           od_w, od_h;         /* current opaque_depth allocation */
     rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
+    rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth → grid (may be NULL) */
+    rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL → no culling) */
 } s_nr;
 
 /* When set, draw_native_scene maps the PSX screen to the FULL render target
@@ -1124,6 +1133,16 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = sizeof(int),
     };
+    /* Occlusion-grid downsample (moby occlusion culling): reduces the WORLD-
+     * opaque depth pre-pass to a coarse conservative farthest-depth grid the
+     * CPU reads back to cull fully-hidden mobys before re-extraction. Optional
+     * (graceful fallback: no grid → no culling). */
+    rhi_pipeline_desc occl_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "occl_downsample.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 4 * sizeof(int),
+    };
     /* FPS-overlay supersample resolve: like resolve_desc but alpha-aware
      * (overlay_resolve.frag) and alpha-blended, to composite the downsampled
      * glyphs over the scene. Optional — draw_fps_overlay falls back to a direct
@@ -1164,6 +1183,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
+    rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
+    rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
@@ -1240,6 +1262,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.overlay_vb   = overlay_vb;
     s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL → 1× fallback */
     s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL → 1× fallback */
+    s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
+    s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
 
@@ -1546,6 +1570,22 @@ static float shadow_decal_band(void)
     return b;
 }
 
+/* Moby occlusion culling on? (OPENPETE_MOBY_OCCLUSION=0 disables; default ON.)
+ * Display-only: culling only skips NATIVE re-extraction/drawing of mobys whose
+ * screen rect is provably behind nearer WORLD-opaque depth — the canonical
+ * cull pass (and every gameplay-readable byte it writes) is untouched. */
+static int occl_cull_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_OCCLUSION"); on = !(e && *e == '0'); }
+    return on;
+}
+/* Culling usable this run (enabled + the optional grid resources came up). */
+static int occl_active(void)
+{
+    return s_nr.occl_pipe && s_nr.occl_grid && occl_cull_enabled();
+}
+
 /* Does the present scene carry a Spyro silhouette shadow? (The untextured
  * SUBTRACT group's membership test, mirrored: blend 3, not HUD-routed.) Gates
  * both the opaque_depth allocation and the per-present pre-pass, so menus /
@@ -1574,7 +1614,10 @@ static void ensure_opaque_depth(void)
     if (s_failed) return;               /* device can't sample depth — fallback pipe */
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
-    if (scene_n <= 0 || !scene_has_spyro_shadow(scene, scene_n)) return;
+    if (scene_n <= 0) return;
+    /* The pre-pass serves TWO consumers: the shadow decal and the moby
+     * occlusion grid. Allocate when either wants it. */
+    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
     int want_w = s_nr.ref_w, want_h = s_nr.ref_h;
     if (s_nr.win_w > want_w) want_w = s_nr.win_w;
     if (s_nr.win_h > want_h) want_h = s_nr.win_h;
@@ -1610,7 +1653,7 @@ static void native_depth_prepass(void)
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
-    if (!scene_has_spyro_shadow(scene, scene_n)) return;
+    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
 
     /* Raster extent = the ensure_opaque_depth sizing, clamped to the allocation. */
     int vw = s_nr.ref_w, vh = s_nr.ref_h;
@@ -1722,6 +1765,166 @@ static void native_depth_prepass(void)
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
     s_od_vw = (float)vw; s_od_vh = (float)vh;
     s_od_ready = 1;
+}
+
+/* ---- moby occlusion culling: grid pass + readback + query -------------------
+ *
+ * Per LIVE present: one tiny render pass reduces the WORLD-opaque depth
+ * pre-pass to an OCCL_GW×OCCL_GH grid of the FARTHEST depth per cell
+ * (occl_downsample.frag — conservative: any sky/gap texel makes its cell
+ * uncullable), which rides the frame's ring readback (rhi_cycle_rt_readback,
+ * no GPU stall) back to the CPU RHI_FRAMES_IN_FLIGHT presents later. The moby
+ * feeder then asks openpete_native_occl_query BEFORE re-extracting a record:
+ * "is this screen rect at this nearest view-Z provably behind nearer terrain
+ * everywhere?" — yes ⇒ it skips the model walk, scene tris and draws for a
+ * moby the depth test would erase anyway.
+ *
+ * Staleness discipline: the grid is a FEW PRESENTS OLD, so every consumer is
+ * conservative — the query inflates the rect by one cell, demands the
+ * occluder be nearer by a slack (OPENPETE_MOBY_OCCL_SLACK, default 1500 world
+ * units — also absorbing the terrain feeder's measured off-anchor depth skew,
+ * see W2.3), refuses rects touching the grid edge, and refuses grids older
+ * than 8 presents (freeze/menu/minimized). The feeder additionally suspends
+ * culling around camera cuts (openpete_native_occl_suspend) and widens its
+ * rects with camera pan speed. The affine mapping PSX-screen→grid-uv is
+ * FIFO'd alongside each queued copy so a retrieved grid decodes with the
+ * mapping it was rendered under (it only changes on window/layout changes).
+ *
+ * Display-only by construction: consumers skip native drawing of provably
+ * hidden geometry; nothing here reads back into gameplay state. */
+static float occl_slack(void)
+{
+    static float s = -1.0f;
+    if (s < 0.0f) { const char* e = getenv("OPENPETE_MOBY_OCCL_SLACK"); s = (e && *e) ? (float)atof(e) : 1500.0f; }
+    return s;
+}
+
+typedef struct { float uax, ubx, vay, vby; unsigned stamp; } occl_meta_t;
+#define OCCL_FIFO_N 16
+static float       s_occl_vz[OCCL_GW * OCCL_GH]; /* decoded farthest view-Z per cell */
+static int         s_occl_have = 0;
+static unsigned    s_occl_presents = 0;          /* live present counter */
+static unsigned    s_occl_stamp = 0;             /* present the current grid was captured at */
+static int         s_occl_suspend = 0;           /* presents left of cut suspension */
+static occl_meta_t s_occl_fifo[OCCL_FIFO_N];     /* affine+stamp queued with each copy */
+static unsigned    s_occl_fifo_head = 0, s_occl_fifo_tail = 0;
+static float       s_occl_uax, s_occl_ubx, s_occl_vay, s_occl_vby;
+
+static void native_occl_downsample(void)
+{
+    s_occl_presents++;
+    if (s_occl_suspend > 0) s_occl_suspend--;
+    if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb) return;
+
+    /* Reduce this present's pre-pass into the grid RT (viewport = full RT). */
+    struct { int gw, gh, pvw, pvh; } pc =
+        { OCCL_GW, OCCL_GH, (int)s_od_vw, (int)s_od_vh };
+    rhi_begin_render_target(s_nr.dev, s_nr.occl_grid, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_bind_pipeline(s_nr.dev, s_nr.occl_pipe);
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
+    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
+    rhi_draw(s_nr.dev, 6, 0);
+    rhi_end_render_target(s_nr.dev, s_nr.occl_grid);
+
+    /* Queue this present's copy; retrieve + decode the one from a few presents
+     * ago. The FIFO pairs each retrieved grid with the affine it was rendered
+     * under (pop order matches the ring's round-robin retrieval order). */
+    static uint8_t raw[OCCL_GW * OCCL_GH * 4];
+    int gw = 0, gh = 0;
+    int got = rhi_cycle_rt_readback(s_nr.dev, s_nr.occl_grid, raw, sizeof raw, &gw, &gh);
+    if (got && gw == OCCL_GW && gh == OCCL_GH && s_occl_fifo_tail != s_occl_fifo_head) {
+        const occl_meta_t* m = &s_occl_fifo[s_occl_fifo_tail % OCCL_FIFO_N];
+        s_occl_fifo_tail++;
+        for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
+            uint32_t q = ((uint32_t)raw[i*4+0] << 16) | ((uint32_t)raw[i*4+1] << 8) | raw[i*4+2];
+            /* Decode the pre-pass encode d = 1 - 1/viewZ; q at full scale is
+             * the far-clear (sky / no occluder) sentinel. */
+            s_occl_vz[i] = (q >= 16777200u) ? 3.4e38f
+                         : 1.0f / (1.0f - (float)q / 16777215.0f);
+        }
+        s_occl_uax = m->uax; s_occl_ubx = m->ubx;
+        s_occl_vay = m->vay; s_occl_vby = m->vby;
+        s_occl_stamp = m->stamp;
+        s_occl_have = 1;
+        /* OPENPETE_OCCL_SELFTEST: end-to-end depth-path probe — a screen-centre
+         * rect at effectively infinite view-Z must read CULLED whenever the
+         * centre cells hold opaque terrain (they do in normal gameplay; a
+         * sky-centred shot legitimately reads 0). Proves grid render →
+         * readback → decode → scan without needing a wall scene. */
+        static int st = -1;
+        if (st < 0) { const char* e = getenv("OPENPETE_OCCL_SELFTEST"); st = (e && *e && *e != '0'); }
+        if (st) {
+            static uint64_t t0 = 0;
+            uint64_t now = openpete_phase_now_us();
+            if (now - t0 >= 1000000u) {
+                t0 = now;
+                int sus = s_occl_suspend; s_occl_suspend = 0;   /* probe past the gate */
+                int far_probe = openpete_native_occl_query(248.0f, 114.0f, 264.0f, 126.0f, 1.0e8f);
+                s_occl_suspend = sus;
+                fprintf(stderr, "[occl-selftest] centre far-probe=%d (1 ⇔ opaque terrain covers screen centre)\n",
+                        far_probe);
+            }
+        }
+    } else if (got) {
+        s_occl_fifo_tail = s_occl_fifo_head;   /* desync (shouldn't happen) — resync empty */
+    }
+    if (s_occl_fifo_head - s_occl_fifo_tail >= OCCL_FIFO_N) s_occl_fifo_tail++; /* overflow: drop oldest */
+    occl_meta_t* mm = &s_occl_fifo[s_occl_fifo_head % OCCL_FIFO_N];
+    mm->uax = s_od_uax; mm->ubx = s_od_ubx; mm->vay = s_od_vay; mm->vby = s_od_vby;
+    mm->stamp = s_occl_presents;
+    s_occl_fifo_head++;
+}
+
+static long s_occl_qstat[OPENPETE_OCCL_Q_COUNT];   /* query-outcome census */
+
+int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near)
+{
+    if (!s_occl_have) { s_occl_qstat[OPENPETE_OCCL_Q_NOGRID]++; return 0; }
+    if (s_occl_suspend > 0) { s_occl_qstat[OPENPETE_OCCL_Q_SUSPENDED]++; return 0; }
+    if (s_occl_presents - s_occl_stamp > 8u) { s_occl_qstat[OPENPETE_OCCL_Q_STALE]++; return 0; }
+    float u0 = s_occl_uax * sx0 + s_occl_ubx, u1 = s_occl_uax * sx1 + s_occl_ubx;
+    float v0 = s_occl_vay * sy0 + s_occl_vby, v1 = s_occl_vay * sy1 + s_occl_vby;
+    if (u1 < u0) { float t = u0; u0 = u1; u1 = t; }
+    if (v1 < v0) { float t = v0; v0 = v1; v1 = t; }
+    /* Native frustum cull: fully outside the visible extent (the same extent
+     * the affine maps — Hor+ widened when active) contributes zero pixels
+     * regardless of depth. The game's view cone is wider than the screen, so
+     * enclosed areas queue plenty of these. vz guard: behind-camera / near-
+     * plane-straddling projections are garbage coordinates — never trust
+     * their rect. (vz_near already carries the caller's staleness slack.) */
+    if (vz_near > 256.0f && (u1 < 0.0f || u0 > 1.0f || v1 < 0.0f || v0 > 1.0f)) {
+        s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
+        return 1;
+    }
+    float need = vz_near - occl_slack();
+    if (need <= 1.0f) { s_occl_qstat[OPENPETE_OCCL_Q_TOONEAR]++; return 0; }
+    /* One-cell inflation, then CLAMP to the grid: the off-grid part of a rect
+     * is outside the visible extent (zero pixels by definition), so only the
+     * on-grid slice needs the depth test. All-near cells there ⇒ every pixel
+     * the moby could produce is behind nearer opaque WORLD ⇒ cullable. */
+    int cx0 = (int)floorf(u0 * (float)OCCL_GW) - 1, cx1 = (int)floorf(u1 * (float)OCCL_GW) + 1;
+    int cy0 = (int)floorf(v0 * (float)OCCL_GH) - 1, cy1 = (int)floorf(v1 * (float)OCCL_GH) + 1;
+    if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
+    if (cx1 >= OCCL_GW) cx1 = OCCL_GW - 1;
+    if (cy1 >= OCCL_GH) cy1 = OCCL_GH - 1;
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++)
+            if (s_occl_vz[cy * OCCL_GW + cx] >= need) {
+                s_occl_qstat[OPENPETE_OCCL_Q_VISIBLE]++; return 0;
+            }
+    s_occl_qstat[OPENPETE_OCCL_Q_CULLED]++;
+    return 1;
+}
+
+void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
+{
+    for (int i = 0; i < OPENPETE_OCCL_Q_COUNT; i++) out[i] = s_occl_qstat[i];
+}
+
+void openpete_native_occl_suspend(int presents)
+{
+    if (presents > s_occl_suspend) s_occl_suspend = presents;
 }
 
 /* Widescreen (Hor+) factor for the feeders' horizontal trivial rejects. 1.0
@@ -2907,6 +3110,78 @@ static bool compose_variant(int variant, bool have_ref)
     return false;
 }
 
+/* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
+ * See openpete_native_render.h. Per-present µs accumulate into s_pt_cur; the
+ * live present path rolls them into a ring and prints p50/p99/max once per
+ * second. Screenshot/dump composes also add into s_pt_cur but never roll a
+ * present, so their (rare, one-shot) contributions fold into the next live
+ * present — acceptable for a diagnostic. */
+#define PT_WINDOW 4096
+static uint32_t s_pt_cur[OPPT_COUNT];
+static uint32_t s_pt_ring[OPPT_COUNT][PT_WINDOW];
+static uint32_t s_pt_cnt_ring[OPPC_COUNT][PT_WINDOW];
+static int      s_pt_cnt_cur[OPPC_COUNT];
+static int      s_pt_n = 0;
+static uint64_t s_pt_last_report = 0;
+
+int openpete_phase_timers_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_PHASE_TIMERS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+uint64_t openpete_phase_now_us(void) {
+    static double us_per_tick = 0.0;
+    if (us_per_tick == 0.0) us_per_tick = 1e6 / (double)SDL_GetPerformanceFrequency();
+    return (uint64_t)((double)SDL_GetPerformanceCounter() * us_per_tick);
+}
+void openpete_phase_add(int phase, uint64_t us) {
+    if ((unsigned)phase < OPPT_COUNT) s_pt_cur[phase] += (uint32_t)us;
+}
+void openpete_phase_set_count(int which, int n) {
+    if ((unsigned)which < OPPC_COUNT) s_pt_cnt_cur[which] = n;
+}
+
+static int pt_cmp_u32(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+
+/* Roll the current present's phase totals into the ring; report ~1/sec. */
+static void phase_present_done(void)
+{
+    if (!openpete_phase_timers_on()) return;
+    for (int p = 0; p < OPPT_COUNT; p++) { s_pt_ring[p][s_pt_n] = s_pt_cur[p]; s_pt_cur[p] = 0; }
+    for (int c = 0; c < OPPC_COUNT; c++) s_pt_cnt_ring[c][s_pt_n] = (uint32_t)s_pt_cnt_cur[c];
+    s_pt_n++;
+    uint64_t now = openpete_phase_now_us();
+    if (s_pt_last_report == 0) s_pt_last_report = now;
+    if (s_pt_n < PT_WINDOW && now - s_pt_last_report < 1000000u) return;
+
+    static const char* pname[OPPT_COUNT] =
+        { "rex", "ter", "moby", "shdw", "spy", "prep", "comp", "gpu", "sim" };
+    static uint32_t sorted[PT_WINDOW];
+    char line[512]; int off = 0;
+    off += snprintf(line + off, sizeof(line) - (size_t)off, "[phase f=%u n=%d]", s_scene_frame, s_pt_n);
+    for (int p = 0; p < OPPT_COUNT && off < (int)sizeof(line); p++) {
+        memcpy(sorted, s_pt_ring[p], (size_t)s_pt_n * sizeof(uint32_t));
+        qsort(sorted, (size_t)s_pt_n, sizeof(uint32_t), pt_cmp_u32);
+        uint32_t p50 = sorted[s_pt_n / 2];
+        uint32_t p99 = sorted[(int)((s_pt_n - 1) * 0.99)];
+        uint32_t mx  = sorted[s_pt_n - 1];
+        off += snprintf(line + off, sizeof(line) - (size_t)off,
+                        " %s %u/%u/%u", pname[p], p50, p99, mx);
+    }
+    static const char* cname[OPPC_COUNT] = { "mobys", "tris", "draws", "culled" };
+    for (int c = 0; c < OPPC_COUNT && off < (int)sizeof(line); c++) {
+        uint32_t mx = 0, sum = 0;
+        for (int i = 0; i < s_pt_n; i++) { if (s_pt_cnt_ring[c][i] > mx) mx = s_pt_cnt_ring[c][i]; sum += s_pt_cnt_ring[c][i]; }
+        off += snprintf(line + off, sizeof(line) - (size_t)off,
+                        " | %s avg %u max %u", cname[c], sum / (uint32_t)s_pt_n, mx);
+    }
+    fprintf(stderr, "%s  (p50/p99/max us)\n", line);
+    s_pt_n = 0; s_pt_last_report = now;
+}
+
 /* Game-registered sub-tick re-extract callback (high-FPS spine). Invoked by
  * the host loop on each intermediate present; rebuilds s_scene against an
  * interpolated gamestate view. NULL → no intermediates (present stays at sim
@@ -3024,12 +3299,18 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     static int s_ptrace = -1;
     if (s_ptrace < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_ptrace = (e && *e && *e != '0'); }
 
+    const int pt_on = openpete_phase_timers_on();
+    uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) — must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
     native_depth_prepass();
+    /* Moby occlusion grid: reduce + ring-readback (live presents only). */
+    native_occl_downsample();
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_PREPASS, pt_t1 - pt_t0); pt_t0 = pt_t1; }
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
     s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
@@ -3039,6 +3320,8 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     prepare_fps_overlay_ss();
     bool did_diff = compose_variant(variant, have_ref);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
+                 openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
     rhi_blit_to_swapchain(s_nr.dev);
@@ -3052,6 +3335,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         record_cycle(record_pts_us);
 
     rhi_end_frame(s_nr.dev);
+    if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);
+                 openpete_phase_set_count(OPPC_DRAWS, (int)rhi_draw_calls(s_nr.dev));
+                 phase_present_done(); }
     if (s_ptrace) { fprintf(stderr, "E\n"); fflush(stderr); }
 
     if (did_diff && s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
@@ -3251,6 +3537,8 @@ void openpete_native_render_shutdown(void)
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
     if (s_nr.ss_rtt)       rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     if (s_nr.opaque_depth) rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);
+    if (s_nr.occl_grid) rhi_destroy_texture(s_nr.dev, s_nr.occl_grid);
+    if (s_nr.occl_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.occl_pipe);
     if (s_nr.prepass_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
     if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
     if (s_nr.gouraud_sub_ztest_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
