@@ -1457,8 +1457,14 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
         .imageType = VK_IMAGE_TYPE_2D, .format = dev->sc_format,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits INTO a render
+         * target (the freeze backdrop capture). Missing until 2026-07-02 —
+         * an illegal blit destination per spec, which real GPUs happened to
+         * tolerate (validation off). Suspected then FALSIFIED as the cause of
+         * the Linux level-transition hang (that's a recompiled-gameplay-code
+         * spin — see the plan doc); kept as a genuine latent-UB fix. */
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
