@@ -88,10 +88,12 @@ static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_nat
 #define SPEC_SCR_LO   0x1100u
 #define SPEC_SCR_LEN  0x800u
 static uint8_t s_canon_spec[SPEC_SCR_LEN];
+static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
     const void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
-    if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1; }
+    if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
+             s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
 }
 
 /* ---- captured prim (ground truth, decoded from the polybuf) --------- */
@@ -2918,23 +2920,50 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     return nm;
 }
 
+static int moby_census_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s = (e && *e && *e != '0'); }
+    return s;
+}
+
 void moby_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
     /* Only replay mobys the canonical frame actually drew. During a level
      * transition the moby render path may not fire (or only for the collected-gem
      * mobys); gating on the canon-drawn mask reproduces exactly that set instead
      * of replaying the previous level's mobys from stale cull records. */
-    if (!render_path_canon_drawn(RP_MOBY)) return;
+    if (!render_path_canon_drawn(RP_MOBY)) {
+        if (moby_census_on())
+            fprintf(stderr, "[census f=%u MOBY-RE] SKIP (not canon-drawn)\n", openpete_frame);
+        return;
+    }
 
-    int nm = reextract_record_pass(cpu, "REG");
-    int reg_walk = s_wtri_n;
+    /* Per-producer freshness (canonical-render epoch): RP_MOBY is shared by
+     * THREE canonical producers — REGULAR (func_8001F798), SPECULAR
+     * (func_80020F34) and SHADED/HUD/text (func_80022A2C) — and a pause menu or
+     * portal-load screen runs ONLY the SHADED/text one. Each re-extract pass
+     * replays its capture only if ITS producer ran during the last canonical
+     * present; otherwise the pass is skipped (the canonical present didn't draw
+     * that content, so neither may the sub-ticks). Without this, the load
+     * screen's text kept RP_MOBY canon-drawn and the stale REG/SPEC queues from
+     * the last gameplay tick painted the previous level's mobys over the frozen
+     * backdrop — the "moby soup" during level transitions (--render-fps only). */
+    int reg_fresh  = spyro_native_canon_mobyreg_fresh();
+    int spec_fresh = s_canon_spec_valid && spyro_native_canon_epoch_fresh(s_canon_spec_epoch);
+    int shd_fresh  = spyro_native_canon_shaded_fresh();
+
+    int nm = 0, reg_walk = 0;
+    if (reg_fresh) {
+        nm = reextract_record_pass(cpu, "REG");
+        reg_walk = s_wtri_n;
+    }
 
     /* SPEC pass: replay the captured specular queue so specular-ONLY mobys (the
      * rescue dragon) render on sub-ticks too. Swap the REGULAR scratch (the
      * orchestrator's bracket restored it) for the captured SPEC scratch, run a
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
-    if (s_canon_spec_valid) {
+    if (spec_fresh) {
         void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
         if (h) {
             static uint8_t saved_reg[SPEC_SCR_LEN];
@@ -2946,19 +2975,23 @@ void moby_native_reextract(CPUState* cpu) {
         }
     }
 
-    /* Shaded mobys (gems/props) — already re-derive from g_Camera. */
-    s_cur_mat = "SHD";
-    build_shaded_walk_tris(cpu);
-    push_scene_moby();
+    /* Shaded mobys (gems/props/HUD icons/text) — already re-derive from g_Camera. */
+    if (shd_fresh) {
+        s_cur_mat = "SHD";
+        build_shaded_walk_tris(cpu);
+        push_scene_moby();
+    }
     openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
 
     static int feeddbg = -1;
-    if (feeddbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); feeddbg = (e && *e && *e != '0'); }
+    if (feeddbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG");
+                       feeddbg = (e && *e && *e != '0') || moby_census_on(); }
     if (feeddbg) {
         static unsigned last = 0xFFFFFFFFu;
         if (openpete_frame != last) { last = openpete_frame;
-            fprintf(stderr, "[reextract-moby f=%u] recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
-                    openpete_frame, nm, reg_walk, spec_walk, s_wtri_n); }
+            fprintf(stderr, "[reextract-moby f=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
+                    openpete_frame, reg_fresh, spec_fresh, shd_fresh,
+                    nm, reg_walk, spec_walk, shd_fresh ? s_wtri_n : 0); }
     }
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }

@@ -5,6 +5,7 @@
 #include "psx_runtime.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
 #include "openpete_native_render.h"  /* isolation toggle */
+#include "spyro_native_reextract.h"  /* canonical-render epoch commit */
 
 #include <stdio.h>
 #include <string.h>
@@ -95,6 +96,10 @@ bool render_path_canon_drawn(render_path_t p) {
 static void render_paths_commit(void) {
     render_paths_canon_snapshot();
     render_paths_frame_reset();
+    /* Same anchor drives the canonical-render epoch: captures taken during the
+     * present that just committed become the (only) fresh set for the sub-tick
+     * re-extracts that follow. */
+    spyro_native_canon_epoch_commit();
 }
 
 bool render_path_addr_visible(uint32_t addr) {

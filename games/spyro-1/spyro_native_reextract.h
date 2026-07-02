@@ -19,6 +19,8 @@
 #ifndef SPYRO_NATIVE_REEXTRACT_H
 #define SPYRO_NATIVE_REEXTRACT_H
 
+#include <stdint.h>   /* uint32_t (canonical-render epoch API) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -107,6 +109,25 @@ void spyro_native_canon_capture_sxy(void* cpu);
  * the Spyro pass reuses the overlapping 0x1900 seg-scratch bytes (so records at
  * queue index >=14 aren't lost — see the .c for the temporal-reuse overlap). */
 void spyro_native_canon_capture_recs(void* cpu);
+
+/* Canonical-render epoch: bumped once per canonical present (from
+ * render_paths_commit, the same anchor that latches the canon-drawn mask). A
+ * capture is replayable on the sub-ticks after a canonical present iff it was
+ * taken DURING that present — i.e. its stamp equals the last committed epoch.
+ * (openpete_frame is a 60 Hz VBL counter, 2 per 30 Hz game tick, so frame==
+ * frame stamp checks never match at re-extract time — the W0.6 gate was dead.)
+ *   _commit: latch the in-flight epoch as "fresh" + start the next (once per
+ *            canonical present).
+ *   _stamp:  the value a producer hook must store at capture time.
+ *   _fresh:  whether a stored stamp belongs to the last canonical present.
+ * Per-producer freshness within RP_MOBY (three canonical producers share that
+ * path bit — REGULAR, SPECULAR, SHADED/text — and a load/pause screen runs
+ * ONLY the SHADED/text one): */
+void     spyro_native_canon_epoch_commit(void);
+uint32_t spyro_native_canon_epoch_stamp(void);
+int      spyro_native_canon_epoch_fresh(uint32_t stamp);
+int      spyro_native_canon_mobyreg_fresh(void);  /* colour 0x1100 + cull records (REGULAR hook) */
+int      spyro_native_canon_shaded_fresh(void);   /* shaded list 0x2400 (SHADED/text hook) */
 
 /* Register the orchestrator with the core sub-tick spine. Call once at boot,
  * after the feeders are registered. */

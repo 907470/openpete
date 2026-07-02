@@ -7,6 +7,7 @@
 #include "openpete_native_render.h" /* register callback + scene API */
 #include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "psx_runtime.h"            /* CPUState (read_word) */
+#include "features/render_paths.h"  /* canon-drawn mask (load-window census) */
 
 #include <math.h>
 #include <stdint.h>
@@ -269,11 +270,40 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
 static uint8_t  s_canon_dsony[DSONY_SPAN], s_live_dsony[DSONY_SPAN];
 static uint32_t s_canon_sxy[SXY_WORDS],    s_live_sxy[SXY_WORDS];
 static int      s_canon_scratch_valid = 0;
-/* W0.6: the canonical frame that set _valid. A tick whose producer didn't fire
- * would otherwise replay tick-(N-k)'s captured scratch (stale); the consumers
- * below only honor the capture when its stamp == the current canonical frame,
- * so "valid" means "captured THIS tick" without needing a begin-of-frame hook. */
-static uint32_t s_canon_scratch_frame = 0xFFFFFFFFu;
+
+/* Canonical-render EPOCH (replaces the W0.6 openpete_frame stamps). W0.6 tried
+ * "capture is fresh iff its frame stamp == openpete_frame at re-extract", but
+ * openpete_frame is a 60 Hz VBL counter (2 per 30 Hz game tick) that has always
+ * advanced 1-2 by re-extract time — census proved match=0 on EVERY present, so
+ * the whole scratch bracket was dead and the feeders silently read live scratch
+ * + the unstamped SPEC snapshot (stale during pause/portal-load screens → the
+ * "moby soup"). The epoch is instead bumped ONCE per canonical present, from
+ * render_paths_commit — the same host-present-loop anchor that latches the
+ * canon-drawn mask, guaranteed to run after the canonical render and before any
+ * sub-tick re-extract. A capture is fresh iff its producer ran during the LAST
+ * canonical present. No canonical present (CdRead stall) → no bump → the last
+ * capture stays fresh (the world is byte-static; the run.c world-liveness gate
+ * bounds long stalls).
+ *
+ * Freshness is PER PRODUCER: three canonical producers share the RP_MOBY path
+ * bit (REGULAR func_8001F798, SPECULAR func_80020F34, SHADED/HUD/text
+ * func_80022A2C), and a pause/portal-load screen runs ONLY the SHADED/text one
+ * — a single shared stamp would let the text renderer revalidate the whole
+ * moby replay. */
+static uint32_t s_canon_epoch_now = 1;   /* stamp captures take (present in flight) */
+static uint32_t s_canon_epoch_ok  = 0;   /* required stamp for a capture to be fresh */
+static uint32_t s_epoch_mobyreg = 0;     /* colour 0x1100 + cull records (REGULAR moby hook) */
+static uint32_t s_epoch_spyro   = 0;     /* seg 0x1900 + FK 0x1D00 + SXY (Spyro hook) */
+static uint32_t s_epoch_shaded  = 0;     /* shaded list 0x2400 (SHADED/text hook) */
+
+void spyro_native_canon_epoch_commit(void) {
+    s_canon_epoch_ok = s_canon_epoch_now;
+    s_canon_epoch_now++;
+}
+uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
+int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
+int spyro_native_canon_mobyreg_fresh(void) { return s_epoch_mobyreg == s_canon_epoch_ok; }
+int spyro_native_canon_shaded_fresh(void)  { return s_epoch_shaded  == s_canon_epoch_ok; }
 
 /* Explicit scratch sub-regions (offsets from G_SCRATCH). The REGULAR cull-record
  * region [0x1600,0x2400) and the Spyro per-segment scratch [0x1900,0x1A00)
@@ -297,8 +327,7 @@ static uint32_t s_canon_scratch_frame = 0xFFFFFFFFu;
 #define SHADED_OFF  0x2400u
 #define SHADED_LEN  0x800u    /* [0x2400,0x2C00) shaded Moby* list + lit scratch */
 static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
-static int      s_canon_recs_valid = 0;
-static uint32_t s_canon_recs_frame  = 0xFFFFFFFFu;    /* W0.6: canonical frame that set _valid */
+static int      s_canon_recs_valid = 0;   /* freshness comes from s_epoch_mobyreg */
 
 /* Capture a G_SCRATCH sub-range at its producer hook (called from the canonical
  * moby/spyro render hooks while the scratch is still live). */
@@ -309,7 +338,12 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     if (!h) return;
     memcpy(s_canon_dsony + (off - DSONY_LO), h, len);
     s_canon_scratch_valid = 1;
-    s_canon_scratch_frame = openpete_frame;
+    /* Stamp the PRODUCER's epoch by capture offset. A new capture site must be
+     * added to this map, or its region will never read as fresh. */
+    if      (off == COLOUR_OFF)                   s_epoch_mobyreg = s_canon_epoch_now;
+    else if (off == SEG_OFF || off == FK_OFF)     s_epoch_spyro   = s_canon_epoch_now;
+    else if (off == SHADED_OFF)                   s_epoch_shaded  = s_canon_epoch_now;
+    else fprintf(stderr, "[canon-cap] UNMAPPED capture offset 0x%04x (no epoch stamp — add it)\n", off);
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); dbg = (e && *e && *e != '0'); }
     if (dbg && (openpete_frame % 200u) == 0) {
@@ -323,7 +357,7 @@ void spyro_native_canon_capture_sxy(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
     for (uint32_t i = 0; i < SXY_WORDS; ++i) s_canon_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
     s_canon_scratch_valid = 1;
-    s_canon_scratch_frame = openpete_frame;
+    s_epoch_spyro = s_canon_epoch_now;   /* Spyro-hook producer, same epoch as seg/FK */
 }
 
 /* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook —
@@ -337,7 +371,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
     if (!h) return;
     memcpy(s_canon_recs, h, RECS_LEN);
     s_canon_recs_valid = 1;
-    s_canon_recs_frame = openpete_frame;
+    s_epoch_mobyreg = s_canon_epoch_now;   /* REGULAR-hook producer, same epoch as colour */
 }
 
 /* On an intermediate: save the live scratch, overwrite with the captured canon,
@@ -347,24 +381,47 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
  * records (records 14+ start at 0x1910) which the .s reuses temporally. We give
  * the moby feeder the FULL records first; scratch_bracket_seg_restore then
  * overlays the seg scratch for the Spyro feeder (called between them). */
+static int s_bracket_open = 0;   /* enter saved the live scratch this present */
+
 static void scratch_bracket_enter(CPUState* cpu) {
-    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
+    {   /* OPENPETE_LOAD_CENSUS: per-producer freshness at re-extract time. */
+        static int cen = -1;
+        if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
+        static unsigned last = 0xFFFFFFFFu;
+        if (cen && openpete_frame != last) { last = openpete_frame;
+            fprintf(stderr, "[census f=%u BRACKET] epoch_ok=%u fresh reg=%d spy=%d shd=%d\n",
+                    openpete_frame, s_canon_epoch_ok,
+                    spyro_native_canon_mobyreg_fresh(),
+                    spyro_native_canon_epoch_fresh(s_epoch_spyro),
+                    spyro_native_canon_shaded_fresh()); }
+    }
+    if (!s_canon_scratch_valid) return;
     void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
     void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
     void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
-    /* Save TRUE live (before any restore). The records region [0x1600,0x2400)
-     * spans the seg sub-range, so this one save/restore covers the seg too. */
-    if (hc) memcpy(s_live_dsony + (COLOUR_OFF - DSONY_LO), hc, COLOUR_LEN);
-    if (hr) memcpy(s_live_recs, hr, RECS_LEN);
-    if (hs) memcpy(s_live_dsony + (SHADED_OFF - DSONY_LO), hs, SHADED_LEN);
-    /* Restore canon for the MOBY + shadow feeders: colour, FULL records, shaded. */
-    if (hc) memcpy(hc, s_canon_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
-    if (hr && s_canon_recs_valid && s_canon_recs_frame == openpete_frame) memcpy(hr, s_canon_recs, RECS_LEN);
-    if (hs) memcpy(hs, s_canon_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
-    for (uint32_t i = 0; i < SXY_WORDS; ++i) {
-        s_live_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
-        cpu->write_word(SXY_BASE + i * 4u, s_canon_sxy[i]);
+    if (!hc || !hr || !hs) return;
+    /* Save TRUE live unconditionally (before any restore) — leave restores all
+     * of it back, so a region whose canon restore below is skipped as stale is
+     * a saved-then-restored no-op. The records region [0x1600,0x2400) spans the
+     * seg + FK sub-ranges, so its save/restore covers scratch_bracket_seg_restore's
+     * overlays too. */
+    memcpy(s_live_dsony + (COLOUR_OFF - DSONY_LO), hc, COLOUR_LEN);
+    memcpy(s_live_recs, hr, RECS_LEN);
+    memcpy(s_live_dsony + (SHADED_OFF - DSONY_LO), hs, SHADED_LEN);
+    for (uint32_t i = 0; i < SXY_WORDS; ++i) s_live_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
+    s_bracket_open = 1;
+    /* Restore canon per PRODUCER freshness: a producer that didn't run during
+     * the last canonical present keeps whatever the live scratch holds (its
+     * feeder pass is skipped too — moby_native_reextract checks the same
+     * predicates), instead of replaying a stale capture. */
+    if (spyro_native_canon_mobyreg_fresh()) {
+        memcpy(hc, s_canon_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
+        if (s_canon_recs_valid) memcpy(hr, s_canon_recs, RECS_LEN);
     }
+    if (spyro_native_canon_shaded_fresh())
+        memcpy(hs, s_canon_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
+    if (spyro_native_canon_epoch_fresh(s_epoch_spyro))
+        for (uint32_t i = 0; i < SXY_WORDS; ++i) cpu->write_word(SXY_BASE + i * 4u, s_canon_sxy[i]);
 }
 
 /* After the moby + shadow feeders have consumed the regular records, overlay the
@@ -372,7 +429,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
  * same temporal reuse the .s does — so the Spyro body feeder sees its seg scratch. */
 static void scratch_bracket_seg_restore(CPUState* cpu) {
     (void)cpu;
-    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
+    if (!s_bracket_open || !spyro_native_canon_epoch_fresh(s_epoch_spyro)) return;
     void* h = openpete_psx_to_host_ptr(G_SCRATCH + SEG_OFF);
     if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
     /* Fairy-Kiss pre-blend colour table — same temporal reuse as the seg scratch:
@@ -385,10 +442,14 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
     if (hf) memcpy(hf, s_canon_dsony + (FK_OFF - DSONY_LO), FK_LEN);
 }
 
-/* Restore the live scratch before the game fiber resumes (determinism). The
- * records-region restore [0x1600,0x2400) covers the seg sub-range too. */
+/* Restore the live scratch before the game fiber resumes (determinism).
+ * Symmetric with enter's unconditional save: restore EVERYTHING saved, whether
+ * or not a canon restore fired (stale-skipped regions restore their own saved
+ * bytes — a no-op). The records-region restore [0x1600,0x2400) covers the
+ * seg + FK sub-ranges scratch_bracket_seg_restore may have overlaid. */
 static void scratch_bracket_leave(CPUState* cpu) {
-    if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
+    if (!s_bracket_open) return;
+    s_bracket_open = 0;
     void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
     void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
     void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
@@ -1022,6 +1083,21 @@ static void spyro_native_reextract(void* cpu_v) {
      * a restore bug (the class the headless oracle can't see); log it same-frame.
      * The moby/particle pool checks guard their restore loops against future
      * regressions (a slot dropped from the loop, a stray post-restore write). */
+    /* Load-window census (OPENPETE_LOAD_CENSUS=1): one line per re-extract with
+     * the inputs that decide what the intermediates rebuild — the canon-drawn
+     * mask (which paths the last canonical render actually painted), the
+     * camera-ring pairing, and the cut flag. Correlate with the MOBY-RE and
+     * SCENE lines to attribute "mobys visible during a level transition". */
+    {
+        static int s_census = -1;
+        if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
+        if (s_census) {
+            uint32_t m = 0;
+            for (int p = 0; p < RP_COUNT; p++) if (render_path_canon_drawn((render_path_t)p)) m |= 1u << p;
+            fprintf(stderr, "[census f=%u RE] canon_mask=%02x (cyc|spy|moby|ter|shdw|flm|part|trc) paired=%d cam_cut=%d alpha=%.2f mobys=%d\n",
+                    openpete_frame, m, paired, cam_cut, alpha, moby_save_n);
+        }
+    }
     if (bc_on) {
         for (int i = 0; i < bc_n; ++i) {
             if (bc_hash(bc_regs[i].addr, bc_regs[i].len) != bc_h0[i])
