@@ -1214,6 +1214,47 @@ verdict_fn       = "psx_runtime_moby_lp_face_offset"
 verified_against = ["aspect_determinism"]
 doc              = "notes/plans/openpete-disable-lods.md"
 
+
+[[channel]]
+name        = "no_lod_moby_zsf4_distance_neutralize"
+status      = "gated"
+description = """
+The cull passes compute the per-record LOD/colour tier
+ZSF4 = ((moby->m_Renderer(0x4B) & 0x3F) << 8) - viewZ and store its low
+16 bits at rec+0x2E (`sh $t2, 0x2E($fp)` @0x8001F4EC regular,
+@0x80020C9C specular). The renderer forks per record on it
+(block_8001FDD0): >=1024 raw colours, 1..1023 DPCS fade toward the far
+palette hdr+0x20, <=0 LP faces + far palette. So even with the Phase-4
+face knob forcing HP faces, distant mobys under --no-lod still shift to
+the far palette ("colour changes with distance").
+
+--no-lod neutralizes the DISTANCE term: the record's TR.z (the exact
+viewZ the formula subtracted) is stored at rec+0x18 one instruction
+earlier, so the hook recovers zsf4_nodist = value + TR.z ==
+(m_Renderer&0x3F)<<8 by pure algebra (no register-layout dependence)
+and stores THAT when it lands in the near band (>=1024) — every
+authored-normal moby renders raw bright colours at any distance.
+Records whose zero-distance value is ALREADY sub-near
+(m_Renderer&0x3F < 4) are effect-AUTHORED fades (e.g. the fireball
+ring puffs drive ZSF4 1024->0 to fade out) — canonical value kept, so
+effect fade-outs survive.
+
+Render-side only: rec+0x2E lives in the g_SonyImage render scratch,
+read back solely by the render passes' ctc2 gte_ctrl[30]; the cull
+verdict (m_WasDrawn) is decided before this store. Identity at default
+(openpete_no_lod == 0). The native renderer reads the STORED value
+(moby_native.c project_all_records), so native and game shift together
+by construction."""
+# GENERATED (void replace_call): no_lod_moby_zsf4_store(cpu, ea, val) —
+# neutralize the distance term under --no-lod, then perform the sh.
+substitution_sites = [
+    { addr = 0x8001F4EC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_no_lod_moby_zsf4_store" },  # regular cull (func_8001F158)
+    { addr = 0x80020C9C, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_no_lod_moby_zsf4_store" },  # specular cull (func_800208FC)
+]
+verdict_fn       = "openpete_no_lod"
+verified_against = ["aspect_determinism"]
+doc              = "notes/plans/openpete-disable-lods.md"
+
 [[channel]]
 name        = "no_lod_env_texture_tier"
 status      = "gated"

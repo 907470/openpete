@@ -1367,7 +1367,17 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     code = translate_sb(instr, addr);
                 }
                 break;
-            case 0x29: code = translate_sh(instr); break;     // sh
+            case 0x29:                                          // sh
+                if (auto _cs = channel_sites_.find(addr);
+                    _cs != channel_sites_.end()
+                    && _cs->second.kind == ChannelSite::ReplaceCall) {
+                    /* void ReplaceCall stores (`hook(cpu, ea, val);`) — e.g. the
+                     * --no-lod moby ZSF4 tier store (rec+0x2E), same shape as sb. */
+                    code = emit_channel_replace_call(_cs->second, instr);
+                } else {
+                    code = translate_sh(instr);
+                }
+                break;
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw
                 /* Data-driven sw channel sites (manifest + --channel-sites):

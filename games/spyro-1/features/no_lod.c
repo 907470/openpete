@@ -294,6 +294,27 @@ int32_t psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump) {
 uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base) {
     return cpu->read_word(base + psx_runtime_moby_lp_face_offset);
 }
+/* moby colour-tier ZSF4 store (`sh $t2, 0x2E($fp)` in both cull builders,
+ * 0x8001F4EC / 0x80020C9C). ZSF4 = ((m_Renderer(0x4B)&0x3F)<<8) - viewZ drives
+ * the renderer's colour ladder (>=1024 raw, 1..1023 fade toward hdr+0x20,
+ * <=0 the far palette itself) — so even with the face knob forcing HP faces,
+ * --no-lod mobys still shifted palette with distance. Neutralize the DISTANCE
+ * term: viewZ is the record's TR.z, stored at rec+0x18 one instruction before
+ * this one, so value + TR.z == (m_Renderer&0x3F)<<8 exactly (the zero-distance
+ * tier). Store that when it's near-band (>=1024): normal mobys render raw
+ * bright colours at any distance. When it's ALREADY sub-near at zero distance
+ * (m_Renderer&0x3F < 4) the fade is effect-AUTHORED (ring-puff fade-outs drive
+ * ZSF4 1024->0 by shrinking m_Renderer) — keep the canonical value so effects
+ * still fade. Identity when --no-lod is off. Render-scratch only (rec+0x2E is
+ * read back solely by the render passes via ctc2 gte_ctrl[30]). */
+void psx_runtime_no_lod_moby_zsf4_store(CPUState* cpu, uint32_t addr, uint32_t val) {
+    if (openpete_no_lod) {
+        int32_t zsf4_nodist = (int32_t)val
+                            + (int32_t)cpu->read_word(addr - 0x2Eu + 0x18u);
+        if (zsf4_nodist >= 1024) val = (uint32_t)zsf4_nodist;
+    }
+    cpu->write_half(addr, (uint16_t)val);
+}
 /* Debug-only (OPENPETE_DBG_KILL_LP): env-renderer g_SkipLowPolyWorld read —
  * OR in 1 when the knob is set so the LP-walk pre-pass is skipped. */
 uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr) {

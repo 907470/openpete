@@ -651,6 +651,9 @@ static int project_all_records(CPUState* cpu) {
                     int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
                     int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
                              - (uint32_t)cpu->read_word(rec + 0x18)) & 0xFFFFu);
+                    /* --no-lod: the zsf4-store hook neutralized the distance term
+                     * for near-band-at-zero-distance records — mirror that */
+                    if (openpete_no_lod && (md << 8) >= 1024) ex = md << 8;
                     if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
                 }
             }
@@ -831,6 +834,9 @@ static void append_revealed_regular(CPUState* cpu) {
         int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
         int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
+        /* --no-lod parity with the game-side zsf4-store hook: neutralize the
+         * distance term for records that are near-band at zero distance */
+        if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4 };
@@ -1608,6 +1614,23 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
     int recoloured = 0;
     for (int wi = 0; wi < s_wtri_n; wi++) {
         ntri_t* w = &s_wtri[wi];
+        /* Speck gate: a tri only a few px across can't display a colour
+         * transient — but at vista density (thousands of 2-5px mobys, ~48k
+         * tris under --no-lod) it's exactly what the NN match cross-pairs
+         * with a NEIGHBOUR moby's tri inside the 4px tolerance (verified: the
+         * vertex-level colour A/B is 100% while adopt floods 56k/s and slams
+         * the s_dyncol/s_dynmoby caps at the --no-lod overview). Adopting a
+         * neighbour's colours = speck noise + canonical-cadence flicker once
+         * the replay cache overflows. Only sizeable faces participate; the
+         * genuine transients (the boundary-barrier ripple) are large faces. */
+        {
+            double bx0 = w->v[0].sx, bx1 = bx0, by0 = w->v[0].sy, by1 = by0;
+            for (int k = 1; k < 3; k++) {
+                if (w->v[k].sx < bx0) bx0 = w->v[k].sx; else if (w->v[k].sx > bx1) bx1 = w->v[k].sx;
+                if (w->v[k].sy < by0) by0 = w->v[k].sy; else if (w->v[k].sy > by1) by1 = w->v[k].sy;
+            }
+            if (bx1 - bx0 < 6.0 && by1 - by0 < 6.0) continue;
+        }
         double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
         int wcxg = (int)((wcx + ADG_OFF) / ADG_CELL); if (wcxg < 0) wcxg = 0; else if (wcxg >= ADG_W) wcxg = ADG_W - 1;

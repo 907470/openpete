@@ -321,6 +321,10 @@ void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t va
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
+/* --no-lod ZSF4 distance-neutralize store (void ReplaceCall replacing the
+ * `sh $t2, 0x2E($fp)` cull-record tier store; games/spyro-1/features/no_lod.c). */
+void psx_runtime_no_lod_moby_zsf4_store(CPUState* cpu, uint32_t addr, uint32_t val);
+
 /* Particle / sparkle canonical-SX cull hooks (defined in
  * core/features/widescreen.c). Set native_part_pass from the canonical SX
  * side channel / return the canonical SX, replacing inline recompiler math. */
