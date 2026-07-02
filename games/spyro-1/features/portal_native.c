@@ -63,6 +63,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_8004FEA0(CPUState* cpu);  /* portal sky: close, full colour */
 extern void     func_80050240(CPUState* cpu);  /* portal sky: medium, blended    */
@@ -70,16 +71,6 @@ extern void     func_8004F4BC(CPUState* cpu);  /* portal sky: secondary pass    
 extern void     func_80050BE0(CPUState* cpu);  /* RenderPortals (the driver)     */
 extern unsigned openpete_frame;
 
-#define G_CAMERA         0x80076DD0u   /* g_Camera: view matrix @+0x00, pos @+0x28/2C/30 */
-#define G_PORTALS        0x80078640u   /* Portal* g_Portals[6]   */
-#define G_PORTALCOUNT    0x800758BCu   /* int     g_PortalCount  */
-#define POLYBUF_CURSOR   0x800757B0u   /* D_800757B0: polybuf write cursor */
-#define D_PORTAL_YAW     0x80075858u   /* portal rotation yaw   (animated) */
-#define D_PORTAL_PITCH   0x800758FCu   /* portal rotation pitch (animated) */
-#define D_PORTAL_DEPTH   0x80075934u   /* D_80075934: portal OT depth */
-#define D_CLIPRECT       0x8007AA00u   /* minY,maxY,minX,maxX each <<16 (per doc) */
-#define D_BLEND_TARGET   0x800757D4u   /* D_800757D4: GTE far-colour (FC), the fog target (0x00BBGGRR) */
-#define D_FOG_FACTOR     0x8007575Cu   /* D_8007575C: GTE IR0, the DPCS depth-cue lerp coeff (0x1000 = 1.0) */
 
 /* DPCS depth-cue blend: lerp an 0x00BBGGRR colour toward the fog target by t in
  * [0,1] (the blended-medium portal's cross-dissolve, func_80050240 — t=IR0/4096,

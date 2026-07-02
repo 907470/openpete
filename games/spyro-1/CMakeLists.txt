@@ -193,8 +193,30 @@ add_custom_command(
     DEPENDS ${_spyro_state_regions_manifest}
             ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
     COMMENT "Generating Spyro gameplay_state_regions.gen.h + lua mirror")
+
+# Curated PSX symbol aliases: generate spyro1_symbols.gen.h from the hand-
+# maintained alias manifest, validated by address against globals.toml /
+# symbols.toml (fails the build if an addr is not a manifest symbol start —
+# i.e. drifted). Replaces ~90 per-file #define copies. See plan W0.8.
+set(_spyro_symbols_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml)
+set(_spyro_symbols_header   ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_symbols.gen.h)
+add_custom_command(
+    OUTPUT  ${_spyro_symbols_header}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_symbols_header.py
+            --symbols   ${_spyro_symbols_manifest}
+            --globals   ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            --functions ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            --out       ${_spyro_symbols_header}
+    DEPENDS ${_spyro_symbols_manifest}
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            ${CMAKE_SOURCE_DIR}/tools/gen_symbols_header.py
+    COMMENT "Generating Spyro spyro1_symbols.gen.h (validated vs manifest)")
 target_sources(openpete-spyro1 PRIVATE
     ${_spyro_state_regions_header}
+    ${_spyro_symbols_header}
     spyro_state_regions.c
     # Phase 2 of fps-unlock: render-side interpolation region table.
     # Hardcoded (g_Spyro + g_Camera) for v1 scaffolding; will graduate

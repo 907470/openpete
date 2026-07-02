@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_8001F798(CPUState* cpu);  /* the real REGULAR moby renderer */
 extern void     func_80020F34(CPUState* cpu);  /* the real SPECULAR moby renderer (same +0x1600 geometry) */
@@ -55,7 +56,6 @@ static long s_animsw_cross = 0, s_animsw_snap = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
-#define D_SONY        0x8006FCF4u   /* g_SonyImage — reused as moby render scratch */
 /* Cull-record buffer base (stride 0x38). The .s REGULAR cull computes it as
  * g_SonyImage + psx_runtime_moby_reg_queue_offset (offset_add channel at
  * 0x8001F19C/0x8001F7E4); the offset is 0x1600 normally but --no-lod RELOCATES +
@@ -68,26 +68,18 @@ static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec 
  * channel substitution, so under --no-lod its queue stays at the CANONICAL
  * 0x1600 (the regular relocation does not apply to it). The native feed must use
  * a PER-PASS base (s_rec_base, set in moby_native_pass) — REGULAR=REC_BASE,
- * SPECULAR=D_SONY+0x1600 — else native SPEC reads the relocated slot (stale
+ * SPECULAR=G_SCRATCH+0x1600 — else native SPEC reads the relocated slot (stale
  * regular records) and specular mobys (e.g. the Artisans rescue dragon, cls 0xFA)
  * vanish under --no-lod while regular mobys are fine. (Normal mode: both are
- * 0x1600.) g_sony_image_base is left canonical by --no-lod, so D_SONY is right. */
-#define REC_BASE      (D_SONY + psx_runtime_moby_reg_queue_offset) /* REGULAR base */
-static uint32_t s_rec_base = D_SONY + 0x1600u;   /* per-pass; set by moby_native_pass */
-#define POLYBUF_CURSOR 0x800757B0u
-#define G_MODELS      0x80076378u   /* Model* g_Models[512] */
-#define G_CAMERA      0x80076DD0u
-#define G_CYCLORAMA   0x80078A40u
-#define G_LEVELMOBYS  0x80075828u   /* Moby* g_LevelMobys (head of the stride-0x58 array) */
-#define G_SPYRO       0x80078A58u   /* g_Spyro; m_Position @ +0x00 (update-gate anchor) */
-#define G_DRAGON_CUTSCENE 0x80077030u /* g_DragonCutscene; m_State @ +0x28, m_CutsceneTicks @ +0x3C, m_CutsceneSpyro @ +0x88 */
-#define D_8006F3C0        0x8006F3C0u  /* short[24] dragon-rescue disappear shrink ramp (draw.c:1924) */
+ * 0x1600.) g_sony_image_base is left canonical by --no-lod, so G_SCRATCH is right. */
+#define REC_BASE      (G_SCRATCH + psx_runtime_moby_reg_queue_offset) /* REGULAR base */
+static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_native_pass */
 
 #define REC_STRIDE    0x38u
 #define MAX_RECORDS   512
-#define SHADED_BASE   (D_SONY + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
+#define SHADED_BASE   (G_SCRATCH + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
 
-/* Sub-tick SPEC-pass scratch snapshot: D_SONY+0x1100..0x1900 (per-vertex fog
+/* Sub-tick SPEC-pass scratch snapshot: G_SCRATCH+0x1100..0x1900 (per-vertex fog
  * colour + the specular cull queue at +0x1600). The SPECULAR pass rebuilds the
  * +0x1600 queue with the specular set — including specular-ONLY mobys (the
  * rescue dragon) that REGULAR didn't draw — and overwrites the colour scratch,
@@ -98,11 +90,9 @@ static uint32_t s_rec_base = D_SONY + 0x1600u;   /* per-pass; set by moby_native
 static uint8_t s_canon_spec[SPEC_SCR_LEN];
 static int     s_canon_spec_valid = 0;
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
-    const void* h = openpete_psx_to_host_ptr(D_SONY + SPEC_SCR_LO);
+    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1; }
 }
-#define D_SPEC_LIGHT  0x800770C8u   /* SpecularAndMetal: +0/+4/+8 = directional light dir */
-#define D_SHADE_COLTAB 0x8006E3D8u  /* shaded base-colour table, indexed by m_SpecularMetalColor>>22 */
 
 /* ---- captured prim (ground truth, decoded from the polybuf) --------- */
 typedef struct {
@@ -166,7 +156,7 @@ static void apply_dragon_disappear_scale(CPUState* cpu, uint32_t moby, int M[3][
      * pop the dragon back to full size for that final frame). The upper bound is a
      * pure safety envelope well past the real max; determinism keeps ticks small. */
     if (ticks < 0 || ticks >= 64) return;
-    int shrink = (int)(int16_t)cpu->read_half(D_8006F3C0 + (uint32_t)ticks * 2u);
+    int shrink = (int)(int16_t)cpu->read_half(D_DRAGON_SHRINK + (uint32_t)ticks * 2u);
     for (int c = 0; c < 3; c++) M[0][c] = (int)lround((double)M[0][c] * shrink / 4096.0);  /* row0 FIXED_MUL shrink */
     if (ticks > 8) {                                               /* row1 squash Cos((ticks-8)*42) */
         double squash = cos((double)((ticks - 8) * 42) * (6.283185307179586 / 4096.0));
@@ -808,7 +798,7 @@ typedef struct {
  * word0: sign=fresh(<0)/strip(>=0), &0x1=quad-enable, &0x2=textured,
  * &0x4=sprite-FT4, &0x8=skip. */
 
-#define COLOR_SCRATCH (D_SONY + 0x1100u)   /* per-vertex fogged RGB (.s DPCS output) */
+#define COLOR_SCRATCH (G_SCRATCH + 0x1100u)   /* per-vertex fogged RGB (.s DPCS output) */
 
 static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
@@ -961,7 +951,7 @@ static int build_walk_tris(CPUState* cpu) {
         uint32_t fp = fb + 4u;
         int base = R->proj_off, vcount = R->proj_n;
         /* per-vertex colour base: near tier = model colour array (AnimationHeader
-         * +0x18); fog tiers = the DPCS-lit scratch (D_SONY+0x1100). Indexed by w1f.
+         * +0x18); fog tiers = the DPCS-lit scratch (G_SCRATCH+0x1100). Indexed by w1f.
          * (Tier select is a ZSF4 test; near tier covers the demo mobys -- if a
          * record is fog-tier its colour will mismatch in the A/B and flag it.) */
         uint32_t cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x18) : 0u;
@@ -1606,7 +1596,6 @@ static int adopt_prim_colors_subtick(void) {
 static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
-#define D_METAL_TILEDEF 0x800756F0u   /* static metal env-texture Tiledef (level-load) */
 static void specular_env_load(CPUState* cpu) {
     read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
     s_camHead = (int)cpu->read_word(G_CAMERA + 0x50u);
@@ -1906,7 +1895,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     int feed   = openpete_native_render_enabled();
     s_cur_mat = mat;
     /* SPECULAR queue is NOT relocated by --no-lod (see REC_BASE note); REGULAR is. */
-    s_rec_base = (mat && mat[0]=='S' && mat[1]=='P') ? (D_SONY + 0x1600u) : REC_BASE;
+    s_rec_base = (mat && mat[0]=='S' && mat[1]=='P') ? (G_SCRATCH + 0x1600u) : REC_BASE;
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     render_fn(cpu);                            /* run the real renderer */
@@ -2101,7 +2090,7 @@ static int on_80020F34_moby_native(CPUState* cpu, uint32_t addr) {
 
 /* ---- SHADED material (func_80022A2C) -- layout-confirming dump (3a.4.3) ----
  * Shaded is structurally different from regular/specular: it loops a flat
- * Moby* array @ D_SONY+0x2400, decodes 3-signed-byte (×2) verts, and rebuilds
+ * Moby* array @ G_SCRATCH+0x2400, decodes 3-signed-byte (×2) verts, and rebuilds
  * R per-moby = ProjMatrix · Rz·Ry·Rx(m_Rotation). Before implementing that,
  * dump the data layout to confirm the RE offsets empirically (falsify-first).
  * func_80022A2C writes m_WasDrawn (verdict) -- we call it exactly once, like
@@ -2166,7 +2155,6 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * the signed-byte decode + projection independent of the (harder) R-rebuild.
  * Set-matches the decoded verts vs the captured shaded prims, like the regular
  * vertex A/B. */
-#define SINCOS_TABLE 0x8006CBF8u   /* sin[idx], cos at [idx+0x80]; s16 1.12 */
 
 static void mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
     for (int i=0;i<3;i++) for (int j=0;j<3;j++)
@@ -2201,8 +2189,8 @@ static void sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
     while (fb >= 256.0) fb -= 256.0;
     int b0 = (int)fb; double frac = fb - (double)b0;
     uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
-    double s0=(int16_t)cpu->read_half(SINCOS_TABLE+i0),       s1=(int16_t)cpu->read_half(SINCOS_TABLE+i1);
-    double c0=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+i1);
+    double s0=(int16_t)cpu->read_half(D_SIN_TABLE+i0),       s1=(int16_t)cpu->read_half(D_SIN_TABLE+i1);
+    double c0=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i1);
     *s_out = rnd_i(s0 + (s1 - s0) * frac);
     *c_out = rnd_i(c0 + (c1 - c0) * frac);
 }
@@ -2235,9 +2223,9 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
     } else {
         uint32_t rot = cpu->read_word(moby + 0x44u);
         uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
-        sy=(int16_t)cpu->read_half(SINCOS_TABLE+iy); cy=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iy);
-        sx=(int16_t)cpu->read_half(SINCOS_TABLE+ix); cx=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+ix);
-        sz=(int16_t)cpu->read_half(SINCOS_TABLE+iz); cz=(int16_t)cpu->read_half(SINCOS_TABLE+0x80u+iz);
+        sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy); cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
+        sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix); cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
+        sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz); cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
     }
     int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
     int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
@@ -2278,8 +2266,8 @@ static void shaded_verify(CPUState* cpu) {
         } else {                                      /* 3D: R = ProjMatrix . Ry(axis0), TR = PM.(pos-cam) */
             uint32_t rot = cpu->read_word(m + 0x44u);
             uint32_t idx0 = (rot >> 15) & 0x1FEu;
-            int s0 = (int16_t)cpu->read_half(SINCOS_TABLE + idx0);
-            int c0 = (int16_t)cpu->read_half(SINCOS_TABLE + 0x80u + idx0);
+            int s0 = (int16_t)cpu->read_half(D_SIN_TABLE + idx0);
+            int c0 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + idx0);
             int Ry[3][3] = {{c0,0,s0},{0,4096,0},{-s0,0,c0}};
             for (int i=0;i<3;i++) for (int j=0;j<3;j++)
                 M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
@@ -2384,7 +2372,6 @@ static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
     return (uint32_t)ch[0] | ((uint32_t)ch[1]<<8) | ((uint32_t)ch[2]<<16);
 }
 
-#define D_METAL_COLTAB 0x8006E44Cu  /* shaded METAL base-colour table, 8B/entry, idx = m_SpecularMetalColor>>21 */
 
 /* Shaded METAL sub-mode colour (word0 bit1, block_80023720) — env-mapped
  * reflection. The face normal is rotated to view space (RT·N), then the
@@ -2695,13 +2682,13 @@ static int build_shaded_walk_tris(CPUState* cpu) {
 }
 
 /* Ground-truth check for the gouraud per-vertex lighting: the .s writes its
- * per-vertex lit colours to scratchpad D_SONY+0x2A00 (block_80023258), one
+ * per-vertex lit colours to scratchpad G_SCRATCH+0x2A00 (block_80023258), one
  * word per vertex, for the LAST gouraud moby it processed (overwritten each
  * moby). Recompute pcol[] for each rec, find the one whose pcol matches the
  * scratchpad (that's the last gouraud moby), and dump element-wise — zero
  * tri-match / cross-moby confound. Call from the verify path. */
 static void shaded_pcol_scratch_check(CPUState* cpu) {
-    uint32_t SCR = D_SONY + 0x2A00u;
+    uint32_t SCR = G_SCRATCH + 0x2A00u;
     int brec=-1; double bscore=1e18;
     for (int r=0; r<s_nshrecs; r++) {            /* find the rec the scratchpad holds */
         shaded_rec* R=&s_shrecs[r]; if (R->vcount<3) continue;
@@ -2858,7 +2845,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
-    s_rec_base = is_spec ? (D_SONY + 0x1600u) : REC_BASE;   /* SPEC queue not relocated */
+    s_rec_base = is_spec ? (G_SCRATCH + 0x1600u) : REC_BASE;   /* SPEC queue not relocated */
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
@@ -2948,7 +2935,7 @@ void moby_native_reextract(CPUState* cpu) {
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
     if (s_canon_spec_valid) {
-        void* h = openpete_psx_to_host_ptr(D_SONY + SPEC_SCR_LO);
+        void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
         if (h) {
             static uint8_t saved_reg[SPEC_SCR_LEN];
             memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */

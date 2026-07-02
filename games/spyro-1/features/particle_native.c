@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
 extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
@@ -40,13 +41,6 @@ extern void     func_80058864(CPUState* cpu);  /* RenderDragonStar (free-a-drago
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map / the format notes) --------------- */
-#define G_PARTICLES    0x80075824u   /* Particle[] base, stride 0x20, m_Type=0xFF term */
-#define G_SPARKLES     0x80077108u   /* Sparkle[8], stride 0x18                        */
-#define D_GLOWS        0x80078800u   /* Glow[16], stride 0x24                          */
-#define D_PARTTEX      0x80076278u   /* ParticleTexture*[32] by m_Type                 */
-#define G_CAMERA       0x80076DD0u   /* projMat +0x00 (5 words), world pos +0x28        */
-#define D_SIN_TABLE    0x8006CBF8u   /* SINE_8 sin[idx]; cos at +0x80                   */
-#define POLYBUF_CURSOR 0x800757B0u
 
 /* ---- captured prims (ground truth) --------------------------------------- *
  * Particle FT4 quads (GPU code 0x2C/0x2E) + glow G3 rings (0x32) decode with
@@ -1066,7 +1060,6 @@ static void sparkle_compare(CPUState* cpu) {
  * 0xE1000620 draw-mode prim makes the whole effect ABR mode 1 ADDITIVE. Output
  * OT = g_HudOT (over the world). Display-only & determinism-safe: the .s writes
  * no gameplay-readable byte (the producer func_8002F3E4 animates D_80076248). */
-#define D_DRAGONSTAR  0x80076248u
 
 static gtri s_dstri[16]; static int s_dstri_n;
 

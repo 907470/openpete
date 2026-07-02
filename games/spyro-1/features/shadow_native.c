@@ -39,23 +39,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_80059F8C(CPUState* cpu);  /* the real MOBY-shadows renderer */
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map / recompiled C) ------------------------- */
-#define G_CAMERA       0x80076DD0u   /* m_ProjectionMatrix +0x00, m_Position +0x28 */
-#define D_SONY         0x8006FCF4u   /* g_SonyImage scratch base                 */
-#define DRAWN_LIST     (D_SONY + 0x2800u) /* drawn-moby list: 8-byte entries     */
-#define G_MOBYSHADOWS  0x80075EF8u   /* {Tiledef shadow; int *shadow_list@+0x08} */
-#define D_SIN_TABLE    0x8006CBF8u   /* SINE_8 sin[idx]; cos at +0x80 (moby)     */
-#define D_COS_TABLE    0x8006CC78u   /* COSINE_8 (Spyro shadow heading)          */
-#define D_SPYROSHADOW  0x8007AA10u   /* SpyroShadow {.. pos@+0x10 .. overwater@+0x24} */
-#define G_SPYRO        0x80078A58u   /* g_Spyro                                  */
-#define G_MODELS       0x80076378u   /* Model* g_Models[]                        */
-#define D_RING         0x8006E268u   /* silhouette ring offset table (packed XY) */
-#define POLYBUF_CURSOR 0x800757B0u
+#define DRAWN_LIST     (G_SCRATCH + 0x2800u) /* drawn-moby list: 8-byte entries     */
 
 /* Moby struct offsets (moby.h) */
 #define MOBY_POS       0x0Cu         /* Vector3D m_Position (x,y,z)              */

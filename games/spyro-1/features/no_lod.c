@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 /* === Recompiler-facing knob storage =================================
  * Reads land in recompiler-generated C via psx_runtime.h externs; the
@@ -85,10 +86,9 @@ int psx_runtime_dbg_kill_env_lp_walk = 0;
  * splash bitmap bytes stay pristine — only the grown queues are
  * relocated. */
 #define NO_LOD_REGION_VADDR       0x80300000u
-#define G_SONY_IMAGE_VADDR        0x8006FCF4u
-#define NO_LOD_HP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x0000u)
-#define NO_LOD_MID_QUEUE_OFFSET   (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x4000u)
-#define NO_LOD_LP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SONY_IMAGE_VADDR + 0x8000u)
+#define NO_LOD_HP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SCRATCH + 0x0000u)
+#define NO_LOD_MID_QUEUE_OFFSET   (NO_LOD_REGION_VADDR - G_SCRATCH + 0x4000u)
+#define NO_LOD_LP_QUEUE_OFFSET    (NO_LOD_REGION_VADDR - G_SCRATCH + 0x8000u)
 #define NO_LOD_REGION_SIZE        0xC000u
 
 static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
@@ -108,8 +108,8 @@ static uint8_t s_no_lod_region[NO_LOD_REGION_SIZE];
  * at setup — or the native walk reads a stale tail (the Sparx trail). */
 #define MOBY_QUEUE_REGION_VADDR   0x80600000u
 #define MOBY_QUEUE_REGION_SIZE    0x10000u
-#define MOBY_REG_QUEUE_OFFSET       (MOBY_QUEUE_REGION_VADDR - G_SONY_IMAGE_VADDR)
-#define MOBY_REG_QUEUE_LIMIT_OFFSET (MOBY_QUEUE_REGION_VADDR - G_SONY_IMAGE_VADDR + MOBY_QUEUE_REGION_SIZE)
+#define MOBY_REG_QUEUE_OFFSET       (MOBY_QUEUE_REGION_VADDR - G_SCRATCH)
+#define MOBY_REG_QUEUE_LIMIT_OFFSET (MOBY_QUEUE_REGION_VADDR - G_SCRATCH + MOBY_QUEUE_REGION_SIZE)
 
 static uint8_t s_moby_queue_region[MOBY_QUEUE_REGION_SIZE];
 

@@ -1,0 +1,276 @@
+# Curated PSX symbol aliases for the native-renderer feeders.
+#
+# Hand-maintained: the readable ALIAS the feeder code uses, joined by address
+# to the authoritative manifest (globals.toml / symbols.toml) at build time.
+# tools/gen_symbols_header.py generates gen/spyro1_symbols.gen.h from this and
+# FAILS the build if any `addr` is not a symbol start in the manifest (or, for
+# `base`/`offset` interiors, if base+offset != the manifest math), so a psx.map
+# rebuild that moves or renames a symbol surfaces here instead of going stale.
+#
+# Why curated aliases instead of the raw manifest names: recomp globals only
+# have D_<addr> names (non-descriptive), the decomp names (g_Camera, ...) are
+# REAL linker symbols that a `#define` would clobber, and the feeders want
+# SCREAMING_CASE raw vaddr integers for cpu->read_word(). See plan W0.8.
+#
+# NOT here (deliberately kept local): the PSX hardware scratchpad 0x1F800000,
+# the openpete-invented relocation regions (no_lod.c 0x80300000/0x80600000),
+# and non-address sentinels (PORTAL_RGB_RESOLVE, FPS_TINT) — none are PSX
+# symbols, so the drift-check can't validate them.
+
+# ---- gameplay structs / pointers (decomp names in the manifest) ----
+[[symbol]]
+name = "G_CAMERA"
+addr = 0x80076DD0
+note = "g_Camera; m_ProjectionMatrix @+0x00, m_Position @+0x28, heading @+0x50"
+
+[[symbol]]
+name = "G_SPYRO"
+addr = 0x80078A58
+note = "g_Spyro; m_Position @+0x00"
+
+[[symbol]]
+name = "G_MODELS"
+addr = 0x80076378
+note = "g_Models[512]; [0] = SPYRO_MODEL"
+
+[[symbol]]
+name = "G_LEVELMOBYS"
+addr = 0x80075828
+note = "g_LevelMobys; head of the stride-0x58 Moby array"
+
+[[symbol]]
+name = "G_PARTICLES"
+addr = 0x80075824
+note = "g_Particles; Particle[] base POINTER (deref), stride 0x20, m_Type=0xFF term"
+
+[[symbol]]
+name = "G_CYCLORAMA"
+addr = 0x80078A40
+note = "g_Cyclorama"
+
+[[symbol]]
+name = "G_SPYROFLAME"
+addr = 0x800786C8
+note = "g_SpyroFlame; m_Position @+0x00, attach matrix @+0xB8 (was G_FLAME)"
+
+[[symbol]]
+name = "G_ENVIRONMENT"
+addr = 0x800785A8
+note = "g_Environment"
+
+[[symbol]]
+name = "G_DRAGON_CUTSCENE"
+addr = 0x80077030
+note = "g_DragonCutscene; m_State @+0x28, m_CutsceneTicks @+0x3C, m_CutsceneSpyro @+0x88"
+
+[[symbol]]
+name = "G_PORTALS"
+addr = 0x80078640
+note = "g_Portals[6]"
+
+[[symbol]]
+name = "G_PORTALCOUNT"
+addr = 0x800758BC
+note = "g_PortalCount"
+
+[[symbol]]
+name = "G_MOBYSHADOWS"
+addr = 0x80075EF8
+note = "{Tiledef shadow; int* shadow_list @+0x08}"
+
+[[symbol]]
+name = "G_SPARKLES"
+addr = 0x80077108
+note = "Sparkle[8], stride 0x18"
+
+[[symbol]]
+name = "G_LEVELID"
+addr = 0x8007596C
+note = "g_LevelId; ==63 (Gnasty) -> width>>2 + R<->G swap"
+
+# ---- shared scratch / cursors ----
+[[symbol]]
+name = "G_SCRATCH"
+addr = 0x8006FCF4
+note = "general render scratch — manifest g_SonyImage, named only for its first use (Sony/universal logos); really a shared scratch buffer (moby recs +0x1600, seg matrices +0x1900). was D_SONY/DSONY/D_SCRATCH"
+
+[[symbol]]
+name = "POLYBUF_CURSOR"
+addr = 0x800757B0
+note = "polybuf write cursor (holds a ptr)"
+
+# ---- tables / LUTs (recomp D_<addr> names in the manifest) ----
+[[symbol]]
+name = "D_SIN_TABLE"
+addr = 0x8006CBF8
+note = "SINE_8 sin[idx]; cos at +0x80 (s16 1.12); was SINCOS_TABLE"
+
+[[symbol]]
+name = "D_COS_TABLE"
+addr = 0x8006CC78
+note = "COSINE_8"
+
+[[symbol]]
+name = "D_VERT_LUT"
+addr = 0x8006D614
+note = "128-entry x4B packed-delta / colour LUT"
+
+[[symbol]]
+name = "D_COL_LUT2"
+addr = 0x8006D808
+note = "adjacent LUT (colour)"
+
+[[symbol]]
+name = "D_FLAME_CONN"
+addr = 0x8006D94C
+note = "flame strip connectivity (index pairs)"
+
+[[symbol]]
+name = "D_FLAME_GEOM"
+addr = 0x8006DAA8
+note = "flame vertex geometry (16-byte records)"
+
+[[symbol]]
+name = "D_FLAME_UV"
+addr = 0x8006E1A8
+note = "per-strand flame UV/colour table (8 words)"
+
+[[symbol]]
+name = "D_RING"
+addr = 0x8006E268
+note = "shadow silhouette ring offset table (packed XY)"
+
+[[symbol]]
+name = "D_SHADE_COLTAB"
+addr = 0x8006E3D8
+note = "shaded base-colour table, idx = m_SpecularMetalColor>>22"
+
+[[symbol]]
+name = "D_METAL_COLTAB"
+addr = 0x8006E44C
+note = "shaded METAL base-colour table, 8B/entry, idx = m_SpecularMetalColor>>21"
+
+[[symbol]]
+name = "D_DRAGON_SHRINK"
+addr = 0x8006F3C0
+note = "short[24] dragon-rescue disappear shrink ramp (draw.c:1924 D_8006F3C0)"
+
+[[symbol]]
+name = "D_METAL_TILEDEF"
+addr = 0x800756F0
+note = "static metal env-texture Tiledef (level-load)"
+
+[[symbol]]
+name = "D_SPEC_LIGHT"
+addr = 0x800770C8
+note = "SpecularAndMetal; +0/+4/+8 = directional light dir"
+
+[[symbol]]
+name = "D_VISIBILITY"
+addr = 0x800771C8
+note = "per-sector visibility VERDICT (1 byte/sector)"
+
+[[symbol]]
+name = "D_PARTTEX"
+addr = 0x80076278
+note = "ParticleTexture*[32] by m_Type"
+
+[[symbol]]
+name = "D_DRAGONSTAR"
+addr = 0x80076248
+note = "dragon-rescue star particle table"
+
+[[symbol]]
+name = "D_GLOWS"
+addr = 0x80078800
+note = "Glow[16], stride 0x24"
+
+# ---- portal animation / clip / fog ----
+[[symbol]]
+name = "D_PORTAL_YAW"
+addr = 0x80075858
+note = "portal rotation yaw (animated)"
+
+[[symbol]]
+name = "D_PORTAL_PITCH"
+addr = 0x800758FC
+note = "portal rotation pitch (animated)"
+
+[[symbol]]
+name = "D_PORTAL_DEPTH"
+addr = 0x80075934
+note = "portal OT depth"
+
+[[symbol]]
+name = "D_CLIPRECT"
+addr = 0x8007AA00
+note = "portal clip rect; minY,maxY,minX,maxX each <<16"
+
+[[symbol]]
+name = "D_BLEND_TARGET"
+addr = 0x800757D4
+note = "GTE far-colour (FC), the fog target (0x00BBGGRR)"
+
+[[symbol]]
+name = "D_FOG_FACTOR"
+addr = 0x8007575C
+note = "GTE IR0, the DPCS depth-cue lerp coeff (0x1000 = 1.0)"
+
+# ---- shadows ----
+[[symbol]]
+name = "D_SPYROSHADOW"
+addr = 0x8007AA10
+note = "SpyroShadow; ground anchor m_Position @+0x10, overwater @+0x24; was G_SHADOW"
+
+# ---- tracer / beam ----
+[[symbol]]
+name = "TRACER_COUNT"
+addr = 0x80075684
+note = "active tracer set count (drained to 0 by the .s)"
+
+[[symbol]]
+name = "TRACER_CNTTAB"
+addr = 0x800772C8
+note = "per-set point count"
+
+[[symbol]]
+name = "TRACER_BASETAB"
+addr = 0x80078658
+note = "per-set points-base pointer"
+
+# ---- gamestate transition ----
+[[symbol]]
+name = "D_GS_EXIT_MODE"
+addr = 0x800758B8
+note = "gamestate exit mode"
+
+[[symbol]]
+name = "D_GS_EXIT_TICK"
+addr = 0x8007568C
+note = "gamestate exit tick"
+
+# ---- struct interiors (base is a manifest symbol; addr = base + offset) ----
+[[symbol]]
+name = "G_HUD_ICONS"
+base = 0x80077FA8            # g_Hud
+offset = 0x44
+note = "g_Hud.m_Mobys[12] — static 3D HUD icons (stride 0x58)"
+
+[[symbol]]
+name = "G_CYCLORAMA_BG_COLOR"
+base = 0x80078A40            # g_Cyclorama
+offset = 0x10
+note = "g_Cyclorama.m_BackgroundColor"
+
+# ---- function addresses (validated against symbols.toml, not globals.toml) ----
+[[symbol]]
+name = "GS_EXIT_FN_LO"
+addr = 0x8001C694
+kind = "function"
+note = "gamestate-exit fn (lo half of the addr compare)"
+
+[[symbol]]
+name = "GS_EXIT_FN_HI"
+addr = 0x8001CA38
+kind = "function"
+note = "gamestate-exit fn (hi half)"

@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_80058D64(CPUState* cpu);  /* the real FLAME renderer */
 extern unsigned openpete_frame;
@@ -50,13 +51,6 @@ void flame_native_set_subframe(double frac) {
 }
 
 /* ---- gamestate addresses (psx.map) --------------------------------------- */
-#define G_SPYROFLAME  0x800786C8u   /* flame struct; attach matrix @ +0xB8     */
-#define G_CAMERA      0x80076DD0u   /* m_ProjectionMatrix +0x00, m_Position +0x28 */
-#define D_SIN_TABLE   0x8006CBF8u   /* SINE_8 sin[idx]; cos at +0x80 (s16 1.12) */
-#define D_FLAME_CONN  0x8006D94Cu   /* strip connectivity (index pairs)        */
-#define D_FLAME_GEOM  0x8006DAA8u   /* flame vertex geometry (16-byte records)  */
-#define D_FLAME_UV    0x8006E1A8u   /* per-strand UV/colour table (8 words)     */
-#define POLYBUF_CURSOR 0x800757B0u
 
 /* flame struct offsets (from the format notes) */
 #define FL_POS        0x00u         /* Vector3D m_Position (origin)            */

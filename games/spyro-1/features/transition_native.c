@@ -43,29 +43,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
 extern void     func_8001C694(CPUState* cpu);   /* the real GS_ExitLevel screen */
 extern unsigned openpete_frame;
 
-#define POLYBUF_CURSOR 0x800757B0u
 /* D_800758B8: func_8001C694's case selector — 0 = the green-tinted grayscale
  * freeze of the level being exited; 1 = the colour cross-fade (-> func_8004F000,
  * already fed). (The decomp names it "pause text rotation ticks"; reused here.) */
-#define D_GS_EXIT_MODE 0x800758B8u
 /* D_8007568C: the per-case fade tick, 0..31 (func_8002E084 increments it each tick,
  * resets at 32 and advances the case). In case 0 it shrinks the grayscale CLUT load
  * (setRECT width 32-tick), fading the frozen level to black. */
-#define D_GS_EXIT_TICK 0x8007568Cu
 /* g_Cyclorama.m_BackgroundColor (g_Cyclorama @0x80078A40 + 0x10): the destination
  * homeworld's flat background colour. In case 1 the game clears the framebuffer to
  * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) — a linear fade-in from black, drawn
  * BEHIND the cyclorama mesh. */
-#define G_CYCLORAMA_BG_COLOR 0x80078A50u
 /* func_8001C694's address span [start, next fn) — to tell the exit-level's nested
  * func_8004F000 call (ra inside this range) from the balloonist's standalone one. */
-#define GS_EXIT_FN_LO 0x8001C694u
-#define GS_EXIT_FN_HI 0x8001CA38u
 
 #define CRED   "\033[1;31m"
 #define CRESET "\033[0m"

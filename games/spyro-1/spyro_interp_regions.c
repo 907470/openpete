@@ -48,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 /* DIRECT singleton regions — captured whole into the interp ring each tick.
  *   g_Camera (0x110): the smooth-follow camera (re-run feeder).
@@ -75,12 +76,9 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */
 
-#define G_LEVELMOBYS   0x80075828u   /* Moby* g_LevelMobys → head of the array */
 #define MOBY_STRIDE    0x58u         /* stride between live moby records */
 #define MOBY_STATE_OFF 0x48u         /* +0x48: 0xFF = array sentinel, >=0x80 dead */
-#define G_HUD_ICONS    0x80077FECu   /* g_Hud.m_Mobys[12] — static 3D HUD icons (stride 0x58) */
 #define G_HUD_COUNT    12u           /* gem/dragon/Spyro-head/key/digit icons (they spin) */
-#define G_PARTICLES    0x80075824u   /* Particle[] base POINTER (deref); stride 0x20 */
 #define PART_STRIDE    0x20u         /* particle record stride */
 #define PART_HDR_SEL   8u            /* (hdr>>8)&0xFF: m_Type/sel; 0xFF=end, &0x80=inactive */
 #define PART_MAX       320u          /* pool walk bound */

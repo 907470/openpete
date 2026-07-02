@@ -36,16 +36,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map / recompiled C / r_environment.s) -------- */
-#define G_ENVIRONMENT  0x800785A8u   /* Environment struct (see offsets below)   */
-#define G_CAMERA       0x80076DD0u   /* m_ProjectionMatrix +0x00, m_Position +0x28 */
-#define D_VISIBILITY   0x800771C8u   /* per-sector visibility VERDICT (1 byte/sector) */
-#define POLYBUF_CURSOR 0x800757B0u   /* shared polybuf write cursor (holds a ptr) */
-#define D_SONY         0x8006FCF4u   /* g_SonyImage scratch; HP queue +0x1C00, LP +0x2000 */
 
 /* Environment field offsets (environment.h:60-73) */
 #define ENV_SECTORPTR   0x00u
@@ -620,7 +616,7 @@ static int defer_cmp(const void* a, const void* b) {
 static void terrain_read_defer(CPUState* cpu) {
     s_defer_n = 0;
     s_defer_hdr2 = s_defer_cell2 = s_defer_hdr1e = s_defer_cell1e = 0;
-    const uint32_t qbase[2] = { D_SONY + 0x2000u, D_SONY + 0x1E00u };
+    const uint32_t qbase[2] = { G_SCRATCH + 0x2000u, G_SCRATCH + 0x1E00u };
     for (int q = 0; q < 2; q++) {
         uint32_t p = qbase[q];
         for (int guard = 0; guard < MAX_DEFER * 2; guard++) {

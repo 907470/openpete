@@ -40,16 +40,11 @@
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* sub-tick re-extract entry */
+#include "spyro1_symbols.gen.h"
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
 
-#define G_CAMERA       0x80076DD0u
-#define POLYBUF_CURSOR  0x800757B0u   /* D_800757B0: polybuf write cursor (range record) */
-#define TRACER_COUNT    0x80075684u   /* active set count (drained to 0 by the .s) */
-#define TRACER_CNTTAB   0x800772C8u   /* per-set point count                       */
-#define TRACER_BASETAB  0x80078658u   /* per-set points-base pointer               */
-#define G_LEVELID       0x8007596Cu   /* g_LevelId; ==63 (Gnasty) -> width>>2 + R<->G swap */
 
 #define MAX_SETS 16
 #define MAX_PTS  72

@@ -35,12 +35,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
 extern unsigned openpete_frame;
 
-#define G_CYCLORAMA      0x80078A40u
-#define POLYBUF_CURSOR   0x800757B0u   /* D_800757B0: polybuf write cursor */
 
 /* ---- native scene triangle (screen-space, float) -------------------- */
 typedef struct { float sx, sy; uint32_t rgb; unsigned char sat; } cyc_vert; /* rgb=low24; sat=GTE IR1/IR2 would clamp */

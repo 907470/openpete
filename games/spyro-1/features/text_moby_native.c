@@ -43,8 +43,8 @@
 
 #include <math.h>
 #include <stdint.h>
+#include "spyro1_symbols.gen.h"
 
-#define G_MODELS 0x80076378u
 
 /* --- glyph metrics (model units) + layout (window-height fractions) --- */
 #define TXT_MODEL_H   152.0f   /* glyph y-extent (-76..76) the cap-height maps to */

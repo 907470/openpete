@@ -13,28 +13,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern unsigned openpete_frame;
 
-#define G_CAMERA      0x80076DD0u
 #define CAM_BYTES     0x110u
-#define G_CYCLORAMA   0x80078A40u
-#define G_SPYRO       0x80078A58u   /* m_Position @ +0x00 */
-#define G_LEVELMOBYS  0x80075828u   /* Moby* → head of the stride-0x58 array */
-#define G_HUD_ICONS   0x80077FECu   /* g_Hud.m_Mobys[12] — static 3D HUD icons (spin) */
 #define G_HUD_COUNT   12u
 #define MOBY_STRIDE   0x58u
 #define MOBY_STATE    0x48u
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
 #define SPYRO_REGION  1u            /* index in s_spyro_interp_regions (after g_Camera) */
 #define SPYRO_SAVE    0x28u         /* g_Spyro bytes bracketed: pos(0x00) + per-seg anim(..0x26) */
-#define G_FLAME       0x800786C8u   /* g_SpyroFlame: m_Position @ +0x00, attach matrix @ +0xB8 */
 #define FLAME_REGION  2u            /* index in s_spyro_interp_regions (after g_Spyro) */
 #define FLAME_SAVE    0xD0u         /* flame bytes bracketed (covers pos + attach @ 0xB8..0xCC) */
 #define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
 #define FLAME_CNT_OFF 0x20u         /* per-strand keyframe counter [8] (u8, += g_DeltaTime/tick) */
 #define FLAME_ATT_OFF 0xB8u         /* flame-attach SHORTMATRIX (9 int16 + pad) */
-#define G_SHADOW      0x8007AA10u   /* SpyroShadow: ground anchor m_Position @ +0x10 */
 #define SHADOW_REGION 3u            /* index in s_spyro_interp_regions (after g_SpyroFlame) */
 #define SHADOW_SAVE   0x1Cu         /* shadow bytes bracketed (covers anchor @ 0x10..0x1C) */
 #define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
@@ -49,7 +43,6 @@ typedef struct { uint32_t addr; uint8_t bytes[MOBY_STRIDE]; } moby_save_t;
  * The spine lerps each active particle's position by its per-object alpha (keyed
  * by slot address in the interp-objs table) so they animate at the present rate.
  * Only +0x04/+0x08 are bracketed (saved/restored). */
-#define G_PARTICLES     0x80075824u  /* Particle[] base POINTER (deref) */
 #define PART_STRIDE     0x20u
 #define PART_HDR_SEL    8u           /* (hdr>>8)&0xFF: 0xFF=end, &0x80=inactive */
 #define PART_POS_OFF    0x04u        /* X(lo16)/Y(hi16) word; Z(lo16) at +0x08 */
@@ -262,7 +255,6 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
  * sub-ticks between N and N+1 is correct: the visible set doesn't change within
  * a tick. The geometry still re-projects through the interpolated camera, so
  * mobys/Spyro move smoothly; only the (sub-pixel) cull decision is tick-N's. */
-#define DSONY            0x8006FCF4u          /* g_SonyImage scratch base */
 #define DSONY_LO         0x1000u              /* captured span low offset (incl) */
 #define DSONY_HI         0x2C00u              /* captured span high offset (excl) */
 #define DSONY_SPAN       (DSONY_HI - DSONY_LO)
@@ -283,7 +275,7 @@ static int      s_canon_scratch_valid = 0;
  * so "valid" means "captured THIS tick" without needing a begin-of-frame hook. */
 static uint32_t s_canon_scratch_frame = 0xFFFFFFFFu;
 
-/* Explicit scratch sub-regions (offsets from DSONY). The REGULAR cull-record
+/* Explicit scratch sub-regions (offsets from G_SCRATCH). The REGULAR cull-record
  * region [0x1600,0x2400) and the Spyro per-segment scratch [0x1900,0x1A00)
  * OVERLAP — the .s reuses 0x1900 temporally (the moby pass fills the records
  * there, then the Spyro pass overwrites them with its seg scratch once the
@@ -308,12 +300,12 @@ static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
 static int      s_canon_recs_valid = 0;
 static uint32_t s_canon_recs_frame  = 0xFFFFFFFFu;    /* W0.6: canonical frame that set _valid */
 
-/* Capture a DSONY sub-range at its producer hook (called from the canonical
+/* Capture a G_SCRATCH sub-range at its producer hook (called from the canonical
  * moby/spyro render hooks while the scratch is still live). */
 void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     (void)cpu_v;
     if (off < DSONY_LO || off + len > DSONY_HI) return;
-    const void* h = openpete_psx_to_host_ptr(DSONY + off);
+    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + off);
     if (!h) return;
     memcpy(s_canon_dsony + (off - DSONY_LO), h, len);
     s_canon_scratch_valid = 1;
@@ -341,7 +333,7 @@ void spyro_native_canon_capture_sxy(void* cpu_v) {
  * Restored for the moby feeder by scratch_bracket_enter. */
 void spyro_native_canon_capture_recs(void* cpu_v) {
     (void)cpu_v;
-    const void* h = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
+    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
     if (!h) return;
     memcpy(s_canon_recs, h, RECS_LEN);
     s_canon_recs_valid = 1;
@@ -357,9 +349,9 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
  * overlays the seg scratch for the Spyro feeder (called between them). */
 static void scratch_bracket_enter(CPUState* cpu) {
     if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
-    void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
-    void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
-    void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);
+    void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
+    void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
+    void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
     /* Save TRUE live (before any restore). The records region [0x1600,0x2400)
      * spans the seg sub-range, so this one save/restore covers the seg too. */
     if (hc) memcpy(s_live_dsony + (COLOUR_OFF - DSONY_LO), hc, COLOUR_LEN);
@@ -381,7 +373,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
 static void scratch_bracket_seg_restore(CPUState* cpu) {
     (void)cpu;
     if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
-    void* h = openpete_psx_to_host_ptr(DSONY + SEG_OFF);
+    void* h = openpete_psx_to_host_ptr(G_SCRATCH + SEG_OFF);
     if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
     /* Fairy-Kiss pre-blend colour table — same temporal reuse as the seg scratch:
      * the Spyro pass wrote it over the (now-consumed) records, so overlay the fresh
@@ -389,7 +381,7 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
      * value and Spyro's colours flicker at >30fps during a Fairy-Kiss). Captured at
      * the Spyro hook (spyro_native.c); when Fairy-Kiss is inactive it's harmless
      * (build_spyro_walk reads m_Colors, not 0x1D00). */
-    void* hf = openpete_psx_to_host_ptr(DSONY + FK_OFF);
+    void* hf = openpete_psx_to_host_ptr(G_SCRATCH + FK_OFF);
     if (hf) memcpy(hf, s_canon_dsony + (FK_OFF - DSONY_LO), FK_LEN);
 }
 
@@ -397,9 +389,9 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
  * records-region restore [0x1600,0x2400) covers the seg sub-range too. */
 static void scratch_bracket_leave(CPUState* cpu) {
     if (!s_canon_scratch_valid || s_canon_scratch_frame != openpete_frame) return;
-    void* hc = openpete_psx_to_host_ptr(DSONY + COLOUR_OFF);
-    void* hr = openpete_psx_to_host_ptr(DSONY + RECS_OFF);
-    void* hs = openpete_psx_to_host_ptr(DSONY + SHADED_OFF);
+    void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
+    void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
+    void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
     if (hc) memcpy(hc, s_live_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
     if (hr) memcpy(hr, s_live_recs, RECS_LEN);
     if (hs) memcpy(hs, s_live_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
@@ -417,8 +409,8 @@ static void spyro_native_reextract(void* cpu_v) {
     static const struct { uint32_t addr, len; const char* name; } bc_regs[] = {
         { G_CAMERA, CAM_BYTES,   "g_Camera"      },
         { G_SPYRO,  SPYRO_SAVE,  "g_Spyro"       },
-        { G_FLAME,  FLAME_SAVE,  "g_SpyroFlame"  },
-        { G_SHADOW, SHADOW_SAVE, "g_SpyroShadow" },
+        { G_SPYROFLAME,  FLAME_SAVE,  "g_SpyroFlame"  },
+        { D_SPYROSHADOW, SHADOW_SAVE, "g_SpyroShadow" },
     };
     const int bc_n = (int)(sizeof(bc_regs) / sizeof(bc_regs[0]));
     uint64_t bc_h0[4];
@@ -631,7 +623,7 @@ static void spyro_native_reextract(void* cpu_v) {
          *
          * Teleport-guard the flame's first active tick (prev pose stale from
          * before activation): snap when the origin jumps far. */
-        fl = (uint8_t*)openpete_psx_to_host_ptr(G_FLAME);
+        fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
         if (fl) {
             const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION];
             const int32_t* pp = (const int32_t*)(pfl + FLAME_POS_OFF);
@@ -678,7 +670,7 @@ static void spyro_native_reextract(void* cpu_v) {
          * so the shadow tracks him; teleport-guard a jump (level transition / warp
          * / a frame Spyro lifts off → re-grounds). (Moby shadows need no bracket —
          * they re-derive from each moby's already-interpolated m_Position.) */
-        sh = (uint8_t*)openpete_psx_to_host_ptr(G_SHADOW);
+        sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
         if (sh) {
             const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION];
             const int32_t* pp = (const int32_t*)(psh + SHADOW_POS_OFF);

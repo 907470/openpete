@@ -39,21 +39,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "spyro1_symbols.gen.h"
 
 extern void     func_80023AC4(CPUState* cpu);  /* the real SPYRO renderer */
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map) --------------------------------------- */
-#define G_SPYRO       0x80078A58u   /* the player struct (r_pete.s $ra base)   */
-#define G_SPYROFLAME  0x800786C8u   /* flame-attach matrix cache @ +0xB8       */
-#define G_MODELS      0x80076378u   /* Model* g_Models[]; [0] = SPYRO_MODEL     */
-#define G_CAMERA      0x80076DD0u   /* m_ProjectionMatrix +0x00, m_Position +0x28 */
-#define D_VERT_LUT    0x8006D614u   /* 128-entry x4B packed-delta / colour LUT  */
-#define D_COL_LUT2    0x8006D808u   /* adjacent LUT (colour? — pin via A/B)     */
-#define D_SIN_TABLE   0x8006CBF8u   /* sin[idx]; cos at D_8006CC78 (s16 1.12)   */
-#define D_COS_TABLE   0x8006CC78u
-#define D_SCRATCH     0x8006FCF4u   /* g_SonyImage scratch (seg matrices +0x1900)*/
-#define POLYBUF_CURSOR 0x800757B0u
 
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
@@ -210,9 +201,9 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
     fprintf(stderr, "  gte_ctrl R[0..4] (post-call): %08X %08X %08X %08X %08X\n",
             cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2], cpu->gte_ctrl[3], cpu->gte_ctrl[4]);
 
-    /* Segment matrix scratch block (D_SCRATCH+0x1900, stride 0x44). */
+    /* Segment matrix scratch block (G_SCRATCH+0x1900, stride 0x44). */
     for (int s = 0; s < 3; s++) {
-        uint32_t e = D_SCRATCH + 0x1900u + (uint32_t)s * 0x44u;
+        uint32_t e = G_SCRATCH + 0x1900u + (uint32_t)s * 0x44u;
         fprintf(stderr, "  seg-scratch[%d] @%08X:\n   ", s, e);
         for (int w = 0; w < 0x11; w++) fprintf(stderr, "%08X ", cpu->read_word(e + (uint32_t)w*4));
         fprintf(stderr, "\n");
@@ -239,7 +230,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
  * ======================================================================== *
  * Spyro's geometry is delta-accumulated, dual-width, two-keyframe-blended.
  * Phase A (the .s) pre-builds, per segment, a scratch entry at
- * D_SCRATCH+0x1900 + seg*0x44:
+ * G_SCRATCH+0x1900 + seg*0x44:
  *   +0x00 frameData  (sign=matrix-present, 0x1000=A 2-byte, 0x2000=B 2-byte,
  *                     [11:0]=INTPL blend (1.12), [23:14]=vertex count)
  *   +0x04..0x0C TRX/TRY/TRZ          +0x10..0x20 R11R12..R33 (SHORTMATRIX)
@@ -251,7 +242,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
  * the running-accumulator decode + INTPL lerp + RTPS in float. Re-deriving the
  * segment matrices from gamestate (Phase A) is a later step. */
 
-#define SEG_SCRATCH (D_SCRATCH + 0x1900u)
+#define SEG_SCRATCH (G_SCRATCH + 0x1900u)
 #define SEG_STRIDE  0x44u
 #define SEG_BLOCK   (3u * SEG_STRIDE)   /* 3 segments (body/head/tail) */
 
@@ -441,7 +432,7 @@ static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3
  * ======================================================================== *
  * The last .s per-frame coupling for Spyro geometry: spyro_project_all reads
  * each segment's view×rotation matrix (M) and translation (TR) straight from
- * the Phase-A scratch block (D_SCRATCH+0x1900). Here we rebuild them from
+ * the Phase-A scratch block (G_SCRATCH+0x1900). Here we rebuild them from
  * gamestate (g_Camera projection matrix × g_Spyro pose + the seam joints),
  * the moby-3a.1→3a.4.3 analog. RE'd from r_pete.s 281-622 (.L80023EE0 TR +
  * .L800241E0/.L80024290/.L80024344 euler + D_80024054 seam RTPS):
@@ -994,7 +985,7 @@ static void spyro_idx_audit(CPUState* cpu) {
  *     ((w0>>{20,11,2})&0x7FC)>>2.
  *   word1 = $s0: three colour indices ((>>17,>>8,<<1)&0x7FC) into m_Colors
  *     (packed RGB words). Colour table = m_Colors when colorFilter.interp==0
- *     (the common case), else the Fairy-Kiss pre-blend scratch D_SCRATCH+0x1D00.
+ *     (the common case), else the Fairy-Kiss pre-blend scratch G_SCRATCH+0x1D00.
  *   FRESH (stride 0x18): word2 @+8 -> i3=(w2&0x7FC)>>2, c3=(w2>>9)&0x7FC; UVs
  *     (Tiledef) @+0xC/+0x10/+0x14; dual-NCLIP -> quad(0x3C GT4) / tri(0x34 GT3) /
  *     skip (the moby emit map: t6a=NCLIP1, t6b=NCLIP2 with bit0 sign-negate;
@@ -1054,7 +1045,7 @@ static int build_spyro_walk(CPUState* cpu) {
     uint32_t faces     = cpu->read_word(animHdr + 0x14);
     uint32_t colorbase = cpu->read_word(animHdr + 0x18);          /* m_Colors */
     if ((cpu->read_word(G_SPYRO + 0x28) >> 24) != 0)              /* colorFilter.interp */
-        colorbase = D_SCRATCH + 0x1D00u;                         /* Fairy-Kiss pre-blend */
+        colorbase = G_SCRATCH + 0x1D00u;                         /* Fairy-Kiss pre-blend */
     if (faces < 0x80000000u || colorbase < 0x80000000u) return 0;
     uint32_t len = cpu->read_word(faces);
     if (len == 0 || len > 0x20000u) return 0;
@@ -1260,7 +1251,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
          * pointers + vert counts) and Spyro's projected SXY (the NCLIP cull
          * verdict), both live now, so intermediates can re-derive Spyro. */
         spyro_native_canon_capture_range(cpu, 0x1900u, 0x100u);
-        /* Fairy-Kiss pre-blend colour table (D_SCRATCH+0x1D00): produced by
+        /* Fairy-Kiss pre-blend colour table (G_SCRATCH+0x1D00): produced by
          * func_80023AC4 ABOVE when g_Spyro.colorFilter.interp != 0. It lives inside
          * the [0x1600,0x2400) record region, so the sub-tick's s_canon_recs restore
          * (captured at the earlier MOBY hook, BEFORE this Spyro pass wrote it) leaves
