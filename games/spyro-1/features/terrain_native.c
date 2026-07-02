@@ -28,6 +28,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_native_render.h"
+#include "openpete_psx.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 
@@ -686,6 +687,150 @@ static int s_caldbg = -1, s_cal_qn;         /* calibration probe (OPENPETE_TERRA
 static int s_nearq = -2;                     /* OPENPETE_TERRAIN_NEARQ: use queue oracle (debug) */
 static double s_cal_qsum_max, s_cal_qmin_max, s_cal_nqsum_min;
 
+/* ---- sector decode cache (terrain Tier 1, mirrors the moby faceblock cache) --
+ * A sector's geometry is STATIC world-space level data: packed vertex words,
+ * face words (indices/colour offsets/flags) and each HP face's LQ Tiledef never
+ * change while the level is loaded — yet the build re-read and re-unpacked all
+ * of it through cpu->read_word per sector PER PRESENT. Decode once per sector
+ * (key: sector vaddr + a 5-word header signature, so a level load re-decodes;
+ * 2-way probe — the 1-way moby map thrashed on ~80 hot entries) and iterate
+ * the decoded arrays; only projection, NCLIP, near-classification, fog and the
+ * near/HQ subdivide stay per-present. Colour arrays additionally resolve to
+ * host pointers once per sector pass. Display-only; behaviour is byte-identical
+ * to the inline parse (verified by the headless same-frame screenshot diff). */
+typedef struct { int16_t x, y, z; } tsvert_t;      /* unpacked local vertex */
+typedef struct {
+    uint8_t  i0, i1, i2, i3, quad, flip;
+    uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
+    uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
+    uint32_t w3;                                   /* HP word3 (face_is_near gates) */
+    tmat mat; float tu[4], tv[4];                  /* LQ-tier texmat (HP; LP untextured) */
+} tsface_t;
+typedef struct {
+    uint32_t s, sig[5];
+    int nLpV, nLpF, nHpV, nHpF, flags;
+    int originX, originY, originZ;
+    uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
+    tsvert_t* lpV; tsface_t* lpF;
+    tsvert_t* hpV; tsface_t* hpF;
+} tscache_t;
+#define TSC_SLOTS 512
+static tscache_t s_tsc[TSC_SLOTS];
+static long s_tsc_hit, s_tsc_miss;
+static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
+    static int on = -1, n;
+    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_CACHE_DBG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    if (on && ++n >= 120) {
+        fprintf(stderr, "[ter-cache] hit=%ld miss=%ld\n", s_tsc_hit, s_tsc_miss);
+        s_tsc_hit = s_tsc_miss = 0; n = 0;
+    }
+}
+
+static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, tsvert_t* out) {
+    for (int k = 0; k < nv; k++) {
+        uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
+        out[k].x = (int16_t)((v >> 21) & 0x7FF);
+        out[k].y = (int16_t)((v >> 10) & 0x7FF);
+        out[k].z = (int16_t)(v & 0x3FF);
+    }
+}
+static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStride,
+                             uint32_t lqTable, uint32_t hqTable, int texTblMode,
+                             int hiDetail, tsface_t* out) {
+    for (int f = 0; f < nf; f++) {
+        tsface_t* F = &out[f];
+        uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
+        uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);
+        memset(F, 0, sizeof(*F));
+        if (faceStride == 16) {                    /* HP: byte indices; word2 tex; word3 flags */
+            F->i0 = (uint8_t)((w0 >> 24) & 0xFF); F->i1 = (uint8_t)((w0 >> 16) & 0xFF);
+            F->i2 = (uint8_t)((w0 >> 8) & 0xFF);  F->i3 = (uint8_t)(w0 & 0xFF);
+            uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
+            uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
+            F->flip = (w3 & 0x2) != 0; F->fogbias = (w3 & 0x1) != 0; F->w3 = w3;
+            F->c0 = (uint16_t)((w1 >> 22) & 0x3FC); F->c1 = (uint16_t)((w1 >> 14) & 0x3FC);
+            F->c2 = (uint16_t)((w1 >> 6) & 0x3FC);  F->c3 = (uint16_t)((w1 << 2) & 0x3FC);
+            F->hq_idx = (uint8_t)(w2 & 0x7F); F->abe = (w2 & 0x80) != 0;
+            F->trirot = (uint8_t)((w2 >> 8) & 3u);
+            int tb = (int)(int8_t)(w2 & 0xFF);
+            uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
+            terrain_texmat(cpu, tbl, tb, hiDetail, &F->mat, F->tu, F->tv);
+        } else {                                   /* LP: 6-bit indices; untextured */
+            F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
+            F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
+            F->c0 = (uint16_t)((w1 >> 24) & 0xFC); F->c1 = (uint16_t)((w1 >> 18) & 0xFC);
+            F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
+            F->mat.bpp = 16;                       /* untextured flat gouraud */
+        }
+        F->quad = (F->i2 != F->i3);
+    }
+}
+
+static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
+                                uint32_t lqTable, uint32_t hqTable,
+                                int texTblMode, int hiDetail) {
+    uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
+                      rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
+    uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
+    tscache_t* C = &s_tsc[h];
+    if (!(C->s == s && C->sig[0]==g[0] && C->sig[1]==g[1] && C->sig[2]==g[2]
+          && C->sig[3]==g[3] && C->sig[4]==g[4])) {
+        tscache_t* C2 = &s_tsc[h ^ 1u];
+        if (C2->s == s && C2->sig[0]==g[0] && C2->sig[1]==g[1] && C2->sig[2]==g[2]
+            && C2->sig[3]==g[3] && C2->sig[4]==g[4]) { s_tsc_hit++; return C2; }
+        s_tsc_miss++;
+        if (C->s) { if (!C2->s) C = C2; else if (s_tsc_miss & 1) C = C2; }
+        free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
+        memset(C, 0, sizeof(*C));
+        C->s = s; memcpy(C->sig, g, sizeof(g));
+        C->flags = (int)(g[0] & 0xE000);
+        C->originX = (int)(g[1] >> 16); C->originY = (int)(g[1] & 0xFFFF);
+        C->originZ = (int)(g[2] >> 16);
+        C->nLpV = g[3] & 0xFF; C->nLpF = (g[3] >> 16) & 0xFF;
+        int nLpC = (g[3] >> 8) & 0xFF;
+        C->nHpV = g[4] & 0xFF; C->nHpF = (g[4] >> 16) & 0xFF;
+        int nHpC = (g[4] >> 8) & 0xFF, hpVertsOff = (int)((g[4] >> 24) & 0xFF);
+        if (C->nLpV > 256) C->nLpV = 256;
+        if (C->nHpV > 256) C->nHpV = 256;
+        uint32_t lpVerts = s + 0x1C;
+        C->lpFaces   = s + 0x1C + (uint32_t)((g[3] & 0xFF) + nLpC) * 4;
+        C->lpColBase = s + 0x1C + (uint32_t)(g[3] & 0xFF) * 4;
+        uint32_t hpVerts = s + 0x1C + (uint32_t)hpVertsOff * 4;
+        C->hpFaces   = hpVerts + (uint32_t)((g[4] & 0xFF) + nHpC * 2) * 4;
+        C->nearBase  = hpVerts + (uint32_t)(g[4] & 0xFF) * 4;
+        C->farBase   = C->nearBase + (uint32_t)nHpC * 4;
+        if (C->nLpV > 0) { C->lpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nLpV);
+                           if (C->lpV) tsc_decode_verts(cpu, lpVerts, C->nLpV, C->lpV); }
+        if (C->nLpF > 0) { C->lpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nLpF);
+                           if (C->lpF) tsc_decode_faces(cpu, C->lpFaces, C->nLpF, 8,
+                                                        lqTable, hqTable, texTblMode, hiDetail, C->lpF); }
+        if (C->nHpV > 0) { C->hpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nHpV);
+                           if (C->hpV) tsc_decode_verts(cpu, hpVerts, C->nHpV, C->hpV); }
+        if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
+                           if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
+                                                        lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
+    } else s_tsc_hit++;
+    return C;
+}
+
+/* Host-pointer terrain colour (fog lerp identical to terrain_color; the debug
+ * fog print stays on the cpu-path variant only). */
+static inline uint32_t t_le32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* nearp,
+                                const uint8_t* farp, int idx, double m3, int fogRef) {
+    if (noHP) return t_le32(lp + idx) & 0xFFFFFFu;
+    uint32_t nearC = t_le32(nearp + idx) & 0xFFFFFFu;
+    uint32_t farC  = t_le32(farp  + idx) & 0xFFFFFFu;
+    double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
+    if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
+    int nr = nearC & 0xFF, ng = (nearC >> 8) & 0xFF, nb = (nearC >> 16) & 0xFF;
+    int fr = farC  & 0xFF, fg = (farC  >> 8) & 0xFF, fb = (farC  >> 16) & 0xFF;
+    int r = (int)((double)fr + f * (nr - fr) + 0.5);
+    int g = (int)((double)fg + f * (ng - fg) + 0.5);
+    int b = (int)((double)fb + f * (nb - fb) + 0.5);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+}
+
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
  * visible set, isolating decode+projection+faces from the cull), project its HP
  * vertices (LP for 0x4000 "no-HP" sectors), then walk the HP faces (16B) / LP
@@ -847,6 +992,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_abr_scan(cpu);
+    tsc_census();
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
@@ -926,16 +1072,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         uint32_t i = visidx[vi];
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         if (!s) continue;
-        uint32_t w1  = rd(cpu, s + 0x04);
-        uint32_t og  = rd(cpu, s + 0x08), oz = rd(cpu, s + 0x0C);
-        uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
-        int flags   = (int)(w1 & 0xE000);
-        int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
+        /* Tier-1 sector decode cache: static level data unpacked once. */
+        static int s_hidet = -2;
+        if (s_hidet == -2) { const char* e = getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet = e ? atoi(e) : -1; }
+        const tscache_t* SC = tsc_get(cpu, s, lqTable, hqTable, texTblMode,
+                                      s_hidet >= 0 ? s_hidet : 0);
+        int flags   = SC->flags;
+        int originX = SC->originX, originY = SC->originY, originZ = SC->originZ;
         double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
 
-        int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
-        int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
-        int hpVertsOff = (int)((hpw >> 24) & 0xFF);
+        int nLpV = SC->nLpV, nLpF = SC->nLpF;
+        int nHpV = SC->nHpV, nHpF = SC->nHpF;
 
         /* Tier selection, distance-INDEPENDENT (no pop-in). HP is drawn wherever
          * a sector HAS HP geometry (the fine layer, all distances). LP is drawn
@@ -969,25 +1116,30 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (passLP && !drawLP) continue;
         if (!passLP && !drawHP) continue;
 
-        uint32_t verts, faces; int nv, nf, faceStride;
+        uint32_t faces; int nv, nf, faceStride;
+        const tsvert_t* cverts; const tsface_t* cfaces;
         uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* §9/§10 colour arrays */
         if (passLP) {
-            verts = s + 0x1C;                                       nv = nLpV;
-            faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;         nf = nLpF; faceStride = 8;
-            lpColBase = s + 0x1C + (uint32_t)nLpV * 4;          /* LP colours (4B, no fog) */
+            cverts = SC->lpV; cfaces = SC->lpF; nv = nLpV; nf = nLpF;
+            faces = SC->lpFaces; faceStride = 8;
+            lpColBase = SC->lpColBase;                     /* LP colours (4B, no fog) */
         } else {
-            verts = s + 0x1C + (uint32_t)hpVertsOff * 4;            nv = nHpV;
-            faces = verts + (uint32_t)(nHpV + nHpC * 2) * 4;        nf = nHpF; faceStride = 16;
-            nearBase = verts + (uint32_t)nHpV * 4;             /* HP near colours (4B) */
-            farBase  = nearBase + (uint32_t)nHpC * 4;          /* HP far  colours (4B) */
+            cverts = SC->hpV; cfaces = SC->hpF; nv = nHpV; nf = nHpF;
+            faces = SC->hpFaces; faceStride = 16;
+            nearBase = SC->nearBase;                       /* HP near colours (4B) */
+            farBase  = SC->farBase;                        /* HP far  colours (4B) */
         }
-        if (nv > 256) nv = 256;
+        if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
+        /* Colour bases → host pointers (fallback: the cpu read path). */
+        const uint8_t* h_lp   = passLP ? (const uint8_t*)openpete_psx_to_host_ptr(lpColBase) : NULL;
+        const uint8_t* h_near = passLP ? NULL : (const uint8_t*)openpete_psx_to_host_ptr(nearBase);
+        const uint8_t* h_far  = passLP ? NULL : (const uint8_t*)openpete_psx_to_host_ptr(farBase);
+        int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         s_emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         sd_nv += nv; sd_nf += nf;
 
         for (int k = 0; k < nv; k++) {
-            uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
-            int Xf = (int)((v >> 21) & 0x7FF), Yf = (int)((v >> 10) & 0x7FF), Zf = (int)(v & 0x3FF);
+            int Xf = cverts[k].x, Yf = cverts[k].y, Zf = cverts[k].z;
             double m1, m2, m3;
             project(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
             sv[k].m1 = m1; sv[k].m2 = m2; sv[k].m3 = m3; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
@@ -1007,47 +1159,20 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
 
         for (int f = 0; f < nf && s_tri_n < MAX_TTRIS - 4; f++) {  /* clipped quad → ≤4 tris */
-            uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
-            uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);   /* colours */
-            int i0, i1, i2, i3, flip, fogRef, c0, c1, c2, c3;
-            uint32_t hqW2 = 0;                 /* HP word2: HQ index (&0x7F) + ABE (&0x80) */
-            uint32_t hqW3 = 0;                 /* HP word3 flags: 0x80/0x40 gate the near defer */
-            tmat mat; float tu[4] = {0,0,0,0}, tv[4] = {0,0,0,0};
-            if (faceStride == 16) {            /* HP: byte-packed indices; word3 flags */
-                i0 = (w0 >> 24) & 0xFF; i1 = (w0 >> 16) & 0xFF;
-                i2 = (w0 >> 8) & 0xFF;  i3 = w0 & 0xFF;
-                /* word2 = texture byte (byte0); word3 = flags (0x1 fog-bias, 0x2
-                 * flip, 0x38 depth). CORRECTED: §7 had word2/word3 swapped. */
-                uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
-                uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
-                hqW2 = w2; hqW3 = w3;
-                flip = (w3 & 0x2) != 0;
-                fogRef = fogRefBase + ((w3 & 0x1) ? 0x2000 : 0);
-                /* HP colour indices (pre-×4 byte offsets), §7. */
-                c0 = (int)((w1 >> 22) & 0x3FC); c1 = (int)((w1 >> 14) & 0x3FC);
-                c2 = (int)((w1 >> 6) & 0x3FC);  c3 = (int)((w1 << 2) & 0x3FC);
-                /* Texture tier (§8): the main HP loop draws FAR cells from the LQ
-                 * Tiledef table (g_Environment+0x18, per-quad 16B, bpp4). NEAR
-                 * foreground cells are intercepted below (the near/HQ subdivide
-                 * dispatch) and drawn from the per-cell HQ record instead. This
-                 * texmat is the LQ tier for the far cells. texTblMode env: 0=auto,
-                 * 1=force LQ everywhere (disables near pass), 2=force HQ (debug). */
-                int tb = (int)(int8_t)(w2 & 0xFF);
-                uint32_t tbl = (texTblMode==2) ? hqTable : lqTable;
-                static int s_hidet=-2; if(s_hidet==-2){const char* e=getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet=e?atoi(e):-1;}
-                terrain_texmat(cpu, tbl, tb, s_hidet>=0?s_hidet:0, &mat, tu, tv);
-                if (mat.textured) s_tex_faces++;
-            } else {                            /* LP: 6-bit indices in word0 */
-                i0 = (int)((w0 >> 23) & 0x1F8) >> 3; i1 = (int)((w0 >> 17) & 0x1F8) >> 3;
-                i2 = (int)((w0 >> 11) & 0x1F8) >> 3; i3 = (int)((w0 >> 5) & 0x1F8) >> 3;
-                flip = 0; fogRef = fogRefBase;
-                /* LP colour indices (pre-×4 byte offsets), §7. */
-                c0 = (int)((w1 >> 24) & 0xFC); c1 = (int)((w1 >> 18) & 0xFC);
-                c2 = (int)((w1 >> 12) & 0xFC); c3 = (int)((w1 >> 6) & 0xFC);
-                memset(&mat, 0, sizeof(mat)); mat.bpp = 16;   /* LP = untextured */
-            }
+            /* Face decode from the sector cache (indices/flags/colour offsets/
+             * texmat all static — see tsc_decode_faces; §7/§8 layout comments
+             * live there now). Per-present work starts at the projection use. */
+            const tsface_t* F = &cfaces[f];
+            int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3;
+            int flip = F->flip;
+            int fogRef = fogRefBase + (F->fogbias ? 0x2000 : 0);
+            int c0 = F->c0, c1 = F->c1, c2 = F->c2, c3 = F->c3;
+            uint32_t hqW3 = F->w3;
+            const tmat* mat = &F->mat;
+            const float* tu = F->tu; const float* tv = F->tv;
+            if (mat->textured) s_tex_faces++;
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
-            int quad = (i2 != i3);
+            int quad = F->quad;
             s_dbg_faces++;
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
              * word3 & 0x2). front = nclip > 0. */
@@ -1095,16 +1220,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 near = (faceStride == 16 && s_nearhq && hqTable && quad && is_deferred(faces + (uint32_t)f*16u));
             if (near) {
                 if (is_deferred(faces + (uint32_t)f * 16u)) s_near_q_agree++; else s_near_c_only++;
-                int abe = (hqW2 & 0x80) != 0;
-                uint32_t r0 = rd(cpu, nearBase + (uint32_t)c0) & 0xFFFFFFu;
-                uint32_t r1 = rd(cpu, nearBase + (uint32_t)c1) & 0xFFFFFFu;
-                uint32_t r2 = rd(cpu, nearBase + (uint32_t)c2) & 0xFFFFFFu;
-                uint32_t r3 = rd(cpu, nearBase + (uint32_t)c3) & 0xFFFFFFu;
+                int abe = F->abe;
+                uint32_t r0, r1, r2, r3;
+                if (host_col) {
+                    r0 = t_le32(h_near + c0) & 0xFFFFFFu; r1 = t_le32(h_near + c1) & 0xFFFFFFu;
+                    r2 = t_le32(h_near + c2) & 0xFFFFFFu; r3 = t_le32(h_near + c3) & 0xFFFFFFu;
+                } else {
+                    r0 = rd(cpu, nearBase + (uint32_t)c0) & 0xFFFFFFu;
+                    r1 = rd(cpu, nearBase + (uint32_t)c1) & 0xFFFFFFu;
+                    r2 = rd(cpu, nearBase + (uint32_t)c2) & 0xFFFFFFu;
+                    r3 = rd(cpu, nearBase + (uint32_t)c3) & 0xFFFFFFu;
+                }
                 cvert TL = { sv[i0].m1, sv[i0].m2, sv[i0].m3, r0, 0, 0 };
                 cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
                 cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
                 cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
-                terrain_near_emit(cpu, hqTable + (uint32_t)(hqW2 & 0x7F) * 168u, abe,
+                terrain_near_emit(cpu, hqTable + (uint32_t)F->hq_idx * 168u, abe,
                                   TL, TR, BL, BR);
                 s_dbg_spike++;   /* near/HQ cells subdivided */
                 continue;
@@ -1115,10 +1246,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
-            uint32_t rc0 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
-            uint32_t rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
-            uint32_t rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
-            uint32_t rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            uint32_t rc0, rc1, rc2, rc3;
+            if (host_col) {
+                rc0 = terrain_color_h(passLP, h_lp, h_near, h_far, c0, sv[i0].vz, fogRef);
+                rc1 = terrain_color_h(passLP, h_lp, h_near, h_far, c1, sv[i1].vz, fogRef);
+                rc2 = terrain_color_h(passLP, h_lp, h_near, h_far, c2, sv[i2].vz, fogRef);
+                rc3 = quad ? terrain_color_h(passLP, h_lp, h_near, h_far, c3, sv[i3].vz, fogRef) : 0;
+            } else {
+                rc0 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
+                rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
+                rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
+                rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            }
             /* UV corners. decode_tiledef gives tu/tv[0..3] = [TL,TR,BL,BR]. A QUAD
              * (GT4) uses them directly via the .s slot reorder (i0→TL, i1→TR,
              * i3→BL, i2→BR). A TRIANGLE (GT3) carries a 2-bit UV ORIENTATION in
@@ -1141,22 +1280,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * applying that swap to LP's scanline-ordered corners bowties the quad
                  * → overlapping tris + gouraud-colour bleed = the missing distant-
                  * terrain polys + brown artifacts.) Untextured, so corner UVs unused. */
-                emit_tri(sv, i0, i1, i2, k0, k1, k2, &mat);
-                emit_tri(sv, i1, i2, i3, k1, k2, k3, &mat);
+                emit_tri(sv, i0, i1, i2, k0, k1, k2, mat);
+                emit_tri(sv, i1, i2, i3, k1, k2, k3, mat);
             } else if (quad) {
-                emit_tri(sv, i0, i1, i3, k0, k1, k3, &mat);
-                emit_tri(sv, i1, i3, i2, k1, k3, k2, &mat);
+                emit_tri(sv, i0, i1, i3, k0, k1, k3, mat);
+                emit_tri(sv, i1, i3, i2, k1, k3, k2, mat);
             } else {
                 /* GT3 UV orientation: corner indices into [TL,TR,BL,BR]=[0,1,2,3]
                  * for slots (i0,i1,i2). rot 0 = {TL,TR,BL} (the .s .L80027588),
                  * 1 = {TR,BR,TL}, 2 = {BR,BL,TR}, 3 = {BL,TL,BR} (.L800275A4/C4/DC). */
                 static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
-                int rot = (faceStride == 16) ? (int)((hqW2 >> 8) & 3u) : 0;
+                int rot = (faceStride == 16) ? (int)F->trirot : 0;
                 const int* tcn = triRot[rot];
                 lcorner t0 = { rc0, tu[tcn[0]], tv[tcn[0]] };
                 lcorner t1 = { rc1, tu[tcn[1]], tv[tcn[1]] };
                 lcorner t2 = { rc2, tu[tcn[2]], tv[tcn[2]] };
-                emit_tri(sv, i0, i1, i2, t0, t1, t2, &mat);
+                emit_tri(sv, i0, i1, i2, t0, t1, t2, mat);
             }
         }
       }  /* pass (LP / HP) */
