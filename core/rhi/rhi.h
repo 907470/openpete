@@ -37,6 +37,19 @@ typedef struct rhi_device rhi_device;
 /* Create the device against an SDL window created with SDL_WINDOW_VULKAN.
  * Returns NULL on failure (a diagnostic is logged to stderr). */
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name);
+
+/* Create a SURFACELESS device: no window, no swapchain, no present. Renders into
+ * the offscreen + render-target images only; retrieve pixels with
+ * rhi_read_render_target / rhi_read_offscreen. width/height set the offscreen
+ * extent (the would-be window size). For headless CI visual-regression capture
+ * under a software rasterizer (lavapipe). Returns NULL on failure. */
+rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height);
+
+/* True for a device created via rhi_create_headless. Such a device's begin/end
+ * frame submit work without acquiring or presenting a swapchain image, and
+ * rhi_blit_to_swapchain is a no-op. */
+bool        rhi_is_headless(const rhi_device *dev);
+
 void        rhi_destroy(rhi_device *dev);
 
 /* The GPU's maximum 2D image dimension (VkPhysicalDeviceLimits.maxImageDimension2D).

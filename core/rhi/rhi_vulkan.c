@@ -63,6 +63,7 @@ struct rhi_device {
     uint32_t                 gfx_family;
     VkQueue                  gfx_queue;
     char                     device_name[256];
+    bool                     headless;   /* surfaceless: no swapchain / present */
 
     /* Swapchain */
     VkSwapchainKHR swapchain;
@@ -212,18 +213,24 @@ static bool layer_available(const char *name)
 
 static bool create_instance(rhi_device *dev, const char *app_name)
 {
+    /* Windowed: SDL supplies the platform surface extensions. Headless: none —
+     * a surfaceless instance needs no surface extension at all. */
     Uint32 sdl_n = 0;
-    char const *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&sdl_n);
-    if (!sdl_ext) {
-        RHI_LOG("SDL_Vulkan_GetInstanceExtensions failed: %s\n", SDL_GetError());
-        return false;
+    char const *const *sdl_ext = NULL;
+    if (!dev->headless) {
+        sdl_ext = SDL_Vulkan_GetInstanceExtensions(&sdl_n);
+        if (!sdl_ext) {
+            RHI_LOG("SDL_Vulkan_GetInstanceExtensions failed: %s\n", SDL_GetError());
+            return false;
+        }
     }
 
     bool want_validation = layer_available("VK_LAYER_KHRONOS_validation");
 
-    /* Copy SDL's required extensions, optionally append debug utils. */
+    /* Copy SDL's required extensions (none when headless), optionally append
+     * debug utils. */
     uint32_t ext_n = sdl_n + (want_validation ? 1u : 0u);
-    const char **exts = calloc(ext_n, sizeof(*exts));
+    const char **exts = ext_n ? calloc(ext_n, sizeof(*exts)) : NULL;
     for (Uint32 i = 0; i < sdl_n; i++) exts[i] = sdl_ext[i];
     if (want_validation) exts[sdl_n] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 
@@ -295,9 +302,12 @@ static bool pick_physical_and_device(rhi_device *dev)
         vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qn, q);
         uint32_t fam = UINT32_MAX;
         for (uint32_t j = 0; j < qn; j++) {
+            /* Headless has no surface: a graphics queue is all we need. */
             VkBool32 present = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], j, dev->surface, &present);
-            if ((q[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) {
+            if (!dev->headless)
+                vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], j, dev->surface, &present);
+            if ((q[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                (dev->headless || present)) {
                 fam = j; break;
             }
         }
@@ -326,7 +336,8 @@ static bool pick_physical_and_device(rhi_device *dev)
     free(devs);
 
     if (chosen == VK_NULL_HANDLE) {
-        RHI_LOG("no device with a graphics+present queue\n");
+        RHI_LOG("no device with a graphics%s queue\n",
+                dev->headless ? "" : "+present");
         return false;
     }
     dev->phys = chosen;
@@ -344,8 +355,9 @@ static bool pick_physical_and_device(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = dev_ext,
+        /* No swapchain extension when there's no surface to present to. */
+        .enabledExtensionCount = dev->headless ? 0u : 1u,
+        .ppEnabledExtensionNames = dev->headless ? NULL : dev_ext,
     };
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateDevice failed: %d\n", (int)r); return false; }
@@ -869,11 +881,13 @@ static bool recreate(rhi_device *dev)
 
 /* ------------------------------------------------------------------ */
 
-rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
+static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
+                                   bool headless, uint32_t hl_w, uint32_t hl_h)
 {
     rhi_device *dev = calloc(1, sizeof(*dev));
     if (!dev) return NULL;
-    dev->window = window;
+    dev->window   = window;
+    dev->headless = headless;
 
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
@@ -886,27 +900,56 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
     if (!create_instance(dev, app_name)) goto fail;
     volkLoadInstance(dev->instance);   /* load instance- + device-level fns */
 
-    if (!SDL_Vulkan_CreateSurface(window, dev->instance, NULL, &dev->surface)) {
-        RHI_LOG("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
-        goto fail;
+    if (!headless) {
+        if (!SDL_Vulkan_CreateSurface(window, dev->instance, NULL, &dev->surface)) {
+            RHI_LOG("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+            goto fail;
+        }
     }
     if (!pick_physical_and_device(dev)) goto fail;
     volkLoadDevice(dev->device);        /* device-specific dispatch (faster) */
-    if (!create_swapchain(dev))         goto fail;
+    if (!headless) {
+        if (!create_swapchain(dev)) goto fail;
+    } else {
+        /* No swapchain: the offscreen render pass + offscreen image still need a
+         * format + extent. Pick B8G8R8A8_UNORM (matches the windowed preference,
+         * so rhi_read_render_target's B/R swizzle is correct) and the requested
+         * size. sc_count stays 0 → no render_done semaphores, no present. */
+        dev->sc_format = VK_FORMAT_B8G8R8A8_UNORM;
+        dev->sc_extent = (VkExtent2D){ hl_w ? hl_w : 1u, hl_h ? hl_h : 1u };
+        dev->sc_count  = 0;
+        for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
+            dev->images_in_flight[i] = VK_NULL_HANDLE;
+    }
     if (!create_render_pass(dev))       goto fail;
     if (!create_rt_render_pass(dev))    goto fail;
     if (!create_offscreen(dev))         goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
     if (!create_descriptor_infra(dev))  goto fail;
 
-    RHI_LOG("device='%s' format=%d %ux%u images=%u\n",
-            dev->device_name, (int)dev->sc_format,
+    RHI_LOG("device='%s'%s format=%d %ux%u images=%u\n",
+            dev->device_name, headless ? " (headless)" : "", (int)dev->sc_format,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
     return dev;
 
 fail:
     rhi_destroy(dev);
     return NULL;
+}
+
+rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
+{
+    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0);
+}
+
+rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height)
+{
+    return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height);
+}
+
+bool rhi_is_headless(const rhi_device *dev)
+{
+    return dev && dev->headless;
 }
 
 void rhi_destroy(rhi_device *dev)
@@ -953,32 +996,36 @@ void rhi_wait_idle(rhi_device *dev)
 
 bool rhi_begin_frame(rhi_device *dev)
 {
-    if (dev->needs_recreate) {
+    if (dev->needs_recreate && !dev->headless) {
         if (!recreate(dev)) return false;
     }
 
     vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
 
-    VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain, UINT64_MAX,
-                                         dev->img_avail[dev->frame],
-                                         VK_NULL_HANDLE, &dev->image_index);
-    if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
-        dev->needs_recreate = true;
-        return false;
-    } else if (acq == VK_ERROR_DEVICE_LOST) {
-        rhi_signal_device_lost("acquire");
-        return false;
-    } else if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
-        RHI_LOG("vkAcquireNextImageKHR failed: %d\n", (int)acq);
-        return false;
-    }
+    /* Headless: no swapchain image to acquire — the command buffer records
+     * directly into the offscreen / render-target images. */
+    if (!dev->headless) {
+        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain, UINT64_MAX,
+                                             dev->img_avail[dev->frame],
+                                             VK_NULL_HANDLE, &dev->image_index);
+        if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
+            dev->needs_recreate = true;
+            return false;
+        } else if (acq == VK_ERROR_DEVICE_LOST) {
+            rhi_signal_device_lost("acquire");
+            return false;
+        } else if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
+            RHI_LOG("vkAcquireNextImageKHR failed: %d\n", (int)acq);
+            return false;
+        }
 
-    /* If a previous frame is still using this image, wait on its fence. */
-    if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
-        vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                        VK_TRUE, UINT64_MAX);
+        /* If a previous frame is still using this image, wait on its fence. */
+        if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
+            vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
+                            VK_TRUE, UINT64_MAX);
+        }
+        dev->images_in_flight[dev->image_index] = dev->in_flight[dev->frame];
     }
-    dev->images_in_flight[dev->image_index] = dev->in_flight[dev->frame];
     vkResetFences(dev->device, 1, &dev->in_flight[dev->frame]);
 
     VkCommandBuffer cb = dev->cmd[dev->frame];
@@ -1056,7 +1103,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage img,
 
 void rhi_blit_to_swapchain(rhi_device *dev)
 {
-    if (!dev->frame_active) return;
+    if (!dev->frame_active || dev->headless) return;   /* no swapchain when headless */
     VkCommandBuffer cb = dev->cmd[dev->frame];
     VkImage sc = dev->sc_images[dev->image_index];
 
@@ -1114,6 +1161,22 @@ void rhi_end_frame(rhi_device *dev)
     if (!dev->frame_active) return;
     VkCommandBuffer cb = dev->cmd[dev->frame];
     vkEndCommandBuffer(cb);
+
+    /* Headless: submit the recorded work with no swapchain semaphores and no
+     * present. The in_flight fence still gates begin_frame's reuse of this slot,
+     * and rhi_read_render_target's vkDeviceWaitIdle guarantees completion before
+     * readback. */
+    if (dev->headless) {
+        VkSubmitInfo si = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cb,
+        };
+        VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
+        dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
+        dev->frame_active = false;
+        return;
+    }
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si = {

@@ -493,6 +493,7 @@ static bool scene_has_world(const openpete_scene_tri* scene, int n) {
 /* Single native renderer instance (one window per process). */
 static struct {
     bool          enabled;
+    bool          headless;     /* W1.1: surfaceless capture (no window/present); screenshots only */
     bool          ab_mode;      /* true = A/B compare (2 panels + reference); false = vk-only */
     int           n_panels;     /* 2 in A/B, 1 in vk-only */
     SDL_Window   *window;
@@ -737,10 +738,18 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (!opts || opts->renderer == OPENPETE_RENDERER_PSYCROSS)
         return 0; /* PsyCross owns the display — native window inert */
 
-    if (opts->headless) {
-        OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no display)");
+    /* W1.1: under --headless, bring the native renderer up SURFACELESS purely to
+     * service screenshots (CI visual-regression capture under lavapipe) — but
+     * only when a native renderer is selected (checked above) AND screenshots
+     * are requested. Plain --headless (the oracle / determinism gates) keeps
+     * native OFF, so those gates are unaffected. The live present loop never runs
+     * headless; only openpete_native_render_screenshot_all is driven (run.c). */
+    const bool headless = opts->headless;
+    if (headless && opts->screenshot_frame_count <= 0) {
+        OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no screenshots requested)");
         return 0;
     }
+    s_nr.headless = headless;
 
     /* A/B compare mode shows the PsyCross reference in a second panel and delays
      * the native scene by one frame to align with that lagged reference. vk and
@@ -778,25 +787,38 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (ab_mode && opts->window_w <= 0)
         w *= 2;
 
-    /* vk (the default display) wears the game's own name; the dev compare modes
-     * keep a descriptive label so the A/B / diff windows are self-identifying. */
-    const char *title = ab_mode   ? "openpete — native renderer (A/B)"
-                      : diff_mode ? "openpete — native renderer (diff)"
-                      : (opts->display_name && opts->display_name[0])
-                                  ? opts->display_name
-                                  : "Spyro the Dragon";
-    SDL_Window *win = SDL_CreateWindow(title, w, h,
-                                       SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
-    if (!win) {
-        OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
-        return 1;
-    }
+    SDL_Window *win = NULL;
+    rhi_device *dev = NULL;
+    if (headless) {
+        /* No window: render into the offscreen/RTT and read back for screenshots.
+         * The offscreen extent is the resolved size; the screenshot path composes
+         * at the reference resolution regardless, so w/h only size unused buffers. */
+        dev = rhi_create_headless("openpete-native", (uint32_t)w, (uint32_t)h);
+        if (!dev) {
+            OPL_ERROR_F("native", "rhi_create_headless failed; native capture disabled");
+            return 1;
+        }
+    } else {
+        /* vk (the default display) wears the game's own name; the dev compare modes
+         * keep a descriptive label so the A/B / diff windows are self-identifying. */
+        const char *title = ab_mode   ? "openpete — native renderer (A/B)"
+                          : diff_mode ? "openpete — native renderer (diff)"
+                          : (opts->display_name && opts->display_name[0])
+                                      ? opts->display_name
+                                      : "Spyro the Dragon";
+        win = SDL_CreateWindow(title, w, h,
+                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        if (!win) {
+            OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
+            return 1;
+        }
 
-    rhi_device *dev = rhi_create(win, "openpete-native");
-    if (!dev) {
-        OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
-        SDL_DestroyWindow(win);
-        return 1;
+        dev = rhi_create(win, "openpete-native");
+        if (!dev) {
+            OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
+            SDL_DestroyWindow(win);
+            return 1;
+        }
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever (W0.6 RHI robustness). */
@@ -2389,6 +2411,11 @@ static void record_cycle(uint64_t pts_us)
 void openpete_native_render_frame(uint64_t record_pts_us)
 {
     if (!s_nr.enabled)
+        return;
+
+    /* Headless (W1.1): no window / swapchain, so there is no live present. The
+     * scene is composed on demand by openpete_native_render_screenshot_all. */
+    if (s_nr.headless)
         return;
 
     /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
