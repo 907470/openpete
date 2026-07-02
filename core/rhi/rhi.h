@@ -246,6 +246,14 @@ rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
  * pass's finalLayout + external dependency make the depth sample-visible).
  * Call after rhi_bind_pipeline. */
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
+/* Async readback of a SMALL render target's color image (the occlusion grid),
+ * ring-buffered exactly like rhi_cycle_readback: call once per frame AFTER the
+ * pass that renders `rt`; queues this frame's copy into the frame slot and
+ * returns the capture from RHI_FRAMES_IN_FLIGHT presents ago (true + fills
+ * out/out_w/out_h in R,G,B,A byte order), riding the frame fence — no GPU
+ * stall. Single ring per device (one client); `out` needs w*h*4 bytes. */
+bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
+                           void *out, size_t out_bytes, int *out_w, int *out_h);
 /* Override the current pass's viewport+scissor to a (w,h) Y-flipped rect. Used
  * so a depth pre-pass into an OVERSIZED depth target rasterizes only the
  * (w,h) sub-rect the consumers will map their lookups to. Recorded inside a
@@ -325,5 +333,8 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
  * pipeline desc's push_const_size). */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
+/* Number of rhi_draw calls recorded since the last rhi_begin_frame (perf
+ * census — the draw-submission count the material batching is minimizing). */
+uint32_t rhi_draw_calls(rhi_device *dev);
 
 #endif /* OPENPETE_RHI_H */

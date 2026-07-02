@@ -114,6 +114,7 @@ struct rhi_device {
     uint32_t image_index;  /* acquired swapchain image this frame */
     bool     needs_recreate;
     bool     frame_active;  /* between begin_frame and end_frame */
+    uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
                             * or the bound render target) — for rhi_clear_depth */
 
@@ -143,6 +144,15 @@ struct rhi_device {
         int         w, h;      /* extent captured into staging */
         uint64_t    tag;       /* opaque caller token (the PTS) for this capture */
     } readback_ring[RHI_FRAMES_IN_FLIGHT];
+
+    /* Second async ring for rhi_cycle_rt_readback (the occlusion-grid RT — a
+     * few-KB color image read back every present). Same fence discipline as
+     * readback_ring; single client (one RT per device), so no per-RT rings. */
+    struct {
+        rhi_buffer *staging;
+        bool        pending;
+        int         w, h;
+    } grid_ring[RHI_FRAMES_IN_FLIGHT];
 };
 
 struct rhi_buffer {
@@ -1079,6 +1089,10 @@ void rhi_destroy(rhi_device *dev)
             rhi_destroy_buffer(dev, dev->readback_ring[i].staging);
             dev->readback_ring[i].staging = NULL;
         }
+        if (dev->grid_ring[i].staging) {
+            rhi_destroy_buffer(dev, dev->grid_ring[i].staging);
+            dev->grid_ring[i].staging = NULL;
+        }
     }
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
@@ -1153,6 +1167,7 @@ bool rhi_begin_frame(rhi_device *dev)
     };
     vkBeginCommandBuffer(cb, &bi);
     dev->frame_active = true;
+    dev->draw_calls = 0;
     return true;
 }
 
@@ -2015,6 +2030,81 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
     return got;
 }
 
+bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
+                           void *out, size_t out_bytes, int *out_w, int *out_h)
+{
+    if (!dev || !dev->frame_active || !rt || !rt->is_rt) return false;
+    uint32_t fi = dev->frame;
+
+    /* (1) Retrieve the capture queued the last time this slot cycled (its copy
+     * rode cmd[fi] under in_flight[fi], which begin_frame already waited on). */
+    bool got = false;
+    if (dev->grid_ring[fi].pending && dev->grid_ring[fi].staging &&
+        dev->grid_ring[fi].w > 0 && dev->grid_ring[fi].h > 0) {
+        int pw = dev->grid_ring[fi].w, ph = dev->grid_ring[fi].h;
+        size_t need = (size_t)pw * (size_t)ph * 4u;
+        if (out && out_bytes >= need) {
+            /* Normalize to R,G,B,A byte order (the RT color format may be BGRA). */
+            readback_swizzle(dev, dev->grid_ring[fi].staging->mapped, out, pw, ph);
+            if (out_w) *out_w = pw;
+            if (out_h) *out_h = ph;
+            got = true;
+        }
+        dev->grid_ring[fi].pending = false;
+    }
+
+    /* (2) Queue THIS frame's copy. The RT sits in SHADER_READ_ONLY after its
+     * render pass (rt_rp finalLayout); round-trip it through TRANSFER_SRC in
+     * this frame's command buffer. Call AFTER the pass that renders the RT. */
+    int w = (int)rt->width, h = (int)rt->height;
+    if (w > 0 && h > 0) {
+        size_t need = (size_t)w * (size_t)h * 4u;
+        rhi_buffer **staging = &dev->grid_ring[fi].staging;
+        if (!*staging || (*staging)->size < need) {
+            if (*staging) rhi_destroy_buffer(dev, *staging);
+            *staging = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                          /*prefer_cached=*/true);
+        }
+        if (*staging) {
+            VkImageMemoryBarrier to_src = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = rt->image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            };
+            vkCmdPipelineBarrier(dev->cmd[fi],
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, NULL, 0, NULL, 1, &to_src);
+            VkBufferImageCopy region = {
+                .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+                .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+            };
+            vkCmdCopyImageToBuffer(dev->cmd[fi], rt->image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   (*staging)->buffer, 1, &region);
+            VkImageMemoryBarrier back = to_src;
+            back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            back.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            vkCmdPipelineBarrier(dev->cmd[fi],
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, NULL, 0, NULL, 1, &back);
+            dev->grid_ring[fi].pending = true;
+            dev->grid_ring[fi].w = w;
+            dev->grid_ring[fi].h = h;
+        }
+    }
+    return got;
+}
+
 bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag)
 {
@@ -2429,7 +2519,13 @@ void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)
 {
     if (!dev->frame_active) return;
+    dev->draw_calls++;
     vkCmdDraw(dev->cmd[dev->frame], vertex_count, 1, first_vertex, 0);
+}
+
+uint32_t rhi_draw_calls(rhi_device *dev)
+{
+    return dev->draw_calls;
 }
 
 void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h)
