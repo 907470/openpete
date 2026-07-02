@@ -195,6 +195,17 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * it per-pixel the way a shared Z-buffer otherwise would). Untextured only;
  * self-occlusion comes from the feeder's own far→near painter sort. */
 #define OPENPETE_SCENE_PORTAL_CYCLORAMA 7
+/* PORTAL_MASK — the stencil aperture mask for a portal-sky group (W2.6). The
+ * portal feeder emits each portal's sky FOOTPRINT again under this category
+ * (same geometry+z, colour irrelevant): core rasterizes it through an
+ * invisible (colour-write-off) depth-TESTED stencil-MARK pass, so the mask is
+ * set exactly where the sky is visible past the world depth (the arch stone /
+ * a wall in front punches it out). The PORTAL_CYCLORAMA colours then draw
+ * depth-FREE, gated on the mask — so dome / flat base / backstop within one
+ * portal composite by submission order (painter) instead of z-arithmetic, and
+ * portals are isolated from each other per group (rhi_clear_stencil between
+ * groups; groups drawn far→near by their plane depth). Untextured only. */
+#define OPENPETE_SCENE_PORTAL_MASK 8
 /* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
@@ -209,6 +220,9 @@ typedef struct {
     int blend;
     int category;
     int carry;
+    int group;   /* per-portal grouping id for the PORTAL_* categories (set via
+                  * add_tri_grouped; plain add_tri stores 0). Ignored for every
+                  * other category. */
 } openpete_scene_tri;
 
 /* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
@@ -244,6 +258,13 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * re-extract can't re-derive) so the overlay-carry snapshot preserves them
  * across the sub-tick rebuild instead of strobing at 30 Hz; 0 otherwise. */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
+/* add_tri with an explicit grouping id (stored in the tri's `group` field —
+ * plain add_tri stores 0). Used by the portal feeder to associate each
+ * portal's PORTAL_MASK footprint with its PORTAL_CYCLORAMA colours so core
+ * can stencil-isolate portals per group. No ambient state (same principle as
+ * the explicit category/carry args). */
+void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
+                                           int carry, int group);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
  * before the scene so uncovered areas show it instead of black, mirroring the
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).

@@ -397,6 +397,20 @@ static float plane_depth(double a, double b, double c, double x, double y) {
  * owning portal directly (captured) instead of re-matching a possibly-stale a0. */
 #define PORTAL_RGB_RESOLVE 0xFFFFFFFFu
 
+/* W2.6 — every portal-sky tri is emitted TWICE: once as the invisible stencil
+ * aperture MASK (PORTAL_MASK: depth-tested vs the world, carries the tie-break
+ * z) and once as the visible colours (PORTAL_CYCLORAMA: depth-free,
+ * stencil-gated in core). `s_portal_group` associates a portal element's mask
+ * with its colours for core's per-group stencil isolation; it is the owning
+ * portal / skybox POINTER (stable across canonical render and sub-tick
+ * replay), set by each feed path immediately before it emits. File-local
+ * ambient only — never crosses a feeder boundary. */
+static int s_portal_group = 0;
+static void portal_add_sky_tri(const openpete_scene_tri* t) {
+    openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+    openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
+}
+
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                             uint32_t rgb_override, double backstop_bias,
                             uint32_t fog_rgb, double fog_t) {
@@ -439,6 +453,16 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * sky and stays on the opening plane (z-fighting the inner frame, accepted); a
      * backstop (back_bias>1) keeps its push-back so it sits just behind the dome. */
     double depth_bias = back_bias;
+    /* Group id for mask↔colour pairing: the destination SKYBOX pointer, so a
+     * portal's flat base, backstop AND dome (fed by separate leaves with
+     * different a0s) all land in ONE stencil group — within a group the
+     * colours composite by submission order (backstops fed before the dome →
+     * dome paints last). Keying quad-by-portal vs dome-by-skybox split one
+     * portal into two groups, and the far→near inter-group sort could put the
+     * dome FIRST (its painter-sorted farthest face can sort deeper than the
+     * backstop), letting the flat backstop paint over the dome (the "bg
+     * colour inset in the portal" report). */
+    s_portal_group = (int)(p ? cpu->read_word(p + 0x00) : a0);
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     if (pn >= 3) {
@@ -453,15 +477,21 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                 t.v[k].z = portal_cyclorama_depth(v->vz * depth_bias);
                 t.v[k].rgba = rgba;
             }
-            openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
+            portal_add_sky_tri(&t);
         }
         return 1;
     }
 
     /* Fallback (an outline point behind the camera / no match): the axis-aligned
-     * clip rect at the farthest-outline constant depth. */
+     * clip rect at the farthest-outline constant depth. vz<=1 means the plane
+     * centre is AT/BEHIND the camera — Spyro is entering and the camera has
+     * crossed the portal: the preview must cover the level being left (the
+     * PSX sky bucket was nearest-OT at that point), so go NEAR, not far (the
+     * old 16384 far-sentinel let current-level mobys repaint over the preview
+     * mid-entry). The sky repaints after the ACTOR group; the PLAYER group
+     * draws later, so Spyro himself is never covered. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    if (vz <= 1.0) vz = 16384.0;
+    if (vz <= 1.0) vz = 2.0;   /* crossed → nearest (was 16384 far-sentinel) */
     float depth = portal_cyclorama_depth(vz * depth_bias);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
@@ -474,7 +504,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             t.v[k].sx = cxx[idx[ti][k]]; t.v[k].sy = cyy[idx[ti][k]];
             t.v[k].z = depth; t.v[k].u = 0.0f; t.v[k].v = 0.0f; t.v[k].rgba = rgba;
         }
-        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
+        portal_add_sky_tri(&t);
     }
     return 1;
 }
@@ -537,7 +567,7 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
             t.v[k].z = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : depth;
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
         }
-        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
+        portal_add_sky_tri(&t);
     }
 }
 
@@ -555,6 +585,7 @@ static int dome_face_cmp(const void* x, const void* y) {
 }
 
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, double fog_t) {
+    s_portal_group = (int)skybox;   /* group id for mask↔colour pairing (W2.6) */
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int x0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, x1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
@@ -573,7 +604,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
 
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
     double vz = portal_viewz(cpu, skybox, cx, cy);
-    if (vz <= 1.0) vz = 16384.0;
+    if (vz <= 1.0) vz = 2.0;   /* camera crossed the plane → nearest (see feed_portal_quad) */
     float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth, pulled forward by the sky offset */
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
@@ -851,6 +882,7 @@ static void feed_revealed_portals(CPUState* cpu) {
         if (cxs < (double)xlo || cxs > (double)xhi) continue;  /* outside the widened view */
         uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
         uint32_t rgba = rgb | 0xFF000000u;
+        s_portal_group = (int)skybox;   /* group id = skybox (one portal = one group) */
         for (int k = 1; k + 1 < pn; k++) {                /* fan-triangulate the outline polygon */
             openpete_scene_tri t;
             memset(&t, 0, sizeof t);
@@ -862,7 +894,7 @@ static void feed_revealed_portals(CPUState* cpu) {
                 t.v[j].z = portal_cyclorama_depth(v->vz);
                 t.v[j].rgba = rgba;
             }
-            openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
+            portal_add_sky_tri(&t);
         }
         revealed++;
         /* Capture this off-4:3 reveal for the sub-tick replay too (else it

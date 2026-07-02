@@ -205,16 +205,21 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
     }
 }
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
+void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
+                                           int carry, int group) {
     if (!tri) return;
     if (s_scene_n < MAX_SCENE_TRIS) {
         s_scene[s_scene_n] = *tri;
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
+        s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
         s_scene_n++;
     } else {
         s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
     }
+}
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
+    openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
@@ -520,7 +525,8 @@ static struct {
     rhi_pipeline *gouraud_blend_pipe; /* 3b.2: semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
     rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — Spyro shadow */
     rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
-    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test ON / write OFF — portal-sky previews */
+    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test OFF + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
+    rhi_pipeline *portal_mask_pipe;   /* W2.6: invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
@@ -871,6 +877,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true, /* shadow decal: hardware coplanar tie-break (W2.5) */
         .uses_vram = false, .push_const_size = 0,
     };
     /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
@@ -894,7 +901,29 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc gouraud_noz_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
+        /* W2.6 (revised): portal-sky colours — depth-TEST ON (LEQUAL at the
+         * portal-plane z, write OFF) + stencil TEST, drawn AFTER the ACTOR
+         * group. The depth test is what lets the sky repaint over mobys
+         * BEHIND the plane while losing to geometry/mobys in front of it;
+         * the stencil mask confines it to the aperture footprint. (A fully
+         * depth-free variant was tried and replaced — with a depth STAMP it
+         * clipped Spyro mid-entry, and without one it needed the stamp.) */
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
+        .stencil = RHI_STENCIL_TEST,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* W2.6 — the portal aperture mask: rasterize the portal's sky footprint
+     * invisibly (colour-write-off), depth-TESTED against the world written by
+     * the WORLD group (depth-write off, so the mask pass can't perturb it),
+     * marking stencil=1 where the sky is actually visible (arch stone / a
+     * nearer wall punches the mask out via depth-fail). Carries the decal
+     * depth-bias so the coincident inner-frame tie-break lives HERE, in the
+     * invisible pass, not in the colours. */
+    rhi_pipeline_desc portal_mask_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true, .stencil = RHI_STENCIL_MARK, .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
     /* Textured scene pipeline (3a.3): samples the PSX VRAM mirror via the ported
@@ -939,6 +968,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true, /* shadow decal: hardware coplanar tie-break (W2.5) */
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
@@ -1030,6 +1060,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_sub_pipe = rhi_create_pipeline(dev, &gouraud_sub_desc);
     rhi_pipeline *gouraud_add_pipe = rhi_create_pipeline(dev, &gouraud_add_desc);
     rhi_pipeline *gouraud_noz_pipe = rhi_create_pipeline(dev, &gouraud_noz_desc);
+    rhi_pipeline *portal_mask_pipe = rhi_create_pipeline(dev, &portal_mask_desc);
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
@@ -1073,6 +1104,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_noz_pipe) rhi_destroy_pipeline(dev, gouraud_noz_pipe);
+        if (portal_mask_pipe) rhi_destroy_pipeline(dev, portal_mask_pipe);
         if (gouraud_add_pipe) rhi_destroy_pipeline(dev, gouraud_add_pipe);
         if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
         if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
@@ -1096,6 +1128,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_sub_pipe = gouraud_sub_pipe;
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
     s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
+    s_nr.portal_mask_pipe = portal_mask_pipe;
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
@@ -1596,10 +1629,77 @@ static void alpha_census(const openpete_scene_tri* scene, int scene_n)
             s_scene_frame, m, ntex, (double)zmin, (double)zmax, overlaps, inversions);
 }
 
+/* W2.5 — hardware depth-bias factors for the shadow decal group (the
+ * SUBTRACT pipes). vkCmdSetDepthBias order semantics: bias = constant×r +
+ * slope×m, floored at clamp (all negative here → pull toward the camera under
+ * LESS_OR_EQUAL). r ≈ 2^-24 relative for D32_SFLOAT, m = max per-pixel depth
+ * slope. Defaults: constant -64 (~4e-6 NDC — kills float-rounding ties vs the
+ * coplanar ground), slope -2 (grows the pull exactly at grazing angles), clamp
+ * -0.002 (total pull bounded well under the retired ×0.96 view-Z pull's
+ * ~5-9e-3, so a genuine occluder is never reordered).
+ * Tunable: OPENPETE_SHADOW_HW_BIAS="constant,slope,clamp". */
+static void shadow_hw_bias(float* c, float* s, float* cl)
+{
+    static int init = 0;
+    static float vc = -64.0f, vs = -2.0f, vcl = -0.002f;
+    if (!init) {
+        const char* e = getenv("OPENPETE_SHADOW_HW_BIAS");
+        if (e && *e) sscanf(e, "%f,%f,%f", &vc, &vs, &vcl);
+        init = 1;
+    }
+    *c = vc; *s = vs; *cl = vcl;
+}
+
+/* Portal-mask camera-ward pull — the close-range "ground disocclusion" knob.
+ * The mask is CONFINED to the portal footprint, so a pull here cannot
+ * side-poke past the arch (the failure that killed the historical forward
+ * view-Z biases); it only decides whether near lips INSIDE the aperture (the
+ * arch threshold step at very close range) beat the preview, reproducing the
+ * PSX painter look where the sky bucket covered the step. Default NEUTRAL
+ * (0,0,0 = current behaviour: real near geometry occludes the preview); tune
+ * live via OPENPETE_PORTAL_MASK_BIAS="c,s,clamp" (try "-64,-4,-0.02"). */
+static void portal_mask_bias(float* c, float* s, float* cl)
+{
+    static int init = 0;
+    static float vc = 0.0f, vs = 0.0f, vcl = 0.0f;
+    if (!init) {
+        const char* e = getenv("OPENPETE_PORTAL_MASK_BIAS");
+        if (e && *e) sscanf(e, "%f,%f,%f", &vc, &vs, &vcl);
+        init = 1;
+    }
+    *c = vc; *s = vs; *cl = vcl;
+}
+
+/* (The earlier portal depth-STAMP mechanism — writing plane depth into the
+ * aperture so later actor draws depth-fail — was replaced by drawing the
+ * portal sky AFTER the ACTOR group with the depth test on: the stamp clipped
+ * Spyro mid-entry (PLAYER draws after ACTOR and tested the fake depth too),
+ * and its far-sentinel fallback let level mobys reappear once the camera
+ * crossed the plane. See the portal draw site in draw_native_scene.) */
+
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
+
+    /* Load-window census (OPENPETE_LOAD_CENSUS=1): what THIS present actually
+     * composes — tri counts per category/blend + the fade/freeze covers. One
+     * line per present; correlate with the game-side RE / MOBY-RE lines to
+     * attribute transition-window artifacts (who fed what, what covers it). */
+    {
+        static int s_census = -1;
+        if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
+        if (s_census) {
+            int cat[9] = {0}, blend = 0;
+            for (int t = 0; t < scene_n; t++) {
+                if (scene[t].blend != 0) blend++;
+                else if (scene[t].category >= 0 && scene[t].category <= 8) cat[scene[t].category]++;
+            }
+            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d blend=%d fade=%08x freeze=%u\n",
+                    s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
+                    blend, scene_fade, scene_freeze);
+        }
+    }
 
     /* Background colour = the GAMESTATE draw-env clear (s_drawenv_clear, captured
      * from PutDrawEnv) — the colour the canonical render actually auto-clears the
@@ -1758,23 +1858,43 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[9] = n - ut_first[9];
-    /* PORTAL_CYCLORAMA untextured: the destination cyclorama previews inside homeworld
-     * portal arches. Collected as their own range so they can be drawn in a
-     * dedicated depth-write-OFF pass AFTER the WORLD group but BEFORE actors/player
-     * (see the draw site). Submission order = the feeder's far→near painter sort. */
-    int portal_first = n, portal_count = 0;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_CYCLORAMA || n + 3 > SCENE_VB_VERTS) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+    /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
+     * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
+     * id. Draw site (after the WORLD group): per group — clear stencil →
+     * rasterize the mask invisibly, depth-TESTED against the world (the arch
+     * stone / a nearer wall punches it out) → draw the colours depth-FREE,
+     * stencil-gated. Groups draw far→near by plane depth so a nearer portal
+     * paints over a farther one seen through it; within a group, submission
+     * order = the feeder's painter order (flat base → dome). */
+    struct portal_run { int group; int first, count; float depth; };
+    enum { MAX_PORTAL_RUNS = 32 };
+    struct portal_run pmask[MAX_PORTAL_RUNS], psky[MAX_PORTAL_RUNS];
+    int pmask_n = 0, psky_n = 0;
+    for (int cat = 0; cat < 2; cat++) {   /* pass 0 = masks, pass 1 = sky colours */
+        const int want = cat ? OPENPETE_SCENE_PORTAL_CYCLORAMA : OPENPETE_SCENE_PORTAL_MASK;
+        struct portal_run *runs = cat ? psky : pmask;
+        int *rn = cat ? &psky_n : &pmask_n;
+        int cur = -1;   /* current run: a maximal streak of one group id */
+        for (int t = 0; t < scene_n; t++) {
+            if (scene[t].textured || scene[t].category != want || n + 3 > SCENE_VB_VERTS) continue;
+            if (cur < 0 || runs[cur].group != scene[t].group) {
+                if (*rn >= MAX_PORTAL_RUNS) continue;   /* drop past cap */
+                cur = (*rn)++;
+                runs[cur].group = scene[t].group;
+                runs[cur].first = n; runs[cur].count = 0;
+                runs[cur].depth = scene[t].v[0].z;
+            }
+            for (int k = 0; k < 3; k++) {
+                float cx, cy;
+                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                rhi_vertex *o = &buf[n + k];
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
+            }
+            runs[cur].count += 3;
+            n += 3;
         }
-        n += 3;
     }
-    portal_count = n - portal_first;
     /* Textured tris, bucketed by draw group then (for opaque groups) material-
      * sorted, so the draw loop coalesces same-material runs into ONE vkCmdDraw.
      * Previously each textured triangle was its own vkCmdDraw + vkCmdPushConstants
@@ -1959,27 +2079,94 @@ static bool draw_native_scene(bool full_extent)
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
         const struct scene_group *g = &groups[gi];
+        /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
+         * depth bias for these draws (both sub pipes are .depth_bias). This is
+         * the W2.5 replacement for the moby-shadow ×0.96 multiplicative view-Z
+         * pull, which was distance-PROPORTIONAL (the depth audit's diagnosed
+         * dimensional error for a coplanar tie-break); the hardware offset is
+         * distance-invariant, slope-aware at grazing angles, and its clamp
+         * bounds the total pull far below anything that could reorder a
+         * genuine occluder.
+         *   Vulkan rule: dynamic state is INVALIDATED by binding any pipeline
+         * that has the same state static (every non-decal pipeline here), so
+         * the bias must be set AFTER each depth_bias pipeline bind, before its
+         * draws — never rely on a value set earlier in the pass. */
         if (g->utex && ut_count[gi] > 0) {
             rhi_bind_pipeline(s_nr.dev, g->utex);
+            if (gi == 1) {
+                float c, s, cl;
+                shadow_hw_bias(&c, &s, &cl);
+                rhi_set_depth_bias(s_nr.dev, c, cl, s);
+            }
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
         if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
             rhi_bind_pipeline(s_nr.dev, g->tex);
+            if (gi == 1) {
+                float c, s, cl;
+                shadow_hw_bias(&c, &s, &cl);
+                rhi_set_depth_bias(s_nr.dev, c, cl, s);
+            }
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene);
         }
-        /* Portal-sky previews: drawn right after the WORLD group (gi==0) so they
-         * depth-test against the arch stone / terrain just written (the arch frame
-         * occludes them into the opening shape), but via the depth-WRITE-OFF pipe so
-         * the SUBTRACT/ACTOR/PLAYER groups drawn next are never per-pixel cut by the
-         * sky — Spyro flying into/through the portal always sorts on top, matching
-         * the PSX OT (portal sky = one bucket, the whole player model in front). */
-        if (gi == 0 && s_nr.gouraud_noz_pipe && portal_count > 0) {
-            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
+        /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
+         * PLAYER group — the native realization of the PSX sky bucket, which
+         * painted over everything OT-behind it:
+         *   - the sky depth-TESTS (LEQUAL at the portal-plane z, write OFF)
+         *     against world+actor depth, so it repaints over mobys BEHIND the
+         *     plane (they drew in the ACTOR group and wrote deeper z) while a
+         *     moby IN FRONT of the arch keeps its pixels;
+         *   - Spyro (PLAYER, drawn next) is never cut by it — he always sorts
+         *     on top, incl. flying/walking through the portal (the earlier
+         *     depth-STAMP variant clipped him mid-entry and was replaced by
+         *     this repaint ordering);
+         *   - the stencil mask confines everything to the aperture footprint
+         *     (side-poke impossible), and intra-portal compositing stays
+         *     painter order (backstops fed before the dome). */
+        if (gi == 2 && s_nr.gouraud_noz_pipe && s_nr.portal_mask_pipe && psky_n > 0) {
+            /* Per-portal stencil sequence, far→near by plane depth (a nearer
+             * portal seen in front of a farther one paints last): clear
+             * stencil → mask (invisible, depth-tested) → sky colours
+             * (depth-tested, stencil-gated). A sky run without a matching
+             * mask uses its own footprint as the mask. */
+            int order[MAX_PORTAL_RUNS];
+            for (int oi = 0; oi < psky_n; oi++) order[oi] = oi;
+            for (int oi = 1; oi < psky_n; oi++) {          /* depth descending */
+                int ov = order[oi], oj = oi - 1;
+                while (oj >= 0 && psky[order[oj]].depth < psky[ov].depth) {
+                    order[oj + 1] = order[oj]; oj--;
+                }
+                order[oj + 1] = ov;
+            }
+            char mused[MAX_PORTAL_RUNS] = {0};
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)portal_count, (uint32_t)portal_first);
+            for (int oi = 0; oi < psky_n; oi++) {
+                const struct portal_run *sk = &psky[order[oi]];
+                const struct portal_run *mk = NULL;
+                for (int mj = 0; mj < pmask_n; mj++)
+                    if (!mused[mj] && pmask[mj].group == sk->group) { mk = &pmask[mj]; mused[mj] = 1; break; }
+                int mf = mk ? mk->first : sk->first;
+                int mc = mk ? mk->count : sk->count;
+                if (sk->count <= 0 || mc <= 0) continue;
+                rhi_clear_stencil(s_nr.dev);
+                rhi_bind_pipeline(s_nr.dev, s_nr.portal_mask_pipe);
+                /* dynamic bias must be (re)set after THIS bind (see the note
+                 * at the shadow group). Default neutral — the tie-break offset
+                 * is already baked into the mask z (portal_sky_depth's
+                 * −0.0015); OPENPETE_PORTAL_MASK_BIAS adds the optional
+                 * close-range pull (see portal_mask_bias). */
+                {
+                    float c, s, cl;
+                    portal_mask_bias(&c, &s, &cl);
+                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
+                }
+                rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
+                rhi_draw(s_nr.dev, (uint32_t)sk->count, (uint32_t)sk->first);
+            }
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
          * after the ACTOR group (gi==2) but BEFORE the PLAYER group (gi==3) — so the
@@ -2029,6 +2216,11 @@ static bool draw_native_scene(bool full_extent)
                                             : s_nr.gouraud_add_pipe;  /* 1 (and 3) -> additive */
         if (fp) {
             rhi_bind_pipeline(s_nr.dev, fp);
+            /* gouraud_sub_pipe carries DYNAMIC depth bias (the shadow decal
+             * pipe) — the state must be set after this bind (see the note at
+             * the shadow group); neutral for the fullscreen fade quad. */
+            if (fp == s_nr.gouraud_sub_pipe)
+                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
@@ -2207,7 +2399,11 @@ static void capture_freeze_from_offscreen(bool world_frame)
     int sy = (int)(((1.0f - s_nr.p0_hy) * 0.5f) * (float)s_nr.win_h + 0.5f);
     int sh = (int)(s_nr.p0_hy * (float)s_nr.win_h + 0.5f);
     if (sw > 0 && sh > 0) {
+        static int s_pt = -1;
+        if (s_pt < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_pt = (e && *e && *e != '0'); }
+        if (s_pt) { fprintf(stderr, "s"); fflush(stderr); }   /* freeze snapshot enter */
         rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex, sx, sy, sw, sh);
+        if (s_pt) { fprintf(stderr, "t"); fflush(stderr); }   /* freeze snapshot done */
         s_nr.frozen_valid = true;
     }
 }
@@ -2475,8 +2671,16 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
     ensure_ovl_ss();           /* FPS-overlay supersample target + composite quad */
 
+    /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
+     * never returns (the freeze-point hang) to the exact call. Terse; one
+     * letter per step: B=begin_frame done, C=compose done, S=swapchain blit
+     * done, E=end_frame done. A truncated sequence names the hung call. */
+    static int s_ptrace = -1;
+    if (s_ptrace < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_ptrace = (e && *e && *e != '0'); }
+
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
     s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
@@ -2486,8 +2690,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     prepare_fps_overlay_ss();
     bool did_diff = compose_variant(variant, have_ref);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
+    if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
     rhi_blit_to_swapchain(s_nr.dev);
+    if (s_ptrace) { fprintf(stderr, "S"); fflush(stderr); }
 
     /* --record: capture the on-screen native frame via the async ring (no-op
      * unless recording is active). MUST run before end_frame, while this frame
@@ -2497,6 +2703,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         record_cycle(record_pts_us);
 
     rhi_end_frame(s_nr.dev);
+    if (s_ptrace) { fprintf(stderr, "E\n"); fflush(stderr); }
 
     if (did_diff && s_nr.stats_enabled) diff_stats_accumulate();  /* reads back the diff */
 }
@@ -2713,6 +2920,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
     if (s_nr.gouraud_noz_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
+    if (s_nr.portal_mask_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.portal_mask_pipe);
     if (s_nr.gouraud_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_add_pipe);
     if (s_nr.gouraud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
     if (s_nr.gouraud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_blend_pipe);

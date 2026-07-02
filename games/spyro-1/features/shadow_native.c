@@ -445,18 +445,31 @@ static void shadow_moby_build(CPUState* cpu) {
  *      own ground, while terrain genuinely nearer (a ledge between camera and
  *      shadow sits at a MUCH smaller view-Z) still occludes it — the small factor
  *      never reorders those. Shadows are depth_write_off, so this can't perturb
- *      the opaque depth field. Tunable via OPENPETE_SHADOW_DEPTH_BIAS. */
+ *      the opaque depth field. Tunable via OPENPETE_SHADOW_BIAS_SPYRO /
+ *      OPENPETE_SHADOW_BIAS_MOBY (view-Z pull, below) and
+ *      OPENPETE_SHADOW_HW_BIAS (the W2.5 hardware polygon offset,
+ *      native_render.c). */
 static float shadow_depth(float viewz, float scale, float bias) {
     return openpete_native_depth_from_viewz(viewz * scale * bias);
 }
-/* Two separate biases (they want opposite things on uneven terrain):
+/* Two separate biases (they historically wanted opposite things on uneven
+ * terrain):
  *  - SPYRO shadow: large + near + on the HQ-subdivided ground right under the
  *    hero, so its big flat fan slices badly through the bumps -> needs a STRONG
- *    bias (~0.7) to drape over them. A ledge in front of Spyro sits at a MUCH
- *    smaller view-Z, so even 0.7 never reorders genuine occluders.
- *  - MOBY shadows: small + distant, so per-vertex barely varies and the footprint
- *    covers little terrain; they need a WEAK bias (~0.96) so distant ones stay
- *    OCCLUDED behind hills (the original "shadows through terrain" symptom). */
+ *    bias (~0.7) to drape over them. This compensates real NON-COPLANARITY
+ *    (bumps genuinely poking above the fan plane), which no constant/slope
+ *    offset can express — it stays until the fan is draped onto sampled
+ *    terrain height or stencil-masked (plan W2.6). A ledge in front of Spyro
+ *    sits at a MUCH smaller view-Z, so even 0.7 never reorders genuine
+ *    occluders.
+ *  - MOBY shadows: small + distant — a textbook coplanar-decal tie-break,
+ *    handled since W2.5 by the HARDWARE slope-scaled depth bias on the
+ *    subtractive pipelines (native_render.c shadow_hw_bias,
+ *    OPENPETE_SHADOW_HW_BIAS). The old ×0.96 multiplicative view-Z pull was
+ *    distance-PROPORTIONAL (2026-07-01 depth audit: the wrong dimension for a
+ *    tie-break — a 10×-further shadow got a 10×-bigger world-space nudge) and
+ *    is retired to a 1.0 default; OPENPETE_SHADOW_BIAS_MOBY remains for A/B
+ *    against the old behaviour. */
 static float shadow_bias_spyro(void) {
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 0.70f; }
@@ -464,7 +477,7 @@ static float shadow_bias_spyro(void) {
 }
 static float shadow_bias_moby(void) {
     static float b = -1.0f;
-    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_MOBY"); b = (e && *e) ? (float)atof(e) : 0.96f; }
+    if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_MOBY"); b = (e && *e) ? (float)atof(e) : 1.0f; }
     return b;
 }
 
