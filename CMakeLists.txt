@@ -138,6 +138,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
+    # frame HEADLESS through a software rasterizer (surfaceless Vulkan, plan
+    # W1.1 — no GPU / no display) at a curated set of attract-demo scenes and
+    # compares each against a stored golden with a tolerance metric. The
+    # automated safety net for the derive-from-gamestate renderer: catches
+    # native regressions and the next undiscovered transient-state seam. Skips
+    # cleanly (exit 64) if the binary / disc / goldens / Vulkan loader / python
+    # +PIL are absent. See notes/plans/openpete-native-renderer.md (Wave 1)
+    # and tests/golden/spyro-1/native-vk/README.md.
+    add_test(NAME native_visual_regression
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_visual.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(native_visual_regression PROPERTIES
+        LABELS "slow;visual"
+        TIMEOUT 600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # --record video-capture smoke test. Boots the headless demo with
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,
