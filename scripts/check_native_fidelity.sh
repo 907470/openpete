@@ -31,23 +31,30 @@ BUILD_DIR="build/linux-release"
 OUT_DIR="/tmp/native-fidelity"
 CALIBRATE=0
 HEADROOM_PCT=10
-FRAMES="2000,4000,5000,9000,14000,18000,19000"
-FRAME_LIMIT=19100
+# Scene keys are CANONICAL DRAW-TICKS (--screenshot-on-tick) — the same sim
+# moments as the old frame keys (tick↔frame at the 2026-07-02 capture:
+# 1001↔2000, 2194↔4000, 2694↔5000, 4888↔9000, 7581↔14000, 9775↔18000,
+# 10275↔19000) but immune to the frame↔tick host-timing drift that forked
+# the frame-keyed gate (2026-07-01 flake; see check_native_visual.sh).
+TICKS="1001,2194,2694,4888,7581,9775,10275"
+# Runaway bound only (frame/VBL units — headroom over the last tick's
+# nominal frame ~19000 so a drifted mapping can't clip the capture).
+FRAME_LIMIT=21000
 
 # Per-scene over8% ceilings (native-vs-PsyCross, frame-synced). Calibrated
-# 2026-07-01 on lavapipe to the measured baseline + ~10% headroom; both
+# 2026-07-02 on lavapipe to the measured baseline + ~10% headroom; both
 # renderers are deterministic so the baseline is reproducible run-to-run.
 # Re-calibrate with --calibrate after an intentional native-render change.
 declare -A CEIL=(
-    [2000]=52 [4000]=75 [5000]=70 [9000]=44
-    [14000]=44 [18000]=47 [19000]=48
+    [1001]=52 [2194]=75 [2694]=70 [4888]=44
+    [7581]=44 [9775]=47 [10275]=48
 )
 
 for arg in "$@"; do
     case "$arg" in
         --build-dir=*)    BUILD_DIR="${arg#--build-dir=}" ;;
         --out=*)          OUT_DIR="${arg#--out=}" ;;
-        --frames=*)       FRAMES="${arg#--frames=}" ;;
+        --ticks=*)        TICKS="${arg#--ticks=}" ;;
         --frame-limit=*)  FRAME_LIMIT="${arg#--frame-limit=}" ;;
         --headroom-pct=*) HEADROOM_PCT="${arg#--headroom-pct=}" ;;
         --calibrate)      CALIBRATE=1 ;;
@@ -74,10 +81,10 @@ LOG="$OUT_DIR/fidelity.log"
 
 # --renderer diff makes screenshot_all diff native vs the (frame-synced) PsyCross
 # reference; --render-stats makes it emit the machine-readable "diff-stats" line.
-echo "[native-fidelity] capturing native-vs-PsyCross diff-stats headless {$FRAMES}"
+echo "[native-fidelity] capturing native-vs-PsyCross diff-stats headless {$TICKS}"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
        --renderer diff --render-stats \
-       --screenshot-on-frame "$FRAMES" \
+       --screenshot-on-tick "$TICKS" \
        --screenshot-output "$OUT_DIR/fid-{n}.png" \
        --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 600 \
        > "$LOG" 2>&1
@@ -88,13 +95,13 @@ if [[ $rc -ne 0 ]] || ! grep -q "(headless)" "$LOG"; then
     exit 64
 fi
 
-IFS=',' read -ra FRAME_ARR <<< "$FRAMES"
+IFS=',' read -ra TICK_ARR <<< "$TICKS"
 declare -i fail=0 seen=0
-for f in "${FRAME_ARR[@]}"; do
+for f in "${TICK_ARR[@]}"; do
     # native: diff-stats file=.../fid-<f>.png size=... mean=.. max=.. over8=..%
     line="$(grep -oE "diff-stats file=[^ ]*fid-${f}\.png .*over8=[0-9.]+%" "$LOG" | tail -1)"
     if [[ -z "$line" ]]; then
-        echo "  FAIL  frame $f: no diff-stats emitted (native ref-compare didn't run?)"; fail=1; continue
+        echo "  FAIL  tick $f: no diff-stats emitted (native ref-compare didn't run?)"; fail=1; continue
     fi
     over="$(sed -E 's/.*over8=([0-9.]+)%.*/\1/' <<<"$line")"
     mean="$(sed -E 's/.*mean=([0-9.]+).*/\1/' <<<"$line")"
@@ -102,17 +109,17 @@ for f in "${FRAME_ARR[@]}"; do
     if [[ "$CALIBRATE" == 1 ]]; then
         # Emit a ready-to-paste ceiling = ceil(measured * (1 + headroom/100)).
         ceil="$(python3 -c "import math;print(math.ceil($over*(1+$HEADROOM_PCT/100.0)))")"
-        printf "  frame %-6s over8=%6s%%  mean=%-7s  suggested_ceiling=%s\n" "$f" "$over" "$mean" "$ceil"
+        printf "  tick %-6s over8=%6s%%  mean=%-7s  suggested_ceiling=%s\n" "$f" "$over" "$mean" "$ceil"
         continue
     fi
     cap="${CEIL[$f]:-}"
     if [[ -z "$cap" ]]; then
-        echo "  SKIP-scene frame $f: no ceiling defined" >&2; continue
+        echo "  SKIP-scene tick $f: no ceiling defined" >&2; continue
     fi
     if python3 -c "import sys; sys.exit(0 if float('$over')<=float('$cap') else 1)"; then
-        echo "  PASS  frame $f  over8=${over}% (ceiling ${cap}%, mean ${mean})"
+        echo "  PASS  tick $f  over8=${over}% (ceiling ${cap}%, mean ${mean})"
     else
-        echo "  FAIL  frame $f  over8=${over}% EXCEEDS ceiling ${cap}% (mean ${mean}) — native drifted from PsyCross"
+        echo "  FAIL  tick $f  over8=${over}% EXCEEDS ceiling ${cap}% (mean ${mean}) — native drifted from PsyCross"
         fail=1
     fi
 done

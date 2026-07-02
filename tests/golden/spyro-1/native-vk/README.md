@@ -7,7 +7,7 @@ captured **headless** through a software rasterizer (surfaceless Vulkan / lavapi
 
 ## What these are (and aren't)
 
-- `demo-<frame>-vk.png` is the native renderer's `native_rtt` readback
+- `demo-tick-<tick>-vk.png` is the native renderer's `native_rtt` readback
   (`openpete_native_render_screenshot_all`, the `-vk` variant) at reference
   resolution.
 - The gate is **native-vs-native**: the candidate is the same native pipeline on
@@ -24,18 +24,24 @@ captured **headless** through a software rasterizer (surfaceless Vulkan / lavapi
 
 ## Corpus
 
-Deterministic attract demo (`--run-recomp 0x80012204`), the SAME (scene, frame)
-pairs as `../psycross-ref`, so the two archives line up scene-for-scene:
+Deterministic attract demo (`--run-recomp 0x80012204`), the SAME sim moments as
+`../psycross-ref` so the two archives line up scene-for-scene — but keyed on
+**canonical draw-ticks** (`--screenshot-on-tick`), not VBL frames. Frame-keyed
+captures forked run-to-run because the VBL↔tick mapping drifts with host timing
+(CD-load VSync spins, audio backend — the 2026-07-01 gate flake); the Nth
+canonical present is the same sim moment in every run. The "frame" column is
+the psycross-ref frame number each tick corresponded to at the 2026-07-02
+capture (nominal — the mapping is host-timing-dependent, which is the point).
 
-| File | Frame | Scene |
-|------|-------|-------|
-| `demo-2000-vk.png`  | 2000  | attract title screen |
-| `demo-4000-vk.png`  | 4000  | Artisans-style grass level |
-| `demo-5000-vk.png`  | 5000  | grass level, second view |
-| `demo-9000-vk.png`  | 9000  | orange/canyon level |
-| `demo-14000-vk.png` | 14000 | blue/dusk level |
-| `demo-18000-vk.png` | 18000 | dark-green level |
-| `demo-19000-vk.png` | 19000 | teal/water scene |
+| File | Tick | ~Frame | Scene |
+|------|------|--------|-------|
+| `demo-tick-1001-vk.png`  | 1001  | 2000  | attract title screen |
+| `demo-tick-2194-vk.png`  | 2194  | 4000  | Artisans-style grass level |
+| `demo-tick-2694-vk.png`  | 2694  | 5000  | grass level, second view |
+| `demo-tick-4888-vk.png`  | 4888  | 9000  | orange/canyon level |
+| `demo-tick-7581-vk.png`  | 7581  | 14000 | blue/dusk level |
+| `demo-tick-9775-vk.png`  | 9775  | 18000 | dark-green level |
+| `demo-tick-10275-vk.png` | 10275 | 19000 | teal/water scene |
 
 **`freeze-1185` is intentionally absent.** The pause-freeze backdrop is drawn
 from `frozen_tex`, which is captured only in the live-present path

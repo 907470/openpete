@@ -38,21 +38,29 @@ GOLDEN_DIR="tests/golden/spyro-1/native-vk"
 BLESS=0
 DIFF_THRESHOLD=16
 MAX_DIVERGENT=400
-# Demo (attract-mode) corpus — the SAME (scene, frame) pairs as the PsyCross
-# reference archive (tests/golden/spyro-1/psycross-ref), minus scenes that can't
-# be rendered from the scene buffers alone. NOTE: the pause-freeze backdrop
-# (freeze-1185) is intentionally excluded — its frozen_tex is captured only in
-# the live-present path, which is a no-op headless, so it can't be reproduced by
-# the headless screenshot path.
-FRAMES="2000,4000,5000,9000,14000,18000,19000"
-FRAME_LIMIT=19100
+# Demo (attract-mode) corpus — the SAME sim moments as the PsyCross reference
+# archive (tests/golden/spyro-1/psycross-ref), minus scenes that can't be
+# rendered from the scene buffers alone, but keyed on CANONICAL DRAW-TICKS
+# (--screenshot-on-tick), not VBL frames: the frame↔tick mapping drifts with
+# host timing (CD-load VSync spins, audio backend), which made frame-keyed
+# goldens fork at session-dependent points (the 2026-07-01 gate flake) while
+# the sim itself stayed tick-deterministic. Tick↔frame mapping at capture
+# (2026-07-02): 1001↔2000, 2194↔4000, 2694↔5000, 4888↔9000, 7581↔14000,
+# 9775↔18000, 10275↔19000 — i.e. these ticks are the psycross-ref scenes.
+# NOTE: the pause-freeze backdrop (freeze-1185) is intentionally excluded —
+# its frozen_tex is captured only in the live-present path, which is a no-op
+# headless, so it can't be reproduced by the headless screenshot path.
+TICKS="1001,2194,2694,4888,7581,9775,10275"
+# Runaway bound only (frame/VBL units, so it needs headroom over the last
+# tick's nominal frame ~19000 — a drifted mapping must not clip the capture).
+FRAME_LIMIT=21000
 
 for arg in "$@"; do
     case "$arg" in
         --build-dir=*)      BUILD_DIR="${arg#--build-dir=}" ;;
         --out=*)            OUT_DIR="${arg#--out=}" ;;
         --golden-dir=*)     GOLDEN_DIR="${arg#--golden-dir=}" ;;
-        --frames=*)         FRAMES="${arg#--frames=}" ;;
+        --ticks=*)          TICKS="${arg#--ticks=}" ;;
         --frame-limit=*)    FRAME_LIMIT="${arg#--frame-limit=}" ;;
         --bless)            BLESS=1 ;;
         --diff-threshold=*) DIFF_THRESHOLD="${arg#--diff-threshold=}" ;;
@@ -89,10 +97,10 @@ mkdir -p "$OUT_DIR"
 
 # --- capture: one headless run emits every -vk frame -----------------------
 LOG="$OUT_DIR/capture.log"
-echo "[native-visual] capturing -vk frames {$FRAMES} headless (device: software vk)"
+echo "[native-visual] capturing -vk ticks {$TICKS} headless (device: software vk)"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
        --renderer vk \
-       --screenshot-on-frame "$FRAMES" \
+       --screenshot-on-tick "$TICKS" \
        --screenshot-output "$OUT_DIR/demo-{n}.png" \
        --frame-limit "$FRAME_LIMIT" \
        --max-runtime-seconds 600 \
@@ -110,19 +118,19 @@ if ! grep -q "(headless)" "$LOG"; then
 fi
 
 # --- compare (or bless) each scene -----------------------------------------
-IFS=',' read -ra FRAME_ARR <<< "$FRAMES"
+IFS=',' read -ra TICK_ARR <<< "$TICKS"
 declare -i fail=0 checked=0
-for f in "${FRAME_ARR[@]}"; do
+for f in "${TICK_ARR[@]}"; do
     cand="$OUT_DIR/demo-${f}-vk.png"
-    gold="$GOLDEN_DIR/demo-${f}-vk.png"
+    gold="$GOLDEN_DIR/demo-tick-${f}-vk.png"
     if [[ ! -f "$cand" ]]; then
-        echo "  FAIL  frame $f: no -vk capture produced ($cand)"; fail=1; continue
+        echo "  FAIL  tick $f: no -vk capture produced ($cand)"; fail=1; continue
     fi
     if [[ "$BLESS" == 1 ]]; then
-        cp -f "$cand" "$gold"; echo "  blessed frame $f -> $gold"; continue
+        cp -f "$cand" "$gold"; echo "  blessed tick $f -> $gold"; continue
     fi
     if [[ ! -f "$gold" ]]; then
-        echo "  SKIP-scene frame $f: no golden ($gold) — run with --bless" >&2
+        echo "  SKIP-scene tick $f: no golden ($gold) — run with --bless" >&2
         continue
     fi
     # Golden and candidate are the same native output size; compare full-frame
@@ -136,9 +144,9 @@ for f in "${FRAME_ARR[@]}"; do
             --max-divergent "$MAX_DIVERGENT" \
             --diff-out "$OUT_DIR/diff-${f}.png" 2>&1)"
     if [[ $? -eq 0 ]]; then
-        echo "  PASS  frame $f  ($out)"
+        echo "  PASS  tick $f  ($out)"
     else
-        echo "  FAIL  frame $f diverged from golden"
+        echo "  FAIL  tick $f diverged from golden"
         echo "$out" | sed 's/^/        /'
         fail=1
     fi

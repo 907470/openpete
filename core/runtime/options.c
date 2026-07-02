@@ -157,6 +157,7 @@ void openpete_options_init(openpete_options_t* opts) {
     memset(opts, 0, sizeof(*opts));
     opts->display_name        = "OpenPete";
     opts->screenshot_frame_count = 0;
+    opts->screenshot_ticks_keyed = false;
     opts->screenshot_output      = "./screenshot.png";
     opts->screenshot_presents_start = -1;
     opts->screenshot_presents_count = 1;
@@ -297,22 +298,31 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->pgxp_enable = n; i++;
-        } else if (strcmp(a, "--screenshot-on-frame") == 0) {
+        } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
+                   strcmp(a, "--screenshot-on-tick") == 0) {
+            bool ticks = (a[16] == 't');   /* "--screenshot-on-[t]ick" */
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (opts->screenshot_frame_count > 0 &&
+                opts->screenshot_ticks_keyed != ticks) {
+                fprintf(stderr, "openpete: --screenshot-on-frame and --screenshot-on-tick "
+                                "are mutually exclusive\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
             opts->screenshot_frame_count = 0;
+            opts->screenshot_ticks_keyed = ticks;
             const char* p = v;
             while (*p) {
                 while (*p == ',' || *p == ' ') p++;
                 if (!*p) break;
                 if (opts->screenshot_frame_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
-                    fprintf(stderr, "openpete: --screenshot-on-frame supports up to %d frames\n",
-                            OPENPETE_MAX_SCREENSHOT_FRAMES);
+                    fprintf(stderr, "openpete: %s supports up to %d frames\n",
+                            a, OPENPETE_MAX_SCREENSHOT_FRAMES);
                     return OPENPETE_EXIT_SETUP_ERROR;
                 }
                 char* end = NULL;
                 long n = strtol(p, &end, 10);
                 if (end == p || n < 0) {
-                    fprintf(stderr, "openpete: --screenshot-on-frame expects N[,N2,...], got: %s\n", v);
+                    fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
                     return OPENPETE_EXIT_SETUP_ERROR;
                 }
                 opts->screenshot_frames[opts->screenshot_frame_count++] = (int)n;
@@ -532,6 +542,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
                 "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 0; --pgxp 1 enables perspective UV)\n"
                 "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
+                "  --screenshot-on-tick N[,N2,...]   same, keyed on canonical draw-ticks instead of VBL frames.\n"
+                "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
+                "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
                 "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
                 "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
                 "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"

@@ -13,6 +13,7 @@ void*        openpete_host_fiber       = NULL;
 void*        openpete_game_fiber       = NULL;
 SDL_AtomicInt openpete_vbl             = {0};
 unsigned     openpete_frame            = 0u;
+unsigned     openpete_canon_tick       = 0u;
 unsigned     openpete_primitives_drawn = 0u;
 int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;

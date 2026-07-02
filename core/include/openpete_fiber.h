@@ -36,6 +36,17 @@ extern SDL_AtomicInt openpete_vbl;
  * during the splash sequence. */
 extern unsigned openpete_frame;
 
+/* Canonical-present counter: increments exactly once per CANONICAL game
+ * draw (the host loop's `openpete_present_pending` block), i.e. once per
+ * game draw-tick. Unlike `openpete_frame` — a VBL/yield counter whose
+ * mapping to sim ticks drifts run-to-run with host timing (CD-load VSync
+ * spins, audio backend) — the Nth canonical present is the SAME sim
+ * moment in every run of a tick-deterministic sim, so tick-keyed triggers
+ * (`--screenshot-on-tick`) sample identical game states across sessions.
+ * (The W1.2 gate flake: frame-keyed captures forked at session-dependent
+ * points while the sim itself stayed deterministic.) */
+extern unsigned openpete_canon_tick;
+
 extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
 extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 

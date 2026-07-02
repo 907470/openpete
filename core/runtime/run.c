@@ -1663,10 +1663,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * the sim reached the start frame. */
         static int s_presents_captured = 0;
         if (openpete_present_pending) {
+            /* Canonical draw-tick counter: the Nth increment is the same sim
+             * moment in every run (tick-deterministic sim), unlike
+             * openpete_frame whose VBL↔tick mapping drifts with host timing.
+             * Keys --screenshot-on-tick (here and the native-variant dump
+             * below). */
+            openpete_canon_tick++;
+            int shot_key = opts->screenshot_ticks_keyed ? (int)openpete_canon_tick
+                                                        : (int)openpete_frame;
             static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
             for (int si = 0; si < opts->screenshot_frame_count; ++si) {
                 if (s_shot_fired[si]) continue;
-                if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
+                if (shot_key < opts->screenshot_frames[si]) continue;
                 s_shot_fired[si] = true;
                 char base[1024], path[1100];
                 openpete_screenshot_format_path(opts->screenshot_output,
@@ -1681,8 +1689,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 else      snprintf(path, sizeof(path), "%s-og", base);
                 openpete_psyx_take_screenshot(path);
                 OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u (target=%d)",
-                           path, openpete_frame, opts->screenshot_frames[si]);
+                           "wrote %s on frame %u tick %u (target=%d, %s-keyed)",
+                           path, openpete_frame, openpete_canon_tick,
+                           opts->screenshot_frames[si],
+                           opts->screenshot_ticks_keyed ? "tick" : "frame");
             }
             if (opts->screenshot_presents_start >= 0
                     && (int)openpete_frame >= opts->screenshot_presents_start
@@ -1788,7 +1798,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {
                     if (s_ab_shot[si]) continue;
-                    if ((int)openpete_frame < opts->screenshot_frames[si]) continue;
+                    if (shot_key < opts->screenshot_frames[si]) continue;
                     s_ab_shot[si] = true;
                     char base[1024];
                     openpete_screenshot_format_path(opts->screenshot_output,

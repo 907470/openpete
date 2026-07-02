@@ -152,7 +152,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(native_visual_regression PROPERTIES
         LABELS "slow;visual"
-        TIMEOUT 600
+        # Headroom over the game's own --max-runtime-seconds 600 so the
+        # in-loop self-limit always fires first (equal timeouts raced, and a
+        # hung game loop can't fire its own limit — the 2026-07-01 flake).
+        TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -170,7 +173,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(native_fidelity PROPERTIES
         LABELS "slow;visual"
-        TIMEOUT 600
+        # Headroom over the game's --max-runtime-seconds 600 (see above).
+        TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

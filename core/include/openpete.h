@@ -153,6 +153,13 @@ typedef struct {
 #define OPENPETE_MAX_SCREENSHOT_FRAMES 64
     int         screenshot_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
     int         screenshot_frame_count;   /* 0 = disabled */
+    /* `--screenshot-on-tick N[,...]` fills the same targets but keys them
+     * on `openpete_canon_tick` (canonical presents = game draw-ticks)
+     * instead of `openpete_frame` (VBL yields). Tick-keyed captures sample
+     * the SAME sim moment run-to-run — the frame↔tick mapping drifts with
+     * host timing (see openpete_fiber.h) — so the visual-regression gates
+     * use ticks. Mutually exclusive with --screenshot-on-frame. */
+    bool        screenshot_ticks_keyed;
     const char* screenshot_output;        /* path template; default ./screenshot.png */
 
     /* Multi-present capture for the transform-interp visual regression
