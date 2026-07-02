@@ -133,9 +133,8 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * (a ground decal pulled slightly toward the camera to clear terrain bumps)
  * draws OVER the terrain it falls on but UNDER the actors standing on it — the
  * PSX draw order (terrain, then shadow, then Spyro on top). Ignored for
- * non-opaque tris (blend!=0 routes by blend). Stamped by add_tri from the
- * current category (see openpete_native_scene_set_category), so feeders that
- * don't care default to WORLD. */
+ * non-opaque tris (blend!=0 routes by blend). Set by add_tri from its explicit
+ * `category` argument; feeders that don't care pass OPENPETE_SCENE_WORLD. */
 #define OPENPETE_SCENE_WORLD 0
 /* ACTOR — regular + shaded mobys (the rescued dragon, level mobys, gems, …). Drawn
  * after shadows, then the HUD/overlay layer goes ON TOP of them. */
@@ -185,7 +184,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * never occluded by world geometry. Only the static g_Hud range routes here
  * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
 #define OPENPETE_SCENE_HUD3D 6
-/* PORTAL_SKY — the destination-level cyclorama preview shown inside a homeworld
+/* PORTAL_CYCLORAMA — the destination-level cyclorama preview shown inside a homeworld
  * portal arch (portal_native.c). It is a far BACKGROUND seen through the arch
  * window: the arch stone must occlude it, but it must never occlude actors or
  * Spyro flying into/through the portal. Drawn in its own pass AFTER the WORLD
@@ -195,14 +194,14 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * bucket and the player's whole model sorts in front of it (never intersecting
  * it per-pixel the way a shared Z-buffer otherwise would). Untextured only;
  * self-occlusion comes from the feeder's own far→near painter sort. */
-#define OPENPETE_SCENE_PORTAL_SKY 7
+#define OPENPETE_SCENE_PORTAL_CYCLORAMA 7
 /* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
  * for tris that share a re-derivable category (the 2D-UI sprites/lines live in
  * OPENPETE_SCENE_HUD, which the moby feeder ALSO populates with re-derived near-OT
- * billboards). A category check can't tell them apart; this flag can. Stamped by
- * add_tri from openpete_native_scene_set_carry (0 unless a feeder opts in). */
+ * billboards). A category check can't tell them apart; this flag can. Set by
+ * add_tri from its explicit `carry` argument (0 unless a feeder opts in). */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
@@ -234,23 +233,17 @@ void openpete_native_scene_begin(void);
  * `openpete_frame` (the per-yield frame counter). Order-independent and robust
  * to a feeder being absent on a given level. */
 void openpete_native_scene_begin_frame(unsigned frame);
-/* Append one screen-space triangle to the current native scene. The tri's
- * `category` is overwritten with the current scene category (set_category). */
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri);
-/* Set the layer that subsequent add_tri calls are stamped with
- * (OPENPETE_SCENE_WORLD / _ACTOR). Actor feeders (Spyro body, mobys) bracket
- * their emit with set_category(ACTOR) ... set_category(WORLD). Reset to WORLD at
- * each frame's first begin_frame and by scene_begin, so a feeder that never
- * calls it always emits WORLD geometry. */
-void openpete_native_scene_set_category(int category);
-/* Mark subsequent add_tri calls as carry=1 (sub-tick-uncarryable 2D-UI: the title
- * logo / "PRESS START" / HUD glyph FT4 sprites + UI separator lines that the 2D-UI
- * feeder builds during the game render and the re-extract can't re-derive). The
- * overlay-carry snapshots these (alongside OVERLAY/HUD_PANEL) so they survive the
- * sub-tick rebuild instead of strobing at 30 Hz. Reset to 0 at each frame's first
- * begin_frame and by scene_begin; the 2D-UI feeder brackets its HUD-sprite emit
- * with set_carry(1) ... set_carry(0). */
-void openpete_native_scene_set_carry(int on);
+/* Append one screen-space triangle to the current native scene. `category`
+ * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
+ * call — there is NO ambient/global scene category (the old set_category /
+ * set_carry globals are gone), so a feeder can't leak a stale layer into the
+ * next feeder and EVERY emit path (incl. the sub-tick re-extract) is
+ * category-correct by construction. `category` is ignored for non-opaque tris
+ * (blend!=0 routes by blend). `carry` = 1 marks sub-tick-uncarryable 2D-UI (the
+ * title logo / "PRESS START" / HUD glyph FT4 sprites + UI separator lines the
+ * re-extract can't re-derive) so the overlay-carry snapshot preserves them
+ * across the sub-tick rebuild instead of strobing at 30 Hz; 0 otherwise. */
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
  * before the scene so uncovered areas show it instead of black, mirroring the
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).

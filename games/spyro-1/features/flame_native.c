@@ -631,7 +631,7 @@ static void flame_feed_scaffold(CPUState* cpu) {
             }
             st.textured = t->textured; st.tpage_x = tpx; st.tpage_y = tpy;
             st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = blend;
-            openpete_native_scene_add_tri(&st);
+            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
 }
@@ -661,7 +661,7 @@ static void flame_feed_native(CPUState* cpu) {
             }
             st.textured = 1; st.tpage_x = q->tpx; st.tpage_y = q->tpy;
             st.clut_x = q->clx; st.clut_y = q->cly; st.bpp = q->bpp; st.blend = 2; /* additive */
-            openpete_native_scene_add_tri(&st);
+            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
     for (int i = 0; i < s_fcap_n; i++) {
@@ -675,7 +675,7 @@ static void flame_feed_native(CPUState* cpu) {
         }
         st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = 0;                       /* G3 caps are opaque (code 0x30, ABE clear) */
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 

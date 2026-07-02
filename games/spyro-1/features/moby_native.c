@@ -1765,9 +1765,9 @@ static void push_scene_moby(void) {
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
     for (int i = 0; i < s_wtri_n; i++) {
-        openpete_native_scene_set_category(s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
-                                          : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
-                                                              : OPENPETE_SCENE_ACTOR);
+        int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
+                : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
+                                    : OPENPETE_SCENE_ACTOR;
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
@@ -1782,9 +1782,8 @@ static void push_scene_moby(void) {
         t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
         t.bpp      = s_wtri[i].bpp;
         t.blend    = s_wtri[i].blend;
-        openpete_native_scene_add_tri(&t);
+        openpete_native_scene_add_tri(&t, cat, 0);
     }
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts --

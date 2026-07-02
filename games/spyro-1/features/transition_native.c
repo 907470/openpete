@@ -213,7 +213,6 @@ static void crossfade_capture(CPUState* cpu, uint32_t start, uint32_t end) {
 static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 
     /* Backdrop behind the mesh: a 3x3 quad grid that EDGE-CLAMP-extends the
      * mesh's bilinear corner gradient outward to a huge scissor-clipped rect.
@@ -255,8 +254,7 @@ static void crossfade_feed_native(void) {
                     st.textured = 0;
                     st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
                     st.blend = 0;
-                    st.category = OPENPETE_SCENE_WORLD;
-                    openpete_native_scene_add_tri(&st);
+                    openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
                 }
             }
     }
@@ -273,8 +271,7 @@ static void crossfade_feed_native(void) {
         st.textured = 0;
         st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = t->blend;
-        st.category = OPENPETE_SCENE_WORLD;
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 

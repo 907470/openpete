@@ -365,9 +365,9 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * preserved. (A hardware slope-scaled polygon offset — pipeline `depthBias` — is the
  * fuller version, but it needs the shared `native_render.c` draw path; this
  * feeder-side constant is the equivalent that touches only this file.) Tunable. */
-#define PORTAL_SKY_DEPTH_OFFSET 0.0015f
-static float portal_sky_depth(double vz) {
-    float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_SKY_DEPTH_OFFSET;
+#define PORTAL_CYCLORAMA_DEPTH_OFFSET 0.0015f
+static float portal_cyclorama_depth(double vz) {
+    float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_CYCLORAMA_DEPTH_OFFSET;
     return z < 0.0f ? 0.0f : z;
 }
 
@@ -376,7 +376,7 @@ static float portal_sky_depth(double vz) {
 static float plane_depth(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
-    return portal_sky_depth(vz);
+    return portal_cyclorama_depth(vz);
 }
 
 /* Far-path portal preview: the destination dome renders as a single flat colour
@@ -454,15 +454,15 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
             openpete_scene_tri t;
             memset(&t, 0, sizeof t);
-            t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_PORTAL_SKY;
+            t.textured = 0; t.blend = 0;
             const int idx3[3] = { 0, i, i + 1 };
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = portal_sky_depth(v->vz * depth_bias);
+                t.v[k].z = portal_cyclorama_depth(v->vz * depth_bias);
                 t.v[k].rgba = rgba;
             }
-            openpete_native_scene_add_tri(&t);
+            openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
         }
         return 1;
     }
@@ -471,19 +471,19 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * clip rect at the farthest-outline constant depth. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = portal_sky_depth(vz * depth_bias);
+    float depth = portal_cyclorama_depth(vz * depth_bias);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
     for (int ti = 0; ti < 2; ti++) {
         openpete_scene_tri t;
         memset(&t, 0, sizeof t);
-        t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_PORTAL_SKY;
+        t.textured = 0; t.blend = 0;
         for (int k = 0; k < 3; k++) {
             t.v[k].sx = cxx[idx[ti][k]]; t.v[k].sy = cyy[idx[ti][k]];
             t.v[k].z = depth; t.v[k].u = 0.0f; t.v[k].v = 0.0f; t.v[k].rgba = rgba;
         }
-        openpete_native_scene_add_tri(&t);
+        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
     }
     return 1;
 }
@@ -537,7 +537,7 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
     for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
         openpete_scene_tri t;
         memset(&t, 0, sizeof t);
-        t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_PORTAL_SKY;
+        t.textured = 0; t.blend = 0;
         const pgv* tv[3] = { &a[0], &a[i], &a[i + 1] };
         for (int k = 0; k < 3; k++) {
             uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
@@ -546,7 +546,7 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
             t.v[k].z = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : depth;
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
         }
-        openpete_native_scene_add_tri(&t);
+        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
     }
 }
 
@@ -583,7 +583,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
     double vz = portal_viewz(cpu, skybox, cx, cy);
     if (vz <= 1.0) vz = 16384.0;
-    float depth = portal_sky_depth(vz);   /* rect-fallback depth, pulled forward by the sky offset */
+    float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth, pulled forward by the sky offset */
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
@@ -787,14 +787,12 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         /* The portal preview is a far BACKGROUND seen through the arch window: it
          * must be occluded by the arch stone but must NEVER occlude actors/Spyro
          * (who can be at/behind the portal plane while walking through). Stamp it
-         * PORTAL_SKY so the renderer draws it depth-test-on / depth-WRITE-off in
-         * its own pass before the actors. (add_tri stamps the ACTIVE category, not
-         * tri.category, so this must be set here.) Restore WORLD after. */
-        openpete_native_scene_set_category(OPENPETE_SCENE_PORTAL_SKY);
+         * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
+         * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
+         * the actors. */
         feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, backstop_bias, fog, fog_t);
         if (is_dome && is_skybox_a0)
             feed_portal_dome(cpu, a0, fog, fog_t);
-        openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
          * so the widescreen off-4:3 reveal below doesn't double-draw it. Also the
          * sub-tick capture (replayed by portal_native_reextract every present). */
@@ -846,7 +844,6 @@ static void feed_revealed_portals(CPUState* cpu) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     int revealed = 0;
     openpete_native_scene_begin_frame(openpete_frame);   /* append; world/cyclorama began it */
-    openpete_native_scene_set_category(OPENPETE_SCENE_PORTAL_SKY);   /* depth-write-off preview layer */
     for (uint32_t i = 0; i < n; i++) {
         uint32_t p = cpu->read_word(G_PORTALS + i * 4);
         if (p < 0x80010000u || p >= 0x80200000u) continue;
@@ -866,15 +863,15 @@ static void feed_revealed_portals(CPUState* cpu) {
         for (int k = 1; k + 1 < pn; k++) {                /* fan-triangulate the outline polygon */
             openpete_scene_tri t;
             memset(&t, 0, sizeof t);
-            t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_PORTAL_SKY;
+            t.textured = 0; t.blend = 0;
             const int idx3[3] = { 0, k, k + 1 };
             for (int j = 0; j < 3; j++) {
                 const ppt* v = &poly[idx3[j]];
                 t.v[j].sx = v->x; t.v[j].sy = v->y;
-                t.v[j].z = portal_sky_depth(v->vz);
+                t.v[j].z = portal_cyclorama_depth(v->vz);
                 t.v[j].rgba = rgba;
             }
-            openpete_native_scene_add_tri(&t);
+            openpete_native_scene_add_tri(&t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
         }
         revealed++;
         /* Capture this off-4:3 reveal for the sub-tick replay too (else it
@@ -901,7 +898,6 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
         }
     }
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);   /* restore default layer */
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
         s_logged = 1;
@@ -1066,14 +1062,13 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
         }
 
         /* Same emit the canonical leaf used, driven by the captured decision.
-         * PORTAL_SKY so the sub-tick previews stay depth-write-off too (never
-         * occlude Spyro flying/walking through). */
-        openpete_native_scene_set_category(OPENPETE_SCENE_PORTAL_SKY);
+         * PORTAL_CYCLORAMA so the sub-tick previews stay depth-write-off too (never
+         * occlude Spyro flying/walking through). PORTAL_CYCLORAMA is passed to add_tri
+         * inside feed_portal_quad/_dome. */
         feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb,
                          c->backstop_bias, c->fog_rgb, c->fog_t);
         if (c->is_dome)
             feed_portal_dome(cpu, c->skybox, c->fog_rgb, c->fog_t);
-        openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
     }
 
     for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);

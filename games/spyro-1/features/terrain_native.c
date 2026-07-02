@@ -1292,7 +1292,7 @@ static void terrain_feed_native(void) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
-        openpete_native_scene_add_tri(&tri);
+        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_WORLD, 0);
     }
 }
 

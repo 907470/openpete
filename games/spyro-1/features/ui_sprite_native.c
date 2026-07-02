@@ -85,8 +85,6 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
-    openpete_native_scene_set_category(OPENPETE_SCENE_HUD);
-    openpete_native_scene_set_carry(1);                  /* 2D-UI: carry across sub-tick re-extracts */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
@@ -95,10 +93,8 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
             tri.v[j].z=0.0f; tri.v[j].u=(float)u[c]; tri.v[j].v=(float)v[c]; tri.v[j].rgba=rgba; }
         tri.textured=1; tri.tpage_x=tpx; tri.tpage_y=tpy; tri.clut_x=clx; tri.clut_y=cly;
         tri.bpp=bpp; tri.blend = abe ? 1 : 0;
-        openpete_native_scene_add_tri(&tri);
+        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
-    openpete_native_scene_set_carry(0);
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* Feed one screen-space untextured POLY_F4 (flat quad) into a native HUD-OT layer.
@@ -144,7 +140,6 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
-    openpete_native_scene_set_category(category);
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
@@ -152,9 +147,8 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
             tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
             tri.v[j].z=0.0f; tri.v[j].rgba=rgba; }
         tri.textured=0; tri.blend=blend;
-        openpete_native_scene_add_tri(&tri);
+        openpete_native_scene_add_tri(&tri, category, 0);
     }
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* Feed one screen-space gouraud line (LINE_G2, code 0x50) into the native HUD
@@ -177,8 +171,6 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
     double px = -dy / len * 0.6, py = dx / len * 0.6;
 
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_category(OPENPETE_SCENE_HUD);
-    openpete_native_scene_set_carry(1);                  /* 2D-UI: carry across sub-tick re-extracts */
     /* corners: a=+perp, b=-perp; colour follows the endpoint (gouraud). */
     float cx[4] = {(float)(x0+px),(float)(x1+px),(float)(x0-px),(float)(x1-px)};
     float cy[4] = {(float)(y0+py),(float)(y1+py),(float)(y0-py),(float)(y1-py)};
@@ -189,10 +181,8 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
         for (int j=0;j<3;j++){ int c=idx[t][j];
             tri.v[j].sx=cx[c]; tri.v[j].sy=cy[c]; tri.v[j].z=0.0f; tri.v[j].rgba=cc[c]; }
         tri.textured=0; tri.blend=0;
-        openpete_native_scene_add_tri(&tri);
+        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
-    openpete_native_scene_set_carry(0);
-    openpete_native_scene_set_category(OPENPETE_SCENE_WORLD);
 }
 
 /* ---- dispatch ------------------------------------------------------------

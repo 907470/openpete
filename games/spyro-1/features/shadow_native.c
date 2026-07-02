@@ -494,7 +494,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
         }
         st.textured = 1; st.tpage_x = m->tpx; st.tpage_y = m->tpy;
         st.clut_x = m->clx; st.clut_y = m->cly; st.bpp = m->bpp; st.blend = 3; /* ABR mode 2 (subtract) */
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 
@@ -665,7 +665,7 @@ static void shadow_spyro_feed_native(CPUState* cpu) {
         }
         st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 
@@ -726,7 +726,7 @@ static void shadow_moby_feed_scaffold(CPUState* cpu) {
         }
         st.textured = 1; st.tpage_x = tpx; st.tpage_y = tpy;
         st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = 3; /* ABR mode 2 (subtract) */
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 
@@ -750,7 +750,7 @@ static void shadow_spyro_feed_scaffold(CPUState* cpu) {
         }
         st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        openpete_native_scene_add_tri(&st);
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
 

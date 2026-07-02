@@ -135,13 +135,10 @@ static int scene_delay_depth(void) {
     return s_scene_delay;
 }
 
-/* Current draw layer stamped onto every add_tri (OPENPETE_SCENE_WORLD/_ACTOR).
- * Reset to WORLD per frame so a non-actor feeder never inherits a stale ACTOR. */
-static int s_scene_category = OPENPETE_SCENE_WORLD;
-
-/* Carry flag stamped onto every add_tri: 1 = sub-tick-uncarryable 2D-UI (see the
- * header). Reset to 0 per frame so a feeder that never opts in emits carry=0. */
-static int s_scene_carry = 0;
+/* No ambient scene category/carry: add_tri takes both EXPLICITLY per call, so a
+ * feeder can't leak a stale layer into the next (the old s_scene_category global)
+ * and every emit path — including the sub-tick re-extract — is category-correct
+ * by construction. */
 
 /* Full-screen fade overlay for the current frame (func_800190D4). 0 = none; else
  * bit31 = active, bits[25:24] = PSX ABR mode (0..3), bits[23:0] = rgb (R in 16..23,
@@ -161,7 +158,7 @@ static uint32_t s_scene_freeze = 0;
  * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
 static int s_scene_hud_under = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_category = OPENPETE_SCENE_WORLD; s_scene_carry = 0; }
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -206,22 +203,19 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
-        s_scene_category = OPENPETE_SCENE_WORLD; s_scene_carry = 0;
     }
 }
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri) {
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
     if (!tri) return;
     if (s_scene_n < MAX_SCENE_TRIS) {
         s_scene[s_scene_n] = *tri;
-        s_scene[s_scene_n].category = s_scene_category;  /* stamp the active layer */
-        s_scene[s_scene_n].carry = s_scene_carry;        /* stamp the carry flag */
+        s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
+        s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene_n++;
     } else {
         s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
     }
 }
-void openpete_native_scene_set_category(int category) { s_scene_category = category; }
-void openpete_native_scene_set_carry(int on) { s_scene_carry = on ? 1 : 0; }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
 /* Gamestate draw-env clear colour (the framebuffer background the canonical
@@ -387,7 +381,7 @@ void openpete_native_scene_capture_overlay(void) {
          * re-applied tris are still here — skip them or the carry set accumulates
          * unbounded (the 2D-UI logo cloning). Only the GAME RENDER's fresh emission
          * is captured: OVERLAY/HUD_PANEL by category, 2D-UI sprites/lines by carry==1
-         * (see openpete_native_scene_set_carry). Capture runs on the CANONICAL present
+         * (see the carry arg to add_tri). Capture runs on the CANONICAL present
          * only (run.c), so a clear here is correct (sub-ticks hold the set). */
         if (cy == 2) continue;
         if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1) {
@@ -869,7 +863,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = false, .push_const_size = 0,
     };
     /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
-     * previews (portal_native.c, OPENPETE_SCENE_PORTAL_SKY). They are a far
+     * previews (portal_native.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
      * background seen through the arch window — the arch stone's depth (written by
      * the WORLD group, drawn first) must occlude them, but they must never write
      * depth, so the actors/player drawn afterward are never per-pixel cut by the
@@ -1742,13 +1736,13 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[9] = n - ut_first[9];
-    /* PORTAL_SKY untextured: the destination cyclorama previews inside homeworld
+    /* PORTAL_CYCLORAMA untextured: the destination cyclorama previews inside homeworld
      * portal arches. Collected as their own range so they can be drawn in a
      * dedicated depth-write-OFF pass AFTER the WORLD group but BEFORE actors/player
      * (see the draw site). Submission order = the feeder's far→near painter sort. */
     int portal_first = n, portal_count = 0;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_SKY || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_CYCLORAMA || n + 3 > SCENE_VB_VERTS) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);

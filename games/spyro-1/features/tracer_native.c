@@ -108,11 +108,10 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
     memset(&st, 0, sizeof st);
     st.textured = 0;
     st.blend    = 2;                          /* ABR mode 1 (additive) */
-    st.category = OPENPETE_SCENE_ACTOR;       /* ignored for blend!=0 (routes by blend) */
     st.v[0].sx = (float)ax; st.v[0].sy = (float)ay; st.v[0].z = (float)az; st.v[0].rgba = acol | 0xFF000000u;
     st.v[1].sx = (float)bx; st.v[1].sy = (float)by; st.v[1].z = (float)bz; st.v[1].rgba = bcol | 0xFF000000u;
     st.v[2].sx = (float)cx; st.v[2].sy = (float)cy; st.v[2].z = (float)cz; st.v[2].rgba = ccol | 0xFF000000u;
-    openpete_native_scene_add_tri(&st);
+    openpete_native_scene_add_tri(&st, OPENPETE_SCENE_ACTOR, 0);  /* category ignored for blend!=0 */
 }
 
 /* Project the snapshot points (against the CURRENT camera — interpolated on
