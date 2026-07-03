@@ -883,11 +883,17 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
         uint32_t S = cpu->read_word(arr + si * 4);
         if (!S) continue;
         /* phase-1 cull: project the sector's representative point, skip if behind
-         * the cull radius (same test as the main cyclorama). */
+         * the cull radius (same test as the main cyclorama). The test is
+         * against the DOME-FORWARD axis — correct for the 4:3 window (±26°
+         * azimuth) but an off-4:3 widescreen portal peers at the dome up to
+         * ±60°+ off forward, where needed sectors cross the boundary as the
+         * dome spins (user report: segments missing as it rotates, flashing
+         * the flat backstop). Under Hor+ skip the sector cull — the per-face
+         * near-plane reject + the arch clip rect still bound the work. */
         uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
         int cvx = (int16_t)(c0 & 0xFFFF), cvy = (int16_t)(c0 >> 16), cvz = (int16_t)(c1 >> 16), radius = (int16_t)(c1 & 0xFFFF);
         double cm3 = (M[2][0]*(double)cvx + M[2][1]*(double)cvy + M[2][2]*(double)cvz) / 4096.0;
-        if (cm3 <= (double)radius) continue;
+        if (openpete_native_widescreen_factor() <= 1.0f && cm3 <= (double)radius) continue;
 
         uint32_t h8 = cpu->read_word(S + 0x08), hC = cpu->read_word(S + 0x0C), hF = cpu->read_word(S + 0x10);
         int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16), centerZ = (int16_t)(hC >> 16);
@@ -1022,6 +1028,13 @@ static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
 
 #include "features/no_lod.h"   /* openpete_no_lod: --no-lod always renders the geometric dome */
 
+/* --no-lod always-dome enabled? (kill switch OPENPETE_NOLOD_PORTAL_DOME=0) */
+static int nolod_portal_dome_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_NOLOD_PORTAL_DOME"); v = !(e && *e == '0'); }
+    return openpete_no_lod && v;
+}
+
 /* ---- dispatch hooks ------------------------------------------------- */
 static int s_want_dump_this_frame(void) {
     return portal_dump_enabled() && openpete_frame >= portal_dump_frame();
@@ -1077,10 +1090,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * (faded fully to the flat colour, the FEA0 preview); close = IR0≈0 (full
          * dome). Apply the same fade to its backstop fill so the gaps match. */
         uint32_t fog = 0; double fog_t = 0.0;
-        static int s_nolod_dome = -1;   /* kill switch: OPENPETE_NOLOD_PORTAL_DOME=0 */
-        if (s_nolod_dome < 0) { const char* e = getenv("OPENPETE_NOLOD_PORTAL_DOME");
-                                s_nolod_dome = !(e && *e == '0'); }
-        if (kind == PORTAL_BLENDED && !(openpete_no_lod && s_nolod_dome)) {
+        if (kind == PORTAL_BLENDED && !nolod_portal_dome_on()) {
             /* --no-lod: skip the medium-range cross-dissolve toward the flat
              * colour — the dome renders full-colour at any distance. */
             fog   = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF;
@@ -1122,7 +1132,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 if (sb2 && (sb2 == a0 || sb2 + 0x10 == a0)) { a0_is_close_backstop = 1; break; }
             }
         }
-        if (openpete_no_lod && s_nolod_dome && kind == PORTAL_FLAT && !a0_is_close_backstop) {
+        if (nolod_portal_dome_on() && kind == PORTAL_FLAT && !a0_is_close_backstop) {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
             uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
@@ -1235,23 +1245,53 @@ static void feed_revealed_portals(CPUState* cpu) {
          * base clip rect is the projected-outline bbox (RenderPortals set no
          * D_CLIPRECT for a culled portal). feed_portal_quad re-projects the
          * outline against the interpolated camera on replay. */
+        float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
+        for (int k = 1; k < pn; k++) {
+            if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
+            if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
+        }
+        /* --no-lod always-dome, off-4:3 half (user report 2026-07-03: revealed
+         * portals still fell back to the flat colour). Same recipe as the
+         * leaf-hook forced dome: derived shared matrix via gte_ctrl; the base
+         * clip rect (RenderPortals set none for a culled portal) = the
+         * projected-outline bbox, written into D_CLIPRECT and RESTORED (render
+         * scratch, but keep canonical bytes canonical). canonical=0 + hint 0:
+         * a culled portal's live D_PORTAL_DEPTH is another portal's bucket. */
+        int rev_dome = 0; int rev_M[3][3];
+        if (nolod_portal_dome_on()) {
+            derive_dome_matrix(cpu, rev_M);
+            uint32_t save_gte[5], save_clip[4];
+            for (int j = 0; j < 5; j++) save_gte[j] = cpu->gte_ctrl[j];
+            for (int j = 0; j < 4; j++) save_clip[j] = cpu->read_word(D_CLIPRECT + j * 4u);
+            cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)(int32_t)floorf(oylo) << 16);
+            cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)(int32_t)ceilf (oyhi) << 16);
+            cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)(int32_t)floorf(oxlo) << 16);
+            cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)(int32_t)ceilf (oxhi) << 16);
+            cpu->gte_ctrl[0] = (uint32_t)(uint16_t)rev_M[0][0] | ((uint32_t)(uint16_t)rev_M[0][1] << 16);
+            cpu->gte_ctrl[1] = (uint32_t)(uint16_t)rev_M[0][2] | ((uint32_t)(uint16_t)rev_M[1][0] << 16);
+            cpu->gte_ctrl[2] = (uint32_t)(uint16_t)rev_M[1][1] | ((uint32_t)(uint16_t)rev_M[1][2] << 16);
+            cpu->gte_ctrl[3] = (uint32_t)(uint16_t)rev_M[2][0] | ((uint32_t)(uint16_t)rev_M[2][1] << 16);
+            cpu->gte_ctrl[4] = (uint32_t)(uint16_t)rev_M[2][2];
+            rev_dome = feed_portal_dome(cpu, skybox, 0, /*canonical=*/0, 0, 0.0);
+            for (int j = 0; j < 5; j++) cpu->gte_ctrl[j] = save_gte[j];
+            for (int j = 0; j < 4; j++) cpu->write_word(D_CLIPRECT + j * 4u, save_clip[j]);
+        }
         if (s_pcap_n < PORTAL_CAP_MAX) {
-            float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
-            for (int k = 1; k < pn; k++) {
-                if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
-                if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
-            }
             portal_cap_t* c = &s_pcap[s_pcap_n++];
             c->portal        = p;
             c->flat_a0       = 0;
             c->flat_rgb      = rgb;
-            c->is_dome       = 0;
-            c->skybox        = 0;
+            c->is_dome       = rev_dome;
+            c->skybox        = rev_dome ? skybox : 0;
             c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
             c->fog_rgb       = 0;
             c->fog_t         = 0.0;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
             c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
+            if (rev_dome && !s_dome_curr_valid) {
+                memcpy(s_dome_curr, rev_M, sizeof s_dome_curr);
+                s_dome_curr_valid = 1;
+            }
         }
     }
     static int s_logged = 0;
