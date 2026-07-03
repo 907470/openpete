@@ -617,29 +617,25 @@ static void shadow_spyro_build(CPUState* cpu) {
                 p.cam_col2[i] = (float)inv[2][i];
             }
         }
-        p.cam_pos_y   = (float)camy;
+        p.cam_pos_up  = (float)camz;   /* vertical = the game z field (axis fix) */
         p.ofx = (float)ofx; p.ofy = (float)ofy; p.h = (float)H;
-        p.ground_y    = (float)sposy;
+        p.ground_up   = (float)sposz;  /* shadow ground plane height */
         const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
         p.wall_height = (wh && *wh) ? (float)atof(wh) : 400.0f;
-        /* |world normal| threshold below which a surface counts as a wall face
-         * (walkable Spyro slopes stay under ~50°; wall faces ~0). DEFAULT 0 =
-         * orientation tests OFF.
-         * 2026-07-02 RETRACTION of the original blocker: the "terrain feeder
-         * view-Z skew" was DISPROVEN — the prepass-recon dump, extended to
-         * print the V1/z axis, shows fed terrain floors reconstruct at
-         * CONSTANT height to the unit (nz=1.00) across camera positions. The
-         * original "ny≈0 / 1000-unit spreads" measurement read the V0/y axis,
-         * which in Spyro's convention is HORIZONTAL (vertical is the z field
-         * → V1): floors legitimately read n_horizontal=0 and spread by the
-         * 1024 grid pitch. Consequence: this decal's height test
-         * (cam_pos_y − V0 vs ground_y) is actually a HORIZONTAL-Y proximity
-         * test that fixes wall punch-through incidentally; switching it (and
-         * the shader) to the true vertical (camz − V1 vs sposz) should retire
-         * the wall-base-notch carve-out and unblock the orientation clause —
-         * tracked as the shadow-decal axis fix in the native-renderer plan. */
+        /* |up normal| threshold below which a surface counts as a wall face
+         * (walkable Spyro slopes stay above ~0.64; wall faces ~0).
+         * DEFAULT 0.5 (orientation clause ON) since the 2026-07-02 axis fix:
+         * the original blocker — "terrain feeder view-Z skewed off the camera
+         * model" — was DISPROVEN (the measuring harness read the HORIZONTAL
+         * V0/y axis as height; Spyro's vertical is the z field → V1; with the
+         * right axis, fed terrain floors reconstruct flat to the unit). The
+         * height test above was switched to the true vertical at the same
+         * time (camz − V1 vs sposz — it previously tested horizontal-Y
+         * proximity, which rejected walls incidentally and left the
+         * wall-base notch this clause retires). OPENPETE_SHADOW_STEEP_NY=0
+         * reverts to the height-only test. */
         const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
-        p.steep_ny    = (sn && *sn) ? (float)atof(sn) : 0.0f;
+        p.steep_nup   = (sn && *sn) ? (float)atof(sn) : 0.5f;
         p.valid = 1;
         openpete_native_set_shadow_decal_params(&p);
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction

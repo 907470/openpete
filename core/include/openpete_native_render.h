@@ -243,36 +243,39 @@ static inline float openpete_native_depth_from_viewz(float vz) {
  * (keep) from "a wall in front" (discard) — both put terrain nearer than the fan.
  * The fix keeps the flat fan's LOOK unchanged and only changes the keep/discard
  * decision: per pixel the shadow covers, the shader reconstructs the opaque
- * terrain's WORLD-Y from the depth pre-pass and discards where it sits well ABOVE
- * the shadow's ground plane (a wall). Bumps/ramps near ground height stay shadowed.
+ * terrain's world HEIGHT from the depth pre-pass and discards where it sits well
+ * ABOVE the shadow's ground plane (a wall). Bumps/ramps near ground height stay
+ * shadowed.
  *
  * The reconstruction needs the camera transform, which only the game can read, so
  * the game passes it here each frame (display-only; never written back to PSX RAM).
- * `cam_col0` is the camera rotation matrix's first COLUMN (the GTE Q12 int16
- * entries as float); the inverse uses worldRel = Cᵀ·MAC/4096 with the Spyro GTE
- * swizzle V=(-Δy,-Δz,Δx), so worldY = cam_pos_y - (Cᵀ·MAC)[0]/4096. `ofx/ofy/h`
- * are the GTE projection regs. `ground_y` is the shadow's ground plane (SpyroShadow
- * world Y). `wall_height` is the world-Y slack above ground before a pixel counts
+ * `cam_col0..2` are 4096²·C⁻¹ rows (pushed numerical inverse — the Spyro camera
+ * matrix is NOT orthonormal); the inverse recovers V = C⁻¹·MAC with the Spyro GTE
+ * swizzle V=(-Δy,-Δz,Δx). AXIS NOTE (2026-07-02): Spyro's VERTICAL world axis is
+ * the **z field** — V1 carries -Δz, so world height = cam_pos_up − V1 (cam_col1).
+ * The original decal tested cam_pos_y − V0, i.e. HORIZONTAL-Y proximity, which
+ * rejected walls incidentally and left the wall-base notch. `ofx/ofy/h` are the
+ * GTE projection regs. `ground_up` is the shadow's ground plane (SpyroShadow
+ * world z). `wall_height` is the height slack above ground before a pixel counts
  * as a wall. valid=0 disables the test (shader draws the fan unmasked).
  *
  * A pure height threshold has one blind band: the BOTTOM wall_height units of a
  * wall rise from ground level, so the fan still painted on a wall's base
  * (dark-hollow f2700 notch). The classifier for that band is surface
- * ORIENTATION — own ground/bumps/slopes are walkable (world normal.y large), a
- * wall face is near-vertical (normal.y ≈ 0). The shader reconstructs the
- * terrain normal from neighbouring pre-pass texels, which needs the OTHER two
- * camera columns (`cam_col1`, `cam_col2`; only used differentially, so no
- * camera position needed) and discards steep surfaces IN FRONT of the fan
- * fragment (`steep_ny` = |normal.y| below which a surface counts as a wall). */
+ * ORIENTATION — own ground/bumps/slopes are walkable (up-normal large), a wall
+ * face is near-vertical (up-normal ≈ 0). The shader reconstructs the terrain
+ * normal from neighbouring pre-pass texels (differential — no camera position
+ * needed) and discards steep surfaces IN FRONT of the fan fragment
+ * (`steep_nup` = |up normal| below which a surface counts as a wall). */
 typedef struct {
     float cam_col0[3];
     float cam_col1[3];
     float cam_col2[3];
-    float cam_pos_y;
+    float cam_pos_up;     /* camera world height (the game's z field) */
     float ofx, ofy, h;
-    float ground_y;
+    float ground_up;      /* shadow ground-plane height (SpyroShadow z) */
     float wall_height;
-    float steep_ny;
+    float steep_nup;
     int   valid;
 } openpete_shadow_decal_params;
 void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p);

@@ -15,14 +15,14 @@
  *      anchor's world position from its own screen+depth recovers SpyroShadow
  *      exactly.) Carve-out: the bottom wall_height units of a wall face pass
  *      this test (small dark notch at a wall base).
- *  (2) STEEPNESS (gated OFF by steep_ny=0 until W2.3) — the notch pixels
- *      differ from own-ground by surface ORIENTATION: walkable ground has
- *      |world normal.y| >> 0, a wall face ≈ 0. The normal comes from
- *      neighbouring pre-pass texels (world-position differences — camera
- *      position constants cancel). Correct for a self-consistent depth field,
- *      but the TERRAIN feeder's fed view-Z is skewed off-anchor relative to
- *      the camera model (W2.3's cross-class depth skew, first measured here),
- *      which garbles reconstructed normals — so the clause ships disabled.
+ *  (2) STEEPNESS (opt-in via steep_nup) — the notch pixels differ from
+ *      own-ground by surface ORIENTATION: walkable ground has a large up
+ *      normal, a wall face ≈ 0. The normal comes from neighbouring pre-pass
+ *      texels (world-position differences — camera position constants
+ *      cancel). The old "terrain view-Z skew" blocker was DISPROVEN
+ *      2026-07-02 (axis misread in the measuring harness — Spyro's vertical
+ *      is the z field/V1, not y/V0); fed terrain floors reconstruct flat to
+ *      the unit, so the clause is sound.
  *
  * Reconstruction (the inverse of the game's GTE path, swizzle V=(-dy,-dz,dx)):
  *   viewZ from the pre-pass depth;  MAC1=(SX-ofx)*viewZ/h;  MAC2=(SY-ofy)*viewZ/h
@@ -30,7 +30,7 @@
  *   numerical inverse: the Spyro camera matrix is NOT orthonormal (its Y row
  *   bakes a ~0.625 PSX aspect scale), so the orthonormal transpose-inverse
  *   silently under-weights MAC2 terms 2.56×.
- *   worldY = cam_pos_y - V0;  world P (camera-relative) = (V2, -V0, -V1)
+ *   worldUp = cam_pos_up - V1 (z field = vertical);  P = (V2, -V0, -V1)
  *
  * The pre-pass depth is SHARED across every consumer pass (native_rtt / SSAA /
  * offscreen panel / screenshots): it is rasterized ONCE per present in the
@@ -51,11 +51,11 @@ layout(push_constant) uniform PC {
     float col0x, col0y, col0z;   /* camera rotation matrix columns (Q12 int16) */
     float col1x, col1y, col1z;
     float col2x, col2y, col2z;
-    float cam_pos_y;
+    float cam_pos_up;            /* camera world HEIGHT (the game z field) */
     float ofx, ofy, h;           /* GTE projection regs */
-    float ground_y;              /* the shadow's ground plane (SpyroShadow world Y) */
-    float wall_height;           /* world-Y slack above ground before "wall" */
-    float steep_ny;              /* |normal.y| below which a surface is a wall face */
+    float ground_up;             /* the shadow's ground plane height (SpyroShadow z) */
+    float wall_height;           /* height slack above ground before "wall" */
+    float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all, 1 = height+steep test, 2 = viz */
     float band;                  /* fallback view-Z band (mode 0/invalid params) */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
@@ -107,15 +107,19 @@ void main()
     float viewZ = viewz_from_prepass_depth(dT);
     float dS = gl_FragCoord.z;
 
-    /* reconstruct the terrain point's world-Y at this pixel */
+    /* Reconstruct the terrain point's world HEIGHT at this pixel. AXIS NOTE
+     * (2026-07-02): Spyro's vertical world axis is the z FIELD, carried by V1
+     * (swizzle V=(-dy,-dz,dx) => slot 1 = -dz). The original decal used V0
+     * (world y — HORIZONTAL), a proximity test that rejected walls
+     * incidentally and left the wall-base notch. */
     float SX   = vScreenPSX.x;
     float SY   = vScreenPSX.y;
     float MAC1 = (SX - pc.ofx) * viewZ / pc.h;
     float MAC2 = (SY - pc.ofy) * viewZ / pc.h;
     float MAC3 = viewZ;
-    float V0   = (pc.col0x * MAC1 + pc.col0y * MAC2 + pc.col0z * MAC3) / 4096.0;
-    float worldY = pc.cam_pos_y - V0;
-    float height = worldY - pc.ground_y;      /* terrain height above the shadow's ground */
+    float V1   = (pc.col1x * MAC1 + pc.col1y * MAC2 + pc.col1z * MAC3) / 4096.0;
+    float worldUp = pc.cam_pos_up - V1;
+    float height  = worldUp - pc.ground_up;   /* terrain height above the shadow's ground */
 
     /* terrain surface normal from neighbouring pre-pass texels */
     vec3 P0 = world_of_texel(tx);
@@ -123,7 +127,9 @@ void main()
     vec3 Py = world_of_texel(min(tx + ivec2(0, 1), hi));
     vec3 N  = cross(Px - P0, Py - P0);
     float nlen = length(N);
-    float ny = (nlen > 1e-6) ? abs(N.y) / nlen : 1.0;  /* degenerate -> "flat" (keep) */
+    /* Up-component of the surface normal: P carries the vertical in .z
+     * (P = (V2, -V0, -V1), vertical = -V1). Degenerate -> "flat" (keep). */
+    float nup = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;
 
     if (pc.mode > 6.5) {                       /* RAW VIZ: vz + both neighbour dvz */
         float vzy = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, min(tx + ivec2(0, 1), hi), 0).r);
@@ -156,37 +162,33 @@ void main()
         float dzy = abs(texelFetch(uOpaqueDepth, min(tx + ivec2(0, 1), hi), 0).r - dT);
         outColor = vec4(0.4 * clamp(dzy * 100.0, 0.0, 1.0),
                         0.4 * clamp(dzx * 100.0, 0.0, 1.0),
-                        0.4 * ny, 1.0);
+                        0.4 * nup, 1.0);
         return;
     }
     if (pc.mode > 1.5) {                       /* CALIBRATION VIZ (machine-read only) */
         /* Small-amplitude channels so the SUBTRACTIVE blend rarely clamps at 0
          * on dark surfaces: recover as (terrain_px - viz_px) / 0.4 per channel.
-         * r = ny, g = height above plane / 1024, b = height below plane / 1024. */
-        outColor = vec4(0.4 * ny,
+         * r = nup, g = height above plane / 1024, b = height below plane / 1024. */
+        outColor = vec4(0.4 * nup,
                         0.4 * clamp(height / 1024.0, 0.0, 1.0),
                         0.4 * clamp(-height / 1024.0, 0.0, 1.0), 1.0);
         return;
     }
     if (pc.mode > 0.5) {
-        if (pc.steep_ny > 0.0) {
-            /* ORIENTATION-AWARE tests — DISABLED BY DEFAULT (steep_ny=0) until
-             * W2.3 unifies feeder depth: the normal reconstruction is exact for
-             * a self-consistent depth field (verified synthetically and against
-             * the shadow anchor), but the TERRAIN feeder's fed view-Z is skewed
-             * off-anchor relative to the camera model (the depth audit's
-             * "suspected cross-class depth skew", measured here for the first
-             * time), so reconstructed normals read flat floors as steep and
-             * over-discard. Re-enable via OPENPETE_SHADOW_STEEP_NY once W2.3
-             * lands; it retires the wall-base-notch carve-out below.
+        if (pc.steep_nup > 0.0) {
+            /* ORIENTATION-AWARE tests (opt-in via OPENPETE_SHADOW_STEEP_NY).
+             * 2026-07-02: the old blocker ("terrain feeder view-Z skewed off
+             * the camera model") was DISPROVEN — it was an axis misread in the
+             * measuring harness; fed terrain floors reconstruct flat to the
+             * unit. The up-normal is now taken from the correct vertical axis.
              * (1) wall face receiver: steep surface — unconditional (the fan
              *     oval can poke THROUGH a wall, putting its near rim in front
              *     of the wall base, so no depth guard);
              * (2) rising occluder, FLATNESS-SCALED: the flatter the receiver,
              *     the more rise above the shadow plane is forgiven — catches
-             *     chamfered wall SKIRTS (ny~0.5 rising 200-340). */
-            if (ny < pc.steep_ny) discard;
-            float flat01 = clamp((ny - pc.steep_ny) / (0.9 - pc.steep_ny), 0.0, 1.0);
+             *     chamfered wall SKIRTS (nup~0.5 rising 200-340). */
+            if (nup < pc.steep_nup) discard;
+            float flat01 = clamp((nup - pc.steep_nup) / (0.9 - pc.steep_nup), 0.0, 1.0);
             if (height > pc.wall_height * flat01) discard;
         } else {
             /* HEIGHT-ONLY (shipping default): terrain standing more than
@@ -194,8 +196,8 @@ void main()
              * discard; at-or-below (bumps, slopes, pits) keeps the fan.
              * CARVE-OUT: the bottom wall_height units of a wall face rise from
              * ground level and pass this test (a small dark notch where the
-             * fan meets a wall base — dark-hollow f2700); killing it needs the
-             * orientation tests above, blocked on W2.3. */
+             * fan meets a wall base — dark-hollow f2700); the orientation
+             * tests above (now unblocked) retire it. */
             if (height > pc.wall_height) discard;
         }
     } else {                                   /* fallback: view-Z band (params invalid) */

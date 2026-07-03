@@ -76,11 +76,11 @@ typedef struct {
     float col0x, col0y, col0z;     /* camera matrix columns (Q12 int16 as float) */
     float col1x, col1y, col1z;
     float col2x, col2y, col2z;
-    float cam_pos_y;
+    float cam_pos_up;              /* camera world height (game z field) */
     float ofx, ofy, h;
-    float ground_y;
+    float ground_up;               /* shadow ground-plane height (SpyroShadow z) */
     float wall_height;
-    float steep_ny;                /* |world normal.y| below which a surface is a wall */
+    float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all, 1 = height+steep discard, 2 = viz */
     float band;                    /* fallback view-Z band when params invalid */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
@@ -2744,12 +2744,12 @@ static bool draw_native_scene(bool full_extent)
                     pc.col2x = s_shadow_decal.cam_col2[0];
                     pc.col2y = s_shadow_decal.cam_col2[1];
                     pc.col2z = s_shadow_decal.cam_col2[2];
-                    pc.cam_pos_y = s_shadow_decal.cam_pos_y;
+                    pc.cam_pos_up = s_shadow_decal.cam_pos_up;
                     pc.ofx = s_shadow_decal.ofx; pc.ofy = s_shadow_decal.ofy;
                     pc.h = s_shadow_decal.h;
-                    pc.ground_y = s_shadow_decal.ground_y;
+                    pc.ground_up = s_shadow_decal.ground_up;
                     pc.wall_height = s_shadow_decal.wall_height;
-                    pc.steep_ny = s_shadow_decal.steep_ny;
+                    pc.steep_nup = s_shadow_decal.steep_nup;
                     /* mode: env override for calibration; else height-test when
                      * the game supplied valid params, else draw-all (no mask). */
                     float mode = s_shadow_decal.valid ? 1.0f : 0.0f;
