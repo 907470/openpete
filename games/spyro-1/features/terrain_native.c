@@ -344,6 +344,7 @@ static void build_captured_colors(void) {
 static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
 static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF (experiment) */
+static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog (W2.6-c) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
 extern int s_fogdbg;
 static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int fogRef);
@@ -1050,13 +1051,29 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                      s_caldbg || s_nearq > 0 ||
                      (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
     terrain_dbg_init();
+    /* FAITHFUL LOD (W2.6-c, OPENPETE_TERRAIN_LOD_FAITHFUL): mirror the .s
+     * sector binning — HP list = lodThr > centreZ − radius (HP ends at the LOD
+     * distance), LP list = 0x8000 || lodThr < centreZ + radius + 0x100 (LP
+     * substitutes beyond it) — AND default the exact DPCS fog on (the two are
+     * one mechanism: the .s tier swap happens exactly at fog saturation,
+     * ir0 = fogRef−4·m3 = 0 at m3 = lodThr, which is what makes the PSX
+     * handoff invisible; the 2026-06 "pop-in" rejection of mirrored lists
+     * happened under the under-fogged fogscale-1 default). Forced OFF under
+     * --no-lod: HP-everywhere IS the no-lod intent, and there the exact fog
+     * must stay off with it (fully-fogged HP without the .s tier coverage was
+     * the W2.3 vista regression). */
+    if (s_tier_faithful < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_LOD_FAITHFUL");
+        s_tier_faithful = (e && *e) ? (*e != '0') : 0;
+        if (openpete_no_lod) s_tier_faithful = 0;
+    }
     if (s_fogscale < 0.0) {  /* viewZ = m3 (m3 already in SZ3 scale); env-tunable */
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
         s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
     if (s_fogdpcs < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
-        s_fogdpcs = (e && *e && *e != '0');
+        s_fogdpcs = (e && *e) ? (*e != '0') : s_tier_faithful;
         /* The exact decode wants the exact scale: default fogscale to 4 when
          * DPCS is enabled and no explicit fogscale override was given. */
         if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE")) s_fogscale = 4.0;
@@ -1153,8 +1170,27 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *   the distant-water seam is left for a poke-free fix (stencil hole-fill).
          * (Flags, confirmed vs the binning pass: 0x4000=no-HP [old noHP],
          * 0x2000=no-LP, 0x8000=force-LP.) */
+        /* Bounding-centre view-Z through the .s BINNING matrix (g_Camera+0x14 —
+         * NOT the +0x00 projection matrix the vertex walk uses; the two differ
+         * in scale). Input to the faithful tier lists and the fill's distance
+         * gate. lodThr = ENV_LODDIST>>4 (the same lodDist that drives fog:
+         * ir0 = fogRef−4·m3 crosses 0 exactly at m3 = lodThr). */
+        double cbin;
+        { double c1m, c2m;
+          ngte_mac(Mbin, camy - SC->centreY, camz - SC->centreZ,
+                   SC->centreX - camx, &c1m, &c2m, &cbin); }
+        int lodThr = fogRefBase >> 2;
         int drawHP = !(flags & 0x4000) && nHpF > 0;
         int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
+        if (s_tier_faithful) {
+            /* The .s sector binning (func @0x80025940): HP ends at the LOD
+             * distance; LP substitutes beyond it. A straddling sector lands in
+             * BOTH lists (LP rides behind HP via the ×1.03 tier pull, exactly
+             * the PSX LP-first/HP-over order). */
+            drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
+            drawLP = !(flags & 0x2000) && nLpF > 0 &&
+                     ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
+        }
         /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
          * the LOD distance (far-only; gated per face below). */
         int lpFarOnly = 0;
@@ -1183,20 +1219,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * the .s READ sites only, so this stays the real LOD band marker. */
         static int s_holefill = -1;   /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
         if (s_holefill < 0) { const char* e = getenv("OPENPETE_TERRAIN_HOLEFILL"); s_holefill = (e && *e) ? (*e != '0') : 1; }
-        int fillLP = s_holefill && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0;
-        if (fillLP) {
-            /* The .s binning projects the bounding centre through the
-             * g_Camera+0x14 matrix (NOT the +0x00 projection matrix the vertex
-             * walk uses — the two differ in scale; using +0x00 here was too
-             * permissive and re-admitted a straddling cliff whose LP fringed
-             * the sky silhouette in peace-keepers, gate tick 4888). */
-            double c1m, c2m, c3m;
-            ngte_mac(Mbin, camy - SC->centreY, camz - SC->centreZ,
-                     SC->centreX - camx, &c1m, &c2m, &c3m);
-            (void)c1m; (void)c2m;
-            int lodThr = fogRefBase >> 2;             /* = ENV_LODDIST >> 4 */
-            if (!((double)lodThr < c3m + SC->radius + 0x100)) fillLP = 0;
-        }
+        int fillLP = s_holefill && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0
+                     && ((double)lodThr < cbin + SC->radius + 0x100);
 
         s_walk_sectors++;
 
@@ -1431,6 +1455,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             }
         }
       }  /* pass (LP / HP) */
+        {   /* OPENPETE_TERRAIN_BINDBG: calibrate the binning-centre projection
+             * against the sector's ACTUAL projected vertex-Z range (one frame). */
+            static int s_bindbg = -1; static unsigned s_bin_f; static int s_bin_lines;
+            if (s_bindbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_BINDBG"); s_bindbg = (e && *e && *e != '0'); }
+            (void)s_bin_f;
+            if (s_bindbg && nvis >= 20 && s_bin_lines < 200) {
+                s_bin_lines++;
+                fprintf(stderr, "[bindbg] f=%u sec=%u flags=%04X cbin=%.0f r=%d m3=[%.0f..%.0f] lodThr=%d hp=%d lp=%d fill=%d\n",
+                        openpete_frame, i, flags, cbin, SC->radius, sd_m3min, sd_m3max, lodThr, drawHP, drawLP, fillLP);
+            }
+        }
         if (s_sd_active && s_sd_n < 1024) {
             secrec* r = &s_sd[s_sd_n++];
             r->idx = (int)i; r->flags = flags;
