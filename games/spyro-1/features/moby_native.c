@@ -810,7 +810,6 @@ static void append_revealed_regular(CPUState* cpu) {
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
     int32_t spx=(int32_t)cpu->read_word(G_SPYRO+0x00), spy=(int32_t)cpu->read_word(G_SPYRO+0x04);
-    int nbase = s_nrecs;                               /* the .s 4:3 records (dedup set) */
     int revealed = 0;
     uint32_t m = cpu->read_word(G_LEVELMOBYS);
     int guard = 0;
@@ -818,9 +817,11 @@ static void append_revealed_regular(CPUState* cpu) {
         uint8_t stt = cpu->read_byte(m + 0x48);
         if (stt == 0xFF) break;                        /* array sentinel */
         if (stt >= 0x80) { m += 0x58; continue; }      /* dead/inactive */
-        /* dedup vs the .s 4:3 set (exact: same Moby* the cull recorded) */
+        /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
+         * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
+         * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
-        for (int k = 0; k < nbase; k++) if (s_recs[k].moby == m) { dup = 1; break; }
+        for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
         if (dup) { m += 0x58; continue; }
         /* live gate (Spyro-anchored, camera-angle-independent): m_WasDrawn grace,
          * always-update sentinel, or within the m_UpdateDistance xy-disk of Spyro */
@@ -863,6 +864,19 @@ static void append_revealed_regular(CPUState* cpu) {
         fade_snap_put(m, rzsf4);
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
+    }
+    /* OPENPETE_MOBY_REVEAL_CENSUS: per-present reveal counts (flicker check —
+     * pre-fix the count alternated N,0,0,0 between canonical and sub-tick
+     * presents; post-fix it holds steady). */
+    {
+        static int cen = -1; static int lines = 0;
+        if (cen < 0) { const char* e = getenv("OPENPETE_MOBY_REVEAL_CENSUS"); cen = (e && *e && *e != '0'); }
+        static int prev = 0;
+        if (cen && lines < 600 && (revealed > 0 || prev > 0)) {
+            lines++;
+            fprintf(stderr, "[reveal-census] f=%u revealed=%d\n", openpete_frame, revealed);
+        }
+        prev = revealed;
     }
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
@@ -3411,6 +3425,16 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         /* Hold-replayed REG mobys likewise (they render, just from the hold). */
         for (int c = 0; c < nreplay_moby && s_reg_moby_n < MAX_RECORDS; c++)
             s_reg_moby[s_reg_moby_n++] = replay_moby[c];
+        /* Widescreen reveal on SUB-TICKS too: the render set above is the .s
+         * cull-record queue, which never contains the off-4:3 mobys the 4:3
+         * cone cull skipped — the canonical feed host-builds those via
+         * append_revealed_regular, so without this they existed ONLY on
+         * canonical presents and flickered at high FPS in wide aspects
+         * (user report, 2026-07-03). Same builder, re-projected through the
+         * interpolated g_Camera; dedups vs s_recs (the queue set — an
+         * occl-culled off-4:3 queue moby may re-enter here, which is merely
+         * redundant draw work, never a wrong pixel). Inert at 4:3. */
+        append_revealed_regular(cpu);
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
     /* Sub-tick: adopt render-time-animated colours (the barrier shimmer) from the
