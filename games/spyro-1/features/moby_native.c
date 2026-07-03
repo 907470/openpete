@@ -518,7 +518,9 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
-                 int metal; uint32_t mscol; uint32_t moby; int zsf4; } rec_meta;  /* metal = m_SpecularMetalColor
+                 int metal; uint32_t mscol; uint32_t moby; int zsf4;
+                 float env_az; } rec_meta;   /* view-space TR azimuth atan2(TR.z,TR.x) — the
+                 * .s SPEC env per-moby u-bias input (.L800226F8 cfc2 TRZ/TRX octant atan) */  /* metal = m_SpecularMetalColor
                  (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
                  moby = Moby* (rec+0x34 for .s records; set directly for host-built reveal records,
                  whose addr is then 0 — there is no live +0x1600 record behind them);
@@ -635,7 +637,9 @@ static int project_all_records_inner(CPUState* cpu) {
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
                 cpu->read_word(rec + 0x30),
                 cpu->read_word(rec + 0x34),
-                zsf4 };
+                zsf4,
+                atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
+                       (float)(int32_t)cpu->read_word(rec + 0x10)) };
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
@@ -803,6 +807,7 @@ static void moby_build_validate(CPUState* cpu) {
  * inside the widened bounds). Dedups against the .s 4:3 set and only draws LIVE
  * (animating) mobys — frozen mobys hold a stale pose (display-anim is deferred).
  * Extends s_recs[]/s_proj[]; build_walk_tris then walks the union. Inert at 4:3. */
+static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
 static void append_revealed_regular(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
     if (F <= 1.0f) return;                              /* 4:3 — nothing to reveal */
@@ -822,6 +827,16 @@ static void append_revealed_regular(CPUState* cpu) {
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
+        if (dup) { m += 0x58; continue; }
+        /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
+         * 4:3 — the native walk draws the whole queue), WITH the per-face
+         * specular treatment the REG walk lacks. Revealing them here too drew
+         * a second coplanar copy without env/highlight faces that z-fought the
+         * SPEC copy (the cliff-town armored gnorc's shield rendered teal).
+         * The live +0x1600 queue is CLOBBERED at REG-render time (the scratch
+         * is reused mid-frame; the spec cull rebuilds it later), so test the
+         * snapshot taken at the last SPEC pass — 1 tick stale at worst. */
+        for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { dup = 1; break; }
         if (dup) { m += 0x58; continue; }
         /* live gate (Spyro-anchored, camera-angle-independent): m_WasDrawn grace,
          * always-update sentinel, or within the m_UpdateDistance xy-disk of Spyro */
@@ -860,7 +875,8 @@ static void append_revealed_regular(CPUState* cpu) {
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
-            f.metal, f.mscol, m, rzsf4 };
+            f.metal, f.mscol, m, rzsf4,
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]) };
         fade_snap_put(m, rzsf4);
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
@@ -939,6 +955,7 @@ static int     s_cur_ui;              /* set per-record by the walks before emit
 static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
+static float    s_cur_env_az;          /* current record's TR azimuth (env-UV bias) */
 static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
@@ -1127,8 +1144,7 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
                      : fresh  ? (textured ? 0x18u : 0x0Cu)
                      :          (textured ? 0x14u : 0x08u);   /* strip */
         if (sprite) sprites++;
-        if (skip)   skips++;
-        if (skip || sprite) { fp += adv; continue; }   /* sprite TODO; advance to stay aligned */
+        if (skip || sprite) { fp += adv; continue; }   /* sprite (billboard FT4, .L8002256C) TODO; advance to stay aligned */
         if (n < 8192) {
             wface_t* F = &s_fc_tmp[n];
             F->i0 = (uint16_t)(((w0 >> 20) & 0x7FCu) >> 2);
@@ -1186,8 +1202,10 @@ static int build_walk_tris(CPUState* cpu) {
     s_us_walk += (long)(openpete_phase_now_us() - t0);
     return n;
 }
+static double s_walk_H = 365.0;   /* GTE projection distance (ctrl[26]) for sprite extents */
 static int build_walk_tris_inner(CPUState* cpu) {
     specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
+    s_walk_H = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
     s_wtri_n = 0;
     memset(&s_walkdiag, 0, sizeof(s_walkdiag));
     int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
@@ -1202,6 +1220,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
             if (dup) continue;
         }
         s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
+        s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
@@ -1327,17 +1346,33 @@ static int build_walk_tris_inner(CPUState* cpu) {
              * overwrites UV/tpage for reflective faces). */
             int tpx=F->tpx, tpy=F->tpy, clx=F->clx, cly=F->cly, bpp=F->bpp, abr=F->abr;
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
-            /* #1 SPECULAR per-face shading. The .s gives ONLY strip faces (!fresh)
-             * with word0&0x4 set a special per-face treatment (the bit is the
-             * highlight-enable @80021B64; on FRESH faces the same bit is the quad
-             * flag, so they're excluded). METAL record -> env reflection
-             * (.L800226F8/.L800222C0); non-metal -> diffuse highlight (.L80021DB4).
-             * Every OTHER face keeps its baked Tiledef texture + per-vertex colour.
-             * This per-face gate is load-bearing: a metal moby's sombrero/eyes are
-             * regular textured faces and must NOT be env-mapped -- only its at&4
-             * strip faces reflect. (The earlier gate env-mapped EVERY textured face
-             * of a metal moby -> sombrero went shiny-green with the wrong texture.) */
+            /* #1 SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
+             * get the special per-face treatment (highlight-enable @80021B64;
+             * dispatcher .L80021DB4): METAL record -> env reflection (the
+             * .L80021FE0 chain, per-vertex .L800222C0 atan2 + the per-moby
+             * .L800226F8 TR-azimuth u-bias); non-metal -> diffuse highlight.
+             * FRESH faces with &0x4 are BILLBOARD SPRITES (.L8002256C, handled
+             * above with authored Tiledef). Every OTHER face keeps its baked
+             * Tiledef texture + per-vertex colour. This per-face gate is
+             * load-bearing: a metal moby's sombrero/eyes are regular textured
+             * faces and must NOT be env-mapped -- only its at&4 strip faces
+             * reflect. (The earlier gate env-mapped EVERY textured face of a
+             * metal moby -> sombrero went shiny-green with the wrong texture.) */
+            proj_xy hlq[4];   /* hl decal copies (vz-nudged); see below */
             if (s_cur_mat[0]=='S' && F->hl) {
+              /* The .s draws these SPECIAL faces (env reflection / diffuse
+               * highlight) COPLANAR over the moby's base faces and wins by OT
+               * paint order within the moby. The native scene is depth-tested
+               * and material-BATCHED (draw order regroups by texture/blend), so
+               * an exact-coplanar decal z-fights its base and mostly loses (the
+               * armored gnorc's shield rendered its baked base texture instead
+               * of the env reflection). Mirror the paint-order semantics in
+               * depth: pull the decal 0.2% toward the camera (a few world units
+               * at moby range — far below any real geometry separation). */
+              hlq[0] = *p0; hlq[1] = *p1; hlq[2] = *p2;
+              hlq[0].vz *= 0.998f; hlq[1].vz *= 0.998f; hlq[2].vz *= 0.998f;
+              p0 = &hlq[0]; p1 = &hlq[1]; p2 = &hlq[2];
+              if (p3) { hlq[3] = *p3; hlq[3].vz *= 0.998f; p3 = &hlq[3]; }
               if (R->metal) {
                 /* ENV REFLECTION -- view-dependent spherical UV (byte-exact <=1
                  * texel vs prims); tpage/clut from the static metal Tiledef. */
@@ -1920,12 +1955,29 @@ static float wrap128(float x) { x = fmodf(x, 128.0f); return x < 0 ? x + 128.0f 
  * (g_Camera+0x50, an 11-bit 2048/circle heading; 2048 -> the 128-texel azimuth
  * wrap == camHead/16). This keeps the reflection WORLD-anchored: turning the
  * camera slides the reflected environment across the metal. */
+static float env_c2(void) {   /* calibration constant (temp env override) */
+    static float c = -1e9f;
+    if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_C2"); c = (e && *e) ? (float)atof(e) : 14.5f; }
+    return c;
+}
+static float env_azsign(void) {
+    static float c = -1e9f;
+    if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_AZSIGN"); c = (e && *e) ? (float)atof(e) : 1.0f; }
+    return c;
+}
 static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
     float r[3]; specular_env_refl(ex, ey, ez, r);
     float len = sqrtf(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
     float az = atan2f(r[0], r[1]);
     float el = len > 0.001f ? asinf(r[2] / len) : 0.0f;
-    int u = (int)lrintf(wrap128(52.5f - (128.0f / (2.0f*PI_F)) * az - s_camHead / 16.0f));
+    /* u: per-moby bias mirrors the .s SPEC setup (.L800226F8): the record's
+     * view-space position azimuth atan2(TR.z, TR.x) (octant-table atan in the
+     * .s) + camHead>>3, folded into the per-vertex azimuth at (camHead/32 -
+     * az_TR/2)*4 texel scale. The old fit (52.5 - az*k - camHead/16) had NO
+     * TR term and the wrong camHead weight - exact only near the artisans
+     * fit-point (edge mobys / other camHead values drifted, e.g. cliff town
+     * shield sampling 75 texels off = dark noise). */
+    int u = (int)lrintf(wrap128(env_c2() - (128.0f / (2.0f*PI_F)) * (az + env_azsign()*s_cur_env_az) + s_camHead / 32.0f));
     int v = (int)lrintf(64.0f + (128.0f / PI_F) * el);
     if (u < 0) u = 0; if (u > 255) u = 255;
     if (v < 0) v = 0; if (v > 255) v = 255;
@@ -2225,6 +2277,11 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
      * (e.g. the rescue dragon the specular cull adds to a slot a regular moby held at
      * REGULAR-read time; also the disjoint specular queue under --no-lod). */
     int is_spec = (mat && mat[0]=='S' && mat[1]=='P');
+    if (is_spec) {              /* snapshot the SPEC moby set for the reveal skip */
+        s_specq_n = 0;
+        for (int r = 0; r < nrec && s_specq_n < MAX_RECORDS; r++)
+            s_specq_moby[s_specq_n++] = s_recs[r].moby;
+    }
     if (!is_spec) moby_build_validate(cpu);   /* OPENPETE_MOBY_BUILDDBG: host-builder A/B vs the .s records */
     if (!is_spec) {                           /* REGULAR runs first — snapshot its moby set */
         s_reg_moby_n = 0;
@@ -3411,7 +3468,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_rec_tr[s_nrecs][2] = f.TR_frac[2];
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, zsf4),
-            f.w0, f.metal, f.mscol, mobys[i], zsf4 };
+            f.w0, f.metal, f.mscol, mobys[i], zsf4,
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]) };
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
