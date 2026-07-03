@@ -256,20 +256,81 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
  * sub-ticks between N and N+1 is correct: the visible set doesn't change within
  * a tick. The geometry still re-projects through the interpolated camera, so
  * mobys/Spyro move smoothly; only the (sub-pixel) cull decision is tick-N's. */
-#define DSONY_LO         0x1000u              /* captured span low offset (incl) */
-#define DSONY_HI         0x2C00u              /* captured span high offset (excl) */
-#define DSONY_SPAN       (DSONY_HI - DSONY_LO)
-#define SXY_BASE         0x1F800000u          /* PSX hardware scratchpad (Spyro SXY) */
-#define SXY_WORDS        0x100u               /* full 1 KB scratchpad */
+/* ---- W2.1: declarative transient-region registry --------------------------
+ * One row per captured transient sub-region. Adding a region = add a backing
+ * buffer + one table row (+ a capture call at its producer hook); the engine
+ * below handles save-live → restore-canon → staged overlay → restore-live
+ * generically. (The Fairy-Kiss 0x1D00 fix, previously three hand-edits, is
+ * now literally the "fk" row.)
+ *
+ * producer — which canonical hook (re)fills the region; freshness is per
+ *   producer (see the epoch comment below).
+ * phase — SPHASE_ENTER rows restore at bracket entry (before the moby +
+ *   shadow feeders). SPHASE_SEG_OVERLAY rows OVERLAP the regular-records row
+ *   in PSX space and are overlaid only AFTER those feeders consumed the
+ *   records (scratch_bracket_seg_restore) — reproducing the .s's temporal
+ *   reuse of [0x1900,..): the moby pass fills cull records there, then the
+ *   Spyro pass overwrites them with its seg scratch / Fairy-Kiss table once
+ *   the records are consumed. (A single-shot restore used to clobber records
+ *   >=14 at 0x1910+ — Sparx and distant chests vanished on sub-ticks.)
+ *
+ * Row storage is PER ROW (canon+live), so PSX-space overlap never aliases in
+ * the backing store — overlap is purely a restore-ORDER concern, which the
+ * phase column encodes. Live saves are all taken before any restore (one
+ * coherent pre-state), so overlapping rows' saved bytes agree and leave()
+ * may restore in any order. */
+typedef enum { SPROD_MOBYREG = 0, SPROD_SPYRO, SPROD_SHADED, SPROD_COUNT } sprod_t;
+typedef enum { SPHASE_ENTER = 0, SPHASE_SEG_OVERLAY } sphase_t;
 
-/* Captured sub-regions are filled at their producer hooks (colour+records at the
- * moby hook, seg at the Spyro hook, shaded at the shaded hook) into s_canon_dsony
- * by offset; the explicit COLOUR/RECS/SEG/SHADED constants below drive the
- * staged restore. The regular records are ALSO captured in full into s_canon_recs
- * (see the overlap note there). */
-static uint8_t  s_canon_dsony[DSONY_SPAN], s_live_dsony[DSONY_SPAN];
-static uint32_t s_canon_sxy[SXY_WORDS],    s_live_sxy[SXY_WORDS];
-static int      s_canon_scratch_valid = 0;
+typedef struct {
+    const char* name;
+    uint32_t    psx_base;    /* absolute PSX address (RAM or scratchpad) */
+    uint32_t    len;
+    sprod_t     producer;    /* epoch-stamp owner */
+    sphase_t    phase;
+    uint8_t*    canon;       /* row-owned canonical capture (len bytes) */
+    uint8_t*    live;        /* row-owned live save (len bytes) */
+    int         captured;    /* canon[] has ever been filled */
+    int         open;        /* live[] holds this present's save */
+    int         warned;      /* one-shot capture-length-mismatch warning */
+} scratch_region_t;
+
+#define SXY_BASE 0x1F800000u  /* PSX scratchpad (Spyro SXY / NCLIP verdicts) */
+
+static uint8_t s_colour_buf[2][0x500];   /* [0]=canon  [1]=live */
+static uint8_t s_recs_buf[2][0xE00];
+static uint8_t s_shaded_buf[2][0x800];
+static uint8_t s_sxy_buf[2][0x400];
+static uint8_t s_seg_buf[2][0x100];
+static uint8_t s_fk_buf[2][0x300];
+
+static scratch_region_t s_scratch_rows[] = {
+    /* per-vertex fog-lit colour scratch [0x1100,0x1600) */
+    { "colour", G_SCRATCH + 0x1100u, 0x500u, SPROD_MOBYREG, SPHASE_ENTER,
+      s_colour_buf[0], s_colour_buf[1], 0, 0, 0 },
+    /* full REGULAR cull records [0x1600,0x2400) (<=64 @ 0x38) — captured at
+     * the MOBY hook while live, BEFORE the Spyro pass reuses 0x1900 */
+    { "recs",   G_SCRATCH + 0x1600u, 0xE00u, SPROD_MOBYREG, SPHASE_ENTER,
+      s_recs_buf[0], s_recs_buf[1], 0, 0, 0 },
+    /* shaded Moby* list + lit scratch [0x2400,0x2C00) */
+    { "shaded", G_SCRATCH + 0x2400u, 0x800u, SPROD_SHADED, SPHASE_ENTER,
+      s_shaded_buf[0], s_shaded_buf[1], 0, 0, 0 },
+    /* Spyro's projected int16 SXY (the NCLIP cull verdict) — full 1 KB
+     * hardware scratchpad */
+    { "sxy",    SXY_BASE,            0x400u, SPROD_SPYRO,  SPHASE_ENTER,
+      s_sxy_buf[0], s_sxy_buf[1], 0, 0, 0 },
+    /* Spyro per-segment scratch [0x1900,0x1A00) — overlaps recs */
+    { "seg",    G_SCRATCH + 0x1900u, 0x100u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
+      s_seg_buf[0], s_seg_buf[1], 0, 0, 0 },
+    /* Fairy-Kiss pre-blend colour table [0x1D00,0x2000) — overlaps recs;
+     * written by the Spyro pass AFTER the moby records, like the seg scratch.
+     * When Fairy-Kiss is inactive it's harmless (build_spyro_walk reads
+     * m_Colors, not 0x1D00). */
+    { "fk",     G_SCRATCH + 0x1D00u, 0x300u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
+      s_fk_buf[0], s_fk_buf[1], 0, 0, 0 },
+};
+#define SCRATCH_ROWS ((int)(sizeof s_scratch_rows / sizeof s_scratch_rows[0]))
+static int s_any_captured = 0;
 
 /* Canonical-render EPOCH (replaces the W0.6 openpete_frame stamps). W0.6 tried
  * "capture is fresh iff its frame stamp == openpete_frame at re-extract", but
@@ -292,9 +353,10 @@ static int      s_canon_scratch_valid = 0;
  * moby replay. */
 static uint32_t s_canon_epoch_now = 1;   /* stamp captures take (present in flight) */
 static uint32_t s_canon_epoch_ok  = 0;   /* required stamp for a capture to be fresh */
-static uint32_t s_epoch_mobyreg = 0;     /* colour 0x1100 + cull records (REGULAR moby hook) */
-static uint32_t s_epoch_spyro   = 0;     /* seg 0x1900 + FK 0x1D00 + SXY (Spyro hook) */
-static uint32_t s_epoch_shaded  = 0;     /* shaded list 0x2400 (SHADED/text hook) */
+static uint32_t s_prod_epoch[SPROD_COUNT] = {0};  /* per-producer last-capture stamp:
+                                                   * MOBYREG = colour + cull records,
+                                                   * SPYRO   = seg + FK + SXY,
+                                                   * SHADED  = shaded list (text hook) */
 
 void spyro_native_canon_epoch_commit(void) {
     s_canon_epoch_ok = s_canon_epoch_now;
@@ -302,76 +364,65 @@ void spyro_native_canon_epoch_commit(void) {
 }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
-int spyro_native_canon_mobyreg_fresh(void) { return s_epoch_mobyreg == s_canon_epoch_ok; }
-int spyro_native_canon_shaded_fresh(void)  { return s_epoch_shaded  == s_canon_epoch_ok; }
+int spyro_native_canon_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }
+int spyro_native_canon_shaded_fresh(void)  { return s_prod_epoch[SPROD_SHADED]  == s_canon_epoch_ok; }
+static int scratch_prod_fresh(sprod_t p)   { return s_prod_epoch[p] == s_canon_epoch_ok; }
 
-/* Explicit scratch sub-regions (offsets from G_SCRATCH). The REGULAR cull-record
- * region [0x1600,0x2400) and the Spyro per-segment scratch [0x1900,0x1A00)
- * OVERLAP — the .s reuses 0x1900 temporally (the moby pass fills the records
- * there, then the Spyro pass overwrites them with its seg scratch once the
- * records are consumed). The reextract reproduces that ordering: it restores the
- * FULL records for the moby feeder, then overlays the seg scratch for the Spyro
- * feeder (scratch_bracket_seg_restore). The old single-shot restore captured the
- * records only up to 0x1900 and then wrote the seg scratch over records at queue
- * index >=14 (they start at 0x1910), so any moby parked there — Sparx, distant
- * chests — was clobbered and vanished on sub-tick presents. */
-#define COLOUR_OFF  0x1100u
-#define COLOUR_LEN  0x500u    /* [0x1100,0x1600) per-vertex fog-lit colour scratch */
-#define RECS_OFF    0x1600u
-#define RECS_LEN    0xE00u    /* [0x1600,0x2400) full REGULAR cull records (≤64 @ 0x38) */
-#define SEG_OFF     0x1900u
-#define SEG_LEN     0x100u    /* [0x1900,0x1A00) Spyro per-segment scratch (overlaps recs) */
-#define FK_OFF      0x1D00u
-#define FK_LEN      0x300u    /* [0x1D00,0x2000) Fairy-Kiss pre-blend colour table (overlaps recs;
-                              * written by the Spyro pass AFTER the moby records, like the seg scratch) */
-#define SHADED_OFF  0x2400u
-#define SHADED_LEN  0x800u    /* [0x2400,0x2C00) shaded Moby* list + lit scratch */
-static uint8_t  s_canon_recs[RECS_LEN], s_live_recs[RECS_LEN];
-static int      s_canon_recs_valid = 0;   /* freshness comes from s_epoch_mobyreg */
+/* Registry engine: row lookup + capture. Captures fire at the producer hooks
+ * (canonical moby/spyro/shaded render hooks, while the scratch is still live)
+ * and stamp the row's producer epoch. */
+static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
+    for (int i = 0; i < SCRATCH_ROWS; ++i)
+        if (s_scratch_rows[i].psx_base == psx_addr) return &s_scratch_rows[i];
+    return NULL;
+}
 
-/* Capture a G_SCRATCH sub-range at its producer hook (called from the canonical
- * moby/spyro render hooks while the scratch is still live). */
-void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
-    (void)cpu_v;
-    if (off < DSONY_LO || off + len > DSONY_HI) return;
-    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + off);
+static void scratch_row_capture(scratch_region_t* r) {
+    const void* h = openpete_psx_to_host_ptr(r->psx_base);
     if (!h) return;
-    memcpy(s_canon_dsony + (off - DSONY_LO), h, len);
-    s_canon_scratch_valid = 1;
-    /* Stamp the PRODUCER's epoch by capture offset. A new capture site must be
-     * added to this map, or its region will never read as fresh. */
-    if      (off == COLOUR_OFF)                   s_epoch_mobyreg = s_canon_epoch_now;
-    else if (off == SEG_OFF || off == FK_OFF)     s_epoch_spyro   = s_canon_epoch_now;
-    else if (off == SHADED_OFF)                   s_epoch_shaded  = s_canon_epoch_now;
-    else fprintf(stderr, "[canon-cap] UNMAPPED capture offset 0x%04x (no epoch stamp — add it)\n", off);
+    memcpy(r->canon, h, r->len);
+    r->captured = 1;
+    s_any_captured = 1;
+    s_prod_epoch[r->producer] = s_canon_epoch_now;
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); dbg = (e && *e && *e != '0'); }
     if (dbg && (openpete_frame % 200u) == 0) {
-        uint32_t w0; memcpy(&w0, s_canon_dsony + (off - DSONY_LO), 4);
-        fprintf(stderr, "[canon-cap f=%u] off=0x%04x len=0x%x word0=%08x\n", openpete_frame, off, len, w0);
+        uint32_t w0; memcpy(&w0, r->canon, 4);
+        fprintf(stderr, "[canon-cap f=%u] row=%s base=0x%08x len=0x%x word0=%08x\n",
+                openpete_frame, r->name, r->psx_base, r->len, w0);
     }
+}
+
+/* Capture a G_SCRATCH sub-range at its producer hook. `off`/`len` must name a
+ * registry row (base match); an unmapped offset is a loud no-op — a new
+ * capture site must come with a registry row, or its region never restores. */
+void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
+    (void)cpu_v;
+    scratch_region_t* r = scratch_row_by_base(G_SCRATCH + off);
+    if (!r) {
+        fprintf(stderr, "[canon-cap] UNMAPPED capture offset 0x%04x (add a registry row)\n", off);
+        return;
+    }
+    if (len != r->len && !r->warned) {
+        r->warned = 1;
+        fprintf(stderr, "[canon-cap] row '%s': capture len 0x%x != row len 0x%x (row len used)\n",
+                r->name, len, r->len);
+    }
+    scratch_row_capture(r);
 }
 
 /* Capture Spyro's projected SXY scratchpad at the canonical spyro hook. */
 void spyro_native_canon_capture_sxy(void* cpu_v) {
-    CPUState* cpu = (CPUState*)cpu_v;
-    for (uint32_t i = 0; i < SXY_WORDS; ++i) s_canon_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
-    s_canon_scratch_valid = 1;
-    s_epoch_spyro = s_canon_epoch_now;   /* Spyro-hook producer, same epoch as seg/FK */
+    (void)cpu_v;
+    scratch_row_capture(scratch_row_by_base(SXY_BASE));
 }
 
 /* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook —
- * while the records are still live, BEFORE the later Spyro pass reuses 0x1900 for
- * its seg scratch. Stored separately from s_canon_dsony (whose seg sub-range is
- * captured later at the Spyro hook and would otherwise overwrite records 14+).
- * Restored for the moby feeder by scratch_bracket_enter. */
+ * while the records are still live, BEFORE the later Spyro pass reuses 0x1900
+ * for its seg scratch (whose own row is captured later at the Spyro hook). */
 void spyro_native_canon_capture_recs(void* cpu_v) {
     (void)cpu_v;
-    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
-    if (!h) return;
-    memcpy(s_canon_recs, h, RECS_LEN);
-    s_canon_recs_valid = 1;
-    s_epoch_mobyreg = s_canon_epoch_now;   /* REGULAR-hook producer, same epoch as colour */
+    scratch_row_capture(scratch_row_by_base(G_SCRATCH + 0x1600u));
 }
 
 /* On an intermediate: save the live scratch, overwrite with the captured canon,
@@ -384,6 +435,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
 static int s_bracket_open = 0;   /* enter saved the live scratch this present */
 
 static void scratch_bracket_enter(CPUState* cpu) {
+    (void)cpu;
     {   /* OPENPETE_LOAD_CENSUS: per-producer freshness at re-extract time. */
         static int cen = -1;
         if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
@@ -392,72 +444,69 @@ static void scratch_bracket_enter(CPUState* cpu) {
             fprintf(stderr, "[census f=%u BRACKET] epoch_ok=%u fresh reg=%d spy=%d shd=%d\n",
                     openpete_frame, s_canon_epoch_ok,
                     spyro_native_canon_mobyreg_fresh(),
-                    spyro_native_canon_epoch_fresh(s_epoch_spyro),
+                    scratch_prod_fresh(SPROD_SPYRO),
                     spyro_native_canon_shaded_fresh()); }
     }
-    if (!s_canon_scratch_valid) return;
-    void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
-    void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
-    void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
-    if (!hc || !hr || !hs) return;
-    /* Save TRUE live unconditionally (before any restore) — leave restores all
-     * of it back, so a region whose canon restore below is skipped as stale is
-     * a saved-then-restored no-op. The records region [0x1600,0x2400) spans the
-     * seg + FK sub-ranges, so its save/restore covers scratch_bracket_seg_restore's
-     * overlays too. */
-    memcpy(s_live_dsony + (COLOUR_OFF - DSONY_LO), hc, COLOUR_LEN);
-    memcpy(s_live_recs, hr, RECS_LEN);
-    memcpy(s_live_dsony + (SHADED_OFF - DSONY_LO), hs, SHADED_LEN);
-    for (uint32_t i = 0; i < SXY_WORDS; ++i) s_live_sxy[i] = cpu->read_word(SXY_BASE + i * 4u);
+    if (!s_any_captured) return;
+    /* Save TRUE live for ALL rows first, before any restore — one coherent
+     * pre-state, so an overlapping row never saves another row's canon bytes,
+     * and leave() restores everything back whether or not a canon restore
+     * fired (a stale-skipped region is a saved-then-restored no-op). */
+    for (int i = 0; i < SCRATCH_ROWS; ++i) {
+        scratch_region_t* r = &s_scratch_rows[i];
+        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        if (!h) continue;
+        memcpy(r->live, h, r->len);
+        r->open = 1;
+    }
     s_bracket_open = 1;
     /* Restore canon per PRODUCER freshness: a producer that didn't run during
      * the last canonical present keeps whatever the live scratch holds (its
      * feeder pass is skipped too — moby_native_reextract checks the same
-     * predicates), instead of replaying a stale capture. */
-    if (spyro_native_canon_mobyreg_fresh()) {
-        memcpy(hc, s_canon_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
-        if (s_canon_recs_valid) memcpy(hr, s_canon_recs, RECS_LEN);
+     * predicates), instead of replaying a stale capture. SEG_OVERLAY rows
+     * wait for scratch_bracket_seg_restore (they overlap the records the
+     * moby + shadow feeders are about to consume). */
+    for (int i = 0; i < SCRATCH_ROWS; ++i) {
+        scratch_region_t* r = &s_scratch_rows[i];
+        if (r->phase != SPHASE_ENTER || !r->open || !r->captured) continue;
+        if (!scratch_prod_fresh(r->producer)) continue;
+        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        if (h) memcpy(h, r->canon, r->len);
     }
-    if (spyro_native_canon_shaded_fresh())
-        memcpy(hs, s_canon_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
-    if (spyro_native_canon_epoch_fresh(s_epoch_spyro))
-        for (uint32_t i = 0; i < SXY_WORDS; ++i) cpu->write_word(SXY_BASE + i * 4u, s_canon_sxy[i]);
 }
 
-/* After the moby + shadow feeders have consumed the regular records, overlay the
- * Spyro per-segment scratch over the (now-consumed) records 14+ at 0x1900 — the
- * same temporal reuse the .s does — so the Spyro body feeder sees its seg scratch. */
+/* After the moby + shadow feeders have consumed the regular records, overlay
+ * the SEG_OVERLAY rows over the (now-consumed) records at 0x1900+ — the same
+ * temporal reuse the .s does — so the Spyro body feeder sees its seg scratch
+ * and the Fairy-Kiss pre-blend colour table (else it reads the stale records
+ * bytes and Spyro's colours flicker at >30fps during a Fairy-Kiss). */
 static void scratch_bracket_seg_restore(CPUState* cpu) {
     (void)cpu;
-    if (!s_bracket_open || !spyro_native_canon_epoch_fresh(s_epoch_spyro)) return;
-    void* h = openpete_psx_to_host_ptr(G_SCRATCH + SEG_OFF);
-    if (h) memcpy(h, s_canon_dsony + (SEG_OFF - DSONY_LO), SEG_LEN);
-    /* Fairy-Kiss pre-blend colour table — same temporal reuse as the seg scratch:
-     * the Spyro pass wrote it over the (now-consumed) records, so overlay the fresh
-     * canon capture for the Spyro body feeder (else it reads the stale s_canon_recs
-     * value and Spyro's colours flicker at >30fps during a Fairy-Kiss). Captured at
-     * the Spyro hook (spyro_native.c); when Fairy-Kiss is inactive it's harmless
-     * (build_spyro_walk reads m_Colors, not 0x1D00). */
-    void* hf = openpete_psx_to_host_ptr(G_SCRATCH + FK_OFF);
-    if (hf) memcpy(hf, s_canon_dsony + (FK_OFF - DSONY_LO), FK_LEN);
+    if (!s_bracket_open) return;
+    for (int i = 0; i < SCRATCH_ROWS; ++i) {
+        scratch_region_t* r = &s_scratch_rows[i];
+        if (r->phase != SPHASE_SEG_OVERLAY || !r->open || !r->captured) continue;
+        if (!scratch_prod_fresh(r->producer)) continue;
+        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        if (h) memcpy(h, r->canon, r->len);
+    }
 }
 
 /* Restore the live scratch before the game fiber resumes (determinism).
- * Symmetric with enter's unconditional save: restore EVERYTHING saved, whether
- * or not a canon restore fired (stale-skipped regions restore their own saved
- * bytes — a no-op). The records-region restore [0x1600,0x2400) covers the
- * seg + FK sub-ranges scratch_bracket_seg_restore may have overlaid. */
+ * Symmetric with enter's unconditional save: every open row restores its
+ * saved bytes. Overlapping rows all saved the same pre-state, so restore
+ * order is irrelevant. */
 static void scratch_bracket_leave(CPUState* cpu) {
+    (void)cpu;
     if (!s_bracket_open) return;
     s_bracket_open = 0;
-    void* hc = openpete_psx_to_host_ptr(G_SCRATCH + COLOUR_OFF);
-    void* hr = openpete_psx_to_host_ptr(G_SCRATCH + RECS_OFF);
-    void* hs = openpete_psx_to_host_ptr(G_SCRATCH + SHADED_OFF);
-    if (hc) memcpy(hc, s_live_dsony + (COLOUR_OFF - DSONY_LO), COLOUR_LEN);
-    if (hr) memcpy(hr, s_live_recs, RECS_LEN);
-    if (hs) memcpy(hs, s_live_dsony + (SHADED_OFF - DSONY_LO), SHADED_LEN);
-    for (uint32_t i = 0; i < SXY_WORDS; ++i)
-        cpu->write_word(SXY_BASE + i * 4u, s_live_sxy[i]);
+    for (int i = 0; i < SCRATCH_ROWS; ++i) {
+        scratch_region_t* r = &s_scratch_rows[i];
+        if (!r->open) continue;
+        r->open = 0;
+        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        if (h) memcpy(h, r->live, r->len);
+    }
 }
 
 static void spyro_native_reextract(void* cpu_v) {

@@ -33,6 +33,8 @@ typedef enum {
     RP_FLAME,     /* Spyro's flame breath (func_80058D64) */
     RP_PARTICLES, /* particle systems (func_800573C8) */
     RP_TRACER,    /* additive tracer/beam (func_800189F0) — charge streak, fireball trail */
+    RP_TRANSITION,/* level-exit / balloonist cross-fade backdrop (func_8004F000) */
+    RP_PORTAL,    /* portal skybox previews (func_80050BE0 RenderPortals) */
     RP_COUNT
 } render_path_t;
 
@@ -55,6 +57,14 @@ bool render_path_enabled(render_path_t p);
  * OT walk consumes it); record appends one path's emitted polybuf range. */
 void render_paths_frame_reset(void);
 void render_path_record(render_path_t p, uint32_t start, uint32_t end);
+
+/* Mark a path canon-drawn for this frame WITHOUT a polybuf interval. For
+ * producers whose native feed isn't 1:1 with their polybuf output — e.g.
+ * RenderPortals under widescreen can feed native-revealed portals the .s
+ * culled (empty polybuf interval, real native content). Interval-less, so it
+ * feeds only the canon-drawn mask, never the OT-walk addr filter. Cleared by
+ * render_paths_frame_reset like the intervals. */
+void render_path_mark_drawn(render_path_t p);
 
 /* "Canon drawn" mask — which paths emitted geometry in the MOST RECENT canonical
  * render. render_paths_canon_snapshot() latches the current per-frame interval

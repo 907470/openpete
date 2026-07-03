@@ -90,11 +90,11 @@ static int      s_cross_have_bg;
  * mesh corners. */
 static uint32_t s_cross_bg_flat;
 
-/* Staleness gate (mirrors portal_native): set while the canonical render runs,
- * latched per canonical present by a chained commit, reset there — so the
- * sub-tick reextract stops replaying the moment func_8004F000 stops firing. */
-static int  s_cross_ran = 0;
-static int  s_cross_canon_drawn = 0;
+/* Staleness gate: the hook records its emitted polybuf interval as
+ * RP_TRANSITION (W2.1 liveness unification); the sub-tick reextract gates on
+ * render_path_canon_drawn(RP_TRANSITION), which drops the moment
+ * func_8004F000 stops emitting. Replaces the old private s_cross_ran /
+ * s_cross_canon_drawn latch + chained commit. */
 
 static int16_t s16(uint32_t v) { return (int16_t)(uint16_t)v; }
 
@@ -316,10 +316,16 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     func_8004F000(cpu);                                   /* real renderer (verdict + g_SonyImage) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
+    /* Record the emitted polybuf range: feeds the OT-walk isolation filter
+     * AND the canon-drawn mask — the staleness gate the sub-tick replay reads
+     * (render_path_canon_drawn(RP_TRANSITION), latched once per canonical
+     * present by the shared render_paths commit; empty ranges are dropped, so
+     * a frame where the cross-fade emitted nothing reads "not drawn"). */
+    render_path_record(RP_TRANSITION, startp, endp);
+
     if (feed && endp > startp) {
         crossfade_capture(cpu, startp, endp);
         crossfade_feed_native();
-        s_cross_ran = 1;                                  /* mark for the staleness latch */
         if (dump_on()) {
             static int s_rawdumped = 0;
             if (!s_rawdumped) {
@@ -420,30 +426,28 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
  * The scene is rebuilt against interpolated gamestate on every intermediate
  * present; without re-adding the captured backdrop it would strobe (gradient on
  * canonical frames, background-clear on intermediates). The mesh is screen-space
- * 2D, so we replay it verbatim (no re-projection). Gated on s_cross_canon_drawn
- * so a stale capture isn't painted over the next level once the transition ends. */
+ * 2D, so we replay it verbatim (no re-projection). Gated on
+ * render_path_canon_drawn(RP_TRANSITION) — latched once per canonical present
+ * by the shared render_paths commit from the hook's recorded polybuf interval
+ * — so a stale capture isn't painted over the next level once the transition
+ * ends (the hook stops emitting → the mask bit drops). */
 void transition_native_reextract(CPUState* cpu) {
     (void)cpu;
     if (!openpete_native_render_enabled()) return;
-    if (!s_cross_canon_drawn) return;
+    if (!render_path_canon_drawn(RP_TRANSITION)) return;
     crossfade_feed_native();
-}
-
-/* Chained host-present commit: latch "func_8004F000 ran this canonical present"
- * (s_cross_ran) into s_cross_canon_drawn and reset it, then call the previously
- * registered commit. Runs once per canonical present, after the game render and
- * before the sub-tick reextract — so the reextract sees this present's verdict. */
-static openpete_native_commit_fn s_prev_commit = NULL;
-static void transition_native_commit(void) {
-    s_cross_canon_drawn = s_cross_ran;
-    s_cross_ran = 0;
-    if (s_prev_commit) s_prev_commit();
+    {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
+        static int cen = -1;
+        if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
+        static unsigned s_fires = 0; s_fires++;
+        static unsigned last = 0xFFFFFFFFu;
+        if (cen && openpete_frame / 100u != last) { last = openpete_frame / 100u;
+            fprintf(stderr, "[census f=%u TRANSITION-REPLAY] fires=%u\n", openpete_frame, s_fires); }
+    }
 }
 
 static void transition_native_apply_options(const openpete_options_t* opts) {
     (void)opts;
-    s_prev_commit = openpete_native_get_commit();
-    openpete_native_register_commit(transition_native_commit);
 }
 
 static const feature_dispatch_entry_t transition_dispatch[] = {

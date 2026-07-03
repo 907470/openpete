@@ -12,6 +12,7 @@
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
+    "transition", "portal",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */
@@ -36,7 +37,8 @@ void render_paths_init(const char* spec) {
             if (strcmp(tok, k_names[i]) == 0) { matched = i; break; }
         if (matched >= 0) s_mask |= (1u << matched);
         else fprintf(stderr, "[render-paths] unknown path '%s' (known: "
-                             "cyclorama,spyro,moby,terrain,flame,particles,hud)\n", tok);
+                             "cyclorama,spyro,moby,terrain,shadow,flame,particles,"
+                             "tracer,transition,portal)\n", tok);
     }
 
     fprintf(stderr, "[render-paths] isolating:");
@@ -60,7 +62,16 @@ typedef struct { uint32_t start, end; render_path_t path; } interval_t;
 static interval_t s_iv[MAX_INTERVALS];
 static int        s_iv_n = 0;
 
-void render_paths_frame_reset(void) { s_iv_n = 0; }
+/* Interval-less canon-drawn marks (render_path_mark_drawn). Kept separate from
+ * the intervals so they can never leak into the OT-walk addr filter. */
+static uint32_t s_pending_marks = 0;
+
+void render_paths_frame_reset(void) { s_iv_n = 0; s_pending_marks = 0; }
+
+void render_path_mark_drawn(render_path_t p) {
+    if (p < 0 || p >= RP_COUNT) return;
+    s_pending_marks |= (1u << (unsigned)p);
+}
 
 void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     if (end <= start || s_iv_n >= MAX_INTERVALS) return;
@@ -79,7 +90,7 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
 static uint32_t s_canon_mask = 0;
 
 void render_paths_canon_snapshot(void) {
-    uint32_t m = 0;
+    uint32_t m = s_pending_marks;
     for (int i = 0; i < s_iv_n; i++) m |= (1u << (unsigned)s_iv[i].path);
     s_canon_mask = m;
 }

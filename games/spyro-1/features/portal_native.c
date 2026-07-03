@@ -186,14 +186,14 @@ static portal_cap_t s_pcap[PORTAL_CAP_MAX];
 static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
-/* Per-canonical-present "RenderPortals ran" latch (staleness gate, see
- * portal_native_reextract). s_pcap_ran is set in on_80050BE0 while the canonical
- * frame renders; portal_native_commit (chained onto the host present commit) latches
- * it into s_pcap_canon_drawn and resets it once per canonical present, BEFORE the
- * sub-tick reextract reads it. When RenderPortals stops (load transition) the latch
- * goes false next present and the reextract stops replaying the stale capture. */
-static int          s_pcap_ran = 0;
-static int          s_pcap_canon_drawn = 0;
+/* Staleness gate (W2.1 liveness unification): on_80050BE0 calls
+ * render_path_mark_drawn(RP_PORTAL) while the canonical frame renders; the
+ * shared render_paths commit latches it into the canon-drawn mask once per
+ * canonical present, BEFORE the sub-tick reextract reads it via
+ * render_path_canon_drawn(RP_PORTAL). When RenderPortals stops (load
+ * transition) the bit drops next present and the reextract stops replaying
+ * the stale capture. Replaces the old private s_pcap_ran /
+ * s_pcap_canon_drawn latch + chained commit. */
 
 /* Shared dome rotation matrix, snapshotted prev+curr per canonical tick. RenderPortals
  * builds ONE dome matrix per frame (byte-identical across all portals — the GTEmat
@@ -950,30 +950,21 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
     /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it
      * usable so portal_native_reextract replays it on the intermediate presents.
-     * (s_pcap_n may be 0 in a portal-less level — the reextract then no-ops.) */
-    if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame; s_pcap_ran = 1; }
+     * (s_pcap_n may be 0 in a portal-less level — the reextract then no-ops.)
+     * The staleness gate is render_path_mark_drawn (W2.1 liveness unification):
+     * the interval-less mark, NOT a polybuf interval — under widescreen the
+     * native feed can contain revealed portals the .s culled (empty polybuf
+     * emission, real native content), so "RenderPortals ran + fed" is the
+     * signal, not "emitted prims". Latched into the canon-drawn mask once per
+     * canonical present by the shared render_paths commit. */
+    if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame;
+                render_path_mark_drawn(RP_PORTAL); }
     s_rp_in = 0;
     return 1;
 }
 
-/* Chained host-present commit: latch "RenderPortals ran this canonical present"
- * (s_pcap_ran, set above during the game render) into s_pcap_canon_drawn and reset
- * it, then call the previously-registered commit (render_paths'). Runs once per
- * canonical present, after the game render, before the sub-tick reextract — so the
- * reextract's staleness gate sees this present's verdict, not last present's. */
-static openpete_native_commit_fn s_prev_commit = NULL;
-static void portal_native_commit(void) {
-    s_pcap_canon_drawn = s_pcap_ran;
-    s_pcap_ran = 0;
-    if (s_prev_commit) s_prev_commit();
-}
-
-/* Chain our commit onto whatever's already registered (render_paths registers
- * earlier in the feature list, so get_commit returns its fn here). */
 static void portal_native_apply_options(const openpete_options_t* opts) {
     (void)opts;
-    s_prev_commit = openpete_native_get_commit();
-    openpete_native_register_commit(portal_native_commit);
 }
 
 /* ---- sub-tick re-extract (high-FPS spine) --------------------------------
@@ -997,10 +988,19 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
      * (The main cyclorama IS still drawn during the transition by a non-RenderPortals
      * path, so render_path_canon_drawn(RP_CYCLORAMA) is NOT a valid proxy here —
      * proven by instrument: the stale replay kept firing with RP_CYCLORAMA true.)
-     * s_pcap_canon_drawn is latched per canonical present (portal_native_commit)
-     * from whether on_80050BE0 actually ran this present, so it goes false the
-     * moment RenderPortals stops — exactly the staleness signal we need. */
-    if (!s_pcap_canon_drawn) return;
+     * RP_PORTAL is marked (render_path_mark_drawn — interval-less, so widescreen-
+     * revealed portals with no polybuf emission still count) each canonical present
+     * on_80050BE0 runs+feeds, so the bit goes false the moment RenderPortals stops
+     * — exactly the staleness signal we need. */
+    if (!render_path_canon_drawn(RP_PORTAL)) return;
+    {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
+        static int cen = -1;
+        if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
+        static unsigned s_fires = 0; s_fires++;
+        static unsigned last = 0xFFFFFFFFu;
+        if (cen && openpete_frame / 100u != last) { last = openpete_frame / 100u;
+            fprintf(stderr, "[census f=%u PORTAL-REPLAY] fires=%u\n", openpete_frame, s_fires); }
+    }
     openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
 
     /* Sub-tick dome matrix = lerp(prev, curr, alpha), componentwise (like the

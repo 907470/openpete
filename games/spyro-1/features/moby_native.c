@@ -2263,7 +2263,9 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * +0x1600 queue with the specular set (incl. specular-ONLY mobys like
          * the rescue dragon that REGULAR didn't draw), so capture it separately
          * for the re-extract's SPEC pass — else those mobys vanish on sub-ticks. */
-        if (!is_spec) { spyro_native_canon_capture_range(cpu, 0x1100u, 0x800u);
+        /* colour row is [0x1100,0x1600); the old 0x800 over-capture spilled
+         * into the records, which capture_recs covers in full anyway. */
+        if (!is_spec) { spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
                         spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
                         /* Invalidate the SPECULAR capture at the START of each canonical
                          * moby render (REGULAR runs first every frame). The game only calls
