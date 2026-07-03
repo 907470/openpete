@@ -222,9 +222,7 @@ void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
  * decoder (shaders/psx_sample.frag). 1024x512 is the faithful PSX VRAM
  * extent; the renderer keeps a CPU mirror and uploads from it. */
 rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
-/* Upload the whole CPU mirror (width*height uint16 PSX pixels). Sub-rect
- * uploads (for runtime LoadImage streaming) arrive with the W2.4 native VRAM
- * write model (dirty-rect tracking).
+/* Upload the whole CPU mirror (width*height uint16 PSX pixels).
  *
  * Upload semantics (W2.2, also rhi_update_rgba8): if called while a frame is
  * being recorded (after rhi_begin_frame), the copy is appended to THAT
@@ -232,6 +230,17 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
  * Callers MUST then invoke it before the frame's first render pass. Outside
  * a frame it falls back to the blocking one-shot submit (init-time). */
 void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
+
+/* Sub-rect upload (W2.4 dirty-rect path): copy only `rects` regions of the
+ * CPU mirror (`mirror` is the FULL width-stride buffer) into the texture, in
+ * one barrier pair + one N-region transfer. Same in-frame/one-shot semantics
+ * as rhi_update_vram. Rects must be pre-clamped to the texture extent. If the
+ * summed rect payload exceeds one full-image staging slot (heavily
+ * overlapping rects), it silently falls back to a full upload. */
+typedef struct { int x, y, w, h; } rhi_rect;
+void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
+                           const uint16_t *mirror,
+                           const rhi_rect *rects, int nrects);
 
 /* An RGBA8 (R8G8B8A8_UNORM, bytes R,G,B,A) sampled image — e.g. a frame read
  * back from another renderer for A/B display. Shares the VRAM texture's

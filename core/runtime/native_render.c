@@ -45,6 +45,8 @@
 extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
 extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
+extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
+static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
 
 /* GL_RGBA enum — byte order R,G,B,A, matching VK_FORMAT_R8G8B8A8_UNORM. */
@@ -1273,6 +1275,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
+    /* W2.4: subscribe to PsyCross VRAM writes (dirty-rect tracked mirror). */
+    PsyX_SetVRAMDirtyCallback(nr_vram_dirty_cb);
 
     /* Static full-target quad (clip -1..1, UV 0..1 top-down) for render-target
      * copies — currently the native_rtt -> frozen_tex freeze-snapshot blit. */
@@ -1328,20 +1332,79 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h)
     s_nr.clip_x = x; s_nr.clip_y = y; s_nr.clip_w = w; s_nr.clip_h = h;
 }
 
-/* Mirror PsyCross's whole VRAM (1024x512) into the native R16_UINT texture.
- * Full snapshot for now; 1c's dirty-rect sub-rect path (driven by hooking the
- * image ops) is a later efficiency step. Always available (reads PsyCross's
- * CPU mirror), even before the first scene. */
-static bool s_vram_dirty = false;   /* mirror refreshed; upload pending (in-frame) */
-static bool s_ref_dirty  = false;   /* readback refreshed; upload pending (in-frame) */
+/* ---- W2.4 native VRAM model: dirty-rect tracked mirror -------------------
+ * PsyCross notifies every write to its CPU VRAM mirror (LoadImage/MoveImage/
+ * ClearImage, DR_LOAD/DR_MOVE, framebuffer copyback, savestate restore) via
+ * PsyX_SetVRAMDirtyCallback with the effective post-clamp rect. We accumulate
+ * the rects, refresh ONLY those regions of our own mirror at present time,
+ * and upload only those regions (rhi_update_vram_rects) — replacing the old
+ * full 1 MiB GR_ReadVRAM copy + full-texture upload every present. The list
+ * overflows to a full-frame refresh (correct, just slower). The callback runs
+ * on the game thread synchronously with the write; the loop is
+ * single-threaded (game fiber + present interleave), so no locking. */
+#define NR_VRAM_MAX_RECTS 64
+static rhi_rect s_vram_rects[NR_VRAM_MAX_RECTS];
+static int      s_vram_nrects  = 0;
+static bool     s_vram_full    = true;    /* first sync = full snapshot */
+
+static void nr_vram_dirty_cb(int x, int y, int w, int h)
+{
+    /* Defensive clamp (GR_ClearVRAM can pass unmasked coords). */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > NR_VRAM_W) w = NR_VRAM_W - x;
+    if (y + h > NR_VRAM_H) h = NR_VRAM_H - y;
+    if (w <= 0 || h <= 0) return;
+    if (s_vram_full) return;
+    if (s_vram_nrects >= NR_VRAM_MAX_RECTS) { s_vram_full = true; return; }
+    s_vram_rects[s_vram_nrects++] = (rhi_rect){ x, y, w, h };
+}
+
+/* Pending upload set (drained by upload_synced_textures inside the frame). */
+static rhi_rect s_vram_up_rects[NR_VRAM_MAX_RECTS];
+static int      s_vram_up_n    = 0;
+static bool     s_vram_up_full = false;
+static bool     s_ref_dirty    = false;  /* readback refreshed; upload pending */
 
 static void sync_vram_texture(void)
 {
-    GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
-    /* Upload deferred to upload_synced_textures() INSIDE the frame (W2.2):
-     * an immediate rhi_update_vram here would be a blocking one-shot submit
-     * (vkQueueWaitIdle) every present. */
-    s_vram_dirty = true;
+    /* OPENPETE_VRAM_CENSUS: per-300-present dirty-traffic summary. */
+    static int s_census = -1;
+    if (s_census < 0) { const char* e = getenv("OPENPETE_VRAM_CENSUS"); s_census = (e && *e && *e != '0'); }
+    if (s_census) {
+        static long presents, rects, full, bytes; static int logged;
+        presents++;
+        if (s_vram_full) full++;
+        rects += s_vram_nrects;
+        for (int i = 0; i < s_vram_nrects; i++)
+            bytes += (long)s_vram_rects[i].w * s_vram_rects[i].h * 2;
+        if (presents % 300 == 0 && logged < 40) {
+            logged++;
+            fprintf(stderr, "[vram-census] presents=%ld rects=%.2f/present bytes=%.1fKB/present fullSyncs=%ld\n",
+                    presents, (double)rects / presents, (double)bytes / presents / 1024.0, full);
+        }
+    }
+    /* Refresh the owned mirror from PsyCross's, dirty regions only, and queue
+     * the same regions for in-frame upload (W2.2 staging-ring path). */
+    if (s_vram_full) {
+        GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
+        s_vram_up_full = true;
+        s_vram_up_n = 0;
+        s_vram_full = false;
+        s_vram_nrects = 0;
+        return;
+    }
+    for (int i = 0; i < s_vram_nrects; i++) {
+        const rhi_rect r = s_vram_rects[i];
+        for (int row = 0; row < r.h; row++)
+            GR_ReadVRAM(s_nr.vram_mirror + (size_t)(r.y + row) * NR_VRAM_W + r.x,
+                        r.x, r.y + row, r.w, 1);
+        if (!s_vram_up_full) {
+            if (s_vram_up_n >= NR_VRAM_MAX_RECTS) s_vram_up_full = true;
+            else s_vram_up_rects[s_vram_up_n++] = r;
+        }
+    }
+    s_vram_nrects = 0;
 }
 
 /* Record the pending VRAM/reference uploads into the CURRENT frame's command
@@ -1350,9 +1413,14 @@ static void sync_vram_texture(void)
  * frame cb — see rhi_update_vram's contract in rhi.h). */
 static void upload_synced_textures(void)
 {
-    if (s_vram_dirty) {
+    if (s_vram_up_full) {
         rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
-        s_vram_dirty = false;
+        s_vram_up_full = false;
+        s_vram_up_n = 0;
+    } else if (s_vram_up_n > 0) {
+        rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror,
+                              s_vram_up_rects, s_vram_up_n);
+        s_vram_up_n = 0;
     }
     if (s_ref_dirty) {
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);

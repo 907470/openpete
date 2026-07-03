@@ -1971,6 +1971,85 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
     update_image(dev, tex, pixels);
 }
 
+/* W2.4 dirty-rect sub-upload: N pre-clamped rects from the full-stride CPU
+ * mirror, packed sequentially into the staging slot, one barrier pair around
+ * one N-region vkCmdCopyBufferToImage. Falls back to a full upload when the
+ * packed payload wouldn't fit the (full-image-sized) staging slot. */
+#define RHI_VRAM_MAX_RECTS 96
+void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
+                           const uint16_t *mirror,
+                           const rhi_rect *rects, int nrects)
+{
+    if (!tex || !tex->staging || nrects <= 0) return;
+    if (nrects > RHI_VRAM_MAX_RECTS) { update_image(dev, tex, mirror); return; }
+    const size_t cap = (size_t)tex->width * tex->height * tex->bpp;
+    size_t need = 0;
+    for (int i = 0; i < nrects; i++) {
+        if (rects[i].w <= 0 || rects[i].h <= 0) continue;
+        need = (need + 3) & ~(size_t)3;
+        need += (size_t)rects[i].w * rects[i].h * tex->bpp;
+    }
+    if (need == 0) return;
+    if (need > cap) { update_image(dev, tex, mirror); return; }
+
+    VkBuffer src;
+    VkCommandBuffer cb;
+    uint8_t *map;
+    bool one_shot = !dev->frame_active;
+    if (one_shot) {
+        map = (uint8_t *)tex->staging->mapped;
+        src = tex->staging->buffer;
+        cb  = one_shot_begin(dev);
+    } else {
+        rhi_buffer **slot = &tex->staging_ring[dev->frame];
+        if (!*slot)
+            *slot = create_host_buffer(dev, cap,
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                       /*prefer_cached=*/false);
+        if (!*slot) return;
+        map = (uint8_t *)(*slot)->mapped;
+        src = (*slot)->buffer;
+        cb  = dev->cmd[dev->frame];
+    }
+
+    image_barrier(cb, tex->image, tex->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy regions[RHI_VRAM_MAX_RECTS];
+    uint32_t nregions = 0;
+    size_t off = 0;
+    for (int i = 0; i < nrects; i++) {
+        const int rx = rects[i].x, ry = rects[i].y, rw = rects[i].w, rh = rects[i].h;
+        if (rw <= 0 || rh <= 0) continue;
+        off = (off + 3) & ~(size_t)3;               /* bufferOffset: 4-byte aligned */
+        uint8_t *dst = map + off;
+        const size_t row = (size_t)rw * tex->bpp;
+        for (int r = 0; r < rh; r++)
+            memcpy(dst + (size_t)r * row,
+                   (const uint8_t *)mirror + (((size_t)(ry + r) * tex->width + rx) * tex->bpp),
+                   row);
+        regions[nregions] = (VkBufferImageCopy){
+            .bufferOffset = off,
+            .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+            .imageOffset = { rx, ry, 0 },
+            .imageExtent = { (uint32_t)rw, (uint32_t)rh, 1 },
+        };
+        nregions++;
+        off += row * rh;
+    }
+    vkCmdCopyBufferToImage(cb, src, tex->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nregions, regions);
+    image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    if (one_shot) one_shot_end(dev, cb);
+    tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
     update_image(dev, tex, pixels);
