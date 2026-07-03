@@ -987,6 +987,41 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
     (void)a1; (void)a2;
 }
 
+/* Native derivation of the shared portal-dome rotation matrix (RenderPortals
+ * func_80050BD0 prologue, computed once per frame on its STACK — unreadable at
+ * leaf-hook time, so mirror it): M = RotX(cam.pitch(+0x4E) − D_PORTAL_PITCH)
+ * × RotY(cam.head(+0x50) + D_PORTAL_YAW) × RotZ(cam.roll(+0x4C)), game angle
+ * units 2048/circle, Q12 components. Float sin/cos per the float policy; the
+ * validation probe (OPENPETE_PORTAL_MAT_DBG) measures it against the matrix
+ * the .s leaves in the GTE on dome frames. */
+static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
+    double TAU = 6.283185307179586;
+    /* Game angle units: 4096/circle (the game's Cos/Sin table domain). The
+     * pitch matrix carries the camera convention's Y-ASPECT bake: its middle
+     * ROW is scaled 2560/4096 = 5/8 (the same non-orthonormal structure as
+     * g_Camera's matrix). Solved
+     * against live GTE matrices at mc f2601/f2945 (element-exact). */
+    double a1 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16)
+               - (double)(int32_t)cpu->read_word(D_PORTAL_PITCH)) * TAU / 4096.0;   /* +0x4E − pitch */
+    double a2 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu)
+               + (double)(int32_t)cpu->read_word(D_PORTAL_YAW)) * TAU / 4096.0;     /* +0x50 + yaw   */
+    double a0 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) & 0xFFFFu)) * TAU / 4096.0; /* +0x4C roll */
+    double c1 = cos(a1), s1 = sin(a1), c2 = cos(a2), s2 = sin(a2), c0 = cos(a0), s0 = sin(a0);
+    double A = 2560.0 / 4096.0;   /* the Y-row aspect bake */
+    double X[3][3] = {{1,0,0},{0,A*c1,-A*s1},{0,s1,c1}};
+    double Y[3][3] = {{c2,0,s2},{0,1,0},{-s2,0,c2}};
+    double Z[3][3] = {{c0,s0,0},{-s0,c0,0},{0,0,1}};
+    double T[3][3], R[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        T[i][j] = X[i][0]*Y[0][j] + X[i][1]*Y[1][j] + X[i][2]*Y[2][j];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        R[i][j] = T[i][0]*Z[0][j] + T[i][1]*Z[1][j] + T[i][2]*Z[2][j];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        M[i][j] = (int)lround(R[i][j] * 4096.0);
+}
+
+#include "features/no_lod.h"   /* openpete_no_lod: --no-lod always renders the geometric dome */
+
 /* ---- dispatch hooks ------------------------------------------------- */
 static int s_want_dump_this_frame(void) {
     return portal_dump_enabled() && openpete_frame >= portal_dump_frame();
@@ -1021,13 +1056,33 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     if (feed) {
         openpete_native_scene_begin_frame(openpete_frame);  /* append; cyclorama/world already began it */
         int is_dome = (kind != PORTAL_FLAT);
+        /* TEMP: derived-vs-GTE dome matrix validation */
+        { static int md=-1; if(md<0){const char*e=getenv("OPENPETE_PORTAL_MAT_DBG");md=(e&&*e&&*e!='0');}
+          if (md && is_dome) { int M[3][3], D[3][3]; read_gte_rotmatrix(cpu, M);
+            derive_dome_matrix(cpu, D);
+            int worst=0; for(int i2=0;i2<3;i2++)for(int j2=0;j2<3;j2++){int d=M[i2][j2]-D[i2][j2];if(d<0)d=-d;if(d>worst)worst=d;}
+            fprintf(stderr, "[pmat f=%u] gte=[%d %d %d|%d %d %d|%d %d %d] drv=[%d %d %d|%d %d %d|%d %d %d] worst=%d "
+              "raw c4C=%d c4E=%d c50=%d yaw=%d pitch=%d\n",
+              openpete_frame,
+              M[0][0],M[0][1],M[0][2],M[1][0],M[1][1],M[1][2],M[2][0],M[2][1],M[2][2],
+              D[0][0],D[0][1],D[0][2],D[1][0],D[1][1],D[1][2],D[2][0],D[2][1],D[2][2],worst,
+              (int)(int16_t)(cpu->read_word(G_CAMERA+0x4Cu)&0xFFFFu),
+              (int)(int16_t)(cpu->read_word(G_CAMERA+0x4Cu)>>16),
+              (int)(int16_t)(cpu->read_word(G_CAMERA+0x50u)&0xFFFFu),
+              (int)(int32_t)cpu->read_word(D_PORTAL_YAW),
+              (int)(int32_t)cpu->read_word(D_PORTAL_PITCH)); } }
         /* The blended-medium leaf (func_80050240) is the cross-dissolve: it draws
          * the SAME dome as F4BC but runs DPCS depth-cue, fading every colour toward
          * the GTE far-colour FC (D_800757D4) by IR0/4096 (D_8007575C). Far = IR0≈4096
          * (faded fully to the flat colour, the FEA0 preview); close = IR0≈0 (full
          * dome). Apply the same fade to its backstop fill so the gaps match. */
         uint32_t fog = 0; double fog_t = 0.0;
-        if (kind == PORTAL_BLENDED) {
+        static int s_nolod_dome = -1;   /* kill switch: OPENPETE_NOLOD_PORTAL_DOME=0 */
+        if (s_nolod_dome < 0) { const char* e = getenv("OPENPETE_NOLOD_PORTAL_DOME");
+                                s_nolod_dome = !(e && *e == '0'); }
+        if (kind == PORTAL_BLENDED && !(openpete_no_lod && s_nolod_dome)) {
+            /* --no-lod: skip the medium-range cross-dissolve toward the flat
+             * colour — the dome renders full-colour at any distance. */
             fog   = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF;
             fog_t = (double)(cpu->read_word(D_FOG_FACTOR) & 0xFFFF) / 4096.0;
             if (fog_t > 1.0) fog_t = 1.0;
@@ -1045,6 +1100,51 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
          * the actors. */
         feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, 0, fog, fog_t);
+        /* --no-lod always-dome: the .s renders far portals as a FLAT colour and
+         * only projects the geometric destination-sky dome when close (the
+         * distance crossfade). Under --no-lod render the dome at ANY distance:
+         * skybox from the owning portal (p+0x00), the shared dome rotation
+         * derived natively (derive_dome_matrix — RenderPortals computes it on
+         * its own stack, unreachable at leaf time), fed through the same
+         * GTE-ctrl path the sub-tick replay uses. The flat quad above stays as
+         * the dome's backstop, exactly like the close-range FEA0 backstop. */
+        int forced_dome = 0; uint32_t forced_sb = 0; int forced_M[3][3];
+        /* Close-backstop test (exact): the close FEA0 flat carries a0 =
+         * m_Skybox+0x10 of some portal; far/medium flats carry a stack/global
+         * colour ptr (which can land inside the loose is_skybox_a0 RANGE —
+         * the PSX stack lives at 0x801FFxxx — so match the portal list). */
+        int a0_is_close_backstop = 0;
+        {
+            uint32_t np2 = cpu->read_word(G_PORTALCOUNT); if (np2 > 6) np2 = 6;
+            for (uint32_t i2 = 0; i2 < np2; i2++) {
+                uint32_t p2 = cpu->read_word(G_PORTALS + i2 * 4); if (!p2) continue;
+                uint32_t sb2 = cpu->read_word(p2 + 0x00);
+                if (sb2 && (sb2 == a0 || sb2 + 0x10 == a0)) { a0_is_close_backstop = 1; break; }
+            }
+        }
+        if (openpete_no_lod && s_nolod_dome && kind == PORTAL_FLAT && !a0_is_close_backstop) {
+            int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
+            int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
+            uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
+            uint32_t sb = fp ? cpu->read_word(fp + 0x00) : 0;
+            { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
+              if (fd) fprintf(stderr, "[nolod-dome f=%u] a0=%08X fp=%08X sb=%08X\n", openpete_frame, a0, fp, sb); }
+            if (sb >= 0x80010000u && sb < 0x80200000u) {
+                derive_dome_matrix(cpu, forced_M);
+                uint32_t save_gte[5];
+                for (int i = 0; i < 5; i++) save_gte[i] = cpu->gte_ctrl[i];
+                cpu->gte_ctrl[0] = (uint32_t)(uint16_t)forced_M[0][0] | ((uint32_t)(uint16_t)forced_M[0][1] << 16);
+                cpu->gte_ctrl[1] = (uint32_t)(uint16_t)forced_M[0][2] | ((uint32_t)(uint16_t)forced_M[1][0] << 16);
+                cpu->gte_ctrl[2] = (uint32_t)(uint16_t)forced_M[1][1] | ((uint32_t)(uint16_t)forced_M[1][2] << 16);
+                cpu->gte_ctrl[3] = (uint32_t)(uint16_t)forced_M[2][0] | ((uint32_t)(uint16_t)forced_M[2][1] << 16);
+                cpu->gte_ctrl[4] = (uint32_t)(uint16_t)forced_M[2][2];
+                int fret = feed_portal_dome(cpu, sb, 0, /*canonical=*/1, 0, 0.0);
+                { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
+                  if (fd) fprintf(stderr, "[nolod-dome f=%u] ret=%d\n", openpete_frame, fret); }
+                if (fret) { forced_dome = 1; forced_sb = sb; }
+                for (int i = 0; i < 5; i++) cpu->gte_ctrl[i] = save_gte[i];
+            }
+        }
         if (is_dome && is_skybox_a0)
             feed_portal_dome(cpu, a0, 0, /*canonical=*/1, fog, fog_t);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
@@ -1060,15 +1160,16 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->portal        = fp;
                 c->flat_a0       = a0;
                 c->flat_rgb      = portal_flat_raw_rgb(cpu, a0);   /* raw, pre-fog */
-                c->is_dome       = (is_dome && is_skybox_a0);
-                c->skybox        = c->is_dome ? a0 : 0;
+                c->is_dome       = (is_dome && is_skybox_a0) || forced_dome;
+                c->skybox        = (is_dome && is_skybox_a0) ? a0 : forced_sb;
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
                 /* Snapshot the shared dome matrix (same for every dome leaf this
                  * frame); the prev copy was rolled in on_80050BE0. */
-                if (c->is_dome) { read_gte_rotmatrix(cpu, s_dome_curr); s_dome_curr_valid = 1; }
+                if (forced_dome) { memcpy(s_dome_curr, forced_M, sizeof s_dome_curr); s_dome_curr_valid = 1; }
+                else if (c->is_dome) { read_gte_rotmatrix(cpu, s_dome_curr); s_dome_curr_valid = 1; }
             }
         }
     }
