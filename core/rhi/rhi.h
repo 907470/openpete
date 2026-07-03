@@ -70,7 +70,15 @@ bool rhi_begin_frame(rhi_device *dev);
 
 /* Offscreen color pass. For 1a, begin+end with nothing drawn between
  * clears the offscreen target to the given (linear, 0..1) color. From 1b
- * on, draw calls are recorded between begin and end. */
+ * on, draw calls are recorded between begin and end.
+ *
+ * off_image is a SINGLE instance shared by all frames in flight — an
+ * explicit serialization point (W2.2 decision, not an oversight): frame
+ * N+1's clear-on-load waits frame N's reads via the render pass's
+ * EXTERNAL src dependency, so back-to-back frames serialize on it. Ring
+ * it per frame-in-flight if that dependency ever shows up as the
+ * bottleneck (it also backs rhi_read_offscreen and the swapchain blit,
+ * so a ring must thread the current slot through both). */
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a);
 void rhi_end_offscreen(rhi_device *dev);
 
@@ -184,8 +192,22 @@ typedef struct {
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
 } rhi_pipeline_desc;
 
-/* Host-visible vertex buffer (map-and-memcpy updates). */
+/* Host-visible vertex buffer (map-and-memcpy updates).
+ *
+ * rhi_create_vertex_buffer — SINGLE instance. Safe only for content that is
+ * static after init, or rewritten under rhi_wait_idle (rare re-layout): a
+ * per-present rewrite would race the frame two presents ago, whose GPU read
+ * is only fenced at rhi_begin_frame (write-after-read tear).
+ *
+ * rhi_create_vertex_buffer_dynamic — per-frame-in-flight RING (W2.2). For
+ * buffers rewritten EVERY present: update writes and bind reads the current
+ * frame's slot, which rhi_begin_frame's fence has proven idle. Contract: the
+ * content must be written on every frame that binds it (a slot written once
+ * and bound on a later frame of the other parity reads that parity's stale
+ * slot). rhi_update_buffer outside an active frame fills ALL slots (init /
+ * under-wait-idle updates stay parity-safe). */
 rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
+rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes);
 void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
 void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 
@@ -201,7 +223,14 @@ void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
  * extent; the renderer keeps a CPU mirror and uploads from it. */
 rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
 /* Upload the whole CPU mirror (width*height uint16 PSX pixels). Sub-rect
- * uploads (for runtime LoadImage streaming) arrive with 1c. */
+ * uploads (for runtime LoadImage streaming) arrive with the W2.4 native VRAM
+ * write model (dirty-rect tracking).
+ *
+ * Upload semantics (W2.2, also rhi_update_rgba8): if called while a frame is
+ * being recorded (after rhi_begin_frame), the copy is appended to THAT
+ * frame's command buffer through a per-frame staging ring — no GPU stall.
+ * Callers MUST then invoke it before the frame's first render pass. Outside
+ * a frame it falls back to the blocking one-shot submit (init-time). */
 void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
 
 /* An RGBA8 (R8G8B8A8_UNORM, bytes R,G,B,A) sampled image — e.g. a frame read

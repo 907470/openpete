@@ -160,6 +160,14 @@ struct rhi_buffer {
     VkDeviceMemory memory;
     void          *mapped;
     VkDeviceSize   size;
+    /* Dynamic per-frame ring (rhi_create_vertex_buffer_dynamic): the buffer
+     * holds RHI_FRAMES_IN_FLIGHT slots of `ring_stride` bytes; update writes
+     * and bind reads the CURRENT frame's slot, so a per-present rewrite can
+     * never race a previous in-flight frame's GPU read (the frame's fence was
+     * waited in rhi_begin_frame before its slot is reused). 0 = single
+     * (static) buffer. */
+    VkDeviceSize   ring_stride;
+    rhi_device    *dev;        /* for frame indexing in rhi_update_buffer */
 };
 
 struct rhi_pipeline {
@@ -173,6 +181,13 @@ struct rhi_texture {
     VkImageView     view;
     VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
     rhi_buffer     *staging;   /* host-visible upload buffer (NULL for render targets) */
+    /* Per-frame staging ring for IN-FRAME uploads (rhi_update_vram/rgba8
+     * called between rhi_begin_frame and the first render pass): the copy is
+     * recorded into the frame's own command buffer, so the previous frame may
+     * still be reading its slot's staging — one slot per frame in flight,
+     * created lazily on first in-frame update. `staging` stays the one-shot
+     * (init-time, blocking) path. */
+    rhi_buffer     *staging_ring[RHI_FRAMES_IN_FLIGHT];
     uint32_t        width, height;
     uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
@@ -1432,6 +1447,7 @@ static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
     }
     vkBindBufferMemory(dev->device, b->buffer, b->memory, 0);
     vkMapMemory(dev->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped);
+    b->dev = dev;
     return b;
 }
 
@@ -1441,11 +1457,35 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
                               /*prefer_cached=*/false);
 }
 
+rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
+{
+    rhi_buffer *b = create_host_buffer(dev, bytes * RHI_FRAMES_IN_FLIGHT,
+                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                       /*prefer_cached=*/false);
+    if (b) b->ring_stride = (VkDeviceSize)bytes;
+    return b;
+}
+
 void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
 {
     if (!buf || !buf->mapped) return;
-    if ((VkDeviceSize)bytes > buf->size) bytes = (size_t)buf->size;
-    memcpy(buf->mapped, data, bytes);
+    VkDeviceSize cap = buf->ring_stride ? buf->ring_stride : buf->size;
+    if ((VkDeviceSize)bytes > cap) bytes = (size_t)cap;
+    if (!buf->ring_stride) {
+        memcpy(buf->mapped, data, bytes);
+        return;
+    }
+    if (buf->dev && buf->dev->frame_active) {
+        /* In-frame: write only the current frame's slot (its fence was waited
+         * in rhi_begin_frame, so no in-flight GPU read can see this write). */
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * buf->dev->frame,
+               data, bytes);
+    } else {
+        /* Outside a frame (init / rare re-layout under rhi_wait_idle): fill
+         * every slot so any frame parity binds the same content. */
+        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+            memcpy((uint8_t *)buf->mapped + buf->ring_stride * i, data, bytes);
+    }
 }
 
 void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
@@ -1876,10 +1916,36 @@ void rhi_clear_stencil(rhi_device *dev)
 static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
     if (!tex || !tex->staging) return;
-    memcpy(tex->staging->mapped, pixels,
-           (size_t)tex->width * tex->height * tex->bpp);
+    const size_t bytes = (size_t)tex->width * tex->height * tex->bpp;
 
-    VkCommandBuffer cb = one_shot_begin(dev);
+    /* In-frame path (W2.2): a frame is being recorded, so append the upload
+     * to ITS command buffer instead of a blocking one-shot submit — the old
+     * per-present `vkQueueWaitIdle` drained the whole GPU every present and
+     * defeated the frames-in-flight design. MUST be called before the
+     * frame's first render pass (callers upload right after
+     * rhi_begin_frame). Staging is a per-frame ring slot: the previous
+     * frame's transfer may still be reading its own slot, but THIS frame's
+     * slot was fenced by rhi_begin_frame. Barriers are recorded per frame in
+     * submission order, so layout tracking stays a plain CPU variable. */
+    VkBuffer src;
+    VkCommandBuffer cb;
+    bool one_shot = !dev->frame_active;
+    if (one_shot) {
+        memcpy(tex->staging->mapped, pixels, bytes);
+        src = tex->staging->buffer;
+        cb  = one_shot_begin(dev);
+    } else {
+        rhi_buffer **slot = &tex->staging_ring[dev->frame];
+        if (!*slot)
+            *slot = create_host_buffer(dev, bytes,
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                       /*prefer_cached=*/false);
+        if (!*slot) return;
+        memcpy((*slot)->mapped, pixels, bytes);
+        src = (*slot)->buffer;
+        cb  = dev->cmd[dev->frame];
+    }
+
     image_barrier(cb, tex->image, tex->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1889,14 +1955,14 @@ static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
         .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
         .imageExtent = { tex->width, tex->height, 1 },
     };
-    vkCmdCopyBufferToImage(cb, tex->staging->buffer, tex->image,
+    vkCmdCopyBufferToImage(cb, src, tex->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    one_shot_end(dev, cb);
+    if (one_shot) one_shot_end(dev, cb);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -2197,6 +2263,8 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     if (tex->depth_set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->depth_set);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
     if (tex->staging) rhi_destroy_buffer(dev, tex->staging);
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+        if (tex->staging_ring[i]) rhi_destroy_buffer(dev, tex->staging_ring[i]);
     if (tex->view)    vkDestroyImageView(dev->device, tex->view, NULL);
     if (tex->image)   vkDestroyImage(dev->device, tex->image, NULL);
     if (tex->mem)     vkFreeMemory(dev->device, tex->mem, NULL);
@@ -2491,7 +2559,8 @@ void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
 {
     if (!dev->frame_active) return;
-    VkDeviceSize off = 0;
+    /* Dynamic ring buffers bind the current frame's slot (see rhi_buffer). */
+    VkDeviceSize off = buf->ring_stride * dev->frame;
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 1, &buf->buffer, &off);
 }
 

@@ -1175,18 +1175,23 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
     rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
+    /* Per-present-rewritten buffers (scene/prepass/overlay) are frame-in-flight
+     * RINGS (W2.2): their every-present rhi_update_buffer used to race the
+     * frame two presents ago, previously masked only by the per-present VRAM
+     * upload's vkQueueWaitIdle drain. panels/diff_quad/ovl_quad/fs_quad update
+     * rarely (init / re-layout) under rhi_wait_idle and stay single. */
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
-    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
-    rhi_buffer   *overlay_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
+    rhi_buffer   *overlay_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
-    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
@@ -1325,10 +1330,32 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h)
  * Full snapshot for now; 1c's dirty-rect sub-rect path (driven by hooking the
  * image ops) is a later efficiency step. Always available (reads PsyCross's
  * CPU mirror), even before the first scene. */
+static bool s_vram_dirty = false;   /* mirror refreshed; upload pending (in-frame) */
+static bool s_ref_dirty  = false;   /* readback refreshed; upload pending (in-frame) */
+
 static void sync_vram_texture(void)
 {
     GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
-    rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
+    /* Upload deferred to upload_synced_textures() INSIDE the frame (W2.2):
+     * an immediate rhi_update_vram here would be a blocking one-shot submit
+     * (vkQueueWaitIdle) every present. */
+    s_vram_dirty = true;
+}
+
+/* Record the pending VRAM/reference uploads into the CURRENT frame's command
+ * buffer. Call right after a successful rhi_begin_frame, BEFORE the frame's
+ * first render pass (the rhi appends transfer commands + barriers to the
+ * frame cb — see rhi_update_vram's contract in rhi.h). */
+static void upload_synced_textures(void)
+{
+    if (s_vram_dirty) {
+        rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
+        s_vram_dirty = false;
+    }
+    if (s_ref_dirty) {
+        rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
+        s_ref_dirty = false;
+    }
 }
 
 /* Pull PsyCross's finished frame from its present FBO into s_nr.ref_tex.
@@ -1363,7 +1390,7 @@ static bool sync_reference_texture(void)
     if (!GR_ReadPresentSceneRGBA(s_nr.readback, pw, ph, NR_GL_RGBA))
         return false;
 
-    rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
+    s_ref_dirty = true;   /* upload deferred to upload_synced_textures() */
     return true;
 }
 
@@ -2990,6 +3017,9 @@ static void ensure_ovl_ss(void) {
         rhi_vertex q[6];
         build_panel(q, -1.0f + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
                     rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f);
+        /* Single (non-ring) VB rewritten only on window resize: an in-flight
+         * frame may still read it — fully sync first (same as panels_vb). */
+        rhi_wait_idle(s_nr.dev);
         rhi_update_buffer(s_nr.ovl_quad_vb, q, sizeof(q));
         s_nr.ovl_quad_win_w = s_nr.win_w; s_nr.ovl_quad_win_h = s_nr.win_h;
     }
@@ -3396,6 +3426,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
+     * — must precede the first render pass (the depth pre-pass below). */
+    upload_synced_textures();
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) — must record
@@ -3498,6 +3531,7 @@ int openpete_native_render_screenshot_all(const char *base)
      * The offscreen + present are kept valid with a plain bg clear so the window
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
     if (!rhi_begin_frame(s_nr.dev)) return 1;
+    upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
     native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
     rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
     draw_native_scene(true);
