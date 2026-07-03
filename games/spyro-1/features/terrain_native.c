@@ -307,41 +307,81 @@ static void build_captured_colors(void) {
 }
 
 /* Native per-vertex terrain colour: RGB888 read from the sector colour arrays +
- * the per-vertex DPCS depth-cue fog (§9/§10, asm-derived from r_environment.s
- * 0x80026DF0-0x80026E6C). The HP colour block is TWO 4B-stride arrays
- * [near0..][far0..]; `idx` is the pre-×4 byte offset from face word1. The DPCS
- * blend is out = seed + IR0·(FC-seed) with seed=far ($s0[idx]), FC=near
- * ($t7[idx]) → out = lerp(far, near, f), f = clamp((fogRef - viewZ)/4096, 0, 1):
- * near (small viewZ) keeps the near colour, far recedes to the far colour. viewZ
- * is the .s fog SZ3, which equals our m3 DIRECTLY (scale 1) — empirically
- * validated (fogscale=1 → 87-92% colour-exact across scenes; ×4 → 25-67%). The
- * earlier "world/16 ×4" was wrong: the projection matrix already yields m3 in the
- * SZ3 scale, and the geometry A/B can't catch an absolute-m3 scale error because
- * SX = m1·H/m3 cancels it — fog is the first consumer of absolute m3. Colour words
- * are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP (no-HP 0x4000
- * sectors) is a single 4B colour, no fog. */
-static double s_fogscale = -1.0;    /* viewZ = fogscale·m3; 1.0 (m3 is already SZ3), env-tunable */
+ * the per-vertex DPCS depth-cue fog. The HP colour block is TWO 4B-stride
+ * arrays [near0..][far0..]; `idx` is the pre-×4 byte offset from face word1.
+ *
+ * The .s decode (generated C block_80026DF0-80026E6C), PROVEN against the
+ * title-vista captured prims (W2.3 fog A/B, 2026-07-03: implied-ir0 regression
+ * over 546 matched fog-band verts fits residual 0, MAD 26):
+ *   ir0 = fogRef - SZ,  SZ = 4·m3 (native V is world/16; the .s HP walk feeds
+ *                                  world/4, so the .s SZ3 = 4× our m3);
+ *   ir0 >= 4096 -> NEAR colour raw (block_80026FB4);
+ *   ir0 <= 0    -> FAR colour raw (block_80026FAC; the .s DOES fully fog);
+ *   else GTE DPCS (cmd 0x10): seed RGBC = FAR word ($s0[idx]), far-colour regs
+ *   = NEAR word 12-bit-expanded ($t7[idx]) -> out = far + ir0·(near-far) with
+ *   the GTE's truncating >>12 >>4 per channel (ngte_dpcs_ch).
+ * The old claim "scale 1 validated, ×4 25-67%" is RETRACTED (it predates the
+ * exact decode; the float+0.5 lerp at scale 1 pins f=1 across the fog band).
+ *
+ * SHIPPED DEFAULT is still the old float+0.5 lerp at fogscale 1
+ * (under-fogged): enabling the exact decode WORSENS global fidelity vs
+ * PsyCross on the vista (mean 9.15→13.14) because the native tier design
+ * draws HP at ALL distances while the .s hands off to LP at the LOD
+ * boundary — the beyond-LOD zone then shows fully-fogged HP whose look
+ * doesn't match what the .s draws there (tier/fogbias interaction,
+ * unresolved; folds into the W2.6(c) LP/HP tier work). Flip on with
+ * OPENPETE_TERRAIN_FOGDPCS=1 (implies fogscale 4 unless overridden);
+ * OPENPETE_TERRAIN_LOD_HANDOFF=1 is the .s-handoff experiment (sector-level,
+ * incomplete — recovered only ~0.9 of the 4.0 mean regression).
+ * Colour words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP
+ * (no-HP 0x4000 sectors) is a single 4B colour, no fog. */
+static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
+static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
+static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF (experiment) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
+extern int s_fogdbg;
+static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int fogRef);
+static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3, int fogRef);
+static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int fogRef) {
+    uint32_t out = terrain_fog_blend_inner(nearC, farC, m3, fogRef);
+    static int s_fs_n;
+    if (s_fogdbg && s_fs_n < 6000) {
+        fprintf(stderr, "[fogsample] m3=%.1f fogRef=%d near=%06X far=%06X out=%06X\n",
+                m3, fogRef, nearC, farC, out);
+        s_fs_n++;
+    }
+    return out;
+}
+static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3, int fogRef) {
+    if (s_fogdpcs) {                      /* GTE-exact path (proven; not yet default) */
+        int ir0 = fogRef - (int)(m3 * s_fogscale);
+        if (ir0 >= 4096) return nearC;
+        if (ir0 <= 0)    return farC;
+        int r = ngte_dpcs_ch((int)(farC & 0xFF),          (int)((nearC & 0xFF) << 4),         ir0);
+        int g = ngte_dpcs_ch((int)((farC >> 8) & 0xFF),   (int)(((nearC >> 8) & 0xFF) << 4),  ir0);
+        int b = ngte_dpcs_ch((int)((farC >> 16) & 0xFF),  (int)(((nearC >> 16) & 0xFF) << 4), ir0);
+        return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+    }
+    /* Shipped default: the float+0.5 lerp at fogscale 1 — under-fogs vs the .s
+     * (f pins to 1 across most of the fog band) but its look co-evolved with
+     * the tier coverage below; see the header comment for why the exact decode
+     * is gated until the LP/HP handoff work lands. */
+    double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
+    if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
+    int nr = (int)(nearC & 0xFF), ng = (int)((nearC >> 8) & 0xFF), nb = (int)((nearC >> 16) & 0xFF);
+    int fr = (int)(farC & 0xFF),  fg = (int)((farC >> 8) & 0xFF),  fb = (int)((farC >> 16) & 0xFF);
+    int r = (int)((double)fr + f * (nr - fr) + 0.5);
+    int g = (int)((double)fg + f * (ng - fg) + 0.5);
+    int b = (int)((double)fb + f * (nb - fb) + 0.5);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+}
 static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
                               uint32_t nearBase, uint32_t farBase,
                               int idx, double m3, int fogRef) {
     if (noHP) return rd(cpu, lpBase + (uint32_t)idx) & 0xFFFFFFu;
     uint32_t nearC = rd(cpu, nearBase + (uint32_t)idx) & 0xFFFFFFu;
     uint32_t farC  = rd(cpu, farBase  + (uint32_t)idx) & 0xFFFFFFu;
-    double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
-    if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
-    int nr = nearC & 0xFF, ng = (nearC >> 8) & 0xFF, nb = (nearC >> 16) & 0xFF;
-    int fr = farC  & 0xFF, fg = (farC  >> 8) & 0xFF, fb = (farC  >> 16) & 0xFF;
-    extern int s_fogdbg; static int s_fogdbg_n;
-    if (s_fogdbg && m3 > 600.0 && s_fogdbg_n < 24) {
-        fprintf(stderr, "[fogdbg] m3=%.0f f=%.3f fogRef=%d  near=%06X far=%06X  idx=%d\n",
-                m3, f, fogRef, nearC, farC, idx);
-        s_fogdbg_n++;
-    }
-    int r = (int)((double)fr + f * (nr - fr) + 0.5);
-    int g = (int)((double)fg + f * (ng - fg) + 0.5);
-    int b = (int)((double)fb + f * (nb - fb) + 0.5);
-    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+    return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
 
 /* Per-sector local projected vertex (indexed by face vertex index). Carries the
@@ -801,7 +841,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     return C;
 }
 
-/* Host-pointer terrain colour (fog lerp identical to terrain_color; the debug
+/* Host-pointer terrain colour (DPCS blend identical to terrain_color; the debug
  * fog print stays on the cpu-path variant only). */
 static inline uint32_t t_le32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* nearp,
@@ -809,14 +849,7 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
     if (noHP) return t_le32(lp + idx) & 0xFFFFFFu;
     uint32_t nearC = t_le32(nearp + idx) & 0xFFFFFFu;
     uint32_t farC  = t_le32(farp  + idx) & 0xFFFFFFu;
-    double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
-    if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
-    int nr = nearC & 0xFF, ng = (nearC >> 8) & 0xFF, nb = (nearC >> 16) & 0xFF;
-    int fr = farC  & 0xFF, fg = (farC  >> 8) & 0xFF, fb = (farC  >> 16) & 0xFF;
-    int r = (int)((double)fr + f * (nr - fr) + 0.5);
-    int g = (int)((double)fg + f * (ng - fg) + 0.5);
-    int b = (int)((double)fb + f * (nb - fb) + 0.5);
-    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+    return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
 
 /* Walk every VISIBLE sector (D_800771C8[i]==0xFF — the .s's own canonical
@@ -1005,6 +1038,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
         s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
+    if (s_fogdpcs < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
+        s_fogdpcs = (e && *e && *e != '0');
+        /* The exact decode wants the exact scale: default fogscale to 4 when
+         * DPCS is enabled and no explicit fogscale override was given. */
+        if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE")) s_fogscale = 4.0;
+    }
+    /* EXPERIMENT (W2.3 fog A/B): OPENPETE_TERRAIN_LOD_HANDOFF=1 mirrors the .s
+     * LP/HP LOD handoff — HP faces are dropped once fully beyond the fog/LOD
+     * distance (ir0 <= 0 at every corner) and LP substitutes there, instead of
+     * the native default "HP at all distances" (no pop-in). */
+    if (s_lod_handoff < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_LOD_HANDOFF");
+        s_lod_handoff = (e && *e && *e != '0');
+    }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
         s_nearz = (e && *e) ? atof(e) : 1.0;
@@ -1090,6 +1138,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * 0x2000=no-LP, 0x8000=force-LP.) */
         int drawHP = !(flags & 0x4000) && nHpF > 0;
         int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
+        /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
+         * the LOD distance (far-only; gated per face below). */
+        int lpFarOnly = 0;
+        if (s_lod_handoff && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
+            drawLP = 1; lpFarOnly = 1;
+        }
 
         s_walk_sectors++;
 
@@ -1168,6 +1222,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
             int front = (nclip > 0.0);
+            if (s_lod_handoff) {
+                int nc = quad ? 4 : 3, beyond = 0;
+                const int ci[4] = { i0, i1, i2, i3 };
+                for (int q2 = 0; q2 < nc; q2++)
+                    if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
+                if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
+                if (passLP && lpFarOnly && beyond == 0) { continue; } /* LP far-only */
+            }
             /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
              * boundary that separates the .s's deferred cells (queue oracle) from
              * the rest, to calibrate face_is_near's scale/threshold. */
@@ -1506,10 +1568,10 @@ static void terrain_compare(void) {
                 if (de == 0) nexact++;
                 if (dr <= 4 && dg <= 4 && db <= 4) nnear4++;
             }
-            if (s_fogdbg && s_cvz[i] > 1024.0 && de > 30) {  /* fogged, large-err samples */
-                static int pr; if (pr < 20) { pr++;
-                    fprintf(stderr, "[colcmp] m3=%.0f native=%06X psx=%06X  dRGB=(%d,%d,%d)\n",
-                            s_cvz[i], n, crgb, dr, dg, db); }
+            if (s_fogdbg) {
+                static int pr; if (pr < 6000) { pr++;
+                    fprintf(stderr, "[colcmp] xy=(%.0f,%.0f) m3=%.1f native=%06X psx=%06X  dRGB=(%d,%d,%d)\n",
+                            s_cvx[i], s_cvy[i], s_cvz[i], n, crgb, dr, dg, db); }
             }
         }
         if (matched)
