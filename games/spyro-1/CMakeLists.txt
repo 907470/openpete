@@ -91,6 +91,7 @@ add_executable(openpete-spyro1
     features/render_paths.c
     features/render_decouple.c
     features/polybuf.c
+    features/native_gte.c
     features/cyclorama_native.c
     features/moby_native.c
     features/spyro_native.c

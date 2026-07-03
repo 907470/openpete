@@ -40,6 +40,7 @@
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "spyro1_symbols.gen.h"
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
@@ -53,8 +54,6 @@ typedef struct { int x, y, z, f; } tpoint;
 typedef struct { int count; tpoint pt[MAX_PTS]; } tset;
 static tset s_sets[MAX_SETS];
 static int  s_nsets;                 /* sets captured at the last canonical frame */
-
-static int s16i(uint32_t v) { return (int)(int16_t)(uint16_t)v; }
 
 /* Snapshot the tracer-point gamestate before the .s drains it. */
 static void tracer_snapshot(CPUState* cpu) {
@@ -79,16 +78,15 @@ static void tracer_snapshot(CPUState* cpu) {
 
 /* func_80017B48 in float: world point -> screen (sx,sy) + true full-scale
  * view-Z. Permuted/negated axes; pure float (no GTE int16 clamp / div cap). */
-static int tracer_project(const double R[3][3], const double cam[3],
+static int tracer_project(const int R[3][3], const double cam[3],
                          double ofx, double ofy, double H,
                          int X, int Y, int Z,
                          double* sx, double* sy, double* vz) {
     double V0 = cam[1] - Y;   /* camY - Y */
     double V1 = cam[2] - Z;   /* camZ - Z */
     double V2 = X - cam[0];   /* X - camX */
-    double m1 = (R[0][0]*V0 + R[0][1]*V1 + R[0][2]*V2) / 4096.0;
-    double m2 = (R[1][0]*V0 + R[1][1]*V1 + R[1][2]*V2) / 4096.0;
-    double m3 = (R[2][0]*V0 + R[2][1]*V1 + R[2][2]*V2) / 4096.0;
+    double m1, m2, m3;
+    ngte_mac(R, V0, V1, V2, &m1, &m2, &m3);
     *vz = m3;
     if (m3 <= 1.0) { *sx = *sy = 0.0; return 0; }   /* at/behind camera */
     *sx = ofx + m1 * H / m3;
@@ -113,13 +111,8 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
  * sub-ticks) and feed the additive ribbon with true per-vertex depth. */
 static void tracer_build_and_feed(CPUState* cpu) {
     if (s_nsets <= 0) return;
-    double R[3][3], cam[3];
-    uint32_t w0 = cpu->read_word(G_CAMERA + 0),  w1 = cpu->read_word(G_CAMERA + 4),
-             w2 = cpu->read_word(G_CAMERA + 8),  w3 = cpu->read_word(G_CAMERA + 12),
-             w4 = cpu->read_word(G_CAMERA + 16);
-    R[0][0]=s16i(w0&0xFFFF); R[0][1]=s16i(w0>>16); R[0][2]=s16i(w1&0xFFFF);
-    R[1][0]=s16i(w1>>16);    R[1][1]=s16i(w2&0xFFFF); R[1][2]=s16i(w2>>16);
-    R[2][0]=s16i(w3&0xFFFF); R[2][1]=s16i(w3>>16); R[2][2]=s16i(w4&0xFFFF);
+    int R[3][3]; double cam[3];
+    ngte_read_matrix(cpu, G_CAMERA + 0, R);
     cam[0]=(int32_t)cpu->read_word(G_CAMERA + 0x28);
     cam[1]=(int32_t)cpu->read_word(G_CAMERA + 0x2C);
     cam[2]=(int32_t)cpu->read_word(G_CAMERA + 0x30);

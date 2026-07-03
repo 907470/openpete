@@ -31,6 +31,7 @@
 #include "openpete_psx.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
 #include <math.h>
 #include <stdint.h>
@@ -220,28 +221,15 @@ static void terrain_dump(CPUState* cpu) {
 
 /* ---- native gamestate walk (float) + geometry A/B ------------------------- */
 
-/* Camera rotation matrix g_Camera+0x14 (5 words, standard ctc2 packing). */
-static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
-    uint32_t w0 = rd(cpu, p + 0), w1 = rd(cpu, p + 4), w2 = rd(cpu, p + 8);
-    uint32_t w3 = rd(cpu, p + 12), w4 = rd(cpu, p + 16);
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-
 /* Projection params (file-static so the clip/emit path can re-project clipped
  * vertices). Set per frame in terrain_build. */
 static double s_ofx, s_ofy, s_H;
 
-/* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12. SX/SY = OFX/OFY +
- * MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs HP-world/4 scale cancels in
- * the MAC1/MAC3 ratio, so V can be built in any consistent unit (world/16). */
-static void project(const int M[3][3], double vx, double vy, double vz,
-                    double* m1, double* m2, double* m3) {
-    *m1 = (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    *m2 = (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    *m3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-}
+/* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12 = ngte_mac (shared,
+ * W2.3). SX/SY = OFX/OFY + MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs
+ * HP-world/4 scale cancels in the MAC1/MAC3 ratio, so V can be built in any
+ * consistent unit (world/16). */
+
 static void proj_screen(double m1, double m2, double m3, float* sx, float* sy) {
     double z = (m3 > 1e-9) ? m3 : 1e-9;
     *sx = (float)(s_ofx + m1 * s_H / z);
@@ -1022,7 +1010,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_nearz = (e && *e) ? atof(e) : 1.0;
     }
     { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
-    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
+    int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -1141,7 +1129,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         for (int k = 0; k < nv; k++) {
             int Xf = cverts[k].x, Yf = cverts[k].y, Zf = cverts[k].z;
             double m1, m2, m3;
-            project(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
+            ngte_mac(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
             sv[k].m1 = m1; sv[k].m2 = m2; sv[k].m3 = m3; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
             proj_screen(m1, m2, m3, &sv[k].sx, &sv[k].sy);
             if (m3 > 0.0) {

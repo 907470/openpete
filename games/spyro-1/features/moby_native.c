@@ -27,6 +27,7 @@
 
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "openpete_psx.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
@@ -117,15 +118,6 @@ static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
 static int s_code_hist[256]; static int s_uncoded_hist[256];
 
 /* ---- helpers (shared with the cyclorama harness conventions) -------- */
-static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
-    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
-    uint32_t w2 = cpu->read_word(p + 8), w3 = cpu->read_word(p + 12);
-    uint32_t w4 = cpu->read_word(p + 16);
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-
 /* Dragon-rescue disappear scale, reconstructed for --no-lod.
  *
  * At the end of a dragon-rescue cutscene (g_DragonCutscene.m_State == 5) the game
@@ -166,21 +158,12 @@ static void apply_dragon_disappear_scale(CPUState* cpu, uint32_t moby, int M[3][
     }
 }
 
-/* Float RTPS mirror WITH translation: MAC_i = TR[i] + (R_i . V)>>12 ;
- * SX = OFX + IR1*H/SZ3. Returns view-Z (MAC3). (gte.cpp gte_rtps_internal.) */
+/* Float RTPS mirror WITH translation: ngte_project_raw (shared, W2.3).
+ * Returns view-Z (MAC3); caller owns the near-plane policy. */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
-    double mac1 = TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-    double z = (mac3 != 0.0) ? mac3 : 1.0;
-    *out_sx = ofx_px + mac1 * H / z;
-    *out_sy = ofy_px + mac2 * H / z;
-    if (out_sat) *out_sat = (mac1 > 32767.0 || mac1 < -32768.0 ||
-                             mac2 > 32767.0 || mac2 < -32768.0 ||
-                             mac3 <= 0.0 || H >= 2.0 * mac3);
-    return mac3;
+    return ngte_project_raw(M, TR, vx, vy, vz, ofx_px, ofy_px, H, out_sx, out_sy, out_sat);
 }
 
 /* Forward decl: the host-side moby record builder (widescreen reveal, below)
@@ -308,7 +291,7 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
             "[rec %d @%08X] w0=%08X frame=%08X faces=%08X color=%08X TR=(%d,%d,%d) moby=%08X\n",
             r, rec, w0, frame_p, faces_p, color_p, trx, tr_y, trz, mobyp);
         if (w0 == 0 && frame_p == 0 && mobyp == 0) { fprintf(stderr, "  (terminator)\n"); break; }
-        int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
+        int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
         fprintf(stderr, "  R=[%d %d %d | %d %d %d | %d %d %d]\n",
                 M[0][0],M[0][1],M[0][2], M[1][0],M[1][1],M[1][2], M[2][0],M[2][1],M[2][2]);
         dump_words(cpu, "record", rec, 14);
@@ -523,7 +506,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
     int TR_raw[3] = { (int32_t)cpu->read_word(rec + 0x10),
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
-    int M[3][3]; read_matrix(cpu, rec + 0x1C, M);
+    int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
     apply_dragon_disappear_scale(cpu, cpu->read_word(rec + 0x34), M);  /* --no-lod: re-derive draw.c's cutscene shrink */
     return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
 }
@@ -725,7 +708,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
      * path uses (verified bit-exact there); m_Rotation @ moby+0x44. */
-    int PM[3][3]; read_matrix(cpu, G_CAMERA + 0x00, PM);
+    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, PM);
     shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
@@ -760,7 +743,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
  * most of the held path's residual cost. Callers guarantee the moby extracted
  * as an animated record this epoch, so the model checks are skipped. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
-    int PM[3][3]; read_matrix(cpu, G_CAMERA + 0x00, PM);
+    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, PM);
     double cfx=(double)(int32_t)cpu->read_word(G_CAMERA+0x28),
            cfy=(double)(int32_t)cpu->read_word(G_CAMERA+0x2C),
            cfz=(double)(int32_t)cpu->read_word(G_CAMERA+0x30);
@@ -798,7 +781,7 @@ static void moby_build_validate(CPUState* cpu) {
         if (f.frameA == cpu->read_word(rec+0x08)) okA++;
         if (f.frameB == cpu->read_word(rec+0x0C)) okB++;
         if ((f.w0 & 0xFF00u) == (cpu->read_word(rec) & 0xFF00u)) okBl++;
-        int sM[3][3]; read_matrix(cpu, rec+0x1C, sM);
+        int sM[3][3]; ngte_read_matrix(cpu, rec+0x1C, sM);
         int dM=0; for(int i=0;i<3;i++)for(int j=0;j<3;j++){int d=f.M[i][j]-sM[i][j]; if(d<0)d=-d; if(d>dM)dM=d;}
         if (dM<=2) okM++; if (dM>worstM) worstM=dM;
         int sTR[3]={(int32_t)cpu->read_word(rec+0x10),(int32_t)cpu->read_word(rec+0x14),(int32_t)cpu->read_word(rec+0x18)};
@@ -998,14 +981,7 @@ static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (hig
  *   out    = sat8((total>>12) >> 4)
  * Verified vs the live GTE: dpcs_ch(255, 2032, 1312) == 214. */
 static int dpcs_ch(int c8, int fc12, int ir0) {
-    long mac = (long)c8 << 16;
-    long ird = (((long)fc12 << 12) - mac) >> 12;
-    if (ird >  32767) ird =  32767;
-    if (ird < -32768) ird = -32768;
-    long out = ((mac + (long)ir0 * ird) >> 12) >> 4;
-    if (out < 0)   out = 0;
-    if (out > 255) out = 255;
-    return (int)out;
+    return ngte_dpcs_ch(c8, fc12, ir0);   /* shared bit-exact GTE mirror (W2.3) */
 }
 
 /* FOG-band colour fade (the .s moby colour pass, block_8001FDD0/.L8001FDE8).
@@ -1893,7 +1869,7 @@ static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
 static void specular_env_load(CPUState* cpu) {
-    read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
+    ngte_read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
     s_camHead = (int)cpu->read_word(G_CAMERA + 0x50u);
     s_specL[0] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0xCu);
     s_specL[1] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0x10u);
@@ -2327,7 +2303,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
     s_done = 1;
 
     float F = openpete_native_widescreen_factor();   /* 1.0 at native 4:3 */
-    int M[3][3]; read_matrix(cpu, G_CAMERA + 0x00, M);   /* moby transform uses ProjMatrix */
+    int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* moby transform uses ProjMatrix */
     int camx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
     int camy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
     int camz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
@@ -2559,7 +2535,7 @@ static void shaded_verify(CPUState* cpu) {
      * (each with its own R = ProjMatrix . Ry(m_Rotation axis0) and TR =
      * ProjMatrix . (pos - cam)) and accumulate, then A/B vs all shaded prims.
      * (axis0 = Y confirmed; axis1/2 euler TODO for fuller rotations.) */
-    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);
+    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
     double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
     double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
@@ -2733,7 +2709,7 @@ static shaded_rec s_shrecs[256]; static int s_nshrecs;
  * out[]. Returns vertex count. Shared by shaded_verify + the feed. Also records
  * per-moby metadata in s_shrecs[] for the native topology walk. */
 static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
-    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);
+    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
     /* Sub-tick floor fix: fractional interpolated camera (un-rounded) for the
      * camera-relative delta below; falls back to the floored RAM at 30 Hz. */
@@ -3383,7 +3359,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * sub-tick present (--render-fps), i.e. they "don't animate out". The deadband
          * leaves normal mobys (ratio≈1, only Q12 truncation noise) untouched. */
         {
-            int rM[3][3]; read_matrix(cpu, recs[i] + 0x1Cu, rM);
+            int rM[3][3]; ngte_read_matrix(cpu, recs[i] + 0x1Cu, rM);
             for (int row = 0; row < 3; row++) {
                 double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
                 double mb = sqrt((double)f.M[row][0]*f.M[row][0] + (double)f.M[row][1]*f.M[row][1] + (double)f.M[row][2]*f.M[row][2]);

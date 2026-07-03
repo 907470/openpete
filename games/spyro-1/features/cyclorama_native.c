@@ -29,6 +29,7 @@
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
 #include <math.h>
 #include <stdint.h>
@@ -51,36 +52,16 @@ static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
 
 /* ---- helpers -------------------------------------------------------- */
 
-static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
-    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
-    uint32_t w2 = cpu->read_word(p + 8), w3 = cpu->read_word(p + 12);
-    uint32_t w4 = cpu->read_word(p + 16);
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-
-/* Continuous float projection mirroring the GTE RTPS (gte.cpp:283-306):
- * MAC = (R*V)>>12 ; SX = OFX/65536 + MAC1 * H / MAC3 (and SY from MAC2).
- * Returns the view-space Z (MAC3); caller treats <=0 as behind-camera. */
+/* Continuous float projection mirroring the GTE RTPS: ngte_project_raw
+ * (shared, W2.3). The sat flag bins the two GTE fixed-point clamps the
+ * unclamped float path diverges from on purpose (IR16 saturation + the
+ * H >= 2*SZ3 divide cap). Returns view-space Z (MAC3); caller treats
+ * <=0 as behind-camera. */
 static double project(const int M[3][3], int vx, int vy, int vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
-    double mac1 = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / 4096.0;
-    double mac2 = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / 4096.0;
-    double mac3 = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / 4096.0;
-    double z = (mac3 != 0.0) ? mac3 : 1.0;
-    *out_sx = ofx_px + mac1 * H / z;
-    *out_sy = ofy_px + mac2 * H / z;
-    /* Two GTE fixed-point clamps make the float (unclamped, more-correct)
-     * projection diverge on purpose: (a) IR1/IR2 = sat16(MAC1/MAC2) before the
-     * screen multiply, and (b) the perspective divide saturates when
-     * H >= 2*SZ3 (gte.cpp gte_divide) — i.e. near-horizon verts with tiny
-     * view-Z. Flag both so the A/B can bin them as expected divergence. */
-    if (out_sat) *out_sat = (mac1 > 32767.0 || mac1 < -32768.0 ||
-                             mac2 > 32767.0 || mac2 < -32768.0 ||
-                             mac3 <= 0.0 || H >= 2.0 * mac3);
-    return mac3;
+    return ngte_project_raw(M, NULL, (double)vx, (double)vy, (double)vz,
+                            ofx_px, ofy_px, H, out_sx, out_sy, out_sat);
 }
 
 /* ---- near-plane clip (mirrors terrain_native.c::clip_push_tri) -------
@@ -153,8 +134,8 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
     s_native_n = 0;
 
     int Mcull[3][3], Mdraw[3][3];
-    read_matrix(cpu, a1, Mcull);
-    read_matrix(cpu, a2, Mdraw);
+    ngte_read_matrix(cpu, a1, Mcull);
+    ngte_read_matrix(cpu, a2, Mdraw);
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);

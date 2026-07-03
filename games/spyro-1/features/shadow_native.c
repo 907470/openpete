@@ -29,6 +29,7 @@
 
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
@@ -235,18 +236,11 @@ static void shadow_spyro_dump(CPUState* cpu) {
  *  float. Validated SXY-shape against the captured FT3 prims (the .s int16
  *  output as the oracle), then it replaces the scaffold.
  * =========================================================================== */
-#define GTE_DIV_CAP   (131071.0 / 65536.0)   /* 0x1FFFF in 1.16 (near-plane cap) */
-#define GTE_SXY_BOUND 1024.0
 static int clamp16i(long v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : (int)v); }
 
 /* load the camera rotation matrix (g_Camera+0x00..0x10, 5 words -> 9 int16) */
 static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
-    uint32_t w0=cpu->read_word(G_CAMERA+0), w1=cpu->read_word(G_CAMERA+4);
-    uint32_t w2=cpu->read_word(G_CAMERA+8), w3=cpu->read_word(G_CAMERA+12);
-    uint32_t w4=cpu->read_word(G_CAMERA+16);
-    R[0][0]=s16(w0&0xFFFF); R[0][1]=s16(w0>>16); R[0][2]=s16(w1&0xFFFF);
-    R[1][0]=s16(w1>>16);    R[1][1]=s16(w2&0xFFFF); R[1][2]=s16(w2>>16);
-    R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
+    ngte_read_matrix(cpu, G_CAMERA + 0, R);
 }
 
 /* MVMVA(sf=1, mx=rotation, v=V0, cv=none, lm=0): IR = clamp16((R·v)>>12). */
@@ -259,25 +253,16 @@ static void mvmva_ir(const int R[3][3], int vx, int vy, int vz, int ir[3]) {
 
 /* integer ground TR (the GTE's MAC after RTPS of the swizzled vector, TR=0). */
 static void ground_tr(const int C[3][3], double vx, double vy, double vz, double TR[3]) {
-    for (int i = 0; i < 3; i++)
-        TR[i] = (C[i][0]*vx + C[i][1]*vy + C[i][2]*vz) / 4096.0;
+    ngte_mac(C, vx, vy, vz, &TR[0], &TR[1], &TR[2]);
 }
 
 /* RTPS one local vertex through R + integer TR (shift 12) -> float screen + view-Z */
 typedef struct { float sx, sy, sz; } spt;
 static void sh_proj(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
                     double vx, double vy, double vz, spt* o) {
-    double mac1 = TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
-    double mac2 = TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
-    double mac3 = TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
-    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
-    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
-    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    double x = ofx + ir1 * q, y = ofy + ir2 * q;
-    if (x < -GTE_SXY_BOUND) x = -GTE_SXY_BOUND; else if (x > GTE_SXY_BOUND-1.0) x = GTE_SXY_BOUND-1.0;
-    if (y < -GTE_SXY_BOUND) y = -GTE_SXY_BOUND; else if (y > GTE_SXY_BOUND-1.0) y = GTE_SXY_BOUND-1.0;
-    o->sx = (float)x; o->sy = (float)y; o->sz = (float)mac3;
+    ngte_proj r;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, H, 1, &r);
+    o->sx = (float)r.sx; o->sy = (float)r.sy; o->sz = (float)r.m3;
 }
 
 /* signed 2*area on the native FLOAT SXY == GTE NCLIP MAC0 sign, WITHOUT the GTE's

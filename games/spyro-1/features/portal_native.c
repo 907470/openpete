@@ -57,6 +57,7 @@
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* portal_native_reextract export */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
 #include <math.h>
 #include <stdint.h>
@@ -98,7 +99,6 @@ static unsigned portal_dump_frame(void) {
     return f;
 }
 
-static void   read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 static double project_world(CPUState* cpu, int wx, int wy, int wz, double* out_sx, double* out_sy);
 
 typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex (clipping) */
@@ -133,15 +133,6 @@ static void dump_portal_table(CPUState* cpu) {
     }
 }
 
-static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
-    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
-    uint32_t w2 = cpu->read_word(p + 8), w3 = cpu->read_word(p + 12);
-    uint32_t w4 = cpu->read_word(p + 16);
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-
 /* Resolve the flat-fill colour a leaf carries in a0 (see feed_portal_quad): the
  * far/medium leaves pass a pointer whose [0] IS the colour (high bytes set); the
  * close DOME leaf passes the skybox struct whose colour is at +0x18. Returns the
@@ -157,11 +148,8 @@ static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0) {
  * matrix RenderPortals' leaf left there (camera euler ⊗ the portal's animated spin
  * D_80075858 yaw / D_800758FC pitch). Snapshotted prev+curr per tick and lerped. */
 static void read_gte_rotmatrix(CPUState* cpu, int M[3][3]) {
-    uint32_t w0 = cpu->gte_ctrl[0], w1 = cpu->gte_ctrl[1], w2 = cpu->gte_ctrl[2];
-    uint32_t w3 = cpu->gte_ctrl[3], w4 = cpu->gte_ctrl[4];
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
+    ngte_unpack_matrix(cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2],
+                       cpu->gte_ctrl[3], cpu->gte_ctrl[4], M);
 }
 
 /* ---- sub-tick capture-and-replay ------------------------------------------
@@ -216,16 +204,15 @@ static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
 static double project_world(CPUState* cpu, int wx, int wy, int wz,
                             double* out_sx, double* out_sy) {
     int M[3][3];
-    read_matrix(cpu, G_CAMERA + 0x00, M);
+    ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
     int cx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
     int cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
     int cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
     double vx = -((double)wy - cy);    /* GTE VX = -(world.y - cam.y) */
     double vy = -((double)wz - cz);    /* GTE VY = -(world.z - cam.z) */
     double vz =  ((double)wx - cx);    /* GTE VZ =  (world.x - cam.x) */
-    double mac1 = (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
+    double mac1, mac2, mac3;
+    ngte_mac(M, vx, vy, vz, &mac1, &mac2, &mac3);
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -593,11 +580,9 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     if (x1 <= x0 || y1 <= y0) return 0;
 
     /* dome rotation matrix the leaf left in the GTE (post-call), TR=0 (sky) */
-    uint32_t w0 = cpu->gte_ctrl[0], w1 = cpu->gte_ctrl[1], w2 = cpu->gte_ctrl[2], w3 = cpu->gte_ctrl[3], w4 = cpu->gte_ctrl[4];
     int M[3][3];
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
+    ngte_unpack_matrix(cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2],
+                       cpu->gte_ctrl[3], cpu->gte_ctrl[4], M);
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -660,9 +645,8 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
         for (uint32_t i = 0; i < vc; i++) {
             uint32_t w = cpu->read_word(vertBase + i * 4);
             int vx = centerX - (int)((w >> 10) & 0x7FF), vy = centerY - (int)(w & 0x3FF), vz2 = centerZ + (int)(w >> 21);
-            double m1 = (M[0][0]*(double)vx + M[0][1]*vy + M[0][2]*vz2) / 4096.0;
-            double m2 = (M[1][0]*(double)vx + M[1][1]*vy + M[1][2]*vz2) / 4096.0;
-            double m3 = (M[2][0]*(double)vx + M[2][1]*vy + M[2][2]*vz2) / 4096.0;
+            double m1, m2, m3;
+            ngte_mac(M, (double)vx, (double)vy, (double)vz2, &m1, &m2, &m3);
             pz[i] = m3; double z = (m3 > 1.0) ? m3 : 1.0;
             px[i] = (float)(ofx + m1 * H / z); py[i] = (float)(ofy + m2 * H / z);
         }

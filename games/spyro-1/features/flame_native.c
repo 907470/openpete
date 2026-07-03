@@ -27,6 +27,7 @@
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
 #include <math.h>
 #include <stdint.h>
@@ -235,14 +236,8 @@ static void flame_origin_tr(CPUState* cpu, double tr[3]) {
     int ir1 = s16(cy - fy);   /* C2_IR1 */
     int ir2 = s16(cz - fz);   /* C2_IR2 */
     int ir3 = s16(fx - cx);   /* C2_IR3 */
-    uint32_t w0 = cpu->read_word(G_CAMERA + 0x00), w1 = cpu->read_word(G_CAMERA + 0x04);
-    uint32_t w2 = cpu->read_word(G_CAMERA + 0x08), w3 = cpu->read_word(G_CAMERA + 0x0C);
-    uint32_t w4 = cpu->read_word(G_CAMERA + 0x10);
-    int R[3][3] = {
-        { s16(w0 & 0xFFFF), s16(w0 >> 16), s16(w1 & 0xFFFF) },
-        { s16(w1 >> 16),    s16(w2 & 0xFFFF), s16(w2 >> 16) },
-        { s16(w3 & 0xFFFF), s16(w3 >> 16), s16(w4 & 0xFFFF) },
-    };
+    int R[3][3];
+    ngte_read_matrix(cpu, G_CAMERA + 0x00, R);
     /* Fractional matrix-scale (÷4096.0, not >>12) so the ribbon's camera-space
      * origin tracks the smooth sub-tick camera instead of stepping ~1 view-unit
      * per present (same fix as the moby/terrain deltas; the s16 IR delta above is
@@ -259,9 +254,6 @@ static void flame_origin_tr(CPUState* cpu, double tr[3]) {
  * against the captured prims (the .s int16 output as the oracle), then it
  * replaces the scaffold. Stage 1 = the STRIP ribbon (GT4 textured additive);
  * the first-cell caps (G3) follow. */
-#define GTE_DIV_CAP   (131071.0 / 65536.0)   /* 0x1FFFF in 1.16 (near-plane cap) */
-#define GTE_SXY_BOUND 1024.0
-
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
@@ -269,28 +261,15 @@ static int rd_s16(CPUState* cpu, uint32_t addr) {
 
 /* load a PSYQ SHORTMATRIX (5 words -> 9 int16, 1.0=4096) at `base` into R[3][3] */
 static void flame_load_matrix(CPUState* cpu, uint32_t base, int R[3][3]) {
-    uint32_t w0 = cpu->read_word(base+0), w1 = cpu->read_word(base+4);
-    uint32_t w2 = cpu->read_word(base+8), w3 = cpu->read_word(base+12);
-    uint32_t w4 = cpu->read_word(base+16);
-    R[0][0]=s16(w0&0xFFFF); R[0][1]=s16(w0>>16); R[0][2]=s16(w1&0xFFFF);
-    R[1][0]=s16(w1>>16);    R[1][1]=s16(w2&0xFFFF); R[1][2]=s16(w2>>16);
-    R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
+    ngte_read_matrix(cpu, base, R);
 }
 
 /* RTPS one local vertex through R + TR (shift 12) -> screen (float) + view-Z */
 static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
                           double vx, double vy, double vz, float* sx, float* sy, float* sz) {
-    double mac1 = TR[0] + (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
-    double mac2 = TR[1] + (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
-    double mac3 = TR[2] + (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
-    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
-    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
-    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    double x = ofx + ir1 * q, y = ofy + ir2 * q;
-    if (x < -GTE_SXY_BOUND) x = -GTE_SXY_BOUND; else if (x > GTE_SXY_BOUND-1.0) x = GTE_SXY_BOUND-1.0;
-    if (y < -GTE_SXY_BOUND) y = -GTE_SXY_BOUND; else if (y > GTE_SXY_BOUND-1.0) y = GTE_SXY_BOUND-1.0;
-    *sx = (float)x; *sy = (float)y; *sz = (float)mac3;
+    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, H, 1, &o);
+    *sx = (float)o.sx; *sy = (float)o.sy; *sz = (float)o.m3;
 }
 
 /* Read one spine cross-section record (Xraw/Z/idx/sIdx), sub-keyframe-lerping

@@ -23,6 +23,7 @@
 
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "render_paths.h"  /* --render-paths isolation */
@@ -222,7 +223,6 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * sin/cos billboard) + the sel>=6 fall-through rotated billboard
  * (block_800574F8). sel 0 (TILE), sel 1/4 (lines), sel 5 (affine matrix),
  * glows + sparkles still TODO. */
-#define GTE_DIV_CAP   (131071.0 / 65536.0)
 /* WORLD particles project through proj2 with camera-relative coords shifted >>2
  * (world/4), so their view-Z (cz) is 1/4 the shared full-world scale that
  * depth_from_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
@@ -240,12 +240,7 @@ static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 
 
 /* generic SHORTMATRIX loader (5 packed words -> 9 int16) at an arbitrary base */
 static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
-    uint32_t w0 = cpu->read_word(base+0), w1 = cpu->read_word(base+4);
-    uint32_t w2 = cpu->read_word(base+8), w3 = cpu->read_word(base+12);
-    uint32_t w4 = cpu->read_word(base+16);
-    R[0][0]=s16(w0&0xFFFF); R[0][1]=s16(w0>>16); R[0][2]=s16(w1&0xFFFF);
-    R[1][0]=s16(w1>>16);    R[1][1]=s16(w2&0xFFFF); R[1][2]=s16(w2>>16);
-    R[2][0]=s16(w3&0xFFFF); R[2][1]=s16(w3>>16); R[2][2]=s16(w4&0xFFFF);
+    ngte_read_matrix(cpu, base, R);
 }
 /* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
 static void load_cam_matrix(CPUState* cpu, int R[3][3]) { load_matrix_at(cpu, G_CAMERA, R); }
@@ -261,23 +256,17 @@ static void proj_view(double ofx, double ofy, double H,
                       double X, double Y, double Z, projres* o);
 static void proj2(const int R[3][3], double ofx, double ofy, double H,
                   double vx, double vy, double vz, projres* o) {
-    double mac1 = (R[0][0]*vx + R[0][1]*vy + R[0][2]*vz) / 4096.0;
-    double mac2 = (R[1][0]*vx + R[1][1]*vy + R[1][2]*vz) / 4096.0;
-    double mac3 = (R[2][0]*vx + R[2][1]*vy + R[2][2]*vz) / 4096.0;
-    o->m1 = mac1; o->m2 = mac2; o->m3 = mac3;
-    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    o->sx = ofx + clamp16(mac1) * q;   /* no ±1024 SXY saturation — float, widescreen reveal needs the true X */
-    o->sy = ofy + clamp16(mac2) * q;
+    ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation — float,
+                    * widescreen reveal needs the true X (W2.3) */
+    ngte_project_gte(R, NULL, vx, vy, vz, ofx, ofy, H, 0, &r);
+    o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
 static void proj_view(double ofx, double ofy, double H,
                       double X, double Y, double Z, projres* o) {
-    o->m1 = X; o->m2 = Y; o->m3 = Z;
-    double sz3 = Z < 0.0 ? 0.0 : (Z > 65535.0 ? 65535.0 : Z);
-    double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
-    o->sx = ofx + clamp16(X) * q;
-    o->sy = ofy + clamp16(Y) * q;
+    ngte_proj r;   /* view-space point: MAC=(X,Y,Z), divide-only (W2.3) */
+    ngte_screen_gte(X, Y, Z, ofx, ofy, H, 0, &r);
+    o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
 /* the .s screen-rect reject of the projected centre (s4=0x10000 s5=0x1000000
@@ -445,7 +434,7 @@ static void particle_build(CPUState* cpu) {
             double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
             double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
             double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
-            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
             for (int k = 0; k < 4; k++) {                /* R'=diag(4096,2560,4096)+TR */
                 double m1 = C[k][0] + TR0;
                 double m2 = C[k][1]*2560.0/4096.0 + TR1;
@@ -568,7 +557,7 @@ static void particle_build(CPUState* cpu) {
             double a2 = (double)sizeB * sinv / 1024.0, a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
             double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
             double sz3 = TR2 > 65535 ? 65535 : TR2;
-            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
             for (int k = 0; k < 4; k++) {                /* diag(4096,2560,4096) + TR */
                 double m1 = Cc[k][0] + TR0;
                 double m2 = Cc[k][1]*2560.0/4096.0 + TR1;
@@ -965,7 +954,7 @@ static void sparkle_build(CPUState* cpu) {
         double a3 = c.m3 > 4096.0 ? c.m3 : 4096.0;
         double TR0 = c.m1*2.0, TR1 = c.m2*2.0, TR2 = c.m3*2.0;
         double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
-        double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? GTE_DIV_CAP : (double)H/sz3;
+        double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
         double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
         double sx[4], sy[4];
         for (int k = 0; k < 4; k++) {
@@ -1112,7 +1101,7 @@ static void dragonstar_build(CPUState* cpu) {
         double mac2 = (Me[1][0]*vx + Me[1][2]*vz)/4096.0 + try_;
         double mac3 = (Me[2][0]*vx + Me[2][2]*vz)/4096.0 + trz;
         double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-        double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? GTE_DIV_CAP : (H / sz3);
+        double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? NGTE_DIV_CAP : (H / sz3);
         rx[m] = ofx + clamp16(mac1) * q;
         ry[m] = ofy + clamp16(mac2) * q;
     }

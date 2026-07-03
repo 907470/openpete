@@ -32,6 +32,7 @@
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_psx.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
+#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
@@ -293,15 +294,6 @@ void spyro_native_set_rot_interp(const int* active, const double* ang /*3x3, row
     }
 }
 
-static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
-    uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
-    uint32_t w2 = cpu->read_word(p + 8), w3 = cpu->read_word(p + 12);
-    uint32_t w4 = cpu->read_word(p + 16);
-    M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
-    M[1][0] = (int16_t)(w1 >> 16);    M[1][1] = (int16_t)(w2 & 0xFFFF); M[1][2] = (int16_t)(w2 >> 16);
-    M[2][0] = (int16_t)(w3 & 0xFFFF); M[2][1] = (int16_t)(w3 >> 16);  M[2][2] = (int16_t)(w4 & 0xFFFF);
-}
-
 /* Float RTPS mirror WITH translation (gte.cpp gte_rtps_internal), reproducing
  * the GTE's near-plane behaviour in float. For a vertex close to the camera the
  * hardware caps the perspective divide: push_sz clamps SZ3 to [0,0xFFFF], and
@@ -314,29 +306,15 @@ static void read_matrix(CPUState* cpu, uint32_t p, int M[3][3]) {
  * leaving the 99.85% of in-range verts byte-identical (there q = H/SZ3 exactly,
  * the path that already matched to ~0.8px). The UNR reciprocal's sub-pixel
  * wobble is not reproduced (our true divide is strictly closer to ideal). */
-#define GTE_DIV_CAP   (131071.0 / 65536.0)   /* 0x1FFFF as a 1.16 quotient (~2.0) */
-#define GTE_SXY_BOUND 1024.0                  /* push_sxy signed-11-bit clamp (4:3) */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, double H,
                       double* out_sx, double* out_sy, int* out_sat) {
-    double mac1 = TR[0] + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
-    double mac2 = TR[1] + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
-    double mac3 = TR[2] + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-    /* IR1/IR2 = MAC saturated to int16 (the GTE projects from saturated IR). */
-    double ir1 = mac1 < -32768.0 ? -32768.0 : (mac1 > 32767.0 ? 32767.0 : mac1);
-    double ir2 = mac2 < -32768.0 ? -32768.0 : (mac2 > 32767.0 ? 32767.0 : mac2);
-    /* SZ3 = MAC3 saturated to [0,0xFFFF]; divide caps to 0x1FFFF when near. */
-    double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-    int sat = (sz3 <= 0.0 || H >= 2.0 * sz3);
-    double q = sat ? GTE_DIV_CAP : (H / sz3);
-    double sx = ofx_px + ir1 * q;
-    double sy = ofy_px + ir2 * q;
-    if (sx < -GTE_SXY_BOUND) sx = -GTE_SXY_BOUND; else if (sx > GTE_SXY_BOUND - 1.0) sx = GTE_SXY_BOUND - 1.0;
-    if (sy < -GTE_SXY_BOUND) sy = -GTE_SXY_BOUND; else if (sy > GTE_SXY_BOUND - 1.0) sy = GTE_SXY_BOUND - 1.0;
-    *out_sx = sx;
-    *out_sy = sy;
-    if (out_sat) *out_sat = sat;
-    return mac3;
+    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_project_gte(M, TR, vx, vy, vz, ofx_px, ofy_px, H, 1, &o);
+    *out_sx = o.sx;
+    *out_sy = o.sy;
+    if (out_sat) *out_sat = o.sat;
+    return o.m3;
 }
 
 /* MIPS `(v << lsh) >> rsh` (sll then arithmetic sra) reproduced exactly. */
@@ -554,7 +532,7 @@ static void spyro_seam_tr(const int Mb[3][3], const double TRb[3], int32_t jw, i
 /* Fill s_xf[3] = {M,TR,present} from gamestate. */
 static void spyro_derive_phaseA(CPUState* cpu) {
     memset(s_xf, 0, sizeof s_xf);
-    int PM[3][3]; read_matrix(cpu, G_CAMERA, PM);  /* camera m_ProjectionMatrix @ +0x00 */
+    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);  /* camera m_ProjectionMatrix @ +0x00 */
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
     int32_t sx=(int32_t)cpu->read_word(G_SPYRO+0x00), sy=(int32_t)cpu->read_word(G_SPYRO+0x04), sz=(int32_t)cpu->read_word(G_SPYRO+0x08);
     /* Sub-tick floor fix (item 22a, folded into the camera tier): prefer the
@@ -610,14 +588,14 @@ typedef struct { int seg_n; int m_max[3]; int tr_max[3]; int worst_m, worst_tr; 
 static void spyro_matrix_eval(CPUState* cpu, mat_stats* ms) {
     memset(ms, 0, sizeof *ms);
     spyro_derive_phaseA(cpu);
-    int M0[3][3]; read_matrix(cpu, SEG_SCRATCH + 0x10, M0);   /* body (seg0) scratch matrix */
+    int M0[3][3]; ngte_read_matrix(cpu, SEG_SCRATCH + 0x10, M0);   /* body (seg0) scratch matrix */
     for (int s = 0; s < 3; s++) {
         uint32_t e = SEG_SCRATCH + (uint32_t)s*SEG_STRIDE;
         uint32_t fd = cpu->read_word(e);
         if (fd == 0) break;
         ms->seg_n++;
         int hasMat = (s == 0) || (fd & 0x80000000u);
-        int Ms_[3][3]; if (hasMat) read_matrix(cpu, e + 0x10, Ms_); else memcpy(Ms_, M0, sizeof M0);
+        int Ms_[3][3]; if (hasMat) ngte_read_matrix(cpu, e + 0x10, Ms_); else memcpy(Ms_, M0, sizeof M0);
         int mmax = 0;
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) { int d = abs(s_xf[s].M[i][j] - Ms_[i][j]); if (d>mmax) mmax=d; }
         int TRs[3] = { (int32_t)cpu->read_word(e+0x04), (int32_t)cpu->read_word(e+0x08), (int32_t)cpu->read_word(e+0x0C) };
@@ -722,7 +700,7 @@ static int spyro_project_all(CPUState* cpu) {
          * slots with a CLEAR sign bit (the .s ignores them, staying sticky);
          * adopting them projected head/tail with a stale matrix (f4549: head
          * vanishes, tail lands at the front of the body). */
-        if (s == 0 || (fd & 0x80000000u)) { read_matrix(cpu, entry + 0x10, M); have_mat = 1; }
+        if (s == 0 || (fd & 0x80000000u)) { ngte_read_matrix(cpu, entry + 0x10, M); have_mat = 1; }
         TR[0] = (double)(int32_t)cpu->read_word(entry + 0x04);
         TR[1] = (double)(int32_t)cpu->read_word(entry + 0x08);
         TR[2] = (double)(int32_t)cpu->read_word(entry + 0x0C);
