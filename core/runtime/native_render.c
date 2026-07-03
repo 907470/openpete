@@ -45,6 +45,7 @@
 extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
 extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
+#include "openpete_native_vram.h"   /* W2.4: the owned VRAM model + native ops */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -1197,11 +1198,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
-    uint16_t     *mirror    = calloc((size_t)NR_VRAM_W * NR_VRAM_H, sizeof(uint16_t));
+    /* W2.4: the CPU mirror IS the owned native VRAM model (static storage in
+     * native_vram.c) — written by the native ops at op time and shadow-synced
+     * from PsyCross's mirror per dirty rect at present time. */
+    uint16_t     *mirror    = openpete_vram_data();
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !diff_pipe || !diff_quad_vb || !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
-        free(mirror);
         if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
         if (prepass_pipe)  rhi_destroy_pipeline(dev, prepass_pipe);
         if (gouraud_sub_fade_pipe) rhi_destroy_pipeline(dev, gouraud_sub_fade_pipe);
@@ -1275,8 +1278,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
     s_nr.vram_mirror  = mirror;
-    /* W2.4: subscribe to PsyCross VRAM writes (dirty-rect tracked mirror). */
+    /* W2.4: subscribe to PsyCross VRAM writes (dirty-rect tracked mirror) and
+     * install the native op implementations (1b — verified via
+     * OPENPETE_VRAM_VERIFY against PsyCross's mirror). */
     PsyX_SetVRAMDirtyCallback(nr_vram_dirty_cb);
+    openpete_vram_install_ops();
 
     /* Static full-target quad (clip -1..1, UV 0..1 top-down) for render-target
      * copies — currently the native_rtt -> frozen_tex freeze-snapshot blit. */
@@ -1382,6 +1388,57 @@ static void sync_vram_texture(void)
             logged++;
             fprintf(stderr, "[vram-census] presents=%ld rects=%.2f/present bytes=%.1fKB/present fullSyncs=%ld\n",
                     presents, (double)rects / presents, (double)bytes / presents / 1024.0, full);
+        }
+    }
+    /* OPENPETE_VRAM_VERIFY (W2.4-1b): before the shadow copy overwrites the
+     * model with PsyCross's bytes, memcmp every op-written rect (exact-rect
+     * match against the ops' post-clamp log) — proves the native op
+     * implementations produce PsyCross's bytes. Shadow-only rects (framebuffer
+     * copyback, savestate restore) are counted but not compared. */
+    static int s_verify = -1;
+    if (s_verify < 0) { const char* e = getenv("OPENPETE_VRAM_VERIFY"); s_verify = (e && *e && *e != '0'); }
+    if (s_verify) {
+        static openpete_vram_op_rect ops[NR_VRAM_MAX_RECTS];
+        int ovf = 0;
+        int nops = openpete_vram_drain_op_rects(ops, NR_VRAM_MAX_RECTS, &ovf);
+        static long v_presents, v_dirty, v_ops, v_match, v_mismatch, v_shadow, v_oponly, v_unverified;
+        static int  v_logged, v_verbose;
+        v_presents++;
+        v_ops += nops;
+        if (s_vram_full || ovf) {
+            v_unverified++;               /* full-sync window / op-log overflow */
+        } else {
+            for (int i = 0; i < s_vram_nrects; i++) {
+                const rhi_rect r = s_vram_rects[i];
+                int oi = -1;
+                for (int k = 0; k < nops; k++)
+                    if (ops[k].w > 0 && ops[k].x == r.x && ops[k].y == r.y &&
+                        ops[k].w == r.w && ops[k].h == r.h) { oi = k; break; }
+                v_dirty++;
+                if (oi < 0) { v_shadow++; continue; }
+                ops[oi].w = -ops[oi].w;   /* consume */
+                v_match++;
+                static uint16_t vrow[NR_VRAM_W];
+                for (int row = 0; row < r.h; row++) {
+                    GR_ReadVRAM(vrow, r.x, r.y + row, r.w, 1);
+                    if (memcmp(vrow, s_nr.vram_mirror + (size_t)(r.y + row) * NR_VRAM_W + r.x,
+                               (size_t)r.w * 2) != 0) {
+                        v_mismatch++;
+                        if (v_verbose < 8) {
+                            v_verbose++;
+                            fprintf(stderr, "[vram-verify] MISMATCH rect(%d,%d %dx%d) row %d\n",
+                                    r.x, r.y, r.w, r.h, row);
+                        }
+                        break;
+                    }
+                }
+            }
+            for (int k = 0; k < nops; k++) if (ops[k].w > 0) v_oponly++;
+        }
+        if (v_presents % 300 == 0 && v_logged < 40) {
+            v_logged++;
+            fprintf(stderr, "[vram-verify] presents=%ld dirty=%ld ops=%ld matched=%ld MISMATCH=%ld shadowOnly=%ld opOnly=%ld unverifiedWindows=%ld\n",
+                    v_presents, v_dirty, v_ops, v_match, v_mismatch, v_shadow, v_oponly, v_unverified);
         }
     }
     /* Refresh the owned mirror from PsyCross's, dirty regions only, and queue
@@ -3777,7 +3834,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy(s_nr.dev);
     SDL_DestroyWindow(s_nr.window);
     free(s_nr.readback);
-    free(s_nr.vram_mirror);
+    /* s_nr.vram_mirror is the static native VRAM model (native_vram.c) — not freed. */
     free(s_recbuf); s_recbuf = NULL; s_reccap = 0;   /* --record async ring host buffer */
 
     /* --render-stats aggregate over the whole run. */

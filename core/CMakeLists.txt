@@ -81,6 +81,7 @@ add_library(openpete_core STATIC
     # consumer built on core/rhi; never writes PSX RAM. Phase 1c of
     # notes/plans/openpete-native-renderer.md.
     runtime/native_render.c
+    runtime/native_vram.c
 
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
