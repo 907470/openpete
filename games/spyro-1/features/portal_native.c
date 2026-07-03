@@ -345,6 +345,20 @@ static float portal_cyclorama_depth(double vz) {
     float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_CYCLORAMA_DEPTH_OFFSET;
     return z < 0.0f ? 0.0f : z;
 }
+/* OPENPETE_PORTAL_SKY_DEPTH=ring (A/B): the whole portal sky at the constant
+ * BEHIND-RING depth (farthest outline point + a hair) — the .s's own OT
+ * placement — instead of the per-pixel opening plane. */
+static int portal_sky_ring_depth(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_SKY_DEPTH");
+                 v = (e && e[0] == 'r') ? 1 : 0; }
+    return v;
+}
+static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
+static float ring_depth(void) {
+    float z = openpete_native_depth_from_viewz((float)s_ring_vz) + 0.0015f;
+    return z > 1.0f ? 1.0f : z;
+}
 
 /* Native depth from the portal plane at a screen point (perspective-correct via
  * the inv-vz fit), pulled forward by the constant portal-sky depth offset. */
@@ -446,6 +460,9 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     if (pn >= 3) {
+        s_ring_vz = 0.0;
+        for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
+        const int ring = portal_sky_ring_depth() && s_ring_vz > 0.0;
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
             openpete_scene_tri t;
             memset(&t, 0, sizeof t);
@@ -454,7 +471,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = portal_cyclorama_depth(v->vz);
+                t.v[k].z = ring ? ring_depth() : portal_cyclorama_depth(v->vz);
                 t.v[k].rgba = rgba;
             }
             portal_add_sky_tri(&t);
@@ -519,13 +536,124 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
     return m;
 }
 
+/* ---- two-region sky depth (the PSX OT placement, 2026-07-03) --------------
+ * The .s sorts the portal sky BEHIND the whole stone ring (its OT key is
+ * derived from the ring — see portal_outline_maxvz), so the rect spill over
+ * the arch is repainted by ANY nearer geometry (arch stone, threshold floor)
+ * while the through-hole backdrop (farther than the ring) is covered. Native
+ * used ONE depth for the whole sky and had to pick a side:
+ *   - plane depth everywhere (since f2945): the arch's far pillar — terrain
+ *     BEHIND the opening plane at steep angles — lost to the sky, which
+ *     painted over it (the magic-crafters "sky erases the pillar" report);
+ *   - constant behind-ring depth everywhere (pre-f2945): the receding floor
+ *     behind the plane but nearer than the ring's far point poked through
+ *     the preview inside the opening.
+ * Resolution: split each sky face by the OUTLINE polygon. Inside the opening
+ * -> plane depth (f2945 semantics); outside (the rect spill) -> behind-ring
+ * depth nudged a hair FARTHER (+0.0015 NDC) so the ring wins even where the
+ * spill grazes the outline's farthest point. Mirrors the PSX partition
+ * exactly: the opening is where the preview must win; the spill is where the
+ * world must win. */
+static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
+static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
+static float s_skyout_back = 1.0f;/* behind-ring depth for the outside region */
+
+/* General half-plane clip: keep points on the LEFT of a->b (CCW inside). */
+static int clip_dir(const pgv* in, int n, pgv* out,
+                    float ax, float ay, float bx, float by, int keepLeft) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const pgv* p0 = &in[i];
+        const pgv* p1 = &in[(i + 1) % n];
+        float s0 = (bx-ax)*(p0->y-ay) - (by-ay)*(p0->x-ax);
+        float s1 = (bx-ax)*(p1->y-ay) - (by-ay)*(p1->x-ax);
+        int in0 = keepLeft ? (s0 >= 0.0f) : (s0 <= 0.0f);
+        int in1 = keepLeft ? (s1 >= 0.0f) : (s1 <= 0.0f);
+        if (in0) { if (m < 24) out[m++] = *p0; }
+        if (in0 != in1) {
+            float t = (s1 != s0) ? (0.0f - s0) / (s1 - s0) : 0.0f;
+            pgv c;
+            c.x = p0->x + t * (p1->x - p0->x);  c.y = p0->y + t * (p1->y - p0->y);
+            c.r = p0->r + t * (p1->r - p0->r);  c.g = p0->g + t * (p1->g - p0->g);
+            c.b = p0->b + t * (p1->b - p0->b);
+            if (m < 24) out[m++] = c;
+        }
+    }
+    return m;
+}
+
+static void fan_emit_poly(const pgv* v, int n, float const_depth,
+                          int use_plane, double pa, double pb, double pc);
+
+/* Fan-emit `poly` split by the outline: the inside piece at PLANE depth, the
+ * outside pieces at the behind-ring depth. Falls back to plane-depth-only
+ * when no outline is registered. */
+static void emit_split_by_outline(const pgv* poly, int n, float depth,
+                                  int use_plane, double pa, double pb, double pc) {
+    if (s_skyout_n < 3 || !use_plane) {
+        fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
+        return;
+    }
+    pgv a[24], b[24];
+    /* inside piece: successive keep-left clips vs every outline edge */
+    int m = n;
+    const pgv* src = poly;
+    for (int e = 0; e < s_skyout_n && m >= 3; e++) {
+        const pgv* p0 = &s_skyout[e];
+        const pgv* p1 = &s_skyout[(e + 1) % s_skyout_n];
+        m = clip_dir(src, m, (src == a) ? b : a, p0->x, p0->y, p1->x, p1->y, 1);
+        src = (src == a) ? b : a;
+    }
+    if (m >= 3) fan_emit_poly(src, m, depth, use_plane, pa, pb, pc);
+    /* outside pieces: for edge i keep RIGHT of edge i and LEFT of edges 0..i-1
+     * (a disjoint decomposition of the outline's complement) */
+    for (int i = 0; i < s_skyout_n; i++) {
+        pgv u[24], w[24];
+        memcpy(u, poly, sizeof(pgv) * (size_t)n);
+        int k = n;
+        const pgv* cur = u;
+        {
+            const pgv* p0 = &s_skyout[i];
+            const pgv* p1 = &s_skyout[(i + 1) % s_skyout_n];
+            k = clip_dir(cur, k, w, p0->x, p0->y, p1->x, p1->y, 0);
+            cur = w;
+        }
+        for (int e = 0; e < i && k >= 3; e++) {
+            const pgv* p0 = &s_skyout[e];
+            const pgv* p1 = &s_skyout[(e + 1) % s_skyout_n];
+            k = clip_dir(cur, k, (cur == w) ? u : w, p0->x, p0->y, p1->x, p1->y, 1);
+            cur = (cur == w) ? u : w;
+        }
+        if (k >= 3) fan_emit_poly(cur, k, s_skyout_back, 0, 0, 0, 0);
+    }
+}
+
 /* Clip a gouraud face to the portal CLIP RECT and fan-emit it. This is what the
  * dome leaves actually do: func_80050BD0 sets D_80077EA0[0]=0, so func_8005060C
  * skips outline clipping — the dome is confined ONLY by the GPU scissor rect
  * (D_8007AA00), and the arch SHAPE comes from the stone/floor occluding the rect
- * spill via depth, not from clipping to the opening polygon. Depth is the portal
- * PLANE (use_plane: inv-vz fit) so that occlusion is correct at any angle (f2945);
- * `depth` is the constant fallback when the plane fit is unavailable. */
+ * spill via depth, not from clipping to the opening polygon. Depth policy is the
+ * two-region split above: plane inside the opening (f2945), behind-ring on the
+ * spill; `depth` is the constant fallback when the plane fit is unavailable. */
+static void fan_emit_poly(const pgv* v, int n, float const_depth,
+                          int use_plane, double pa, double pb, double pc) {
+    for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
+        openpete_scene_tri t;
+        memset(&t, 0, sizeof t);
+        t.textured = 0; t.blend = 0;
+        const pgv* tv[3] = { &v[0], &v[i], &v[i + 1] };
+        for (int k = 0; k < 3; k++) {
+            uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
+            if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
+            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
+            t.v[k].z = (portal_sky_ring_depth() && s_ring_vz > 0.0) ? ring_depth()
+                     : use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : const_depth;
+            t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
+        }
+        portal_add_sky_tri(&t);
+    }
+}
+
 static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1,
                                  float depth, int use_plane, double pa, double pb, double pc) {
     pgv a[10], b[10];
@@ -535,20 +663,7 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
     n = clip_half(b, n, a, 0, (float)x1, 0); if (n < 3) return;
     n = clip_half(a, n, b, 1, (float)y0, 1); if (n < 3) return;
     n = clip_half(b, n, a, 1, (float)y1, 0); if (n < 3) return;
-    for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
-        openpete_scene_tri t;
-        memset(&t, 0, sizeof t);
-        t.textured = 0; t.blend = 0;
-        const pgv* tv[3] = { &a[0], &a[i], &a[i + 1] };
-        for (int k = 0; k < 3; k++) {
-            uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
-            if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
-            t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
-            t.v[k].z = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : depth;
-            t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
-        }
-        portal_add_sky_tri(&t);
-    }
+    emit_split_by_outline(a, n, depth, use_plane, pa, pb, pc);
 }
 
 /* A collected dome face awaiting depth-sorted emission. The dome is drawn at the
@@ -593,6 +708,32 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     double pa = 0, pb = 0, pc = 0;
     int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
+    /* Register the outline for the two-region sky-depth split (see
+     * emit_split_by_outline): orient CCW by signed area; behind-ring depth =
+     * the farthest outline point, nudged a hair FARTHER (+0.0015 NDC) so the
+     * ring geometry wins even where the spill grazes its far tangent. */
+    s_skyout_n = 0;
+    if (use_plane) {
+        double maxvz = 0.0, mx = 0.0, my = 0.0;
+        for (int i = 0; i < pn; i++) {
+            if (poly[i].vz > maxvz) maxvz = poly[i].vz;
+            mx += poly[i].x; my += poly[i].y;
+        }
+        mx /= pn; my /= pn;
+        /* orient so the polygon interior (its centroid) is LEFT of edge 0 —
+         * the side clip_dir keeps on the inside pass */
+        double sgn = ((double)poly[1].x - poly[0].x) * (my - poly[0].y)
+                   - ((double)poly[1].y - poly[0].y) * (mx - poly[0].x);
+        for (int i = 0; i < pn; i++) {
+            const ppt* q = (sgn >= 0.0) ? &poly[i] : &poly[pn - 1 - i];
+            s_skyout[i].x = q->x; s_skyout[i].y = q->y;
+            s_skyout[i].r = s_skyout[i].g = s_skyout[i].b = 0.0f;
+        }
+        s_skyout_n = pn;
+        s_ring_vz = maxvz;
+        s_skyout_back = openpete_native_depth_from_viewz((float)maxvz) + 0.0015f;
+        if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
+    }
 
     /* Widescreen un-clamp: the .s clip rect D_8007AA00 is the GPU scissor, clamped
      * to the 4:3 framebuffer [0,512]. For a portal at the screen edge the outline
