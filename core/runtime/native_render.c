@@ -1759,10 +1759,10 @@ static void native_depth_prepass(void)
     {
         const char* pr = getenv("OPENPETE_PREPASS_RECON_DEBUG");
         static int printed = 0;
-        if (pr && *pr && s_shadow_decal.valid && printed < 6) {
+        if (pr && *pr && s_shadow_decal.valid && printed < 40) {
             float psx = 300.0f, psy = 145.0f;
             sscanf(pr, "%f,%f", &psx, &psy);
-            for (int t = 0; t < scene_n && printed < 6; t++) {
+            for (int t = 0; t < scene_n && printed < 40; t++) {
                 int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
                 if (b != 0 || scene[t].category != OPENPETE_SCENE_WORLD) continue;
                 float x0 = scene[t].v[0].sx, x1 = scene[t].v[1].sx, x2 = scene[t].v[2].sx;
@@ -1791,13 +1791,15 @@ static void native_depth_prepass(void)
                 double e2[3] = { P[2][0]-P[0][0], P[2][1]-P[0][1], P[2][2]-P[0][2] };
                 double N[3] = { e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0] };
                 double nl = sqrt(N[0]*N[0]+N[1]*N[1]+N[2]*N[2]);
-                fprintf(stderr, "[prepass-recon] tri sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f) relY=(%.0f,%.0f,%.0f) ny=%.2f\n",
+                fprintf(stderr, "[prepass-recon] tri sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f) relY=(%.0f,%.0f,%.0f) ny=%.2f relZ=(%.0f,%.0f,%.0f) nz=%.2f\n",
                         x0, y0, x1, y1, x2, y2,
                         4096.0*scene[t].v[0].z/(1.0-scene[t].v[0].z),
                         4096.0*scene[t].v[1].z/(1.0-scene[t].v[1].z),
                         4096.0*scene[t].v[2].z/(1.0-scene[t].v[2].z),
                         P[0][1], P[1][1], P[2][1],
-                        nl > 1e-9 ? fabs(N[1])/nl : -1.0);
+                        nl > 1e-9 ? fabs(N[1])/nl : -1.0,
+                        P[0][2], P[1][2], P[2][2],
+                        nl > 1e-9 ? fabs(N[2])/nl : -1.0);
                 printed++;
             }
         }

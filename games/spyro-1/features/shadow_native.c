@@ -622,15 +622,22 @@ static void shadow_spyro_build(CPUState* cpu) {
         p.ground_y    = (float)sposy;
         const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
         p.wall_height = (wh && *wh) ? (float)atof(wh) : 400.0f;
-        /* |world normal.y| below which a surface counts as a wall face
-         * (walkable Spyro slopes stay under ~50°, ny > 0.64; wall faces ~0).
-         * DEFAULT 0 = orientation tests OFF: the shader's normal reconstruction
-         * is exact (validated against the anchor + synthetic fields) but the
-         * TERRAIN feeder's fed view-Z is skewed off-anchor vs the camera model
-         * (the depth audit's suspected cross-class skew — first measured here),
-         * so normals misread flat floors as steep. Blocked on W2.3 (shared
-         * project() / unified feeder depth); until then the decal runs the
-         * height-only test, leaving the small wall-base-notch carve-out. */
+        /* |world normal| threshold below which a surface counts as a wall face
+         * (walkable Spyro slopes stay under ~50°; wall faces ~0). DEFAULT 0 =
+         * orientation tests OFF.
+         * 2026-07-02 RETRACTION of the original blocker: the "terrain feeder
+         * view-Z skew" was DISPROVEN — the prepass-recon dump, extended to
+         * print the V1/z axis, shows fed terrain floors reconstruct at
+         * CONSTANT height to the unit (nz=1.00) across camera positions. The
+         * original "ny≈0 / 1000-unit spreads" measurement read the V0/y axis,
+         * which in Spyro's convention is HORIZONTAL (vertical is the z field
+         * → V1): floors legitimately read n_horizontal=0 and spread by the
+         * 1024 grid pitch. Consequence: this decal's height test
+         * (cam_pos_y − V0 vs ground_y) is actually a HORIZONTAL-Y proximity
+         * test that fixes wall punch-through incidentally; switching it (and
+         * the shader) to the true vertical (camz − V1 vs sposz) should retire
+         * the wall-base-notch carve-out and unblock the orientation clause —
+         * tracked as the shadow-decal axis fix in the native-renderer plan. */
         const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
         p.steep_ny    = (sn && *sn) ? (float)atof(sn) : 0.0f;
         p.valid = 1;
