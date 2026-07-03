@@ -83,6 +83,8 @@ typedef struct {
     float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all, 1 = height+steep discard, 2 = viz */
     float band;                    /* fallback view-Z band when params invalid */
+    float plat_eps;                /* raised-occluder-in-front: min rise */
+    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
 } shadow_decal_pc;
@@ -1759,9 +1761,11 @@ static void native_depth_prepass(void)
     {
         const char* pr = getenv("OPENPETE_PREPASS_RECON_DEBUG");
         static int printed = 0;
-        if (pr && *pr && s_shadow_decal.valid && printed < 40) {
-            float psx = 300.0f, psy = 145.0f;
-            sscanf(pr, "%f,%f", &psx, &psy);
+        extern unsigned openpete_frame;
+        float psx = 300.0f, psy = 145.0f; unsigned fmin = 0;
+        if (pr && *pr) sscanf(pr, "%f,%f,%u", &psx, &psy, &fmin);
+        if (pr && *pr && s_shadow_decal.valid && printed < 40 &&
+            openpete_frame >= fmin) {
             for (int t = 0; t < scene_n && printed < 40; t++) {
                 int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
                 if (b != 0 || scene[t].category != OPENPETE_SCENE_WORLD) continue;
@@ -2757,6 +2761,8 @@ static bool draw_native_scene(bool full_extent)
                     if (mv && *mv) mode = (float)atof(mv);
                     pc.mode = mode;
                     pc.band = shadow_decal_band();
+                    pc.plat_eps = s_shadow_decal.plat_eps;
+                    pc.plat_slack = s_shadow_decal.plat_slack;
                     pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                     pc.vay = s_od_vay; pc.vby = s_od_vby;
                     pc.pvw = s_od_vw; pc.pvh = s_od_vh;

@@ -58,6 +58,9 @@ layout(push_constant) uniform PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all, 1 = height+steep test, 2 = viz */
     float band;                  /* fallback view-Z band (mode 0/invalid params) */
+    float plat_eps;              /* min rise above the shadow plane for a raised
+                                  * IN-FRONT surface to occlude (platform/curb) */
+    float plat_slack;            /* view-Z slack for "meaningfully in front" */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
 } pc;
@@ -175,6 +178,16 @@ void main()
         return;
     }
     if (pc.mode > 0.5) {
+        /* Raised occluder IN FRONT (curb / raised platform): PSX's painter
+         * covered the fan with ANY nearer terrain drawn after it. A flat
+         * raised path passes both the steep test (top is flat) and the
+         * wall-height test (dark-hollow platform: +368 < 400), yet must
+         * occlude. "In front" = the pre-pass terrain is meaningfully nearer
+         * than the fan fragment itself; "raised" = meaningfully above the
+         * shadow plane. The receiving ground keeps the shadow: its bumps are
+         * below plat_eps, and draped far slopes are FARTHER, not nearer. */
+        if (viewZ + pc.plat_slack < viewz_from_scene_depth(dS) &&
+            height > pc.plat_eps) discard;
         if (pc.steep_nup > 0.0) {
             /* ORIENTATION-AWARE tests (opt-in via OPENPETE_SHADOW_STEEP_NY).
              * 2026-07-02: the old blocker ("terrain feeder view-Z skewed off

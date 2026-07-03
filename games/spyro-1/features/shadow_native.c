@@ -636,6 +636,14 @@ static void shadow_spyro_build(CPUState* cpu) {
          * reverts to the height-only test. */
         const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
         p.steep_nup   = (sn && *sn) ? (float)atof(sn) : 0.5f;
+        /* Raised-occluder-in-front (curb/platform) clause: eps well under the
+         * measured dark-hollow platform (+368) and above grass-level bump
+         * noise; slack absorbs the fan-vs-ground depth mismatch on the
+         * receiving surface. 0 disables the clause. */
+        const char* pe = getenv("OPENPETE_SHADOW_PLAT_EPS");
+        const char* ps = getenv("OPENPETE_SHADOW_PLAT_SLACK");
+        p.plat_eps    = (pe && *pe) ? (float)atof(pe) : 150.0f;
+        p.plat_slack  = (ps && *ps) ? (float)atof(ps) : 48.0f;
         p.valid = 1;
         openpete_native_set_shadow_decal_params(&p);
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
