@@ -345,19 +345,57 @@ static float portal_cyclorama_depth(double vz) {
     float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_CYCLORAMA_DEPTH_OFFSET;
     return z < 0.0f ? 0.0f : z;
 }
-/* OPENPETE_PORTAL_SKY_DEPTH=ring (A/B): the whole portal sky at the constant
- * BEHIND-RING depth (farthest outline point + a hair) — the .s's own OT
- * placement — instead of the per-pixel opening plane. */
-static int portal_sky_ring_depth(void) {
+/* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
+ *
+ * `ot` mirrors the .s's ACTUAL OT placement (extracted from the generated C,
+ * 2026-07-03): RenderPortals computes the sky's world-OT bucket as
+ *   B = (Σ outline-point SZ / npts) >> 7;  if (B >= 256) B += 64;  clamp 2047
+ * (block_800515C4-80051674; SZ at world scale), and the terrain walk buckets
+ * each face at (Σ 4-corner SZ) >> 7 (+ the face's (w3&0x38)>>1 sort bias) —
+ * terrain SZ is world/4, so BOTH are world-scale mean-view-Z / 128: the whole
+ * sky sits at the constant depth 128·B. The SKY half is validated live
+ * (D_PORTAL_DEPTH == the mirrored B, incl. the +64 bump), but ot mode did
+ * NOT fix the Alpine far-pillar case: by mean-depth buckets the pillar (~39)
+ * sorts FARTHER than the sky (31) yet PsyCross paints it on top — so the
+ * face-side model (bucket direction / which pass draws the pillar) is
+ * incomplete. NOT the default until the world-OT dump (OPENPETE_OT_DUMP_
+ * FRAMES) pins the actual sky-vs-pillar prim indexes.
+ * `plane` (DEFAULT) = per-pixel opening-plane depth + the two-region spill
+ * split; `ring` = farthest outline point (the pre-f2945 construction). */
+static int portal_sky_depth_mode(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_SKY_DEPTH");
-                 v = (e && e[0] == 'r') ? 1 : 0; }
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_PORTAL_SKY_DEPTH");
+        v = 0;                                   /* default: plane (+ the spill split) */
+        if (e) { if (e[0] == 'r') v = 1; else if (e[0] == 'o') v = 2; }
+    }
     return v;
 }
 static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
+static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
 static float ring_depth(void) {
     float z = openpete_native_depth_from_viewz((float)s_ring_vz) + 0.0015f;
     return z > 1.0f ? 1.0f : z;
+}
+static float ot_depth(void) {
+    return openpete_native_depth_from_viewz((float)s_ot_vz);
+}
+/* 1 + *z set when a constant-depth mode is active for the current feed. */
+static int sky_const_depth(float* z) {
+    int m = portal_sky_depth_mode();
+    if (m == 2 && s_ot_vz   > 0.0) { *z = ot_depth();   return 1; }
+    if (m == 1 && s_ring_vz > 0.0) { *z = ring_depth(); return 1; }
+    return 0;
+}
+/* Mirror the .s bucket from the projected outline (world-scale vz). */
+static void set_ot_sky_vz(const ppt* poly, int pn) {
+    double sum = 0.0;
+    for (int i = 0; i < pn; i++) sum += poly[i].vz;
+    long B = (long)(sum / (double)pn) >> 7;
+    if (B >= 256) B += 64;
+    if (B > 2047) B = 2047;
+    if (B < 1) B = 1;
+    s_ot_vz = 128.0 * (double)B;
 }
 
 /* Native depth from the portal plane at a screen point (perspective-correct via
@@ -462,7 +500,25 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     if (pn >= 3) {
         s_ring_vz = 0.0;
         for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
-        const int ring = portal_sky_ring_depth() && s_ring_vz > 0.0;
+        set_ot_sky_vz(poly, pn);
+        /* Mirror check (canonical only; a0 live means the .s just computed
+         * D_PORTAL_DEPTH for THIS portal): our bucket must equal the .s's. */
+        if (portal_dump_enabled() && rgb_override == PORTAL_RGB_RESOLVE) {
+            static int chk = 0;
+            long liveB = (long)(int32_t)cpu->read_word(D_PORTAL_DEPTH);
+            long mirB  = (long)(s_ot_vz / 128.0);
+            if (chk < 8 && liveB != mirB) {
+                chk++;
+                fprintf(stderr, "[portal-otchk f=%u] MISMATCH mirrored=%ld live=%ld\n",
+                        openpete_frame, mirB, liveB);
+            } else if (chk < 8 && liveB == mirB) {
+                chk++;
+                fprintf(stderr, "[portal-otchk f=%u] ok B=%ld (vz %.0f)\n",
+                        openpete_frame, mirB, s_ot_vz);
+            }
+        }
+        float cz;
+        const int cmode = sky_const_depth(&cz);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
             openpete_scene_tri t;
             memset(&t, 0, sizeof t);
@@ -471,7 +527,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = ring ? ring_depth() : portal_cyclorama_depth(v->vz);
+                t.v[k].z = cmode ? cz : portal_cyclorama_depth(v->vz);
                 t.v[k].rgba = rgba;
             }
             portal_add_sky_tri(&t);
@@ -645,8 +701,9 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
         for (int k = 0; k < 3; k++) {
             uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
             if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
+            float cz2;
             t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
-            t.v[k].z = (portal_sky_ring_depth() && s_ring_vz > 0.0) ? ring_depth()
+            t.v[k].z = sky_const_depth(&cz2) ? cz2
                      : use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : const_depth;
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
         }
@@ -731,6 +788,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
         }
         s_skyout_n = pn;
         s_ring_vz = maxvz;
+        set_ot_sky_vz(poly, pn);
         s_skyout_back = openpete_native_depth_from_viewz((float)maxvz) + 0.0015f;
         if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
     }
