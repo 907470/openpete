@@ -523,7 +523,10 @@ static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
 static bool scene_has_world(const openpete_scene_tri* scene, int n) {
     for (int t = 0; t < n; t++) {
         int c = scene[t].category;
-        if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR)
+        /* SKY counts as world: the cyclorama was WORLD before the W2.6-c split
+         * and a dome-only frame qualified as a gameplay frame — preserve that. */
+        if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
+            c == OPENPETE_SCENE_SKY)
             return true;
     }
     return false;
@@ -563,6 +566,9 @@ static struct {
     rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
     rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test OFF + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
     rhi_pipeline *portal_mask_pipe;   /* W2.6: invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
+    rhi_pipeline *gouraud_mark_pipe;  /* W2.6-c: WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
+    rhi_pipeline *scene_tex_mark_pipe;/* W2.6-c: WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
+    rhi_pipeline *gouraud_fill_pipe;  /* W2.6-c: WORLD_FILL LP backing, stencil TEST_ZERO (paints only unmarked pixels; may be NULL → no hole-fill) */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
@@ -906,6 +912,29 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
         .uses_vram = false, .push_const_size = 0,
     };
+    /* WORLD-group variants that also stencil-MARK their coverage (W2.6-c): the
+     * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
+     * fragment passes the depth test, defining "pixels real world geometry
+     * covered". The terrain LP hole-fill layer (WORLD_FILL, TEST_ZERO below)
+     * then paints only the uncovered pixels — LP↔HP T-junction seams — and can
+     * never poke through the HP. The SKY category (cyclorama dome) deliberately
+     * does NOT use these: the sky showing through a seam is exactly what the
+     * fill must repaint. */
+    rhi_pipeline_desc gouraud_mark_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
+     * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
+     * mark left uncovered). LP is untextured, so no textured variant needed. */
+    rhi_pipeline_desc gouraud_fill_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
+        .uses_vram = false, .push_const_size = 0,
+    };
     /* Semi-transparent UNTEXTURED gouraud pipeline (3b.2): the Spyro silhouette
      * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
      * (B+F)/2) — untextured, so it can't go through the textured-blend pipe.
@@ -1028,6 +1057,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Textured WORLD-group stencil-MARK variant (W2.6-c) — most terrain is
+     * textured, so the coverage mark must come from this pipe too. */
+    rhi_pipeline_desc scene_tex_mark_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
@@ -1195,6 +1232,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
+    /* Optional W2.6-c hole-fill pipes (graceful fallback: any NULL → WORLD uses
+     * the plain pipes and the FILL layer is skipped — the pre-fill look). */
+    rhi_pipeline *gouraud_mark_pipe = rhi_create_pipeline(dev, &gouraud_mark_desc);
+    rhi_pipeline *scene_tex_mark_pipe = rhi_create_pipeline(dev, &scene_tex_mark_desc);
+    rhi_pipeline *gouraud_fill_pipe = rhi_create_pipeline(dev, &gouraud_fill_desc);
+    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe) {
+        if (gouraud_mark_pipe)   { rhi_destroy_pipeline(dev, gouraud_mark_pipe);   gouraud_mark_pipe = NULL; }
+        if (scene_tex_mark_pipe) { rhi_destroy_pipeline(dev, scene_tex_mark_pipe); scene_tex_mark_pipe = NULL; }
+        if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
+        OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
+    }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
@@ -1228,6 +1276,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_noz_pipe) rhi_destroy_pipeline(dev, gouraud_noz_pipe);
         if (portal_mask_pipe) rhi_destroy_pipeline(dev, portal_mask_pipe);
+        if (gouraud_mark_pipe)   rhi_destroy_pipeline(dev, gouraud_mark_pipe);
+        if (scene_tex_mark_pipe) rhi_destroy_pipeline(dev, scene_tex_mark_pipe);
+        if (gouraud_fill_pipe)   rhi_destroy_pipeline(dev, gouraud_fill_pipe);
         if (gouraud_add_pipe) rhi_destroy_pipeline(dev, gouraud_add_pipe);
         if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
         if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
@@ -1256,6 +1307,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
     s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
     s_nr.portal_mask_pipe = portal_mask_pipe;
+    s_nr.gouraud_mark_pipe = gouraud_mark_pipe;     /* may be NULL → no hole-fill */
+    s_nr.scene_tex_mark_pipe = scene_tex_mark_pipe; /* may be NULL → no hole-fill */
+    s_nr.gouraud_fill_pipe = gouraud_fill_pipe;     /* may be NULL → no hole-fill */
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
@@ -2457,14 +2511,14 @@ static bool draw_native_scene(bool full_extent)
         static int s_census = -1;
         if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
         if (s_census) {
-            int cat[9] = {0}, blend = 0;
+            int cat[13] = {0}, blend = 0;
             for (int t = 0; t < scene_n; t++) {
                 if (scene[t].blend != 0) blend++;
-                else if (scene[t].category >= 0 && scene[t].category <= 8) cat[scene[t].category]++;
+                else if (scene[t].category >= 0 && scene[t].category <= 12) cat[scene[t].category]++;
             }
-            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d blend=%d fade=%08x freeze=%u\n",
+            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u\n",
                     s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
-                    blend, scene_fade, scene_freeze);
+                    cat[10], cat[11], blend, scene_fade, scene_freeze);
         }
     }
 
@@ -2526,8 +2580,16 @@ static bool draw_native_scene(bool full_extent)
      * Spyro (who flies in front of the intro text) — exactly the PSX OT order
      * (text at the near slot, over other mobys; the player rendered on top). */
     struct scene_group { int blend, gcat; rhi_pipeline *utex, *tex; };
+    /* W2.6-c: the WORLD-opaque group draws through the stencil-MARK variants
+     * (identical raster + stencil=1 coverage write) so the FILL layer below can
+     * paint only uncovered pixels. Falls back to the plain pipes (and no fill)
+     * if the mark/fill pipes didn't come up. */
+    const int holefill_on = s_nr.gouraud_mark_pipe && s_nr.scene_tex_mark_pipe
+                            && s_nr.gouraud_fill_pipe;
     const struct scene_group groups[6] = {
-        { 0, OPENPETE_SCENE_WORLD,  s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 0, OPENPETE_SCENE_WORLD,
+              holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
+              holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
         { 3, -1,                    s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
         { 0, OPENPETE_SCENE_ACTOR,  s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
         { 0, OPENPETE_SCENE_PLAYER, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
@@ -2537,8 +2599,11 @@ static bool draw_native_scene(bool full_extent)
     /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
      * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
      * under the HUD text); 9 = HUD3D (in-game 3D icon mobys, DEPTH-TESTED on top
-     * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on. */
-    int ut_first[11], ut_count[11];
+     * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on.
+     * 11 = SKY (cyclorama dome — WORLD-like, drawn FIRST with the PLAIN pipe so
+     * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
+     * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
+    int ut_first[13], ut_count[13];
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
@@ -2648,6 +2713,37 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[10] = n - ut_first[10];
+    /* SKY (cyclorama dome) + WORLD_FILL (terrain LP hole-fill) untextured
+     * buckets (W2.6-c). SKY draws before the group loop with the PLAIN opaque
+     * pipe (depth-tested backdrop, no stencil mark); FILL draws right after
+     * the WORLD group with the TEST_ZERO pipe. Both untextured by
+     * construction (gouraud dome / gouraud LP). */
+    ut_first[11] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[11] = n - ut_first[11];
+    ut_first[12] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_WORLD_FILL || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[12] = n - ut_first[12];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -2846,6 +2942,17 @@ static bool draw_native_scene(bool full_extent)
         rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
     }
 
+    /* SKY (cyclorama dome) — drawn before the layered groups with the PLAIN
+     * opaque pipe: same depth behaviour as its old WORLD membership (z=1.0
+     * backdrop, everything nearer wins), but it never stencil-MARKs, so the
+     * hole-fill layer can repaint the sky showing through terrain seams
+     * (W2.6-c). Skipped on freeze frames like the other gameplay groups. */
+    if (freeze_first < 0 && s_nr.gouraud_pipe && ut_count[11] > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
+    }
+
     /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
      * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE). For each: the batched
      * untextured range, then its textured tris as material-coalesced runs
@@ -2944,6 +3051,16 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene);
+        }
+        /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
+         * group: depth-tested at TRUE LP depth, gated on stencil==0 so it can
+         * only paint pixels the WORLD group's coverage MARK left empty (the
+         * LP↔HP T-junction seams — where the sky currently shows through).
+         * Must run before the portal sequence (gi==2), which clears stencil. */
+        if (gi == 0 && holefill_on && ut_count[12] > 0) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
          * PLAYER group — the native realization of the PSX sky bucket, which
@@ -3870,6 +3987,9 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
     if (s_nr.gouraud_noz_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
     if (s_nr.portal_mask_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.portal_mask_pipe);
+    if (s_nr.gouraud_mark_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_mark_pipe);
+    if (s_nr.scene_tex_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_mark_pipe);
+    if (s_nr.gouraud_fill_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
     if (s_nr.gouraud_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_add_pipe);
     if (s_nr.gouraud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
     if (s_nr.gouraud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_blend_pipe);

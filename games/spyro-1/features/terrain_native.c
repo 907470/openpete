@@ -263,9 +263,11 @@ typedef struct {
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
+    uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
+static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -496,6 +498,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
     t->tier = s_emit_noHP;
     t->guard = (uint8_t)s_emit_guard;
+    t->fill = (uint8_t)s_emit_fill;
     if (m->textured) s_tex_tris++;
 }
 
@@ -743,6 +746,7 @@ typedef struct {
     uint32_t s, sig[5];
     int nLpV, nLpF, nHpV, nHpF, flags;
     int originX, originY, originZ;
+    int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) — the .s LP/HP binning inputs */
     uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
     tsvert_t* lpV; tsface_t* lpF;
     tsvert_t* hpV; tsface_t* hpF;
@@ -817,6 +821,12 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
         C->flags = (int)(g[0] & 0xE000);
+        {   /* Bounding sphere (header w0/w1) — the .s LP/HP binning inputs. w0 is
+             * not in the signature (it never changes independently of w1..w4). */
+            uint32_t w0 = rd(cpu, s + 0x00);
+            C->centreX = (int)(w0 >> 16); C->centreY = (int)(w0 & 0xFFFF);
+            C->centreZ = (int)(g[0] >> 16); C->radius = (int)(g[0] & 0x1FFF);
+        }
         C->originX = (int)(g[1] >> 16); C->originY = (int)(g[1] & 0xFFFF);
         C->originZ = (int)(g[2] >> 16);
         C->nLpV = g[3] & 0xFF; C->nLpF = (g[3] >> 16) & 0xFF;
@@ -1065,6 +1075,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
     int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
+    int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -1150,6 +1161,42 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_lod_handoff && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
             drawLP = 1; lpFarOnly = 1;
         }
+        /* LP HOLE-FILL backing (W2.6-c): an HP sector that does NOT already
+         * draw its LP re-emits it as WORLD_FILL — stencil-gated in core to the
+         * pixels no world geometry covered, i.e. the LP↔HP T-junction seams
+         * (the artisans distant-water gaps). Because of the stencil gate it can
+         * never poke through the HP (the failure of the 2026-06-26 draw-LP-
+         * everywhere attempt); it draws at TRUE LP depth, no tier bias.
+         *
+         * DISTANCE GATE — the .s LP-list binning condition (func @0x80025940):
+         * LP is fed only when lodThr < centerZ + radius + 0x100 (the sector's
+         * far edge crosses the LOD boundary; lodThr = ENV_LODDIST>>4, centerZ =
+         * the projected bounding-CENTRE view-Z, radius = w1 & 0x1FFF). A NEAR
+         * sector's LP is never drawn by the PSX, and feeding it here broke the
+         * portal apertures: the near arch-hill's coarse LP bulged into the
+         * opening (stencil==0 — nothing marks inside an aperture), painted at
+         * near depth and depth-killed the portal-sky mask (gate tick 9775).
+         * The seams the fill exists for sit exactly AT the LOD boundary, which
+         * satisfies this condition by construction. Distance-dependence is
+         * confined to sub-pixel seam slivers, so no visible pop-in. NB: reads
+         * the RAW RAM lodDist — --no-lod's INT32_MAX saturation substitutes at
+         * the .s READ sites only, so this stays the real LOD band marker. */
+        static int s_holefill = -1;   /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
+        if (s_holefill < 0) { const char* e = getenv("OPENPETE_TERRAIN_HOLEFILL"); s_holefill = (e && *e) ? (*e != '0') : 1; }
+        int fillLP = s_holefill && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0;
+        if (fillLP) {
+            /* The .s binning projects the bounding centre through the
+             * g_Camera+0x14 matrix (NOT the +0x00 projection matrix the vertex
+             * walk uses — the two differ in scale; using +0x00 here was too
+             * permissive and re-admitted a straddling cliff whose LP fringed
+             * the sky silhouette in peace-keepers, gate tick 4888). */
+            double c1m, c2m, c3m;
+            ngte_mac(Mbin, camy - SC->centreY, camz - SC->centreZ,
+                     SC->centreX - camx, &c1m, &c2m, &c3m);
+            (void)c1m; (void)c2m;
+            int lodThr = fogRefBase >> 2;             /* = ENV_LODDIST >> 4 */
+            if (!((double)lodThr < c3m + SC->radius + 0x100)) fillLP = 0;
+        }
 
         s_walk_sectors++;
 
@@ -1159,10 +1206,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         float sd_bx0 = 1e18f, sd_by0 = 1e18f, sd_bx1 = -1e18f, sd_by1 = -1e18f;
         int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
 
-      for (int pass = 0; pass < 2; pass++) {
-        int passLP = (pass == 0);                 /* LP first → drawn behind HP */
-        if (passLP && !drawLP) continue;
-        if (!passLP && !drawHP) continue;
+      for (int pass = 0; pass < 3; pass++) {
+        int passFill = (pass == 2);               /* LP hole-fill backing (W2.6-c) */
+        int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
+        if (pass == 0 && !drawLP) continue;
+        if (pass == 1 && !drawHP) continue;
+        if (passFill && !fillLP) continue;
 
         uint32_t faces; int nv, nf, faceStride;
         const tsvert_t* cverts; const tsface_t* cfaces;
@@ -1184,6 +1233,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         const uint8_t* h_far  = passLP ? NULL : (const uint8_t*)openpete_psx_to_host_ptr(farBase);
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         s_emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
+        s_emit_fill = passFill;   /* fill pass -> WORLD_FILL category in the feed */
         sd_nv += nv; sd_nf += nf;
 
         for (int k = 0; k < nv; k++) {
@@ -1235,6 +1285,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
                 if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
                 if (passLP && lpFarOnly && beyond == 0) { continue; } /* LP far-only */
+            }
+            /* HOLE-FILL per-face far gate (W2.6-c): only FULLY-FOGGED faces
+             * (every corner at/past the exact fog saturation, ir0 = fogRef−4·m3
+             * ≤ 0 — the proven W2.3 decode scale, independent of the shipped
+             * s_fogscale). The T-junction seams the fill exists for are at the
+             * fully-fogged horizon; a mid-band face admitted here painted a
+             * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
+             * float raster is a hair tighter than the PSX integer edge — gate
+             * tick 4888, peace-keepers cliffs). */
+            if (passFill) {
+                int nc2 = quad ? 4 : 3, farAll = 1;
+                const int cf[4] = { i0, i1, i2, i3 };
+                for (int q2 = 0; q2 < nc2 && farAll; q2++)
+                    if (fogRef - (int)(sv[cf[q2]].m3 * 4.0) > 0) farAll = 0;
+                if (!farAll) continue;
             }
             /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
              * boundary that separates the .s's deferred cells (queue oracle) from
@@ -1477,24 +1542,34 @@ static void terrain_feed_native(void) {
              * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
              * scale, so ×16 to match — else terrain's depth is ~16× too small
              * (always nearest) and draws on top of every actor.
-             * LP_DEPTH_BIAS: the coarse LP layer is pushed slightly BEHIND the
-             * HP layer (PSX draws LP first, HP overwrites it) so where a sector
-             * carries both tiers the fine HP mesh wins the depth test and the LP
-             * shows only in the seam gaps HP doesn't reach. Harmless for pure-LP
-             * far sectors (still far in front of the cyclorama). */
+             * LP ×1.03 (W2.6-c resolution): with the stencil hole-fill carrying
+             * every INTER-sector LP backing role, this pull's one remaining
+             * consumer is the 0x8000 force-LP set — a sector whose LP is the
+             * PRIMARY surface backing a sparse HP detail overlay (stone-hill
+             * sector 79: 3 HP vs 12 LP faces). That LP must OCCLUDE geometry
+             * behind it, so it cannot ride the additive-only stencil fill; and
+             * it is NOT a coplanar tie-break, so the W2.5 constant hardware
+             * bias is the wrong shape — the two meshes diverge in WORLD units,
+             * which a distance-PROPORTIONAL pull models correctly. Retained,
+             * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
+             * LP, where it is inert — nothing shares its surface.) */
             float vzf = (float)t->vz[k] * 16.0f;
-            if (t->tier) vzf *= 1.03f;   /* tier==1 → LP */
+            /* The FILL backing draws at TRUE depth: the stencil gate (not a
+             * depth bias) is what keeps it behind the HP (W2.6-c). */
+            if (t->tier && !t->fill) vzf *= 1.03f;   /* tier==1 → LP */
             tri.v[k].z  = openpete_native_depth_from_viewz(vzf);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:
              * the gouraud colour; s_flat = a debug coverage colour;
-             * s_tiercolor = LP red / HP blue. */
-            tri.v[k].rgba = s_tiercolor ? (t->tier ? 0xFF0000FFu : 0xFFFF0000u)
+             * s_tiercolor = LP red / HP blue / fill green. */
+            tri.v[k].rgba = s_tiercolor ? (t->fill ? 0xFF00FF00u
+                                         : t->tier ? 0xFF0000FFu : 0xFFFF0000u)
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
-        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_WORLD, 0);
+        openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
+                                                    : OPENPETE_SCENE_WORLD, 0);
         /* PSX mask-bit mirror: re-feed .s-deferred (near-band) tris as the
          * portal guard, drawn after the portal sky (see the category doc).
          * Opaque only (the defer test excludes ABE); gated on a portal having

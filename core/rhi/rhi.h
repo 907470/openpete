@@ -165,9 +165,14 @@ typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRAC
  *    stencil=1 (depth-fail leaves 0, so world geometry in front punches the
  *    mask out). Pair with color_write_off for an invisible mask pass.
  *  - TEST: draw only where stencil==1 (inside the mask); stencil not written.
+ *  - TEST_ZERO: draw only where stencil==0 (OUTSIDE the mask); stencil not
+ *    written. The hole-fill role (W2.6-c): geometry that must paint only the
+ *    pixels a prior MARK pass did NOT cover (e.g. the terrain LP backing layer
+ *    filling LP↔HP T-junction seams without ever poking through the HP).
  * Reference is fixed at 1 — per-object isolation is done by rhi_clear_stencil
  * between mask groups, not by reference juggling. */
-typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST } rhi_stencil_mode;
+typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
+               RHI_STENCIL_TEST_ZERO } rhi_stencil_mode;
 
 typedef struct {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */

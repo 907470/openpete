@@ -440,7 +440,11 @@ static void push_scene(CPUState* cpu) {
         t.textured = 0;   /* cyclorama is gouraud-shaded (no texture) */
         t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
         t.blend = 0;      /* opaque */
-        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_WORLD, 0);
+        /* SKY, not WORLD (W2.6-c): drawn identically (opaque, depth-tested,
+         * first) but without the WORLD group's stencil coverage MARK — the sky
+         * showing through a terrain seam is exactly what the LP hole-fill
+         * layer must be allowed to repaint. */
+        openpete_native_scene_add_tri(&t, OPENPETE_SCENE_SKY, 0);
     }
 }
 

@@ -2563,6 +2563,16 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         };
         dss.stencilTestEnable = VK_TRUE;
         dss.front = sop; dss.back = sop;
+    } else if (desc->stencil == RHI_STENCIL_TEST_ZERO) {
+        /* Pass where stencil != 1, i.e. ==0 (only 0/1 are ever written): the
+         * hole-fill role — paint only pixels the MARK pass left uncovered. */
+        VkStencilOpState sop = {
+            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
+            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_NOT_EQUAL,
+            .compareMask = 0xFFu, .writeMask = 0u, .reference = 1u,
+        };
+        dss.stencilTestEnable = VK_TRUE;
+        dss.front = sop; dss.back = sop;
     }
     VkDynamicState dyn[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
                               VK_DYNAMIC_STATE_DEPTH_BIAS };

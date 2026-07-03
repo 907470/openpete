@@ -218,6 +218,27 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * re-wins its own pixels — the depth-buffer realization of the mask).
  * Opaque only by construction (the defer test excludes ABE faces). */
 #define OPENPETE_SCENE_PORTAL_GUARD 9
+/* SKY — the main cyclorama dome (cyclorama_native.c). Drawn exactly like WORLD
+ * (opaque, depth-tested, before everything else) EXCEPT it does not stencil-MARK
+ * terrain coverage (W2.6-c): the WORLD group's mark defines "pixels real world
+ * geometry covered", and the hole-fill LP backing (WORLD_FILL) paints only where
+ * that mark is absent — which is precisely where the sky shows through a terrain
+ * seam. If the dome marked, every hole would be self-masked and the fill dead. */
+#define OPENPETE_SCENE_SKY 10
+/* WORLD_FILL — the terrain LP backing layer for sectors whose HP is drawn
+ * (W2.6-c hole-fill). The PSX draws the coarse LP list first and the fine HP
+ * over it, so LP shows through wherever HP leaves a T-junction seam against an
+ * LP-only neighbour (the artisans distant-water gaps). Natively, drawing LP
+ * behind HP with a depth bias poked through on non-flat sectors (the coarse
+ * mesh bulges in front of the fine one — tried and reverted 2026-06-26).
+ * Instead the WORLD group stencil-MARKs its coverage and this layer draws right
+ * after it with RHI_STENCIL_TEST_ZERO: it can only touch pixels NO world
+ * geometry covered, so poke-through is impossible by construction and every
+ * genuine hole is filled with the same LP the PSX shows there. Depth-tested and
+ * depth-written at TRUE LP depth (no bias needed). Untextured only (LP is
+ * gouraud G4/G3). EXCLUDED from the occlusion depth pre-pass: rasterized
+ * unstencilled there, a bulging LP would be a phantom occluder. */
+#define OPENPETE_SCENE_WORLD_FILL 11
 /* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
