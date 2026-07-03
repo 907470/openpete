@@ -206,6 +206,18 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * portals are isolated from each other per group (rhi_clear_stencil between
  * groups; groups drawn far→near by their plane depth). Untextured only. */
 #define OPENPETE_SCENE_PORTAL_MASK 8
+/* PORTAL_GUARD — near-band terrain PROTECTION (the PSX mask bit, 2026-07-03).
+ * The .s drains deferred terrain (depthSum < 0x2000 = mean world vz < 8192,
+ * minus word3&0x80 faces) via immediate DrawPrim, which the PSX renders with
+ * the mask bit SET; every OT prim — including the portal sky — draws with
+ * mask-CHECK and is REJECTED on those pixels. So near-band terrain always
+ * beats the portal preview on hardware, regardless of OT order. The terrain
+ * feeder re-emits exactly those faces (its face_is_near classifier) under
+ * this category when a portal fed sky recently; core re-draws them right
+ * AFTER the portal-sky sequence (the sky writes no depth, so the redraw
+ * re-wins its own pixels — the depth-buffer realization of the mask).
+ * Opaque only by construction (the defer test excludes ABE faces). */
+#define OPENPETE_SCENE_PORTAL_GUARD 9
 /* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but

@@ -164,6 +164,7 @@ typedef struct {
     uint32_t flat_rgb;      /* resolved raw flat colour (a0 is stale on replay)   */
     uint32_t skybox;        /* skybox ptr for the dome walk (is_dome only)        */
     int      is_dome;       /* leaf emitted a gradient dome (kind != FLAT)        */
+    uint32_t ot_b;          /* captured D_PORTAL_DEPTH (the .s OT bucket)          */
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
     int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
@@ -366,7 +367,7 @@ static int portal_sky_depth_mode(void) {
     static int v = -1;
     if (v < 0) {
         const char* e = getenv("OPENPETE_PORTAL_SKY_DEPTH");
-        v = 0;                                   /* default: plane (+ the spill split) */
+        v = 0;                                   /* default: plane + spill split + guard */
         if (e) { if (e[0] == 'r') v = 1; else if (e[0] == 'o') v = 2; }
     }
     return v;
@@ -378,23 +379,31 @@ static float ring_depth(void) {
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
-    /* max(128*B, 8192): the OT bucket handles OT-vs-OT ordering; the 8192
-     * floor mirrors the near-subdivide PROTECTION — faces with depthSum <
-     * 0x2000 (mean world vz < 8192) are drained via immediate DrawPrim with
-     * the PSX mask bit set (PsyCross: stencil REPLACE), and every OT prim
-     * (incl. the portal sky) draws with mask-CHECK (stencil NOTEQUAL 1), so
-     * near-band terrain ALWAYS beats the sky on hardware regardless of OT
-     * order. That is what keeps the arch pillar (and the f2945 receding
-     * floor) on top of the preview. */
-    double vz = s_ot_vz > 8192.0 ? s_ot_vz : 8192.0;
-    return openpete_native_depth_from_viewz((float)vz);
+    /* 128 * the mirrored .s OT bucket — the literal PSX OT placement. The
+     * near-band terrain that would need extra protection here is handled
+     * per-face by the PORTAL_GUARD redraw (the PSX mask-bit mirror), not by
+     * a depth floor (a blanket floor over-protects the non-deferred
+     * through-hole floor, which the preview must cover). */
+    return openpete_native_depth_from_viewz((float)s_ot_vz);
 }
-/* 1 + *z set when a constant-depth mode is active for the current feed. */
+/* Returns the active constant-depth mode (0 none, 1 ring, 2 ot) + *z.
+ * ot mode COMBINES with the per-pixel plane: the sky z is
+ * min(plane_depth, 128*B) — the plane half covers everything behind the
+ * OPENING (through-hole content near or far, the PSX walk-order result at
+ * close range where the dome paints over all earlier slots), the bucket
+ * half caps the depth for the rect spill + far ordering, and the
+ * PORTAL_GUARD redraw resurrects the DrawPrim-protected (deferred) faces
+ * exactly as the PSX mask bit does. */
 static int sky_const_depth(float* z) {
     int m = portal_sky_depth_mode();
-    if (m == 2 && s_ot_vz   > 0.0) { *z = ot_depth();   return 1; }
+    if (m == 2 && s_ot_vz   > 0.0) { *z = ot_depth();   return 2; }
     if (m == 1 && s_ring_vz > 0.0) { *z = ring_depth(); return 1; }
     return 0;
+}
+static float sky_min2(float plane_z, float cz, int cmode) {
+    if (cmode == 2) return plane_z < cz ? plane_z : cz;
+    if (cmode == 1) return cz;
+    return plane_z;
 }
 /* Mirror the .s bucket from the projected outline (world-scale vz). */
 static void set_ot_sky_vz(const ppt* poly, int pn) {
@@ -450,13 +459,19 @@ static float plane_depth(double a, double b, double c, double x, double y) {
  * replay), set by each feed path immediately before it emits. File-local
  * ambient only — never crosses a feeder boundary. */
 static int s_portal_group = 0;
+/* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
+ * true while a portal fed sky within the last couple of presents. */
+static unsigned s_sky_fed_frame = 0;
+int openpete_portal_sky_recent(void) {
+    return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
+}
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
 }
 
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
-                            uint32_t rgb_override,
+                            uint32_t rgb_override, uint32_t ot_b_hint,
                             uint32_t fog_rgb, double fog_t) {
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
@@ -506,10 +521,23 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     s_portal_group = (int)(p ? cpu->read_word(p + 0x00) : a0);
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    /* The sky's OT bucket: canonical leaves read the LIVE D_PORTAL_DEPTH the
+     * .s just computed for THIS portal (correct even when the outline is
+     * unavailable — a point behind the camera at close/steep range); the
+     * sub-tick replay uses the captured bucket; the outline mirror (validated
+     * == live) is the last resort. A stale s_ot_vz from another portal put
+     * the Alpine sky ~59k deep and let the whole through-hole floor beat it. */
+    if (rgb_override == PORTAL_RGB_RESOLVE)
+        s_ot_vz = 128.0 * (double)(int32_t)cpu->read_word(D_PORTAL_DEPTH);
+    else if (ot_b_hint)
+        s_ot_vz = 128.0 * (double)ot_b_hint;
+    else
+        s_ot_vz = 0.0;
     if (pn >= 3) {
         s_ring_vz = 0.0;
         for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
-        set_ot_sky_vz(poly, pn);
+        if (s_ot_vz <= 0.0) set_ot_sky_vz(poly, pn);
+        s_sky_fed_frame = openpete_frame;
         /* Mirror check (canonical only; a0 live means the .s just computed
          * D_PORTAL_DEPTH for THIS portal): our bucket must equal the .s's. */
         if (portal_dump_enabled() && rgb_override == PORTAL_RGB_RESOLVE) {
@@ -526,7 +554,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                         openpete_frame, mirB, s_ot_vz);
             }
         }
-        float cz;
+        float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
             openpete_scene_tri t;
@@ -536,7 +564,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = cmode ? cz : portal_cyclorama_depth(v->vz);
+                t.v[k].z = sky_min2(portal_cyclorama_depth(v->vz), cz, cmode);
                 t.v[k].rgba = rgba;
             }
             portal_add_sky_tri(&t);
@@ -553,8 +581,17 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * mid-entry). The sky repaints after the ACTOR group; the PLAYER group
      * draws later, so Spyro himself is never covered. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    if (vz <= 1.0) vz = 2.0;   /* crossed → nearest (was 16384 far-sentinel) */
+    int crossed = (vz <= 1.0);
+    if (crossed) vz = 2.0;     /* crossed → nearest (was 16384 far-sentinel) */
     float depth = portal_cyclorama_depth(vz);
+    /* Constant-depth modes apply to the fallback rect too (the pn<3 case IS
+     * the common close/steep one) — except mid-entry (crossed), where the
+     * near cover must win everything. */
+    {
+        float cz3 = 0.0f;
+        int cm3 = sky_const_depth(&cz3);
+        if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
+    }
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -710,10 +747,11 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
         for (int k = 0; k < 3; k++) {
             uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
             if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
-            float cz2;
+            float cz2 = 0.0f;
+            int cm2 = sky_const_depth(&cz2);
+            float pz2 = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : const_depth;
             t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
-            t.v[k].z = sky_const_depth(&cz2) ? cz2
-                     : use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : const_depth;
+            t.v[k].z = sky_min2(pz2, cz2, cm2);
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
         }
         portal_add_sky_tri(&t);
@@ -745,7 +783,8 @@ static int dome_face_cmp(const void* x, const void* y) {
     return (kx < ky) ? 1 : (kx > ky) ? -1 : 0;   /* DESCENDING view-Z: far first */
 }
 
-static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, double fog_t) {
+static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
+                            int canonical, uint32_t fog_rgb, double fog_t) {
     s_portal_group = (int)skybox;   /* group id for mask↔colour pairing (W2.6) */
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int x0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, x1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
@@ -761,10 +800,22 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
 
+    if (canonical)
+        s_ot_vz = 128.0 * (double)(int32_t)cpu->read_word(D_PORTAL_DEPTH);
+    else if (ot_b_hint)
+        s_ot_vz = 128.0 * (double)ot_b_hint;
+    else
+        s_ot_vz = 0.0;
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
     double vz = portal_viewz(cpu, skybox, cx, cy);
-    if (vz <= 1.0) vz = 2.0;   /* camera crossed the plane → nearest (see feed_portal_quad) */
-    float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth, pulled forward by the sky offset */
+    int crossed = (vz <= 1.0);
+    if (crossed) vz = 2.0;     /* camera crossed the plane → nearest (see feed_portal_quad) */
+    float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth */
+    {
+        float cz3 = 0.0f;
+        int cm3 = sky_const_depth(&cz3);
+        if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
+    }
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
@@ -797,7 +848,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t fog_rgb, do
         }
         s_skyout_n = pn;
         s_ring_vz = maxvz;
-        set_ot_sky_vz(poly, pn);
+        s_sky_fed_frame = openpete_frame;
         s_skyout_back = openpete_native_depth_from_viewz((float)maxvz) + 0.0015f;
         if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
     }
@@ -993,9 +1044,9 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
          * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
          * the actors. */
-        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, fog, fog_t);
+        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, 0, fog, fog_t);
         if (is_dome && is_skybox_a0)
-            feed_portal_dome(cpu, a0, fog, fog_t);
+            feed_portal_dome(cpu, a0, 0, /*canonical=*/1, fog, fog_t);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
          * so the widescreen off-4:3 reveal below doesn't double-draw it. Also the
          * sub-tick capture (replayed by portal_native_reextract every present). */
@@ -1011,6 +1062,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->flat_rgb      = portal_flat_raw_rgb(cpu, a0);   /* raw, pre-fog */
                 c->is_dome       = (is_dome && is_skybox_a0);
                 c->skybox        = c->is_dome ? a0 : 0;
+                c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
@@ -1094,6 +1146,7 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->flat_rgb      = rgb;
             c->is_dome       = 0;
             c->skybox        = 0;
+            c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
             c->fog_rgb       = 0;
             c->fog_t         = 0.0;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
@@ -1267,10 +1320,11 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
          * PORTAL_CYCLORAMA so the sub-tick previews stay depth-write-off too (never
          * occlude Spyro flying/walking through). PORTAL_CYCLORAMA is passed to add_tri
          * inside feed_portal_quad/_dome. */
-        feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb,
+        feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb, c->ot_b,
                          c->fog_rgb, c->fog_t);
         if (c->is_dome)
-            feed_portal_dome(cpu, c->skybox, c->fog_rgb, c->fog_t);
+            feed_portal_dome(cpu, c->skybox, c->ot_b, /*canonical=*/0,
+                             c->fog_rgb, c->fog_t);
     }
 
     for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);

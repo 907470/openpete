@@ -33,6 +33,8 @@
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
+extern int openpete_portal_sky_recent(void);   /* portal_native.c (portal-guard gate) */
+
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -260,8 +262,10 @@ typedef struct {
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
+    uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
+static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -491,6 +495,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->textured=m->textured; t->tpx=m->tpx; t->tpy=m->tpy;
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
     t->tier = s_emit_noHP;
+    t->guard = (uint8_t)s_emit_guard;
     if (m->textured) s_tex_tris++;
 }
 
@@ -1031,7 +1036,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* The render decision uses face_is_near (gamestate); the deferred QUEUE is read
      * ONLY as a verify oracle / for the NEARQ debug path — never in the shipping
      * feed path (the plan forbids consuming .s per-frame output for rendering). */
-    int wantOracle = s_caldbg || s_nearq > 0 ||
+    int wantOracle = openpete_portal_sky_recent() ||   /* portal guard reads the queue */
+                     s_caldbg || s_nearq > 0 ||
                      (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
     terrain_dbg_init();
     if (s_fogscale < 0.0) {  /* viewZ = m3 (m3 already in SZ3 scale); env-tunable */
@@ -1264,6 +1270,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * orientation (triRot). Geometry + orientation match; the only gap vs
              * the .s is LQ-vs-HQ texture on that single tri (the HQ detail-path
              * sub-tessellation is the existing carve-out). */
+            /* Portal-guard tag (PSX mask-bit mirror): the .s DEFERS this face
+             * (DrawPrim-drawn, mask-protected from the OT walk incl. the portal
+             * sky) — every tri it emits below (near-subdivide OR the regular
+             * fall-through) gets re-fed as OPENPETE_SCENE_PORTAL_GUARD when
+             * portals are active (terrain_feed_native). Tag from the QUEUE
+             * ORACLE (the .s's own defer decision), NOT face_is_near — the
+             * classifier over-covers the real queue by ~20x (see the defer
+             * calibration note) and would wrongly protect the through-hole
+             * floor the preview must cover. */
+            s_emit_guard = (faceStride == 16 && s_defer_n > 0 &&
+                            is_deferred(faces + (uint32_t)f * 16u));
             int near = (faceStride == 16 && s_nearhq && hqTable && front && quad &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
@@ -1478,6 +1495,34 @@ static void terrain_feed_native(void) {
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
         openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_WORLD, 0);
+        /* PSX mask-bit mirror: re-feed .s-deferred (near-band) tris as the
+         * portal guard, drawn after the portal sky (see the category doc).
+         * Opaque only (the defer test excludes ABE); gated on a portal having
+         * fed sky within the last couple of presents. */
+        {   /* OPENPETE_PORTAL_GUARD=1 (EXPERIMENT, default OFF): re-feed
+             * .s-deferred tris as the portal guard. Disabled by default: at
+             * magic-crafters f3000 the PsyCross reference shows the preview
+             * covering MOST deferred faces (only the arch pillar behaves
+             * protected), so redrawing all of them regressed the probes by
+             * ~+12k strong-diff px — the mask/drain model is incomplete
+             * (open question: PsyCross FBO stencil attachment + drain-vs-
+             * DrawOTag split order). */
+            static int gen = -1;
+            if (gen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD"); gen = (e && *e && *e != '0'); }
+            if (gen && t->guard && tri.blend == 0 && openpete_portal_sky_recent())
+                openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_PORTAL_GUARD, 0);
+        }
+    }
+    {   /* guard census (debug, stderr-throttled) */
+        static int cen = -1; static int lines;
+        if (cen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD_DBG"); cen = (e && *e && *e != '0'); }
+        if (cen && lines < 40 && openpete_frame >= 2980) {
+            int g = 0;
+            for (int i = 0; i < s_tri_n; i++) if (s_tri[i].guard) g++;
+            lines++;
+            fprintf(stderr, "[portal-guard] f=%u tris=%d guard=%d recent=%d defer_n=%d\n",
+                    openpete_frame, s_tri_n, g, openpete_portal_sky_recent(), s_defer_n);
+        }
     }
 }
 

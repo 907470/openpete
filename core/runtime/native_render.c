@@ -2526,7 +2526,7 @@ static bool draw_native_scene(bool full_extent)
      * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
      * under the HUD text); 9 = HUD3D (in-game 3D icon mobys, DEPTH-TESTED on top
      * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on. */
-    int ut_first[10], ut_count[10];
+    int ut_first[11], ut_count[11];
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
@@ -2620,6 +2620,22 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[9] = n - ut_first[9];
+    /* PORTAL_GUARD untextured: near-band terrain protection redraw (see the
+     * category doc). Depth-tested opaque, drawn right after the portal-sky
+     * sequence — re-wins its own pixels from the depth-write-off sky. */
+    ut_first[10] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_GUARD || n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[10] = n - ut_first[10];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -2671,8 +2687,8 @@ static bool draw_native_scene(bool full_extent)
      * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
      * backdrops want painter's order) and only coalesce already-adjacent runs. */
     int tx_start = n;
-    int txg_first[7], txg_count[7], txtri = 0;
-    for (int b = 0; b < 7; b++) {
+    int txg_first[8], txg_count[8], txtri = 0;
+    for (int b = 0; b < 8; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
@@ -2681,9 +2697,11 @@ static bool draw_native_scene(bool full_extent)
             int cat = scene[t].category;
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
+            else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
             else {
                 int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
                 belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
+                          cat != OPENPETE_SCENE_PORTAL_GUARD &&
                           bl == groups[b].blend &&
                           !(groups[b].blend == 0 && groups[b].gcat >= 0 && cat != groups[b].gcat);
             }
@@ -2969,6 +2987,21 @@ static bool draw_native_scene(bool full_extent)
                 rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
                 rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
                 rhi_draw(s_nr.dev, (uint32_t)sk->count, (uint32_t)sk->first);
+            }
+            /* PORTAL_GUARD: near-band terrain protection redraw — the PSX
+             * mask-bit mirror (see the category doc in the header). Drawn
+             * once after ALL portal groups; the sky wrote no depth, so the
+             * guard's normal LEQUAL re-wins exactly its own pixels. */
+            if (ut_count[10] > 0 && s_nr.gouraud_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[10], (uint32_t)ut_first[10]);
+            }
+            if (txg_count[7] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene);
             }
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
