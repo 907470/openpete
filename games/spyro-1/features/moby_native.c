@@ -86,8 +86,19 @@ static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_nat
  * rescue dragon) that REGULAR didn't draw — and overwrites the colour scratch,
  * so the REGULAR snapshot can't reproduce them. Capture it at the canonical SPEC
  * hook and replay it in the re-extract's SPEC pass. */
+/* Window = colour rows [0x1100,0x1600) + the FULL record region [0x1600,0x2400)
+ * — same extent as the REGULAR capture_recs. The records are stride 0x38, so
+ * record 14+ spills past +0x1900; the old 0x800 length stopped there and
+ * silently truncated the replayed SPEC queue to 13 records. In Gnorc Cove's
+ * opening the specular queue holds 15-19 (armored gnorcs + snails + barrels),
+ * putting the ROLLING BARRELS at the tail — they vanished on every sub-tick
+ * present (--render-fps), i.e. "invisible barrels" at high fps. Capture happens
+ * at the canonical SPEC hook, BEFORE the later Spyro pass reuses [0x1900,0x1A00)
+ * for its seg scratch (same liveness argument as capture_recs); the sub-tick
+ * swap below save/restores the whole window, so the bracket's seg overlay for
+ * the Spyro feeder is untouched. */
 #define SPEC_SCR_LO   0x1100u
-#define SPEC_SCR_LEN  0x800u
+#define SPEC_SCR_LEN  0x1300u
 static uint8_t s_canon_spec[SPEC_SCR_LEN];
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
