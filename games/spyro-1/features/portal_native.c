@@ -378,7 +378,16 @@ static float ring_depth(void) {
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
-    return openpete_native_depth_from_viewz((float)s_ot_vz);
+    /* max(128*B, 8192): the OT bucket handles OT-vs-OT ordering; the 8192
+     * floor mirrors the near-subdivide PROTECTION — faces with depthSum <
+     * 0x2000 (mean world vz < 8192) are drained via immediate DrawPrim with
+     * the PSX mask bit set (PsyCross: stencil REPLACE), and every OT prim
+     * (incl. the portal sky) draws with mask-CHECK (stencil NOTEQUAL 1), so
+     * near-band terrain ALWAYS beats the sky on hardware regardless of OT
+     * order. That is what keeps the arch pillar (and the f2945 receding
+     * floor) on top of the preview. */
+    double vz = s_ot_vz > 8192.0 ? s_ot_vz : 8192.0;
+    return openpete_native_depth_from_viewz((float)vz);
 }
 /* 1 + *z set when a constant-depth mode is active for the current feed. */
 static int sky_const_depth(float* z) {
