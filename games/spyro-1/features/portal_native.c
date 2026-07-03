@@ -164,7 +164,6 @@ typedef struct {
     uint32_t flat_rgb;      /* resolved raw flat colour (a0 is stale on replay)   */
     uint32_t skybox;        /* skybox ptr for the dome walk (is_dome only)        */
     int      is_dome;       /* leaf emitted a gradient dome (kind != FLAT)        */
-    double   backstop_bias; /* flat depth push-back (dome backstop vs flat preview)*/
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
     int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
@@ -325,8 +324,8 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * angle that forward push made the sky poke out past the stone SIDES — it won the
  * depth test against the arch's own geometry. Sitting exactly on the opening plane
  * is the correct depth; the accepted cost is that the ~1px inner-frame edge z-fights
- * and can flicker. (The backstop push-back in feed_portal_quad is a SEPARATE
- * mechanism that keeps the flat backstop behind the dome — unaffected by this.) */
+ * and can flicker. (The backstop push-back once noted here was retired by the W2.6
+ * stencil groups' in-group painter order.) */
 
 /* A small CONSTANT offset in NDC depth-buffer space (0..1) pulling the portal sky a
  * hair toward the camera, so it consistently wins the z-fight against the thin
@@ -338,9 +337,7 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * everywhere, so the rim sliver where it beats the stone stays sub-pixel at any
  * distance or angle, while still clearing the coincident-frame z-fight. Applied to
  * the WHOLE portal sky (dome, flat preview, AND backstop) so all paths shift
- * together and the far↔medium↔close distance crossfade has no discontinuity; the
- * backstop's separate relative push-back (`backstop_bias`) rides on top and is
- * preserved. (A hardware slope-scaled polygon offset — pipeline `depthBias` — is the
+ * together and the far↔medium↔close distance crossfade has no discontinuity. (A hardware slope-scaled polygon offset — pipeline `depthBias` — is the
  * fuller version, but it needs the shared `native_render.c` draw path; this
  * feeder-side constant is the equivalent that touches only this file.) Tunable. */
 #define PORTAL_CYCLORAMA_DEPTH_OFFSET 0.0015f
@@ -371,12 +368,11 @@ static float plane_depth(double a, double b, double c, double x, double y) {
  * differently across the interior — this quad linearly per fan-tri, the dome
  * perspective-correct per pixel — so the bg colour shimmers through, f1910). So a
  * SKYBOX-LINKED flat (a0 == a portal's m_Skybox, or m_Skybox+0x10) is the dome's
- * BACKSTOP: push it behind the dome by backstop_bias (>1 scales the fill's view-Z
- * so depth_from_viewz sinks it farther). The dome then wins wherever it has
- * coverage; the backstop only shows through the dome's culled/near-rejected edge
- * gaps (still far nearer than the through-hole terrain, so it never reveals the hill
- * behind). A far/medium flat (a0 = a stack/global colour ptr, NOT skybox-linked) IS
- * the whole preview — it stays on the portal plane (bias 1.0, backstop_bias ignored). */
+ * BACKSTOP. Historical: it used to be pushed behind the dome by a x1.0625/x1.125
+ * view-Z scale so the dome won the depth test; RETIRED by the W2.6 stencil groups
+ * (in-group painter order at equal depth — the dome draws after the backstop and
+ * wins per pixel). The backstop still only shows through the dome's
+ * culled/near-rejected edge gaps, still far nearer than the through-hole terrain. */
 /* rgb_override == PORTAL_RGB_RESOLVE means "resolve the colour from a0" (the
  * canonical leaf path, where a0 is live); any other value is used directly (the
  * sub-tick reextract path, where a0 may be a stale stack/transient pointer so the
@@ -399,7 +395,7 @@ static void portal_add_sky_tri(const openpete_scene_tri* t) {
 }
 
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
-                            uint32_t rgb_override, double backstop_bias,
+                            uint32_t rgb_override,
                             uint32_t fog_rgb, double fog_t) {
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
@@ -431,15 +427,12 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * that makes the floor eat the near part (f2945). */
     uint32_t p = portal_hint ? portal_hint
                              : owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    /* Only a skybox-linked flat is a dome backstop (close FEA0 a0=skybox+0x10, or
-     * the dome's own a0=skybox) — push it behind the dome. Far/medium previews
-     * (a0 = stack/global colour) are the whole sky and stay on the plane. */
-    double back_bias = 1.0;
-    if (p) { uint32_t sb = cpu->read_word(p + 0x00); if (sb == a0 || sb == a0 - 0x10) back_bias = backstop_bias; }
-    /* No forward bias: a far/medium FLAT preview (back_bias 1.0) IS the whole visible
-     * sky and stays on the opening plane (z-fighting the inner frame, accepted); a
-     * backstop (back_bias>1) keeps its push-back so it sits just behind the dome. */
-    double depth_bias = back_bias;
+    /* Backstop push-back RETIRED (W2.6-b): a skybox-linked flat (the dome's
+     * backstop) used to sink behind the dome by x1.0625/x1.125 so the dome won
+     * the depth test — dead since the W2.6 stencil groups: within a group the
+     * colours draw in submission order (backstop first, dome last) with LEQUAL,
+     * so at EQUAL plane depth the dome wins per pixel anyway. Everything sits
+     * on the opening plane now. */
     /* Group id for mask↔colour pairing: the destination SKYBOX pointer, so a
      * portal's flat base, backstop AND dome (fed by separate leaves with
      * different a0s) all land in ONE stencil group — within a group the
@@ -461,7 +454,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             for (int k = 0; k < 3; k++) {
                 const ppt* v = &poly[idx3[k]];
                 t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = portal_cyclorama_depth(v->vz * depth_bias);
+                t.v[k].z = portal_cyclorama_depth(v->vz);
                 t.v[k].rgba = rgba;
             }
             portal_add_sky_tri(&t);
@@ -479,7 +472,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
      * draws later, so Spyro himself is never covered. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     if (vz <= 1.0) vz = 2.0;   /* crossed → nearest (was 16384 far-sentinel) */
-    float depth = portal_cyclorama_depth(vz * depth_bias);
+    float depth = portal_cyclorama_depth(vz);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -780,15 +773,11 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
             fog_t = (double)(cpu->read_word(D_FOG_FACTOR) & 0xFFFF) / 4096.0;
             if (fog_t > 1.0) fog_t = 1.0;
         }
-        /* Far/medium FLAT leaves: one quad = the whole preview, on the portal plane
-         * (a non-skybox a0 stays at bias 1.0). The close FEA0 flat (a0=skybox+0x10)
-         * is the dome's authored BACKSTOP — sunk just behind the dome (1.0625). The
-         * DOME leaves walk the gouraud dome on the plane AND lay a backstop: F4BC at
-         * 1.125 (so it can't z-fight the paired FEA0 backstop at 1.0625), the medium
-         * leaf at 1.0625 (no FEA0 at medium). Depths front→back: dome (×1.0) <
-         * backstop (×1.0625) [< F4BC safety ×1.125]. All far nearer than the
-         * through-hole terrain. (Fixes the bg z-fight at f1910.) */
-        double backstop_bias = (kind == PORTAL_DOME) ? 1.125 : 1.0625;
+        /* Far/medium FLAT leaves: one quad = the whole preview; the close FEA0
+         * flat (a0=skybox+0x10) is the dome's authored BACKSTOP. All on the
+         * opening plane — the old x1.0625/x1.125 backstop push-back is retired
+         * (W2.6-b): in-group painter order at equal depth already lets the dome
+         * (drawn last) win per pixel, incl. the f1910 bg z-fight case. */
         int is_skybox_a0 = (a0 >= 0x80010000u && a0 < 0x80200000u);
         /* The portal preview is a far BACKGROUND seen through the arch window: it
          * must be occluded by the arch stone but must NEVER occlude actors/Spyro
@@ -796,7 +785,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
          * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
          * the actors. */
-        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, backstop_bias, fog, fog_t);
+        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, fog, fog_t);
         if (is_dome && is_skybox_a0)
             feed_portal_dome(cpu, a0, fog, fog_t);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
@@ -814,7 +803,6 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->flat_rgb      = portal_flat_raw_rgb(cpu, a0);   /* raw, pre-fog */
                 c->is_dome       = (is_dome && is_skybox_a0);
                 c->skybox        = c->is_dome ? a0 : 0;
-                c->backstop_bias = backstop_bias;
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
@@ -898,7 +886,6 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->flat_rgb      = rgb;
             c->is_dome       = 0;
             c->skybox        = 0;
-            c->backstop_bias = 1.0;
             c->fog_rgb       = 0;
             c->fog_t         = 0.0;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
@@ -1073,7 +1060,7 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
          * occlude Spyro flying/walking through). PORTAL_CYCLORAMA is passed to add_tri
          * inside feed_portal_quad/_dome. */
         feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb,
-                         c->backstop_bias, c->fog_rgb, c->fog_t);
+                         c->fog_rgb, c->fog_t);
         if (c->is_dome)
             feed_portal_dome(cpu, c->skybox, c->fog_rgb, c->fog_t);
     }
