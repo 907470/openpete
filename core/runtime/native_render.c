@@ -1818,9 +1818,20 @@ static void native_depth_prepass(void)
     if (vw <= 0 || vh <= 0) return;
 
     /* Extract the opaque WORLD occluders' clip geometry with the FULL-EXTENT
-     * mapping (positions only — the pipe writes depth, never colour). */
+     * mapping (positions only — the pipe writes depth, never colour).
+     * WIDENED full extent under Hor+ (--aspect): the freeze_wf divide maps the
+     * whole widened PSX x-band [256-256F, 256+256F] across the target, so the
+     * pre-pass covers every column the widescreen view actually shows. Without
+     * this the recorded affine spanned only the 4:3 [0,512] rect and the
+     * occl-query offscreen reject culled edge mobys that ARE visible — on
+     * sub-tick presents only (canonical never occl-culls) = the widescreen
+     * edge flicker (user report 2026-07-03, probe-confirmed sx∈[-316,0]
+     * rejects at F=2.67). Also gives the shadow decal terrain depth at the
+     * revealed edges (it samples through the same recorded affine). */
     int prev_fe = s_render_full_extent;
+    float prev_wf = s_render_freeze_wf;
     s_render_full_extent = 1;
+    s_render_freeze_wf = openpete_native_widescreen_factor();
     static rhi_vertex pbuf[SCENE_VB_VERTS];
     int m = 0;
     /* Far BACKSTOP: a fullscreen quad at z=0.999 (view-Z ≈ 4.09M — decodes as
@@ -1870,6 +1881,7 @@ static void native_depth_prepass(void)
         s_od_vay = (cy0 - cy1) * 0.5f; s_od_vby = (1.0f - cy0) * 0.5f;
     }
     s_render_full_extent = prev_fe;
+    s_render_freeze_wf = prev_wf;
     rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
 
     if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
