@@ -77,6 +77,12 @@ typedef struct { uint32_t addr, w1, w2; } part_save_t;  /* +0x04, +0x08 */
  * unchanged; a resume sweeps the full delta over one tick. */
 static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
     op_time_t p = curr_ns - prev_ns;
+    /* OPENPETE_INTERP_PERIOD_UNCAP=1: diagnostic only — restore the pre-cap
+     * behaviour (sweep across the full distinct-roll interval) to attribute
+     * cadence regressions on slow-rolling objects. */
+    static int s_uncap = -1;
+    if (s_uncap < 0) { const char* e = getenv("OPENPETE_INTERP_PERIOD_UNCAP"); s_uncap = (e && *e && *e != '0'); }
+    if (s_uncap) return (double)p;
     return (double)(p > TICK_PERIOD_NS ? TICK_PERIOD_NS : p);
 }
 
@@ -243,6 +249,271 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
         }
     }
     return 0;
+}
+
+/* ---- cutscene path-follower smoothing (title flyby & friends) ----------------
+ * Cutscene actors (main-EXE func_8002BFE0/func_8002C0EC) ride a packed
+ * polyline: one word per waypoint, three 10-bit coords ×256 (so the path data
+ * itself is quantized to a 256-unit grid), advanced at idx = t/div with a
+ * coarse 64ths lerp between wp[idx] and wp[idx+1]. Faithfully sub-tick-lerping
+ * those canonical positions renders the quantization as a per-axis ~512-unit
+ * staircase — the titlescreen-flyby shimmer (the camera rides a SEPARATE
+ * full-precision 24-byte record table, which is why only the mobys jitter).
+ * Present-side we re-evaluate the SAME waypoint array as a uniform cubic
+ * B-spline over wp[i-1..i+2] at the exact fractional parameter: C2-smooth,
+ * full look-ahead (the path is static data in RAM), stays within the waypoint
+ * hull (≤ ~one quantization step from canonical, bound-guarded below), and
+ * writes nothing gameplay-readable. OPENPETE_CUTSCENE_PATH_SMOOTH=0 disables. */
+static int cut_rd32(uint32_t va, uint32_t* out) {
+    if (va < 0x80000000u || va >= 0x80200000u - 4u) return 0;
+    const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(va);
+    if (!p) return 0;
+    memcpy(out, p, 4);
+    return 1;
+}
+
+/* Invert the packed polyline: find u (fractional waypoint index) such that
+ * path(u) == pos, where pos is a CANONICAL actor position — an exact
+ * lerp(wp[i], wp[i+1], f) the game's decoder wrote (f is a coarse 64ths
+ * fraction, so on-segment matches are near-exact in integer world units).
+ * Searches segments around `hint` (the actor's last solved index; paths are
+ * walked monotonically). Returns 1 and writes *out_u on a match. Repeated-
+ * waypoint HOLD runs are inherently ambiguous — the search order (outward
+ * from hint, forward first) picks the hint-nearest match, which keeps u
+ * continuous through a hold. */
+/* Test whether pos lies on segment [wp[i], wp[i+1]]; writes the fraction. */
+static int cutpath_on_segment(uint32_t path, int i, const int32_t* pos, double* out_f) {
+    uint32_t wa, wb;
+    if (i < 0) return 0;
+    if (!cut_rd32(path + (uint32_t)i * 4u, &wa)) return 0;
+    if (!cut_rd32(path + (uint32_t)(i + 1) * 4u, &wb)) return 0;
+    int32_t A[3], B[3];
+    A[0] = (int32_t)(((wa >> 20) & 0x3FFu) << 8); B[0] = (int32_t)(((wb >> 20) & 0x3FFu) << 8);
+    A[1] = (int32_t)(((wa >> 10) & 0x3FFu) << 8); B[1] = (int32_t)(((wb >> 10) & 0x3FFu) << 8);
+    A[2] = (int32_t)((wa & 0x3FFu) << 8);         B[2] = (int32_t)((wb & 0x3FFu) << 8);
+    /* fraction from the axis with the largest span, then verify all axes */
+    int ax = 0; int32_t span = 0;
+    for (int c = 0; c < 3; c++) {
+        int32_t d = B[c] - A[c]; if (d < 0) d = -d;
+        if (d > span) { span = d; ax = c; }
+    }
+    double f;
+    if (span == 0) {                      /* hold segment: any f — need exact pos */
+        if (pos[0] != A[0] || pos[1] != A[1] || pos[2] != A[2]) return 0;
+        f = 0.0;
+    } else {
+        f = (double)(pos[ax] - A[ax]) / (double)(B[ax] - A[ax]);
+        if (f < -0.01 || f > 1.01) return 0;
+        for (int c = 0; c < 3; c++) {
+            double e = (double)A[c] + ((double)B[c] - (double)A[c]) * f;
+            if (fabs(e - (double)pos[c]) > 4.0) return 0;
+        }
+        if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
+    }
+    *out_f = f;
+    return 1;
+}
+
+#define CUTPATH_SCAN_MAX 512
+
+static int cutpath_solve_u(uint32_t path, const int32_t* pos, int hint, double* out_u) {
+    if (hint < 0) hint = 0;
+    /* fast window: hint, hint+1, hint-1, hint+2, ... (forward bias) — the
+     * common per-present case where u has barely moved */
+    for (int step = 0; step <= 12; step++) {
+        int i = (step & 1) ? hint - (step + 1) / 2 : hint + step / 2;
+        double f;
+        if (cutpath_on_segment(path, i, pos, &f)) { *out_u = (double)i + f; return 1; }
+    }
+    /* wide scan (park→motion transitions, joins, long holds): pick the match
+     * nearest the hint, forward-preferred. Without this, one fast-window miss
+     * freezes the hint and the path walks out of reach — a0/a1 silently fell
+     * back to the quantized staircase mid-flyby (census showed engage loss). */
+    int best_i = -1; double best_f = 0.0; long best_score = 0;
+    for (int i = 0; i < CUTPATH_SCAN_MAX; i++) {
+        double f;
+        if (!cutpath_on_segment(path, i, pos, &f)) {
+            uint32_t w;
+            if (!cut_rd32(path + (uint32_t)i * 4u, &w)) break;   /* end of readable path */
+            continue;
+        }
+        long d = (long)(i - hint); if (d < 0) d = -d;
+        long score = 2 * d - (i >= hint ? 1 : 0);
+        if (best_i < 0 || score < best_score) { best_i = i; best_f = f; best_score = score; }
+    }
+    if (best_i < 0) return 0;
+    *out_u = (double)best_i + best_f;
+    return 1;
+}
+
+static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
+                              double a, int32_t* out) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_CUTSCENE_PATH_SMOOTH");
+        s_on = !(e && *e == '0');
+    }
+    if (!s_on) return 0;
+    uint32_t cs, base, cnt;
+    if (!cut_rd32(G_CUTSCENE, &cs) || cs < 0x80000000u || cs >= 0x80200000u) return 0;
+    /* actors are the first `count` entries of g_LevelMobys (the decoder walks
+     * *(g_LevelMobys) + k*0x58 and writes position at +0x0C) */
+    if (!cut_rd32(G_LEVELMOBYS, &base) || base < 0x80000000u || base >= 0x80200000u) return 0;
+    if (m < base) return 0;
+    uint32_t off = m - base;
+    if (off % MOBY_STRIDE) return 0;
+    uint32_t k = off / MOBY_STRIDE;
+    if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 8u || k >= cnt) return 0;
+
+    uint32_t path;
+    if (!cut_rd32(cs + 0x14 + 4u * k, &path) || path < 0x80000000u || path >= 0x80200000u) return 0;
+
+    /* Path parameter from the CAPTURED canonical positions, NOT the cutscene
+     * clock. The clock at cs+0 advances every 60 Hz VBL — TWICE per sim tick,
+     * asynchronously with present phase — so a prev/curr clock tracker rolls
+     * mid-tick while alpha is mid-sweep and u JUMPS a full clock unit and
+     * re-sweeps: a 60 Hz ±5-20 px sawtooth along the path ("jumping back in
+     * the path", the second windows-eyeball failure; invisible in throttled
+     * traces that sampled presents at lucky consistent VBL phases). Instead
+     * invert the polyline: pp and cp are EXACT points on it (the decoder
+     * writes lerp(wp[i], wp[i+1], f) with coarse fractions), so solve
+     * u_prev/u_curr by segment search and sweep between them — tick-aligned
+     * with the camera pair by construction, no clock assumptions at all. */
+    static struct {
+        uint32_t cs; int hint[8]; long nosolve[8];
+        double lu[8]; uint8_t have_lu[8];        /* per-actor u slew state */
+    } s_uh = { 0u, {0}, {0}, {0.0}, {0} };
+    if (s_uh.cs != cs) {
+        memset(s_uh.hint, 0, sizeof s_uh.hint);
+        memset(s_uh.nosolve, 0, sizeof s_uh.nosolve);
+        memset(s_uh.have_lu, 0, sizeof s_uh.have_lu);
+        s_uh.cs = cs;
+    }
+    /* Solve u_curr FIRST (against the tracked hint), then u_prev anchored to
+     * it: on a hold run every segment matches, and anchoring pp's solve at
+     * u_curr picks the hold EXIT rather than the hold start — so departure
+     * from a park sweeps [hold-end → first moving segment] instead of
+     * rejecting on a bogus 160-waypoint "jump". */
+    double u_prev, u_curr;
+    if (!cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) ||
+        !cutpath_solve_u(path, pp, (int)u_curr, &u_prev)) {
+        s_uh.nosolve[k]++;
+        return 0;
+    }
+    /* monotone forward progression, at most ~2 waypoints per tick */
+    if (u_curr < u_prev - 0.26 || u_curr > u_prev + 2.0) {
+        s_uh.nosolve[k]++; s_uh.have_lu[k] = 0; return 0;
+    }
+    s_uh.hint[k] = (int)u_curr;
+
+    double u = u_prev + (u_curr - u_prev) * a;
+    /* u SLEW LIMITER. A hold run collapses several waypoints of path time
+     * into one position, so the inversion can't see u advance through it —
+     * at hold entry/exit the solved u JUMPS ~1 waypoint in one present and
+     * the spline output steps half a waypoint (~350-670 units — the hover
+     * spikes at f987/f1003, plus small back-steps at pause boundaries). u is
+     * 1-D and monotone, so a slew is SAFE (no positional overshoot): cap the
+     * per-present advance (normal motion is ~0.03-0.25/present) and floor
+     * tiny regressions; a hold jump becomes a brief smooth catch-up instead
+     * of a step. Reset on cs change / solve failure / disengage (snaps). */
+    if (s_uh.have_lu[k]) {
+        if (u > s_uh.lu[k] + 0.35) u = s_uh.lu[k] + 0.35;
+        else if (u < s_uh.lu[k] - 0.02) u = s_uh.lu[k] - 0.02;
+    }
+    s_uh.lu[k] = u; s_uh.have_lu[k] = 1;
+    int i = (int)floor(u);
+    double s = u - (double)i;
+    /* No end-of-path index clamp: the authored paths tail-pad with repeated
+     * copies of the final waypoint (the spline converges to the endpoint on
+     * its own), and a genuine overrun into garbage is caught by the bound
+     * guard below. (An earlier clamp keyed on cs+0x08 froze the spline
+     * mid-flyby — that field is the CAMERA record count (t/2-indexed), not
+     * the cutscene end clock.) */
+    double wx[6], wy[6], wz[6];               /* wp[i-2 .. i+3] */
+    for (int j = 0; j < 6; j++) {
+        int idx = i - 2 + j;
+        if (idx < 0) idx = 0;
+        uint32_t w;
+        if (!cut_rd32(path + (uint32_t)idx * 4u, &w)) return 0;
+        wx[j] = (double)(((w >> 20) & 0x3FFu) << 8);
+        wy[j] = (double)(((w >> 10) & 0x3FFu) << 8);
+        wz[j] = (double)((w & 0x3FFu) << 8);
+    }
+    double cpx[4] = { wx[1], wx[2], wx[3], wx[4] };
+    double cpy[4] = { wy[1], wy[2], wy[3], wy[4] };
+    double cpz[4] = { wz[1], wz[2], wz[3], wz[4] };
+    /* PARK-boundary endpoint reflection: a uniform B-spline only APPROXIMATES
+     * its control points, so leaving/entering a long equal-waypoint PARK run
+     * the curve sits (Q−P)/6 off the actual park position — a ~1/6-waypoint
+     * POP when motion resumes. Reflecting the outer control point across the
+     * boundary (C0' = 2·C1 − C2; C3' = 2·C2 − C1) makes the spline hit the
+     * park position EXACTLY at s=0/s=1 — the standard clamped end condition.
+     * Gated on a TRIPLE equal run (the extra wp[i-2]/wp[i+3] sample): 1-2
+     * waypoint MINI-PAUSES during motion are quantization artifacts of slow
+     * segments and must be rolled through smoothly, not turned into hard
+     * stop-starts. All-equal windows are unaffected (reflection is a no-op). */
+    if (cpx[0] == cpx[1] && cpy[0] == cpy[1] && cpz[0] == cpz[1] &&
+        wx[0] == cpx[1] && wy[0] == cpy[1] && wz[0] == cpz[1]) {
+        cpx[0] = 2.0 * cpx[1] - cpx[2];
+        cpy[0] = 2.0 * cpy[1] - cpy[2];
+        cpz[0] = 2.0 * cpz[1] - cpz[2];
+    }
+    if (cpx[3] == cpx[2] && cpy[3] == cpy[2] && cpz[3] == cpz[2] &&
+        wx[5] == cpx[2] && wy[5] == cpy[2] && wz[5] == cpz[2]) {
+        cpx[3] = 2.0 * cpx[2] - cpx[1];
+        cpy[3] = 2.0 * cpy[2] - cpy[1];
+        cpz[3] = 2.0 * cpz[2] - cpz[1];
+    }
+    /* uniform cubic B-spline basis at s */
+    double s2 = s * s, s3 = s2 * s;
+    double b0 = (1.0 - 3.0 * s + 3.0 * s2 - s3) / 6.0;
+    double b1 = (4.0 - 6.0 * s2 + 3.0 * s3) / 6.0;
+    double b2 = (1.0 + 3.0 * s + 3.0 * s2 - 3.0 * s3) / 6.0;
+    double b3 = s3 / 6.0;
+    double sm[3];
+    sm[0] = b0 * cpx[0] + b1 * cpx[1] + b2 * cpx[2] + b3 * cpx[3];
+    sm[1] = b0 * cpy[0] + b1 * cpy[1] + b2 * cpy[2] + b3 * cpy[3];
+    sm[2] = b0 * cpz[0] + b1 * cpz[1] + b2 * cpz[2] + b3 * cpz[3];
+    /* Bound guard WITH HYSTERESIS: the smooth position must stay near the
+     * canonical prev→curr lerp — anti-garbage (stale cutscene state,
+     * misassociated actor slot, path overrun). The deviation is α-dependent,
+     * so a single threshold ALTERNATES verdicts between neighbouring presents
+     * right at the engage/disengage boundary — at 480 fps that renders as a
+     * violent flicker between the spline and faithful positions (the first
+     * windows-eyeball failure of this feature). Two thresholds + a per-actor
+     * latch make every transition a single snap instead. */
+    double dev = 0.0;
+    for (int c = 0; c < 3; c++) {
+        double g = (double)pp[c] + ((double)cp[c] - (double)pp[c]) * a;
+        double d = fabs(sm[c] - g);
+        if (d > dev) dev = d;
+    }
+    static uint8_t s_engaged[8];
+    static uint32_t s_eng_cs = 0;
+    if (s_eng_cs != cs) { memset(s_engaged, 0, sizeof s_engaged); s_eng_cs = cs; }
+    if (s_engaged[k]) { if (dev > 1536.0) s_engaged[k] = 0; }
+    else              { if (dev <  512.0) s_engaged[k] = 1; }
+    /* OPENPETE_CUTPATH_DBG: per-actor engage/reject census, once a second. */
+    {
+        static int s_dbg = -1;
+        if (s_dbg < 0) { const char* e = getenv("OPENPETE_CUTPATH_DBG"); s_dbg = (e && *e && *e != '0'); }
+        if (s_dbg) {
+            static long s_n[8][2]; static unsigned s_lastf = 0;
+            s_n[k][s_engaged[k] ? 0 : 1]++;
+            if (openpete_frame >= s_lastf + 60u) {
+                s_lastf = openpete_frame;
+                fprintf(stderr, "[cutpath f=%u]", openpete_frame);
+                for (int q = 0; q < 8; q++) if (s_n[q][0] | s_n[q][1] | s_uh.nosolve[q])
+                    fprintf(stderr, " a%d=%ld/%ld/%ld", q, s_n[q][0], s_n[q][1], s_uh.nosolve[q]);
+                fprintf(stderr, " (engaged/rejected/nosolve)\n");
+                memset(s_n, 0, sizeof s_n);
+                memset(s_uh.nosolve, 0, sizeof s_uh.nosolve);
+            }
+        }
+    }
+    if (!s_engaged[k]) { s_uh.have_lu[k] = 0; return 0; }   /* re-engage snaps: reset slew */
+    for (int c = 0; c < 3; c++) out[c] = (int32_t)llround(sm[c]);
+    return 1;
 }
 
 /* ---- transient .s render-pass scratch bracket --------------------------------
@@ -637,8 +908,30 @@ static void spyro_native_reextract(void* cpu_v) {
          * show prev (N-1); advance to curr (N) over the next sim period. The
          * forward endpoint is the KNOWN canonical N → no extrapolation. */
         double period = interp_period_ns(prev->tick_ns, curr->tick_ns);
-        alpha = (period > 0.0) ? (double)(op_now() - curr->tick_ns) / period : 1.0;
-        if (alpha < 0.0) alpha = 0.0; else if (alpha > 1.0) alpha = 1.0;
+        alpha = (period > 0.0) ? (double)(openpete_interp_present_now() - curr->tick_ns) / period : 1.0;
+        /* OPENPETE_ALPHA_MAP_DBG: raw present-time → interp-time mapping, one
+         * line per present BEFORE the clamp (judder forensics: shown time is
+         * curr_tick + alpha − 1; discontinuities here ARE the on-screen judder). */
+        {
+            static int s_amdbg = -1;
+            if (s_amdbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_amdbg = (e && *e && *e != '0'); }
+            if (s_amdbg) {
+                extern int g_openpete_canon_lag_leg;
+                fprintf(stderr, "[alpha-map f=%u leg=%s] now=%.3fms raw=%.3fms curr_ns=%.3fms period=%.3fms alpha_raw=%.3f tick=%u\n",
+                        openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                        (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, (double)curr->tick_ns / 1e6,
+                        period / 1e6, alpha, curr->tick);
+            }
+        }
+        /* Allow slightly NEGATIVE alpha instead of clamping at 0: the canonical
+         * present fires a few ms before its tick's grid stamp (present latency
+         * jitter vs the PLL-smoothed capture stamps), and clamping snapped shown
+         * time forward ~0.5 VBL at EVERY roll — ~24% of all motion delivered as
+         * 30 Hz jumps (the flyby judder; measured via OPENPETE_ALPHA_MAP_DBG).
+         * lerp(prev,curr,α<0) is a tiny backward extrapolation of a known
+         * velocity — continuous and visually correct; the cubic Hermite is NOT
+         * safe below 0, so the pred1 gate below requires alpha >= 0. */
+        if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
 
         /* pred1 gate: use the cubic Hermite (centered start-tangent) only when a
          * valid prev2 exists AND the prev2→prev step is itself continuous — a cut
@@ -647,7 +940,7 @@ static void spyro_native_reextract(void* cpu_v) {
          * stay linear for now. Same 1-tick latency either way. */
         int use_herm = 0;
         const uint8_t* pcam2 = NULL;
-        if (prev2 && hermite_enabled()) {
+        if (prev2 && hermite_enabled() && alpha >= 0.0) {
             pcam2 = prev2->data + prev2->region_offsets[0];
             const int32_t* p2p = (const int32_t*)(pcam2 + CAM_OFF_POS);
             const int32_t* pp  = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
@@ -852,7 +1145,7 @@ static void spyro_native_reextract(void* cpu_v) {
      * with a moving camera is preserved), and keeps animating when the camera is
      * static. Same per-object-cadence pattern as the HUD icons below. */
     {
-        op_time_t now = op_now();
+        op_time_t now = openpete_interp_present_now();
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
         uint32_t arr = 0; if (base_p) memcpy(&arr, base_p, 4);
         if (arr >= 0x80000000u) {
@@ -891,7 +1184,9 @@ static void spyro_native_reextract(void* cpu_v) {
                         op_time_t period_ns = o->curr_ns - o->prev_ns;
                         if (o->prev_ns != 0 && period_ns > 0) {
                             double ma = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
-                            if (ma < 0.0) ma = 0.0; else if (ma > 1.0) ma = 1.0;
+                            /* same negative-alpha allowance as the camera (roll-
+                             * boundary continuity); hermite gated on ma >= 0 below */
+                            if (ma < -0.35) ma = -0.35; else if (ma > 1.0) ma = 1.0;
                             int32_t pp[3], cp[3];
                             memcpy(pp, o->prev + MOBY_POS, 12);
                             memcpy(cp, o->curr + MOBY_POS, 12);
@@ -903,16 +1198,30 @@ static void spyro_native_reextract(void* cpu_v) {
                             s_moby_save[moby_save_n].addr = m;
                             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
                             moby_save_n++;
+                            /* Cutscene path-followers first: if this moby is a
+                             * cutscene actor, evaluate its packed waypoint
+                             * polyline as a smooth B-spline (de-quantizes the
+                             * 256-grid path data — the titlescreen-flyby
+                             * shimmer). The spline runs on the GLOBAL tick
+                             * phase (camera alpha when paired) so its cadence
+                             * is uniform even though the actor's canonical
+                             * position only rolls every other tick. */
+                            int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
+                            int32_t sm3[3];
+                            if (cutpath_smooth_pos(m, pp, cp, paired ? alpha : ma, sm3)) {
+                                for (int k = 0; k < 3; k++)
+                                    memcpy(mh + MOBY_POS + k * 4, &sm3[k], 4);
+                                fpos_set(m, sm3, sm3, 0.0);
+                            } else {
                             /* pred1: use the cubic Hermite (centered start-tangent)
                              * when this moby has a valid prev2 whose prev2->prev step
                              * is itself continuous — else the linear prev->curr lerp.
                              * Same per-object alpha + 1-tick latency either way. */
-                            int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             if (o->have_prev2) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
                                 double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
                                 have_p2 = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
-                                m_herm = hermite_enabled() && have_p2;
+                                m_herm = hermite_enabled() && have_p2 && ma >= 0.0;
                             }
                             for (int k = 0; k < 3; k++) {
                                 int32_t lv = m_herm ? hround32(hermite1(p2[k], pp[k], cp[k], ma))
@@ -926,6 +1235,7 @@ static void spyro_native_reextract(void* cpu_v) {
                              * (not just the camera component). */
                             if (m_herm) fpos_set_h(m, p2, pp, cp, ma);
                             else        fpos_set(m, pp, cp, ma);
+                            }
                             /* OPENPETE_MOBY_POSTRACE_CLS=<cls>: per-present lerp
                              * trace for mobys of that class (jitter forensics). */
                             {
@@ -983,7 +1293,7 @@ static void spyro_native_reextract(void* cpu_v) {
      * SPIN, and the m_Position (+0x0C) fly/slide-in when the HUD first appears.
      * Bracketed via s_moby_save (restored with the rest below). */
     {
-        op_time_t now = op_now();
+        op_time_t now = openpete_interp_present_now();
         for (uint32_t i = 0; i < G_HUD_COUNT && moby_save_n < MOBY_SAVE_MAX; i++) {
             uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
             uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(m);
@@ -1037,7 +1347,7 @@ static void spyro_native_reextract(void* cpu_v) {
      * out) or glows (they ride their owner moby). Teleport-guard a slot reused by a
      * new particle mid-flight. */
     {
-        op_time_t now = op_now();
+        op_time_t now = openpete_interp_present_now();
         /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts —
          * lerped vs each snap reason, MOVING particles (prev->curr delta > 2
          * world/4) counted separately. A moving particle that keeps snapping is
@@ -1162,7 +1472,7 @@ static void spyro_native_reextract(void* cpu_v) {
             if (pg != 0 && cg != 0 &&
                 dx*dx + dy*dy + dz*dz <= 5000.0*5000.0 &&
                 c0dot > 0.0) {
-                double a2 = (double)(op_now() - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
+                double a2 = (double)(openpete_interp_present_now() - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
                 if (a2 < 0.0) a2 = 0.0; else if (a2 > 1.0) a2 = 1.0;
                 memcpy(ds_saved, ds_host, 0x2C); ds_bracketed = 1;
                 for (int k = 0; k < 3; k++) {

@@ -13,6 +13,17 @@
 #include "openpete_interp.h"   /* openpete_interp_enabled() — shared gate */
 #include "openpete_time.h"     /* op_now() — per-object distinct-roll timestamps */
 
+/* PLL-smoothed VBL stamp shared with the region ring (set in run.c right
+ * before openpete_interp_capture). Roll timestamps must sit on the ideal VBL
+ * grid, not the jittery actual tick-completion time — jittery stamps make the
+ * per-object alpha mapping discontinuous at every roll (fast movers judder
+ * ±half a tick per present). Falls back to op_now() if unset (unit harnesses
+ * that drive the objs table without the run loop). */
+op_time_t g_openpete_tick_stamp = 0;
+static op_time_t objs_tick_stamp(void) {
+    return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now();
+}
+
 #include <stdint.h>
 #include <string.h>
 
@@ -91,7 +102,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         memcpy(s_tab[i].prev, s_tab[i].curr, s_tab[i].blob_len);
         s_tab[i].have_prev = 1;
         s_tab[i].prev_ns   = s_tab[i].curr_ns;
-        s_tab[i].curr_ns   = op_now();
+        s_tab[i].curr_ns   = objs_tick_stamp();
     } else {
         /* Spawn: occupy the slot, no previous tick to pair against. */
         if (s_tab[i].key == 0 && s_count < (int)SLOTS) s_count++;
@@ -99,7 +110,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         s_tab[i].have_prev = 0;
         s_tab[i].have_prev2 = 0;
         s_tab[i].prev_ns   = 0;
-        s_tab[i].curr_ns   = op_now();
+        s_tab[i].curr_ns   = objs_tick_stamp();
         s_stat_spawned++;
     }
     memcpy(s_tab[i].curr, data, len);

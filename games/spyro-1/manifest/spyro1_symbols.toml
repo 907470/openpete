@@ -186,6 +186,11 @@ addr = 0x80075710
 note = "g_HudMobys — bump-down pointer to the per-frame HUD moby pool (double-buffered with the polybuf halves)"
 
 [[symbol]]
+name = "G_CUTSCENE"
+addr = 0x80075680
+note = "g_CutsceneLayout — pointer to the active cutscene state: +0x00 clock t, +0x08 end t, +0x0C actor count, +0x10 camera record table (24B full-precision), +0x14.. per-actor packed 10:10:10 waypoint paths (func_8002BFE0/func_8002C0EC). Actors are g_LevelMobys[0..count), classes 1..count; path type byte = *(g_Models[cls]+56)+12 (16/21/32/else -> waypoint divisor 8/6/4/2)"
+
+[[symbol]]
 name = "D_GLOWS"
 addr = 0x80078800
 note = "Glow[16], stride 0x24"

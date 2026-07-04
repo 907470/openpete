@@ -102,6 +102,18 @@ int  openpete_interp_enabled(void);
  * No-op when disabled or when the region table is empty. */
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns);
 
+/* Virtual present clock: the run loop sets, before each present's re-extract,
+ * the EVENLY-SPACED wall time this present will effectively be DISPLAYED at
+ * (a PLL over the present stream). Sub-tick phase (alpha) computations must
+ * use openpete_interp_present_now() instead of op_now(): presents are
+ * GENERATED at uneven wall offsets (the canonical present fires off the
+ * render pacer's grid), but FIFO displays them at even refresh slots — phase
+ * from raw generation time re-creates 3:1 velocity judder on the display no
+ * matter how linear the generation-time mapping is. Falls back to op_now()
+ * when unset (canonical-only paths, harnesses). */
+void      openpete_interp_set_present_target(op_time_t t);
+op_time_t openpete_interp_present_now(void);
+
 /* Returns the most recent two snapshots (prev = tick N-1, curr = tick N)
  * via out params. Returns 1 if both are valid AND their data buffers
  * differ (byte-identical → state is stuck → caller should re-present

@@ -105,8 +105,9 @@ static int watch_should_log(uint32_t addr) {
 }
 static void watch_log(uint32_t addr, uint32_t val, int size) {
     fprintf(stderr,
-            "WATCH frame=%u pc=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
-            openpete_frame, g_watch.cpu->pc, addr, size, size * 2, val);
+            "WATCH frame=%u pc=0x%08x ra=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
+            openpete_frame, g_watch.cpu->pc, g_watch.cpu->ra,
+            addr, size, size * 2, val);
 }
 static void watch_w(uint32_t a, uint32_t v) {
     /* A 4-byte store overlaps the watch range if any of its 4 bytes

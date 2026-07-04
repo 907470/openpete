@@ -2552,7 +2552,7 @@ static void mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
  * prev/curr roll timestamps). 0 = inactive → byte-exact path (canonical render,
  * or --render-fps off where the snapshot table is empty anyway). */
 static op_time_t s_rot_now = 0;
-void moby_native_set_rot_interp(int on) { s_rot_now = on ? op_now() : 0; }
+void moby_native_set_rot_interp(int on) { s_rot_now = on ? openpete_interp_present_now() : 0; }
 
 static int rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
 
@@ -3668,6 +3668,28 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                                       fap, fbp, w0p, hdrp, balpha,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
+        /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
+         * the render-side truth, one step before raster (jitter forensics). */
+        {
+            static long s_sccls = -2;
+            if (s_sccls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_sccls = e ? strtol(e, NULL, 0) : -1; }
+            uint16_t sccls = (uint16_t)cpu->read_half(mobys[i] + 0x36u);
+            if (s_sccls >= 0 && (s_sccls == 0xFFFF || sccls == (uint16_t)s_sccls)) {
+                extern int g_openpete_canon_lag_leg;
+                double mx = 0, my = 0, mz = 0;
+                for (int j = 0; j < got; j++) { mx += s_proj[s_proj_n+j].sx; my += s_proj[s_proj_n+j].sy; mz += s_proj[s_proj_n+j].vz; }
+                double cf[3]={0,0,0}, mf[3]={0,0,0};
+                int ch = openpete_native_interp_pos(G_CAMERA, cf);
+                int mh2 = openpete_native_interp_pos(mobys[i], mf);
+                fprintf(stderr, "[moby-screen f=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
+                        openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                        (double)op_now() / 1e6,
+                        mobys[i], sccls, got,
+                        mx / got, my / got, mz / got,
+                        ch, mh2, cf[0], cf[1], cf[2], mf[0], mf[1], mf[2],
+                        f.TR_frac[0], f.TR_frac[1], f.TR_frac[2]);
+            }
+        }
         occl_cache_update(mobys[i], s_proj + off, got);   /* refresh cull bounds */
         if (ver_check && !occl_query_fresh(mobys[i]))
             occl_verify_report(mobys[i], &ver_snap);

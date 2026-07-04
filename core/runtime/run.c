@@ -55,6 +55,47 @@
 #define CLEAR_G 0x14
 #define CLEAR_B 0x20
 
+/* 1 while the canonical present's lagged re-extract (lag_re) is running —
+ * lets feeder-side diagnostics tag which present leg produced a sample. */
+int g_openpete_canon_lag_leg = 0;
+
+/* Virtual present clock (see openpete_interp.h): PLL over the present stream
+ * so each present's CONTENT is timed for the evenly-spaced display slot FIFO
+ * will scan it out at, not the uneven wall instant it was generated at (the
+ * canonical present fires off the render pacer's grid — measured +8ms/+25ms
+ * alternation per tick at --render-fps 60, i.e. 3:1 display judder if phase
+ * comes from generation time). Steps at the EMA of the measured present
+ * cadence (robust to any achieved rate vs the nominal --render-fps), with a
+ * bounded 1/16 pull toward reality and a resync on stalls/jumps.
+ * OPENPETE_PRESENT_TARGET_CLOCK=0 disables (phase falls back to op_now()). */
+static void vp_set_present_target(void) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_PRESENT_TARGET_CLOCK");
+        s_on = !(e && *e == '0');
+    }
+    if (!s_on) return;
+    static op_time_t s_clk = 0, s_last = 0;
+    static double s_sp = 0.0;
+    op_time_t now = op_now();
+    if (s_last != 0) {
+        double d = (double)(now - s_last);
+        if (d > 0.0 && d < 100.0 * (double)OP_NS_PER_MS) {
+            if (s_sp <= 0.0) s_sp = d;
+            else s_sp += (d - s_sp) * 0.05;
+        }
+    }
+    s_last = now;
+    if (s_clk == 0 || s_sp <= 0.0 ||
+        now > s_clk + 50 * OP_NS_PER_MS || now + 50 * OP_NS_PER_MS < s_clk) {
+        s_clk = now;                      /* first present / stall / jump: resync */
+    } else {
+        s_clk += (op_time_t)s_sp;         /* even step at the measured cadence */
+        s_clk += (now - s_clk) / 16;      /* bounded pull toward reality */
+    }
+    openpete_interp_set_present_target(s_clk);
+}
+
 /* PCSX-Redux trace state — file-static so the dispatch hook (which has
  * to be a plain function pointer with no closure) can find it. There's
  * only ever one open trace per run. */
@@ -1551,8 +1592,65 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 /* fps-unlock Phase 2: snapshot the transform-bearing
                  * regions into the interp ring while the game fiber
                  * is still yielded (consistent RAM). No-op unless
-                 * --render-fps > sim rate. */
-                openpete_interp_capture(openpete_frame, op_now());
+                 * --render-fps > sim rate.
+                 *
+                 * Stamp with a PLL-SMOOTHED VBL clock, not raw op_now(): the
+                 * raw completion time of a tick jitters by milliseconds with
+                 * sim/render load, and every snapshot ROLL resets the sub-tick
+                 * alpha mapping against its stamp — jittery stamps make shown
+                 * interp time advance 0.05..1.4 ticks between evenly-generated
+                 * presents (measured on the titlescreen flyby: fast movers
+                 * judder ±half a tick at ANY --render-fps while the slow
+                 * background looks fine). Locking stamps to the ideal VBL grid
+                 * (proportional 1/32 nudge tracks real cadence; full resync on
+                 * a stall/jump, e.g. CD loads) keeps the present-time → shown-
+                 * time mapping continuous across rolls. */
+                {
+                    static op_time_t s_vclk = 0;
+                    static unsigned  s_vclk_f = 0;
+                    const op_time_t vT = (op_time_t)((OP_NS_PER_SEC * 1001ull) / 60000ull);
+                    op_time_t raw = op_now();
+                    unsigned df = openpete_frame - s_vclk_f;
+                    s_vclk_f = openpete_frame;
+                    if (s_vclk == 0 || df == 0 || df > 8) s_vclk = raw;
+                    else {
+                        op_time_t pred = s_vclk + (op_time_t)df * vT;
+                        int64_t err = (int64_t)raw - (int64_t)pred;
+                        if (err > (int64_t)vT || err < -(int64_t)vT) s_vclk = raw;  /* stall/jump resync */
+                        else s_vclk = pred + (op_time_t)(err / 32);
+                    }
+                    /* Display-phase bias: the canonical present fires a few ms
+                     * BEFORE this tick's grid stamp (present latency + PLL lock
+                     * to AVERAGE completion), making its alpha slightly NEGATIVE
+                     * — the [0,1] clamp then snaps shown time forward ~0.5 VBL
+                     * at every roll and the following intermediates crawl to
+                     * compensate (measured: ~24% of all motion delivered as
+                     * 30 Hz jumps — the flyby judder). Biasing the stamp back
+                     * by a fixed phase keeps every present's alpha inside
+                     * (0,1): the mapping now−→shown-time stays linear through
+                     * the roll. Costs that many ms of extra display latency.
+                     * OPENPETE_INTERP_PHASE_MS overrides (default 10). */
+                    {
+                        static op_time_t s_phase = -1;
+                        if (s_phase < 0) {
+                            /* Default 0: the presents of one interval span exactly
+                             * one period, so ANY fixed bias clips an end (a +10ms
+                             * bias moved the clamp from alpha<0 at the canonical
+                             * present to alpha>1 on the last ~10ms of dense
+                             * intermediates). The canonical present firing a few
+                             * ms before the grid stamp is instead absorbed by the
+                             * consumers allowing slightly NEGATIVE alpha. */
+                            const char* e = getenv("OPENPETE_INTERP_PHASE_MS");
+                            double ms = e && *e ? atof(e) : 0.0;
+                            if (ms < 0.0) ms = 0.0; else if (ms > 16.0) ms = 16.0;
+                            s_phase = (op_time_t)(ms * 1e6);
+                        }
+                        op_time_t stamp = s_vclk - s_phase;
+                        openpete_interp_capture(openpete_frame, stamp);
+                        extern op_time_t g_openpete_tick_stamp;   /* objs capture shares the stamp */
+                        g_openpete_tick_stamp = stamp;
+                    }
+                }
 
                 /* High-FPS step 1: per-object (indirect) snapshot — walks
                  * the game's object pools (g_LevelMobys) into the keyed
@@ -1776,7 +1874,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                      * (here and each sub-tick) only re-applies it. */
                     openpete_native_scene_capture_overlay();
                     uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+                    extern int g_openpete_canon_lag_leg;
+                    g_openpete_canon_lag_leg = 1;
+                    vp_set_present_target();     /* even display-slot time for this present */
                     lag_re(&g_game.cpu);
+                    g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
                 }
             }
@@ -1892,6 +1994,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 (op_now() - s_last_canon_present_ns) <= 6 * vbl_ns; /* ~3 sim ticks */
             if (world_live) {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+                vp_set_present_target();      /* even display-slot time for this present */
                 native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
                 if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
             }
