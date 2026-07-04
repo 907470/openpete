@@ -1219,7 +1219,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * the .s READ sites only, so this stays the real LOD band marker. */
         static int s_holefill = -1;   /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
         if (s_holefill < 0) { const char* e = getenv("OPENPETE_TERRAIN_HOLEFILL"); s_holefill = (e && *e) ? (*e != '0') : 1; }
-        int fillLP = s_holefill && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0
+        /* The fill runs for EVERY far-band sector with LP — including sectors
+         * whose LP already draws in WORLD (LP-only 0x4000 / force-LP). For
+         * those the fill is a screen-DILATED duplicate (see the feed): the PSX
+         * integer scanline fill is INCLUSIVE where native's float raster +
+         * centre-sampling drops sub-pixel rows, so the far water renders as
+         * dashed slivers near screen edges under rotation (the carved-out
+         * distant-water horizon gaps, now also user-reported through the
+         * green cyclorama). The dilated re-emit grows coverage ~a pixel
+         * outward but paints only stencil==0 holes — overdraw is impossible,
+         * and the old coverage quantifier's "PSX horizon sits ~1.75px above
+         * native's" top-edge deficit is recovered the same way (the sky never
+         * marks, so growing above the drawn edge is allowed). */
+        int fillLP = s_holefill && !(flags & 0x2000) && nLpF > 0
                      && ((double)lodThr < cbin + SC->radius + 0x100);
 
         s_walk_sectors++;
@@ -1319,10 +1331,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * float raster is a hair tighter than the PSX integer edge — gate
              * tick 4888, peace-keepers cliffs). */
             if (passFill) {
+                /* Slack 1024 (face admitted when every corner is ≥75% fogged):
+                 * a strict ir0≤0 dropped the LP of sectors STRADDLING the LOD
+                 * boundary, leaving their far rows' raster gaps unfilled (the
+                 * f2730 right-edge green band); 1024 admits those while still
+                 * excluding the mid-band faces that fringed sky silhouettes
+                 * (gate tick 4888). */
+                static int s_fogslack = -1;
+                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 1024; }
                 int nc2 = quad ? 4 : 3, farAll = 1;
                 const int cf[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc2 && farAll; q2++)
-                    if (fogRef - (int)(sv[cf[q2]].m3 * 4.0) > 0) farAll = 0;
+                    if (fogRef - (int)(sv[cf[q2]].m3 * 4.0) > s_fogslack) farAll = 0;
                 if (!farAll) continue;
             }
             /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
@@ -1545,6 +1565,39 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             fputc('\n', stderr);
         }
         fprintf(stderr, "  gap cells (PSX-covered, native-missing): %d / %d\n", gap, GW*GH);
+        /* OPENPETE_TERRAIN_PIXBOX="x0,y0,x1,y1" (PSX screen px): dump every
+         * captured .s prim and every native tri whose bbox intersects the box —
+         * prim-level forensics for a coverage gap the grid localizes. */
+        const char* pb = getenv("OPENPETE_TERRAIN_PIXBOX");
+        if (pb && *pb) {
+            float bx0, by0, bx1, by1;
+            if (sscanf(pb, "%f,%f,%f,%f", &bx0, &by0, &bx1, &by1) == 4) {
+                for (int p = 0; p < s_gte_n; p++) {
+                    prim_t* g = &s_gte[p];
+                    float mnx=1e9f,mny=1e9f,mxx=-1e9f,mxy=-1e9f;
+                    for (int k = 0; k < g->nv; k++) {
+                        if (g->x[k]<mnx)mnx=g->x[k]; if (g->x[k]>mxx)mxx=g->x[k];
+                        if (g->y[k]<mny)mny=g->y[k]; if (g->y[k]>mxy)mxy=g->y[k];
+                    }
+                    if (mxx < bx0 || mnx > bx1 || mxy < by0 || mny > by1) continue;
+                    fprintf(stderr, "  [pixbox-psx] code=%02X nv=%d tex=%d xy=", g->code, g->nv, g->textured);
+                    for (int k = 0; k < g->nv; k++) fprintf(stderr, "(%.0f,%.0f)", g->x[k], g->y[k]);
+                    fprintf(stderr, " rgb0=%06X\n", g->rgb[0]);
+                }
+                for (int t = 0; t < s_tri_n; t++) {
+                    ttri* T = &s_tri[t];
+                    float mnx=1e9f,mny=1e9f,mxx=-1e9f,mxy=-1e9f;
+                    for (int k = 0; k < 3; k++) {
+                        if (T->sx[k]<mnx)mnx=T->sx[k]; if (T->sx[k]>mxx)mxx=T->sx[k];
+                        if (T->sy[k]<mny)mny=T->sy[k]; if (T->sy[k]>mxy)mxy=T->sy[k];
+                    }
+                    if (mxx < bx0 || mnx > bx1 || mxy < by0 || mny > by1) continue;
+                    fprintf(stderr, "  [pixbox-nat] tier=%d fill=%d tex=%d blend=%d xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) vz=%.0f\n",
+                            T->tier, T->fill, T->textured, T->blend,
+                            T->sx[0],T->sy[0],T->sx[1],T->sy[1],T->sx[2],T->sy[2], T->vz[0]);
+                }
+            }
+        }
     }
 }
 
@@ -1562,6 +1615,11 @@ static void terrain_feed_native(void) {
       if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
           fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
+    static float s_fill_dilate = -1.0f;  /* OPENPETE_TERRAIN_FILL_DILATE px (0 disables) */
+    if (s_fill_dilate < 0.0f) {
+        const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
+        s_fill_dilate = (e && *e) ? (float)atof(e) : 0.7f;
+    }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -1571,8 +1629,36 @@ static void terrain_feed_native(void) {
         tri.textured = tex; tri.blend = tex ? t->blend : 0;
         tri.tpage_x = t->tpx; tri.tpage_y = t->tpy;
         tri.clut_x = t->clx; tri.clut_y = t->cly; tri.bpp = t->bpp;
+        /* FILL tris are dilated a sub-pixel outward from their centroid: the
+         * PSX integer scanline fill is inclusive where native's float raster +
+         * GPU centre-sampling drops sub-pixel rows (the dashed far-water
+         * slivers). Stencil==0 confines the growth to genuine holes. */
+        float dsx[3], dsy[3];
+        for (int k = 0; k < 3; k++) { dsx[k] = t->sx[k]; dsy[k] = t->sy[k]; }
+        if (t->fill && s_fill_dilate > 0.0f) {
+            /* FILL coords are floor-QUANTIZED to mirror the PSX's truncating
+             * GTE (pixbox forensics f2730: the same LP quads sit +0.2..+1.0px
+             * below the PSX integer coords with per-row VARIANCE — at the
+             * horizon, where rows are ~1px tall, that variance opens the
+             * dashed water gaps; floor() reproduces the PSX row edges almost
+             * everywhere), then grown by the residual dilate PER AXIS (not
+             * radially — these rows are ~80px wide and ~1px tall, so a
+             * normalized radial offset is nearly all horizontal and closes
+             * nothing) to bridge the occasional remaining ±1 divergence.
+             * Stencil==0 confines all growth to genuine holes. */
+            /* Vertical growth is DOWN-only: floor() already lifts the top edge
+             * by the truncated fraction (~0.5px avg, matching the PSX edge);
+             * additionally growing UP pushed the fill's fully-fogged LP-only
+             * strips ABOVE the terrain silhouette into the sky (a dark fringe
+             * on the peace-keepers cliff line, gate tick 4888 round 2). */
+            float cx = (dsx[0]+dsx[1]+dsx[2]) / 3.0f, cy = (dsy[0]+dsy[1]+dsy[2]) / 3.0f;
+            for (int k = 0; k < 3; k++) {
+                dsx[k] = floorf(dsx[k]) + (dsx[k] > cx ? s_fill_dilate : -s_fill_dilate);
+                dsy[k] = floorf(dsy[k]) + (dsy[k] > cy ? s_fill_dilate : 0.0f);
+            }
+        }
         for (int k = 0; k < 3; k++) {
-            tri.v[k].sx = t->sx[k]; tri.v[k].sy = t->sy[k];
+            tri.v[k].sx = dsx[k]; tri.v[k].sy = dsy[k];
             /* Terrain view-Z is in world/16 units (cam>>4, verts /16); the
              * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
              * scale, so ×16 to match — else terrain's depth is ~16× too small
