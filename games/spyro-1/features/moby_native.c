@@ -3263,6 +3263,13 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     uint32_t header_p = cpu->read_word(model + 0x38u + anim_p * 4u);
     if (header_p < 0x80000000u) return 0;
     if (header_p != header_curr) {                            /* clip switch */
+        /* Cutscene path-followers: SNAP the switch, as canonical does. Their
+         * flight clips carry large BAKED whole-body translation; crossfading
+         * two spatially-distant poses lurches the whole model for 1-2
+         * presents at every clip switch (the title-flyby "seizure" cluster
+         * at the anim 2→3 switch). */
+        extern int spyro_cutpath_is_actor(uint32_t m);
+        if (spyro_cutpath_is_actor(moby)) { s_animsw_snap++; return 0; }
         /* crossfade only when the two clips share vertex topology (same count) */
         int count_c = cpu->read_byte(header_curr + 8) & 0xFFu;
         int count_p = cpu->read_byte(header_p   + 8) & 0xFFu;

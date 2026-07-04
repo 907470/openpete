@@ -346,6 +346,23 @@ static int cutpath_solve_u(uint32_t path, const int32_t* pos, int hint, double* 
     return 1;
 }
 
+/* Is this moby a cutscene path-follower right now? (g_LevelMobys[0..count)
+ * while g_CutsceneLayout is live.) Used by the moby feeder to SNAP clip
+ * switches for these actors: their flight clips carry large BAKED whole-body
+ * translation, and a crossfade averages two spatially-distant poses on a
+ * phase that can't match the path timing — a 1-2 present whole-body lurch at
+ * every clip switch. Canonical does a hard switch; mirror it. */
+int spyro_cutpath_is_actor(uint32_t m) {
+    uint32_t cs, base, cnt;
+    if (!cut_rd32(G_CUTSCENE, &cs) || cs < 0x80000000u || cs >= 0x80200000u) return 0;
+    if (!cut_rd32(G_LEVELMOBYS, &base) || base < 0x80000000u || base >= 0x80200000u) return 0;
+    if (m < base) return 0;
+    uint32_t off = m - base;
+    if (off % MOBY_STRIDE) return 0;
+    if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 8u) return 0;
+    return (off / MOBY_STRIDE) < cnt;
+}
+
 static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
                               double a, int32_t* out) {
     static int s_on = -1;
@@ -382,11 +399,13 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
     static struct {
         uint32_t cs; int hint[8]; long nosolve[8];
         double lu[8]; uint8_t have_lu[8];        /* per-actor u slew state */
-    } s_uh = { 0u, {0}, {0}, {0.0}, {0} };
+        uint8_t hold[8];                         /* consecutive held presents */
+    } s_uh = { 0u, {0}, {0}, {0.0}, {0}, {0} };
     if (s_uh.cs != cs) {
         memset(s_uh.hint, 0, sizeof s_uh.hint);
         memset(s_uh.nosolve, 0, sizeof s_uh.nosolve);
         memset(s_uh.have_lu, 0, sizeof s_uh.have_lu);
+        memset(s_uh.hold, 0, sizeof s_uh.hold);
         s_uh.cs = cs;
     }
     /* Solve u_curr FIRST (against the tracked hint), then u_prev anchored to
@@ -394,19 +413,29 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
      * u_curr picks the hold EXIT rather than the hold start — so departure
      * from a park sweeps [hold-end → first moving segment] instead of
      * rejecting on a bogus 160-waypoint "jump". */
-    double u_prev, u_curr;
-    if (!cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) ||
-        !cutpath_solve_u(path, pp, (int)u_curr, &u_prev)) {
+    double u, u_prev, u_curr;
+    int solved = cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) &&
+                 cutpath_solve_u(path, pp, (int)u_curr, &u_prev) &&
+                 u_curr >= u_prev - 0.26 && u_curr <= u_prev + 2.0;
+    if (solved) {
+        s_uh.hint[k] = (int)u_curr;
+        s_uh.hold[k] = 0;
+        u = u_prev + (u_curr - u_prev) * a;
+    } else {
         s_uh.nosolve[k]++;
-        return 0;
+        /* HOLD through transient solver dropouts (path joins, off-polyline
+         * hops, hold ambiguity): falling back to the faithful path for
+         * ISOLATED presents alternates spline-pos ↔ faithful-pos at present
+         * rate — a violent ±10-20 px flicker (the sign-gnorc a1 join
+         * "seizure": 47 nosolve presents interleaved with engaged ones).
+         * While recently engaged, keep rendering the spline at the last
+         * slewed u (frozen — invents no motion; the bound guard below still
+         * disengages if canonical walks away). Give up after 40 consecutive
+         * held presents (genuinely lost → one snap). */
+        if (!s_uh.have_lu[k] || s_uh.hold[k] >= 40) { s_uh.have_lu[k] = 0; return 0; }
+        s_uh.hold[k]++;
+        u = s_uh.lu[k];
     }
-    /* monotone forward progression, at most ~2 waypoints per tick */
-    if (u_curr < u_prev - 0.26 || u_curr > u_prev + 2.0) {
-        s_uh.nosolve[k]++; s_uh.have_lu[k] = 0; return 0;
-    }
-    s_uh.hint[k] = (int)u_curr;
-
-    double u = u_prev + (u_curr - u_prev) * a;
     /* u SLEW LIMITER. A hold run collapses several waypoints of path time
      * into one position, so the inversion can't see u advance through it —
      * at hold entry/exit the solved u JUMPS ~1 waypoint in one present and
