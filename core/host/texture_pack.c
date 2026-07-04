@@ -23,6 +23,14 @@
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include "stb_image.h"
+
+#include <SDL3/SDL.h>  /* SDL_GetBasePath — same discovery music_override uses */
+#include <dirent.h>
+
 #define TP_MAX_ENTRIES   4096
 #define TP_MAX_ANNOT     128
 #define TP_RESOLVE_SLOTS 4096   /* open-addressed resolve cache (power of 2) */
@@ -54,12 +62,81 @@ static uint32_t s_gen = 1;            /* bumped on any registry mutation */
 static tp_slot  s_cache[TP_RESOLVE_SLOTS];
 static int      s_inited = 0;
 
-void texture_pack_init(void)  { s_inited = 1; }
+/* ---- replacement pack state (Phase 3) ------------------------------------ */
+/* The pack INDEX is built at init by parsing every PNG filename in the dir
+ * (identity is fully encoded in the name); images load lazily on first
+ * match. Matching is containment-based — see texture_pack.h. */
+#define TP_PACK_MAX 8192
+typedef struct {
+    uint64_t thash, phash;
+    int bpp;
+    int bx, by, bw, bh;            /* the file's upload-relative texel box */
+    unsigned char *px;             /* lazy; NULL until first match */
+    int w, h;
+    int load_failed;
+    char name[96];
+} tp_pack_entry;
+static tp_pack_entry s_pack[TP_PACK_MAX];
+static int  s_pack_n = 0;
+static char s_repl_dir[512];
+static int  s_repl_active = 0;
+
+/* memo: identity key -> pack entry index (or -1 = no match) */
+#define TP_MATCH_SLOTS 8192
+typedef struct { uint64_t key; int entry; } tp_match_slot;
+static tp_match_slot s_match[TP_MATCH_SLOTS];
+
+static void tp_repl_scan(void)
+{
+    s_repl_active = 0; s_pack_n = 0;
+    memset(s_match, 0, sizeof s_match);
+    const char *env = getenv("OPENPETE_TEXPACK_DIR");
+    if (env && *env) {
+        snprintf(s_repl_dir, sizeof s_repl_dir, "%s", env);
+    } else {
+        const char *base = SDL_GetBasePath();
+        if (!base) return;
+        snprintf(s_repl_dir, sizeof s_repl_dir, "%sassets/textures/replacements", base);
+    }
+    DIR *d = opendir(s_repl_dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) && s_pack_n < TP_PACK_MAX) {
+        tp_pack_entry *e = &s_pack[s_pack_n];
+        unsigned long long th, ph;
+        int bx, by, bw, bh, bpp;
+        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
+                   &th, &bx, &by, &bw, &bh, &ph, &bpp) != 7) continue;
+        if ((int)strlen(de->d_name) >= (int)sizeof(e->name)) continue;
+        memset(e, 0, sizeof *e);
+        e->thash = th; e->phash = ph; e->bpp = bpp;
+        e->bx = bx; e->by = by; e->bw = bw; e->bh = bh;
+        snprintf(e->name, sizeof e->name, "%s", de->d_name);
+        s_pack_n++;
+    }
+    closedir(d);
+    s_repl_active = s_pack_n > 0;
+    if (s_repl_active)
+        fprintf(stderr, "[texpack] replacement pack active: %d entries in %s\n",
+                s_pack_n, s_repl_dir);
+}
+
+void texture_pack_init(void)
+{
+    if (s_inited) return;
+    s_inited = 1;
+    tp_repl_scan();
+}
 void texture_pack_shutdown(void)
 {
     if (getenv("OPENPETE_TEXPACK_DUMP_REGISTRY")) texture_pack_debug_dump();
-    s_ent_n = 0; s_annot_n = 0; s_gen++; s_inited = 0;
+    for (int i = 0; i < s_pack_n; i++)
+        if (s_pack[i].px) { stbi_image_free(s_pack[i].px); s_pack[i].px = NULL; }
+    s_pack_n = 0;
+    s_ent_n = 0; s_annot_n = 0; s_gen++; s_inited = 0; s_repl_active = 0;
 }
+
+int texture_pack_replacements_active(void) { return s_repl_active; }
 
 static int tp_overlap(const tp_entry *e, int x, int y, int w, int h)
 {
@@ -163,32 +240,22 @@ static const tp_entry *tp_cover(int x, int y, int w, int h)
     return NULL;
 }
 
-/* Trimmed palette hash: scan the draw's texel indices (from the live VRAM
- * model) for the used index range, then XXH3 the CLUT entries over exactly
- * that range. 16bpp has no palette (phash 0). */
-static uint64_t tp_clut_hash(int bpp, int tpage_x, int tpage_y,
-                             int clut_x, int clut_y,
-                             int u0, int v0, int u1, int v1)
+/* Palette hash: XXH3 over the full bpp-addressable CLUT row (16 entries for
+ * 4bpp, 256 for 8bpp) read from the live VRAM model. NOT trimmed to the
+ * query's used index range — that made phash a function of the QUERY BOX
+ * (each clipped tri scans a different index range), so identical tiles
+ * produced different identities per frame and containment matching fell
+ * apart (falsified 2026-07-04; terrain never matched while rigid-box quads
+ * did). The emulator-world "trim to used range" lesson guards against
+ * nondeterministic garbage beyond the used indices — but this registry's
+ * VRAM model is fed only by deterministic uploads, so the full row is
+ * stable. 16bpp has no palette (phash 0). */
+static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
 {
     if (bpp == 16) return 0;
     const uint16_t *vr = openpete_vram_data();
-    unsigned lo = 255, hi = 0;
-    for (int v = v0; v <= v1; v++) {
-        const uint16_t *row = vr + (size_t)(tpage_y + v) * OPENPETE_VRAM_W;
-        for (int u = u0; u <= u1; u++) {
-            unsigned idx;
-            if (bpp == 8) {
-                idx = (row[tpage_x + (u >> 1)] >> (8 * (u & 1))) & 0xFFu;
-            } else {
-                idx = (row[tpage_x + (u >> 2)] >> (4 * (u & 3))) & 0xFu;
-            }
-            if (idx < lo) lo = idx;
-            if (idx > hi) hi = idx;
-        }
-    }
-    if (lo > hi) return 0;
     const uint16_t *clut = vr + (size_t)clut_y * OPENPETE_VRAM_W + clut_x;
-    return XXH3_64bits(clut + lo, (size_t)(hi - lo + 1) * 2);
+    return XXH3_64bits(clut, (bpp == 8 ? 256 : 16) * 2);
 }
 
 int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
@@ -221,7 +288,7 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
 
     texture_pack_id id;
     id.thash = e->thash;
-    id.phash = tp_clut_hash(bpp, tpage_x, tpage_y, clut_x, clut_y, u0, v0, u1, v1);
+    id.phash = tp_clut_hash(bpp, clut_x, clut_y);
     id.bpp   = bpp;
     /* Box relative to the upload origin, in TEXEL units of this bpp. */
     int shift = (bpp == 16) ? 0 : (bpp == 8) ? 1 : 2;
@@ -235,13 +302,91 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
     return 1;
 }
 
+/* ---- identity key / filename (shared: dump + replacement lookup) ---------- */
+
+static uint64_t tp_id_key(const texture_pack_id *id)
+{
+    uint64_t key = id->thash ^ (id->phash * 0x9E3779B97F4A7C15ull) ^
+                   ((uint64_t)(uint32_t)((id->box_x << 20) ^ (id->box_y << 8) ^
+                                         (id->box_w << 26) ^ id->box_h ^ id->bpp) << 1);
+    return key ? key : 1;
+}
+
+uint64_t texture_pack_id_hashkey(const texture_pack_id *id) { return tp_id_key(id); }
+
+static void tp_id_filename(const texture_pack_id *id, const char *dir,
+                           char *buf, size_t n)
+{
+    snprintf(buf, n, "%s/%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
+             dir, (unsigned long long)id->thash, id->box_x, id->box_y,
+             id->box_w, id->box_h, (unsigned long long)id->phash, id->bpp);
+}
+
+/* ---- replacement lookup (Phase 3) ----------------------------------------- */
+
+int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
+{
+    if (!s_repl_active || !id) return 0;
+    uint64_t key = tp_id_key(id);
+    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    tp_match_slot *m = NULL;
+    for (int p = 0; p < 16; p++) {
+        tp_match_slot *c = &s_match[(base + (uint64_t)p) & (TP_MATCH_SLOTS - 1)];
+        if (c->key == key || c->key == 0) { m = c; break; }
+    }
+    int ei;
+    if (m && m->key == key) {
+        ei = m->entry;                          /* memoized (incl. -1 = no match) */
+    } else {
+        /* Containment search: same thash/bpp/phash, file box contains the
+         * query box; smallest containing file wins. */
+        ei = -1;
+        long best = 0;
+        for (int i = 0; i < s_pack_n; i++) {
+            const tp_pack_entry *e = &s_pack[i];
+            if (e->thash != id->thash || e->bpp != id->bpp || e->phash != id->phash)
+                continue;
+            if (id->box_x < e->bx || id->box_y < e->by ||
+                id->box_x + id->box_w > e->bx + e->bw ||
+                id->box_y + id->box_h > e->by + e->bh) continue;
+            long area = (long)e->bw * e->bh;
+            if (ei < 0 || area < best) { ei = i; best = area; }
+        }
+        if (m) { m->key = key; m->entry = ei; }
+    }
+    if (ei < 0) return 0;
+    tp_pack_entry *e = &s_pack[ei];
+    if (!e->px && !e->load_failed) {            /* lazy first load */
+        char path[640];
+        snprintf(path, sizeof path, "%s/%s", s_repl_dir, e->name);
+        int comp = 0;
+        e->px = stbi_load(path, &e->w, &e->h, &comp, 4);
+        if (!e->px) e->load_failed = 1;
+        else fprintf(stderr, "[texpack] replacement loaded %dx%d: %s\n", e->w, e->h, e->name);
+    }
+    if (!e->px) return 0;
+    out->pixels = e->px; out->w = e->w; out->h = e->h;
+    out->box_x = e->bx; out->box_y = e->by; out->box_w = e->bw; out->box_h = e->bh;
+    return 1;
+}
+
 /* ---- dump tool (Phase 2) -------------------------------------------------- */
 
 int stbi_write_png(const char *filename, int w, int h, int comp,
                    const void *data, int stride_in_bytes);   /* impl: screenshot.c TU */
 
-#define TP_DUMPED_SLOTS 16384   /* identity dedupe (power of 2) */
-static uint64_t s_dumped[TP_DUMPED_SLOTS];
+/* Dump granularity: per-tri query boxes explode into clipped variants
+ * (11k files/run measured), so the dump accumulates a BOX UNION per
+ * (thash, phash, bpp) — converging to the full tile / glyph-strip / sprite
+ * box — and (re)writes that union's file whenever it grows. Containment
+ * matching consumes the union naturally. */
+#define TP_UNION_SLOTS 16384   /* power of 2 */
+typedef struct {
+    uint64_t key;
+    int bx, by, bw, bh;        /* union box, upload-relative texels */
+    char name[96];             /* last written filename (unlinked on growth) */
+} tp_union;
+static tp_union s_union[TP_UNION_SLOTS];
 
 void texture_pack_dump_draw(const texture_pack_id *id,
                             int tpage_x, int tpage_y, int clut_x, int clut_y,
@@ -252,30 +397,54 @@ void texture_pack_dump_draw(const texture_pack_id *id,
     if (!checked) { checked = 1; dir = getenv("OPENPETE_TEXPACK_DUMP_DIR"); }
     if (!dir || !*dir || !id) return;
 
-    uint64_t key = id->thash ^ (id->phash * 0x9E3779B97F4A7C15ull) ^
-                   ((uint64_t)(uint32_t)((id->box_x << 20) ^ (id->box_y << 8) ^
-                                         (id->box_w << 26) ^ id->box_h ^ id->bpp) << 1);
+    uint64_t key = id->thash ^ (id->phash * 0x9E3779B97F4A7C15ull) ^ (uint64_t)id->bpp;
     if (!key) key = 1;
-    uint64_t *slot = &s_dumped[(key * 0xff51afd7ed558ccdull >> 32) & (TP_DUMPED_SLOTS - 1)];
-    if (*slot == key) return;
-    *slot = key;
+    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    tp_union *u = NULL;
+    for (int p = 0; p < 16; p++) {
+        tp_union *c = &s_union[(base + (uint64_t)p) & (TP_UNION_SLOTS - 1)];
+        if (c->key == key || c->key == 0) { u = c; break; }
+    }
+    if (!u) return;                             /* neighbourhood full */
+    int grew = 0;
+    if (u->key != key) {                        /* first sighting */
+        u->key = key; u->name[0] = 0;
+        u->bx = id->box_x; u->by = id->box_y; u->bw = id->box_w; u->bh = id->box_h;
+        grew = 1;
+    } else {
+        int x1 = u->bx + u->bw, y1 = u->by + u->bh;
+        int qx1 = id->box_x + id->box_w, qy1 = id->box_y + id->box_h;
+        if (id->box_x < u->bx) { u->bx = id->box_x; grew = 1; }
+        if (id->box_y < u->by) { u->by = id->box_y; grew = 1; }
+        if (qx1 > x1) { x1 = qx1; grew = 1; }
+        if (qy1 > y1) { y1 = qy1; grew = 1; }
+        u->bw = x1 - u->bx; u->bh = y1 - u->by;
+    }
+    if (!grew) return;
 
-    int W = id->box_w, H = id->box_h;
+    /* Decode the union box. This draw anchors page<->upload coords:
+     * page coord of union origin = query page origin - (query - union) box
+     * offset. u may walk beyond this tpage's 256-texel window — that is
+     * correct: pages are x-offsets into the same VRAM rows, and the upload
+     * is contiguous there. */
+    int pu0 = u0 - (id->box_x - u->bx);
+    int pv0 = v0 - (id->box_y - u->by);
+    int W = u->bw, H = u->bh;
     const uint16_t *vr = openpete_vram_data();
     unsigned char *px = malloc((size_t)W * H * 4);
     if (!px) return;
     for (int y = 0; y < H; y++) {
-        const uint16_t *row = vr + (size_t)(tpage_y + v0 + y) * OPENPETE_VRAM_W;
+        const uint16_t *row = vr + (size_t)(tpage_y + pv0 + y) * OPENPETE_VRAM_W;
         for (int x = 0; x < W; x++) {
-            int u = u0 + x;
+            int uu = pu0 + x;
             uint16_t p;
             if (id->bpp == 16) {
-                p = row[tpage_x + u];
+                p = row[tpage_x + uu];
             } else if (id->bpp == 8) {
-                unsigned idx = (row[tpage_x + (u >> 1)] >> (8 * (u & 1))) & 0xFFu;
+                unsigned idx = (row[tpage_x + (uu >> 1)] >> (8 * (uu & 1))) & 0xFFu;
                 p = vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + idx];
             } else {
-                unsigned idx = (row[tpage_x + (u >> 2)] >> (4 * (u & 3))) & 0xFu;
+                unsigned idx = (row[tpage_x + (uu >> 2)] >> (4 * (uu & 3))) & 0xFu;
                 p = vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + idx];
             }
             unsigned char *o = px + ((size_t)y * W + x) * 4;
@@ -286,10 +455,16 @@ void texture_pack_dump_draw(const texture_pack_id *id,
             o[3] = p ? 255 : 0;   /* PSX sentinel -> transparent (STP nuance: Phase 5) */
         }
     }
-    char path[512];
-    snprintf(path, sizeof path, "%s/%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
-             dir, (unsigned long long)id->thash, id->box_x, id->box_y,
-             id->box_w, id->box_h, (unsigned long long)id->phash, id->bpp);
+    if (u->name[0]) {                           /* superseded smaller union */
+        char old[640];
+        snprintf(old, sizeof old, "%s/%s", dir, u->name);
+        remove(old);
+    }
+    snprintf(u->name, sizeof u->name, "%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
+             (unsigned long long)id->thash, u->bx, u->by, u->bw, u->bh,
+             (unsigned long long)id->phash, id->bpp);
+    char path[740];
+    snprintf(path, sizeof path, "%s/%s", dir, u->name);
     stbi_write_png(path, W, H, 4, px, W * 4);
     free(px);
 }

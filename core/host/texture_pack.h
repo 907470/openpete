@@ -71,6 +71,32 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
  * otherwise outlive the registry. */
 void texture_pack_annotate(int x, int y, int w, int h, const char *name);
 
+/* ---- replacement packs (Phase 3) ----------------------------------------- */
+
+/* True if a replacement directory exists and holds at least one PNG.
+ * Dir: $OPENPETE_TEXPACK_DIR, else <exe>/assets/textures/replacements/.
+ * Cheap flag read — callable per drawn run. */
+int texture_pack_replacements_active(void);
+
+/* A matched replacement: the image plus the FILE's texel box (upload-
+ * relative). Matching is by CONTAINMENT: a pack file covers every query box
+ * inside its own box (same thash/bpp/phash), so one 64x64 tile file serves
+ * both the LP full-tile draw and the HP 2x2 sub-quad draws, and per-frame
+ * clipped boxes still resolve. Smallest containing file wins. */
+typedef struct {
+    const unsigned char *pixels;   /* RGBA8, borrowed from the cache */
+    int w, h;                      /* replacement image dimensions */
+    int box_x, box_y, box_w, box_h; /* the FILE's texel box, upload-relative */
+} texture_pack_repl;
+
+/* Match a resolved identity against the pack index (filenames parsed at
+ * init). Lazy-loads the image on first match; memoized per identity. */
+int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out);
+
+/* Stable 64-bit key over the full identity (thash+phash+box+bpp) — for
+ * caller-side caches (e.g. the renderer's identity->GPU-texture map). */
+uint64_t texture_pack_id_hashkey(const texture_pack_id *id);
+
 /* ---- dump tool (Phase 2) ------------------------------------------------- */
 
 /* If OPENPETE_TEXPACK_DUMP_DIR is set, decode the draw's texel box from the

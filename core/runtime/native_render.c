@@ -49,7 +49,6 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
 #include "texture_pack.h"           /* texture-replacement registry (Phase 1+) */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
-static void hd_poc_init(rhi_device *dev);   /* HD texture-replacement PoC, defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
 
 /* GL_RGBA enum — byte order R,G,B,A, matching VK_FORMAT_R8G8B8A8_UNORM. */
@@ -670,7 +669,9 @@ static struct {
     rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
     rhi_pipeline *gouraud_hud_sub_pipe; /* HUD panel: UNTEXTURED subtractive gouraud, depth-test OFF (the ABR mode-2 shaded text box, B-F) */
     rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
-    rhi_pipeline *hd_tex_pipe;        /* HD texture-replacement PoC: RGBA sampler, alpha blend, depth OFF */
+    rhi_pipeline *hd_tex_pipe;        /* HD replacement, HUD overlay: RGBA sampler, alpha blend, depth OFF */
+    rhi_pipeline *hd_cutout_pipe;     /* HD replacement, opaque scene: depth-tested, alpha-cutout */
+    rhi_pipeline *hd_cutout_mark_pipe;/* cutout twin with stencil MARK (WORLD group when hole-fill is on) */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
     /* Target display aspect (W/H), from --aspect (0 → default 4:3). Drives the
@@ -1264,6 +1265,22 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = false,
         .uses_vram = true, .push_const_size = 4 * sizeof(float),
     };
+    /* Opaque-scene HD replacement: depth-tested cutout (true blending on
+     * opaque groups would break Z ordering); the MARK twin keeps the W2.6-c
+     * hole-fill stencil coverage intact when replacing WORLD-group runs. */
+    rhi_pipeline_desc hd_cutout_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+    };
+    rhi_pipeline_desc hd_cutout_mark_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .stencil = RHI_STENCIL_MARK,
+        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+    };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
      * depth, no blend. Built unconditionally so --screenshot-on-frame can dump
@@ -1333,7 +1350,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_hud_blend_pipe = rhi_create_pipeline(dev, &gouraud_hud_blend_desc);
     rhi_pipeline *gouraud_hud_sub_pipe = rhi_create_pipeline(dev, &gouraud_hud_sub_desc);
     rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
-    rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* PoC: allowed to fail (NULL = feature off) */
+    rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
+    rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
+    rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
+    fprintf(stderr, "[texpack] hd pipes: hud=%d cutout=%d cutout_mark=%d\n",
+            hd_tex_pipe != NULL, hd_cutout_pipe != NULL, hd_cutout_mark_pipe != NULL);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
     rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
@@ -1399,6 +1420,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (diff_pipe)     rhi_destroy_pipeline(dev, diff_pipe);
         if (scene_tex_hud_pipe) rhi_destroy_pipeline(dev, scene_tex_hud_pipe);
         if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
+        if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
+        if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
         if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
@@ -1451,6 +1474,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_hud_sub_pipe = gouraud_hud_sub_pipe;
     s_nr.scene_tex_hud_pipe = scene_tex_hud_pipe;
     s_nr.hd_tex_pipe  = hd_tex_pipe;
+    s_nr.hd_cutout_pipe = hd_cutout_pipe;
+    s_nr.hd_cutout_mark_pipe = hd_cutout_mark_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
@@ -1470,7 +1495,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * OPENPETE_VRAM_VERIFY against PsyCross's mirror). */
     PsyX_SetVRAMDirtyCallback(nr_vram_dirty_cb);
     openpete_vram_install_ops();
-    hd_poc_init(dev);   /* HD texture-replacement PoC (OPENPETE_HD_TEX) */
 
     /* Static full-target quad (clip -1..1, UV 0..1 top-down) for render-target
      * copies — currently the native_rtt -> frozen_tex freeze-snapshot blit. */
@@ -2476,85 +2500,83 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
     if (a->bpp     != b->bpp    ) return a->bpp     < b->bpp     ? -1 : 1;
     return 0;
 }
-/* ---- HD texture-replacement PoC ------------------------------------------
- * (openpete-texture-replacement plan, Phase 4 spike.) Replace ONE hardcoded
- * material — the title-screen "Spyro the Dragon" logo, a single 256x128 FT4
- * on tpage (512,256) 8bpp / CLUT (512,511) (identity read off the
- * OPENPETE_UISPRITE_DUMP prim dump) — with a high-res RGBA texture at the
- * material-batching seam. The real feature derives identity + texel box from
- * the upload-time registry (plan Phase 1); the PoC hardcodes them.
- *
- *   OPENPETE_HD_TEX=<file>       raw blob: u32le W, u32le H, then W*H RGBA8.
- *   OPENPETE_HD_TEX_DUMP=<file>  one-shot PNG dump of the SD texel box at
- *                                first draw (for fitting the HD art). Works
- *                                without OPENPETE_HD_TEX.
- */
-#include "stb_image_write.h"
+/* ---- HD texture replacement (openpete-texture-replacement Phases 3+4) -----
+ * Identity comes from the upload-time registry (texture_pack_resolve, per
+ * TRI — run-union boxes vary with per-frame clipping); the pack match is
+ * containment-based (texture_pack_match), so one tile-sized file covers LP
+ * full-tile draws, HP sub-quad draws, and partially-clipped boxes alike.
+ * (The original hardcoded title-logo PoC path is retired — the generic path
+ * replaced it 1:1.) */
 
-static rhi_texture *s_hd_tex = NULL;
-static const psx_material s_hd_key = { 512, 256, 512, 511, 8 };
-static const float s_hd_rect[4] = { 0.0f, 0.0f, 256.0f, 128.0f };
+/* ---- HD replacement GPU-texture cache (Phase 4) ---------------------------
+ * identity hashkey -> uploaded rhi texture (linear-filtered). Slot collision
+ * keeps the incumbent and falls back to SD for the newcomer (destroying an
+ * in-flight texture is not frame-safe; with 512 slots and pack sizes in the
+ * dozens this is theoretical). */
+#define HD_CACHE_SLOTS 8192   /* pack sizes reach thousands game-wide; probe-16 needs headroom */
+static struct { uint64_t key; rhi_texture *tex; } s_hd_cache[HD_CACHE_SLOTS];
 
-static void hd_poc_init(rhi_device *dev) {
-    const char *path = getenv("OPENPETE_HD_TEX");
-    if (!path || !*path) return;
-    FILE *f = fopen(path, "rb");
-    uint32_t wh[2];
-    if (!f) { fprintf(stderr, "[hdpoc] cannot open %s\n", path); return; }
-    if (fread(wh, 1, 8, f) != 8 || wh[0] == 0 || wh[1] == 0 ||
-        wh[0] > 8192 || wh[1] > 8192) { fclose(f); return; }
-    size_t n = (size_t)wh[0] * wh[1] * 4;
-    void *px = malloc(n);
-    if (!px || fread(px, 1, n, f) != n) {
-        fprintf(stderr, "[hdpoc] short read: %s\n", path);
-        free(px); fclose(f); return;
+/* GPU uploads cannot record inside the offscreen render pass, so a first
+ * sighting at draw time only QUEUES the image; hd_flush_pending() uploads at
+ * the next frame start (one SD frame on first appearance). */
+static struct { uint64_t key; const unsigned char *px; int w, h; } s_hd_pending[64];
+static int s_hd_pending_n = 0;
+
+static rhi_texture *hd_cache_lookup(uint64_t key)
+{
+    uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
+    for (int p = 0; p < 16; p++) {             /* linear probe */
+        int idx = (int)((base + (uint64_t)p) & (HD_CACHE_SLOTS - 1));
+        if (s_hd_cache[idx].key == key) return s_hd_cache[idx].tex;
+        if (s_hd_cache[idx].key == 0) return NULL;
     }
-    fclose(f);
-    rhi_texture *t = rhi_create_rgba8(dev, wh[0], wh[1]);
-    if (t) {
-        rhi_update_rgba8(dev, t, px);
-        rhi_texture_set_filter_linear(dev, t);
-        s_hd_tex = t;
-        fprintf(stderr, "[hdpoc] HD replacement %ux%u active (title-logo key)\n",
-                wh[0], wh[1]);
-    }
-    free(px);
+    return NULL;
 }
 
-/* One-shot: decode the SD texel box from the native VRAM model and write a
- * PNG (the plan's Phase-2 dump tool in miniature). 8bpp CLUT only (the PoC
- * key); PSX word 0x0000 = transparent sentinel -> alpha 0. */
-static void hd_poc_dump_sd(const psx_material *m) {
-    static int done = 0;
-    const char *path = getenv("OPENPETE_HD_TEX_DUMP");
-    if (!path || !*path || done || m->bpp != 8) return;
-    done = 1;
-    int W = (int)s_hd_rect[2], H = (int)s_hd_rect[3];
-    const uint16_t *vr = openpete_vram_data();
-    unsigned char *px = malloc((size_t)W * H * 4);
-    if (!px) return;
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            uint16_t word = vr[(size_t)(m->tpage_y + y) * 1024 + m->tpage_x + (x >> 1)];
-            uint16_t idx  = (uint16_t)((word >> (8 * (x & 1))) & 0xFFu);
-            uint16_t p    = vr[(size_t)m->clut_y * 1024 + m->clut_x + idx];
-            unsigned char *o = px + ((size_t)y * W + x) * 4;
-            unsigned r5 = p & 31u, g5 = (p >> 5) & 31u, b5 = (p >> 10) & 31u;
-            o[0] = (unsigned char)((r5 << 3) | (r5 >> 2));
-            o[1] = (unsigned char)((g5 << 3) | (g5 >> 2));
-            o[2] = (unsigned char)((b5 << 3) | (b5 >> 2));
-            o[3] = p ? 255 : 0;
+static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h)
+{
+    if (s_hd_pending_n >= 64) return;
+    for (int i = 0; i < s_hd_pending_n; i++)
+        if (s_hd_pending[i].key == key) return;
+    s_hd_pending[s_hd_pending_n++] = (__typeof__(s_hd_pending[0])){ key, px, w, h };
+}
+
+static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
+{
+    for (int i = 0; i < s_hd_pending_n; i++) {
+        uint64_t key = s_hd_pending[i].key;
+        uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
+        int idx = -1;
+        for (int p = 0; p < 16; p++) {         /* linear probe: existing or empty */
+            int c = (int)((base + (uint64_t)p) & (HD_CACHE_SLOTS - 1));
+            if (s_hd_cache[c].key == key) { idx = -1; break; }   /* already up */
+            if (s_hd_cache[c].key == 0) { idx = c; break; }
         }
+        if (idx < 0) {                          /* already uploaded, or neighbourhood full */
+            static int drops = 0;
+            if (drops < 8 && hd_cache_lookup(key) == NULL)
+                fprintf(stderr, "[texpack] GPU cache insert dropped (key=%016llx, %d)\n",
+                        (unsigned long long)key, ++drops);
+            continue;
+        }
+        rhi_texture *t = rhi_create_rgba8(s_nr.dev, (uint32_t)s_hd_pending[i].w,
+                                          (uint32_t)s_hd_pending[i].h);
+        if (!t) continue;
+        rhi_update_rgba8(s_nr.dev, t, s_hd_pending[i].px);
+        rhi_texture_set_filter_linear(s_nr.dev, t);
+        s_hd_cache[idx].key = key;
+        s_hd_cache[idx].tex = t;
     }
-    stbi_write_png(path, W, H, 4, px, W * 4);
-    free(px);
-    fprintf(stderr, "[hdpoc] dumped SD texel box %dx%d -> %s\n", W, H, path);
+    s_hd_pending_n = 0;
 }
 
-static int hd_poc_match(const psx_material *m) {
-    return m->tpage_x == s_hd_key.tpage_x && m->tpage_y == s_hd_key.tpage_y &&
-           m->clut_x  == s_hd_key.clut_x  && m->clut_y  == s_hd_key.clut_y  &&
-           m->bpp     == s_hd_key.bpp;
+static void hd_cache_shutdown(void)
+{
+    for (int i = 0; i < HD_CACHE_SLOTS; i++)
+        if (s_hd_cache[i].tex) {
+            rhi_destroy_texture(s_nr.dev, s_hd_cache[i].tex);
+            s_hd_cache[i].tex = NULL; s_hd_cache[i].key = 0;
+        }
 }
 
 /* Draw a bucket's textured vert range [first_vert, first_vert+vert_count),
@@ -2566,7 +2588,8 @@ static int hd_poc_match(const psx_material *m) {
  * depth-bias (shadow) group, the caller's rhi_set_depth_bias is NOT re-applied
  * on restore — fine for the PoC's HUD-only key. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
-                          const openpete_scene_tri* scene, rhi_pipeline* self) {
+                          const openpete_scene_tri* scene, rhi_pipeline* self,
+                          rhi_pipeline* hd_pipe) {
     int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
     while (i < ntri) {
         const openpete_scene_tri* s0 = &scene[s_txscene[base + i]];
@@ -2578,65 +2601,119 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
             run++;
         }
-        /* Phase-1 validation + Phase-2 dump: resolve each drawn run against
-         * the upload-time registry (OPENPETE_TEXPACK_RESOLVE_LOG=1 logs the
-         * identity; OPENPETE_TEXPACK_DUMP_DIR writes the texel box as a baked
-         * PNG named by identity). The UV box computation is the Phase-4 query
-         * shape. */
+        /* Registry query — Phase-1 validation (RESOLVE_LOG), Phase-2 dump
+         * (DUMP_DIR), Phase-4 replacement. Identity is PER TRI (a run-union
+         * box varies with per-frame clipping and tile composition); adjacent
+         * tris matching the same pack file coalesce into HD sub-runs, the
+         * rest draw SD in material-coalesced groups as before. */
         static int s_resolve_log = -1, s_dump_on = -1;
         if (s_resolve_log < 0) {
             s_resolve_log = getenv("OPENPETE_TEXPACK_RESOLVE_LOG") ? 1 : 0;
             s_dump_on     = getenv("OPENPETE_TEXPACK_DUMP_DIR") ? 1 : 0;
         }
-        if (s_resolve_log || s_dump_on) {
-            float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
-            for (int t = 0; t < run; t++) {
-                const openpete_scene_tri* st = &scene[s_txscene[base + i + t]];
-                for (int j = 0; j < 3; j++) {
-                    if (st->v[j].u < u0) u0 = st->v[j].u;
-                    if (st->v[j].u > u1) u1 = st->v[j].u;
-                    if (st->v[j].v < v0) v0 = st->v[j].v;
-                    if (st->v[j].v > v1) v1 = st->v[j].v;
-                }
+        const int want_replace = hd_pipe && texture_pack_replacements_active();
+        if (!(s_resolve_log || s_dump_on || want_replace)) {
+            rhi_push_constants(s_nr.dev, &m, sizeof m);
+            rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+            i += run;
+            continue;
+        }
+        int t = 0;
+        int m_pushed = 0;                       /* material push valid for SD draws */
+        while (t < run) {
+            /* This tri's texel box -> identity -> pack match. */
+            const openpete_scene_tri* st = &scene[s_txscene[base + i + t]];
+            float u0 = st->v[0].u, v0 = st->v[0].v, u1 = u0, v1 = v0;
+            for (int j = 1; j < 3; j++) {
+                if (st->v[j].u < u0) u0 = st->v[j].u;
+                if (st->v[j].u > u1) u1 = st->v[j].u;
+                if (st->v[j].v < v0) v0 = st->v[j].v;
+                if (st->v[j].v > v1) v1 = st->v[j].v;
             }
             texture_pack_id id;
+            texture_pack_repl repl;
             int hit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
                                            m.bpp, (int)u0, (int)v0, (int)u1, (int)v1, &id);
+            int matched = hit && want_replace && texture_pack_match(&id, &repl);
             if (hit && s_dump_on)
                 texture_pack_dump_draw(&id, m.tpage_x, m.tpage_y,
                                        m.clut_x, m.clut_y, (int)u0, (int)v0);
             static int s_logged = 0;
-            if (s_resolve_log && s_logged < 256) {   /* first frames only — identity is per-material, not per-frame */
+            if (s_resolve_log && s_logged < 256) {
                 s_logged++;
-                if (hit)
-                    fprintf(stderr, "[texpack] resolve tp=%d,%d clut=%d,%d bpp=%d uv=%d,%d-%d,%d"
-                            " -> t=%016llx p=%016llx box=%d,%d %dx%d%s%s\n",
-                            m.tpage_x, m.tpage_y, m.clut_x, m.clut_y, m.bpp,
-                            (int)u0, (int)v0, (int)u1, (int)v1,
-                            (unsigned long long)id.thash, (unsigned long long)id.phash,
-                            id.box_x, id.box_y, id.box_w, id.box_h,
-                            id.asset ? " asset=" : "", id.asset ? id.asset : "");
-                else
-                    fprintf(stderr, "[texpack] resolve tp=%d,%d clut=%d,%d bpp=%d uv=%d,%d-%d,%d -> MISS\n",
-                            m.tpage_x, m.tpage_y, m.clut_x, m.clut_y, m.bpp,
-                            (int)u0, (int)v0, (int)u1, (int)v1);
+                fprintf(stderr, "[texpack] resolve tp=%d,%d clut=%d,%d bpp=%d uv=%d,%d-%d,%d -> %s\n",
+                        m.tpage_x, m.tpage_y, m.clut_x, m.clut_y, m.bpp,
+                        (int)u0, (int)v0, (int)u1, (int)v1, hit ? "hit" : "MISS");
             }
-        }
-        if (hd_poc_match(&m)) {
-            hd_poc_dump_sd(&m);
-            if (s_hd_tex && s_nr.hd_tex_pipe) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
-                rhi_bind_vram(s_nr.dev, s_hd_tex);
-                rhi_push_constants(s_nr.dev, s_hd_rect, sizeof s_hd_rect);
-                rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
-                rhi_bind_pipeline(s_nr.dev, self);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                i += run;
-                continue;
+            /* Grow the sub-run: consecutive tris with the same disposition
+             * (same pack file, or both unreplaced). */
+            int g = 1;
+            while (t + g < run) {
+                const openpete_scene_tri* sn = &scene[s_txscene[base + i + t + g]];
+                float nu0 = sn->v[0].u, nv0 = sn->v[0].v, nu1 = nu0, nv1 = nv0;
+                for (int j = 1; j < 3; j++) {
+                    if (sn->v[j].u < nu0) nu0 = sn->v[j].u;
+                    if (sn->v[j].u > nu1) nu1 = sn->v[j].u;
+                    if (sn->v[j].v < nv0) nv0 = sn->v[j].v;
+                    if (sn->v[j].v > nv1) nv1 = sn->v[j].v;
+                }
+                texture_pack_id nid;
+                texture_pack_repl nrepl;
+                int nhit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
+                                                m.bpp, (int)nu0, (int)nv0, (int)nu1, (int)nv1, &nid);
+                int nmatched = nhit && want_replace && texture_pack_match(&nid, &nrepl);
+                if (nhit && s_dump_on)
+                    texture_pack_dump_draw(&nid, m.tpage_x, m.tpage_y,
+                                           m.clut_x, m.clut_y, (int)nu0, (int)nv0);
+                if (nmatched != matched) break;
+                if (matched && nrepl.pixels != repl.pixels) break;
+                g++;
             }
+            /* OPENPETE_TEXPACK_STATS=1: sub-run disposition counters. */
+            static int s_stats = -1;
+            static long sc_hd = 0, sc_pend = 0, sc_sd = 0, sc_n = 0;
+            if (s_stats < 0) s_stats = getenv("OPENPETE_TEXPACK_STATS") ? 1 : 0;
+            if (matched) {
+                uint64_t key = (uint64_t)(uintptr_t)repl.pixels;   /* stable per file */
+                rhi_texture *tex = hd_cache_lookup(key);
+                if (s_stats) {
+                    if (tex) sc_hd++; else sc_pend++;
+                    if (++sc_n % 5000 == 0)
+                        fprintf(stderr, "[texpack] stats hd=%ld pend=%ld sd=%ld last_pipe=%s\n",
+                                sc_hd, sc_pend, sc_sd,
+                                hd_pipe == s_nr.hd_cutout_mark_pipe ? "mark" :
+                                hd_pipe == s_nr.hd_cutout_pipe ? "cutout" : "hud");
+                }
+                if (!tex) {
+                    hd_pending_add(key, repl.pixels, repl.w, repl.h);   /* next frame */
+                } else {
+                    /* Shader rect = the FILE's box in page-texel coords: the
+                     * query box (u0 page-relative <-> id.box upload-relative)
+                     * anchors the conversion. */
+                    const float rect[4] = {
+                        u0 - (float)(id.box_x - repl.box_x),
+                        v0 - (float)(id.box_y - repl.box_y),
+                        (float)repl.box_w, (float)repl.box_h,
+                    };
+                    rhi_bind_pipeline(s_nr.dev, hd_pipe);
+                    rhi_bind_vram(s_nr.dev, tex);
+                    rhi_push_constants(s_nr.dev, rect, sizeof rect);
+                    rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
+                    rhi_bind_pipeline(s_nr.dev, self);
+                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                    m_pushed = 0;               /* push constants were overwritten */
+                    t += g;
+                    continue;
+                }
+            }
+            if (s_stats && !matched && want_replace) sc_sd++;
+            if (!m_pushed) {
+                rhi_push_constants(s_nr.dev, &m, sizeof m);
+                m_pushed = 1;
+            }
+            rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
+            t += g;
         }
-        rhi_push_constants(s_nr.dev, &m, sizeof m);
-        rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
         i += run;
     }
 }
@@ -2665,7 +2742,8 @@ static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
         rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe);  /* bucket 6, submission order + run-coalesce */
+        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
+                      s_nr.hd_tex_pipe);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
     }
     if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
         rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
@@ -3341,7 +3419,15 @@ static bool draw_native_scene(bool full_extent)
             }
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex);
+            /* HD replacement only in OPAQUE groups for now (depth-tested
+             * cutout; true alpha would break Z order — Phase 7 revisits).
+             * WORLD's stencil-MARK variant gets the MARK twin so the W2.6-c
+             * hole-fill coverage stays intact. Blend groups draw SD. */
+            rhi_pipeline *hd = (g->blend == 0)
+                ? (g->tex == s_nr.scene_tex_mark_pipe ? s_nr.hd_cutout_mark_pipe
+                                                      : s_nr.hd_cutout_pipe)
+                : NULL;
+            draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd);
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
          * group: depth-tested at TRUE LP depth, gated on stencil==0 so it can
@@ -3475,7 +3561,8 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe);
+                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe,
+                              s_nr.hd_cutout_pipe);
             }
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
@@ -4069,6 +4156,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
      * — must precede the first render pass (the depth pre-pass below). */
     upload_synced_textures();
+    hd_flush_pending();        /* HD replacement textures queued at draw time */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) — must record
@@ -4172,6 +4260,7 @@ int openpete_native_render_screenshot_all(const char *base)
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
     if (!rhi_begin_frame(s_nr.dev)) return 1;
     upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
+    hd_flush_pending();        /* HD replacement textures queued at draw time */
     native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
     rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
     draw_native_scene(true);
@@ -4324,7 +4413,9 @@ void openpete_native_render_shutdown(void)
     if (s_nr.diff_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.diff_pipe);
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
-    if (s_hd_tex) { rhi_destroy_texture(s_nr.dev, s_hd_tex); s_hd_tex = NULL; }
+    if (s_nr.hd_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);
+    if (s_nr.hd_cutout_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_mark_pipe);
+    hd_cache_shutdown();
     texture_pack_shutdown();
     if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
     if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
