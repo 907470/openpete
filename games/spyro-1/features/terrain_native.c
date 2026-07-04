@@ -1338,7 +1338,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * excluding the mid-band faces that fringed sky silhouettes
                  * (gate tick 4888). */
                 static int s_fogslack = -1;
-                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 1024; }
+                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 4096; }
                 int nc2 = quad ? 4 : 3, farAll = 1;
                 const int cf[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc2 && farAll; q2++)
@@ -1651,10 +1651,12 @@ static void terrain_feed_native(void) {
              * additionally growing UP pushed the fill's fully-fogged LP-only
              * strips ABOVE the terrain silhouette into the sky (a dark fringe
              * on the peace-keepers cliff line, gate tick 4888 round 2). */
+            static float s_fill_up = -1.0f;   /* OPENPETE_TERRAIN_FILL_UP: upward growth px */
+            if (s_fill_up < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_FILL_UP"); s_fill_up = (e && *e) ? (float)atof(e) : 0.7f; }
             float cx = (dsx[0]+dsx[1]+dsx[2]) / 3.0f, cy = (dsy[0]+dsy[1]+dsy[2]) / 3.0f;
             for (int k = 0; k < 3; k++) {
                 dsx[k] = floorf(dsx[k]) + (dsx[k] > cx ? s_fill_dilate : -s_fill_dilate);
-                dsy[k] = floorf(dsy[k]) + (dsy[k] > cy ? s_fill_dilate : 0.0f);
+                dsy[k] = floorf(dsy[k]) + (dsy[k] > cy ? s_fill_dilate : -s_fill_up);
             }
         }
         for (int k = 0; k < 3; k++) {
