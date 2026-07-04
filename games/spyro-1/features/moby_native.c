@@ -3221,7 +3221,8 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
  * top of the grid's own OPENPETE_MOBY_OCCL_SLACK. HUD/UI-routed mobys are
  * exempt (drawn depth-off — never depth-occluded). Direct-mapped cache: a
  * collision only evicts (→ that moby extracts normally), never lies. */
-typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick; } occl_rect_t;
+typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
+                 float mot, mot_vz; } occl_rect_t;   /* measured screen / view-Z motion per VBL (px, world units) */
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
@@ -3247,10 +3248,18 @@ static int occl_record_culled(uint32_t moby) {
     /* Own-motion allowance ≈ 256 world units/tick at an overestimated H≈400:
      * px = 400·256/vz. Camera pan rides s_occl_pan_px (measured per tick). */
     float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
-    float inf = 8.0f + aged * (s_occl_pan_px + 102400.0f / vzm);
+    /* Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
+     * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
+     * beat the model by 3× and could stay culled ≤3 presents while emerging
+     * from cover (found by the OCCL_VERIFY audit, magic-crafters f2154). */
+    float own = 102400.0f / vzm;
+    if (e->mot * 1.5f > own) own = e->mot * 1.5f;
+    float inf = 8.0f + aged * (s_occl_pan_px + own);
+    float vzs = 600.0f;
+    if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
     int culled = openpete_native_occl_query(e->x0 - inf, e->y0 - inf,
                                             e->x1 + inf, e->y1 + inf,
-                                            e->vz_min - 600.0f * aged);
+                                            e->vz_min - vzs * aged);
     /* OPENPETE_MOBY_OCCL_DUMP: rate-limited raw-rect dump (diagnosis). CULLED
      * verdicts print with the comparison values (need vs the farthest grid
      * cell in the scanned rect) so a wrong cull names its own cause: vz_min
@@ -3277,6 +3286,53 @@ static int occl_record_culled(uint32_t moby) {
     return culled;
 }
 
+/* ---- occl-verify audit mode (OPENPETE_MOBY_OCCL_VERIFY=1, inert otherwise) --
+ * When the cull says "hidden", the pass extracts the moby ANYWAY, then re-runs
+ * the query on the FRESH bounds (age 0). A fresh verdict of "visible" means the
+ * ≤2-tick-stale cache would have culled a moby the depth test would NOT fully
+ * erase — a would-be single-present flicker. Census printed once per second.
+ * The moby still draws in verify mode (verdict overridden), so a live run with
+ * verify on is also the zero-flicker reference. */
+static int occl_verify_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_OCCL_VERIFY"); v = (e && *e && *e != '0'); }
+    return v;
+}
+static long s_ver_would = 0;   /* stale-cache verdicts said CULL */
+static long s_ver_wrong = 0;   /* ...of which fresh bounds said VISIBLE */
+
+/* Re-query with the just-refreshed cache entry (age forced fresh). Returns the
+ * query verdict on fresh bounds. */
+static int occl_query_fresh(uint32_t moby) {
+    const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
+    if (e->moby != moby) return 1;   /* no verts projected → nothing drawable */
+    float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
+    float own = 102400.0f / vzm;
+    if (e->mot * 1.5f > own) own = e->mot * 1.5f;
+    float inf = 8.0f + (s_occl_pan_px + own);
+    float vzs = 600.0f;
+    if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
+    return openpete_native_occl_query(e->x0 - inf, e->y0 - inf,
+                                      e->x1 + inf, e->y1 + inf,
+                                      e->vz_min - vzs);
+}
+static void occl_verify_report(uint32_t moby, const occl_rect_t* stale_snap) {
+    const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
+    /* Classify: a fresh rect fully outside the visible extent produces ZERO
+     * pixels regardless of the verdict — the conservative inflation merely
+     * crossed the boundary. Only on-screen fresh rects are real events. */
+    float xlo, xhi;
+    openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    int zeropx = (e->x1 < xlo || e->x0 > xhi || e->y1 < 0.0f || e->y0 > 224.0f);
+    if (!zeropx) s_ver_wrong++;
+    fprintf(stderr, "[occl-VERIFY-%s f=%u] moby=%08x stale rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f "
+                    "fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f mot=%.1f scan_max=%.0f\n",
+            zeropx ? "zeropx" : "WRONG", openpete_frame, moby,
+            stale_snap->x0, stale_snap->y0, stale_snap->x1, stale_snap->y1, stale_snap->vz_min,
+            e->x0, e->y0, e->x1, e->y1, e->vz_min, e->mot,
+            openpete_native_occl_last_scan_max());
+}
+
 /* Refresh the cache from a record's freshly projected verts (s_proj carries
  * PSX screen px + FULL-WORLD view-Z — exactly the query's units). Bounds over
  * ALL verts ⊇ bounds over the drawn subset, so the rect is conservative. */
@@ -3289,6 +3345,20 @@ static void occl_cache_update(uint32_t moby, const proj_xy* p, int n) {
         if (p[j].vz < vzm) vzm = p[j].vz;
     }
     occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
+    /* Measured motion (px + view-Z per VBL) from the previous bounds of the
+     * SAME moby: rect-centre delta over the refresh interval. Slot collision
+     * or first sighting → 0 (the model floor covers it). */
+    if (e->moby == moby && openpete_frame != e->tick) {
+        float dt = (float)(openpete_frame - e->tick);
+        float dx = 0.5f * ((x0 + x1) - (e->x0 + e->x1));
+        float dy = 0.5f * ((y0 + y1) - (e->y0 + e->y1));
+        float d  = sqrtf(dx * dx + dy * dy) / dt;
+        float dv = (vzm > e->vz_min ? vzm - e->vz_min : e->vz_min - vzm) / dt;
+        e->mot    = d;
+        e->mot_vz = dv;
+    } else if (e->moby != moby) {
+        e->mot = 0.0f; e->mot_vz = 0.0f;
+    }
     e->moby = moby; e->x0 = x0; e->y0 = y0; e->x1 = x1; e->y1 = y1;
     e->vz_min = vzm; e->tick = openpete_frame;
 }
@@ -3389,10 +3459,19 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * untouched. Culled REG mobys still join the SPEC dedup set below —
          * their specular twin is equally hidden. */
         s_occl_seen++;
+        int ver_check = 0;              /* verify mode: audit this moby post-extract */
+        occl_rect_t ver_snap;
         if (occl_record_culled(mobys[i])) {
-            s_occl_culled++;
-            if (!is_spec && culled_n < MAX_RECORDS) culled_moby[culled_n++] = mobys[i];
-            continue;
+            if (!occl_verify_on()) {
+                s_occl_culled++;
+                if (!is_spec && culled_n < MAX_RECORDS) culled_moby[culled_n++] = mobys[i];
+                continue;
+            }
+            /* verify: extract anyway, re-query on fresh bounds after
+             * occl_cache_update below. Snapshot the stale entry for the report. */
+            s_ver_would++;
+            ver_check = 1;
+            ver_snap = s_occl_cache[occl_slot(mobys[i])];
         }
         /* Tier-2 hold: a speck-sized moby captured earlier THIS epoch replays
          * its built tris translated by the origin-projection delta — skipping
@@ -3469,6 +3548,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         occl_cache_update(mobys[i], s_proj + off, got);   /* refresh cull bounds */
+        if (ver_check && !occl_query_fresh(mobys[i]))
+            occl_verify_report(mobys[i], &ver_snap);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         /* LOD tier from the last canonical pass (sub-tick reuse — the tier is a
          * per-tick verdict, held across intermediates). Miss default 1024 = the
@@ -3650,6 +3731,10 @@ void moby_native_reextract(CPUState* cpu) {
                         openpete_frame, dc, dsn, dsn > 0 ? 100.0 * (double)dc / (double)dsn : 0.0,
                         s_occl_f[0]-pf[0], s_occl_f[1]-pf[1], s_occl_f[2]-pf[2],
                         q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5], q[6]-pq[6], q[7]-pq[7]);
+                if (occl_verify_on())
+                    fprintf(stderr, "[moby-occl-verify f=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
+                            openpete_frame, s_ver_would, s_ver_wrong,
+                            s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0);
                 for (int k = 0; k < OPENPETE_OCCL_Q_COUNT; k++) pq[k] = q[k];
                 for (int k = 0; k < 3; k++) pf[k] = s_occl_f[k];
                 win0 = now; wc = s_occl_culled; ws = s_occl_seen;
