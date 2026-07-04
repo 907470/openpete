@@ -700,9 +700,16 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
         const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
     }
     double s = s_hqscale;
-    double sz0 = z0*s, sz1 = z1*s, sz2 = z2*s, sz3 = z3*s;
+    /* Per-corner SATURATION at 0 mirrors the GTE: SZ3 is an unsigned clamped
+     * register, so a corner behind the camera contributes 0 to the .s's
+     * depthSum — the face still classifies NEAR (it is the closest thing on
+     * screen). Native's raw float m3 goes NEGATIVE there and used to drag the
+     * sum ≤ 0 → "behind camera" → the closest ground/wall cells fell back to
+     * the LQ tier exactly when the camera pressed against them. */
+    double sz0 = z0 > 0.0 ? z0*s : 0.0, sz1 = z1 > 0.0 ? z1*s : 0.0;
+    double sz2 = z2 > 0.0 ? z2*s : 0.0, sz3 = z3 > 0.0 ? z3*s : 0.0;
     double sum = sz0 + sz1 + sz2 + sz3;
-    if (sum <= 0.0) return 0;                          /* behind camera */
+    if (sum <= 0.0) return 0;                          /* FULLY behind camera */
     if (word3 & 0x80) return 0;                        /* face hard-excluded from HQ subdivide */
     /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
      * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
@@ -1390,8 +1397,37 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * floor the preview must cover. */
             s_emit_guard = (faceStride == 16 && s_defer_n > 0 &&
                             is_deferred(faces + (uint32_t)f * 16u));
-            int near = (faceStride == 16 && s_nearhq && hqTable && front && quad &&
+            /* `front` is NCLIP on the PROJECTED corners — meaningless when a
+             * corner sits behind the camera (proj_screen mirrors it), so a
+             * straddling foreground cell flunked it ~half the time and fell to
+             * the LQ tier (the user-visible "closest ground/wall goes low-res"
+             * flicker). Waive the facing test for straddling cells; the
+             * near-emit path near-plane-clips (clip_push_tri) and the Z-buffer
+             * owns occlusion, so a waived back-face is harmless. */
+            int straddle = (sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 ||
+                            sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0);
+            int near = (faceStride == 16 && s_nearhq && hqTable && (front || straddle) && quad &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
+            {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
+                 * (a corner behind the camera) by route — near/HQ vs LQ fall-through. */
+                static int s_ndbg = -1; static long s_nd_near, s_nd_excl, s_nd_lq; static int s_nd_n;
+                if (s_ndbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARDBG"); s_ndbg = (e && *e && *e != '0'); }
+                int vis_straddle = straddle && (sv[i0].m3 > 0.0 || sv[i1].m3 > 0.0 ||
+                                                sv[i2].m3 > 0.0 || sv[i3].m3 > 0.0);
+                if (s_ndbg && faceStride == 16 && quad && vis_straddle) {
+                    static long s_nd_q, s_nd_qtot;   /* .s-queue oracle agreement (needs VERIFY) */
+                    if (near) s_nd_near++;
+                    else if (hqW3 & 0x80) s_nd_excl++;   /* hard-excluded from HQ (no Tiledef) */
+                    else s_nd_lq++;
+                    if (s_defer_n > 0) { s_nd_qtot++;
+                        if (is_deferred(faces + (uint32_t)f * 16u)) s_nd_q++; }
+                    if (++s_nd_n >= 200) {
+                        fprintf(stderr, "[neardbg] visible straddling quads: near=%ld excl80=%ld lq=%ld  queue: %ld/%ld deferred\n",
+                                s_nd_near, s_nd_excl, s_nd_lq, s_nd_q, s_nd_qtot);
+                        s_nd_n = 0;
+                    }
+                }
+            }
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
                 near = (faceStride == 16 && s_nearhq && hqTable && quad && is_deferred(faces + (uint32_t)f*16u));
             if (near) {
