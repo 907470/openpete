@@ -255,6 +255,12 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
+/* Switch a sampled texture's descriptor to the LINEAR-filter sampler (the
+ * default is NEAREST — pixel-exact VRAM/blit semantics). For high-res
+ * replacement art whose minification/magnification should filter. Call at
+ * load time, before the texture is first sampled in a frame. */
+void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex);
+
 /* ---- render-to-texture (the diff pass; later: framebuffer effects) ----- */
 
 /* An RGBA8 image that is BOTH a color attachment AND a sampler2D — geometry

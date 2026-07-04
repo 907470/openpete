@@ -123,6 +123,7 @@ struct rhi_device {
     /* VRAM-sampler infrastructure (1b.2): one shared sampler + set layout +
      * pool; each rhi_texture owns a descriptor set allocated from the pool. */
     VkSampler             vram_sampler;
+    VkSampler             linear_sampler;   /* LINEAR twin for HD replacement art */
     VkDescriptorSetLayout vram_set_layout;
     VkDescriptorPool      desc_pool;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
@@ -928,6 +929,12 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateSampler(dev->device, &si, NULL, &dev->vram_sampler) != VK_SUCCESS) {
         RHI_LOG("vkCreateSampler failed\n"); return false;
     }
+    /* LINEAR variant for high-res replacement art (rhi_texture_set_filter_linear)
+     * — same addressing, filtered mag/min. */
+    si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR;
+    if (vkCreateSampler(dev->device, &si, NULL, &dev->linear_sampler) != VK_SUCCESS) {
+        RHI_LOG("vkCreateSampler (linear) failed\n"); return false;
+    }
     VkDescriptorSetLayoutBinding b = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1117,6 +1124,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
+    if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         if (dev->img_avail[i]) vkDestroySemaphore(dev->device, dev->img_avail[i], NULL);
@@ -2651,6 +2659,25 @@ void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
     /* Dynamic ring buffers bind the current frame's slot (see rhi_buffer). */
     VkDeviceSize off = buf->ring_stride * dev->frame;
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 1, &buf->buffer, &off);
+}
+
+void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex)
+{
+    /* Rewrite the texture's (view, sampler) descriptor with the LINEAR
+     * sampler. Only safe while the set is not in flight — call at load time,
+     * before the texture's first frame. */
+    VkDescriptorImageInfo ii = {
+        .sampler = dev->linear_sampler,
+        .imageView = tex->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = tex->set, .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &ii,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
 }
 
 void rhi_bind_vram(rhi_device *dev, rhi_texture *tex)
