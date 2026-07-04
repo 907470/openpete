@@ -46,6 +46,7 @@ extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
 extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
 #include "openpete_native_vram.h"   /* W2.4: the owned VRAM model + native ops */
+#include "texture_pack.h"           /* texture-replacement registry (Phase 1+) */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
 static void hd_poc_init(rhi_device *dev);   /* HD texture-replacement PoC, defined below */
@@ -2577,6 +2578,43 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
             run++;
         }
+        /* Phase-1 validation: resolve each drawn run against the upload-time
+         * registry and log identity (OPENPETE_TEXPACK_RESOLVE_LOG=1). The UV
+         * box computation here is the Phase-4 query shape. */
+        static int s_resolve_log = -1;
+        if (s_resolve_log < 0)
+            s_resolve_log = getenv("OPENPETE_TEXPACK_RESOLVE_LOG") ? 1 : 0;
+        if (s_resolve_log) {
+            float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+            for (int t = 0; t < run; t++) {
+                const openpete_scene_tri* st = &scene[s_txscene[base + i + t]];
+                for (int j = 0; j < 3; j++) {
+                    if (st->v[j].u < u0) u0 = st->v[j].u;
+                    if (st->v[j].u > u1) u1 = st->v[j].u;
+                    if (st->v[j].v < v0) v0 = st->v[j].v;
+                    if (st->v[j].v > v1) v1 = st->v[j].v;
+                }
+            }
+            texture_pack_id id;
+            int hit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
+                                           m.bpp, (int)u0, (int)v0, (int)u1, (int)v1, &id);
+            static int s_logged = 0;
+            if (s_logged < 256) {   /* first frames only — identity is per-material, not per-frame */
+                s_logged++;
+                if (hit)
+                    fprintf(stderr, "[texpack] resolve tp=%d,%d clut=%d,%d bpp=%d uv=%d,%d-%d,%d"
+                            " -> t=%016llx p=%016llx box=%d,%d %dx%d%s%s\n",
+                            m.tpage_x, m.tpage_y, m.clut_x, m.clut_y, m.bpp,
+                            (int)u0, (int)v0, (int)u1, (int)v1,
+                            (unsigned long long)id.thash, (unsigned long long)id.phash,
+                            id.box_x, id.box_y, id.box_w, id.box_h,
+                            id.asset ? " asset=" : "", id.asset ? id.asset : "");
+                else
+                    fprintf(stderr, "[texpack] resolve tp=%d,%d clut=%d,%d bpp=%d uv=%d,%d-%d,%d -> MISS\n",
+                            m.tpage_x, m.tpage_y, m.clut_x, m.clut_y, m.bpp,
+                            (int)u0, (int)v0, (int)u1, (int)v1);
+            }
+        }
         if (hd_poc_match(&m)) {
             hd_poc_dump_sd(&m);
             if (s_hd_tex && s_nr.hd_tex_pipe) {
@@ -4280,6 +4318,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     if (s_hd_tex) { rhi_destroy_texture(s_nr.dev, s_hd_tex); s_hd_tex = NULL; }
+    texture_pack_shutdown();
     if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
     if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
     if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);

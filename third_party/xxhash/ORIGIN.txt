@@ -1,0 +1,2 @@
+xxHash v0.8.3 single header (BSD-2), https://github.com/Cyan4973/xxHash
+Vendored 2026-07-04 for the texture-pack registry (XXH3-64 content identity).

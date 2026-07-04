@@ -90,6 +90,7 @@ add_library(openpete_core STATIC
     # Music WAV override: play user PCM WAVs from assets/music/ in place
     # of XA music. See notes/plans/openpete-music-wav-override.md.
     host/music_override.c
+    host/texture_pack.c
     host/wav_loader.c
 
     runtime/crash.c
@@ -138,6 +139,7 @@ target_include_directories(openpete_core
         ${CMAKE_SOURCE_DIR}/third_party/libco
     PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/stb
+        ${CMAKE_SOURCE_DIR}/third_party/xxhash
         ${CMAKE_SOURCE_DIR}/third_party/miniz
 )
 

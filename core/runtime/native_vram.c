@@ -4,7 +4,10 @@
  * must re-pass the OPENPETE_VRAM_VERIFY memcmp census against PsyCross. */
 
 #include "openpete_native_vram.h"
+#include "texture_pack.h"   /* Phase-1 registry: fed from this op seam */
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* PsyCross seam (see PsyX_public.h). Declared here to keep this TU free of
@@ -45,6 +48,24 @@ int openpete_vram_drain_op_rects(openpete_vram_op_rect* out, int max, int* overf
     return n;
 }
 
+/* ---- Phase-0 texture-pack census (openpete-texture-replacement plan) -----
+ * OPENPETE_TEXPACK_CENSUS=1: log every op with rect + (loads) a cheap 64-bit
+ * content hash, one line per op, for the upload-granularity analysis (TIM vs
+ * atlas packing, CLUT placement, per-level repack, hash stability across
+ * runs). FNV-1a here is census-only; the Phase-1 registry uses XXH3. */
+extern unsigned openpete_frame;
+static int tp_census_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_TEXPACK_CENSUS"); s = (e && *e) ? 1 : 0; }
+    return s;
+}
+static uint64_t tp_fnv1a(const uint16_t* p, int w, int h, int stride) {
+    uint64_t hv = 1469598103934665603ull;
+    for (int i = 0; i < h; i++, p += stride)
+        for (int j = 0; j < w; j++) { hv ^= p[j]; hv *= 1099511628211ull; }
+    return hv;
+}
+
 /* ---- ops ----------------------------------------------------------------- */
 
 /* LoadImage: GR_CopyVRAM(src, 0,0, w,h, x,y) — src is TIGHTLY packed with the
@@ -60,12 +81,18 @@ void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
     if (w <= 0 || h <= 0) return;
 
     uint16_t* dst = s_model + dst_x + (size_t)dst_y * OPENPETE_VRAM_W;
+    const uint16_t* src0 = src;
     for (int i = 0; i < h; i++) {
         memcpy(dst, src, (size_t)w * sizeof(uint16_t));
         dst += OPENPETE_VRAM_W;
         src += stride;
     }
     op_log(dst_x, dst_y, w, h);
+    texture_pack_on_load(dst_x, dst_y, w, h, src0, stride);
+    if (tp_census_on())
+        fprintf(stderr, "[texpack] f=%u load %d,%d %dx%d h=%016llx\n",
+                openpete_frame, dst_x, dst_y, w, h,
+                (unsigned long long)tp_fnv1a(src0, w, h, stride));
 }
 
 /* MoveImage: GR_CopyVRAM(NULL, sx,sy, w,h, dx,dy) — source origin masked and
@@ -94,6 +121,10 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
         src += OPENPETE_VRAM_W;
     }
     op_log(dst_x, dst_y, w, h);
+    texture_pack_on_move(src_x, src_y, w, h, dst_x, dst_y);
+    if (tp_census_on())
+        fprintf(stderr, "[texpack] f=%u move %d,%d -> %d,%d %dx%d\n",
+                openpete_frame, src_x, src_y, dst_x, dst_y, w, h);
 }
 
 /* ClearImage: GR_ClearVRAM — NO origin masking (only w/h clamp), and the
@@ -118,6 +149,10 @@ void openpete_vram_clear(int x, int y, int w, int h,
         dst += OPENPETE_VRAM_W;
     }
     op_log(x, y, w, h);
+    texture_pack_on_clear(x, y, w, h);
+    if (tp_census_on())
+        fprintf(stderr, "[texpack] f=%u clear %d,%d %dx%d rgb=%u,%u,%u\n",
+                openpete_frame, x, y, w, h, r, g, b);
 }
 
 /* ---- install ------------------------------------------------------------- */
@@ -134,4 +169,5 @@ void openpete_vram_install_ops(void)
 {
     static const PsyX_VRAMOps ops = { nv_load, nv_move, nv_clear };
     PsyX_SetVRAMOpCallbacks(&ops);
+    texture_pack_init();
 }
