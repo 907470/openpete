@@ -155,10 +155,21 @@ static double hermite1(double prev2, double prev, double curr, double t) {
     double m0 = 0.5 * (curr - prev2);   /* centered tangent at prev */
     double m1 = (curr - prev);          /* backward tangent at curr */
     double t2 = t * t, t3 = t2 * t;
-    return (2.0*t3 - 3.0*t2 + 1.0) * prev
-         + (t3 - 2.0*t2 + t)       * m0
-         + (-2.0*t3 + 3.0*t2)      * curr
-         + (t3 - t2)               * m1;
+    double y = (2.0*t3 - 3.0*t2 + 1.0) * prev
+             + (t3 - 2.0*t2 + t)       * m0
+             + (-2.0*t3 + 3.0*t2)      * curr
+             + (t3 - t2)               * m1;
+    /* MONOTONE clamp (2026-07-04): never leave the [prev,curr] segment box.
+     * At a velocity discontinuity (a path-polyline corner — e.g. the
+     * titlescreen flyby where one axis stops moving), the centered tangent
+     * makes the cubic OVERSHOOT the endpoint and come back — a dip-and-return
+     * hitch at every knot (user report: flyby moby "very jittery"; traced as
+     * repeating -36/+36 reversals in the fed position). Clamping is exact for
+     * constant-velocity segments (cubic == lerp there), keeps the smooth
+     * easing inside the box, and only engages where the overshoot was. */
+    double lo = prev < curr ? prev : curr;
+    double hi = prev < curr ? curr : prev;
+    return y < lo ? lo : (y > hi ? hi : y);
 }
 static int16_t hround16(double v) { return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
 static int32_t hround32(double v) { return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
@@ -914,6 +925,22 @@ static void spyro_native_reextract(void* cpu_v) {
                              * (not just the camera component). */
                             if (m_herm) fpos_set_h(m, p2, pp, cp, ma);
                             else        fpos_set(m, pp, cp, ma);
+                            /* OPENPETE_MOBY_POSTRACE_CLS=<cls>: per-present lerp
+                             * trace for mobys of that class (jitter forensics). */
+                            {
+                                static long s_ptcls = -2;
+                                if (s_ptcls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_ptcls = e ? strtol(e, NULL, 0) : -1; }
+                                uint16_t tcls; memcpy(&tcls, mh + 0x36, 2);
+                                if (s_ptcls >= 0 && (s_ptcls == 0xFFFF || tcls == (uint16_t)s_ptcls)) {
+                                    int32_t lv2[3];
+                                    memcpy(lv2, mh + MOBY_POS, 12);
+                                    fprintf(stderr, "[moby-lerp f=%u] m=%08x herm=%d a=%.3f prev=(%d,%d,%d) curr=(%d,%d,%d) out=(%d,%d,%d) dt=%.1fms\n",
+                                            openpete_frame, m, m_herm, ma,
+                                            pp[0], pp[1], pp[2], cp[0], cp[1], cp[2],
+                                            lv2[0], lv2[1], lv2[2],
+                                            (double)(o->curr_ns - o->prev_ns) / 1e6);
+                                }
+                            }
                             /* Animation: NOT synthesized into RAM here anymore. The
                              * old approach wrote an interpolated m_FrameProgress (and,
                              * across a knot, an extended "continuous-phase" blend) into
