@@ -1346,11 +1346,33 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * (gate tick 4888). */
                 static int s_fogslack = -1;
                 if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 4096; }
-                int nc2 = quad ? 4 : 3, farAll = 1;
+                int nc2 = quad ? 4 : 3, farAll = 1, fogged = 1;
                 const int cf[4] = { i0, i1, i2, i3 };
-                for (int q2 = 0; q2 < nc2 && farAll; q2++)
-                    if (fogRef - (int)(sv[cf[q2]].m3 * 4.0) > s_fogslack) farAll = 0;
+                for (int q2 = 0; q2 < nc2 && farAll; q2++) {
+                    int ir0 = fogRef - (int)(sv[cf[q2]].m3 * 4.0);
+                    if (ir0 > 0) fogged = 0;
+                    if (ir0 > s_fogslack) farAll = 0;
+                }
                 if (!farAll) continue;
+                /* Slack-admitted (NOT fully fogged) faces pass ONLY when screen-
+                 * THIN (bbox height ≤ 3px): the class the slack exists for is
+                 * the 1px straddling water rows (f2680/f2730 dashes). An
+                 * unrestricted slack admitted mid-band LP BODIES whose coarse
+                 * silhouette ghosts into stencil-0 sky above terrain tops and
+                 * depth-notches neighbouring geometry (user report 2026-07-03:
+                 * ghosting/spikes at terrain tops, gaps-2 f2770 rocks). */
+                if (!fogged) {
+                    static float s_thin = -1.0f;
+                    if (s_thin < 0.0f) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_THINPX"); s_thin = (e2 && *e2) ? (float)atof(e2) : 16.0f; }
+                    float ty0 = 1e9f, ty1 = -1e9f; int thinOk = 1;
+                    for (int q2 = 0; q2 < nc2; q2++) {
+                        const lvert* V = &sv[cf[q2]];
+                        if (V->m3 <= 0.0) { thinOk = 0; break; }  /* behind-camera: not the sliver class */
+                        if (V->sy < ty0) ty0 = V->sy;
+                        if (V->sy > ty1) ty1 = V->sy;
+                    }
+                    if (!thinOk || ty1 - ty0 > s_thin) continue;
+                }
             }
             /* calibration probe (OPENPETE_TERRAIN_CALDBG): find the Σm3 + minm3
              * boundary that separates the .s's deferred cells (queue oracle) from
@@ -1689,10 +1711,27 @@ static void terrain_feed_native(void) {
              * on the peace-keepers cliff line, gate tick 4888 round 2). */
             static float s_fill_up = -1.0f;   /* OPENPETE_TERRAIN_FILL_UP: upward growth px */
             if (s_fill_up < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_FILL_UP"); s_fill_up = (e && *e) ? (float)atof(e) : 0.7f; }
+            /* CONTINUOUS growth (2026-07-03, replaces the v2 floor()-quantize
+             * as the DEFAULT): floor() snapped the fill verts to the pixel
+             * grid EVERY PRESENT, so under the sub-tick spine the fill fringe
+             * crawled/jittered against the smoothly-interpolated canonical
+             * terrain (user report: ghosting / spikes at terrain tops, all
+             * levels — a temporal artifact, invisible in canonical stills).
+             * Same coverage envelope without snapping: shift UP by the mean
+             * truncation bias (~0.55px — native float sits +0.2..+1.0px below
+             * the PSX ints) and grow per-axis from the centroid.
+             * OPENPETE_TERRAIN_FILL_QUANT=1 restores floor() (A/B lever). */
+            static int s_fill_quant = -1;
+            if (s_fill_quant < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_QUANT"); s_fill_quant = e ? (*e && *e != '0') : 1;   /* default floor (canonical fidelity); 0 = continuous (smoother sub-tick) */ }
             float cx = (dsx[0]+dsx[1]+dsx[2]) / 3.0f, cy = (dsy[0]+dsy[1]+dsy[2]) / 3.0f;
             for (int k = 0; k < 3; k++) {
-                dsx[k] = floorf(dsx[k]) + (dsx[k] > cx ? s_fill_dilate : -s_fill_dilate);
-                dsy[k] = floorf(dsy[k]) + (dsy[k] > cy ? s_fill_dilate : -s_fill_up);
+                if (s_fill_quant) {
+                    dsx[k] = floorf(dsx[k]) + (dsx[k] > cx ? s_fill_dilate : -s_fill_dilate);
+                    dsy[k] = floorf(dsy[k]) + (dsy[k] > cy ? s_fill_dilate : -s_fill_up);
+                } else {
+                    dsx[k] += (dsx[k] > cx ? s_fill_dilate : -s_fill_dilate);
+                    dsy[k] += -0.55f + (dsy[k] > cy ? s_fill_dilate : -s_fill_up);
+                }
             }
         }
         for (int k = 0; k < 3; k++) {
@@ -1713,9 +1752,17 @@ static void terrain_feed_native(void) {
              * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
              * LP, where it is inert — nothing shares its surface.) */
             float vzf = (float)t->vz[k] * 16.0f;
-            /* The FILL backing draws at TRUE depth: the stencil gate (not a
-             * depth bias) is what keeps it behind the HP (W2.6-c). */
-            if (t->tier && !t->fill) vzf *= 1.03f;   /* tier==1 → LP */
+            /* FILL depth = the SAME ×1.03 as its canonical LP twin, so the two
+             * copies TIE exactly (fill drawn later wins where quantize+grow
+             * differ) instead of the fill sitting 3% NEARER — which let a
+             * grown fill row depth-beat neighbouring canonical LP bodies
+             * (rock-edge notch, gaps-2 f2770). The stencil gate — not depth —
+             * is what keeps the fill behind HP (W2.6-c). */
+            {
+                static int s_fillpull = -1;
+                if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
+                if (t->tier && (s_fillpull || !t->fill)) vzf *= 1.03f;   /* tier==1 → LP */
+            }
             tri.v[k].z  = openpete_native_depth_from_viewz(vzf);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
