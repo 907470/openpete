@@ -2588,6 +2588,15 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
      * rotation axis — untouched either way. */
     const openpete_interp_obj_t* o =
         s_rot_now ? openpete_interp_objs_find(spyro_interp_moby_key(moby)) : NULL;
+    /* Occupant guard: a g_LevelMobys slot reused by a DIFFERENT-class moby
+     * within one tick would euler-lerp across two objects (the gem-vs-chest
+     * class, HUD-pool side fixed by the class-folded key; level slots key by
+     * raw address so guard here). */
+    if (o && o->have_prev) {
+        uint16_t pcls3, ccls3;
+        memcpy(&pcls3, o->prev + 0x36, 2); memcpy(&ccls3, o->curr + 0x36, 2);
+        if (pcls3 != ccls3) o = NULL;
+    }
     if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -3239,6 +3248,14 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     if (!s_rot_now) return 0;                                  /* interp off → snap */
     const openpete_interp_obj_t* o = openpete_interp_objs_find(spyro_interp_moby_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    /* Occupant guard: prev snapshot must be the SAME class as the live moby —
+     * a reused level slot would crossfade another object's anim/frame state
+     * (the topology count check below only catches different mesh sizes). */
+    {
+        uint16_t pcls4, ccls4;
+        memcpy(&pcls4, o->prev + 0x36, 2); memcpy(&ccls4, o->curr + 0x36, 2);
+        if (pcls4 != ccls4) return 0;
+    }
     uint32_t cls   = cpu->read_half(moby + 0x36);
     uint32_t model = cpu->read_word(G_MODELS + cls * 4u);
     if (model < 0x80000000u) return 0;
