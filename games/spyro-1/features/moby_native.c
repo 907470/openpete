@@ -2862,7 +2862,11 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                     int32_t pp[3], cp[3];
                     memcpy(pp, o->prev + 0x0Cu, 12); memcpy(cp, o->curr + 0x0Cu, 12);
                     double ddx=(double)cp[0]-pp[0], ddy=(double)cp[1]-pp[1], ddz=(double)cp[2]-pp[2];
-                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 5000.0*5000.0) {
+                    /* billboard coords are SCREEN px — a 5000 guard never fires.
+                     * 64 px/tick is ~4x the tally gem's flight speed; a same-class
+                     * slot shift (gem inheriting another gem's slot) jumps farther
+                     * and snaps. */
+                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 64.0*64.0) {
                         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
                         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
                         bfx = (double)pp[0] + ddx * t;

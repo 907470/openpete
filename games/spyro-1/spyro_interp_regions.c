@@ -95,12 +95,24 @@ uint32_t spyro_interp_moby_key(uint32_t m) {
      * may be read at a different allocation phase than the entries were made
      * (observed: tally mobys sit BELOW the read value by a stable per-frame
      * offset), but within one frame the pointer is the same at capture and
-     * re-extract time, so ptr-relative offsets pair across the halves. */
+     * re-extract time, so ptr-relative offsets pair across the halves.
+     * The m_Class (+0x36) is FOLDED INTO the key: the pool is re-allocated in
+     * draw order every frame, so a despawn (a tally gem absorbed into the
+     * chest) SHIFTS every later entry one slot — a pure slot key would pair a
+     * gem's prev with the CHEST's curr and blend across two different objects
+     * (user report 2026-07-04). A class change ⇒ different key ⇒ clean snap.
+     * (Same-class slot shifts can still pair gem-with-gem; the consumers'
+     * distance guards cover those.) */
     if (base >= 0x80000000u) {
         int32_t off = (int32_t)(m - base);
         if (off > -(int32_t)(HUD_POOL_MAX * MOBY_STRIDE) &&
-            off <  (int32_t)(HUD_POOL_MAX * MOBY_STRIDE))
-            return 0x40000000u + (uint32_t)(off + (int32_t)(HUD_POOL_MAX * MOBY_STRIDE));
+            off <  (int32_t)(HUD_POOL_MAX * MOBY_STRIDE)) {
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
+            uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36, 2);
+            return 0x40000000u
+                 | ((uint32_t)(cls & 0x3FFu) << 16)
+                 | ((uint32_t)(off + (int32_t)(HUD_POOL_MAX * MOBY_STRIDE)) & 0xFFFFu);
+        }
     }
     return m;
 }
