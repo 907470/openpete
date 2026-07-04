@@ -367,8 +367,19 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
                               double a, uint32_t cam_tick, int32_t* out) {
     static int s_on = -1;
     if (s_on < 0) {
+        /* DEFAULT OFF (2026-07-04, fourth eyeball round): the canonical
+         * RENDERED flyby trajectory is ALREADY SMOOTH — the flight clips'
+         * baked whole-body animation was authored against the exact
+         * quantized path, so the composite (path + anim) cancels the
+         * 256-grid staircase. Smoothing the path channel ALONE un-cancels
+         * the anim's complementary wiggle and injects staircase noise into
+         * the composite — the spline itself was the residual jitter. The
+         * correct high-FPS rendering is the plain faithful lerp of both
+         * channels at ONE coherent alpha (correct now that the stamp/alpha/
+         * present clocks are fixed — their breakage was the ORIGINAL
+         * regression). OPENPETE_CUTSCENE_PATH_SMOOTH=1 re-enables for A/B. */
         const char* e = getenv("OPENPETE_CUTSCENE_PATH_SMOOTH");
-        s_on = !(e && *e == '0');
+        s_on = (e && *e == '1');
     }
     if (!s_on) return 0;
     uint32_t cs, base, cnt;
@@ -1270,7 +1281,16 @@ static void spyro_native_reextract(void* cpu_v) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
                                 double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
                                 have_p2 = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
-                                m_herm = hermite_enabled() && have_p2 && ma >= 0.0;
+                                m_herm = hermite_enabled() && have_p2 && ma >= 0.0
+                                /* Cutscene path actors: LINEAR position lerp only.
+                                 * Their pose (two-pass shape lerp, linear in
+                                 * balpha) carries baked whole-body motion authored
+                                 * to complement the quantized path — the two
+                                 * channels cancel per present ONLY when they
+                                 * sweep with the SAME alpha shape; hermite easing
+                                 * on position alone breaks the cancellation by up
+                                 * to easing-gap × staircase amplitude. */
+                                         && !spyro_cutpath_is_actor(m);
                             }
                             for (int k = 0; k < 3; k++) {
                                 int32_t lv = m_herm ? hround32(hermite1(p2[k], pp[k], cp[k], ma))
