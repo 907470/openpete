@@ -34,6 +34,7 @@
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
+#include "spyro_interp_regions.h"   /* spyro_interp_moby_key — HUD-pool slot-stable identity */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 
@@ -2586,7 +2587,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
      * or interp off). The high byte (+0x47) is the OT-bias overlay flag, not a
      * rotation axis — untouched either way. */
     const openpete_interp_obj_t* o =
-        s_rot_now ? openpete_interp_objs_find(moby) : NULL;
+        s_rot_now ? openpete_interp_objs_find(spyro_interp_moby_key(moby)) : NULL;
     if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -2843,7 +2844,42 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (block_80022D64 base, then the Ry/Rx/Rz MVMVA chain). */
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
             shaded_compose_euler(cpu, base, m, M);
-            TR[0]=0; TR[1]=0; TR[2]=(double)(pz>>1); mofx=(double)px; mofy=(double)py;
+            /* Billboard position interp (2026-07-04): px/py here are SCREEN
+             * coords the game animates per tick (pz = depth) — fed raw, a
+             * moving billboard (the level-transition tally gems flying to the
+             * chest) stepped at 30 Hz regardless of --render-fps. Prefer the
+             * spine's fractional position; else lerp the interp-objs prev/curr
+             * at the rotation-interp clock (same guards as the moby lerp:
+             * class unchanged + teleport snap). */
+            double bfx=(double)px, bfy=(double)py, bfz=(double)pz;
+            { double mf[3];
+              if (openpete_native_interp_pos(m, mf)) { bfx=mf[0]; bfy=mf[1]; bfz=mf[2]; }
+              else if (s_rot_now) {
+                const openpete_interp_obj_t* o = openpete_interp_objs_find(spyro_interp_moby_key(m));
+                if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
+                    uint16_t pcls2, ccls2;
+                    memcpy(&pcls2, o->prev + 0x36u, 2); memcpy(&ccls2, o->curr + 0x36u, 2);
+                    int32_t pp[3], cp[3];
+                    memcpy(pp, o->prev + 0x0Cu, 12); memcpy(cp, o->curr + 0x0Cu, 12);
+                    double ddx=(double)cp[0]-pp[0], ddy=(double)cp[1]-pp[1], ddz=(double)cp[2]-pp[2];
+                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 5000.0*5000.0) {
+                        double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+                        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                        bfx = (double)pp[0] + ddx * t;
+                        bfy = (double)pp[1] + ddy * t;
+                        bfz = (double)pp[2] + ddz * t;
+                    }
+                }
+              } }
+            TR[0]=0; TR[1]=0; TR[2]=bfz/2.0; mofx=bfx; mofy=bfy;
+            /* OPENPETE_SHADED_POSTRACE also traces the billboard branch. */
+            {
+                static int s_bt0 = -2;
+                if (s_bt0 == -2) { const char* e = getenv("OPENPETE_SHADED_POSTRACE"); s_bt0 = (e && *e) ? atoi(e) : -1; }
+                if (s_bt0 >= 0 && (int)openpete_frame >= s_bt0 && (int)openpete_frame < s_bt0 + 6)
+                    fprintf(stderr, "[bb-pos f=%u] moby=%08x key=%08x cls=%03x bf=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
+                            openpete_frame, m, spyro_interp_moby_key(m), cls, bfx, bfy, bfz, px, py, pz);
+            }
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
              * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
              * pz). Scale the fed depth back to full-world so billboards (e.g. the
@@ -2868,7 +2904,33 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * Floor fix: also prefer the FRACTIONAL interpolated moby position so the
              * moby's own motion is continuous (not just the camera component). */
             double mfx=(double)px, mfy=(double)py, mfz=(double)pz;
-            { double mf[3]; if (openpete_native_interp_pos(m, mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
+            int fpos_hit;
+            { double mf[3]; fpos_hit = openpete_native_interp_pos(m, mf); if (fpos_hit) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
+            /* OPENPETE_SHADED_INTERP_MISS: shaded mobys with NO fractional
+             * position (not in the spine's lerp walk → they step at 30 Hz). */
+            {
+                static int s_smiss = -1;
+                if (s_smiss < 0) { const char* e = getenv("OPENPETE_SHADED_INTERP_MISS"); s_smiss = (e && *e && *e != '0'); }
+                if (s_smiss && !fpos_hit) {
+                    static uint64_t t0 = 0; static int nn2 = 0;
+                    uint64_t nowp = openpete_phase_now_us();
+                    if (nowp - t0 >= 1000000u) { t0 = nowp; nn2 = 0; }
+                    if (nn2 < 12) { nn2++;
+                        fprintf(stderr, "[shaded-interp-MISS f=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
+                                openpete_frame, m, cls, px, py, pz); }
+                }
+            }
+            /* OPENPETE_SHADED_POSTRACE=frameLo: per-PRESENT fractional position of
+             * every cls-0x53 gem for ~40 frames from frameLo — does the fed
+             * position CHANGE between the presents of one tick? */
+            {
+                static int s_ptr0 = -2;
+                if (s_ptr0 == -2) { const char* e = getenv("OPENPETE_SHADED_POSTRACE"); s_ptr0 = (e && *e) ? atoi(e) : -1; }
+                if (s_ptr0 >= 0 &&
+                    (int)openpete_frame >= s_ptr0 && (int)openpete_frame < s_ptr0 + 6)
+                    fprintf(stderr, "[gem-pos f=%u] moby=%08x hit=%d fp=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
+                            openpete_frame, m, fpos_hit, mfx, mfy, mfz, px, py, pz);
+            }
             double Dx=(mfx-cfx)/4.0, Dy=(cfy-mfy)/4.0, Dz=(cfz-mfz)/4.0;
             double t1=(PM[0][0]*Dy+PM[0][1]*Dz+PM[0][2]*Dx)/4096.0;
             double t2=(PM[1][0]*Dy+PM[1][1]*Dz+PM[1][2]*Dx)/4096.0;
@@ -3171,7 +3233,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
                               uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p,
                               uint32_t* hdr_p, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby);
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(spyro_interp_moby_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     uint32_t cls   = cpu->read_half(moby + 0x36);
     uint32_t model = cpu->read_word(G_MODELS + cls * 4u);
@@ -3458,6 +3520,28 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * Display-only skip; the record itself (canonical gameplay state) is
          * untouched. Culled REG mobys still join the SPEC dedup set below —
          * their specular twin is equally hidden. */
+        /* OPENPETE_MOBY_INTERP_MISS: name the record mobys with NO interp-objs
+         * snapshot (they present at 30 Hz — the capture walk never saw them).
+         * Rate-limited; prints the moby addr + class + position. */
+        {
+            static int s_imiss = -1;
+            if (s_imiss < 0) { const char* e = getenv("OPENPETE_MOBY_INTERP_MISS"); s_imiss = (e && *e && *e != '0'); }
+            if (s_imiss) {
+                static uint64_t t0 = 0; static int n = 0;
+                uint64_t nowp = openpete_phase_now_us();
+                if (nowp - t0 >= 1000000u) { t0 = nowp; n = 0; }
+                const openpete_interp_obj_t* io = openpete_interp_objs_find(mobys[i]);
+                if ((!io || !io->have_prev) && n < 16) {
+                    n++;
+                    fprintf(stderr, "[moby-interp-%s f=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
+                            io ? "noprev" : "MISS", openpete_frame, mobys[i],
+                            (unsigned)(cpu->read_word(mobys[i] + 0x34u) >> 16),
+                            (int)cpu->read_word(mobys[i] + 0x0Cu),
+                            (int)cpu->read_word(mobys[i] + 0x10u),
+                            (int)cpu->read_word(mobys[i] + 0x14u));
+                }
+            }
+        }
         s_occl_seen++;
         int ver_check = 0;              /* verify mode: audit this moby post-extract */
         occl_rect_t ver_snap;

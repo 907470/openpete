@@ -82,6 +82,28 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
 #define PART_STRIDE    0x20u         /* particle record stride */
 #define PART_HDR_SEL   8u            /* (hdr>>8)&0xFF: m_Type/sel; 0xFF=end, &0x80=inactive */
 #define PART_MAX       320u          /* pool walk bound */
+#define HUD_POOL_MAX   64u           /* generous HUD-pool entry bound (tally text+gems) */
+
+/* See spyro_interp_regions.h. The pool base is the LIVE g_HudMobys pointer
+ * (lowest allocated entry, bump-down); a moby within [base, base+64*0x58)
+ * keys slot-relative so the double-buffered halves share one identity. */
+uint32_t spyro_interp_moby_key(uint32_t m) {
+    const void* hp = openpete_psx_to_host_ptr(G_HUDMOBYS);
+    uint32_t base = 0;
+    if (hp) memcpy(&base, hp, 4);
+    /* Window SYMMETRICALLY around the live pointer: it bump-allocates DOWN and
+     * may be read at a different allocation phase than the entries were made
+     * (observed: tally mobys sit BELOW the read value by a stable per-frame
+     * offset), but within one frame the pointer is the same at capture and
+     * re-extract time, so ptr-relative offsets pair across the halves. */
+    if (base >= 0x80000000u) {
+        int32_t off = (int32_t)(m - base);
+        if (off > -(int32_t)(HUD_POOL_MAX * MOBY_STRIDE) &&
+            off <  (int32_t)(HUD_POOL_MAX * MOBY_STRIDE))
+            return 0x40000000u + (uint32_t)(off + (int32_t)(HUD_POOL_MAX * MOBY_STRIDE));
+    }
+    return m;
+}
 
 extern unsigned openpete_frame;
 
@@ -148,6 +170,20 @@ static void spyro_interp_capture_objs(void) {
             if (sel & 0x80u) continue;          /* inactive slot */
             openpete_interp_objs_capture(pa, host, PART_STRIDE);
         }
+    }
+
+    /* SHADED render list (G_SCRATCH+0x2400 — flat Moby*[256] the .s shaded
+     * renderer walks): capture EVERY listed moby. Mostly a dedup-overwrite of
+     * the g_LevelMobys walk above, but load-screen props (the level-transition
+     * tally gems/chest — user report 2026-07-04: they step at 30 Hz) live in
+     * the bump-allocated HUD pool OUTSIDE g_LevelMobys and would otherwise
+     * never get prev/curr snapshots (no position OR rotation interp). */
+    for (uint32_t i = 0; i < 256u; ++i) {
+        uint32_t m = rd32(G_SCRATCH + 0x2400u + i * 4u);
+        if (m < 0x80000000u) break;
+        const void* host = openpete_psx_to_host_ptr(m);
+        if (host) openpete_interp_objs_capture(spyro_interp_moby_key(m), host,
+                                               OPENPETE_INTERP_OBJ_BLOB_BYTES);
     }
 
     /* Dragon-star record (D_DRAGONSTAR — the circling damage stars around

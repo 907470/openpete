@@ -181,6 +181,11 @@ addr = 0x80076248
 note = "dragon-rescue star particle table"
 
 [[symbol]]
+name = "G_HUDMOBYS"
+addr = 0x80075710
+note = "g_HudMobys — bump-down pointer to the per-frame HUD moby pool (double-buffered with the polybuf halves)"
+
+[[symbol]]
 name = "D_GLOWS"
 addr = 0x80078800
 note = "Glow[16], stride 0x24"
