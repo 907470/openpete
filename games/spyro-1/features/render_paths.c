@@ -8,7 +8,9 @@
 #include "spyro_native_reextract.h"  /* canonical-render epoch commit */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "openpete_fiber.h"   /* openpete_frame — for the ivdump env probe */
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
@@ -75,6 +77,18 @@ void render_path_mark_drawn(render_path_t p) {
 
 void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     if (end <= start || s_iv_n >= MAX_INTERVALS) return;
+    /* OPENPETE_RENDER_PATH_IVDUMP=frame: print every recorded polybuf interval
+     * on that openpete_frame with its path name (OT-prim producer attribution). */
+    {
+        static int s_ivdump = -2;
+        if (s_ivdump == -2) {
+            const char* e = getenv("OPENPETE_RENDER_PATH_IVDUMP");
+            s_ivdump = (e && *e) ? atoi(e) : -1;
+        }
+        if (s_ivdump >= 0 && (int)openpete_frame == s_ivdump)
+            fprintf(stderr, "[render-paths] ivdump f=%u path=%s [0x%08X,0x%08X)\n",
+                    openpete_frame, k_names[p], start, end);
+    }
     s_iv[s_iv_n].start = start;
     s_iv[s_iv_n].end   = end;
     s_iv[s_iv_n].path  = p;

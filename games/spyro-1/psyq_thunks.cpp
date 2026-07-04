@@ -777,8 +777,24 @@ void psyq_DrawOTag(CPUState* cpu) {
         s_otg_trace = (e && *e && *e != '0') ? 1 : 0;
     }
     static int s_otg_logs = 0;
+    /* OPENPETE_OT_TRUNCATE=N (portal a4 forensics, inert otherwise): stop
+     * submitting the OT chain after N slots, keeping exactly OT-dump slots
+     * 0..N-1 (the dump's slot column is g_ot_slot_count-1, so the indices
+     * line up 1:1 with OPENPETE_OT_DUMP_FRAMES rows). Lets an -og capture
+     * show what the PsyCross walk has painted "so far" at any slot cutoff —
+     * the decisive probe for whether a pixel's final color comes from slots
+     * before or after the cutoff. */
+    static int s_ot_truncate = -2;
+    if (s_ot_truncate == -2) {
+        const char* e = std::getenv("OPENPETE_OT_TRUNCATE");
+        s_ot_truncate = (e && *e) ? std::atoi(e) : -1;
+        if (s_ot_truncate >= 0)
+            OPL_INFO_F("thunks", "OT truncate armed: submitting first %d slots only",
+                       s_ot_truncate);
+    }
     uint32_t prev_addr = 0u, prev_tag = 0u;
     while (g_ot_slot_count < (int)OT_MAX_SLOTS) {
+        if (s_ot_truncate >= 0 && g_ot_slot_count >= s_ot_truncate) break;
         if (addr == 0u) break;
         uint8_t* host = (uint8_t*)openpete_psx_to_host_ptr(addr);
         if (!host) break;
