@@ -150,6 +150,21 @@ static void spyro_interp_capture_objs(void) {
         }
     }
 
+    /* Dragon-star record (D_DRAGONSTAR — the circling damage stars around
+     * Spyro): a SINGLE gamestate record the producer (func_8002F3E4) animates
+     * per tick — +0x04 world position, +0x10 per-effect rotation SHORTMATRIX,
+     * +0x24 spoke size, +0x2B colour. The feeder (dragonstar_feed_native)
+     * re-reads it on every sub-tick present, so without a snapshot the stars
+     * circle at 30 Hz regardless of --render-fps (user report 2026-07-04,
+     * particle-circling-stars.bk2 f1850). Capture the 0x2C-byte record when
+     * ACTIVE (+0x00 gate); inactive → unseen → evicted (a re-trigger snaps). */
+    {
+        const void* host = openpete_psx_to_host_ptr(D_DRAGONSTAR);
+        uint32_t gate = 0; if (host) memcpy(&gate, host, 4);
+        if (gate != 0)
+            openpete_interp_objs_capture(D_DRAGONSTAR, host, 0x2Cu);
+    }
+
     openpete_interp_objs_end_tick();
 
     static int dbg = -1;

@@ -521,9 +521,10 @@ static void spyro_native_reextract(void* cpu_v) {
         { G_SPYRO,  SPYRO_SAVE,  "g_Spyro"       },
         { G_SPYROFLAME,  FLAME_SAVE,  "g_SpyroFlame"  },
         { D_SPYROSHADOW, SHADOW_SAVE, "g_SpyroShadow" },
+        { D_DRAGONSTAR,  0x2Cu,       "d_DragonStar"  },
     };
     const int bc_n = (int)(sizeof(bc_regs) / sizeof(bc_regs[0]));
-    uint64_t bc_h0[4];
+    uint64_t bc_h0[5];
     if (bc_on) for (int i = 0; i < bc_n; ++i) bc_h0[i] = bc_hash(bc_regs[i].addr, bc_regs[i].len);
 
     /* Pair prev/curr camera snapshots (region 0 = g_Camera). Returns 0 when
@@ -1007,6 +1008,13 @@ static void spyro_native_reextract(void* cpu_v) {
      * new particle mid-flight. */
     {
         op_time_t now = op_now();
+        /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts —
+         * lerped vs each snap reason, MOVING particles (prev->curr delta > 2
+         * world/4) counted separately. A moving particle that keeps snapping is
+         * a 30 Hz stepper (the circling-stars class). */
+        static int s_pidbg = -1;
+        if (s_pidbg < 0) { const char* e = getenv("OPENPETE_PART_INTERP_DBG"); s_pidbg = (e && *e && *e != '0'); }
+        static long s_pi[8]; /* 0 lerp,1 noprev,2 classchg,3 lifestall,4 far,5 lerp-moving,6 classchg-moving,7 lifestall-moving */
         uint8_t* pbase = (uint8_t*)openpete_psx_to_host_ptr(G_PARTICLES);
         uint32_t ppool = 0; if (pbase) memcpy(&ppool, pbase, 4);
         if (ppool >= 0x80000000u) {
@@ -1019,7 +1027,7 @@ static void spyro_native_reextract(void* cpu_v) {
                 if (sel == 0xFFu) break;            /* end of pool */
                 if (sel & 0x80u) continue;          /* inactive slot */
                 const openpete_interp_obj_t* o = openpete_interp_objs_find(pa);
-                if (!o || !o->have_prev) continue;  /* spawn → snap (curr) */
+                if (!o || !o->have_prev) { s_pi[1]++; continue; }  /* spawn → snap (curr) */
                 op_time_t period = o->curr_ns - o->prev_ns;
                 if (o->prev_ns == 0 || period <= 0) continue;
                 double pa_alpha = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
@@ -1050,11 +1058,24 @@ static void spyro_native_reextract(void* cpu_v) {
                  * life reset, or life held — appears only inside bursts). So lerp only a
                  * genuinely continuing particle; otherwise snap (present curr, no streak). */
                 {
-                    uint32_t ph, ch; memcpy(&ph, o->prev, 4); memcpy(&ch, o->curr, 4);
-                    if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) continue;              /* m_Class/sel changed → reuse */
-                    if (((ch >> 16) & 0xFFu) <= ((ph >> 16) & 0xFFu)) continue;  /* m_Life didn't advance → reuse */
+                    int moving = (dX*dX + dY*dY + dZ*dZ > 4.0);
+                    uint32_t ph2, ch2; memcpy(&ph2, o->prev, 4); memcpy(&ch2, o->curr, 4);
+                    if ((ph2 & 0xFFFFu) != (ch2 & 0xFFFFu)) { s_pi[2]++; if (moving) s_pi[6]++; continue; } /* m_Class/sel changed → reuse */
+                    uint8_t plife = (uint8_t)(ph2 >> 16), clife = (uint8_t)(ch2 >> 16);
+                    /* Life DECREASED → reset → slot reuse: snap. Life EQUAL is
+                     * ambiguous: burst reuse (rare same-life coincidence) vs a
+                     * PERSISTENT particle whose life byte stalls — the circling
+                     * damage stars (user report 2026-07-04): 245-300 moving
+                     * particles/s snapped here during the effect, stepping the
+                     * orbit at 30 Hz. Lerp stalled-life particles only within a
+                     * TIGHT radius (300 world/4 per tick — orbiting stars move
+                     * ~50-100; burst reuses jump farther or reset life). */
+                    if (clife < plife) { s_pi[3]++; if (moving) s_pi[7]++; continue; }
+                    if (clife == plife && dX*dX + dY*dY + dZ*dZ > 300.0*300.0)
+                        { s_pi[3]++; if (moving) s_pi[7]++; continue; }
+                    s_pi[0]++; if (moving) s_pi[5]++;
                 }
-                if (dX*dX + dY*dY + dZ*dZ > 1250.0 * 1250.0) continue;
+                if (dX*dX + dY*dY + dZ*dZ > 1250.0 * 1250.0) { s_pi[4]++; continue; }
                 uint32_t live1, live2;
                 memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
                 s_part_save[part_save_n].addr = pa;
@@ -1068,6 +1089,74 @@ static void spyro_native_reextract(void* cpu_v) {
                 uint32_t nw2 = (live2 & 0xFFFF0000u) | (uint32_t)(uint16_t)lZ;
                 memcpy(ph + PART_POS_OFF, &nw1, 4);
                 memcpy(ph + 0x08u, &nw2, 4);
+            }
+        }
+        if (s_pidbg) {
+            static op_time_t t0 = 0;
+            if (t0 == 0) t0 = now;
+            if (now - t0 >= OP_NS_PER_SEC) {
+                fprintf(stderr, "[part-interp f=%u] lerp=%ld (moving=%ld) noprev=%ld classchg=%ld (mov=%ld) lifestall=%ld (mov=%ld) far=%ld\n",
+                        openpete_frame, s_pi[0], s_pi[5], s_pi[1], s_pi[2], s_pi[6], s_pi[3], s_pi[7], s_pi[4]);
+                memset(s_pi, 0, sizeof s_pi);
+                t0 = now;
+            }
+        }
+    }
+
+    /* Dragon-star record (D_DRAGONSTAR — the circling damage stars): a single
+     * gamestate record (pos +0x04, per-effect rotation SHORTMATRIX +0x10, spoke
+     * size +0x24, colour byte +0x2B) that func_8002F3E4 animates once per tick;
+     * the feeder re-reads it every present, so un-bracketed the stars circle at
+     * 30 Hz regardless of --render-fps (user report, particle-circling-stars.bk2
+     * f1850). Lerp prev→curr at the record's own distinct-roll alpha — position
+     * (int32), matrix (componentwise int16, then the two USED column vectors
+     * — [r][0]/[r][2], the spoke basis — renormalized to Q12 so the chord lerp
+     * can't shrink the ring), size and colour. Guards: active in BOTH snapshots
+     * (re-trigger → snap), teleport (>5000 world units), rotation >90°/tick
+     * (column-0 cosine < 0 → snap; lerp would arc the wrong way). Bracketed:
+     * saved here, restored with the other brackets below. */
+    uint8_t* ds_host = NULL; int ds_bracketed = 0; static uint8_t ds_saved[0x2C];
+    {
+        ds_host = (uint8_t*)openpete_psx_to_host_ptr(D_DRAGONSTAR);
+        uint32_t gate = 0; if (ds_host) memcpy(&gate, ds_host, 4);
+        const openpete_interp_obj_t* o = (gate != 0) ? openpete_interp_objs_find(D_DRAGONSTAR) : NULL;
+        if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
+            uint32_t pg, cg; memcpy(&pg, o->prev, 4); memcpy(&cg, o->curr, 4);
+            int32_t pp[3], cp[3];
+            memcpy(pp, o->prev + 0x04, 12); memcpy(cp, o->curr + 0x04, 12);
+            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+            int16_t pm[9], cm[9];
+            memcpy(pm, o->prev + 0x10, 18); memcpy(cm, o->curr + 0x10, 18);
+            /* column-0 rotation magnitude between snapshots (Q12 dot) */
+            double c0dot = ((double)pm[0]*cm[0] + (double)pm[3]*cm[3] + (double)pm[6]*cm[6]) / (4096.0*4096.0);
+            if (pg != 0 && cg != 0 &&
+                dx*dx + dy*dy + dz*dz <= 5000.0*5000.0 &&
+                c0dot > 0.0) {
+                double a2 = (double)(op_now() - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
+                if (a2 < 0.0) a2 = 0.0; else if (a2 > 1.0) a2 = 1.0;
+                memcpy(ds_saved, ds_host, 0x2C); ds_bracketed = 1;
+                for (int k = 0; k < 3; k++) {
+                    int32_t v = pp[k] + (int32_t)llround(((double)cp[k] - pp[k]) * a2);
+                    memcpy(ds_host + 0x04 + 4*k, &v, 4);
+                }
+                double lm[9];
+                for (int j = 0; j < 9; j++) lm[j] = (double)pm[j] + ((double)cm[j] - pm[j]) * a2;
+                for (int col = 0; col <= 2; col += 2) {   /* the used spoke basis columns */
+                    double n = sqrt(lm[0+col]*lm[0+col] + lm[3+col]*lm[3+col] + lm[6+col]*lm[6+col]);
+                    if (n > 1.0) {
+                        double s = 4096.0 / n;
+                        lm[0+col] *= s; lm[3+col] *= s; lm[6+col] *= s;
+                    }
+                }
+                for (int j = 0; j < 9; j++) {
+                    int16_t v16 = (int16_t)llround(lm[j]);
+                    memcpy(ds_host + 0x10 + 2*j, &v16, 2);
+                }
+                int32_t psz, csz; memcpy(&psz, o->prev + 0x24, 4); memcpy(&csz, o->curr + 0x24, 4);
+                int32_t lsz = psz + (int32_t)llround(((double)csz - psz) * a2);
+                memcpy(ds_host + 0x24, &lsz, 4);
+                int pc = o->prev[0x2B], ccol = o->curr[0x2B];
+                ds_host[0x2B] = (uint8_t)(pc + (int)llround(((double)ccol - pc) * a2));
             }
         }
     }
@@ -1162,6 +1251,7 @@ static void spyro_native_reextract(void* cpu_v) {
         if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
+    if (ds_bracketed && ds_host) memcpy(ds_host, ds_saved, 0x2C);
     if (sh_bracketed)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
