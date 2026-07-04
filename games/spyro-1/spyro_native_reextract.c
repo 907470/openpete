@@ -907,12 +907,89 @@ static void spyro_native_reextract(void* cpu_v) {
                              * when this moby has a valid prev2 whose prev2->prev step
                              * is itself continuous — else the linear prev->curr lerp.
                              * Same per-object alpha + 1-tick latency either way. */
-                            int m_herm = 0; int32_t p2[3];
-                            if (hermite_enabled() && o->have_prev2) {
+                            int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
+                            if (o->have_prev2) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
                                 double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
-                                m_herm = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
+                                have_p2 = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
+                                m_herm = hermite_enabled() && have_p2;
                             }
+                            /* GRID-QUANTIZED path filter (2026-07-04): the title-
+                             * flyby moby's canonical positions sit on a 512-unit
+                             * grid, so true diagonal motion arrives as an
+                             * ALTERNATING per-axis staircase ((-512,-512,0) then
+                             * (0,-1024,0), ...). Faithful lerp reproduces that
+                             * zigzag at present rate — the user's "very jittery"
+                             * flyby. Midpoint (2-tap) filtering renders the segment
+                             * (p2+pp)/2 → (pp+cp)/2: for an alternating ±q
+                             * quantization the midpoints lie ON the true line, at
+                             * the cost of half a tick of extra display lag. Scoped
+                             * to movers whose THREE bracket positions are all
+                             * 512-aligned (the quantized-cutscene class — gameplay
+                             * mobys move at fine granularity and never qualify). */
+                            int grid512 = have_p2 &&
+                                (pp[0] != cp[0] || pp[1] != cp[1] || pp[2] != cp[2]);  /* MOVING only:
+                                 * a static moby parked on an aligned spawn position must
+                                 * never engage the camera-composed path (it would swim
+                                 * with the camera's sub-tick offset against the world). */
+                            for (int k = 0; k < 3 && grid512; k++)
+                                if (((uint32_t)pp[k] | (uint32_t)cp[k] | (uint32_t)p2[k]) & 511u) grid512 = 0;
+                            if (grid512) {
+                                /* GRID-QUANTIZED (cutscene/flyby) movers: render as
+                                 * SMOOTH CAMERA + FILTERED OFFSET. The title camera
+                                 * rides the same flight path continuously (its ring
+                                 * dedupes to true 30 Hz states, un-quantized) while
+                                 * the moby's canonical path is snapped to a 512 grid
+                                 * — an alternating per-axis staircase whose zigzag a
+                                 * direct lerp faithfully reproduces (~±300 units ≈
+                                 * 15-20 screen px = the jitter). The moby's OFFSET
+                                 * from the camera is slow-drifting truth + the
+                                 * quantization ripple, so a small one-pole (K=0.08,
+                                 * rolled per bracket) crushes the ripple to a few
+                                 * units while the fast common motion arrives via the
+                                 * ALREADY-INTERPOLATED camera (the camera bracket ran
+                                 * above; `cam` RAM holds this present's pose,
+                                 * `cam_saved` the canonical tick). Offset-jump
+                                 * (camera cut / moby teleport) resets the filter. */
+                                enum { DQ_N = 32 };
+                                static struct { uint32_t key; op_time_t ns; double S[3], Sp[3]; } dq[DQ_N];
+                                int di = -1, free_i = -1;
+                                for (int k = 0; k < DQ_N; k++) {
+                                    if (dq[k].key == m) { di = k; break; }
+                                    if (dq[k].key == 0 && free_i < 0) free_i = k;
+                                }
+                                if (di < 0) { di = free_i >= 0 ? free_i : 0; dq[di].key = m; dq[di].ns = 0; }
+                                int32_t camc[3], cami[3];
+                                memcpy(camc, cam_saved + CAM_OFF_POS, 12);   /* canonical tick camera */
+                                memcpy(cami, cam + CAM_OFF_POS, 12);         /* this present's interpolated camera */
+                                double tgt[3];
+                                for (int k = 0; k < 3; k++) tgt[k] = (double)cp[k] - camc[k];
+                                if (dq[di].ns == 0) {
+                                    for (int k = 0; k < 3; k++) { dq[di].S[k] = tgt[k]; dq[di].Sp[k] = tgt[k]; }
+                                    dq[di].ns = o->curr_ns;
+                                } else if (o->curr_ns != dq[di].ns) {
+                                    double jx = tgt[0]-dq[di].S[0], jy = tgt[1]-dq[di].S[1], jz = tgt[2]-dq[di].S[2];
+                                    if (jx*jx + jy*jy + jz*jz > 5000.0*5000.0) {
+                                        for (int k = 0; k < 3; k++) { dq[di].S[k] = tgt[k]; dq[di].Sp[k] = tgt[k]; }  /* cut → reset */
+                                    } else {
+                                        for (int k = 0; k < 3; k++) {
+                                            dq[di].Sp[k] = dq[di].S[k];
+                                            dq[di].S[k] += 0.08 * (tgt[k] - dq[di].S[k]);
+                                        }
+                                    }
+                                    dq[di].ns = o->curr_ns;
+                                }
+                                /* Present = interpolated camera + Sp→S lerp: the offset
+                                 * itself drifts (~70/tick during banking turns), so it
+                                 * must sweep within the tick too, not step per roll. */
+                                int32_t fq[3];
+                                for (int k = 0; k < 3; k++) {
+                                    double off = dq[di].Sp[k] + (dq[di].S[k] - dq[di].Sp[k]) * ma;
+                                    fq[k] = (int32_t)llround((double)cami[k] + off);
+                                    memcpy(mh + MOBY_POS + k * 4, &fq[k], 4);
+                                }
+                                fpos_set(m, fq, fq, 0.0);   /* fractional table: the composed position */
+                            } else {
                             for (int k = 0; k < 3; k++) {
                                 int32_t lv = m_herm ? hround32(hermite1(p2[k], pp[k], cp[k], ma))
                                                     : lerp32(pp[k], cp[k], ma);
@@ -925,6 +1002,7 @@ static void spyro_native_reextract(void* cpu_v) {
                              * (not just the camera component). */
                             if (m_herm) fpos_set_h(m, p2, pp, cp, ma);
                             else        fpos_set(m, pp, cp, ma);
+                            }
                             /* OPENPETE_MOBY_POSTRACE_CLS=<cls>: per-present lerp
                              * trace for mobys of that class (jitter forensics). */
                             {
@@ -934,11 +1012,13 @@ static void spyro_native_reextract(void* cpu_v) {
                                 if (s_ptcls >= 0 && (s_ptcls == 0xFFFF || tcls == (uint16_t)s_ptcls)) {
                                     int32_t lv2[3];
                                     memcpy(lv2, mh + MOBY_POS, 12);
-                                    fprintf(stderr, "[moby-lerp f=%u] m=%08x herm=%d a=%.3f prev=(%d,%d,%d) curr=(%d,%d,%d) out=(%d,%d,%d) dt=%.1fms\n",
+                                    double cfp[3] = {0,0,0};
+                                    int cfh = openpete_native_interp_pos(G_CAMERA, cfp);
+                                    fprintf(stderr, "[moby-lerp f=%u] m=%08x herm=%d a=%.3f out=(%d,%d,%d) cam=%d(%.1f,%.1f,%.1f) rel=(%.1f,%.1f,%.1f)\n",
                                             openpete_frame, m, m_herm, ma,
-                                            pp[0], pp[1], pp[2], cp[0], cp[1], cp[2],
                                             lv2[0], lv2[1], lv2[2],
-                                            (double)(o->curr_ns - o->prev_ns) / 1e6);
+                                            cfh, cfp[0], cfp[1], cfp[2],
+                                            lv2[0]-cfp[0], lv2[1]-cfp[1], lv2[2]-cfp[2]);
                                 }
                             }
                             /* Animation: NOT synthesized into RAM here anymore. The

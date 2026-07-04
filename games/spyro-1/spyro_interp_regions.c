@@ -147,8 +147,21 @@ static void spyro_interp_capture_objs(void) {
             if (!host) break;
             uint8_t st = ((const uint8_t*)host)[MOBY_STATE_OFF];
             if (st == 0xFF) break;                       /* array sentinel */
-            if (st < 0x80)                               /* alive */
+            if (st < 0x80) {                             /* alive */
                 openpete_interp_objs_capture(m, host, OPENPETE_INTERP_OBJ_BLOB_BYTES);
+                /* OPENPETE_CAPTRACE_CLS: per-TICK canonical position of mobys of
+                 * this class (staircase-vs-smooth forensics, capture side). */
+                static long s_ctc = -2;
+                if (s_ctc == -2) { const char* e = getenv("OPENPETE_CAPTRACE_CLS"); s_ctc = e ? strtol(e, NULL, 0) : -1; }
+                if (s_ctc >= 0) {
+                    uint16_t c2; memcpy(&c2, (const uint8_t*)host + 0x36, 2);
+                    if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
+                        int32_t pos[3]; memcpy(pos, (const uint8_t*)host + 0x0C, 12);
+                        fprintf(stderr, "[cap-tick f=%u] m=%08x cls=%03x pos=(%d,%d,%d)\n",
+                                openpete_frame, m, c2, pos[0], pos[1], pos[2]);
+                    }
+                }
+            }
             m += MOBY_STRIDE;
         }
     }

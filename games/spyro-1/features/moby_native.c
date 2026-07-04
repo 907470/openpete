@@ -3648,6 +3648,22 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * spawn or a topology-changing clip switch. */
         uint32_t fap = 0, fbp = 0, w0p = 0, hdrp = 0; double balpha = 0.0;
         moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &hdrp, &balpha);
+        /* OPENPETE_MOBY_POSTRACE_CLS also traces the anim channel here. */
+        {
+            static long s_atcls = -2;
+            if (s_atcls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_atcls = e ? strtol(e, NULL, 0) : -1; }
+            uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + 0x36u);
+            if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
+                uint32_t mrot = cpu->read_word(mobys[i] + 0x44u);
+                fprintf(stderr, "[moby-anim f=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
+                        openpete_frame, mobys[i], tcls2,
+                        fap != 0, balpha,
+                        cpu->read_byte(mobys[i]+0x3E), cpu->read_byte(mobys[i]+0x3F),
+                        cpu->read_byte(mobys[i]+0x40), cpu->read_byte(mobys[i]+0x3C),
+                        f.frameA, f.frameB, fap, fbp, f.w0 & 0xFFFFu, w0p & 0xFFFFu,
+                        mrot & 0xFFFFFFu);
+            }
+        }
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
                                       fap, fbp, w0p, hdrp, balpha,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
