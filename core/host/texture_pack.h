@@ -71,6 +71,17 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
  * otherwise outlive the registry. */
 void texture_pack_annotate(int x, int y, int w, int h, const char *name);
 
+/* ---- dump tool (Phase 2) ------------------------------------------------- */
+
+/* If OPENPETE_TEXPACK_DUMP_DIR is set, decode the draw's texel box from the
+ * live VRAM model and write it as a baked RGBA PNG named by its identity:
+ *   <thash>-<bx>x<by>+<bw>x<bh>-<phash>-<bpp>bpp.png
+ * (box coords are upload-relative, so the name is stable across per-level
+ * VRAM repacks). Deduped per identity; call freely per drawn run. */
+void texture_pack_dump_draw(const texture_pack_id *id,
+                            int tpage_x, int tpage_y, int clut_x, int clut_y,
+                            int u0, int v0);
+
 /* ---- lifecycle / diagnostics -------------------------------------------- */
 
 void texture_pack_init(void);      /* idempotent; reads env gates */

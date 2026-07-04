@@ -235,6 +235,65 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
     return 1;
 }
 
+/* ---- dump tool (Phase 2) -------------------------------------------------- */
+
+int stbi_write_png(const char *filename, int w, int h, int comp,
+                   const void *data, int stride_in_bytes);   /* impl: screenshot.c TU */
+
+#define TP_DUMPED_SLOTS 16384   /* identity dedupe (power of 2) */
+static uint64_t s_dumped[TP_DUMPED_SLOTS];
+
+void texture_pack_dump_draw(const texture_pack_id *id,
+                            int tpage_x, int tpage_y, int clut_x, int clut_y,
+                            int u0, int v0)
+{
+    static const char *dir = NULL;
+    static int checked = 0;
+    if (!checked) { checked = 1; dir = getenv("OPENPETE_TEXPACK_DUMP_DIR"); }
+    if (!dir || !*dir || !id) return;
+
+    uint64_t key = id->thash ^ (id->phash * 0x9E3779B97F4A7C15ull) ^
+                   ((uint64_t)(uint32_t)((id->box_x << 20) ^ (id->box_y << 8) ^
+                                         (id->box_w << 26) ^ id->box_h ^ id->bpp) << 1);
+    if (!key) key = 1;
+    uint64_t *slot = &s_dumped[(key * 0xff51afd7ed558ccdull >> 32) & (TP_DUMPED_SLOTS - 1)];
+    if (*slot == key) return;
+    *slot = key;
+
+    int W = id->box_w, H = id->box_h;
+    const uint16_t *vr = openpete_vram_data();
+    unsigned char *px = malloc((size_t)W * H * 4);
+    if (!px) return;
+    for (int y = 0; y < H; y++) {
+        const uint16_t *row = vr + (size_t)(tpage_y + v0 + y) * OPENPETE_VRAM_W;
+        for (int x = 0; x < W; x++) {
+            int u = u0 + x;
+            uint16_t p;
+            if (id->bpp == 16) {
+                p = row[tpage_x + u];
+            } else if (id->bpp == 8) {
+                unsigned idx = (row[tpage_x + (u >> 1)] >> (8 * (u & 1))) & 0xFFu;
+                p = vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + idx];
+            } else {
+                unsigned idx = (row[tpage_x + (u >> 2)] >> (4 * (u & 3))) & 0xFu;
+                p = vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + idx];
+            }
+            unsigned char *o = px + ((size_t)y * W + x) * 4;
+            unsigned r5 = p & 31u, g5 = (p >> 5) & 31u, b5 = (p >> 10) & 31u;
+            o[0] = (unsigned char)((r5 << 3) | (r5 >> 2));
+            o[1] = (unsigned char)((g5 << 3) | (g5 >> 2));
+            o[2] = (unsigned char)((b5 << 3) | (b5 >> 2));
+            o[3] = p ? 255 : 0;   /* PSX sentinel -> transparent (STP nuance: Phase 5) */
+        }
+    }
+    char path[512];
+    snprintf(path, sizeof path, "%s/%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
+             dir, (unsigned long long)id->thash, id->box_x, id->box_y,
+             id->box_w, id->box_h, (unsigned long long)id->phash, id->bpp);
+    stbi_write_png(path, W, H, 4, px, W * 4);
+    free(px);
+}
+
 void texture_pack_debug_dump(void)
 {
     int live = 0;
