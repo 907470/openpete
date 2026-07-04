@@ -1345,7 +1345,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * excluding the mid-band faces that fringed sky silhouettes
                  * (gate tick 4888). */
                 static int s_fogslack = -1;
-                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 4096; }
+                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 0;   /* v4.1: back to v1 STRICT (fully-fogged only) — see the dilation block */ }
                 int nc2 = quad ? 4 : 3, farAll = 1, fogged = 1;
                 const int cf[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc2 && farAll; q2++) {
@@ -1676,7 +1676,7 @@ static void terrain_feed_native(void) {
     static float s_fill_dilate = -1.0f;  /* OPENPETE_TERRAIN_FILL_DILATE px (0 disables) */
     if (s_fill_dilate < 0.0f) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
-        s_fill_dilate = (e && *e) ? (float)atof(e) : 0.7f;
+        s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* v4.1: quantize/grow OFF by default (v2/v3 machinery caused silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
