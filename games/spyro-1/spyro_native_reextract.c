@@ -364,7 +364,7 @@ int spyro_cutpath_is_actor(uint32_t m) {
 }
 
 static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
-                              double a, int32_t* out) {
+                              double a, uint32_t cam_tick, int32_t* out) {
     static int s_on = -1;
     if (s_on < 0) {
         const char* e = getenv("OPENPETE_CUTSCENE_PATH_SMOOTH");
@@ -385,71 +385,90 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
     uint32_t path;
     if (!cut_rd32(cs + 0x14 + 4u * k, &path) || path < 0x80000000u || path >= 0x80200000u) return 0;
 
-    /* Path parameter from the CAPTURED canonical positions, NOT the cutscene
-     * clock. The clock at cs+0 advances every 60 Hz VBL — TWICE per sim tick,
-     * asynchronously with present phase — so a prev/curr clock tracker rolls
-     * mid-tick while alpha is mid-sweep and u JUMPS a full clock unit and
-     * re-sweeps: a 60 Hz ±5-20 px sawtooth along the path ("jumping back in
-     * the path", the second windows-eyeball failure; invisible in throttled
-     * traces that sampled presents at lucky consistent VBL phases). Instead
-     * invert the polyline: pp and cp are EXACT points on it (the decoder
-     * writes lerp(wp[i], wp[i+1], f) with coarse fractions), so solve
-     * u_prev/u_curr by segment search and sweep between them — tick-aligned
-     * with the camera pair by construction, no clock assumptions at all. */
+    /* Path parameter = a CONSTANT-RATE COASTING CLOCK, phase-locked to the
+     * position solves. The game's true clock advances u at a perfectly
+     * uniform rate (u = t/div, t += const per tick); repeated waypoints
+     * (holds / mini-pauses) are QUANTIZER DUPLICATES — pauses in POSITION,
+     * never in path time. The position-inversion is degenerate there, and
+     * rendering the faithful solved-u reproduced the quantizer's stop-go at
+     * 8-15 Hz — a ±5-15 px sawtooth riding the true curve (the third
+     * windows-eyeball failure: canonical-vs-interp overlay showed canonical
+     * SMOOTH with the interp wiggling around it). So: per-actor clock
+     * coasts `rate` waypoints per tick (rate = damped EMA of solved per-tick
+     * advance), corrected toward each tick's solve by 1/8 — but ONLY when
+     * this tick's canonical position MOVED (a hold-ambiguous solve pins to a
+     * segment and must not drag the clock); |error| > 1.5 wp = a genuine
+     * cut/park-exit → resync (snap). The cutscene clock at cs+0 itself is
+     * NOT usable: it advances per 60 Hz VBL, twice per tick, async with
+     * presents (the second eyeball failure — "jumping back in the path"). */
     static struct {
         uint32_t cs; int hint[8]; long nosolve[8];
-        double lu[8]; uint8_t have_lu[8];        /* per-actor u slew state */
-        uint8_t hold[8];                         /* consecutive held presents */
-    } s_uh = { 0u, {0}, {0}, {0.0}, {0}, {0} };
+        double clk_prev[8], clk_curr[8], rate[8];
+        int32_t last_cp[8][3];
+        uint32_t last_tick[8];
+        uint8_t have_clk[8];
+    } s_uh;
     if (s_uh.cs != cs) {
-        memset(s_uh.hint, 0, sizeof s_uh.hint);
-        memset(s_uh.nosolve, 0, sizeof s_uh.nosolve);
-        memset(s_uh.have_lu, 0, sizeof s_uh.have_lu);
-        memset(s_uh.hold, 0, sizeof s_uh.hold);
+        memset(&s_uh, 0, sizeof s_uh);
         s_uh.cs = cs;
     }
-    /* Solve u_curr FIRST (against the tracked hint), then u_prev anchored to
-     * it: on a hold run every segment matches, and anchoring pp's solve at
-     * u_curr picks the hold EXIT rather than the hold start — so departure
-     * from a park sweeps [hold-end → first moving segment] instead of
-     * rejecting on a bogus 160-waypoint "jump". */
-    double u, u_prev, u_curr;
-    int solved = cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) &&
-                 cutpath_solve_u(path, pp, (int)u_curr, &u_prev) &&
-                 u_curr >= u_prev - 0.26 && u_curr <= u_prev + 2.0;
-    if (solved) {
-        s_uh.hint[k] = (int)u_curr;
-        s_uh.hold[k] = 0;
-        u = u_prev + (u_curr - u_prev) * a;
-    } else {
-        s_uh.nosolve[k]++;
-        /* HOLD through transient solver dropouts (path joins, off-polyline
-         * hops, hold ambiguity): falling back to the faithful path for
-         * ISOLATED presents alternates spline-pos ↔ faithful-pos at present
-         * rate — a violent ±10-20 px flicker (the sign-gnorc a1 join
-         * "seizure": 47 nosolve presents interleaved with engaged ones).
-         * While recently engaged, keep rendering the spline at the last
-         * slewed u (frozen — invents no motion; the bound guard below still
-         * disengages if canonical walks away). Give up after 40 consecutive
-         * held presents (genuinely lost → one snap). */
-        if (!s_uh.have_lu[k] || s_uh.hold[k] >= 40) { s_uh.have_lu[k] = 0; return 0; }
-        s_uh.hold[k]++;
-        u = s_uh.lu[k];
+    int cp_moved = memcmp(s_uh.last_cp[k], cp, 12) != 0;
+    int tick_rolled = cam_tick != 0 && cam_tick != s_uh.last_tick[k];
+    double dticks = tick_rolled && s_uh.last_tick[k] != 0
+                  ? (double)(cam_tick - s_uh.last_tick[k]) / 2.0 : 1.0;
+    if (dticks < 1.0) dticks = 1.0; else if (dticks > 4.0) dticks = 4.0;
+
+    if (!s_uh.have_clk[k]) {
+        /* engage: need an unambiguous solve of a MOVING position */
+        double u_prev, u_curr;
+        if (!cp_moved ||
+            !cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) ||
+            !cutpath_solve_u(path, pp, (int)u_curr, &u_prev) ||
+            u_curr <= u_prev + 0.05 || u_curr > u_prev + 2.0) {
+            s_uh.nosolve[k]++;
+            memcpy(s_uh.last_cp[k], cp, 12);
+            if (tick_rolled) s_uh.last_tick[k] = cam_tick;
+            return 0;
+        }
+        s_uh.hint[k]     = (int)u_curr;
+        s_uh.clk_curr[k] = u_curr;
+        s_uh.clk_prev[k] = u_prev;
+        s_uh.rate[k]     = (u_curr - u_prev) / dticks;
+        if (s_uh.rate[k] < 0.1) s_uh.rate[k] = 0.1; else if (s_uh.rate[k] > 1.5) s_uh.rate[k] = 1.5;
+        s_uh.have_clk[k] = 1;
+    } else if (tick_rolled) {
+        /* coast one (or more) ticks at the estimated rate */
+        s_uh.clk_prev[k] = s_uh.clk_curr[k];
+        s_uh.clk_curr[k] += s_uh.rate[k] * dticks;
+        if (cp_moved) {
+            double u_curr;
+            if (cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr)) {
+                double err = u_curr - s_uh.clk_curr[k];
+                if (err > 1.5 || err < -1.5) {
+                    /* genuine discontinuity (park exit / cut): resync hard */
+                    s_uh.clk_curr[k] = u_curr;
+                    s_uh.clk_prev[k] = u_curr - s_uh.rate[k] * dticks;
+                } else {
+                    s_uh.clk_curr[k] += err / 8.0;
+                    /* rate: damped EMA of the solved per-tick advance */
+                    double inst = (u_curr - s_uh.clk_prev[k]) / dticks;
+                    if (inst > 0.05 && inst < 1.5)
+                        s_uh.rate[k] += (inst - s_uh.rate[k]) * 0.1;
+                }
+                s_uh.hint[k] = (int)u_curr;
+            } else {
+                s_uh.nosolve[k]++;   /* coast through solver dropouts */
+            }
+        }
+        /* cp unchanged across a tick (hold): pure coast — the true clock
+         * never pauses; the bound guard below limits how far we may run
+         * ahead of a genuinely PARKED actor before disengaging. */
     }
-    /* u SLEW LIMITER. A hold run collapses several waypoints of path time
-     * into one position, so the inversion can't see u advance through it —
-     * at hold entry/exit the solved u JUMPS ~1 waypoint in one present and
-     * the spline output steps half a waypoint (~350-670 units — the hover
-     * spikes at f987/f1003, plus small back-steps at pause boundaries). u is
-     * 1-D and monotone, so a slew is SAFE (no positional overshoot): cap the
-     * per-present advance (normal motion is ~0.03-0.25/present) and floor
-     * tiny regressions; a hold jump becomes a brief smooth catch-up instead
-     * of a step. Reset on cs change / solve failure / disengage (snaps). */
-    if (s_uh.have_lu[k]) {
-        if (u > s_uh.lu[k] + 0.35) u = s_uh.lu[k] + 0.35;
-        else if (u < s_uh.lu[k] - 0.02) u = s_uh.lu[k] - 0.02;
-    }
-    s_uh.lu[k] = u; s_uh.have_lu[k] = 1;
+    memcpy(s_uh.last_cp[k], cp, 12);
+    if (tick_rolled) s_uh.last_tick[k] = cam_tick;
+    if (!s_uh.have_clk[k]) return 0;
+
+    double u = s_uh.clk_prev[k] + (s_uh.clk_curr[k] - s_uh.clk_prev[k]) * a;
     int i = (int)floor(u);
     double s = u - (double)i;
     /* No end-of-path index clamp: the authored paths tail-pad with repeated
@@ -540,7 +559,7 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
             }
         }
     }
-    if (!s_engaged[k]) { s_uh.have_lu[k] = 0; return 0; }   /* re-engage snaps: reset slew */
+    if (!s_engaged[k]) { s_uh.have_clk[k] = 0; return 0; }  /* re-engage resyncs the clock */
     for (int c = 0; c < 3; c++) out[c] = (int32_t)llround(sm[c]);
     return 1;
 }
@@ -1237,7 +1256,8 @@ static void spyro_native_reextract(void* cpu_v) {
                              * position only rolls every other tick. */
                             int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             int32_t sm3[3];
-                            if (cutpath_smooth_pos(m, pp, cp, paired ? alpha : ma, sm3)) {
+                            if (cutpath_smooth_pos(m, pp, cp, paired ? alpha : ma,
+                                                   curr ? curr->tick : 0u, sm3)) {
                                 for (int k = 0; k < 3; k++)
                                     memcpy(mh + MOBY_POS + k * 4, &sm3[k], 4);
                                 fpos_set(m, sm3, sm3, 0.0);
