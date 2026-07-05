@@ -398,7 +398,8 @@ typedef struct { float sx, sy, vz; int sat; int rec;
 static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                uint32_t frameA_p, uint32_t frameB_p, uint32_t w0_p,
-                               uint32_t header_p, double blend_alpha, const int TR_raw[3],
+                               uint32_t header_p, double blend_alpha, double gpf_frac,
+                               const int TR_raw[3],
                                const double TR_frac[3],
                                const int M[3][3], proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
@@ -435,10 +436,15 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         TR[0] = TR_frac[0] * sc;   /* == (TR_frac << 2) >> m_scale, fractional */
         TR[1] = TR_frac[1] * sc;
         TR[2] = TR_frac[2] * sc;
-        if (gpf) {                 /* fractional flavour of the GPF rescale below */
-            TR[0] *= (double)gpf / 32.0;
-            TR[1] *= (double)gpf / 32.0;
-            TR[2] *= (double)gpf / 32.0;
+        if (gpf) {                 /* fractional flavour of the GPF rescale below;
+                                    * gpf_frac >= 0 = the sub-tick-lerped byte
+                                    * (prev→curr m_ScaleOverride, reextract_record_pass)
+                                    * so the on-screen scale animates at present rate
+                                    * instead of stepping per canonical tick */
+            double g = (gpf_frac >= 0.0) ? gpf_frac : (double)gpf;
+            TR[0] *= g / 32.0;
+            TR[1] *= g / 32.0;
+            TR[2] *= g / 32.0;
         }
     } else if (gpf) {
         /* .s GPF-TR path [.L8001F870..F8DC; spec twin @80021024]: when the record's
@@ -551,7 +557,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
     apply_dragon_disappear_scale(cpu, cpu->read_word(rec + 0x34), M);  /* --no-lod: re-derive draw.c's cutscene shrink */
-    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, out, cap);
 }
 
 #define MAX_PROJ 8192
@@ -908,7 +914,7 @@ static void append_revealed_regular(CPUState* cpu) {
         if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, f.TR_raw, f.TR_frac, f.M,
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                       s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { m += 0x58; continue; }
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -3780,6 +3786,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
          * TR.z (frozen per tick — no sub-tick boundary flicker), else a GPF-far
          * moby the game popped out draws on intermediates only. */
+        double gpf_frac = -1.0;
         {
             uint32_t rw0 = cpu->read_word(recs[i]);
             if ((rw0 & 0xFFu) != 0u && f.header >= 0x80000000u) {
@@ -3787,8 +3794,38 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 int ir3  = (int)(int16_t)(((int32_t)cpu->read_word(recs[i] + 0x18) << 2) >> msc);
                 if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) continue;
                 /* thread the live GPF byte into the decode so the sub-tick pose
-                 * projects at the same GPF-rescaled translation (frozen per tick) */
+                 * projects at the same GPF-rescaled translation */
                 f.w0 = (f.w0 & ~0xFFu) | (rw0 & 0xFFu);
+                /* GPF sub-tick scale lerp: the byte is the cull's copy of
+                 * m_ScaleOverride (moby+0x57, folded into w0 @8001F4A8/F4C4),
+                 * animated per tick by effect classes (Gnasty-blast dome).
+                 * Frozen per tick the on-screen scale steps at 30Hz under
+                 * --render-fps; lerp prev→curr from the interp snapshots on
+                 * the SAME clock as the pose crossfade (moby_prev_keyframe's
+                 * t), so scale stays in phase with the poses. Snap when the
+                 * prev byte is 0 or missing: byte==0 takes the .s's non-GPF
+                 * (true-distance) branch — a semantic discontinuity, and the
+                 * spine never lerps across a discontinuity. */
+                if (s_rot_now) {
+                    const openpete_interp_obj_t* og =
+                        openpete_interp_objs_find(spyro_interp_moby_key(mobys[i]));
+                    if (og && og->have_prev && og->prev_ns && og->curr_ns > og->prev_ns) {
+                        int gprev = (int)og->prev[0x57];
+                        int gnow  = (int)(rw0 & 0xFFu);
+                        if (gprev > 0) {
+                            double t = (double)(s_rot_now - og->curr_ns)
+                                     / (double)(og->curr_ns - og->prev_ns);
+                            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                            gpf_frac = (double)gprev + ((double)gnow - (double)gprev) * t;
+                        }
+                        /* OPENPETE_MOBY_GPF_DBG=1: one line per GPF re-extract —
+                         * the ramp must be monotone across presents within a tick */
+                        { static int s_gd = -1;
+                          if (s_gd < 0) { const char* e = getenv("OPENPETE_MOBY_GPF_DBG"); s_gd = (e && *e && *e != '0'); }
+                          if (s_gd) fprintf(stderr, "[gpf] f=%u m=%08x prev=%d now=%d frac=%.3f\n",
+                                            openpete_frame, mobys[i], gprev, gnow, gpf_frac); }
+                    }
+                }
             }
         }
         /* Re-apply any render-time per-row scale the .s baked into the cull-record
@@ -3842,7 +3879,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
         }
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
-                                      fap, fbp, w0p, hdrp, balpha,
+                                      fap, fbp, w0p, hdrp, balpha, gpf_frac,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
