@@ -1418,24 +1418,34 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * water with land palettes (g1 metric 4.9k→14k). They keep the
              * old static +0 half until that path is decoded. */
             tmat matSel;
+            int dbg_half = 0, dbg_delta = 0;   /* fardbg: chosen tiledef half + ladder row */
             if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !F->abe) {
                 /* SZ = s_fogscale·m3 — the whole ladder ramp rides the
-                 * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1). */
+                 * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1).
+                 * ALWAYS four corners: .s HP tris are quads with i2==i3 and
+                 * the walk sums the shared vertex TWICE. Summing only 3
+                 * under-shot Δ by ~25% on every fog-band triangle (user-
+                 * caught: confetti on the title's left mountain — .s row
+                 * 138, native row 131 = unauthored palette content). */
                 int szsum = (int)(sv[i0].m3 * s_fogscale) + (int)(sv[i1].m3 * s_fogscale)
-                          + (int)(sv[i2].m3 * s_fogscale)
-                          + (quad ? (int)(sv[i3].m3 * s_fogscale) : 0);
+                          + (int)(sv[i2].m3 * s_fogscale) + (int)(sv[i3].m3 * s_fogscale);
                 int key = (szsum >> 7) << 5;
                 int t0k = key - fogRef + 4096;
                 if (t0k <= 0) {
-                    if (F->matN.textured) { matSel = F->matN; mat = &matSel; tu = F->tuN; tv = F->tvN; }
+                    if (F->matN.textured) { matSel = F->matN; mat = &matSel; tu = F->tuN; tv = F->tvN; dbg_half = 1; }
                 } else {
-                    /* Clamp to the full-fog row (t0 = 4096 at ir0 = 0 → Δ = 16).
-                     * The .s never evaluates Δ much past that (beyond-LOD faces
-                     * are handed to LP), but native's HP-at-all-distances design
-                     * does — unclamped, Δ marches off the palette ladder into
-                     * unrelated CLUTs (the dark far-water stripe, artisans g1). */
+                    /* Clamp to the DEEPEST AUTHORED row: the ladder is exactly
+                     * 16 rows (Δ 0..15). Within the fog band t0 < 4096 so the
+                     * .s only ever produces Δ ≤ 15 (title frame-1210 material
+                     * census: .s emits base+13/+15, NEVER base+16); faces whose
+                     * quantized key lands at/past saturation (straddling faces
+                     * the handoff keeps — only all-corner-beyond faces drop)
+                     * would compute Δ ≥ 16 and sample the NEIGHBOURING tile's
+                     * palette (found in testing round 2: foliage confetti on the
+                     * title mountain — 37 faces at (832,0) row 848,144). */
                     int delta = t0k >> 8;
-                    if (delta > 16) delta = 16;
+                    if (delta > 15) delta = 15;
+                    dbg_delta = delta;
                     if (delta > 0) {
                         matSel = F->mat;
                         uint16_t hw = (uint16_t)((uint32_t)matSel.clut_raw + ((uint32_t)delta << 6));
@@ -1486,8 +1496,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 const int ci[4] = { i0, i1, i2, i3 };
                 const int cc[4] = { c0, c1, c2, c3 };
                 int nc = quad ? 4 : 3;
-                fprintf(stderr, "[fardbg-face] s=%d p=%d f=%d q=%d fb=%d fr=%d fogRef=%d",
-                        (int)i, pass, f, quad, F->fogbias, front, fogRef);
+                fprintf(stderr, "[fardbg-face] s=%d p=%d f=%d q=%d fb=%d fr=%d fogRef=%d "
+                        "abe=%d half=%d dlt=%d cl=%d,%d tp=%d,%d bpp=%d",
+                        (int)i, pass, f, quad, F->fogbias, front, fogRef,
+                        F->abe, dbg_half, dbg_delta, mat->clx, mat->cly,
+                        mat->tpx, mat->tpy, mat->bpp);
                 for (int q2 = 0; q2 < nc; q2++) {
                     const lvert* V = &sv[ci[q2]];
                     uint32_t cn = 0, cf2 = 0, cb2 = 0;

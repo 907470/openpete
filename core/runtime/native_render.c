@@ -1683,6 +1683,27 @@ static void sync_vram_texture(void)
                     v_presents, v_dirty, v_ops, v_match, v_mismatch, v_shadow, v_oponly, v_unverified);
         }
     }
+    /* OPENPETE_VRAM_PEEK="x,y,w,h,frame": one-shot dump of PsyCross VRAM vs
+     * the native mirror for a rect (fog-arc palette forensics). */
+    { static int s_peek = -1; static int px_, py_, pw_, ph_, pf_;
+      if (s_peek < 0) { const char* e = getenv("OPENPETE_VRAM_PEEK");
+          s_peek = 0; pf_ = 0;
+          if (e && sscanf(e, "%d,%d,%d,%d,%d", &px_, &py_, &pw_, &ph_, &pf_) >= 4) s_peek = 1; }
+      if (s_peek == 1 && s_scene_frame != 0xFFFFFFFFu && (int)s_scene_frame >= pf_) {
+          s_peek = 2;
+          static uint16_t vrow[NR_VRAM_W];
+          if (pw_ > 32) pw_ = 32;
+          for (int row = 0; row < ph_; row++) {
+              GR_ReadVRAM(vrow, px_, py_ + row, pw_, 1);
+              fprintf(stderr, "[vram-peek] psx  y=%3d:", py_ + row);
+              for (int i2 = 0; i2 < pw_; i2++) fprintf(stderr, " %04X", vrow[i2]);
+              fprintf(stderr, "\n[vram-peek] mirr y=%3d:", py_ + row);
+              for (int i2 = 0; i2 < pw_; i2++)
+                  fprintf(stderr, " %04X",
+                          s_nr.vram_mirror[(size_t)(py_ + row) * NR_VRAM_W + px_ + i2]);
+              fprintf(stderr, "\n");
+          }
+      } }
     /* Refresh the owned mirror from PsyCross's, dirty regions only, and queue
      * the same regions for in-frame upload (W2.2 staging-ring path). */
     if (s_vram_full) {
