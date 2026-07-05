@@ -471,9 +471,17 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         double vx = A.VX, vy = A.VY, vz = A.VZ;
         if (do_blend) {
             vstream_next(cpu, &B, i == 0);
-            vx += t * (B.VX - A.VX);
-            vy += t * (B.VY - A.VY);
-            vz += t * (B.VZ - A.VZ);
+            /* GTE INTPL mirror: the .s blends keyframes in INTEGER model space
+             * (IR = A + (IR0·(B−A))>>12, truncating). A float lerp here was the
+             * intro-dragon shimmer: the breathing anim's blend ticks every
+             * frame, and sub-unit float pose drift crawled the projection
+             * under nearest sampling, where the .s pose (and so og) is
+             * pixel-static between integer steps. Canonical inputs are all
+             * ints, so this makes the canonical pose .s-exact; the sub-tick
+             * prev→curr pose lerp below stays float (smoothness intact). */
+            vx = A.VX + (double)(((int64_t)blend * (int64_t)((int64_t)B.VX - (int64_t)A.VX)) >> 12);
+            vy = A.VY + (double)(((int64_t)blend * (int64_t)((int64_t)B.VY - (int64_t)A.VY)) >> 12);
+            vz = A.VZ + (double)(((int64_t)blend * (int64_t)((int64_t)B.VZ - (int64_t)A.VZ)) >> 12);
         }
         if (two) {
             /* curr pose is in (vx,vy,vz); reconstruct the prev pose the same way and
@@ -482,9 +490,10 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
             double vxp = Ap.VX, vyp = Ap.VY, vzp = Ap.VZ;
             if (do_blend_p) {
                 vstream_next(cpu, &Bp, i == 0);
-                vxp += tp * (Bp.VX - Ap.VX);
-                vyp += tp * (Bp.VY - Ap.VY);
-                vzp += tp * (Bp.VZ - Ap.VZ);
+                /* same GTE INTPL mirror — the prev pose is one the game drew */
+                vxp = Ap.VX + (double)(((int64_t)blend_p * (int64_t)((int64_t)Bp.VX - (int64_t)Ap.VX)) >> 12);
+                vyp = Ap.VY + (double)(((int64_t)blend_p * (int64_t)((int64_t)Bp.VY - (int64_t)Ap.VY)) >> 12);
+                vzp = Ap.VZ + (double)(((int64_t)blend_p * (int64_t)((int64_t)Bp.VZ - (int64_t)Ap.VZ)) >> 12);
             }
             vx = vxp + (vx - vxp) * blend_alpha;
             vy = vyp + (vy - vyp) * blend_alpha;
@@ -510,6 +519,97 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
 }
 
 /* Thin wrapper: read the six fields from a live .s cull record (+0x1600). */
+/* ---- slow-moby SXY quantization (intro-cutscene dragon shimmer) -----------
+ * The .s GTE truncates SXY to integer pixels, so slow drift (a cutscene dolly
+ * at ~0.3px/tick, or a breathing-anim's sub-pixel pose creep) leaves mobys
+ * pixel-STATIC for several frames between whole-pixel steps. Native float
+ * projection tracks the same drift continuously, and under nearest texture
+ * sampling that reads as whole-body texture shimmer on detailed skins (the
+ * crystal dragons). Freezing the INPUTS can't work — the anim blend ticks
+ * every frame — so mirror the .s at the OUTPUT: per moby, track the ORIGIN
+ * projection's per-call velocity; while it moves slower than
+ * OPENPETE_MOBY_QUANT_PX (default 0.5, 0 = off) per extraction, FLOOR that
+ * moby's walk vertices to the PSX integer grid (exactly the GTE >>16).
+ * Slow content becomes og-crisp and steps in whole pixels like the PSX;
+ * anything faster keeps the pure-float sub-pixel smoothness (the gate opens
+ * well below one quantum per frame, so real motion never quantizes).
+ * Display-only. */
+typedef struct { uint32_t moby; double sx, sy; int has, slow;
+                 int M[3][3]; int m_has;            /* anchored rotation while slow */
+                 int tri[3]; int tri_has;           /* anchored TR (record-int flavour) */
+                 double trf[3]; int trf_has; } mvel_t;  /* anchored TR (fractional flavour) */
+#define MVEL_MAX 256
+static mvel_t  s_mvel[MVEL_MAX]; static int s_mvel_n;
+static uint32_t s_quant_moby[MVEL_MAX]; static int s_quant_n;  /* this pass's quantize set */
+static double quant_px(void) {
+    static double v = -1.0;
+    if (v < 0.0) { const char* e = getenv("OPENPETE_MOBY_QUANT_PX");
+                   v = (e && *e) ? atof(e) : 0.5; if (v < 0.0) v = 0.0; }
+    return v;
+}
+static unsigned s_quant_frame = 0xFFFFFFFFu;   /* set is per canonical tick */
+static int moby_quant_listed(uint32_t moby) {
+    for (int i = 0; i < s_quant_n; i++) if (s_quant_moby[i] == moby) return 1;
+    return 0;
+}
+/* Track the origin projection (x/z ratio — the m_Scale shift cancels) and mark
+ * the moby for output quantization while it creeps below the threshold. */
+/* Track the origin projection (x/z ratio — scale shifts cancel) per tracked
+ * call; while the moby reads SLOW, capture-then-substitute ANCHORED inputs
+ * (rotation M + the given TR flavour) IN PLACE: with the INTPL int mirror,
+ * fully-anchored inputs give a bit-static projection while the moby creeps
+ * sub-quantum (the .s cull rebuilds record M from the creeping camera every
+ * tick — its int elements oscillate ±1 = a ±0.1-0.4px non-monotonic vertex
+ * wobble og's SXY truncation mostly hides). track=0 callers (SPEC dedup
+ * pass, sub-tick re-extract) substitute but never update the velocity —
+ * their deltas are queue- or present-cadence artifacts. */
+static void moby_quant_check(CPUState* cpu, uint32_t moby, int track,
+                             int TRi[3], double TRf[3], int M[3][3]) {
+    double q = quant_px();
+    if (q <= 0.0 || moby < 0x80000000u) return;
+    if (s_quant_frame != openpete_frame) { s_quant_n = 0; s_quant_frame = openpete_frame; }
+    double tx, ty, tz;
+    if (TRf) { tx = TRf[0]; ty = TRf[1]; tz = TRf[2]; }
+    else     { tx = (double)TRi[0]; ty = (double)TRi[1]; tz = (double)TRi[2]; }
+    if (tz < 64.0) return;
+    double H = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    double sx = tx * H / tz, sy = ty * H / tz;
+    mvel_t* e = NULL;
+    for (int i = 0; i < s_mvel_n; i++) if (s_mvel[i].moby == moby) { e = &s_mvel[i]; break; }
+    if (!e) {
+        if (s_mvel_n >= MVEL_MAX) s_mvel_n = 0;           /* rare: reset pool */
+        e = &s_mvel[s_mvel_n++]; memset(e, 0, sizeof(*e)); e->moby = moby;
+    }
+    if (track) {
+        double d = e->has ? fmax(fabs(sx - e->sx), fabs(sy - e->sy)) : 1e9;
+        { static int s_qdbg = -1, s_qn = 0;
+          if (s_qdbg < 0) { const char* e2 = getenv("OPENPETE_MOBY_QUANT_DBG"); s_qdbg = (e2 && *e2 && *e2 != '0'); }
+          if (s_qdbg && s_qn < 300 && d < 1e8 && openpete_frame >= 1195 && openpete_frame <= 1225) {
+              s_qn++;
+              fprintf(stderr, "[quant] f=%u m=%08X d=%.3f slow=%d n=%d\n",
+                      openpete_frame, moby, d, e->has && d < q, s_quant_n);
+          } }
+        int was = e->slow;
+        e->slow = (e->has && d < q); e->sx = sx; e->sy = sy; e->has = 1;
+        if (!e->slow || !was) { e->m_has = e->tri_has = e->trf_has = 0; }  /* (re)anchor on slow entry */
+    }
+    if (!e->slow) return;
+    if (M) {
+        if (!e->m_has) { memcpy(e->M, M, sizeof(e->M)); e->m_has = 1; }
+        else memcpy(M, e->M, sizeof(e->M));
+    }
+    if (TRi) {
+        if (!e->tri_has) { memcpy(e->tri, TRi, sizeof(e->tri)); e->tri_has = 1; }
+        else memcpy(TRi, e->tri, sizeof(e->tri));
+    }
+    if (TRf) {
+        if (!e->trf_has) { memcpy(e->trf, TRf, sizeof(e->trf)); e->trf_has = 1; }
+        else memcpy(TRf, e->trf, sizeof(e->trf));
+    }
+    if (!moby_quant_listed(moby) && s_quant_n < MVEL_MAX)
+        s_quant_moby[s_quant_n++] = moby;
+}
+
 static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
     uint32_t header = cpu->read_word(rec + 0x04);
     uint32_t frameA = cpu->read_word(rec + 0x08);
@@ -520,6 +620,10 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
     apply_dragon_disappear_scale(cpu, cpu->read_word(rec + 0x34), M);  /* --no-lod: re-derive draw.c's cutscene shrink */
+    /* track only on the REG pass -- the SPEC queue re-projects the same mobys
+     * from post-anim-advance records (phantom REG<->SPEC velocity jumps). */
+    moby_quant_check(cpu, cpu->read_word(rec + 0x34),
+                     !(s_cur_mat && s_cur_mat[0] == 'S'), TR_raw, NULL, M);
     return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, TR_raw, NULL, M, out, cap);
 }
 
@@ -1853,6 +1957,7 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
         if (bp < 0 || best > tol_sq) continue;   /* no confident match -> keep native colour */
         const ptri* P = &PT[bp];
         int changed = 0;
+        uint32_t orig0 = w->v[0].rgb, orig2 = w->v[2].rgb;   /* pre-adopt (ADOPT_DBG) */
         for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
             double bd = 1e18; int bj = 0;
             for (int j = 0; j < 3; j++) {
@@ -1867,6 +1972,19 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
         }
         if (changed) {
             recoloured++;
+            /* OPENPETE_MOBY_ADOPT_DBG: who floods the adopt (moby, screen pos,
+             * native vs adopted colour) — capped, ~one burst per run. */
+            static int s_adbg = -1, s_adbg_n = 0;
+            if (s_adbg < 0) { const char* e = getenv("OPENPETE_MOBY_ADOPT_DBG");
+                              s_adbg = (e && *e && *e != '0'); }
+            if (s_adbg && s_adbg_n < 200) {
+                s_adbg_n++;
+                fprintf(stderr, "[adopt] moby=%08X fkey=%08X c=(%.0f,%.0f) "
+                        "nat=%06X..%06X prim=%06X..%06X d=%.1f\n",
+                        s_wtri_moby[wi], s_wtri_fkey[wi], wcx, wcy,
+                        orig0 & 0xFFFFFFu, orig2 & 0xFFFFFFu,
+                        P->rgb[0] & 0xFFFFFFu, P->rgb[2] & 0xFFFFFFu, best);
+            }
             if (s_dyncol_n < MAX_DYNCOL) {     /* cache by face identity for the sub-tick replay */
                 dyncol_t* d = &s_dyncol[s_dyncol_n++];
                 d->moby = s_wtri_moby[wi]; d->fkey = s_wtri_fkey[wi];
@@ -1945,11 +2063,22 @@ static void specular_env_load(CPUState* cpu) {
     int mode = (int)((tp >> 7) & 3u); s_env_bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
     s_env_clx = (int)(cl & 0x3Fu) * 16; s_env_cly = (int)((cl >> 6) & 0x1FFu);
 }
-/* refl = metalMatrix . vec  (vec = the rotated vertex offset ex/ey/ez). */
+/* refl = metalMatrix . vec  (vec = the rotated vertex offset ex/ey/ez).
+ * TRUNCATED to integers like the .s GTE MVMVA output: the env-UV downstream
+ * is lrint(atan2(...)) texels, so a float refl lets sub-unit camera creep
+ * flip UVs +-1 texel per vertex per frame — on the crystal-dragon env
+ * texture that reads as whole-body sparkle FLICKER (intro cutscene,
+ * user-reported; og is rock-static because the .s refl quantizes the creep
+ * away). Functional quantization for temporal stability, NOT an A/B
+ * scaffold — geometry/colours stay float. OPENPETE_ENV_QUANT=0 restores
+ * the float vector (A/B). */
 static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
+    static int s_q = -1;
+    if (s_q < 0) { const char* e = getenv("OPENPETE_ENV_QUANT"); s_q = (e && *e) ? (*e != '0') : 1; }
     r[0] = (s_metalM[0][0]*ex + s_metalM[0][1]*ey + s_metalM[0][2]*ez) / 4096.0f;
     r[1] = (s_metalM[1][0]*ex + s_metalM[1][1]*ey + s_metalM[1][2]*ez) / 4096.0f;
     r[2] = (s_metalM[2][0]*ex + s_metalM[2][1]*ey + s_metalM[2][2]*ez) / 4096.0f;
+    if (s_q) { r[0] = truncf(r[0]); r[1] = truncf(r[1]); r[2] = truncf(r[2]); }
 }
 
 /* CALIBRATION (falsify-before-ship): for the metal/env textured walk faces,
@@ -2098,6 +2227,30 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
+    /* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB": dump every walk tri whose
+     * centroid falls in the PSX-screen box for frames [fA,fB] — offline
+     * identity diff (moby+fkey) across frames names which attribute flaps
+     * (intro-cutscene dragon flicker forensics). */
+    { static int s_td = -1; static int tx0,ty0,tx1,ty1,tfa,tfb;
+      if (s_td < 0) { const char* e = getenv("OPENPETE_MOBY_TRIDBG");
+          s_td = 0;
+          if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &tx0,&ty0,&tx1,&ty1,&tfa,&tfb) == 6) s_td = 1; }
+      if (s_td == 1 && (int)openpete_frame >= tfa && (int)openpete_frame <= tfb) {
+          for (int i = 0; i < s_wtri_n; i++) {
+              const ntri_t* w = &s_wtri[i];
+              float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
+              float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
+              if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
+              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d",
+                      openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
+                      w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend);
+              for (int k = 0; k < 3; k++)
+                  fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%d,%d,%06X", k,
+                          w->v[k].sx, w->v[k].sy, w->v[k].vz,
+                          w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
+              fputc('\n', stderr);
+          }
+      } }
     /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
      * from the walk's UI tag (0=ACTOR, 1=HUD flat overlay, 2=HUD3D depth-sorted
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
@@ -2107,10 +2260,22 @@ static void push_scene_moby(void) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
                                     : OPENPETE_SCENE_ACTOR;
+        /* Slow-moby SXY quantization: floor to the PSX integer grid (the GTE
+         * >>16) while this moby's origin creeps below OPENPETE_MOBY_QUANT_PX
+         * per canonical tick — og-crisp static textures, whole-pixel steps. */
+        int qz = moby_quant_listed(s_wtri_moby[i]);
+        { static int s_qp = -1; static long hits, tot; static unsigned lastf;
+          if (s_qp < 0) { const char* e = getenv("OPENPETE_MOBY_QUANT_DBG"); s_qp = (e && *e && *e != '0'); }
+          if (s_qp) { tot++; if (qz) hits++;
+              if (openpete_frame != lastf && openpete_frame >= 1195 && openpete_frame <= 1225) {
+                  lastf = openpete_frame;
+                  fprintf(stderr, "[quantpush] f=%u qz-tris=%ld/%ld set=%d\n", openpete_frame, hits, tot, s_quant_n);
+                  hits = tot = 0;
+              } } }
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
-            t.v[k].sx   = s_wtri[i].v[k].sx;
-            t.v[k].sy   = s_wtri[i].v[k].sy;
+            t.v[k].sx   = qz ? floorf(s_wtri[i].v[k].sx) : s_wtri[i].v[k].sx;
+            t.v[k].sy   = qz ? floorf(s_wtri[i].v[k].sy) : s_wtri[i].v[k].sy;
             t.v[k].z    = openpete_native_depth_from_viewz(s_wtri[i].v[k].vz);
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
@@ -2307,7 +2472,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
          * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
         if (!is_spec) {
-            int rc = adopt_prim_colors();
+            /* OPENPETE_MOBY_ADOPT=0: A/B kill switch (intro-cutscene dragon
+             * flicker forensics — adopt hit/miss flapping under a creeping
+             * camera reads as texture flicker on any moby whose walk colour
+             * persistently differs from the captured prims). */
+            static int s_adopt_on = -1;
+            if (s_adopt_on < 0) { const char* e = getenv("OPENPETE_MOBY_ADOPT");
+                                  s_adopt_on = (e && *e) ? (*e != '0') : 1; }
+            int rc = s_adopt_on ? adopt_prim_colors() : 0;
             s_tier_adopt += rc;
             if (s_dyncol_n > s_tier_dyncol_hi) s_tier_dyncol_hi = s_dyncol_n;
             if (s_dynmoby_n > s_tier_dynmoby_hi) s_tier_dynmoby_hi = s_dynmoby_n;
@@ -2962,6 +3134,11 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (gems) sort vs terrain/Spyro. p57=0 -> x2 (probe: ratio exactly 2.0);
              * p57!=0 -> x64/p57. Sign-preserving (near cull intact); depth-only. */
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
+            /* Slow-moby anchor, shaded flavour: the fractional TR (interp
+             * camera/moby positions) creeps continuously where the .s int
+             * pipeline is pixel-static -- the big foreground cutscene
+             * dragons' texture shimmer. Same tracker as the REG path. */
+            moby_quant_check(cpu, m, 1, NULL, TR, M);
         }
         int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
         for (int i=0;i<count && n<cap;i++) {
@@ -3671,6 +3848,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         mrot & 0xFFFFFFu);
             }
         }
+        /* (No quant_check here: the re-extract inherits the canonical tick's
+         * quantize verdicts — per-present deltas would misclassify speed.
+         * The anchored rotation DOES apply, so a slow moby's pose doesn't
+         * wobble with the rebuilt-per-present euler·camera matrix.) */
+        moby_quant_check(cpu, mobys[i], 0, NULL, f.TR_frac, f.M);
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
                                       fap, fbp, w0p, hdrp, balpha,
                                       f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
