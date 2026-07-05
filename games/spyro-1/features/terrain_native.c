@@ -264,10 +264,12 @@ typedef struct {
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
+    int16_t sec, face;                             /* source identity (fardbg attribution) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
 static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
+static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -286,6 +288,7 @@ static double s_band_m3lo;
 static int    s_band_seen;
 static int    s_band_slack = -1;   /* OPENPETE_TERRAIN_INPAINT_SLACK (ir0 units) */
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 
 /* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
 typedef struct {
@@ -340,22 +343,24 @@ static void build_captured_colors(void) {
  * The old claim "scale 1 validated, ×4 25-67%" is RETRACTED (it predates the
  * exact decode; the float+0.5 lerp at scale 1 pins f=1 across the fog band).
  *
- * SHIPPED DEFAULT is still the old float+0.5 lerp at fogscale 1
- * (under-fogged): enabling the exact decode WORSENS global fidelity vs
- * PsyCross on the vista (mean 9.15→13.14) because the native tier design
- * draws HP at ALL distances while the .s hands off to LP at the LOD
- * boundary — the beyond-LOD zone then shows fully-fogged HP whose look
- * doesn't match what the .s draws there (tier/fogbias interaction,
- * unresolved; folds into the W2.6(c) LP/HP tier work). Flip on with
- * OPENPETE_TERRAIN_FOGDPCS=1 (implies fogscale 4 unless overridden);
- * OPENPETE_TERRAIN_LOD_HANDOFF=1 is the .s-handoff experiment (sector-level,
- * incomplete — recovered only ~0.9 of the 4.0 mean regression).
+ * SHIPPED DEFAULT since the fog arc (2026-07-05): the EXACT decode. The old
+ * "exact worsens the vista (9.0→13.0)" park was a two-error cancellation:
+ * PSX terrain fog is TWO channels — the DPCS vertex blend here AND a
+ * per-face CLUT-ROW ladder of pre-baked progressively-fogged palettes
+ * (see the .s texture-fog select at the face loop) — and native had
+ * neither; the under-fogged lerp partially compensated for the missing
+ * palette fog. With both channels implemented the exact decode is strictly
+ * closer (identity join: 100% within ±4 at EVERY band; the lerp is Δ67-112
+ * off in deep fog). OPENPETE_TERRAIN_FOGDPCS=0 restores the lerp (A/B);
+ * OPENPETE_TERRAIN_LOD_HANDOFF=1 is the old .s-handoff experiment.
  * Colour words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP
- * (no-HP 0x4000 sectors) is a single 4B colour, no fog. */
+ * faces are NEVER fogged in the .s (raw working palette at all distances —
+ * identity-join-proven); noHP=1 keeps that. */
 static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
 static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF (experiment) */
 static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog (W2.6-c) */
+static int s_clutfog = -1;          /* OPENPETE_TERRAIN_CLUTFOG: .s per-face CLUT-row fog ladder (default ON) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
 extern int s_fogdbg;
 static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int fogRef);
@@ -408,8 +413,10 @@ typedef struct { float sx, sy; double m1, m2, m3, vz; int ok; } lvert;
 
 /* A face corner: native colour + page-relative texel UV. */
 typedef struct { uint32_t rgb; float u, v; } lcorner;
-/* A face's texture material (decoded from the Tiledef; VRAM-pixel units). */
-typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend; } tmat;
+/* A face's texture material (decoded from the Tiledef; VRAM-pixel units).
+ * clut_raw keeps the undecoded CLUT halfword: the .s HP walk ADDS a per-face
+ * fog row offset to it per frame (Δ<<6 → cly += Δ) before decoding. */
+typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw; } tmat;
 
 /* Decode a terrain face's texture material + its 4 corner UVs from the
  * m_LQTexturePointer Tiledef table (§8). texByte (int8 of HP face word2):
@@ -446,6 +453,7 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     m->tpx = (tpage & 0xF) * 64; m->tpy = ((tpage >> 4) & 1) * 256;
     int mode = (tpage >> 7) & 3; m->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
     m->clx = (clut & 0x3F) * 16; m->cly = (clut >> 6) & 0x1FF;
+    m->clut_raw = clut;
     /* blend: opaque unless ABE; then the tpage ABR mode (0..3) → scene blend
      * 1..4 ((B+F)/2, +, −, B+F/4). */
     m->blend = abe ? (((tpage >> 5) & 3) + 1) : 0;
@@ -511,6 +519,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->tier = s_emit_noHP;
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
+    t->sec = (int16_t)s_emit_sec; t->face = (int16_t)s_emit_face;
     if (m->textured) s_tex_tris++;
 }
 
@@ -759,7 +768,8 @@ typedef struct {
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
-    tmat mat; float tu[4], tv[4];                  /* LQ-tier texmat (HP; LP untextured) */
+    tmat mat; float tu[4], tv[4];                  /* tiledef half +0 (far/LQ; LP untextured) */
+    tmat matN; float tuN[4], tvN[4];               /* tiledef half +8 (near tile, .s t0<=0 branch) */
 } tsface_t;
 typedef struct {
     uint32_t s, sig[5];
@@ -811,6 +821,9 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             int tb = (int)(int8_t)(w2 & 0xFF);
             uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
             terrain_texmat(cpu, tbl, tb, hiDetail, &F->mat, F->tu, F->tv);
+            /* Both tiledef halves are cached; the walk picks per FRAME by the
+             * .s distance rule (t0 = key−fogRef+4096; t0<=0 → the +8 half). */
+            terrain_texmat(cpu, tbl, tb, 1, &F->matN, F->tuN, F->tvN);
         } else {                                   /* LP: 6-bit indices; untextured */
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
@@ -1092,25 +1105,58 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
     if (s_fogdpcs < 0) {
+        /* DEFAULT ON since the fog arc (2026-07-05): the exact decode is
+         * proven per-corner at every band, and the old vista regression it
+         * was blamed for was actually the MISSING CLUT-row fog (s_clutfog)
+         * that the under-fogged lerp partially compensated. Ship both.
+         * EXCEPT under --no-lod: the lerp at fogscale 1 stretches fog
+         * saturation 4x farther, which is the far-detail look no-lod users
+         * have; canonical fog would hide exactly the detail no-lod exists
+         * to show. The whole trio (DPCS/ladder/handoff) keeps the old path
+         * there — envs still override for A/B. */
         const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
-        s_fogdpcs = (e && *e) ? (*e != '0') : s_tier_faithful;
+        s_fogdpcs = (e && *e) ? (*e != '0') : !openpete_no_lod;
         /* The exact decode wants the exact scale: default fogscale to 4 when
          * DPCS is enabled and no explicit fogscale override was given. */
         if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE")) s_fogscale = 4.0;
     }
-    /* EXPERIMENT (W2.3 fog A/B): OPENPETE_TERRAIN_LOD_HANDOFF=1 mirrors the .s
-     * LP/HP LOD handoff — HP faces are dropped once fully beyond the fog/LOD
-     * distance (ir0 <= 0 at every corner) and LP substitutes there, instead of
-     * the native default "HP at all distances" (no pop-in). */
+    if (s_clutfog < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_CLUTFOG");
+        s_clutfog = (e && *e) ? (*e != '0') : !openpete_no_lod;
+    }
+    /* .s LP/HP fog-saturation handoff — HP faces are dropped once FULLY beyond
+     * fog saturation (ir0 <= 0 at every corner) and LP substitutes (far-only).
+     * DEFAULT ON since the fog arc (2026-07-05): beyond saturation the .s
+     * picture IS the LP tier (raw palette — identity-join-proven), and any HP
+     * content native paints there is invented (the artisans far-water green
+     * stripe once the CLUT ladder landed). The swap happens strictly inside
+     * fully-fogged pixels, so there is no visible pop-in — which is why this
+     * stays on under --no-lod too (no-lod removes MESH pop-in; fog saturation
+     * is the one place a tier swap is invisible by construction). The W2.3
+     * "recovered only ~0.9/4.0" verdict predates exact verts + the ladder.
+     * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere (A/B). */
     if (s_lod_handoff < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_LOD_HANDOFF");
-        s_lod_handoff = (e && *e && *e != '0');
+        /* Under --no-lod the fog trio keeps the old stretched-fog path (see
+         * s_fogdpcs), so the handoff stays off with it. */
+        s_lod_handoff = (e && *e) ? (*e != '0') : !openpete_no_lod;
     }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
         s_nearz = (e && *e) ? atof(e) : 1.0;
     }
     { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
+    /* Far-band identity instrument (fog decode arc): one-shot full dump of
+     * per-sector binning state + per-face corner records (screen xy, m3, raw
+     * colour words per tier) for the offline identity JOIN against the
+     * captured .s prims (which self-classify LP/HP by prim code 0x30/0x38 vs
+     * 0x34/0x3C). Use with OPENPETE_TERRAIN_VERIFY (no feed) so the single
+     * build is the canonical verify one. */
+    if (s_fardbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_FARDBG"); s_fardbg = (e && *e) ? atoi(e) : 0; }
+    /* value > 1 = fire at that openpete_frame (feed mode, pairs with a
+     * --screenshot-on-frame of the same number); 1 = first build (verify mode) */
+    s_fardbg_active = s_fardbg && !s_fardbg_done
+                      && (s_fardbg == 1 || openpete_frame >= (unsigned)s_fardbg);
     int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
@@ -1211,6 +1257,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             drawLP = !(flags & 0x2000) && nLpF > 0 &&
                      ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
         }
+        if (s_fardbg_active)
+            fprintf(stderr, "[fardbg-sec] s=%d flags=%04X cbin=%.1f rad=%d lodThr=%d fogRefBase=%d "
+                            "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
+                    (int)i, flags, cbin, SC->radius, lodThr, fogRefBase,
+                    drawHP, drawLP, nLpF, nHpF);
+        /* .s HP-list membership (lodThr > cbin − radius): the CLUT-fog ladder
+         * is only ever evaluated by the .s INSIDE this envelope — beyond it
+         * the .s draws LP, so ladder rows past it are unauthored for many
+         * tiles (artisans far water/shore: row+Δ landed on green land
+         * palettes, g1 metric 897→1681). Beyond-envelope HP (native's
+         * no-pop-in extension) keeps the base palette, which og shows is
+         * the closer stand-in for the LP look. */
+        int secInLOD = ((double)lodThr > cbin - SC->radius);
         /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
          * the LOD distance (far-only; gated per face below). */
         int lpFarOnly = 0;
@@ -1328,6 +1387,56 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             if (i0 >= nv || i1 >= nv || i2 >= nv || i3 >= nv) { s_dbg_oob++; continue; }
             int quad = F->quad;
             s_dbg_faces++;
+            s_emit_sec = (int)i; s_emit_face = f;   /* fardbg attribution identity */
+            /* .s HP-walk texture-fog select (generated C block_80027040-809C,
+             * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
+             * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
+             *   t0 > 0 (in/beyond the fog band): tiledef half +0, CLUT halfword
+             *     += (t0>>8)<<6 — cly += Δ, a LADDER of pre-baked progressively
+             *     fogged palette rows. This is the missing half of the PSX fog
+             *     model (the DPCS vertex blend is the other half); without it
+             *     the fog band rendered with the base (unfogged) palette — the
+             *     flat washed-out far mountains and the parked ~4% brightness.
+             *   t0 ≤ 0 (near): the +8 tiledef half (bpp8 near tile), Δ = 0.
+             * Under --no-lod the .s suppresses both (saturated fogRef at the
+             * walk's LOD loads + the no_lod_tier_bump channel) as a side effect
+             * of the shared lodDist reads; natively we keep CANONICAL fog by
+             * true distance — no-lod means mesh detail, not fog removal.
+             * OPENPETE_TERRAIN_CLUTFOG=0 kills (A/B); force-tier debug modes
+             * (OPENPETE_TERRAIN_TEXTBL != 0) keep the old static half.
+             * CARVE-OUT: negative-texByte faces (F->abe — bit7 doubles as the
+             * ABE flag and the ANIMATED-tile marker) go through the .s's
+             * indirect animated-tiledef branch (block_80027080, len-0x3E
+             * packet, CLUT-X anim cycling — artisans far water) which native
+             * has never decoded; applying the ladder to them painted the
+             * water with land palettes (g1 metric 4.9k→14k). They keep the
+             * old static +0 half until that path is decoded. */
+            tmat matSel;
+            if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !F->abe) {
+                int szsum = (int)(sv[i0].m3 * 4.0) + (int)(sv[i1].m3 * 4.0)
+                          + (int)(sv[i2].m3 * 4.0)
+                          + (quad ? (int)(sv[i3].m3 * 4.0) : 0);
+                int key = (szsum >> 7) << 5;
+                int t0k = key - fogRef + 4096;
+                if (t0k <= 0) {
+                    if (F->matN.textured) { matSel = F->matN; mat = &matSel; tu = F->tuN; tv = F->tvN; }
+                } else {
+                    /* Clamp to the full-fog row (t0 = 4096 at ir0 = 0 → Δ = 16).
+                     * The .s never evaluates Δ much past that (beyond-LOD faces
+                     * are handed to LP), but native's HP-at-all-distances design
+                     * does — unclamped, Δ marches off the palette ladder into
+                     * unrelated CLUTs (the dark far-water stripe, artisans g1). */
+                    int delta = t0k >> 8;
+                    if (delta > 16) delta = 16;
+                    if (delta > 0) {
+                        matSel = F->mat;
+                        uint16_t hw = (uint16_t)((uint32_t)matSel.clut_raw + ((uint32_t)delta << 6));
+                        matSel.clx = (int)(hw & 0x3F) * 16;
+                        matSel.cly = (int)(hw >> 6) & 0x1FF;
+                        mat = &matSel;
+                    }
+                }
+            }
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
              * word3 & 0x2). front = nclip > 0. */
             double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
@@ -1360,6 +1469,31 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     if (m3lo < s_band_m3lo) s_band_m3lo = m3lo;
                     s_band_seen = 1;
                 }
+            }
+            /* Far-band identity dump: full per-face record for the offline
+             * whole-face join vs captured prims. Backfaces included (fr=0 —
+             * the .s NCLIP-culls them but native emit-all draws them; the
+             * attribution needs them); fill pass skipped (duplicate of pass 0). */
+            if (s_fardbg_active && !passFill) {
+                const int ci[4] = { i0, i1, i2, i3 };
+                const int cc[4] = { c0, c1, c2, c3 };
+                int nc = quad ? 4 : 3;
+                fprintf(stderr, "[fardbg-face] s=%d p=%d f=%d q=%d fb=%d fr=%d fogRef=%d",
+                        (int)i, pass, f, quad, F->fogbias, front, fogRef);
+                for (int q2 = 0; q2 < nc; q2++) {
+                    const lvert* V = &sv[ci[q2]];
+                    uint32_t cn = 0, cf2 = 0, cb2 = 0;
+                    if (passLP) {
+                        cb2 = rd(cpu, lpColBase + (uint32_t)cc[q2]) & 0xFFFFFFu;
+                    } else {
+                        cn  = rd(cpu, nearBase + (uint32_t)cc[q2]) & 0xFFFFFFu;
+                        cf2 = rd(cpu, farBase  + (uint32_t)cc[q2]) & 0xFFFFFFu;
+                        cb2 = terrain_fog_blend(cn, cf2, V->m3, fogRef);
+                    }
+                    fprintf(stderr, " c%d=%.2f,%.2f,%.1f,%06X,%06X,%06X",
+                            q2, V->sx, V->sy, V->m3, cb2, cn, cf2);
+                }
+                fputc('\n', stderr);
             }
             if (s_lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
@@ -1696,6 +1830,39 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
             }
         }
+    }
+
+    /* Far-band identity dump, captured side: every .s prim (same canonical
+     * frame — capture_prims ran in the same hook invocation) + the prim-code
+     * histogram. Tier attribution is the prim code itself: 0x30/0x38 = LP
+     * (untextured gouraud), 0x34/0x3C = HP (textured gouraud). */
+    if (s_fardbg_active) {
+        fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d\n",
+                openpete_frame, s_prim_total, s_gte_n, fogRefBase);
+        for (int c = 0; c < 256; c++)
+            if (s_code_hist[c])
+                fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
+        for (int p = 0; p < s_gte_n; p++) {
+            prim_t* g = &s_gte[p];
+            fprintf(stderr, "[fardbg-prim] code=%02X n=%d", g->code, g->nv);
+            for (int k = 0; k < g->nv; k++)
+                fprintf(stderr, " c%d=%.0f,%.0f,%06X", k, g->x[k], g->y[k], g->rgb[k]);
+            fputc('\n', stderr);
+        }
+        /* The post-clip triangle list = exactly what native rasterizes (the
+         * offline face-cover replica got the quad ring order wrong; this is
+         * ground truth for native-winner attribution). */
+        for (int t2 = 0; t2 < s_tri_n; t2++) {
+            ttri* T = &s_tri[t2];
+            fprintf(stderr, "[fardbg-tri] s=%d f=%d tier=%d fill=%d tex=%d "
+                    "v0=%.2f,%.2f,%.1f,%06X v1=%.2f,%.2f,%.1f,%06X v2=%.2f,%.2f,%.1f,%06X\n",
+                    T->sec, T->face, T->tier, T->fill, T->textured,
+                    T->sx[0], T->sy[0], T->vz[0], T->rgb[0],
+                    T->sx[1], T->sy[1], T->vz[1], T->rgb[1],
+                    T->sx[2], T->sy[2], T->vz[2], T->rgb[2]);
+        }
+        s_fardbg_done = 1;
+        s_fardbg_active = 0;
     }
 }
 
