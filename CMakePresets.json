@@ -14,7 +14,7 @@
       "displayName": "Linux native (RelWithDebInfo)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "OPENPETE_SKIP_DECOMP": "ON" }
     },
     {
       "name": "windows-mingw",
