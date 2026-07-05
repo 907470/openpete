@@ -912,6 +912,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     s_nr.headless = headless;
 
+    /* --texpack-dir: point the HD texture-replacement scan at a chosen dir. Set
+     * before openpete_vram_install_ops() below runs texture_pack_init(). NULL is
+     * a no-op (falls back to OPENPETE_TEXPACK_DIR env, then the built-in dir). */
+    texture_pack_set_dir_override(opts->texpack_dir);
+
     /* A/B compare mode shows the PsyCross reference in a second panel and delays
      * the native scene by one frame to align with that lagged reference. vk and
      * diff are single full-window panels with no reference panel and no scene
@@ -974,7 +979,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             return 1;
         }
 
-        dev = rhi_create(win, "openpete-native");
+        dev = rhi_create(win, "openpete-native", opts->vsync);
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
             SDL_DestroyWindow(win);
@@ -3670,6 +3675,9 @@ static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
 static int      s_fps_frames    = 0;
 static int      s_fps_value     = 0;
 
+static int s_fps_in_record_pref = -1;  /* --record-fps-overlay: -1 unset, 0/1 explicit */
+void openpete_native_set_fps_in_record(int pref) { s_fps_in_record_pref = pref; }
+
 void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
 int  openpete_native_toggle_fps_overlay(void) { s_fps_overlay = !s_fps_overlay; return s_fps_overlay; }
 int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
@@ -3731,8 +3739,14 @@ static bool fps_overlay_should_draw(void) {
     if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
     if (openpete_record_active()) {
         static int s_in_rec = -1;
-        if (s_in_rec < 0) { const char *e = getenv("OPENPETE_FPS_IN_RECORD");
-                            s_in_rec = (e && *e && *e != '0') ? 1 : 0; }
+        if (s_in_rec < 0) {
+            if (s_fps_in_record_pref >= 0) {
+                s_in_rec = s_fps_in_record_pref;             /* --record-fps-overlay wins */
+            } else {
+                const char *e = getenv("OPENPETE_FPS_IN_RECORD");  /* env fallback */
+                s_in_rec = (e && *e && *e != '0') ? 1 : 0;
+            }
+        }
         if (!s_in_rec) return false;
     }
     return true;

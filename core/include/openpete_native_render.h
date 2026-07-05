@@ -53,6 +53,12 @@ void openpete_native_toggle_fullscreen(void);
 void openpete_native_set_fps_overlay(int on);
 int  openpete_native_toggle_fps_overlay(void);
 
+/* --record-fps-overlay: whether the FPS overlay is drawn INTO --record video.
+ * -1 = unset (defer to the OPENPETE_FPS_IN_RECORD env, else off), 0/1 explicit.
+ * Set once at init from opts. Only affects presents while a recording is active;
+ * the live window always follows set_fps_overlay above. */
+void openpete_native_set_fps_in_record(int pref);
+
 /* Is the FPS overlay currently on? The game-side digit-model emitter reads this
  * to skip building geometry when the overlay is off. */
 int  openpete_native_fps_overlay_enabled(void);

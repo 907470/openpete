@@ -270,6 +270,13 @@ typedef struct {
      * off, F11 to toggle live). Display-only; ignored under --headless / psycross. */
     bool fps_overlay;
 
+    /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
+     * locked to the monitor refresh — the default); 0 = a vsync-OFF mode
+     * (immediate/mailbox) for low latency / uncapped-throughput benchmarking;
+     * -1 = unset (defer to the OPENPETE_PRESENT_MODE env, else FIFO). Display-only;
+     * ignored under --headless / psycross. */
+    int vsync;
+
     /* --render-stats (debug): in --renderer diff, read the per-pixel diff back
      * each frame and log colour-closeness statistics (per-channel mean/max abs
      * diff, % within tolerance, differing-pixel count) over the panel, plus an
@@ -417,6 +424,18 @@ typedef struct {
      * notes/plans/openpete-record-audio.md. */
     bool        record_no_audio;     /* --no-record-audio: video-only */
     const char* record_audio_encoder; /* libavcodec audio encoder. Default aac. */
+
+    /* --record-fps-overlay 0|1: draw the native vk FPS counter INTO captured
+     * video (--record). Off by default so recordings show the clean game image;
+     * 1 burns the overlay in (verification captures). -1 = unset (defer to the
+     * OPENPETE_FPS_IN_RECORD env, else off). Display-only. */
+    int         record_fps_overlay;
+
+    /* --texpack-dir PATH: directory of HD texture-replacement PNGs (the texture
+     * pack). NULL = unset (defer to the OPENPETE_TEXPACK_DIR env, else the
+     * built-in <exe>/assets/textures/replacements/). Native renderer only;
+     * display-only, never perturbs gameplay state. */
+    const char* texpack_dir;
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title

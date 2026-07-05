@@ -170,6 +170,15 @@ target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
 # reach any downstream renderer TUs. See openpete-native-renderer.md.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 
+# Hide the debug/diagnostic CLI flags from `--help` (options.c only splits the
+# text; every flag still PARSES and works — this is display-only). Enabled by
+# the windows-mingw-opt preset so the distributed build shows a clean,
+# user-facing flag list; OFF everywhere else (dev builds list everything).
+option(OPENPETE_HIDE_DEBUG_FLAGS "Hide debug/diagnostic flags from --help output" OFF)
+if(OPENPETE_HIDE_DEBUG_FLAGS)
+    target_compile_definitions(openpete_core PUBLIC OPENPETE_HIDE_DEBUG_FLAGS=1)
+endif()
+
 # libav* for --record gameplay video capture (runtime/record.c). On a native
 # build this is a hard dependency — see notes/plans/openpete-record-video.md
 # ("hard-require" decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev

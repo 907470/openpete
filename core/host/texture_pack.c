@@ -83,6 +83,13 @@ static tp_pack_entry s_pack[TP_PACK_MAX];
 static int  s_pack_n = 0;
 static char s_repl_dir[512];
 static int  s_repl_active = 0;
+static char s_dir_override[512];   /* --texpack-dir; empty = unset (see set_dir_override) */
+
+void texture_pack_set_dir_override(const char *dir)
+{
+    if (dir && *dir) snprintf(s_dir_override, sizeof s_dir_override, "%s", dir);
+    else             s_dir_override[0] = '\0';
+}
 
 /* memo: identity key -> pack entry index (or -1 = no match) */
 #define TP_MATCH_SLOTS 8192
@@ -93,8 +100,11 @@ static void tp_repl_scan(void)
 {
     s_repl_active = 0; s_pack_n = 0;
     memset(s_match, 0, sizeof s_match);
+    /* Precedence: --texpack-dir override > OPENPETE_TEXPACK_DIR env > built-in dir. */
     const char *env = getenv("OPENPETE_TEXPACK_DIR");
-    if (env && *env) {
+    if (s_dir_override[0]) {
+        snprintf(s_repl_dir, sizeof s_repl_dir, "%s", s_dir_override);
+    } else if (env && *env) {
         snprintf(s_repl_dir, sizeof s_repl_dir, "%s", env);
     } else {
         const char *base = SDL_GetBasePath();

@@ -35,8 +35,13 @@ struct SDL_Window;
 typedef struct rhi_device rhi_device;
 
 /* Create the device against an SDL window created with SDL_WINDOW_VULKAN.
+ * `vsync` selects the swapchain present mode: 1 = force FIFO (vsync ON, present
+ * locked to the monitor refresh), 0 = force a vsync-OFF mode (immediate, else
+ * mailbox — uncapped throughput / low latency), -1 = unset (defer to the
+ * OPENPETE_PRESENT_MODE env var, else default FIFO). Falls back to FIFO with a
+ * log if a requested vsync-OFF mode isn't supported by the surface.
  * Returns NULL on failure (a diagnostic is logged to stderr). */
-rhi_device *rhi_create(struct SDL_Window *window, const char *app_name);
+rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync);
 
 /* Create a SURFACELESS device: no window, no swapchain, no present. Renders into
  * the offscreen + render-target images only; retrieve pixels with

@@ -904,6 +904,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * the oracle gate / determinism are unaffected. */
     (void)openpete_native_render_init(opts, win_w, win_h);
     openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (F11 toggles live) */
+    openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
      * Only a pure, successfully-brought-up native vk display with no comparison/

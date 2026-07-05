@@ -48,8 +48,10 @@ else
 fi
 
 echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
+# --vsync 0: present mode immediate so the true achieved rate shows (FIFO would
+# pin the average to the monitor refresh). Pass --vsync 1 after -- to override.
 "$EXE" --disc "$DISC_ARG" --run-recomp 0x80012204 --renderer vk \
-       --render-fps "$FPS" --frame-limit "$FRAMES" \
+       --render-fps "$FPS" --frame-limit "$FRAMES" --vsync 0 \
        --max-runtime-seconds 1200 \
        --frame-time-log "$LOG_ARG" "${EXTRA[@]}"
 

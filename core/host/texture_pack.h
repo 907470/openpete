@@ -74,9 +74,15 @@ void texture_pack_annotate(int x, int y, int w, int h, const char *name);
 
 /* ---- replacement packs (Phase 3) ----------------------------------------- */
 
+/* Override the replacement-pack directory (from the --texpack-dir CLI flag).
+ * Takes precedence over $OPENPETE_TEXPACK_DIR and the built-in default. Call
+ * BEFORE texture_pack_init() (the scan reads it). NULL / "" clears the
+ * override (fall back to env, then default). */
+void texture_pack_set_dir_override(const char *dir);
+
 /* True if a replacement directory exists and holds at least one PNG.
- * Dir: $OPENPETE_TEXPACK_DIR, else <exe>/assets/textures/replacements/.
- * Cheap flag read — callable per drawn run. */
+ * Dir: --texpack-dir, else $OPENPETE_TEXPACK_DIR, else
+ * <exe>/assets/textures/replacements/. Cheap flag read — callable per drawn run. */
 int texture_pack_replacements_active(void);
 
 /* A matched replacement: the image plus the FILE's texel box (upload-

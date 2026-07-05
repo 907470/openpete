@@ -153,6 +153,114 @@ static int expand_options_file(int argc, char** argv, int* out_argc, char*** out
     return rc;
 }
 
+/* Print --help. The RELEASE block (user-facing flags) always prints. The DEBUG
+ * block (dev/diagnostic flags) is compiled OUT of --help under
+ * OPENPETE_HIDE_DEBUG_FLAGS — set by the windows-mingw-opt preset so the
+ * distributed build shows a clean, user-facing flag list; a one-line note
+ * replaces it. This is display-only: every flag still PARSES and works in every
+ * build regardless of whether it appears here. */
+static void print_help(const char* display_name, const char* argv0) {
+    fprintf(stderr,
+        "OpenPete %s\n"
+        "Usage: %s [options]\n"
+        "  An 'openpete.opts' file next to the executable supplies default flags\n"
+        "  (whitespace/newline-separated, '#' comments). Explicit CLI flags override it.\n"
+        "  --disc PATH                disc image (BIN/CUE)\n"
+        "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
+        "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
+        "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff)\n"
+        "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
+        "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
+        "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
+        "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
+        "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
+        "                             max image size / VRAM. Display-only.\n"
+        "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
+        "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
+        "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted; F11 toggles live)\n"
+        "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
+        "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
+        "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
+        "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
+        "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
+        "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 0; --pgxp 1 enables perspective UV)\n"
+        "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
+        "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
+        "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
+        "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
+        "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
+        "                             an unknown name prints the full list\n"
+        "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
+        "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
+        "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
+        "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
+        "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
+        "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
+        "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
+        "  --record-gop N             keyframe interval in frames (default 120)\n"
+        "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
+        "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
+        "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
+        "  --record-fps-overlay 0|1   burn the native FPS overlay into --record video (default 0 = clean\n"
+        "                             capture; on|off also accepted). Display-only.\n",
+        display_name, argv0);
+
+#ifdef OPENPETE_HIDE_DEBUG_FLAGS
+    fputs("  (plus dev/diagnostic flags, hidden in this build)\n", stderr);
+#else
+    fputs(
+        "\nDebug / diagnostic flags:\n"
+        "  --headless                 no on-screen window (offscreen video driver)\n"
+        "  --frame-limit N            exit after N rendered frames\n"
+        "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
+        "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
+        "  --render-paths LIST        render ONLY these paths in both renderers, e.g.\n"
+        "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"
+        "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
+        "  --render-stats             with --renderer diff, log per-frame + aggregate colour-diff\n"
+        "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
+        "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
+        "  --log-format json|plain    structured stderr (default plain)\n"
+        "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
+        "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
+        "  --screenshot-on-tick N[,N2,...]   same, keyed on canonical draw-ticks instead of VBL frames.\n"
+        "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
+        "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
+        "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
+        "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
+        "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
+        "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
+        "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
+        "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
+        "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
+        "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
+        "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
+        "  --halt-cpu-dump-output PATH also write 528B 'CSv1' CPU dump alongside RAM at halt\n"
+        "  --halt-hit N               dump on Nth (1-indexed) call to --halt-at-pc (default 1)\n"
+        "  --psxtrace-verify PATH     consume per-frame .psxtrace + diff against PSX oracle\n"
+        "  --psxtrace-keep-going      don't exit on first divergence (collect all)\n"
+        "  --psxtrace-anchor-pc HEX   PC where advance() fires (default: trace's first-record pc)\n"
+        "  --psxtrace-anchor-hit N    skip first N-1 hits before starting (default 1 = first)\n"
+        "  --test-recomp-call HEX     boot, dispatch one fn at HEX, exit\n"
+        "  --test-recomp-expect-v0 N  verify cpu->v0 after --test-recomp-call\n"
+        "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
+        "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
+        "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
+        "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
+        "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
+        "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
+        "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
+        "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
+        "                             Primary determinism gate — see check_aspect_determinism.sh\n"
+        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
+        "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
+        "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 0 = substitute off); >0 enables clamped extrapolation\n"
+        "  --debug-highlight-smoothed paint actively-smoothed batches solid red (diagnostic); live-toggle F9\n"
+        "  --debug-black-intermediates present a black prim instead of the interp OT on intermediate frames (presentation test); live-toggle F10\n",
+        stderr);
+#endif
+}
+
 void openpete_options_init(openpete_options_t* opts) {
     memset(opts, 0, sizeof(*opts));
     opts->display_name        = "OpenPete";
@@ -172,12 +280,15 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / F11 */
+    opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
     opts->record_gop          = 120;
     opts->record_pixfmt       = "yuv420p";
     opts->record_audio_encoder = "aac";
+    opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
+    opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -243,6 +354,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->fps_overlay = false;
             else {
                 fprintf(stderr, "openpete: --show-fps expects 0|1 (on|off also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--vsync") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            /* Accept 0|1 (preferred) plus on|off, matching --show-fps / --mute. */
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->vsync = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->vsync = 0;
+            else {
+                fprintf(stderr, "openpete: --vsync expects 0|1 (on|off also accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
@@ -441,6 +562,19 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--record-audio-encoder") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->record_audio_encoder = v; i++;
+        } else if (strcmp(a, "--record-fps-overlay") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            /* Accept 0|1 (preferred) plus on|off, matching --show-fps / --vsync. */
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->record_fps_overlay = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->record_fps_overlay = 0;
+            else {
+                fprintf(stderr, "openpete: --record-fps-overlay expects 0|1 (on|off also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--texpack-dir") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->texpack_dir = v; i++;
         } else if (strcmp(a, "--unlock-frames") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->unlock_frames_spec = v;
@@ -510,94 +644,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr,
-                "OpenPete %s\n"
-                "Usage: %s [options]\n"
-                "  An 'openpete.opts' file next to the executable supplies default flags\n"
-                "  (whitespace/newline-separated, '#' comments). Explicit CLI flags override it.\n"
-                "  --frame-limit N            exit after N rendered frames\n"
-                "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
-                "  --headless                 no on-screen window (offscreen video driver)\n"
-                "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
-                "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff).\n"
-                "                             Native modes ignored with --headless (falls back to psycross). In any native mode,\n"
-                "                             --screenshot-on-frame dumps every variant: <out>-og/-vk/-ab/-diff.png.\n"
-                "  --render-paths LIST        debug: render ONLY these paths in both renderers, e.g.\n"
-                "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"
-                "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
-                "  --render-stats             debug: with --renderer diff, log per-frame + aggregate colour-diff\n"
-                "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
-                "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
-                "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
-                "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
-                "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
-                "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
-                "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
-                "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
-                "                             max image size / VRAM. Display-only.\n"
-                "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted; F11 toggles live)\n"
-                "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
-                "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; widens DISPENV/DRAWENV + GTE offset)\n"
-                "  --fov DEG                  horizontal FOV override; intercepts SetGeomScreen (default ~50°, range 30-140)\n"
-                "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
-                "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 0; --pgxp 1 enables perspective UV)\n"
-                "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
-                "  --screenshot-on-tick N[,N2,...]   same, keyed on canonical draw-ticks instead of VBL frames.\n"
-                "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
-                "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
-                "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
-                "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
-                "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
-                "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
-                "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
-                "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
-                "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
-                "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
-                "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
-                "  --halt-cpu-dump-output PATH also write 528B 'CSv1' CPU dump alongside RAM at halt\n"
-                "  --halt-hit N               dump on Nth (1-indexed) call to --halt-at-pc (default 1)\n"
-                "  --psxtrace-verify PATH     consume per-frame .psxtrace + diff against PSX oracle\n"
-                "  --psxtrace-keep-going      don't exit on first divergence (collect all)\n"
-                "  --psxtrace-anchor-pc HEX   PC where advance() fires (default: trace's first-record pc)\n"
-                "  --psxtrace-anchor-hit N    skip first N-1 hits before starting (default 1 = first)\n"
-                "  --log-format json|plain    structured stderr (default plain)\n"
-                "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
-                "  --disc PATH                disc image (BIN/CUE)\n"
-                "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
-                "  --test-recomp-call HEX     boot, dispatch one fn at HEX, exit\n"
-                "  --test-recomp-expect-v0 N  verify cpu->v0 after --test-recomp-call\n"
-                "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
-                "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
-                "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
-                "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
-                "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
-                "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
-                "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
-                "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
-                "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
-                "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
-                "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
-                "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
-                "  --record-gop N             keyframe interval in frames (default 120)\n"
-                "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
-                "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
-                "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
-                "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
-                "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
-                "                             an unknown name prints the full list\n"
-                "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
-                "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
-                "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
-                "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
-                "                             Primary determinism gate — see check_aspect_determinism.sh\n"
-                "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record)\n"
-                "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
-                "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 0 = substitute off); >0 enables clamped extrapolation\n"
-                "  --debug-highlight-smoothed paint actively-smoothed batches solid red (diagnostic); live-toggle F9\n"
-                "  --debug-black-intermediates present a black prim instead of the interp OT on intermediate frames (presentation test); live-toggle F10\n"
-                "                             for scripts/measure-pacing.py. Off by default.\n"
-                "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n",
-                opts->display_name, argv[0]);
+            print_help(opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {
             fprintf(stderr, "openpete: unknown arg: %s\n", a);

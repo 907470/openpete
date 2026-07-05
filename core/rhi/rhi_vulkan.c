@@ -64,6 +64,9 @@ struct rhi_device {
     VkQueue                  gfx_queue;
     char                     device_name[256];
     bool                     headless;   /* surfaceless: no swapchain / present */
+    int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
+                                          * OFF, -1 = unset (env / default). Read by
+                                          * choose_present_mode on (re)create. */
 
     /* Swapchain */
     VkSwapchainKHR swapchain;
@@ -451,19 +454,10 @@ static VkExtent2D choose_extent(rhi_device *dev, const VkSurfaceCapabilitiesKHR 
     return e;
 }
 
-/* Swapchain present mode. Default FIFO (vsync — always supported, locks present
- * to the monitor refresh). OPENPETE_PRESENT_MODE=immediate|mailbox selects a
- * vsync-OFF mode for low latency or uncapped-throughput benchmarking (FIFO
- * otherwise hides the real frame rate behind the refresh ceiling). Falls back to
- * FIFO with a log if the requested mode isn't supported by the surface. */
-static VkPresentModeKHR choose_present_mode(rhi_device *dev)
+/* True if the surface advertises `want`. FIFO is always supported (spec) so
+ * callers only need to query the vsync-OFF modes. */
+static bool surface_has_present_mode(rhi_device *dev, VkPresentModeKHR want)
 {
-    const char *env = getenv("OPENPETE_PRESENT_MODE");
-    VkPresentModeKHR want = VK_PRESENT_MODE_FIFO_KHR;
-    if (env && !strcmp(env, "immediate")) want = VK_PRESENT_MODE_IMMEDIATE_KHR;
-    else if (env && !strcmp(env, "mailbox")) want = VK_PRESENT_MODE_MAILBOX_KHR;
-    if (want == VK_PRESENT_MODE_FIFO_KHR) return want;  /* always supported */
-
     uint32_t n = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, dev->surface, &n, NULL);
     VkPresentModeKHR *modes = calloc(n ? n : 1, sizeof(*modes));
@@ -471,7 +465,43 @@ static VkPresentModeKHR choose_present_mode(rhi_device *dev)
     bool ok = false;
     for (uint32_t i = 0; i < n; i++) if (modes[i] == want) { ok = true; break; }
     free(modes);
-    if (!ok) {
+    return ok;
+}
+
+/* Swapchain present mode. Precedence: the explicit --vsync flag (dev->vsync_pref
+ * 0|1) beats the OPENPETE_PRESENT_MODE env, which beats the default FIFO (vsync
+ * ON — always supported, locks present to the monitor refresh).
+ *   --vsync 1        -> FIFO (vsync ON).
+ *   --vsync 0        -> a vsync-OFF mode (immediate, else mailbox) for low latency
+ *                       or uncapped-throughput benchmarking (FIFO otherwise hides
+ *                       the real frame rate behind the refresh ceiling).
+ *   --vsync unset    -> OPENPETE_PRESENT_MODE=immediate|mailbox if set, else FIFO.
+ * A vsync-OFF request the surface lacks falls back to FIFO (with a log). */
+static VkPresentModeKHR choose_present_mode(rhi_device *dev)
+{
+    if (dev->vsync_pref == 1)
+        return VK_PRESENT_MODE_FIFO_KHR;               /* explicit vsync ON */
+
+    if (dev->vsync_pref == 0) {                         /* explicit vsync OFF */
+        if (surface_has_present_mode(dev, VK_PRESENT_MODE_IMMEDIATE_KHR)) {
+            RHI_LOG("present mode: immediate (--vsync 0)\n");
+            return VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+        if (surface_has_present_mode(dev, VK_PRESENT_MODE_MAILBOX_KHR)) {
+            RHI_LOG("present mode: mailbox (--vsync 0; immediate unsupported)\n");
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+        RHI_LOG("--vsync 0 but no vsync-OFF present mode supported; using FIFO (vsync)\n");
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    /* unset (-1): defer to the env override, else default FIFO (vsync ON). */
+    const char *env = getenv("OPENPETE_PRESENT_MODE");
+    VkPresentModeKHR want = VK_PRESENT_MODE_FIFO_KHR;
+    if (env && !strcmp(env, "immediate")) want = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    else if (env && !strcmp(env, "mailbox")) want = VK_PRESENT_MODE_MAILBOX_KHR;
+    if (want == VK_PRESENT_MODE_FIFO_KHR) return want; /* always supported */
+    if (!surface_has_present_mode(dev, want)) {
         RHI_LOG("present mode '%s' unsupported by surface; using FIFO (vsync)\n", env);
         return VK_PRESENT_MODE_FIFO_KHR;
     }
@@ -522,7 +552,7 @@ static bool create_swapchain(rhi_device *dev)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = choose_present_mode(dev), /* FIFO (vsync) unless OPENPETE_PRESENT_MODE */
+        .presentMode = choose_present_mode(dev), /* FIFO (vsync) unless --vsync 0 / OPENPETE_PRESENT_MODE */
         .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE,
     };
@@ -1029,12 +1059,14 @@ static bool recreate(rhi_device *dev)
 /* ------------------------------------------------------------------ */
 
 static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
-                                   bool headless, uint32_t hl_w, uint32_t hl_h)
+                                   bool headless, uint32_t hl_w, uint32_t hl_h,
+                                   int vsync)
 {
     rhi_device *dev = calloc(1, sizeof(*dev));
     if (!dev) return NULL;
-    dev->window   = window;
-    dev->headless = headless;
+    dev->window     = window;
+    dev->headless   = headless;
+    dev->vsync_pref = vsync;   /* consulted by choose_present_mode (windowed only) */
 
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
@@ -1085,14 +1117,15 @@ fail:
     return NULL;
 }
 
-rhi_device *rhi_create(struct SDL_Window *window, const char *app_name)
+rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync)
 {
-    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0);
+    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync);
 }
 
 rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height)
 {
-    return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height);
+    /* Surfaceless: no swapchain, so present mode / vsync is irrelevant (-1). */
+    return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height, -1);
 }
 
 bool rhi_is_headless(const rhi_device *dev)

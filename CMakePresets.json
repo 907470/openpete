@@ -31,14 +31,12 @@
     },
     {
       "name": "windows-mingw-opt",
-      "displayName": "Windows x64 MinGW + LTO + -march=native (this machine; max perf, slow link)",
+      "displayName": "Windows x64 MinGW + LTO, portable -march=x86-64-v3 (distributable release build; slow link)",
       "inherits": "windows-mingw",
       "binaryDir": "${sourceDir}/build/windows-mingw-opt",
       "cacheVariables": {
-        "OPENPETE_SKIP_DECOMP": "ON",
         "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "CMAKE_C_FLAGS": "-march=native -mtune=native",
-        "CMAKE_CXX_FLAGS": "-march=native -mtune=native"
+        "OPENPETE_HIDE_DEBUG_FLAGS": "ON"
       }
     },
     {
