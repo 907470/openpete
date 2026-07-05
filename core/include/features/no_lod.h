@@ -37,6 +37,14 @@ extern "C" {
  * See notes/plans/openpete-disable-lods.md. */
 extern int openpete_no_lod;
 
+/* --fog-scale: terrain fog-distance multiplier, resolved at boot in
+ * no_lod_apply_options (explicit --fog-scale wins; else 4.0 under
+ * --no-lod, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
+ * every channel of the fog model together (DPCS vertex curve, CLUT-row
+ * palette ladder, near-tile select, fog-saturation LP handoff — see
+ * games/spyro-1/features/terrain_native.c). Always > 0 after boot. */
+extern float openpete_fog_scale;
+
 /* Boot-time entry. If opts->no_lod is set, allocate + register the
  * relocated env-renderer scratch pool (via the per-game module's
  * setup hook), swing the recompiler's value-keyed

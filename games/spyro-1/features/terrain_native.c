@@ -32,6 +32,7 @@
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 
 extern int openpete_portal_sky_recent(void);   /* portal_native.c (portal-guard gate) */
 
@@ -1108,21 +1109,24 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* DEFAULT ON since the fog arc (2026-07-05): the exact decode is
          * proven per-corner at every band, and the old vista regression it
          * was blamed for was actually the MISSING CLUT-row fog (s_clutfog)
-         * that the under-fogged lerp partially compensated. Ship both.
-         * EXCEPT under --no-lod: the lerp at fogscale 1 stretches fog
-         * saturation 4x farther, which is the far-detail look no-lod users
-         * have; canonical fog would hide exactly the detail no-lod exists
-         * to show. The whole trio (DPCS/ladder/handoff) keeps the old path
-         * there — envs still override for A/B. */
+         * that the under-fogged lerp partially compensated. Ship both. */
         const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
-        s_fogdpcs = (e && *e) ? (*e != '0') : !openpete_no_lod;
-        /* The exact decode wants the exact scale: default fogscale to 4 when
-         * DPCS is enabled and no explicit fogscale override was given. */
-        if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE")) s_fogscale = 4.0;
+        s_fogdpcs = (e && *e) ? (*e != '0') : 1;
+        /* The whole fog model rides ONE user knob, --fog-scale (fog-distance
+         * multiplier k; openpete_fog_scale, resolved at boot: explicit wins,
+         * else 4 under --no-lod / 1 stock). Internally SZ = s_fogscale·m3
+         * with s_fogscale = 4/k: k=1 → the exact PSX curve (SZ = 4·m3);
+         * k=4 → saturation 4x farther — the classic no-lod far-detail look,
+         * which is also numerically the old lerp curve (fogscale 1), so
+         * no-lod keeps its appearance while gaining the exact math, the
+         * palette ladder and the saturation handoff along the stretched
+         * curve. OPENPETE_TERRAIN_FOGSCALE still force-overrides (debug). */
+        if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE"))
+            s_fogscale = 4.0 / (double)openpete_fog_scale;
     }
     if (s_clutfog < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_CLUTFOG");
-        s_clutfog = (e && *e) ? (*e != '0') : !openpete_no_lod;
+        s_clutfog = (e && *e) ? (*e != '0') : 1;
     }
     /* .s LP/HP fog-saturation handoff — HP faces are dropped once FULLY beyond
      * fog saturation (ir0 <= 0 at every corner) and LP substitutes (far-only).
@@ -1137,9 +1141,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere (A/B). */
     if (s_lod_handoff < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_LOD_HANDOFF");
-        /* Under --no-lod the fog trio keeps the old stretched-fog path (see
-         * s_fogdpcs), so the handoff stays off with it. */
-        s_lod_handoff = (e && *e) ? (*e != '0') : !openpete_no_lod;
+        /* Rides the --fog-scale curve via s_fogscale (the per-face beyond
+         * test below uses it), so under a stretched curve the handoff fires
+         * only at the stretched saturation distance. */
+        s_lod_handoff = (e && *e) ? (*e != '0') : 1;
     }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
@@ -1268,8 +1273,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * tiles (artisans far water/shore: row+Δ landed on green land
          * palettes, g1 metric 897→1681). Beyond-envelope HP (native's
          * no-pop-in extension) keeps the base palette, which og shows is
-         * the closer stand-in for the LP look. */
-        int secInLOD = ((double)lodThr > cbin - SC->radius);
+         * the closer stand-in for the LP look. The envelope stretches with
+         * --fog-scale (k = 4/s_fogscale; ×1 at stock, bit-identical). */
+        int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
         /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
          * the LOD distance (far-only; gated per face below). */
         int lpFarOnly = 0;
@@ -1413,9 +1419,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * old static +0 half until that path is decoded. */
             tmat matSel;
             if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !F->abe) {
-                int szsum = (int)(sv[i0].m3 * 4.0) + (int)(sv[i1].m3 * 4.0)
-                          + (int)(sv[i2].m3 * 4.0)
-                          + (quad ? (int)(sv[i3].m3 * 4.0) : 0);
+                /* SZ = s_fogscale·m3 — the whole ladder ramp rides the
+                 * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1). */
+                int szsum = (int)(sv[i0].m3 * s_fogscale) + (int)(sv[i1].m3 * s_fogscale)
+                          + (int)(sv[i2].m3 * s_fogscale)
+                          + (quad ? (int)(sv[i3].m3 * s_fogscale) : 0);
                 int key = (szsum >> 7) << 5;
                 int t0k = key - fogRef + 4096;
                 if (t0k <= 0) {

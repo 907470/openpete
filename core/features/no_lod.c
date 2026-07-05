@@ -18,6 +18,7 @@
  * third_party/psxrecomp/runner/include/psx_runtime.h declaration still
  * resolves to this symbol. */
 int openpete_no_lod = 0;
+float openpete_fog_scale = 1.0f;
 
 static no_lod_setup_fn s_setup_hook = NULL;
 
@@ -27,6 +28,13 @@ void no_lod_set_setup_hook(no_lod_setup_fn fn) {
 
 int no_lod_apply_options(const openpete_options_t* opts) {
     openpete_no_lod = 0;
+    /* Resolve the fog-distance multiplier before the no-lod early-out:
+     * explicit --fog-scale wins; otherwise --no-lod defaults to the
+     * classic stretched curve (4x) and stock to the authentic PSX one. */
+    if (opts) {
+        openpete_fog_scale = (opts->fog_scale > 0.0f) ? opts->fog_scale
+                             : (opts->no_lod ? 4.0f : 1.0f);
+    }
     if (!opts || !opts->no_lod) return 0;
 
     if (!s_setup_hook) {

@@ -183,6 +183,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
         "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
         "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
+        "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, 4 = fog\n"
+        "                             saturates 4x farther (the classic --no-lod far-detail look).\n"
+        "                             Default: 1, or 4 when --no-lod is set. Range [0.25,16].\n"
         "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 0; --pgxp 1 enables perspective UV)\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
@@ -411,6 +414,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--no-lod") == 0) {
             opts->no_lod = true;
+        } else if (strcmp(a, "--fog-scale") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->fog_scale = (float)atof(v); i++;
+            if (opts->fog_scale < 0.25f || opts->fog_scale > 16.0f) {
+                fprintf(stderr, "openpete: --fog-scale clamped to [0.25,16]; got %.2f\n",
+                        opts->fog_scale);
+                if (opts->fog_scale < 0.25f) opts->fog_scale = 0.25f;
+                if (opts->fog_scale > 16.0f) opts->fog_scale = 16.0f;
+            }
         } else if (strcmp(a, "--pgxp") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             int n = atoi(v);

@@ -146,6 +146,14 @@ typedef struct {
      * gameplay state. See notes/plans/openpete-disable-lods.md. */
     bool no_lod;
 
+    /* Fog-distance multiplier (`--fog-scale N`). Scales every channel of the
+     * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
+     * near-tile select, fog-saturation LP handoff): N = 1 is the authentic
+     * PSX curve (saturation at the LOD distance), N = 4 saturates 4x farther
+     * — the classic --no-lod "see detail far away" look. 0 = auto: 1 without
+     * --no-lod, 4 with it. */
+    float fog_scale;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via
