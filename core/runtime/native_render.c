@@ -672,6 +672,8 @@ static struct {
     rhi_pipeline *hd_tex_pipe;        /* HD replacement, HUD overlay: RGBA sampler, alpha blend, depth OFF */
     rhi_pipeline *hd_cutout_pipe;     /* HD replacement, opaque scene: depth-tested, alpha-cutout */
     rhi_pipeline *hd_cutout_mark_pipe;/* cutout twin with stencil MARK (WORLD group when hole-fill is on) */
+    rhi_pipeline *hd_scene_blend_pipe;/* HD replacement, alpha scene group (ABR 0): ztest, no zwrite */
+    rhi_pipeline *hd_scene_add_pipe;  /* HD replacement, additive scene group (ABR 1): ztest, no zwrite */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
     /* Target display aspect (W/H), from --aspect (0 → default 4:3). Drives the
@@ -1281,6 +1283,25 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .stencil = RHI_STENCIL_MARK,
         .uses_vram = true, .push_const_size = 4 * sizeof(float),
     };
+    /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
+     * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
+     * counterparts. STP encoding: dumps bake STP texels at alpha 128, so
+     * src-over on the alpha pipe reproduces (B+F)/2 while non-STP texels
+     * stay opaque. The SUBTRACTIVE group keeps SD (its draws depend on the
+     * caller's dynamic depth-bias state, which an HD rebind would
+     * invalidate — and shadow-fan replacement is out of scope). */
+    rhi_pipeline_desc hd_scene_blend_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+    };
+    rhi_pipeline_desc hd_scene_add_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex.frag.spv",
+        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+    };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
      * depth, no blend. Built unconditionally so --screenshot-on-frame can dump
@@ -1353,8 +1374,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
     rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
     rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
-    fprintf(stderr, "[texpack] hd pipes: hud=%d cutout=%d cutout_mark=%d\n",
-            hd_tex_pipe != NULL, hd_cutout_pipe != NULL, hd_cutout_mark_pipe != NULL);
+    rhi_pipeline *hd_scene_blend_pipe = rhi_create_pipeline(dev, &hd_scene_blend_desc);
+    rhi_pipeline *hd_scene_add_pipe   = rhi_create_pipeline(dev, &hd_scene_add_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
     rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
@@ -1422,6 +1443,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
         if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
         if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
+        if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
+        if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
         if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
@@ -1476,6 +1499,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.hd_tex_pipe  = hd_tex_pipe;
     s_nr.hd_cutout_pipe = hd_cutout_pipe;
     s_nr.hd_cutout_mark_pipe = hd_cutout_mark_pipe;
+    s_nr.hd_scene_blend_pipe = hd_scene_blend_pipe;
+    s_nr.hd_scene_add_pipe = hd_scene_add_pipe;
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.diff_pipe    = diff_pipe;
@@ -3419,14 +3444,19 @@ static bool draw_native_scene(bool full_extent)
             }
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            /* HD replacement only in OPAQUE groups for now (depth-tested
-             * cutout; true alpha would break Z order — Phase 7 revisits).
-             * WORLD's stencil-MARK variant gets the MARK twin so the W2.6-c
-             * hole-fill coverage stays intact. Blend groups draw SD. */
-            rhi_pipeline *hd = (g->blend == 0)
-                ? (g->tex == s_nr.scene_tex_mark_pipe ? s_nr.hd_cutout_mark_pipe
-                                                      : s_nr.hd_cutout_pipe)
-                : NULL;
+            /* HD replacement per group family: opaque -> depth-tested cutout
+             * (WORLD's stencil-MARK variant gets the MARK twin so W2.6-c
+             * hole-fill coverage stays intact); alpha/additive -> the
+             * ztest/no-zwrite HD twins. SUBTRACTIVE (gi==1) stays SD — its
+             * draws depend on the caller's dynamic depth-bias state, which
+             * an HD rebind would invalidate. */
+            rhi_pipeline *hd =
+                (g->blend == 0) ? (g->tex == s_nr.scene_tex_mark_pipe
+                                       ? s_nr.hd_cutout_mark_pipe
+                                       : s_nr.hd_cutout_pipe)
+              : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
+              : (g->blend == 2) ? s_nr.hd_scene_add_pipe
+              : NULL;
             draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd);
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
@@ -4415,6 +4445,8 @@ void openpete_native_render_shutdown(void)
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     if (s_nr.hd_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);
     if (s_nr.hd_cutout_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_mark_pipe);
+    if (s_nr.hd_scene_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_scene_blend_pipe);
+    if (s_nr.hd_scene_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_scene_add_pipe);
     hd_cache_shutdown();
     texture_pack_shutdown();
     if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);

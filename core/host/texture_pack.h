@@ -51,6 +51,7 @@ typedef struct {
     uint64_t phash;
     int      bpp;
     int      box_x, box_y, box_w, box_h;   /* relative to the upload rect */
+    int      up_w, up_h;                   /* full upload dims, texels of this bpp */
     const char *asset;                     /* symbolic name, or NULL */
 } texture_pack_id;
 

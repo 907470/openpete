@@ -71,10 +71,13 @@ typedef struct {
     uint64_t thash, phash;
     int bpp;
     int bx, by, bw, bh;            /* the file's upload-relative texel box */
+    int symbolic;                  /* named asset file (<asset>.png) — matched by
+                                    * the game layer's texture_pack_annotate name;
+                                    * covers the FULL upload (Phase 7) */
     unsigned char *px;             /* lazy; NULL until first match */
     int w, h;
     int load_failed;
-    char name[96];
+    char name[96];                 /* filename; for symbolic: asset name (no .png) */
 } tp_pack_entry;
 static tp_pack_entry s_pack[TP_PACK_MAX];
 static int  s_pack_n = 0;
@@ -102,16 +105,25 @@ static void tp_repl_scan(void)
     if (!d) return;
     struct dirent *de;
     while ((de = readdir(d)) && s_pack_n < TP_PACK_MAX) {
+        const char *dot = strrchr(de->d_name, '.');
+        if (!dot || strcmp(dot, ".png") != 0) continue;
+        if ((int)strlen(de->d_name) >= (int)sizeof(s_pack[0].name)) continue;
         tp_pack_entry *e = &s_pack[s_pack_n];
         unsigned long long th, ph;
         int bx, by, bw, bh, bpp;
-        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
-                   &th, &bx, &by, &bw, &bh, &ph, &bpp) != 7) continue;
-        if ((int)strlen(de->d_name) >= (int)sizeof(e->name)) continue;
         memset(e, 0, sizeof *e);
-        e->thash = th; e->phash = ph; e->bpp = bpp;
-        e->bx = bx; e->by = by; e->bw = bw; e->bh = bh;
-        snprintf(e->name, sizeof e->name, "%s", de->d_name);
+        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
+                   &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
+            e->thash = th; e->phash = ph; e->bpp = bpp;
+            e->bx = bx; e->by = by; e->bw = bw; e->bh = bh;
+            snprintf(e->name, sizeof e->name, "%s", de->d_name);
+        } else {
+            /* Symbolic entry: <asset>.png, matched against the game layer's
+             * texture_pack_annotate name; covers the full upload. */
+            e->symbolic = 1;
+            snprintf(e->name, sizeof e->name, "%.*s",
+                     (int)(dot - de->d_name), de->d_name);
+        }
         s_pack_n++;
     }
     closedir(d);
@@ -296,6 +308,8 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
     id.box_y = (tpage_y - e->y) + v0;
     id.box_w = u1 - u0 + 1;
     id.box_h = v1 - v0 + 1;
+    id.up_w  = e->w << shift;
+    id.up_h  = e->h;
     id.asset = e->asset;
     sl->id = id; sl->hit = 1;
     *out = id;
@@ -338,12 +352,22 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     if (m && m->key == key) {
         ei = m->entry;                          /* memoized (incl. -1 = no match) */
     } else {
-        /* Containment search: same thash/bpp/phash, file box contains the
-         * query box; smallest containing file wins. */
+        /* Symbolic first (plan: asset-ID primary): an annotated upload whose
+         * name matches a <asset>.png entry. Falls back to hash containment:
+         * same thash/bpp/phash, file box contains the query box; smallest
+         * containing file wins. */
         ei = -1;
         long best = 0;
-        for (int i = 0; i < s_pack_n; i++) {
+        if (id->asset) {
+            for (int i = 0; i < s_pack_n; i++)
+                if (s_pack[i].symbolic && strcmp(s_pack[i].name, id->asset) == 0) {
+                    ei = i;
+                    break;
+                }
+        }
+        if (ei < 0) for (int i = 0; i < s_pack_n; i++) {
             const tp_pack_entry *e = &s_pack[i];
+            if (e->symbolic) continue;
             if (e->thash != id->thash || e->bpp != id->bpp || e->phash != id->phash)
                 continue;
             if (id->box_x < e->bx || id->box_y < e->by ||
@@ -358,15 +382,24 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     tp_pack_entry *e = &s_pack[ei];
     if (!e->px && !e->load_failed) {            /* lazy first load */
         char path[640];
-        snprintf(path, sizeof path, "%s/%s", s_repl_dir, e->name);
+        snprintf(path, sizeof path, "%s/%s%s", s_repl_dir, e->name,
+                 e->symbolic ? ".png" : "");
         int comp = 0;
         e->px = stbi_load(path, &e->w, &e->h, &comp, 4);
         if (!e->px) e->load_failed = 1;
-        else fprintf(stderr, "[texpack] replacement loaded %dx%d: %s\n", e->w, e->h, e->name);
+        else fprintf(stderr, "[texpack] replacement loaded %dx%d: %s%s\n",
+                     e->w, e->h, e->name, e->symbolic ? ".png (symbolic)" : "");
     }
     if (!e->px) return 0;
     out->pixels = e->px; out->w = e->w; out->h = e->h;
-    out->box_x = e->bx; out->box_y = e->by; out->box_w = e->bw; out->box_h = e->bh;
+    if (e->symbolic) {
+        /* A symbolic file covers the FULL upload in this draw's bpp texels. */
+        out->box_x = 0; out->box_y = 0;
+        out->box_w = id->up_w; out->box_h = id->up_h;
+    } else {
+        out->box_x = e->bx; out->box_y = e->by;
+        out->box_w = e->bw; out->box_h = e->bh;
+    }
     return 1;
 }
 
@@ -452,7 +485,11 @@ void texture_pack_dump_draw(const texture_pack_id *id,
             o[0] = (unsigned char)((r5 << 3) | (r5 >> 2));
             o[1] = (unsigned char)((g5 << 3) | (g5 >> 2));
             o[2] = (unsigned char)((b5 << 3) | (b5 >> 2));
-            o[3] = p ? 255 : 0;   /* PSX sentinel -> transparent (STP nuance: Phase 5) */
+            /* Alpha encoding (Phase 5): 0x0000 sentinel -> transparent;
+             * STP-set texels -> 128 (on the HD alpha pipe, src-over at 0.5
+             * reproduces the PSX (B+F)/2; the cutout pipe keeps them: 128
+             * passes its 0.5 discard); plain texels -> opaque. */
+            o[3] = (p == 0) ? 0 : ((p & 0x8000u) ? 128 : 255);
         }
     }
     if (u->name[0]) {                           /* superseded smaller union */

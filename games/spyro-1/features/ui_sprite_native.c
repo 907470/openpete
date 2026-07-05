@@ -24,6 +24,7 @@
 #include "psx_runtime.h"
 #include "openpete_native_render.h"
 #include "render_paths.h"
+#include "texture_pack.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -281,6 +282,17 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_render_enabled();
     int dump = dump_enabled();
     if (!feed && !dump) return 0;               /* inert: normal dispatch runs it */
+    /* First symbolic texture asset (texture-replacement plan Phase 7): name
+     * the title-screen UI upload (logo + PRESS START + banner glyphs — one
+     * 512x256 block at VRAM (512,256), measured via the registry dump). A
+     * pack file `title_ui.png` then replaces the whole block by NAME.
+     * Rect-keyed for now; decomp load-site annotation supersedes this when
+     * the uploader function gets named. */
+    static int s_annotated = 0;
+    if (!s_annotated) {
+        s_annotated = 1;
+        texture_pack_annotate(512, 256, 512, 256, "title_ui");
+    }
     static int s_in = 0;
     if (s_in) return 0;                         /* re-entry from our own call -> real body */
     s_in = 1;
