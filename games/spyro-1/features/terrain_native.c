@@ -274,6 +274,17 @@ static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.
  * case (headroom for worst-camera-angle). See MAX_SCENE_TRIS in native_render.c. */
 #define MAX_TTRIS 65536
 static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
+
+/* Far-band accumulation for the seam-inpaint pass (core draw site): the screen
+ * bbox of every front face whose corners are all at/past ~fully-fogged
+ * (ir0 = fogRef−4·m3 ≤ slack — slack admits the straddling ~1px rows the
+ * dashes border, v3's fog-band membership), plus the smallest corner m3 among
+ * them (→ the neighbour view-Z gate). Reset per build; pushed to the core
+ * once per feed. */
+static float  s_band_x0, s_band_y0, s_band_x1, s_band_y1;
+static double s_band_m3lo;
+static int    s_band_seen;
+static int    s_band_slack = -1;   /* OPENPETE_TERRAIN_INPAINT_SLACK (ir0 units) */
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
 
 /* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
@@ -1038,6 +1049,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_abr_scan(cpu);
     tsc_census();
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
+    s_band_x0 = s_band_y0 = 1e9f; s_band_x1 = s_band_y1 = -1e9f;
+    s_band_m3lo = 1e18; s_band_seen = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
     if (s_sectordump < 0) { const char* e = getenv("OPENPETE_TERRAIN_SECTORDUMP"); s_sectordump = (e && *e && *e != '0'); }
@@ -1321,6 +1334,33 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                          - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
             if (flip) nclip = -nclip;
             int front = (nclip > 0.0);
+            /* Seam-inpaint far-band accumulation (pass-agnostic — before the
+             * pass-specific skips; revisits across passes only re-extend the
+             * same bbox). Front faces whose corners are ALL at/past the fog
+             * band (ir0 ≤ slack). */
+            if (front) {
+                if (s_band_slack < 0) { const char* e = getenv("OPENPETE_TERRAIN_INPAINT_SLACK");
+                                        s_band_slack = (e && *e) ? atoi(e) : 3072; }
+                int nc = quad ? 4 : 3, inband = 1;
+                const int cb[4] = { i0, i1, i2, i3 };
+                double m3lo = 1e18;
+                for (int q2 = 0; q2 < nc; q2++) {
+                    double m3 = sv[cb[q2]].m3;
+                    if (m3 <= 0.0 || fogRef - (int)(m3 * 4.0) > s_band_slack) { inband = 0; break; }
+                    if (m3 < m3lo) m3lo = m3;
+                }
+                if (inband) {
+                    for (int q2 = 0; q2 < nc; q2++) {
+                        const lvert* V = &sv[cb[q2]];
+                        if (V->sx < s_band_x0) s_band_x0 = V->sx;
+                        if (V->sy < s_band_y0) s_band_y0 = V->sy;
+                        if (V->sx > s_band_x1) s_band_x1 = V->sx;
+                        if (V->sy > s_band_y1) s_band_y1 = V->sy;
+                    }
+                    if (m3lo < s_band_m3lo) s_band_m3lo = m3lo;
+                    s_band_seen = 1;
+                }
+            }
             if (s_lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 const int ci[4] = { i0, i1, i2, i3 };
@@ -1804,6 +1844,23 @@ static void terrain_feed_native(void) {
             fprintf(stderr, "[portal-guard] f=%u tris=%d guard=%d recent=%d defer_n=%d\n",
                     openpete_frame, s_tri_n, g, openpete_portal_sky_recent(), s_defer_n);
         }
+    }
+    /* Seam-inpaint band (accumulated during terrain_build, which always runs
+     * right before this feed — canonical hook AND sub-tick re-extract). View-Z
+     * window: lo = the smallest in-band corner (×16 world scale, 5% margin for
+     * the LP ×1.03 tier pull + raster interpolation), hi excludes the pre-pass
+     * far backstop (~4.09e6). No band this frame → all-zero = inpaint off. */
+    if (s_band_seen && s_band_x1 > s_band_x0)
+        openpete_native_scene_set_far_band(s_band_x0, s_band_y0, s_band_x1, s_band_y1,
+                                           (float)(s_band_m3lo * 16.0 * 0.95), 3.0e6f);
+    else
+        openpete_native_scene_set_far_band(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    {   /* OPENPETE_INPAINT_DBG: band census (stderr-throttled) */
+        static int dbg = -1; static int lines;
+        if (dbg < 0) { const char* e = getenv("OPENPETE_INPAINT_DBG"); dbg = (e && *e && *e != '0'); }
+        if (dbg && lines < 60) { lines++;
+            fprintf(stderr, "[inpaint-band] f=%u seen=%d box=(%.0f,%.0f)-(%.0f,%.0f) m3lo=%.0f\n",
+                    openpete_frame, s_band_seen, s_band_x0, s_band_y0, s_band_x1, s_band_y1, s_band_m3lo); }
     }
 }
 

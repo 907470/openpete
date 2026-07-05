@@ -92,6 +92,17 @@ typedef struct {
     float pvw, pvh;                /* pre-pass raster extent (texels) */
 } shadow_decal_pc;
 
+/* inpaint.frag push constant (must match the GLSL block field-for-field) —
+ * the far-band seam-inpaint pass. Same pre-pass affine convention as the
+ * shadow decal (PSX screen coord rides the vertex u,v). */
+typedef struct {
+    float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
+    float pvw, pvh;                /* pre-pass raster extent (texels) */
+    float vz_lo, vz_hi;            /* neighbour far-band view-Z window */
+    float reach;                   /* max texels searched per side (<=4) */
+    float simfrac;                 /* same-surface gate fraction (see shader) */
+} inpaint_pc;
+
 /* How many panels the window shows (1c.3a: VRAM + reference). */
 #define NR_PANELS 2
 
@@ -192,7 +203,23 @@ static uint32_t s_scene_freeze = 0;
  * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
 static int s_scene_hud_under = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; }
+/* Far-band seam-inpaint band for the current frame (terrain feeder): the PSX-
+ * screen bbox of the fogged far band ({x0,y0,x1,y1}, x1<=x0 = none) + the
+ * full-world view-Z window [vz_lo, vz_hi) a pre-pass neighbour must sit in to
+ * count as far-band terrain. Reset per frame; snapshotted with the scene
+ * history so the delayed (ab/diff) present pairs the band with its scene. */
+static float s_scene_band[4];
+static float s_scene_band_vz[2];
+static float s_scene_hist_band[SCENE_HIST][4];
+static float s_scene_hist_band_vz[SCENE_HIST][2];
+/* The presented scene's band (filled by scene_present_buf alongside its return
+ * value — live or history slot — so the pre-pass gate and the draw site agree). */
+static float s_present_band[4];
+static float s_present_band_vz[2];
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0;
+    s_scene_band[0] = s_scene_band[1] = s_scene_band[2] = s_scene_band[3] = 0.0f;
+    s_scene_band_vz[0] = s_scene_band_vz[1] = 0.0f; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -233,10 +260,14 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
             s_scene_hist_hud_under[slot] = s_scene_hud_under;
+            memcpy(s_scene_hist_band[slot], s_scene_band, sizeof s_scene_band);
+            memcpy(s_scene_hist_band_vz[slot], s_scene_band_vz, sizeof s_scene_band_vz);
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
+        memset(s_scene_band, 0, sizeof s_scene_band);
+        memset(s_scene_band_vz, 0, sizeof s_scene_band_vz);
     }
 }
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
@@ -256,6 +287,16 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
     openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+
+/* Terrain feeder, once per (re)extract: the fogged far band's screen bbox +
+ * the neighbour view-Z window for the seam inpaint (see the inpaint draw in
+ * draw_native_scene). x1<=x0 disables. */
+void openpete_native_scene_set_far_band(float x0, float y0, float x1, float y1,
+                                        float vz_lo, float vz_hi) {
+    s_scene_band[0] = x0; s_scene_band[1] = y0;
+    s_scene_band[2] = x1; s_scene_band[3] = y1;
+    s_scene_band_vz[0] = vz_lo; s_scene_band_vz[1] = vz_hi;
+}
 
 /* Gamestate draw-env clear colour (the framebuffer background the canonical
  * render auto-clears to). Two producers: the PutDrawEnv thunk (fallback,
@@ -513,12 +554,47 @@ static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
         *out_fade = s_scene_hist_fade[slot];
         if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
         if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
+        memcpy(s_present_band, s_scene_hist_band[slot], sizeof s_present_band);
+        memcpy(s_present_band_vz, s_scene_hist_band_vz[slot], sizeof s_present_band_vz);
         return s_scene_hist[slot];
     }
     *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
     if (out_freeze) *out_freeze = s_scene_freeze;
     if (out_hud_under) *out_hud_under = s_scene_hud_under;
+    memcpy(s_present_band, s_scene_band, sizeof s_present_band);
+    memcpy(s_present_band_vz, s_scene_band_vz, sizeof s_present_band_vz);
     return s_scene;
+}
+
+/* Seam inpaint enabled? (OPENPETE_TERRAIN_INPAINT=0 disables; default ON.)
+ * Display-only image-space fill; never touches PSX RAM. */
+static int inpaint_enabled(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_INPAINT"); on = !(e && *e == '0'); }
+    return on;
+}
+/* The presented scene carries a non-empty far band (fill target exists). */
+static int present_band_active(void) {
+    return inpaint_enabled() &&
+           s_present_band[2] > s_present_band[0] &&
+           s_present_band[3] > s_present_band[1] &&
+           s_present_band_vz[1] > s_present_band_vz[0];
+}
+/* Neighbour search reach in pre-pass texels (~window px). The dash class is
+ * 1-2 window px tall; 3 covers it with margin while keeping the both-sides
+ * requirement tight enough to reject sky notches. OPENPETE_TERRAIN_INPAINT_REACH
+ * overrides for A/B (clamped to the shader's fixed loop bound of 4). */
+static float inpaint_reach(void) {
+    static float r = -1.0f;
+    if (r < 0.0f) {
+        const char* e = getenv("OPENPETE_TERRAIN_INPAINT_REACH");
+        r = (e && *e) ? (float)atof(e) : 3.0f;
+        /* 99 = shader debug (paint the stencil-0 band magenta); else clamp to
+         * the shader's fixed loop bound. */
+        if (r < 1.0f) r = 1.0f;
+        if (r > 4.0f && r < 80.0f) r = 4.0f;   /* 89/99 = shader debug modes */
+    }
+    return r;
 }
 
 /* True if the presented scene holds real WORLD or ACTOR geometry — i.e. a full
@@ -582,6 +658,8 @@ static struct {
     rhi_pipeline *gouraud_mark_pipe;  /* W2.6-c: WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
     rhi_pipeline *scene_tex_mark_pipe;/* W2.6-c: WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
     rhi_pipeline *gouraud_fill_pipe;  /* W2.6-c: WORLD_FILL LP backing, stencil TEST_ZERO (paints only unmarked pixels; may be NULL → no hole-fill) */
+    rhi_pipeline *inpaint_pipe;       /* far-band seam inpaint: stencil TEST_ZERO band quad sampling the pre-pass depth+colour (may be NULL → no inpaint) */
+    rhi_buffer   *inpaint_vb;         /* 6-vert dynamic ring for the band quad */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
@@ -948,6 +1026,20 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
         .uses_vram = false, .push_const_size = 0,
     };
+    /* Far-band seam INPAINT pipe: one band-rect quad drawn right after the
+     * WORLD(+fill) group. Hardware stencil TEST_ZERO confines fragments to
+     * pixels no WORLD geometry marked; the frag then fills only pixels with
+     * far-band pre-pass terrain on BOTH sides of an axis (inpaint.frag —
+     * the structural discriminator the grown-copy fills lacked), sampling the
+     * pre-pass depth (set 0) + colour (set 1). Depth test/write OFF: actors
+     * and later groups draw over the fill normally. */
+    rhi_pipeline_desc inpaint_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "inpaint.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false, .stencil = RHI_STENCIL_TEST_ZERO,
+        .uses_vram = true, .uses_vram2 = true,
+        .push_const_size = sizeof(inpaint_pc),
+    };
     /* Semi-transparent UNTEXTURED gouraud pipeline (3b.2): the Spyro silhouette
      * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
      * (B+F)/2) — untextured, so it can't go through the textured-blend pipe.
@@ -1003,18 +1095,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = false, .push_const_size = 0,
     };
     /* WORLD-opaque depth PRE-PASS pipe: rasterize the opaque world geometry
-     * depth-only (colour writes off — W2.6's invisible-pass flag) into the
-     * depth-sampled RT that shadow_decal.frag reads. prepass.vert stores TRUE
-     * PERSPECTIVE depth (z = 1 - 1/vz, screen-affine for planes) so the
-     * decal's neighbour-texel NORMAL reconstruction is exact — the canonical
-     * vz/(vz+4096) curve interpolates screen-linearly with a distorted local
-     * gradient across large terrain tris (read flat floors as
-     * fronto-parallel). */
+     * into the depth-sampled RT that shadow_decal.frag reads. prepass.vert
+     * stores TRUE PERSPECTIVE depth (z = 1 - 1/vz, screen-affine for planes)
+     * so the decal's neighbour-texel NORMAL reconstruction is exact — the
+     * canonical vz/(vz+4096) curve interpolates screen-linearly with a
+     * distorted local gradient across large terrain tris (read flat floors as
+     * fronto-parallel). Colour writes are ON (was W2.6's invisible-pass flag):
+     * the seam-inpaint pass samples the pre-pass COLOUR attachment as its fill
+     * source (the gouraud world beside a seam), and no other consumer reads
+     * the attachment, so gouraud output is free. */
     rhi_pipeline_desc prepass_desc = {
         .vert_spv = "prepass.vert.spv",
         .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
     /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
@@ -1256,6 +1349,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
         OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
     }
+    /* Optional seam-inpaint resources (graceful fallback: NULL → no inpaint;
+     * needs the stencil marks, so it degrades together with the hole-fill). */
+    rhi_pipeline *inpaint_pipe = gouraud_mark_pipe ? rhi_create_pipeline(dev, &inpaint_desc) : NULL;
+    rhi_buffer   *inpaint_vb   = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * 6);
+    if (!inpaint_pipe || !inpaint_vb) {
+        if (inpaint_pipe) { rhi_destroy_pipeline(dev, inpaint_pipe); inpaint_pipe = NULL; }
+        if (inpaint_vb)   { rhi_destroy_buffer(dev, inpaint_vb);     inpaint_vb = NULL; }
+        OPL_ERROR_F("native", "seam-inpaint pipeline unavailable; far-band inpaint disabled");
+    }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
@@ -1323,6 +1425,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_mark_pipe = gouraud_mark_pipe;     /* may be NULL → no hole-fill */
     s_nr.scene_tex_mark_pipe = scene_tex_mark_pipe; /* may be NULL → no hole-fill */
     s_nr.gouraud_fill_pipe = gouraud_fill_pipe;     /* may be NULL → no hole-fill */
+    s_nr.inpaint_pipe = inpaint_pipe;               /* may be NULL → no seam inpaint */
+    s_nr.inpaint_vb = inpaint_vb;
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
@@ -1836,9 +1940,11 @@ static void ensure_opaque_depth(void)
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
     if (scene_n <= 0) return;
-    /* The pre-pass serves TWO consumers: the shadow decal and the moby
-     * occlusion grid. Allocate when either wants it. */
-    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
+    /* The pre-pass serves THREE consumers: the shadow decal, the moby
+     * occlusion grid, and the far-band seam inpaint. Allocate when any
+     * wants it. (scene_present_buf above filled s_present_band.) */
+    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active() &&
+        !present_band_active()) return;
     int want_w = s_nr.ref_w, want_h = s_nr.ref_h;
     if (s_nr.win_w > want_w) want_w = s_nr.win_w;
     if (s_nr.win_h > want_h) want_h = s_nr.win_h;
@@ -1874,7 +1980,8 @@ static void native_depth_prepass(void)
     const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
-    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
+    if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active() &&
+        !present_band_active()) return;
 
     /* Raster extent = the ensure_opaque_depth sizing, clamped to the allocation. */
     int vw = s_nr.ref_w, vh = s_nr.ref_h;
@@ -1927,13 +2034,24 @@ static void native_depth_prepass(void)
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
         int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
         if (b != 0) continue;                                    /* opaque only */
-        if (scene[t].category != OPENPETE_SCENE_WORLD) continue; /* world occluders only */
+        /* World occluders only — plus the WORLD_FILL LP backing: at the fogged
+         * waterline much of the painted terrain IS the hole-fill layer, and
+         * the seam inpaint's neighbour test needs the pre-pass to know it as
+         * coverage (it is canonical LP geometry at true depth, so the decal /
+         * occlusion consumers only gain accuracy from it). */
+        if (scene[t].category != OPENPETE_SCENE_WORLD &&
+            scene[t].category != OPENPETE_SCENE_WORLD_FILL) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex* o = &pbuf[m + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
-            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->tex = 0;
+            /* Real gouraud colour: the seam inpaint samples the pre-pass
+             * colour attachment as its fill source. (Textured world tris
+             * contribute their vertex tint — at the fogged far band, where the
+             * inpaint's neighbour window lives, world geometry is untextured
+             * LP/HP gouraud, so the tint IS the rendered colour there.) */
+            o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         m += 3;
     }
@@ -3074,6 +3192,60 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
+        }
+        /* Far-band seam INPAINT — after the WORLD group + WORLD_FILL (so every
+         * canonical terrain source had its shot at the pixel), before anything
+         * that draws over terrain, and before the portal sequence clears
+         * stencil. One band-rect quad; the u,v channel carries the PSX screen
+         * coord (quad.vert → vScreenPSX) so inpaint.frag samples the shared
+         * WORLD-opaque pre-pass (depth at set 0, gouraud colour at set 1)
+         * through the same recorded affine as the shadow decal — identical in
+         * the offscreen, SSAA-RT, native_rtt and screenshot contexts. */
+        {   /* OPENPETE_INPAINT_DBG: draw-site gate census (stderr-throttled) */
+            static int dbg = -1; static int lines;
+            if (dbg < 0) { const char* e = getenv("OPENPETE_INPAINT_DBG"); dbg = (e && *e && *e != '0'); }
+            if (dbg && gi == 0 && lines < 60) { lines++;
+                fprintf(stderr, "[inpaint-draw] f=%u pipe=%d vb=%d od=%d band=%d box=(%.0f,%.0f)-(%.0f,%.0f) vz=(%.0f,%.0f)\n",
+                        s_scene_frame, s_nr.inpaint_pipe != NULL, s_nr.inpaint_vb != NULL,
+                        s_od_ready, present_band_active(),
+                        s_present_band[0], s_present_band[1], s_present_band[2], s_present_band[3],
+                        s_present_band_vz[0], s_present_band_vz[1]); }
+        }
+        if (gi == 0 && s_nr.inpaint_pipe && s_nr.inpaint_vb && s_od_ready &&
+            present_band_active()) {
+            const float margin = 4.0f;   /* PSX px: dash rows straddle the bbox edge */
+            float bx0 = s_present_band[0] - margin, by0 = s_present_band[1] - margin;
+            float bx1 = s_present_band[2] + margin, by1 = s_present_band[3] + margin;
+            rhi_vertex q[6];
+            const float qx[6] = { bx0, bx1, bx1, bx0, bx1, bx0 };
+            const float qy[6] = { by0, by0, by1, by0, by1, by1 };
+            for (int k = 0; k < 6; k++) {
+                float cx, cy;
+                scene_to_clip(qx[k], qy[k], &cx, &cy);
+                q[k].x = cx; q[k].y = cy; q[k].z = 0.0f;
+                q[k].u = qx[k]; q[k].v = qy[k];
+                q[k].rgba = 0xFFFFFFFFu; q[k].tex = 0;
+            }
+            rhi_update_buffer(s_nr.inpaint_vb, q, sizeof q);
+            rhi_bind_pipeline(s_nr.dev, s_nr.inpaint_pipe);
+            rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
+            rhi_bind_vram2(s_nr.dev, s_nr.opaque_depth);   /* colour aspect, set 1 */
+            inpaint_pc pc;
+            pc.uax = s_od_uax; pc.ubx = s_od_ubx;
+            pc.vay = s_od_vay; pc.vby = s_od_vby;
+            pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
+            pc.vz_lo = s_present_band_vz[0];
+            pc.vz_hi = s_present_band_vz[1];
+            pc.reach = inpaint_reach();
+            {   /* same-surface gate fraction (OPENPETE_TERRAIN_INPAINT_SIM) */
+                static float sf = -1.0f;
+                if (sf < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_INPAINT_SIM");
+                                 sf = (e && *e) ? (float)atof(e) : 0.5f; }   /* horizon rows span 12-50%/row (1/y divergence); cliff-vs-plain is >2x */
+                pc.simfrac = sf;
+            }
+            rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.inpaint_vb);
+            rhi_draw(s_nr.dev, 6, 0);
         }
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
          * PLAYER group — the native realization of the PSX sky bucket, which
