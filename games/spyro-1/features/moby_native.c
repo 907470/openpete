@@ -406,7 +406,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
      * +0x05): 2 = identity (the common case), 1 = ×2 size, 3 = /2, etc. Without
      * this, models whose m_Scale != 2 mis-project (the multi-moby A/B residual).
-     * (This is the a3 = w0&0xFF == 0 path; the rare a3!=0 GPF-TR path is a TODO.)
+     * (a3 = w0&0xFF != 0 records take the GPF-TR rescale below instead.)
      *
      * TR_frac (host-rebuilt path) carries the moby-centre translation at FLOAT
      * precision — the camera/moby delta computed as ÷4.0 instead of >>2, so the
@@ -423,9 +423,10 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * that. w0&0xFF==0 records (the common case) never take this test. Host-
      * built w0 (reveal/sub-tick rebuild) has no low byte; the sub-tick pass
      * re-applies this check from the live record's w0 (reextract_record_pass). */
-    if ((w0 & 0xFFu) != 0u) {
+    int gpf = (int)(w0 & 0xFFu);
+    if (gpf) {
         int ir3 = (int)(int16_t)((TR_raw[2] << 2) >> m_scale);
-        int mac3 = (int)(w0 & 0xFFu) * ir3;
+        int mac3 = gpf * ir3;
         if ((mac3 >> 5) > 63000) return 0;
     }
     double TR[3];
@@ -434,10 +435,40 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         TR[0] = TR_frac[0] * sc;   /* == (TR_frac << 2) >> m_scale, fractional */
         TR[1] = TR_frac[1] * sc;
         TR[2] = TR_frac[2] * sc;
+        if (gpf) {                 /* fractional flavour of the GPF rescale below */
+            TR[0] *= (double)gpf / 32.0;
+            TR[1] *= (double)gpf / 32.0;
+            TR[2] *= (double)gpf / 32.0;
+        }
+    } else if (gpf) {
+        /* .s GPF-TR path [.L8001F870..F8DC; spec twin @80021024]: when the record's
+         * low byte is set, the PROJECTION translation is GPF-rescaled —
+         *   TRi = (IR0(=w0&0xFF) × int16((TRi<<2)>>m_Scale)) >> 5   (GPF sf=0, then sra 5)
+         * scl/32 > 1 pushes the moby AWAY along the view ray, < 1 pulls it in; the
+         * class code animates the byte to scale the moby ON SCREEN by moving it in
+         * depth (Gnasty-blast dome: the byte ticks down as the blast plays out).
+         * Without this the native projected the dome at its TRUE distance — the
+         * user-visible giant constant dome. The mtc2 int16 truncation is kept. */
+        TR[0] = (double)((gpf * (int)(int16_t)((TR_raw[0] << 2) >> m_scale)) >> 5);
+        TR[1] = (double)((gpf * (int)(int16_t)((TR_raw[1] << 2) >> m_scale)) >> 5);
+        TR[2] = (double)((gpf * (int)(int16_t)((TR_raw[2] << 2) >> m_scale)) >> 5);
     } else {
         TR[0] = (double)((TR_raw[0] << 2) >> m_scale);
         TR[1] = (double)((TR_raw[1] << 2) >> m_scale);
         TR[2] = (double)((TR_raw[2] << 2) >> m_scale);
+    }
+    /* GPF records: the Z-BUFFER depth stays at the TRUE distance. The GPF rescale
+     * moves the moby in depth purely to scale its screen projection; the .s OT key
+     * still derives from the RAW TR.z (ctrl[14] = (TR.z_raw>>5) − w0 byte2 bias,
+     * block_8001F80C..F844), which is how the shrunk blast dome paints OVER the
+     * floor on PSX. Emitting the scaled depth here let the floor Z-occlude the
+     * dome (it vanished at blast onset); depth at the true distance mirrors the
+     * OT-sort intent while sx/sy keep the .s-exact scaled projection. */
+    double vz_bias = 0.0;
+    if (gpf) {
+        double tr2_true = TR_frac ? TR_frac[2] * (4.0 / (double)(1 << (m_scale < 0 ? 0 : (m_scale > 30 ? 30 : m_scale))))
+                                  : (double)((TR_raw[2] << 2) >> m_scale);
+        vz_bias = tr2_true - TR[2];
     }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
@@ -500,7 +531,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
-        out[i].vz = (float)(vzz * (double)(1 << ds)); out[i].sat = sat;
+        out[i].vz = (float)((vzz + vz_bias) * (double)(1 << ds)); out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
@@ -531,7 +562,11 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
-                 float env_az; } rec_meta;   /* view-space TR azimuth atan2(TR.z,TR.x) — the
+                 float env_az;
+                 uint32_t frameA; } rec_meta;   /* frameA = the record's keyframe (rec+0x08 /
+                 * f.frameA): the frame may carry a render-time FACEBLOCK PATCH list
+                 * (see moby_faces_for_record) — 0 = no patch lookup. */
+                 /* env_az = view-space TR azimuth atan2(TR.z,TR.x) — the
                  * .s SPEC env per-moby u-bias input (.L800226F8 cfc2 TRZ/TRX octant atan) */  /* metal = m_SpecularMetalColor
                  (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
                  moby = Moby* (rec+0x34 for .s records; set directly for host-built reveal records,
@@ -651,7 +686,8 @@ static int project_all_records_inner(CPUState* cpu) {
                 cpu->read_word(rec + 0x34),
                 zsf4,
                 atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
-                       (float)(int32_t)cpu->read_word(rec + 0x10)) };
+                       (float)(int32_t)cpu->read_word(rec + 0x10)),
+                cpu->read_word(rec + 0x08) };
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
@@ -888,7 +924,7 @@ static void append_revealed_regular(CPUState* cpu) {
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]) };
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA };
         fade_snap_put(m, rzsf4);
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
@@ -1124,6 +1160,9 @@ static fcache_t s_fcache[FC_SLOTS];
 static long s_fc_hit, s_fc_miss;      /* tier-census counters */
 static wface_t s_fc_tmp[8192];        /* decode scratch (guard cap matches the old walk) */
 
+static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
+                              uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C);
+
 static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     uint32_t bytecount = cpu->read_word(fb);
     if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as before */
@@ -1142,6 +1181,15 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
         if (!C2->f) C = C2;                         /* fill the empty way */
         else if (s_fc_miss & 1) C = C2;             /* both busy: alternate eviction */
     }
+    if (!fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C)) return NULL;
+    return C;
+}
+
+/* Decode one faceblock into C (malloc'd face array; C's previous array freed).
+ * Factored out of fcache_get so the render-time PATCHED decode (fpcache_get)
+ * reuses the exact same parse. Returns 0 on malloc failure. */
+static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
+                              uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C) {
     uint32_t end = fb + 4u + bytecount;   /* end_hi (generous; alignment classified below) */
     uint32_t fp  = fb + 4u;
     int n = 0, raw = 0, sprites = 0, skips = 0, guard = 0;
@@ -1193,14 +1241,108 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
         fp += adv;
     }
     wface_t* arr = (wface_t*)malloc(sizeof(wface_t) * (size_t)(n > 0 ? n : 1));
-    if (!arr) return NULL;
+    if (!arr) return 0;
     memcpy(arr, s_fc_tmp, sizeof(wface_t) * (size_t)n);
     free(C->f);
     C->fb = fb; C->bytecount = bytecount; C->sig1 = s1; C->sig2 = s2; C->sig3 = s3;
     C->nfaces = n; C->raw = raw; C->sprites = sprites; C->skips = skips;
     C->align = (uint8_t)((fp == fb + bytecount) ? 0 : (fp == end) ? 1 : 2);
     C->f = arr;
+    return 1;
+}
+
+/* ---- render-time faceblock patches (frame-driven transient) ---------------
+ * An animation KEYFRAME may carry a faceblock patch list: frame word1 low16
+ * (<<2) = byte offset of the list WITHIN the frame. Entries: header word
+ * ((cnt<<24) | byte-offset-into-the-HP-faceblock), then cnt replacement
+ * words; the list ends with the entry whose header is <= 0 (bit31 = last).
+ * The .s applies the patches IN PLACE before rendering each record ([F7FC
+ * block_8001F92C..F998], dest base = [header+0x14], gated on ZSF4 > 0; spec
+ * twin @800210C8) saving originals to scratch 0x2A00, and RESTORES them right
+ * after the record renders (func_80020860 / spec 80022990). It is how effect
+ * models animate structure per keyframe: the Gnasty-blast dome shrinks and
+ * fades ENTIRELY through this (each keyframe re-points every strip face's
+ * advancing-vertex word + colour-index word onto inner rings / darker colour
+ * entries). The native walk reads the faceblock AFTER the .s restore, so
+ * without this mirror it decodes the unpatched model — the user-visible
+ * "constant full-size dome".
+ *
+ * Mirror: patch -> fcache_decode_into -> restore (forward order, like the .s
+ * scratch walk), byte-exact and synchronous inside the render hook, so no
+ * game code can observe the transient. The decode is cached keyed
+ * (faceblock, frameA): the patch is a pure function of the static frame
+ * asset, so a keyframe's patched decode replays for every present that still
+ * renders that keyframe (incl. the sub-tick re-extract path). */
+#define FPATCH_MAX 384
+typedef struct { uint32_t addr, val; } fpsave_t;
+static long s_fp_hit, s_fp_miss;   /* tier-census counters */
+
+/* Apply the frame's patch list to PSX RAM, recording originals. Returns the
+ * number of patched words, 0 = no list/invalid, -1 = list too large (rolled
+ * back, caller must fall back to the unpatched decode). */
+static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t frameA,
+                                  fpsave_t* sv) {
+    uint32_t off = (cpu->read_word(frameA + 4) & 0xFFFFu) << 2;
+    if (!off) return 0;
+    uint32_t fbHP = cpu->read_word(header + 0x14);
+    if (fbHP < 0x80000000u) return 0;
+    uint32_t at = frameA + off;
+    int n = 0, entries = 0;
+    for (;;) {
+        uint32_t a0 = cpu->read_word(at); at += 4;
+        uint32_t dst = fbHP + (a0 & 0xFFFFu);
+        int cnt = (int)((a0 >> 24) & 0x7Fu);
+        for (int q = 0; q < cnt; q++) {
+            if (n >= FPATCH_MAX) {                  /* malformed/huge: roll back */
+                for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);
+                return -1;
+            }
+            sv[n].addr = dst; sv[n].val = cpu->read_word(dst);
+            cpu->write_word(dst, cpu->read_word(at));
+            at += 4; dst += 4; n++;
+        }
+        if ((int32_t)a0 <= 0 || ++entries > 128) break;
+    }
+    return n;
+}
+
+#define FP_SLOTS 32
+static fcache_t  s_fpc[FP_SLOTS];         /* patched decodes (keyed fb + frameA) */
+static uint32_t  s_fpc_frame[FP_SLOTS];
+static int       s_fpc_next;
+
+static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
+                                   uint32_t frameA) {
+    uint32_t bytecount = cpu->read_word(fb);
+    if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as fcache_get */
+    /* key sigs are the UNPATCHED words (lookup always happens pre-patch) */
+    uint32_t s1 = cpu->read_word(fb + 4u), s2 = cpu->read_word(fb + 8u), s3 = cpu->read_word(fb + 12u);
+    for (int i = 0; i < FP_SLOTS; i++) {
+        fcache_t* C = &s_fpc[i];
+        if (C->f && C->fb == fb && s_fpc_frame[i] == frameA && C->bytecount == bytecount
+            && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fp_hit++; return C; }
+    }
+    s_fp_miss++;
+    static fpsave_t sv[FPATCH_MAX];
+    int n = moby_frame_patch_apply(cpu, header, frameA, sv);
+    if (n <= 0) return fcache_get(cpu, fb);         /* no/oversized list: unpatched decode */
+    int slot = s_fpc_next; s_fpc_next = (s_fpc_next + 1) & (FP_SLOTS - 1);
+    fcache_t* C = &s_fpc[slot];
+    int ok = fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C);
+    for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);   /* forward restore (.s order) */
+    if (!ok) return NULL;
+    s_fpc_frame[slot] = frameA;
     return C;
+}
+
+/* Face decode for one walk record: the patched decode when the record's
+ * keyframe carries a patch list under the .s gate (ZSF4 > 0 — the LP tier
+ * never patches), else the plain Tier-1 cache. */
+static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
+    if (R->zsf4 > 0 && R->frameA >= 0x80000000u && R->header >= 0x80000000u
+        && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u)
+        return fpcache_get(cpu, R->faceblock, R->header, R->frameA);
+    return fcache_get(cpu, R->faceblock);
 }
 
 /* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
@@ -1238,7 +1380,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
-        const fcache_t* FC = fcache_get(cpu, fb);   /* Tier-1 static face decode */
+        const fcache_t* FC = moby_faces_for_record(cpu, R);   /* Tier-1 decode (patch-aware) */
         if (!FC) { s_walkdiag.desync++; continue; }
         int base = R->proj_off, vcount = R->proj_n;
         /* per-vertex colour base + fade by the record's LOD tier (ladder documented
@@ -2098,6 +2240,30 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
+    /* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB": dump every walk tri whose
+     * centroid falls in the PSX-screen box for frames [fA,fB] — offline
+     * identity diff (moby+fkey) across frames names which attribute flaps.
+     * (Reinstated from b726f6c — the display-only forensics instrument.) */
+    { static int s_td = -1; static int tx0,ty0,tx1,ty1,tfa,tfb;
+      if (s_td < 0) { const char* e = getenv("OPENPETE_MOBY_TRIDBG");
+          s_td = 0;
+          if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &tx0,&ty0,&tx1,&ty1,&tfa,&tfb) == 6) s_td = 1; }
+      if (s_td == 1 && (int)openpete_frame >= tfa && (int)openpete_frame <= tfb) {
+          for (int i = 0; i < s_wtri_n; i++) {
+              const ntri_t* w = &s_wtri[i];
+              float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
+              float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
+              if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
+              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d",
+                      openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
+                      w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend);
+              for (int k = 0; k < 3; k++)
+                  fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%d,%d,%06X", k,
+                          w->v[k].sx, w->v[k].sy, w->v[k].vz,
+                          w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
+              fputc('\n', stderr);
+          }
+      } }
     /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
      * from the walk's UI tag (0=ACTOR, 1=HUD flat overlay, 2=HUD3D depth-sorted
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
@@ -2260,11 +2426,12 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld hold=%ld\n",
+                    "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld hold=%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
-                    s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss, s_hold_replayed);
+                    s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss,
+                    s_fp_hit, s_fp_miss, s_hold_replayed);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
@@ -3619,6 +3786,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 int msc  = (int)(cpu->read_byte(f.header + 5) & 0xFFu);
                 int ir3  = (int)(int16_t)(((int32_t)cpu->read_word(recs[i] + 0x18) << 2) >> msc);
                 if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) continue;
+                /* thread the live GPF byte into the decode so the sub-tick pose
+                 * projects at the same GPF-rescaled translation (frozen per tick) */
+                f.w0 = (f.w0 & ~0xFFu) | (rw0 & 0xFFu);
             }
         }
         /* Re-apply any render-time per-row scale the .s baked into the cull-record
@@ -3711,7 +3881,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, zsf4),
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]) };
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA };
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
