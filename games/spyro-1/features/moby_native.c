@@ -569,9 +569,16 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
                  float env_az;
-                 uint32_t frameA; } rec_meta;   /* frameA = the record's keyframe (rec+0x08 /
-                 * f.frameA): the frame may carry a render-time FACEBLOCK PATCH list
-                 * (see moby_faces_for_record) — 0 = no patch lookup. */
+                 uint32_t frameA;
+                 uint32_t frameA_p, header_p; float clr_alpha; } rec_meta;
+                 /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
+                 * may carry a render-time FACEBLOCK PATCH list (see
+                 * moby_faces_for_record) — 0 = no patch lookup.
+                 * frameA_p/header_p/clr_alpha = the PREV drawn keyframe + the pose
+                 * crossfade alpha (sub-tick re-extract only; 0 = canonical/no prev):
+                 * drives the per-face COLOUR crossfade for patch-animated effects,
+                 * whose colour indices step per keyframe (see the FCp block in
+                 * build_walk_tris_inner). */
                  /* env_az = view-space TR azimuth atan2(TR.z,TR.x) — the
                  * .s SPEC env per-moby u-bias input (.L800226F8 cfc2 TRZ/TRX octant atan) */  /* metal = m_SpecularMetalColor
                  (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
@@ -693,7 +700,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 zsf4,
                 atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
                        (float)(int32_t)cpu->read_word(rec + 0x10)),
-                cpu->read_word(rec + 0x08) };
+                cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
@@ -930,7 +937,7 @@ static void append_revealed_regular(CPUState* cpu) {
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA };
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
         fade_snap_put(m, rzsf4);
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
@@ -1341,15 +1348,42 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     return C;
 }
 
-/* Face decode for one walk record: the patched decode when the record's
- * keyframe carries a patch list under the .s gate (ZSF4 > 0 — the LP tier
- * never patches), else the plain Tier-1 cache. */
-static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
-    if (R->zsf4 > 0 && R->frameA >= 0x80000000u && R->header >= 0x80000000u
-        && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u)
-        return fpcache_get(cpu, R->faceblock, R->header, R->frameA);
-    return fcache_get(cpu, R->faceblock);
+/* Face decode for one (faceblock, header, keyframe) triple: the patched
+ * decode when the keyframe carries a patch list under the .s gate (ZSF4 > 0
+ * — the LP tier never patches), else the plain Tier-1 cache. */
+static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t fb, uint32_t header,
+                                      uint32_t frameA, int zsf4) {
+    if (zsf4 > 0 && frameA >= 0x80000000u && header >= 0x80000000u
+        && (cpu->read_word(frameA + 4u) & 0xFFFFu) != 0u)
+        return fpcache_get(cpu, fb, header, frameA);
+    return fcache_get(cpu, fb);
 }
+static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
+    return moby_faces_for(cpu, R->faceblock, R->header, R->frameA, R->zsf4);
+}
+/* PREV-keyframe faces for the sub-tick COLOUR crossfade (the faces the game
+ * drew last tick, with last tick's patches). NULL = snap. Face-for-face
+ * colour correspondence needs prev/curr to share faceblock + colour blocks
+ * (true within a clip and across the blast's clip switch; anything else
+ * snaps). */
+static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
+    if (R->frameA_p < 0x80000000u) return NULL;
+    uint32_t hp = (R->header_p >= 0x80000000u) ? R->header_p : R->header;
+    if (hp != R->header) {
+        if (cpu->read_word(hp + 0x14) != cpu->read_word(R->header + 0x14) ||
+            cpu->read_word(hp + 0x18) != cpu->read_word(R->header + 0x18) ||
+            cpu->read_word(hp + 0x20) != cpu->read_word(R->header + 0x20)) return NULL;
+    }
+    return moby_faces_for(cpu, R->faceblock, hp, R->frameA_p, R->zsf4);
+}
+/* Per-channel colour lerp (values are 0x00BBGGRR walk colours). */
+static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
+    int r = (int)(a & 0xFFu)         + (int)lroundf(((int)(b & 0xFFu)         - (int)(a & 0xFFu))         * t);
+    int g = (int)((a >> 8) & 0xFFu)  + (int)lroundf(((int)((b >> 8) & 0xFFu)  - (int)((a >> 8) & 0xFFu))  * t);
+    int bl = (int)((a >> 16) & 0xFFu) + (int)lroundf(((int)((b >> 16) & 0xFFu) - (int)((a >> 16) & 0xFFu)) * t);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)bl << 16);
+}
+static long s_clerp_recs;   /* tier-census: records colour-crossfaded this window */
 
 /* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
  * No backface cull yet (the winding sign is determined from the A/B's nclip
@@ -1423,6 +1457,24 @@ static int build_walk_tris_inner(CPUState* cpu) {
         const uint8_t* cb_host = (const uint8_t*)openpete_psx_to_host_ptr(cbase);
         const uint8_t* fb_host = farbase ? (const uint8_t*)openpete_psx_to_host_ptr(farbase) : NULL;
         int host_col = (cb_host != NULL) && (farbase == 0 || fb_host != NULL);
+        /* Sub-tick COLOUR crossfade (patch-animated effects): the fade of the
+         * Gnasty-blast dome/rings is per-KEYFRAME colour-index re-pointing down
+         * a pre-baked ladder (faceblock patches) — the colour block itself is
+         * static, so colours snap each keyframe (~15Hz). Crossfade per face
+         * between the PREV drawn keyframe's colours and the curr ones by the
+         * SAME alpha that lerps the vertex streams — endpoints are exactly the
+         * two states the game drew. Only fetched when a patch list is in play
+         * (prev==curr faces otherwise makes it a no-op). */
+        const fcache_t* FCp = NULL; float clr_a = 0.f;
+        if (R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
+            int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
+            int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
+            if (curr_p || prev_p) {
+                FCp = moby_faces_for_prev(cpu, R);
+                if (FCp == FC || (FCp && FCp->nfaces != FC->nfaces)) FCp = NULL;
+                if (FCp) { clr_a = R->clr_alpha; s_clerp_recs++; }
+            }
+        }
         s_walkdiag.faces  += FC->raw;
         s_walkdiag.sprite += FC->sprites;
         s_walkdiag.skip   += FC->skips;
@@ -1493,6 +1545,34 @@ static int build_walk_tris_inner(CPUState* cpu) {
                 c1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c1);
                 c2 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c2);
                 c3 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c3);
+            }
+            if (FCp) {   /* colour crossfade: prev-keyframe colours -> curr by clr_a */
+                const wface_t* P = &FCp->f[fi];
+                uint32_t p0, p1, p2, p3v;
+                if (host_col) {
+                    p0 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c0);
+                    p1 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c1);
+                    p2 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c2);
+                    p3v = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c3);
+                } else {
+                    p0 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c0);
+                    p1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c1);
+                    p2 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c2);
+                    p3v = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c3);
+                }
+                uint32_t c0curr = c0;
+                c0 = moby_clerp(p0, c0, clr_a);
+                c1 = moby_clerp(p1, c1, clr_a);
+                c2 = moby_clerp(p2, c2, clr_a);
+                c3 = moby_clerp(p3v, c3, clr_a);
+                /* OPENPETE_MOBY_CLERP_DBG=1: face-0 ramp per present — must run
+                 * monotonically prev->curr within each keyframe hold */
+                { static int s_cd = -1;
+                  if (s_cd < 0) { const char* e = getenv("OPENPETE_MOBY_CLERP_DBG"); s_cd = (e && *e && *e != '0'); }
+                  if (s_cd && fi == 0)
+                      fprintf(stderr, "[clerp] f=%u m=%08X a=%.3f p=%06X c=%06X out=%06X\n",
+                              openpete_frame, R->moby, (double)clr_a,
+                              p0 & 0xFFFFFFu, c0curr & 0xFFFFFFu, c0 & 0xFFFFFFu); }
             }
             /* v3 (4th-vertex) gouraud colour: its index is the HIGH field of the
              * fp+8 word ((v4w>>9)&0x7FC), the sibling of the SXY index in the low
@@ -2432,17 +2512,17 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld hold=%ld\n",
+                    "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss,
-                    s_fp_hit, s_fp_miss, s_hold_replayed);
+                    s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_calls = 0;
-            s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0;
+            s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
         }
     }
 
@@ -3918,7 +3998,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, zsf4),
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA };
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
+            fap, hdrp, (float)balpha };
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
