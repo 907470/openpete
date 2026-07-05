@@ -23,6 +23,7 @@
       "binaryDir": "${sourceDir}/build/windows-mingw",
       "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64.cmake",
       "cacheVariables": {
+        "OPENPETE_SKIP_DECOMP": "ON",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_FLAGS": "-march=x86-64-v3",
         "CMAKE_CXX_FLAGS": "-march=x86-64-v3"
