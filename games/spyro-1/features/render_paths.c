@@ -125,6 +125,11 @@ static void render_paths_commit(void) {
      * present that just committed become the (only) fresh set for the sub-tick
      * re-extracts that follow. */
     spyro_native_canon_epoch_commit();
+    /* Sync the native background clear from g_CurDB->m_DrawEnv (the env the
+     * game's DrawOTag will apply to the scene being presented) — the PutDrawEnv
+     * thunk latch trails the OT build by one VSync and flashed the stale
+     * homeworld clear at the portal-entry transition boundary. */
+    cyclorama_native_env_clear_commit();
 }
 
 bool render_path_addr_visible(uint32_t addr) {

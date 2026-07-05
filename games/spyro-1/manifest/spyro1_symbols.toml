@@ -88,6 +88,17 @@ name = "G_LEVELID"
 addr = 0x8007596C
 note = "g_LevelId; ==63 (Gnasty) -> width>>2 + R<->G swap"
 
+# ---- double-buffer draw contexts ----
+[[symbol]]
+name = "G_DB"
+addr = 0x80076EE0
+note = "g_DB[2] — DB double-buffer pair, sizeof(DB)=0x84; m_DrawEnv @+0x00 (PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B)"
+
+[[symbol]]
+name = "G_CUR_DB"
+addr = 0x80075888
+note = "g_CurDB — DB* of the pass under construction; GamestateDraw flips it at the TOP of every draw pass, so at host-present time it names the pass the live scene came from"
+
 # ---- shared scratch / cursors ----
 [[symbol]]
 name = "G_SCRATCH"

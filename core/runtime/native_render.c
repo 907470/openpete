@@ -258,17 +258,30 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
 
 /* Gamestate draw-env clear colour (the framebuffer background the canonical
- * render auto-clears to). Captured from the PutDrawEnv thunk; the primary bg
- * source in draw_native_scene (preferred over g_Cyclorama, which is stale in
- * cyclorama-less states). rgba R,G,B,A; 0 = unset / no auto-clear → fall back to
- * the scene-fed colour. Persists across sub-tick presents (PutDrawEnv only fires
- * on canonical frames). */
+ * render auto-clears to). Two producers: the PutDrawEnv thunk (fallback,
+ * trails the OT build by one VSync — the game PutDrawEnvs an OT's env only
+ * when it DRAWS it) and the game module's per-canonical-present sync from the
+ * DRAWENV struct in RAM (spyro-1: cyclorama_native_env_clear_commit reads
+ * g_CurDB->m_DrawEnv, the env the presented scene's DrawOTag will use —
+ * without it the transition boundary flashed the stale clear for a present).
+ * The primary bg source in draw_native_scene (preferred over g_Cyclorama,
+ * which is stale in cyclorama-less states). rgba R,G,B,A; 0 = unset / no
+ * auto-clear → fall back to the scene-fed colour. Persists across sub-tick
+ * presents (both producers fire on canonical frames only). */
 static uint32_t s_drawenv_clear = 0;
 void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
-    s_drawenv_clear = isbg
+    uint32_t v = isbg
         ? (0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
                        | ((uint32_t)(b & 0xFF) << 16))
         : 0u;   /* no auto-clear → defer to the scene-fed bg / ref corner */
+    {
+        static int s_census = -1;
+        if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
+        if (s_census && v != s_drawenv_clear)
+            fprintf(stderr, "[census f=%u CLEAR] isbg=%d rgb=%08x (was %08x)\n",
+                    s_scene_frame, isbg, v, s_drawenv_clear);
+    }
+    s_drawenv_clear = v;
 }
 /* The game's fade for THIS tick + a "set this tick" flag. The flag (not the
  * begin_frame reset of s_scene_fade) is what tells the re-extract whether the
@@ -2516,9 +2529,9 @@ static bool draw_native_scene(bool full_extent)
                 if (scene[t].blend != 0) blend++;
                 else if (scene[t].category >= 0 && scene[t].category <= 12) cat[scene[t].category]++;
             }
-            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u\n",
+            fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u denv=%08x sbg=%08x\n",
                     s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
-                    cat[10], cat[11], blend, scene_fade, scene_freeze);
+                    cat[10], cat[11], blend, scene_fade, scene_freeze, s_drawenv_clear, scene_bg);
         }
     }
 

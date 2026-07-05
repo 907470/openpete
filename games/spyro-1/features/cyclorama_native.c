@@ -26,6 +26,7 @@
 
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
+#include "openpete_psx.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
@@ -511,6 +512,34 @@ void cyclorama_native_reextract(CPUState* cpu) {
     if (s_cyc_a1 == 0 || s_cyc_a2 == 0) return;   /* no real frame captured yet */
     cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2);
     push_scene(cpu);
+}
+
+/* ---- present-time draw-env clear sync (portal-entry flash fix) ---------
+ * The native background fill (s_drawenv_clear) used to come only from the
+ * PutDrawEnv THUNK latch — but the game calls PutDrawEnv one VSync AFTER it
+ * builds (and we feed) each OT: GamestateDraw flips g_CurDB at the top of the
+ * pass, the gamestate writes g_CurDB->m_DrawEnv.r0g0b0 (e.g. GS_LevelTransition
+ * = g_Cyclorama.m_BackgroundColor, fresh destination sky), builds the OT
+ * (feeders fire), then VSync-WAITS — yielding to the host, which PRESENTS the
+ * just-fed scene — and only then PutDrawEnv+DrawOTag. So at the transition
+ * boundary the live present paired the NEW scene with the OLD latched clear:
+ * a 1-present flash of the homeworld background under the destination sky.
+ * PsyCross never flashes because it composes the OT only at DrawOTag, after
+ * the env applies.
+ *
+ * Fix: at every canonical host present (render_paths_commit), re-read the
+ * clear from the DRAWENV STRUCT the game keeps in RAM — g_CurDB->m_DrawEnv —
+ * which by the flip-at-pass-top invariant is exactly the env DrawOTag will
+ * use for the scene being presented. State-universal: every gamestate writes
+ * its clear into the struct before building the OT (GS_ExitLevel even writes
+ * its ColorLerp fade step there). The thunk latch stays as the fallback for
+ * the brief boot window where g_CurDB doesn't point at g_DB[] yet. */
+void cyclorama_native_env_clear_commit(void) {
+    const uint32_t curdb = *(const uint32_t*)openpete_psx_to_host_ptr(G_CUR_DB);
+    if (curdb != G_DB && curdb != G_DB + 0x84u) return;   /* not a valid DB* yet */
+    const uint8_t* env = (const uint8_t*)openpete_psx_to_host_ptr(curdb);
+    /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B (m_DrawEnv is DB +0x00) */
+    openpete_native_set_clear_color(env[0x18], env[0x19], env[0x1A], env[0x1B]);
 }
 
 static const feature_dispatch_entry_t cyc_dispatch[] = {

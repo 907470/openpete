@@ -90,6 +90,13 @@ void flame_native_set_subframe(double frac);
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
 void cyclorama_native_reextract(struct CPUState* cpu);
+/* Present-time draw-env clear sync (called from render_paths_commit, once per
+ * canonical present): re-reads the clear colour from g_CurDB->m_DrawEnv in PSX
+ * RAM — the env DrawOTag will use for the scene being presented — instead of
+ * the PutDrawEnv thunk latch, which trails the OT build by one VSync and
+ * flashed the stale homeworld background for one present at the portal-entry
+ * transition boundary. Defined in cyclorama_native.c. */
+void cyclorama_native_env_clear_commit(void);
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */
