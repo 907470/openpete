@@ -175,6 +175,34 @@ is cut at the loop point.
 The disc image is still required — the override only replaces music
 playback; level data, SFX, and everything else still come from the disc.
 
+## Custom textures (HD packs)
+
+Drop replacement PNGs into `assets/textures/replacements/` **next to the
+executable** and the native renderer displays them in place of the
+original PSX textures — 3D world/moby textures, HUD sprites, and the
+title logo alike. Any resolution works (the image is sampled normalized
+over the texel box it replaces, with linear filtering and real per-texel
+alpha). Presentation-only by construction: replacements never touch the
+game's VRAM or any gameplay-readable byte.
+
+The workflow is **dump → edit → drop in**:
+
+```
+OPENPETE_TEXPACK_DUMP_DIR=dumps ./openpete-spyro1 ...   # play; textures dump as they draw
+# edit/upscale dumps/<name>.png at any resolution, keep the filename
+cp dumps/<name>.png assets/textures/replacements/
+```
+
+Filenames are the identity — `<content-hash>-<x>x<y>+<w>x<h>-<palette-
+hash>-<bpp>bpp.png`, derived from the *uploaded* texture data, so they are
+stable across levels, VRAM repacking, and sessions. A file covers every
+draw that samples inside its texel box (one tile file serves both terrain
+LOD tiers). Partial packs are fine — anything without a replacement draws
+the original. `OPENPETE_TEXPACK_DIR=<dir>` overrides the pack location.
+
+Replacement applies in the native (`--renderer vk`, default) display path;
+`--headless` and the PsyCross reference path always render the originals.
+
 ## Disc requirement
 
 Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair. The .bin's
