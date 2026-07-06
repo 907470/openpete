@@ -509,8 +509,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
  * Same carve-out as the hook: only when the zero-distance tier is near-band
  * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring puffs shrink
  * m_Renderer) and keeps the canonical value. */
-static int record_zsf4(CPUState* cpu, uint32_t rec) {
+static int record_zsf4(CPUState* cpu, uint32_t rec, int* raw_out) {
     int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
+    if (raw_out) *raw_out = zsf4;
     if (openpete_no_lod) {
         uint32_t mob = cpu->read_word(rec + 0x34);
         if (mob >= 0x80000000u) {
@@ -546,7 +547,8 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
                  float env_az;
                  uint32_t frameA;
-                 uint32_t frameA_p, header_p; float clr_alpha; } rec_meta;
+                 uint32_t frameA_p, header_p; float clr_alpha;
+                 int zsf4_raw; } rec_meta;
                  /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
                  * may carry a render-time FACEBLOCK PATCH list (see
                  * moby_faces_for_record) — 0 = no patch lookup.
@@ -562,6 +564,11 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  whose addr is then 0 — there is no live +0x1600 record behind them);
                  zsf4 = per-moby colour fade level (high16 of the cull record's matrix word @+0x2C,
                  cfc2 gte_ctrl[30]); see moby_color_fade_ir0 */
+                 /* zsf4_raw (trailing field, set after the positional literal) =
+                 * the CANONICAL verdict before the --no-lod neutralize. When they
+                 * differ and raw < 1024, the .s prims carry fog-band colours the
+                 * native walk intentionally dropped — adopt_prim_colors must not
+                 * copy them back (the --no-lod distant-chest saturation). */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
 /* Per-moby ZSF4 (colour-fade) snapshot, keyed by Moby*. Filled from the live .s
@@ -569,12 +576,20 @@ static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
  * host-side records (no live cull record to read +0x2C from) and looks the fade up
  * here, so fading effect mobys (ring puffs) fade on intermediate presents too
  * instead of flickering back to full brightness. Cleared once per canonical frame. */
-static struct { uint32_t moby; int zsf4; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
+static struct { uint32_t moby; int zsf4; int zsf4_raw; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
 static void fade_snap_clear(void) { s_fade_snap_n = 0; }
-static void fade_snap_put(uint32_t moby, int zsf4) {
+static void fade_snap_put2(uint32_t moby, int zsf4, int zsf4_raw) {
     if (moby < 0x80000000u) return;
-    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; return; }
-    if (s_fade_snap_n < MAX_RECORDS) { s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4; s_fade_snap_n++; }
+    for (int i = 0; i < s_fade_snap_n; i++)
+        if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; s_fade_snap[i].zsf4_raw = zsf4_raw; return; }
+    if (s_fade_snap_n < MAX_RECORDS) {
+        s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4;
+        s_fade_snap[s_fade_snap_n].zsf4_raw = zsf4_raw; s_fade_snap_n++;
+    }
+}
+static int fade_snap_get_raw(uint32_t moby, int dflt) {
+    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4_raw;
+    return dflt;
 }
 static int fade_snap_get(uint32_t moby, int dflt) {
     for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4;
@@ -622,6 +637,8 @@ static long s_tier_lpskip;   /* far-tier records skipped by the LP vertex count 
                               * (no LP mesh): the .s draws NOTHING for them */
 static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis distance-band
                               * cull mirror (block_80022B40..90 — the distant-gem hide) */
+static long s_adopt_fogskip; /* adopt candidates skipped by the --no-lod fog-suppression
+                              * gate (the .s prim colours are the fog we neutralized) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
 static long s_tier_adopt;   /* adopt_prim_colors recolours since last print — a far-palette
                              * mismatch floods this (the pre-fix flicker); healthy is ~0 */
@@ -667,7 +684,8 @@ static int project_all_records_inner(CPUState* cpu) {
          * vertex-count read ([hdr+8+(ZSF4>>31)], 0 = record skipped) needs it.
          * Snapshotted into fade_snap below, so the sub-tick re-extract
          * inherits the (--no-lod-neutralized) tier too. */
-        int zsf4 = record_zsf4(cpu, rec);
+        int zsf4_raw;
+        int zsf4 = record_zsf4(cpu, rec, &zsf4_raw);
         int got = moby_project_record(cpu, rec, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
@@ -686,7 +704,8 @@ static int project_all_records_inner(CPUState* cpu) {
                 atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
                        (float)(int32_t)cpu->read_word(rec + 0x10)),
                 cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
-            fade_snap_put(s_recs[nrec].moby, zsf4);
+            s_recs[nrec].zsf4_raw = zsf4_raw;
+            fade_snap_put2(s_recs[nrec].moby, zsf4, zsf4_raw);
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
                 else if (zsf4 > 0) s_tier_fog++;
@@ -989,8 +1008,9 @@ static void append_revealed_regular(CPUState* cpu) {
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
-        int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
+        int rzsf4_raw = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
+        int rzsf4 = rzsf4_raw;
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the
          * distance term for records that are near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
@@ -1002,7 +1022,8 @@ static void append_revealed_regular(CPUState* cpu) {
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
-        fade_snap_put(m, rzsf4);
+        s_recs[s_nrecs].zsf4_raw = rzsf4_raw;
+        fade_snap_put2(m, rzsf4, rzsf4_raw);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
@@ -1067,7 +1088,11 @@ typedef struct {
 static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
+static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's fog band: the .s
+                                         * prims carry fogged colours the walk dropped — adopt
+                                         * must NOT copy them back (distant-chest saturation) */
 static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
+static int     s_cur_fogsup;          /* per-record: --no-lod dropped a live fog band here */
 
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
  * each emitted walk tri so the canonical frame can snapshot the .s's transient
@@ -1115,6 +1140,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
     s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
+    s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
     s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
     ntri_t* t = &s_wtri[s_wtri_n++];
@@ -1486,6 +1512,14 @@ static int build_walk_tris_inner(CPUState* cpu) {
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
+        /* --no-lod fog suppression marker: the neutralize replaced a canonical
+         * verdict that was IN the fog band (raw < 1024) — the .s prims for this
+         * record carry fogged colours (vk mode never arms the game-side
+         * neutralize channel), so adopt_prim_colors must skip its tris or the
+         * fog leaks back in (the distant-chest saturation). Exempt records
+         * (effect-authored fades, adj == raw) keep adopting — their ladder is
+         * canonical in both walks, so the adopt delta is true transients. */
+        s_cur_fogsup = (openpete_no_lod && R->zsf4 != R->zsf4_raw && R->zsf4_raw < 1024) ? 1 : 0;
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
         const fcache_t* FC = moby_faces_for_record(cpu, R);   /* Tier-1 decode (patch-aware) */
@@ -2202,6 +2236,11 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
             }
             if (bx1 - bx0 < 6.0 && by1 - by0 < 6.0) continue;
         }
+        /* --no-lod fog-suppression gate: this tri's record had a live canonical
+         * fog band the walk neutralized. The .s prim colours ARE the fog —
+         * adopting them re-fogs exactly what the flag turned off (the distant-
+         * chest orange saturation). Exempt (effect-fade) records pass through. */
+        if (s_wtri_fogsup[wi]) { s_adopt_fogskip++; continue; }
         double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
         int wcxg = (int)((wcx + ADG_OFF) / ADG_CELL); if (wcxg < 0) wcxg = 0; else if (wcxg >= ADG_W) wcxg = ADG_W - 1;
@@ -2651,14 +2690,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         static int s_tier_cnt = 0;
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
-                    "zsf4-mirror ok=%ld bad=%ld | adopt=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
+                    "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
                     "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
-                    s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
+                    s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed);
-            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = 0;
+            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_calls = 0;
@@ -3515,6 +3554,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : model_3d ? "HUD3D" : "HUDflat");
         }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
+        s_cur_fogsup = 0;         /* shaded mobys have no fog band — never fog-suppressed */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
                  : 0;
@@ -4236,6 +4276,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             fap, hdrp, (float)balpha };
+        s_recs[s_nrecs].zsf4_raw = fade_snap_get_raw(mobys[i], zsf4);
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
