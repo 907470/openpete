@@ -581,7 +581,7 @@ static void flame_feed_scaffold(CPUState* cpu) {
     if (s_gte_n <= 0) return;
     double tr[3]; flame_origin_tr(cpu, tr);
     float vz = (float)tr[2];
-    float depth = openpete_native_depth_from_viewz(vz);
+    float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(vz));
     openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
     for (int p = 0; p < s_gte_n; p++) {
         prim_t* t = &s_gte[p];
@@ -628,7 +628,7 @@ static void flame_feed_native(CPUState* cpu) {
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j];
-                st.v[k].z  = openpete_native_depth_from_viewz(q->sz[j]);
+                st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(q->sz[j]));
                 st.v[k].u  = (float)q->u[j]; st.v[k].v = (float)q->v[j];
                 st.v[k].rgba = (q->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
             }
@@ -642,7 +642,7 @@ static void flame_feed_native(CPUState* cpu) {
         openpete_scene_tri st;
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
-            st.v[k].z  = openpete_native_depth_from_viewz(c->sz[k]);
+            st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(c->sz[k]));
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

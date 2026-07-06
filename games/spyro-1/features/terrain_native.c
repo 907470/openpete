@@ -1979,7 +1979,7 @@ static void terrain_feed_native(void) {
              * which a distance-PROPORTIONAL pull models correctly. Retained,
              * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
              * LP, where it is inert — nothing shares its surface.) */
-            float vzf = (float)t->vz[k] * 16.0f;
+            openpete_worldvz wz = openpete_worldvz_scaled((float)t->vz[k], 16.0f);
             /* FILL depth = the SAME ×1.03 as its canonical LP twin, so the two
              * copies TIE exactly (fill drawn later wins where quantize+grow
              * differ) instead of the fill sitting 3% NEARER — which let a
@@ -1989,9 +1989,9 @@ static void terrain_feed_native(void) {
             {
                 static int s_fillpull = -1;
                 if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
-                if (t->tier && (s_fillpull || !t->fill)) vzf *= 1.03f;   /* tier==1 → LP */
+                if (t->tier && (s_fillpull || !t->fill)) wz = openpete_worldvz_bias(wz, 1.03f);   /* tier==1 → LP */
             }
-            tri.v[k].z  = openpete_native_depth_from_viewz(vzf);
+            tri.v[k].z  = openpete_native_depth_from_viewz(wz);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:

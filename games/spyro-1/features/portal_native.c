@@ -343,7 +343,8 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * feeder-side constant is the equivalent that touches only this file.) Tunable. */
 #define PORTAL_CYCLORAMA_DEPTH_OFFSET 0.0015f
 static float portal_cyclorama_depth(double vz) {
-    float z = openpete_native_depth_from_viewz((float)vz) - PORTAL_CYCLORAMA_DEPTH_OFFSET;
+    float z = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz))
+              - PORTAL_CYCLORAMA_DEPTH_OFFSET;
     return z < 0.0f ? 0.0f : z;
 }
 /* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
@@ -375,7 +376,10 @@ static int portal_sky_depth_mode(void) {
 static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
 static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
 static float ring_depth(void) {
-    float z = openpete_native_depth_from_viewz((float)s_ring_vz) + 0.0015f;
+    /* +OFFSET (not −): the ring construction wants the sky BEHIND the outline
+     * it was measured from — the same constant, opposite direction. */
+    float z = openpete_native_depth_from_viewz(openpete_worldvz_full((float)s_ring_vz))
+              + PORTAL_CYCLORAMA_DEPTH_OFFSET;
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
@@ -384,7 +388,7 @@ static float ot_depth(void) {
      * per-face by the PORTAL_GUARD redraw (the PSX mask-bit mirror), not by
      * a depth floor (a blanket floor over-protects the non-deferred
      * through-hole floor, which the preview must cover). */
-    return openpete_native_depth_from_viewz((float)s_ot_vz);
+    return openpete_native_depth_from_viewz(openpete_worldvz_full((float)s_ot_vz));
 }
 /* Returns the active constant-depth mode (0 none, 1 ring, 2 ot) + *z.
  * ot mode COMBINES with the per-pixel plane: the sky z is
@@ -849,7 +853,8 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
         s_skyout_n = pn;
         s_ring_vz = maxvz;
         s_sky_fed_frame = openpete_frame;
-        s_skyout_back = openpete_native_depth_from_viewz((float)maxvz) + 0.0015f;
+        s_skyout_back = openpete_native_depth_from_viewz(openpete_worldvz_full((float)maxvz))
+                        + PORTAL_CYCLORAMA_DEPTH_OFFSET;   /* behind the ring, same constant as ring_depth */
         if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
     }
 
@@ -951,7 +956,7 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
                     "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes  fogFC=%06X IR0=%u(t=%.3f)\n",
             openpete_frame, which, a0, col, rx0, rx1, ry0, ry1,
             (int32_t)cpu->read_word(D_PORTAL_DEPTH), vz,
-            (double)openpete_native_depth_from_viewz((float)(vz > 1.0 ? vz : 16384.0)),
+            (double)openpete_native_depth_from_viewz(openpete_worldvz_full((float)(vz > 1.0 ? vz : 16384.0))),
             (end > start) ? (end - start) : 0, fog, ir0, (double)ir0 / 4096.0);
     /* Widescreen bug probe: the CLAMPED .s scissor rect (above) vs the native
      * projected-outline bbox (which widens through scene_to_clip). If the outline

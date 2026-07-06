@@ -706,7 +706,7 @@ static void particle_feed_native(CPUState* cpu) {
         float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
         float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
         uint32_t cc[4] = { l->rgb0, l->rgb0, l->rgb1, l->rgb1 };  /* gouraud along the line */
-        float depth = openpete_native_depth_from_viewz(l->cz);
+        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(l->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st;
             for (int k = 0; k < 3; k++) {
@@ -724,7 +724,7 @@ static void particle_feed_native(CPUState* cpu) {
     if (s_fq_n <= 0) return;
     for (int i = 0; i < s_fq_n; i++) {
         fquad* q = &s_fq[i];
-        float depth = openpete_native_depth_from_viewz(q->cz);
+        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(q->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st;
             for (int k = 0; k < 3; k++) {
@@ -843,7 +843,11 @@ static void glow_feed_native(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_gtri_n; i++) {
         gtri* t = &s_gtri[i];
-        float depth = openpete_native_depth_from_viewz((float)(t->cz * GLOW_AURA_BEHIND_MOBY_BIAS));
+        /* cz is full-world; the behind-moby push is an ordering BIAS, applied
+         * here as the original double-precision product (a float-typed
+         * openpete_worldvz_bias would round differently in the last ULP). */
+        float depth = openpete_native_depth_from_viewz(
+            openpete_worldvz_full((float)(t->cz * GLOW_AURA_BEHIND_MOBY_BIAS)));
         openpete_scene_tri st;
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
@@ -988,7 +992,7 @@ static void sparkle_feed_native(CPUState* cpu) {
         if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
         float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
         float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
-        float depth = openpete_native_depth_from_viewz(l->cz);
+        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(l->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st;
             for (int k = 0; k < 3; k++) {

@@ -245,34 +245,77 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * gouraud G4/G3). EXCLUDED from the occlusion depth pre-pass: rasterized
  * unstencilled there, a bulging LP would be a phantom occluder. */
 #define OPENPETE_SCENE_WORLD_FILL 11
-/* carry: 1 = this tri is screen-space 2D-UI that the sub-tick re-extract canNOT
+/* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
  * for tris that share a re-derivable category (the 2D-UI sprites/lines live in
  * OPENPETE_SCENE_HUD, which the moby feeder ALSO populates with re-derived near-OT
- * billboards). A category check can't tell them apart; this flag can. Set by
- * add_tri from its explicit `carry` argument (0 unless a feeder opts in). */
+ * billboards). A category check can't tell them apart; this flag can. Passed as
+ * add_tri's explicit `carry` argument (0 unless a feeder opts in). */
+/* The FEEDER-FACING tri: geometry + material only. The routing state —
+ * category / carry / portal group — is NOT a struct field: it travels
+ * exclusively through the add_tri arguments and lives on the renderer's
+ * internal stored tri (native_render.c). A feeder that tries to write
+ * `tri.category = …` gets a compile error instead of a silently-ignored
+ * field (W0.7b). */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
-    int category;
-    int carry;
-    int group;   /* per-portal grouping id for the PORTAL_* categories (set via
-                  * add_tri_grouped; plain add_tri stores 0). Ignored for every
-                  * other category. */
 } openpete_scene_tri;
 
-/* Map a GTE view-space Z (larger = farther; same units the GTE projects with,
- * 1.0 == 4096) to an NDC depth in [0,1) that is monotonic in distance, so the
- * depth buffer sorts actors near→far. Not perspective-exact (the native render
- * only needs correct ORDERING, not PSX-bit-identical Z); the 4096 scale spreads
- * typical actor depths across the usable range. Shared by every feeder so their
- * depths are mutually comparable. */
-static inline float openpete_native_depth_from_viewz(float vz) {
+/* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------
+ *
+ * The native depth buffer stores z = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE),
+ * 0(near)..→1(far), monotonic in distance, where vz is FULL-WORLD view-space Z
+ * (the GTE MAC3 of full-world camera-relative coords; larger = farther,
+ * 1.0 == 4096 GTE units). Not perspective-exact — the native render needs
+ * correct ORDERING, not PSX-bit-identical Z; 4096 spreads typical actor depths
+ * across the usable range.
+ *
+ * The conversion takes an openpete_worldvz, which can ONLY be built through
+ * the unit-claiming constructors below — a bare float is a compile error. A
+ * GTE path that produces sub-scaled Z must normalize through _scaled naming
+ * its unit. This enforces the "every feeder hands in the SAME absolute scale"
+ * invariant whose prose-only form shipped ×4 / ×2^m_scale sorting bugs
+ * (world/4 feeders drew through terrain). Known per-feeder units:
+ *   terrain            world/16 (camera>>4, verts /16)  → _scaled(vz, 16)
+ *   moby shadows       world/4  (cam+pos >>2)           → _scaled(vz, 4)
+ *   moby records       world/2^m_scale — normalized at project time; feeds _full
+ *   particles (world)  world/4 — normalized at build (PART_VZ_WORLD4); feeds _full
+ *   spyro / flame / tracer / portal / glows  full-world  → _full
+ *
+ * GPU mirrors of this mapping / its inverse (keep in sync if the constant
+ * ever changes): core/rhi/shaders/psx_scene.vert, quad.vert, prepass.vert,
+ * shadow_decal.frag (viewz_from_scene_depth). */
+#define OPENPETE_DEPTH_VIEWZ_SCALE 4096.0f
+
+/* A full-world view-Z. Only the constructors below produce one. */
+typedef struct { float vz; } openpete_worldvz;
+
+/* vz is ALREADY full-world view-Z (raw GTE MAC3 of full-world coords, or a
+ * value normalized to full-world upstream where the unit is known). */
+static inline openpete_worldvz openpete_worldvz_full(float vz) {
+    openpete_worldvz w; w.vz = vz; return w;
+}
+/* vz is full-world DIVIDED BY mul (vz*mul == full-world): the unit claim for
+ * sub-scaled GTE paths — 4 for >>2 camera paths, 16 for terrain cam>>4,
+ * (1<<m_scale) for moby record scale. */
+static inline openpete_worldvz openpete_worldvz_scaled(float vz, float mul) {
+    openpete_worldvz w; w.vz = vz * mul; return w;
+}
+/* An INTENTIONAL world-proportional ordering bias (mul>1 pushes behind, mul<1
+ * pulls nearer), applied after unit normalization — the terrain LP tier-pull,
+ * the shadow A/B bias envs. Distinct from a unit claim: use _scaled to state
+ * what unit a value is in, _bias to state ordering policy. */
+static inline openpete_worldvz openpete_worldvz_bias(openpete_worldvz z, float mul) {
+    z.vz *= mul; return z;
+}
+static inline float openpete_native_depth_from_viewz(openpete_worldvz z) {
+    float vz = z.vz;
     if (vz < 1.0f) vz = 1.0f;              /* near guard (behind-camera is culled) */
-    return vz / (vz + 4096.0f);            /* 0(near) .. ->1(far), never reaches 1 */
+    return vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE);  /* 0(near) .. ->1(far), never reaches 1 */
 }
 
 /* ---- depth-aware shadow decal (height-above-ground wall rejection) ----------
@@ -347,8 +390,8 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * re-extract can't re-derive) so the overlay-carry snapshot preserves them
  * across the sub-tick rebuild instead of strobing at 30 Hz; 0 otherwise. */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
-/* add_tri with an explicit grouping id (stored in the tri's `group` field —
- * plain add_tri stores 0). Used by the portal feeder to associate each
+/* add_tri with an explicit grouping id (stored on the renderer's internal
+ * tri — plain add_tri stores 0). Used by the portal feeder to associate each
  * portal's PORTAL_MASK footprint with its PORTAL_CYCLORAMA colours so core
  * can stencil-isolate portals per group. No ambient state (same principle as
  * the explicit category/carry args). */

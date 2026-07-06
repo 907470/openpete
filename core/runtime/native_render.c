@@ -33,6 +33,7 @@
 
 #include <math.h>    /* fminf/fmaxf/floorf (prepass recon + occlusion grid) */
 #include <stdbool.h>
+#include <stddef.h>  /* offsetof (scene_tri_t prefix assert) */
 #include <stdint.h>
 #include <stdio.h>   /* snprintf */
 #include <stdlib.h>
@@ -140,7 +141,26 @@ typedef struct {
 #define OVL_SS_FACTOR  4
 #define OVL_REGION_W   0.30f
 #define OVL_REGION_H   0.05f
-static openpete_scene_tri s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
+/* The INTERNAL stored tri (W0.7b): the feeder-facing openpete_scene_tri plus
+ * the routing state that travels through the add_tri arguments. Private to
+ * this TU — feeders can't write routing fields (no such field exists on their
+ * type), and no API ever hands a stored tri back out. The feeder tri is a
+ * strict LAYOUT PREFIX (asserted below), so the store is a prefix memcpy. */
+typedef struct {
+    openpete_scene_vert v[3];
+    int textured;
+    int tpage_x, tpage_y, clut_x, clut_y, bpp;
+    int blend;
+    int category;   /* draw layer (OPENPETE_SCENE_*) — add_tri's explicit arg */
+    int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
+                     * stamped by apply_overlay so the next canonical capture skips it */
+    int group;      /* per-portal grouping id (add_tri_grouped; plain add_tri: 0) */
+} scene_tri_t;
+/* C99 compile-time prefix check: if a field is added to openpete_scene_tri
+ * without mirroring it here (or vice versa), this array gets a negative size. */
+typedef char nr_assert_scene_tri_prefix[
+    (offsetof(scene_tri_t, category) == sizeof(openpete_scene_tri)) ? 1 : -1];
+static scene_tri_t s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
@@ -158,7 +178,7 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
  * OPENPETE_NATIVE_SCENE_DELAY=<n> overrides with an explicit integer depth. */
 #define SCENE_HIST 4   /* ring of completed-frame snapshots; supports delay depth 0..3 */
 #define AB_DIFF_SCENE_DELAY 2   /* ab/diff default: native lagged 2 frames to match PsyCross */
-static openpete_scene_tri s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
+static scene_tri_t s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
 static int                s_scene_hist_n[SCENE_HIST];
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
@@ -229,8 +249,8 @@ void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_
  * to s_scene_disp before the clear, so the present can draw the 1-frame-delayed
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
-static void alpha_census(const openpete_scene_tri* scene, int scene_n);  /* 3c instrument, defined below */
-static bool scene_has_world(const openpete_scene_tri* scene, int n);     /* defined below */
+static void alpha_census(const scene_tri_t* scene, int scene_n);  /* 3c instrument, defined below */
+static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
@@ -294,7 +314,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                       tri->v[2].sx, tri->v[2].sy, tri->v[0].u, tri->v[0].v);
       } }
     if (s_scene_n < MAX_SCENE_TRIS) {
-        s_scene[s_scene_n] = *tri;
+        /* geometry+material prefix copy (the feeder tri IS the stored tri's
+         * layout prefix — asserted at scene_tri_t), then stamp the routing
+         * state from the explicit args. */
+        memcpy(&s_scene[s_scene_n], tri, sizeof *tri);
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
@@ -400,7 +423,7 @@ void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under =
  * but the 3D feeders never re-derive THEM, so they carry by an explicit per-tri
  * flag (set_carry, stamped by add_tri) that the moby near-OT billboards leave 0. */
 #define OVERLAY_CARRY_MAX 1024
-static openpete_scene_tri s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
+static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
 static uint32_t           s_overlay_carry_freeze;
 /* The previous canonical carry set, so apply_overlay can interpolate the SCREEN
@@ -410,7 +433,7 @@ static uint32_t           s_overlay_carry_freeze;
  * by index when the two captures have equal count + matching sprite identity
  * (category/textured/uv), else that tri snaps to curr (a structural change — a
  * blink toggling the count, a glyph swap — is discrete anyway). */
-static openpete_scene_tri s_overlay_prev[OVERLAY_CARRY_MAX];
+static scene_tri_t s_overlay_prev[OVERLAY_CARRY_MAX];
 static int                s_overlay_prev_n;
 /* Wall-clock timestamps of the two most-recent CANONICAL overlay captures, so
  * apply_overlay computes the position/fade interpolation alpha from the OVERLAY's
@@ -539,9 +562,9 @@ void openpete_native_scene_apply_overlay(double alpha) {
      * index pairing meaningless, so snap to curr that present. */
     int pairable = (s_overlay_prev_n == s_overlay_carry_n);
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
-        openpete_scene_tri tri = s_overlay_carry[t];   /* curr; category already stamped */
+        scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
         if (pairable) {
-            const openpete_scene_tri *p = &s_overlay_prev[t];
+            const scene_tri_t *p = &s_overlay_prev[t];
             /* Same sprite? A rigid screen translation (the slide) keeps the texture
              * region, so category + textured + the first vertex's UV identify it; a
              * glyph swap at the same slot differs in UV and snaps to curr. */
@@ -564,7 +587,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
  * a reference-compare delay is set (A/B-synced with the lagged reference), else
  * the live accumulator (vk-only, runs ahead). Falls back to the live frame
  * during warmup before enough history has accumulated. */
-static const openpete_scene_tri* scene_present_buf(int* out_n, uint32_t* out_bg,
+static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
                                                    uint32_t* out_fade, uint32_t* out_freeze,
                                                    int* out_hud_under) {
     int depth = scene_delay_depth();
@@ -629,7 +652,7 @@ static float inpaint_reach(void) {
  * framebuffer instead of the cyclorama" under the high-FPS spine's pause menu. A real
  * gameplay frame always carries terrain (WORLD) and/or mobys (ACTOR), so gate on
  * those and the transition frame is rejected, preserving the last full world. */
-static bool scene_has_world(const openpete_scene_tri* scene, int n) {
+static bool scene_has_world(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++) {
         int c = scene[t].category;
         /* SKY counts as world: the cyclorama was WORLD before the W2.6-c split
@@ -2026,7 +2049,7 @@ static int occl_active(void)
  * SUBTRACT group's membership test, mirrored: blend 3, not HUD-routed.) Gates
  * both the opaque_depth allocation and the per-present pre-pass, so menus /
  * cutscenes / shadowless scenes pay nothing. */
-static int scene_has_spyro_shadow(const openpete_scene_tri* scene, int scene_n)
+static int scene_has_spyro_shadow(const scene_tri_t* scene, int scene_n)
 {
     for (int t = 0; t < scene_n; t++) {
         int c = scene[t].category;
@@ -2049,7 +2072,7 @@ static void ensure_opaque_depth(void)
     static int s_failed = 0;
     if (s_failed) return;               /* device can't sample depth — fallback pipe */
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
     if (scene_n <= 0) return;
     /* The pre-pass serves THREE consumers: the shadow decal, the moby
      * occlusion grid, and the far-band seam inpaint. Allocate when any
@@ -2088,7 +2111,7 @@ static void native_depth_prepass(void)
     s_od_ready = 0;
     if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active() &&
@@ -2559,10 +2582,10 @@ static uint32_t bg_from_ref_corner(void)
  * scene index of each textured block-tri, in VB order, so the draw side can read
  * a tri's material and coalesce adjacent same-material runs into one draw. */
 static int s_txscene[MAX_SCENE_TRIS];
-static const openpete_scene_tri* s_txsort_scene;   /* qsort context (set per call) */
+static const scene_tri_t* s_txsort_scene;   /* qsort context (set per call) */
 static int tex_mat_cmp(const void* pa, const void* pb) {
-    const openpete_scene_tri* a = &s_txsort_scene[*(const int*)pa];
-    const openpete_scene_tri* b = &s_txsort_scene[*(const int*)pb];
+    const scene_tri_t* a = &s_txsort_scene[*(const int*)pa];
+    const scene_tri_t* b = &s_txsort_scene[*(const int*)pb];
     if (a->tpage_y != b->tpage_y) return a->tpage_y < b->tpage_y ? -1 : 1;
     if (a->tpage_x != b->tpage_x) return a->tpage_x < b->tpage_x ? -1 : 1;
     if (a->clut_y  != b->clut_y ) return a->clut_y  < b->clut_y  ? -1 : 1;
@@ -2658,15 +2681,15 @@ static void hd_cache_shutdown(void)
  * depth-bias (shadow) group, the caller's rhi_set_depth_bias is NOT re-applied
  * on restore — fine for the PoC's HUD-only key. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
-                          const openpete_scene_tri* scene, rhi_pipeline* self,
+                          const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe) {
     int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
     while (i < ntri) {
-        const openpete_scene_tri* s0 = &scene[s_txscene[base + i]];
+        const scene_tri_t* s0 = &scene[s_txscene[base + i]];
         const psx_material m = { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp };
         int run = 1;
         while (i + run < ntri) {
-            const openpete_scene_tri* s1 = &scene[s_txscene[base + i + run]];
+            const scene_tri_t* s1 = &scene[s_txscene[base + i + run]];
             if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
                 s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
             run++;
@@ -2692,7 +2715,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
         int m_pushed = 0;                       /* material push valid for SD draws */
         while (t < run) {
             /* This tri's texel box -> identity -> pack match. */
-            const openpete_scene_tri* st = &scene[s_txscene[base + i + t]];
+            const scene_tri_t* st = &scene[s_txscene[base + i + t]];
             float u0 = st->v[0].u, v0 = st->v[0].v, u1 = u0, v1 = v0;
             for (int j = 1; j < 3; j++) {
                 if (st->v[j].u < u0) u0 = st->v[j].u;
@@ -2719,7 +2742,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
              * (same pack file, or both unreplaced). */
             int g = 1;
             while (t + g < run) {
-                const openpete_scene_tri* sn = &scene[s_txscene[base + i + t + g]];
+                const scene_tri_t* sn = &scene[s_txscene[base + i + t + g]];
                 float nu0 = sn->v[0].u, nv0 = sn->v[0].v, nu1 = nu0, nv1 = nv0;
                 for (int j = 1; j < 3; j++) {
                     if (sn->v[j].u < nu0) nu0 = sn->v[j].u;
@@ -2788,7 +2811,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
     }
 }
 
-static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
+static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int tx_start,
                                 int hud_tex_first, int hud_tex_count)
 {
@@ -2831,7 +2854,7 @@ static void draw_hud_flat_layer(const openpete_scene_tri* scene, int scene_n,
  * sort would visibly change that frame; inversions==0 across a corpus means the
  * sort is unobservable there. Env-gated (OPENPETE_ALPHA_CENSUS), inert otherwise.
  * Display-only diagnostic. */
-static void alpha_census(const openpete_scene_tri* scene, int scene_n)
+static void alpha_census(const scene_tri_t* scene, int scene_n)
 {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_ALPHA_CENSUS"); s_on = (e && *e && *e != '0') ? 1 : 0; }
@@ -2940,7 +2963,7 @@ static void portal_mask_bias(float* c, float* s, float* cl)
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
-    const openpete_scene_tri* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
 
     /* Load-window census (OPENPETE_LOAD_CENSUS=1): what THIS present actually
      * composes — tri counts per category/blend + the fade/freeze covers. One
@@ -3261,7 +3284,7 @@ static bool draw_native_scene(bool full_extent)
         txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
     }
     for (int i = 0; i < txtri; i++) {
-        const openpete_scene_tri *st = &scene[s_txscene[i]];
+        const scene_tri_t *st = &scene[s_txscene[i]];
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
@@ -3903,7 +3926,7 @@ enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
 static bool compose_variant(int variant, bool have_ref)
 {
     int sn; uint32_t sbg, sfade, sfreeze;
-    const openpete_scene_tri* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL);
+    const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL);
     uint32_t bg = sbg; if (bg == 0) bg = bg_from_ref_corner();  /* gamestate primary (== PSX clear); corner fallback */
     bool want_scene = (sn > 0) || (s_isolation && bg != 0);
 

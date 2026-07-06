@@ -434,7 +434,8 @@ static void shadow_moby_build(CPUState* cpu) {
  *      depth-write-off/depth-free, so none of this can perturb the opaque
  *      depth field. */
 static float shadow_depth(float viewz, float scale, float bias) {
-    return openpete_native_depth_from_viewz(viewz * scale * bias);
+    return openpete_native_depth_from_viewz(
+        openpete_worldvz_bias(openpete_worldvz_scaled(viewz, scale), bias));
 }
 /* Both view-Z pulls are RETIRED to 1.0 defaults (true depth); the envs remain
  * for A/B against the old behaviour:
@@ -779,7 +780,7 @@ static void shadow_spyro_compare(CPUState* cpu) {
  *  walk gives per-vertex Z).
  * =========================================================================== */
 static float scaffold_depth(void) {
-    return openpete_native_depth_from_viewz(2048.0f);   /* mid ground depth */
+    return openpete_native_depth_from_viewz(openpete_worldvz_full(2048.0f));   /* mid ground depth */
 }
 
 /* moby shadows: each captured prim is a textured FT3 (code 0x26), ABR mode 0. */

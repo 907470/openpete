@@ -172,8 +172,8 @@ static void tracer_build_and_feed(CPUState* cpu) {
             double c1x = sx - px, c1y = sy - py;
             emitted++;
             if (emitted >= 2 && havePrev && vz < 256000.0) {
-                double dz = openpete_native_depth_from_viewz((float)vz);
-                double pz = openpete_native_depth_from_viewz((float)pvz);
+                double dz = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz));
+                double pz = openpete_native_depth_from_viewz(openpete_worldvz_full((float)pvz));
                 /* G4: v0=c0(cur) v1=c1(cur) v2=pc0(prev) v3=pc1(prev) -> tris (0,1,2)(1,3,2) */
                 emit_tri(c0x,c0y,dz,col,  c1x,c1y,dz,col,  pc0x,pc0y,pz,pcol);
                 emit_tri(c1x,c1y,dz,col,  pc1x,pc1y,pz,pcol, pc0x,pc0y,pz,pcol);

@@ -2408,7 +2408,7 @@ static void push_scene_moby(void) {
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
             t.v[k].sy   = s_wtri[i].v[k].sy;
-            t.v[k].z    = openpete_native_depth_from_viewz(s_wtri[i].v[k].vz);
+            t.v[k].z    = openpete_native_depth_from_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
             t.v[k].rgba = s_wtri[i].v[k].rgb | 0xFF000000u;
