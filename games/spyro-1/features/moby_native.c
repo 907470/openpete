@@ -349,7 +349,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                uint32_t header_p, double blend_alpha, double gpf_frac,
                                const int TR_raw[3],
                                const double TR_frac[3],
-                               const int M[3][3], proj_xy* out, int cap) {
+                               const int M[3][3], int zsf4, proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
@@ -429,7 +429,15 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
 
     int s5    = (cpu->read_byte(header + 6) & 0xFF) + 1;
-    int count = cpu->read_byte(header + 8) & 0xFF;   /* gte_ctrl[30] sign adj = 0 here */
+    /* .s tier-adjusted vertex COUNT [@8001F9D4..FA04 / spec twin @80021178]:
+     * count = [hdr + 8 + (ZSF4>>31)] — hdr+9 is the LP vertex count — and
+     * count == 0 SKIPS the record entirely (bnez → func_80020860 restore +
+     * advance). Models with NO LP mesh store 0 there, so beyond the LOD band
+     * the game draws NOTHING for them (the distant-gem leak: native read the
+     * HP count unconditionally and kept drawing). --no-lod forces the HP
+     * count with the same guard as the HP face select (moby_tier_faceblock). */
+    int count = cpu->read_byte(header + 8u + ((zsf4 < 0 && !openpete_no_lod) ? 1u : 0u)) & 0xFF;
+    if (count == 0) return 0;
     if (count > cap) count = cap;
 
     /* Keyframe blend: IR0 = (w0 & 0xFF00) >> 2 (1.0=4096); frame B at frameB.
@@ -494,8 +502,29 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     return count;
 }
 
-/* Thin wrapper: read the six fields from a live .s cull record (+0x1600). */
-static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int cap) {
+/* The record's ZSF4 LOD/colour-fade tier verdict = high16 of the matrix word
+ * @rec+0x2C (renderer: ctc2/cfc2 gte_ctrl[30]); see moby_tier_faceblock.
+ * --no-lod: neutralize the DISTANCE term host-side (READ-side twin of the
+ * retired game-side zsf4-store hook; idempotent when a store hook did run).
+ * Same carve-out as the hook: only when the zero-distance tier is near-band
+ * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring puffs shrink
+ * m_Renderer) and keeps the canonical value. */
+static int record_zsf4(CPUState* cpu, uint32_t rec) {
+    int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
+    if (openpete_no_lod) {
+        uint32_t mob = cpu->read_word(rec + 0x34);
+        if (mob >= 0x80000000u) {
+            int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
+            if ((md << 8) >= 1024) zsf4 = md << 8;
+        }
+    }
+    return zsf4;
+}
+
+/* Thin wrapper: read the six fields from a live .s cull record (+0x1600).
+ * zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by the
+ * caller (record_zsf4) — feeds the tier-adjusted vertex-count read. */
+static int moby_project_record(CPUState* cpu, uint32_t rec, int zsf4, proj_xy* out, int cap) {
     uint32_t header = cpu->read_word(rec + 0x04);
     uint32_t frameA = cpu->read_word(rec + 0x08);
     uint32_t frameB = cpu->read_word(rec + 0x0C);
@@ -504,7 +533,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
-    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, out, cap);
+    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, zsf4, out, cap);
 }
 
 #define MAX_PROJ 8192
@@ -589,6 +618,10 @@ static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
 /* OPENPETE_MOBY_TIER_DBG: ~1/sec canonical tier census + validation that the
  * mirror formula reproduces the stored ZSF4 (mirror bad=0 proves the decode). */
 static long s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade, s_tier_gpfskip;
+static long s_tier_lpskip;   /* far-tier records skipped by the LP vertex count == 0
+                              * (no LP mesh): the .s draws NOTHING for them */
+static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis distance-band
+                              * cull mirror (block_80022B40..90 — the distant-gem hide) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
 static long s_tier_adopt;   /* adopt_prim_colors recolours since last print — a far-palette
                              * mismatch floods this (the pre-fix flicker); healthy is ~0 */
@@ -630,28 +663,15 @@ static int project_all_records_inner(CPUState* cpu) {
         int bl = (int)((w0 & 0xFF00u) >> 2);  /* INTPL blend 0..4096 */
         if (bl > s_max_blend) s_max_blend = bl;
         int off = s_proj_n;
-        int got = moby_project_record(cpu, rec, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        /* ZSF4 verdict BEFORE the projection — the decode's tier-adjusted
+         * vertex-count read ([hdr+8+(ZSF4>>31)], 0 = record skipped) needs it.
+         * Snapshotted into fade_snap below, so the sub-tick re-extract
+         * inherits the (--no-lod-neutralized) tier too. */
+        int zsf4 = record_zsf4(cpu, rec);
+        int got = moby_project_record(cpu, rec, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = cpu->read_word(rec + 0x04);
-            /* ZSF4 LOD/colour-fade tier = high16 of the matrix word @rec+0x2C
-             * (renderer: ctc2/cfc2 gte_ctrl[30]); see moby_tier_faceblock */
-            int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
-            /* --no-lod: neutralize the DISTANCE term host-side (READ-side twin
-             * of the game-side zsf4-store hook, which only arms in PsyCross
-             * mode now; idempotent when a store hook did run). Same carve-out
-             * as the hook: only when the zero-distance tier is near-band
-             * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring
-             * puffs shrink m_Renderer) and keeps the canonical value.
-             * Snapshotted into fade_snap below, so the sub-tick re-extract
-             * inherits the neutralized tier too. */
-            if (openpete_no_lod) {
-                uint32_t mob = cpu->read_word(rec + 0x34);
-                if (mob >= 0x80000000u) {
-                    int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
-                    if ((md << 8) >= 1024) zsf4 = md << 8;
-                }
-            }
             s_recs[nrec] = (rec_meta){ rec, off, got, header,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
                 moby_tier_faceblock(cpu, header, zsf4), w0,
@@ -673,6 +693,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 else if (zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) s_tier_farfade++;
                 else s_tier_far++;
                 if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
+                if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
                 /* mirror check: recompute ZSF4 from gamestate the way the cull
                  * does (@8001F404) and compare with the stored verdict */
                 uint32_t mob = cpu->read_word(rec + 0x34);
@@ -962,19 +983,21 @@ static void append_revealed_regular(CPUState* cpu) {
         if (sx < (double)xlo - margin || sx > (double)xhi + margin) { m += 0x58; continue; }  /* outside widened view (+radius) */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
-                                      s_proj + s_proj_n, MAX_PROJ - s_proj_n);
-        if (got <= 0) { m += 0x58; continue; }
-        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
          * record behind a revealed moby to read the verdict from. Validated by
-         * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records. */
+         * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
+         * Computed BEFORE the decode: the tier-adjusted vertex-count read
+         * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
         int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the
          * distance term for records that are near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
+        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
+                                      rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        if (got <= 0) { m += 0x58; continue; }
+        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
@@ -2555,15 +2578,15 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     if (tier_dbg_on() && !(mat && mat[0]=='S' && mat[1]=='P')) {   /* ~1/sec, REG+SPEC records pooled */
         static int s_tier_cnt = 0;
         if (++s_tier_cnt >= 30) {
-            fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld | "
+            fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
                     "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
-                    s_tier_gpfskip, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
+                    s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed);
-            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = 0;
+            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_calls = 0;
@@ -3133,6 +3156,36 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * here, else they render as ghost gems beside their spawner. (m_RenderRadius
          * & 0x80 is the billboard/HUD flag, handled below — nonzero, so it passes.) */
         if (cpu->read_byte(m + 0x50) == 0) continue;
+        /* .s in-walk 3-axis distance-band cull (block_80022B40..80022B90) —
+         * NON-BILLBOARD mobys only (the lhu@80022B20 halfword's bit7 <<24 sign
+         * branches billboards past it). eff = (m_RenderRadius & 0x7F) << 8,
+         * plus 0x200 when the SAME lhu's high byte (m_WasDrawn, +0x51) has
+         * bit0 set — a one-tick hysteresis so boundary mobys don't flicker.
+         * The moby is SKIPPED unless (pos−cam)>>2 is STRICTLY inside ±eff on
+         * ALL THREE axes (camera = the canonical g_Camera+0x28.. words the
+         * walk stashes at scratch+0x3E0 — the same cx/cy/cz above; axis signs
+         * and >>2 rounding mirrored exactly). This in-WALK test — not the
+         * queue — is what hides distant gems/props on PSX (the SHADED_BASE
+         * list still contains them); without it native drew every listed
+         * moby at any distance (the user-reported distant-gem leak).
+         * --no-lod parity with the retired Phase-8 lhu hook: saturate the
+         * low 7 bits to 0x7F (the m_Distance==0 dormant sentinel never
+         * reaches here — skipped above). */
+        {
+            uint8_t r50 = cpu->read_byte(m + 0x50);
+            if (!(r50 & 0x80)) {
+                int eff = openpete_no_lod ? 0x7F : (int)(r50 & 0x7F);
+                int32_t a0 = ((int32_t)eff << 8)
+                           + ((cpu->read_byte(m + 0x51) & 1) ? 0x200 : 0);
+                int32_t t;
+                t = ((int32_t)cpu->read_word(m + 0x0C) - cx) >> 2;
+                if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
+                t = (cy - (int32_t)cpu->read_word(m + 0x10)) >> 2;
+                if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
+                t = (cz - (int32_t)cpu->read_word(m + 0x14)) >> 2;
+                if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
+            }
+        }
         uint32_t cls = cpu->read_half(m + 0x36);
         uint32_t mraw  = cpu->read_word(G_MODELS + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
         uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
@@ -4067,9 +4120,15 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         mrot & 0xFFFFFFu);
             }
         }
+        /* LOD tier from the last canonical pass (sub-tick reuse — the tier is a
+         * per-tick verdict, held across intermediates). Miss default 1024 = the
+         * near/HP tier, today's behaviour for a moby with no canonical record.
+         * Read BEFORE the decode: the tier-adjusted vertex-count read
+         * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
+        int zsf4 = fade_snap_get(mobys[i], 1024);
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
                                       fap, fbp, w0p, hdrp, balpha, gpf_frac,
-                                      f.TR_raw, f.TR_frac, f.M, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                      f.TR_raw, f.TR_frac, f.M, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
          * the render-side truth, one step before raster (jitter forensics). */
@@ -4097,10 +4156,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (ver_check && !occl_query_fresh(mobys[i]))
             occl_verify_report(mobys[i], &ver_snap);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-        /* LOD tier from the last canonical pass (sub-tick reuse — the tier is a
-         * per-tick verdict, held across intermediates). Miss default 1024 = the
-         * near/HP tier, today's behaviour for a moby with no canonical record. */
-        int zsf4 = fade_snap_get(mobys[i], 1024);
         s_rec_tr[s_nrecs][0] = f.TR_frac[0];   /* Tier-2 capture reference */
         s_rec_tr[s_nrecs][1] = f.TR_frac[1];
         s_rec_tr[s_nrecs][2] = f.TR_frac[2];
