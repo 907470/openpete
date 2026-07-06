@@ -1519,6 +1519,27 @@ static int build_walk_tris_inner(CPUState* cpu) {
             dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
         }
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
+        { /* OPENPETE_MOBY_FADEDBG=frameLo: per-record LOD-fade forensics (4 frames). */
+            static int s_fd0 = -2;
+            if (s_fd0 == -2) { const char* e = getenv("OPENPETE_MOBY_FADEDBG"); s_fd0 = (e && *e) ? atoi(e) : -1; }
+            if (s_fd0 >= 0 && (int)openpete_frame >= s_fd0 && (int)openpete_frame < s_fd0 + 4) {
+                uint32_t c0 = cpu->read_word(cbase), c1 = cpu->read_word(cbase + 4);
+                uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
+                fprintf(stderr, "[fade f=%u] rec=%d moby=%08x cls=%03x zsf4=%d hdr=%08x cbase=%08x farbase=%08x ir0=%d "
+                        "c0=%06X c1=%06X f0=%06X f1=%06X\n",
+                        openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + 0x36) & 0xFFFu) : 0xFFF,
+                        R->zsf4, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
+                if (dpcs_ir0 > 0 && farbase) {   /* one fog-band record: full table triplets */
+                    int nc = (int)(cpu->read_half(R->header + 2) & 0xFFFFu); if (nc > 24) nc = 24;
+                    for (int k = 0; k < nc; k++) {
+                        uint32_t nw = cpu->read_word(cbase + (uint32_t)k*4u) & 0xFFFFFFu;
+                        uint32_t fw2 = cpu->read_word(farbase + (uint32_t)k*4u) & 0xFFFFFFu;
+                        uint32_t ov = moby_color_at(cpu, cbase, farbase, NULL, dpcs_ir0, (uint32_t)k*4u);
+                        fprintf(stderr, "  [ftab k=%d] near=%06X far=%06X out=%06X\n", k, nw, fw2, ov);
+                    }
+                }
+            }
+        }
         /* Resolve the colour bases to host pointers once per record; the loop
          * then reads colours directly (moby_color_at_host). Fallback = the
          * cpu->read_word path when a base doesn't map (never in practice). */
@@ -1608,6 +1629,17 @@ static int build_walk_tris_inner(CPUState* cpu) {
                 c1 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c1);
                 c2 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c2);
                 c3 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c3);
+                { /* FADEDBG face-level dump for the fog-band record */
+                    static int s_ff0 = -2;
+                    if (s_ff0 == -2) { const char* e = getenv("OPENPETE_MOBY_FADEDBG"); s_ff0 = (e && *e) ? atoi(e) : -1; }
+                    if (s_ff0 >= 0 && dpcs_ir0 > 0 && farbase &&
+                        (int)openpete_frame >= s_ff0 && (int)openpete_frame < s_ff0 + 2)
+                        fprintf(stderr, "  [fface] v0=(%.0f,%.0f) tex=%d ci=%d,%d,%d nr=%06X fr=%06X out=%06X,%06X,%06X clut=%d,%d tp=%d,%d\n",
+                                s_proj[base + F->i0].sx, s_proj[base + F->i0].sy, F->textured,
+                                F->c0, F->c1, F->c2,
+                                le32_at(cb_host + F->c0) & 0xFFFFFFu, le32_at(fb_host + F->c0) & 0xFFFFFFu,
+                                c0, c1, c2, F->clx, F->cly, F->tpx, F->tpy);
+                }
             } else {
                 c0 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c0);
                 c1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c1);
@@ -1653,6 +1685,17 @@ static int build_walk_tris_inner(CPUState* cpu) {
             /* Tiledef material from the cache (locals: the spec env path below
              * overwrites UV/tpage for reflective faces). */
             int tpx=F->tpx, tpy=F->tpy, clx=F->clx, cly=F->cly, bpp=F->bpp, abr=F->abr;
+            /* Fog-band CLUT-row fog (the texel half of the LOD crossfade,
+             * .s @8001FE04-FE08: s2 = (IR0>>9) << 22 is added to every textured
+             * prim's UV word — word bits 22-30 ARE the CLUT y, so the row is
+             * biased by IR0>>9 = 0..7 down an 8-row fogged-CLUT ladder; same
+             * mechanism as the terrain CLUT-row texel fog). Without it the walk
+             * sampled the base (unfogged) row at every tier — distant HP mobys
+             * rendered full-bright texels over correctly-faded vertex colours
+             * (the ram's white blowout at the LP boundary, verified +6 rows at
+             * ir0=3512 vs the captured .s prims). Per-record and view-dependent,
+             * so applied here at emit — never baked into the Tier-1 face cache. */
+            if (dpcs_ir0 > 0 && !fcc) cly += (dpcs_ir0 >> 9);
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* #1 SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
@@ -1844,6 +1887,29 @@ static double tri_match_cost_sq(const ntri_t* w, const ptri* p) {
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
+    { /* OPENPETE_MOBY_PRIMBOX="x0,y0,x1,y1": dump every captured .s prim with a
+       * vertex in the PSX-screen box (per-vertex xy+rgb) — the position-matched
+       * ground truth for the [fface] walk dump. One frame only. */
+        static int s_pb = -1; static int px0,py0,px1,py1; static int s_pb_done = 0;
+        if (s_pb < 0) { const char* e = getenv("OPENPETE_MOBY_PRIMBOX");
+            s_pb = 0;
+            if (e && sscanf(e, "%d,%d,%d,%d", &px0,&py0,&px1,&py1) == 4) s_pb = 1; }
+        if (s_pb == 1 && !s_pb_done) {
+            for (int pi = 0; pi < s_gte_n; pi++) {
+                int in = 0;
+                for (int k = 0; k < s_gte[pi].nv; k++)
+                    if (s_gte[pi].x[k] >= px0 && s_gte[pi].x[k] <= px1 &&
+                        s_gte[pi].y[k] >= py0 && s_gte[pi].y[k] <= py1) in = 1;
+                if (!in) continue;
+                fprintf(stderr, "  [pbox f=%u] code=%02X tex=%d clut=%04X tpage=%04X", openpete_frame,
+                        s_gte[pi].code, s_gte[pi].textured, s_gte[pi].clut & 0xFFFFu, s_gte[pi].tpage & 0xFFFFu);
+                for (int k = 0; k < s_gte[pi].nv; k++)
+                    fprintf(stderr, " (%.0f,%.0f)%06X", s_gte[pi].x[k], s_gte[pi].y[k], s_gte[pi].rgb[k] & 0xFFFFFFu);
+                fprintf(stderr, "\n");
+            }
+            s_pb_done = 1;
+        }
+    }
     int wn=s_wtri_n, pn=s_ptri_n;
     int prim_quad=0, prim_tri=0;   /* how many GPU quads vs tris the .s actually emitted */
     for(int g=0;g<s_gte_n;g++){ if(s_gte[g].nv==4)prim_quad++; else if(s_gte[g].nv==3)prim_tri++; }
@@ -1878,6 +1944,12 @@ static void compare_walk_vs_prims(void) {
             /* colour + uv match vs the matched prim tri (vertex 0, coarse) */
             uint32_t wc=w->v[0].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[0]&0xFFFFFFu;
             coln++; if (wc==pc) colmatch++;
+            else { /* colour-mismatch forensics (first 16): walk vs .s prim values */
+                static int ncd=0;
+                if (ncd++ < 16) fprintf(stderr,
+                    "  [col-miss] w(%.0f,%.0f) tex=%d walk=%06X prim=%06X\n",
+                    w->v[0].sx, w->v[0].sy, w->textured, wc, pc);
+            }
             wluma_sum += (wc&0xFF)+((wc>>8)&0xFF)+((wc>>16)&0xFF);   /* brightness: is my colour darker than the .s's? */
             pluma_sum += (pc&0xFF)+((pc>>8)&0xFF)+((pc>>16)&0xFF);
             if (w->textured){ uvn++; if (w->v[0].u==s_ptri[bp].u[0] && w->v[0].v==s_ptri[bp].v[0]) uvmatch++; }
