@@ -1611,12 +1611,36 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
 
     for (int n = 0; n < s_pcap_n; n++) {
         const portal_cap_t* c = &s_pcap[n];
-        /* Write the captured base clip rect (the feeders union it with the live
-         * projected-outline bbox, so the scissor still rides the camera). */
-        cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)c->clip[0] << 16);
-        cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)c->clip[1] << 16);
-        cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)c->clip[2] << 16);
-        cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)c->clip[3] << 16);
+        /* Base clip rect for the replay: the LIVE projected-outline bbox
+         * (this present's interpolated camera), NOT the captured canonical
+         * rect. The feeders only ever UNION the base rect with the live
+         * outline bbox — union grows, so a captured rect from the canonical
+         * camera keeps its stale corners while the arch moves between
+         * presents: under --render-fps a fast pan pushed the rect's corner
+         * past the stone silhouette and the dome's spill won against the far
+         * hill behind it — a transient sky block OUTSIDE the arch, visible
+         * only on intermediate presents (user repro portal-cyclorama-cull.bk2
+         * ~f1650 / poke.mkv 28s; invisible to --screenshot-on-frame, which
+         * lands on canonical presents). Captured rect kept only as the
+         * fallback when the live outline has a point behind the camera. */
+        int rc[4] = { c->clip[0], c->clip[1], c->clip[2], c->clip[3] };
+        if (c->portal) {
+            ppt rp[16];
+            int rn = portal_outline_screen(cpu, c->portal, rp, 16);
+            if (rn >= 3) {
+                float lx0 = rp[0].x, lx1 = rp[0].x, ly0 = rp[0].y, ly1 = rp[0].y;
+                for (int k = 1; k < rn; k++) {
+                    if (rp[k].x < lx0) lx0 = rp[k].x; if (rp[k].x > lx1) lx1 = rp[k].x;
+                    if (rp[k].y < ly0) ly0 = rp[k].y; if (rp[k].y > ly1) ly1 = rp[k].y;
+                }
+                rc[0] = (int)floorf(ly0); rc[1] = (int)ceilf(ly1);
+                rc[2] = (int)floorf(lx0); rc[3] = (int)ceilf(lx1);
+            }
+        }
+        cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)rc[0] << 16);
+        cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)rc[1] << 16);
+        cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)rc[2] << 16);
+        cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)rc[3] << 16);
 
         if (c->is_dome && dome_ready) {
             /* Write the sub-tick-lerped shared dome matrix (computed once above). */
