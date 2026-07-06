@@ -768,12 +768,48 @@ typedef struct {
     uint8_t  i0, i1, i2, i3, quad, flip;
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
+    int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
+    uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
     tmat mat; float tu[4], tv[4];                  /* tiledef half +0 (far/LQ; LP untextured) */
     tmat matN; float tuN[4], tvN[4];               /* tiledef half +8 (near tile, .s t0<=0 branch) */
 } tsface_t;
+
+/* Env texture animation liveness (the artisans waterfall fix): the game's
+ * env-anim (func_8002A6FC) animates textures by rewriting the LQ tiledef
+ * TABLE ENTRIES in place each keyframe advance — loop 1 copies whole 16-byte
+ * entries from an animation bank (texture-descriptor swap), loop 2 rewrites
+ * the V bytes of BOTH halves (+1/+5/+9/+13, UV scroll — waterfalls/water),
+ * and both also rewrite the sibling 168-byte HQ record. The .s HP walk reads
+ * the entry live per face per frame (block_8002709C), so PSX animates; the
+ * sector cache snapshot froze it (near/HQ subdivide reads the HQ record live,
+ * which is why close-up terrain still animated). Mirror = one generation
+ * counter per tile, bumped when the 16-byte entry content changes (checked
+ * once per present); cached faces re-decode their texmat on gen mismatch.
+ * Sector verts/colours are NOT anim-rewritten storage (colour anim goes
+ * through the live-read colour arrays; verified by OPENPETE_TERRAIN_ANIMDBG
+ * in artisans: only lq/hq tile 23 churns, secV/secC never). */
+static uint32_t s_tgen[128];
+static uint32_t s_tgen_epoch = 1;     /* bumped when ANY tile gen bumps */
+static uint32_t s_lqsnap[128][4];
+static uint32_t s_lqsnap_base;
+static void tsc_tile_gens(CPUState* cpu, uint32_t lqTable, uint32_t texCnt) {
+    if (!lqTable) return;
+    if (texCnt > 128) texCnt = 128;
+    int rebase = (lqTable != s_lqsnap_base);
+    for (uint32_t t = 0; t < texCnt; t++) {
+        uint32_t w[4]; int diff = rebase;
+        for (int k = 0; k < 4; k++) {
+            w[k] = rd(cpu, lqTable + t * 16u + (uint32_t)k * 4u);
+            diff |= (w[k] != s_lqsnap[t][k]);
+        }
+        if (diff) { memcpy(s_lqsnap[t], w, sizeof(w)); s_tgen[t]++; s_tgen_epoch++; }
+    }
+    s_lqsnap_base = lqTable;
+}
 typedef struct {
     uint32_t s, sig[5];
+    uint32_t animEpoch;                      /* s_tgen_epoch at last texmat refresh */
     int nLpV, nLpF, nHpV, nHpF, flags;
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) — the .s LP/HP binning inputs */
@@ -821,15 +857,19 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             F->trirot = (uint8_t)((w2 >> 8) & 3u);
             int tb = (int)(int8_t)(w2 & 0xFF);
             uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
+            F->tb = (int8_t)tb;
+            F->tgen = (tb == -1) ? 0 : s_tgen[tb & 0x7F];
             terrain_texmat(cpu, tbl, tb, hiDetail, &F->mat, F->tu, F->tv);
             /* Both tiledef halves are cached; the walk picks per FRAME by the
-             * .s distance rule (t0 = key−fogRef+4096; t0<=0 → the +8 half). */
+             * .s distance rule (t0 = key−fogRef+4096; t0<=0 → the +8 half).
+             * Animated tiles re-decode when their gen bumps (tsc_refresh_anim). */
             terrain_texmat(cpu, tbl, tb, 1, &F->matN, F->tuN, F->tvN);
         } else {                                   /* LP: 6-bit indices; untextured */
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
             F->c0 = (uint16_t)((w1 >> 24) & 0xFC); F->c1 = (uint16_t)((w1 >> 18) & 0xFC);
             F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
+            F->tb = -1;
             F->mat.bpp = 16;                       /* untextured flat gouraud */
         }
         F->quad = (F->i2 != F->i3);
@@ -887,6 +927,26 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
     } else s_tsc_hit++;
     return C;
+}
+
+/* Re-decode cached texmats whose tile content changed (env texture anim).
+ * Epoch-gated: free when no tile changed since this sector's last refresh. */
+static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
+                             uint32_t lqTable, uint32_t hqTable,
+                             int texTblMode, int hiDetail) {
+    if (C->animEpoch == s_tgen_epoch) return;
+    C->animEpoch = s_tgen_epoch;
+    if (!C->hpF) return;                     /* LP faces are untextured */
+    uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
+    for (int f = 0; f < C->nHpF; f++) {
+        tsface_t* F = &C->hpF[f];
+        if (F->tb == -1) continue;
+        uint32_t g = s_tgen[F->tb & 0x7F];
+        if (F->tgen == g) continue;
+        F->tgen = g;
+        terrain_texmat(cpu, tbl, F->tb, hiDetail, &F->mat, F->tu, F->tv);
+        terrain_texmat(cpu, tbl, F->tb, 1, &F->matN, F->tuN, F->tvN);
+    }
 }
 
 /* Host-pointer terrain colour (DPCS blend identical to terrain_color; the debug
@@ -1059,7 +1119,63 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     return n;
 }
 
+/* OPENPETE_TERRAIN_ANIMDBG (keeper instrument): per-present RAM-change census
+ * for env anim. Hashes each LQ tiledef entry (16B), each HQ record (168B), and
+ * per sector: the +0x18 anim word, vert regions, colour regions. Prints indices
+ * that changed since the previous present. Proved the waterfall freeze (only
+ * lq/hq tile 23 churns in artisans; secV/secC never → verts safe to cache). */
+static void terrain_animdbg(CPUState* cpu) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ANIMDBG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    if (!on) return;
+    uint32_t lqTable   = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
+    uint32_t hqTable   = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
+    uint32_t texCnt    = rd(cpu, G_ENVIRONMENT + ENV_TEXCNT);
+    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
+    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    if (texCnt > 128) texCnt = 128;
+    if (sectorCnt > 512) sectorCnt = 512;
+    static uint32_t lq[128], hq[128], s18[512], svh[512], sch[512];
+    static int have = 0;
+    char lqs[256] = "", hqs[256] = "", s18s[256] = "", svs[256] = "", scs[256] = "";
+    for (uint32_t t = 0; t < texCnt; t++) {
+        uint32_t h = 2166136261u;
+        for (int w = 0; w < 4; w++) h = (h ^ rd(cpu, lqTable + t * 16u + (uint32_t)w * 4u)) * 16777619u;
+        if (have && h != lq[t] && strlen(lqs) < 240) snprintf(lqs + strlen(lqs), 12, " %u", t);
+        lq[t] = h;
+        h = 2166136261u;
+        for (int w = 0; w < 42; w++) h = (h ^ rd(cpu, hqTable + t * 168u + (uint32_t)w * 4u)) * 16777619u;
+        if (have && h != hq[t] && strlen(hqs) < 240) snprintf(hqs + strlen(hqs), 12, " %u", t);
+        hq[t] = h;
+    }
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint32_t s = rd(cpu, sectorPtr + i * 4u);
+        if (!s) continue;
+        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int nLpV = g3 & 0xFF, nLpC = (g3 >> 8) & 0xFF;
+        int nHpV = g4 & 0xFF, nHpC = (g4 >> 8) & 0xFF, hpOff = (int)((g4 >> 24) & 0xFF);
+        uint32_t h = rd(cpu, s + 0x18);
+        if (have && h != s18[i] && strlen(s18s) < 240) snprintf(s18s + strlen(s18s), 12, " %u", i);
+        s18[i] = h;
+        h = 2166136261u;                                   /* verts: LP + HP */
+        for (int w = 0; w < nLpV; w++) h = (h ^ rd(cpu, s + 0x1C + (uint32_t)w * 4u)) * 16777619u;
+        for (int w = 0; w < nHpV; w++) h = (h ^ rd(cpu, s + 0x1C + (uint32_t)(hpOff + w) * 4u)) * 16777619u;
+        if (have && h != svh[i] && strlen(svs) < 240) snprintf(svs + strlen(svs), 12, " %u", i);
+        svh[i] = h;
+        h = 2166136261u;                                   /* colours: LP + HP near/far pairs */
+        for (int w = 0; w < nLpC; w++) h = (h ^ rd(cpu, s + 0x1C + (uint32_t)(nLpV + w) * 4u)) * 16777619u;
+        for (int w = 0; w < nHpC * 2; w++) h = (h ^ rd(cpu, s + 0x1C + (uint32_t)(hpOff + nHpV + w) * 4u)) * 16777619u;
+        if (have && h != sch[i] && strlen(scs) < 240) snprintf(scs + strlen(scs), 12, " %u", i);
+        sch[i] = h;
+    }
+    if (have && (lqs[0] || hqs[0] || s18s[0] || svs[0] || scs[0]))
+        fprintf(stderr, "[anim-dbg] f=%u lq:%s | hq:%s | s18:%s | secV:%s | secC:%s\n",
+                openpete_frame, lqs, hqs, s18s, svs, scs);
+    have = 1;
+}
+
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
+    terrain_animdbg(cpu);
     terrain_abr_scan(cpu);
     tsc_census();
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
@@ -1192,6 +1308,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
     uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
+    tsc_tile_gens(cpu, lqTable, rd(cpu, G_ENVIRONMENT + ENV_TEXCNT));  /* env-anim liveness */
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
     int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
     if (s_nearhq < 0) {      /* near/HQ subdivide pass enable (Route 2, default ON) */
@@ -1218,6 +1335,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_hidet == -2) { const char* e = getenv("OPENPETE_TERRAIN_HIDETAIL"); s_hidet = e ? atoi(e) : -1; }
         const tscache_t* SC = tsc_get(cpu, s, lqTable, hqTable, texTblMode,
                                       s_hidet >= 0 ? s_hidet : 0);
+        tsc_refresh_anim(cpu, (tscache_t*)SC, lqTable, hqTable, texTblMode,
+                         s_hidet >= 0 ? s_hidet : 0);
         int flags   = SC->flags;
         int originX = SC->originX, originY = SC->originY, originZ = SC->originZ;
         double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
@@ -1410,16 +1529,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * true distance — no-lod means mesh detail, not fog removal.
              * OPENPETE_TERRAIN_CLUTFOG=0 kills (A/B); force-tier debug modes
              * (OPENPETE_TERRAIN_TEXTBL != 0) keep the old static half.
-             * CARVE-OUT: negative-texByte faces (F->abe — bit7 doubles as the
-             * ABE flag and the ANIMATED-tile marker) go through the .s's
-             * indirect animated-tiledef branch (block_80027080, len-0x3E
-             * packet, CLUT-X anim cycling — artisans far water) which native
-             * has never decoded; applying the ladder to them painted the
-             * water with land palettes (g1 metric 4.9k→14k). They keep the
-             * old static +0 half until that path is decoded. */
+             * ABE carve-out RESOLVED (2026-07-06 waterfall arc): the old
+             * "indirect animated-tiledef branch" reading of block_80027080
+             * was wrong — the 0x3E there is the PRIM CODE byte (ABE GT4),
+             * not a packet length, and the .s reads the SAME tiledef entry
+             * (masked &0x7F) and applies the SAME ladder to negative-texByte
+             * faces. Animated tiles are plain in-place entry rewrites
+             * (func_8002A6FC), now kept live by tsc_refresh_anim; the old
+             * "land palettes on water" artifact was ladder-on-STALE-entry. */
             tmat matSel;
             int dbg_half = 0, dbg_delta = 0;   /* fardbg: chosen tiledef half + ladder row */
-            if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !F->abe) {
+            if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured) {
                 /* SZ = s_fogscale·m3 — the whole ladder ramp rides the
                  * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1).
                  * ALWAYS four corners: .s HP tris are quads with i2==i3 and
