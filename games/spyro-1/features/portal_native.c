@@ -400,8 +400,11 @@ static int portal_plane_invz(CPUState* cpu, uint32_t p,
  * and the far/medium/close distance crossfade has no discontinuity. The
  * matching terrain-side OT-conformance clamp (terrain_native.c) pushes
  * straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped faces
- * always lose to the sky and unclamped coincident bands always win to it. */
-#define PORTAL_SKY_EPS_VZ 16.0
+ * always lose to the sky and unclamped coincident bands always win to it.
+ * 16 -> 24 (2026-07-06): at 16 a residual z-fight sparkled on the inner
+ * edge of some arches (seen live) — the decorative band evidently sits a
+ * few units in FRONT of the opening plane, not exactly on it. */
+#define PORTAL_SKY_EPS_VZ 24.0
 static float portal_cyclorama_depth(double vz) {
     double v = vz - PORTAL_SKY_EPS_VZ;
     if (v < 1.0) v = 1.0;
@@ -1370,9 +1373,25 @@ static void feed_revealed_portals(CPUState* cpu) {
         ppt poly[16];
         int pn = portal_outline_screen(cpu, p, poly, 16); /* >=3 iff every outline pt is in front */
         if (pn < 3) continue;
-        double cxs = 0.0; for (int k = 0; k < pn; k++) cxs += poly[k].x; cxs /= pn;
-        if (cxs >= 0.0 && cxs <= 512.0) continue;         /* on 4:3 — the .s renders it */
-        if (cxs < (double)xlo || cxs > (double)xhi) continue;  /* outside the widened view */
+        float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
+        for (int k = 1; k < pn; k++) {
+            if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
+            if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
+        }
+        /* Gate by the outline BBOX, not its centroid (user repro
+         * portal-cyclorama-cull.bk2 f2156 @16:9: Stone Hill's preview popped
+         * out with half the arch still visible at the right edge — the
+         * centroid left the widened bounds / stayed on-4:3 while the OPENING
+         * straddled the boundary, and the reveal skipped both ways):
+         *   - a portal fully INSIDE the 4:3 frame (small margin) is
+         *     canonical — the .s renders it (or wouldn't at 4:3 either);
+         *   - a portal whose bbox misses the widened view entirely is
+         *     invisible;
+         *   - everything else (straddling either boundary, un-fed) gets the
+         *     reveal. A leaf-fed portal was already skipped above, so the .s
+         *     keeps authority wherever it actually drew. */
+        if (oxlo >= 8.0f && oxhi <= 504.0f) continue;     /* deep on-4:3 — canonical */
+        if (oxhi < xlo || oxlo > xhi) continue;           /* fully outside the widened view */
         uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
         uint32_t rgba = rgb | 0xFF000000u;
         s_portal_group = (int)skybox;   /* group id = skybox (one portal = one group) */
@@ -1393,13 +1412,9 @@ static void feed_revealed_portals(CPUState* cpu) {
         /* Capture this off-4:3 reveal for the sub-tick replay too (else it
          * flickers like the on-4:3 leaves did). Flat, portal-plane, no fog; the
          * base clip rect is the projected-outline bbox (RenderPortals set no
-         * D_CLIPRECT for a culled portal). feed_portal_quad re-projects the
-         * outline against the interpolated camera on replay. */
-        float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
-        for (int k = 1; k < pn; k++) {
-            if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
-            if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
-        }
+         * D_CLIPRECT for a culled portal; bbox computed at the gate above).
+         * feed_portal_quad re-projects the outline against the interpolated
+         * camera on replay. */
         /* --no-lod always-dome, off-4:3 half (user report 2026-07-03: revealed
          * portals still fell back to the flat colour). Same recipe as the
          * leaf-hook forced dome: derived shared matrix via gte_ctrl; the base

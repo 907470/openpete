@@ -2075,7 +2075,7 @@ static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only
  * feet on the sill, actors, the step's front face) still wins vs the sunken
  * face; the geometry that newly loses to it sits inside the portal throat —
  * behind the opening, where the sky covers everything anyway. */
-#define PORTAL_CLAMP_EPS_VZ 32.0   /* full-world; 2x the sky's PORTAL_SKY_EPS_VZ margin */
+#define PORTAL_CLAMP_EPS_VZ 48.0   /* full-world; 2x the sky's PORTAL_SKY_EPS_VZ margin */
 static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
 static openpete_portal_skyplane s_pplane[6];
 static int s_pplane_n = 0;
