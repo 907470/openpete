@@ -330,13 +330,27 @@ typedef struct {
      * so a headless run with no audio device is silent either way. */
     bool mute;
 
+    /* Content for the "<bk2_record_path>.args" sidecar written next to a
+     * --bk2-record capture. Holds the launch flags passed *directly* on
+     * the command line (excluding every --bk2-* flag and anything sourced
+     * from openpete.opts) so replaying the recording via --bk2 re-applies
+     * the same scenario. NULL = don't write a sidecar. Heap-owned and
+     * intentionally leaked for program lifetime (built in
+     * openpete_options_parse). */
+    const char* bk2_record_args;
+
     /* Record live pad input (keyboard + gamepad, merged by PsyCross) into
      * a BizHawk-format .bk2 zip at this path. Sister of --bk2 replay;
      * combinable with it (the recorded frames include the replayed ones,
      * so a session can start with a canned .bk2 prefix and extend live
      * from where it ends). NULL = disabled. The file is written at exit,
      * so SIGTERM/Ctrl-C against the run still produces a usable movie as
-     * long as core/runtime/run.c reaches its cleanup block. */
+     * long as core/runtime/run.c reaches its cleanup block.
+     *
+     * When --bk2-record is passed with no path, openpete_options_parse
+     * resolves a default here: "<exe_dir>/bk2/<timestamp>.bk2" (and
+     * mkdir -p's that directory). Heap-owned in that case (leaked for
+     * program lifetime); otherwise it points at the CLI token. */
     const char* bk2_record_path;
 
     /* Scheduled fast-forward windows: forces openpete_unlock_fps = 1

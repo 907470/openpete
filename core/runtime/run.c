@@ -1194,7 +1194,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * produces a usable movie. */
     bool bk2_recording = (opts->bk2_record_path && *opts->bk2_record_path);
     if (bk2_recording) {
-        if (bk2_record_begin(opts->bk2_record_path) != 0) {
+        if (bk2_record_begin(opts->bk2_record_path, opts->bk2_record_args) != 0) {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
     }

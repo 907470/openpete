@@ -49,6 +49,18 @@ Use kebab-case names that read as a goal, not a fix
 will rot, the goal won't). Keep them small (< 30 sec gameplay; a
 few KB on disk).
 
+`--bk2-record` also drops a `<name>.bk2.args` sidecar (see below)
+capturing the flags you *typed* — minus every `--bk2*` flag and
+anything inherited from `openpete.opts` — so a later `--bk2 <name>.bk2`
+reproduces the scenario without re-typing `--skip-to-level`, `--no-lod`,
+etc. Committing the `.args` next to the `.bk2` is what makes the fixture
+self-contained.
+
+Passing `--bk2-record` with **no path** records to
+`<exe_dir>/bk2/<timestamp>.bk2` (the `bk2/` dir is created if needed) —
+a zero-argument "capture what I'm doing right now" for quick throwaway
+repros; move + rename into this corpus if one is worth keeping.
+
 To extend an existing movie with new input, combine `--bk2` with
 `--bk2-record` — replays the movie and appends live input from
 where it ends.

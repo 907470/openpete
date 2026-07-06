@@ -22,8 +22,13 @@ extern "C" {
 /* Begin recording. Must be paired with a finalize. Returns 0 on
  * success, non-zero (and logs via OPL_ERROR_F) if the buffer can't be
  * allocated. The path is stored verbatim and used at finalize time;
- * the file is not opened until then. */
-int  bk2_record_begin(const char* path);
+ * the file is not opened until then.
+ *
+ * `args_sidecar`, if non-NULL, is written verbatim to "<path>.args"
+ * alongside the .bk2 at finalize time (the caller builds this from the
+ * launch flags so `--bk2 <path>` re-applies the scenario). NULL = no
+ * sidecar. The string is copied; the caller may free it after the call. */
+int  bk2_record_begin(const char* path, const char* args_sidecar);
 
 /* Append the current frame: PSX pad bitfield (released=1, pressed=0) and the
  * 4 analog axis bytes (LX, LY, RX, RY; 128 = centre, NULL = all centre).

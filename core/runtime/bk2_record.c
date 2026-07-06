@@ -22,6 +22,7 @@
 
 #include "miniz.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,7 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
 
 static struct {
     char*        path;
+    char*        args;       /* .args sidecar content, or NULL — written at finalize */
     bk2_frame_t* frames;
     int          count;
     int          capacity;
@@ -46,7 +48,7 @@ static struct {
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
 
-int bk2_record_begin(const char* path) {
+int bk2_record_begin(const char* path, const char* args_sidecar) {
     if (s_rec.active) {
         OPL_ERROR_F("bk2-record", "begin called twice");
         return -1;
@@ -60,11 +62,42 @@ int bk2_record_begin(const char* path) {
         memset(&s_rec, 0, sizeof(s_rec));
         return -1;
     }
+    /* The sidecar is a nice-to-have; a failed copy just skips it. */
+    s_rec.args = args_sidecar ? strdup(args_sidecar) : NULL;
+    if (args_sidecar && !s_rec.args)
+        OPL_ERROR_F("bk2-record", "out of memory copying args sidecar; skipping it");
     s_rec.count = 0;
     s_rec.active = 1;
     s_rec.prev_bits = 0xFFFF;  /* all released */
     OPL_INFO_F("bk2-record", "recording to %s", path);
     return 0;
+}
+
+/* Write "<bk2_path>.args" with `content`. Best-effort: a failure is
+ * logged but never fails the recording (the .bk2 is the real output). */
+static void write_args_sidecar(const char* bk2_path, const char* content) {
+    size_t plen = strlen(bk2_path);
+    char* apath = (char*)malloc(plen + 6);  /* ".args" + NUL */
+    if (!apath) {
+        OPL_ERROR_F("bk2-record", "out of memory building .args path");
+        return;
+    }
+    memcpy(apath, bk2_path, plen);
+    memcpy(apath + plen, ".args", 6);
+
+    FILE* f = fopen(apath, "wb");
+    if (!f) {
+        OPL_ERROR_F("bk2-record", "cannot open %s for write: %s", apath, strerror(errno));
+        free(apath);
+        return;
+    }
+    size_t clen = strlen(content);
+    if (clen && fwrite(content, 1, clen, f) != clen)
+        OPL_ERROR_F("bk2-record", "short write on %s", apath);
+    else
+        OPL_INFO_F("bk2-record", "wrote args sidecar %s", apath);
+    fclose(f);
+    free(apath);
 }
 
 void bk2_format_button_diff(uint16_t prev, uint16_t cur,
@@ -171,7 +204,7 @@ int bk2_record_finalize(void) {
     char* log = (char*)malloc(log_size + 1);
     if (!log) {
         OPL_ERROR_F("bk2-record", "out of memory at finalize (%zu bytes)", log_size);
-        free(s_rec.path); free(s_rec.frames);
+        free(s_rec.path); free(s_rec.args); free(s_rec.frames);
         memset(&s_rec, 0, sizeof(s_rec));
         return -1;
     }
@@ -209,12 +242,16 @@ int bk2_record_finalize(void) {
         goto out_close;
     }
     OPL_INFO_F("bk2-record", "wrote %d frames to %s", s_rec.count, s_rec.path);
+    /* Drop the launch-args sidecar next to the movie now that the .bk2
+     * exists, so `--bk2 <path>` picks it up on replay. */
+    if (s_rec.args)
+        write_args_sidecar(s_rec.path, s_rec.args);
     rc = 0;
 out_close:
     mz_zip_writer_end(&zip);
 out:
     free(log);
-    free(s_rec.path); free(s_rec.frames);
+    free(s_rec.path); free(s_rec.args); free(s_rec.frames);
     memset(&s_rec, 0, sizeof(s_rec));
     return rc;
 }

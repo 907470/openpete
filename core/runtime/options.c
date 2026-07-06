@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>       /* time/localtime/strftime — default --bk2-record filename */
 
 static int needs_value(const char* flag, int argc, char** argv, int i, const char** out) {
     if (i + 1 >= argc) {
@@ -153,6 +154,108 @@ static int expand_options_file(int argc, char** argv, int* out_argc, char*** out
     return rc;
 }
 
+/* --bk2-record args sidecar helpers -----------------------------------
+ *
+ * When --bk2-record captures a session, we drop a "<bk2>.args" sidecar
+ * mirroring the launch flags so `--bk2 <recording>` re-applies the same
+ * scenario (see expand_bk2_sidecar). The captured flags come from the
+ * *original* argv — before the openpete.opts / bk2-sidecar splices — so
+ * only what the user typed on the command line is recorded, not the
+ * machine-local persistent defaults. Every --bk2* flag is filtered out:
+ * they control recording/replay, not the scenario. Re-emitting
+ * --bk2-record would make the replay re-record, and re-emitting the
+ * --bk2 replay flag would make a recording-while-replaying session try
+ * to replay the *old* movie instead of the new one. */
+
+static int is_bk2_flag(const char* a) {
+    return strncmp(a, "--bk2", 5) == 0;
+}
+
+/* How many following tokens a --bk2* flag consumes as its value (0 or
+ * 1), so the exclusion walk skips the value too. `next` is the token
+ * after `a` (or NULL at end of argv). */
+static int bk2_flag_value_tokens(const char* a, const char* next) {
+    if (strcmp(a, "--bk2") == 0) return 1;                       /* replay PATH */
+    if (strcmp(a, "--bk2-frame-offset") == 0) return 1;          /* always a value */
+    if (strcmp(a, "--bk2-record") == 0)                           /* optional value */
+        return (next && next[0] != '-') ? 1 : 0;
+    return 0;   /* --bk2-stop-on-end and any other flag-only --bk2* */
+}
+
+/* Build the sidecar content from `argv` (the original, pre-splice one),
+ * dropping every --bk2* flag (and its value). Returns a heap buffer the
+ * caller owns (leaked for program lifetime), or NULL on OOM. Tokens are
+ * space-separated with a trailing newline, prefixed by a '#' header the
+ * sidecar tokenizer treats as a comment. */
+static char* build_bk2_record_args(int argc, char** argv) {
+    static const char header[] =
+        "# openpete --bk2-record: launch args auto-captured for replay via --bk2\n"
+        "# (excludes --bk2* flags and anything sourced from openpete.opts)\n";
+    const size_t hlen = sizeof(header) - 1;  /* without NUL */
+
+    size_t len = hlen;
+    for (int i = 1; i < argc; i++) {
+        if (is_bk2_flag(argv[i])) {
+            i += bk2_flag_value_tokens(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL);
+            continue;
+        }
+        len += strlen(argv[i]) + 1;  /* token + separator */
+    }
+
+    char* buf = (char*)malloc(len + 2);  /* +2: newline fixup + NUL */
+    if (!buf) return NULL;
+    char* p = buf;
+    memcpy(p, header, hlen); p += hlen;
+    for (int i = 1; i < argc; i++) {
+        if (is_bk2_flag(argv[i])) {
+            i += bk2_flag_value_tokens(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL);
+            continue;
+        }
+        size_t n = strlen(argv[i]);
+        memcpy(p, argv[i], n); p += n;
+        *p++ = ' ';
+    }
+    if (p > buf && p[-1] == ' ') p[-1] = '\n';  /* last separator -> newline */
+    else                        *p++  = '\n';   /* no tokens: header already ends '\n' */
+    *p = '\0';
+    return buf;
+}
+
+/* Resolve the default --bk2-record path when the flag is passed with no
+ * argument: "<exe_dir>/bk2/<timestamp>.bk2", creating the bk2 dir. Falls
+ * back to a relative "bk2/..." if the exe dir can't be resolved. Returns
+ * a heap buffer (leaked for program lifetime), or NULL on OOM. */
+static char* resolve_default_bk2_record_path(void) {
+    char stamp[24];
+    time_t now = time(NULL);
+    /* localtime() (not _r/_s): option parsing is single-threaded and runs
+     * once, so the shared-buffer caveat doesn't apply, and this avoids the
+     * platform-specific reentrant variants. */
+    struct tm* tmv = localtime(&now);
+    if (!tmv || strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", tmv) == 0)
+        snprintf(stamp, sizeof(stamp), "recording");
+
+    const char* base = SDL_GetBasePath();  /* SDL3: owned by SDL, trailing sep, do not free */
+    const char* prefix = base ? base : "";  /* NULL → relative to CWD */
+
+    /* "<prefix>bk2" directory, then "<prefix>bk2/<stamp>.bk2" file. */
+    size_t plen = strlen(prefix);
+    char* dir = (char*)malloc(plen + 4);  /* "bk2" + NUL */
+    if (!dir) return NULL;
+    memcpy(dir, prefix, plen);
+    memcpy(dir + plen, "bk2", 4);
+    if (!SDL_CreateDirectory(dir))  /* mkdir -p; true if it already exists */
+        fprintf(stderr, "openpete: --bk2-record: could not create %s: %s\n",
+                dir, SDL_GetError());
+
+    size_t need = strlen(dir) + 1 /* '/' */ + strlen(stamp) + 4 /* ".bk2" */ + 1;
+    char* path = (char*)malloc(need);
+    if (!path) { free(dir); return NULL; }
+    snprintf(path, need, "%s/%s.bk2", dir, stamp);
+    free(dir);
+    return path;
+}
+
 /* Print --help. The RELEASE block (user-facing flags) always prints. The DEBUG
  * block (dev/diagnostic flags) is compiled OUT of --help under
  * OPENPETE_HIDE_DEBUG_FLAGS — set by the windows-mingw-opt preset so the
@@ -196,7 +299,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
         "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
         "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
-        "  --bk2-record PATH          write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie)\n"
+        "  --bk2-record [PATH]        write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie).\n"
+        "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
+        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n"
         "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
         "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
         "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
@@ -295,6 +400,16 @@ void openpete_options_init(openpete_options_t* opts) {
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+    /* Snapshot the command line as typed, before the sidecar / options-file
+     * splices below rewrite argv. --bk2-record captures this (and not the
+     * spliced-in openpete.opts defaults) into its .args sidecar. */
+    int    orig_argc = argc;
+    char** orig_argv = argv;
+
+    /* Set when --bk2-record is present, even with no path argument (the
+     * default path is resolved after the parse loop). */
+    bool bk2_record_requested = false;
+
     /* Per-bk2 sidecar: <path>.bk2.args next to the movie can supply
      * scenario-specific defaults (e.g. --skip-to-level 10 for an
      * Artisans-only movie). Spliced before user argv so explicit CLI
@@ -548,8 +663,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--bk2-stop-on-end") == 0) {
             opts->bk2_stop_on_end = true;
         } else if (strcmp(a, "--bk2-record") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->bk2_record_path = v; i++;
+            /* Optional PATH: consume the next token only when it isn't
+             * another flag. With no path, the default
+             * "<exe_dir>/bk2/<timestamp>.bk2" is resolved after the loop. */
+            bk2_record_requested = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                opts->bk2_record_path = argv[i + 1]; i++;
+            }
         } else if (strcmp(a, "--record") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->record_path = v; i++;
@@ -692,6 +812,23 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                             "point given; pass the PSX vaddr of the game's main)\n");
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+    }
+
+    /* --bk2-record post-processing (after validation, so we don't mkdir on
+     * a bad invocation): fill in the default path when none was given, and
+     * capture the launch args into the .args sidecar. */
+    if (bk2_record_requested) {
+        if (!opts->bk2_record_path || !*opts->bk2_record_path) {
+            char* def = resolve_default_bk2_record_path();
+            if (!def) {
+                fprintf(stderr, "openpete: --bk2-record: out of memory resolving default path\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->bk2_record_path = def;  /* leaked for program lifetime */
+            fprintf(stderr, "openpete: --bk2-record: recording to %s\n", def);
+        }
+        opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
+        /* NULL (OOM) just means no sidecar — the recording itself still works. */
     }
 
     return OPENPETE_EXIT_OK;
