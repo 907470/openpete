@@ -9,7 +9,6 @@
 
 #include <stddef.h>
 
-extern const feature_module_t no_lod_module;
 extern const feature_module_t render_paths_module;
 extern const feature_module_t cyclorama_native_module;
 extern const feature_module_t moby_native_module;
@@ -24,7 +23,6 @@ extern const feature_module_t portal_native_module;
 extern const feature_module_t transition_native_module;
 
 const feature_module_t* const openpete_features[] = {
-    &no_lod_module,
     /* --render-paths: parse the path-isolation selection at startup (apply_options
      * only; the per-path polybuf brackets live in the native feature modules and
      * the OT-walk filter in psyq_DrawOTag). */

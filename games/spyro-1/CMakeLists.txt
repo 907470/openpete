@@ -86,10 +86,8 @@ add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
     feature_list.c
-    features/no_lod.c
     features/render_paths.c
     features/render_decouple.c
-    features/polybuf.c
     features/native_gte.c
     features/cyclorama_native.c
     features/moby_native.c

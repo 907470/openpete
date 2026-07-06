@@ -15,7 +15,6 @@
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
 #include "openpete_render_cache.h"
-#include "features/widescreen.h"
 #include "features/text_moby_native.h"
 
 #include <ctype.h>
@@ -700,8 +699,7 @@ static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
  * Layout: g_DB[2] @ 0x80076EE0, sizeof(DB)=0x84, m_PolyBuf @ +0x70
  * (DRAWENV 0x5C + DISPENV 0x14); g_CurDB ptr @ 0x80075888 (unused —
  * reading BOTH bases makes the mapping frame-symmetric). Reads are
- * via the live DB structs, so --no-lod's polybuf relocation (which
- * keeps PSX vaddrs) is handled automatically. Residual: a copy's
+ * via the live DB structs. Residual: a copy's
  * OFFSET within its buffer can drift when the frame's preceding
  * prim allocations change — the canonical tag then changes for one
  * frame and the batch snaps (clean, gated). READ-ONLY w.r.t.
@@ -738,24 +736,18 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
         (const uint32_t*)openpete_psx_to_host_ptr(0x80076F64u + 0x70u);
     if (!pb0p || !pb1p) return addr;
     {
-        /* CANON-MAP the live pb values: under --no-lod/widescreen the
-         * polybuf is host-relocated (pb reads 0x804xxxxx/0x805xxxxx)
-         * but the staged-copy area stays at its CANONICAL PSX
-         * addresses (measured 0x801Axxxx/0x801Bxxxx alternating under
-         * no-lod) — the raw-pb window only ever bracketed it
-         * coincidentally, and broke under relocation (DEMO MODE solid
-         * red with --no-lod, plain flags fine). to_canon is identity
-         * when not relocated. */
-        uint32_t pb0 = psx_runtime_polybuf_to_canon(*pb0p);
-        uint32_t pb1 = psx_runtime_polybuf_to_canon(*pb1p);
+        /* Live per-slot polybuf cursors (canonical PSX vaddrs; the
+         * host-relocation that once required a to_canon mapping here
+         * was deleted with the --no-lod producer stack 2026-07-06). */
+        uint32_t pb0 = *pb0p;
+        uint32_t pb1 = *pb1p;
         uint32_t lo, span;
         if (!(pb0 & 0x80000000u) || !(pb1 & 0x80000000u) || pb0 == pb1)
             return addr;          /* DBs not initialised yet */
         lo   = (pb0 < pb1) ? pb0 : pb1;
         span = (pb0 < pb1) ? (pb1 - pb0) : (pb0 - pb1);
         /* OPENPETE_NORM_WINDOW=1: one-shot dump of the live window
-         * geometry + first out-of-window addrs (flag-dependent
-         * layouts: --no-lod grows/relocates the polybuf). */
+         * geometry + first out-of-window addrs. */
         if (getenv("OPENPETE_NORM_WINDOW")) {
             static unsigned s_nw = 0;
             static uint32_t s_nw_hi[24]; static unsigned s_nw_cnt[24];
@@ -1260,11 +1252,6 @@ extern void func_80023AC4(CPUState* cpu);
 extern void openpete_trace_writes_begin(CPUState* cpu);
 extern void openpete_trace_writes_end(CPUState* cpu);
 
-/* AllocateBuffers (4BEF8.c) post-call hook target — relocate the poly
- * buffer to a virtualized region when widescreen has set one up. See
- * notes/plans/openpete-widescreen-fov.md item 2. */
-extern void func_8005B6F8(CPUState* cpu);
-
 /* Phase 3/4 — native-decomp dispatch table. Generated from
  * manifest/native.toml by tools/gen_dispatch.py; see
  * generated/native_dispatch.c. Each [[dispatch]] entry there names a
@@ -1272,6 +1259,14 @@ extern void func_8005B6F8(CPUState* cpu);
  * emits the cpu-stash, psyq___main bootstrap (for main), arg unpacking
  * from a0..a3/stack, and return code. To add another entry point,
  * extend native.toml and re-run scripts/regen-manifest.sh. */
+/* g_SonyImage / D_8006FCF4 base. Default == canonical PSX address; the
+ * recompiler's value-keyed lui+addiu pair substitution is then identity.
+ * A generic relocation primitive for any future consumer of the
+ * env-renderer scratch pool (the --no-lod producer stack that motivated
+ * it was deleted 2026-07-06; it always left this at canonical anyway).
+ * Declared in psx_runtime.h. */
+uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
+
 extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
@@ -1362,47 +1357,6 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         func_80023AC4(cpu);
         openpete_trace_writes_end(cpu);
         s_in_traced_call = 0;
-        return 1;
-    }
-
-    /* AllocateBuffers post-call polybuf-redirect hook (Option B).
-     * AllocateBuffers (4BEF8.c, PC 0x8005B6F8) sets up the polybuf +
-     * OT layout in canonical 2 MB. When widescreen has registered a
-     * host-backed polybuf region via widescreen_polybuf_setup(), let
-     * the original run (so the canonical anchor + OT/scene pointers
-     * stay correct), then redirect only the per-frame write cursors
-     * (`g_DB[0/1].m_PolyBuf`) into the host-backed region.
-     *
-     * `m_LowerPolyBuffer` / `m_HigherPolyBuffer` are deliberately
-     * NOT overwritten — they remain canonical and serve as the layout
-     * anchor for transient scratch zones (`m_LowerPolyBuffer -
-     * 0x40000` titlescreen image, cyclorama dest, memcard scratch,
-     * flight image stash, balloonist bounds check). Moving them was
-     * the bug behind the parked Step 3c crash. The `D_800757B0 =
-     * db->m_PolyBuf` assignment at draw.c:2664 propagates the
-     * redirected cursor automatically every frame; the
-     * `psx_runtime_polybuf_size` substitutions at the
-     * `D_80075780 = ... + 0x1C000` sites cover the end-cursor.
-     *
-     * See notes/plans/openpete-polybuf-host-redirect.md for the
-     * two-pointer separation rationale. */
-    static int s_in_alloc_buffers = 0;
-    if (addr == 0x8005B6F8u && widescreen_polybuf_active()
-        && !s_in_alloc_buffers) {
-        s_in_alloc_buffers = 1;
-        func_8005B6F8(cpu);
-        /* Capture the canonical per-slot poly-buffer bases AllocateBuffers
-         * just wrote, before we overwrite them with the host-relocated
-         * ones. psx_runtime_polybuf_to_canon() needs these to keep
-         * cursor-derived gameplay pointers (g_HudMobys, D_800756FC) at
-         * their hardware value. */
-        widescreen_polybuf_set_canonical(cpu->read_word(0x80076F50u),
-                                         cpu->read_word(0x80076FD4u));
-        uint32_t lo = widescreen_polybuf_lower_vaddr();
-        uint32_t hi = widescreen_polybuf_higher_vaddr();
-        cpu->write_word(0x80076F50u, lo);  /* g_DB[0].m_PolyBuf           */
-        cpu->write_word(0x80076FD4u, hi);  /* g_DB[1].m_PolyBuf           */
-        s_in_alloc_buffers = 0;
         return 1;
     }
 

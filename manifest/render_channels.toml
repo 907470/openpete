@@ -387,11 +387,9 @@ unchanged)."""
 # `openpete_world_geo_set_current(<operand>)` after the verbatim translation.
 # operand="rd" for the dominant xor (the strip-base result reg), "rt" for the
 # six lw loop heads (the loaded value). See gen_channel_sites.py.
-# 0x800276B4 — a 7th strip head — is NOT here: it's a hybrid co-owned with
-# dbg_kill_env_lp_walk (the LP-kill knob bakes a conditional into the load),
-# so it stays hardcoded in code_generator.cpp.
 substitution_sites = [
     { addr = 0x80026238, operand = "rd", kind = "append_call", hook = "openpete_world_geo_set_current" },  # xor $t7,$t7,$s1 — strip base ptr (dominant)
+    { addr = 0x800276B4, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #7 (ex dbg_kill hybrid)
     { addr = 0x800267E4, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $t9,0($ra) — strip-list head #2
     { addr = 0x80027720, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #3 inner
     { addr = 0x80028590, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 outer
@@ -580,97 +578,33 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_polybuf_size"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Spyro's double-buffered polygon-buffer slot is sized 0x1C000 bytes
-(4BEF8.c:25-27, matching decomp). Three sites in gamestates/draw.c
-recompute the end cursor `D_80075780 = m_LowerPolyBuffer + 0x1C000`,
-and AllocateBuffers (4BEF8.c) decrements `m_HudOTStart` and
-`m_HigherPolyBuffer` by 0x1C000 to lay the slots out. The compiler
-emits the constant via `lui $X, 0x1; ori $X, $X, 0xC000` (positive
-sites) or `lui $X, 0xFFFE; ori $X, $X, 0x4000` (AllocateBuffers
-default-path negation).
-
-Wider aspect ratios admit more cells through the cone-cull and
-overflow the existing buffer (cyclorama corrupted at 21:9, crash at
-32:9 — see openpete-widescreen-fov.md). Substituting the three
-end-cursor ori sites with psx_runtime_polybuf_size lets the runtime
-register a larger host-backed polybuf via the RAM virtualization
-primitive (notes/plans/openpete-ram-virtualization.md) and grow
-the slot without re-recompiling. The companion AllocateBuffers
-substitution was deliberately removed: widening the canonical
-layout there shifted m_LowerPolyBuffer down by (size-0x1C000)*2
-bytes, far enough in 21:9+ to land on top of the level loader's
-CdRead destinations (gameplay corruption + pause-resume hang at
-21:9, frame 1686 in the pause-unpause bk2). The canonical 0x1C000
-layout stays intact; widening lives entirely in the host-backed
-buffer accessed via psx_runtime_polybuf_lower (see that channel).
-Default 0x1C000 = byte-identical 4:3.
-
-Activated by widescreen_polybuf_setup() under the Option B
-two-pointer separation — host-backed cursors, canonical anchor.
-See notes/plans/openpete-polybuf-host-redirect.md.
-
-Render-side only; no gameplay-readable RAM is touched (the bytes
-written to the polybuf are P_TAGs that DrawOTag consumes)."""
-# GENERATED (const_load): `ori $X,$X,0xC000` end-cursor sites compose the
-# 0x1C000 slot size -> emitted as `rt = psx_runtime_polybuf_size`.
-# (AllocateBuffers ori-0x4000 negation was deliberately NOT substituted — it
-# shifted m_LowerPolyBuffer into CdRead level-data; canonical layout stays.)
-substitution_sites = [
-    { addr = 0x8001A608, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # draw.c:947 pause-resume
-    { addr = 0x8001C6AC, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # draw.c:1561 Gamestate-10 entry
-    { addr = 0x8001ED90, imm = 0xC000, kind = "const_load", knob = "psx_runtime_polybuf_size" },  # GamestateDraw bracket
-]
-verdict_fn       = "psx_runtime_polybuf_size"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # presentation-side; render-time only
-doc              = "notes/plans/openpete-polybuf-host-redirect.md"
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate). Nothing arms the polybuf host-redirect any more (the widescreen >1.5-factor trigger died with the --aspect stack; the 1 MB --no-lod grow dies here), so the whole relocation block is deleted.
+Was: the 4 const_load (ori) sites substituting the 0x1C000 polybuf slot size so the host-redirected buffer could grow. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
+doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "widescreen_polybuf_lower"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Companion to widescreen_polybuf_size. The two cursor-reset paths in
-gamestates/draw.c read `g_Buffers.m_LowerPolyBuffer` directly and
-then write D_800757B0 / D_80075780. With Option B's two-pointer
-separation the canonical m_LowerPolyBuffer must stay put (it anchors
-transient scratch zones — cyclorama, savedata, flight image-stash),
-so this channel substitutes the LW result at the two cursor-reset
-PCs only, redirecting the loaded pointer to the host-backed polybuf
-base (psx_runtime_polybuf_lower).
-
-Without this substitution, pause-resume (draw.c:946) and Gamestate-10
-entry (draw.c:1559) would re-anchor D_800757B0 at the canonical
-buffer while D_80075780 is `canonical_lower + polybuf_size` (per
-the polybuf_size sub) — overrunning into m_HigherPolyBuffer /
-HudOTStart and corrupting the OT chain into a DrawOTag hang.
-
-The third polybuf_size site (0x8001ED90, GamestateDraw bracket) reads
-`db->m_PolyBuf` directly — that pointer is already redirected by
-the AllocateBuffers post-call hook (game_extras_impl.c), so no LW
-substitution is needed there.
-
-Default sentinel 0u = byte-identical 4:3 (LW falls through). Set by
-widescreen_polybuf_setup() to the host region base.
-
-Render-side only; no gameplay-readable RAM is touched."""
-# GENERATED (replace_call): rt = psx_runtime_polybuf_lower_load(cpu, ea) —
-# load then return the host-backed base when relocated (knob != 0), in widescreen.c.
-substitution_sites = [
-    { addr = 0x8001A618, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_polybuf_lower_load" },  # draw.c:946 pause-resume
-    { addr = 0x8001C6A0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_polybuf_lower_load" },  # draw.c:1559 Gamestate-10 entry
-]
-verdict_fn       = "psx_runtime_polybuf_lower"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 2 replace_call sites (polybuf_lower_load) re-anchoring the cursor-reset m_LowerPolyBuffer reads at the relocated base. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-polybuf-host-redirect.md"
-
-# ─── Open channels — identified, no substitution yet ────────────────
-# These appear in manifest/gameplay_state_regions.toml as
-# `render_channel:*` regions; the harness diffs them and is expected
-# to be RED until each gets a substitution and flips to "gated".
-# Listing them here makes the unknown-unknown visible.
+doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "sparkle_alloc_state"
@@ -1002,390 +936,144 @@ doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "no_lod_env_queue_offsets"
-status      = "gated"
+status      = "audited_clean"
 description = """
-r_environment.s queue-head pointer arithmetic: 11 PC-keyed `addi $rt,
-$rs, +0x1C00 | +0x1E00 | +0x2000` sites following a `lui+addiu
-D_8006FCF4` pair, where $rs already holds the splash-and-scratch base
-and the addi shifts to one of three queue heads (HP / mid / LP).
-
-Substituted via three runtime knobs (psx_runtime_env_hp_queue_offset,
-_mid_queue_offset, _lp_queue_offset) defaulting to the canonical
-0x1C00 / 0x1E00 / 0x2000 sub-offsets — identity at default, byte-
-identical to the pre-substitution recompiler output.
-
---no-lod (Phase 2.5 of openpete-disable-lods.md) collapses Spyro's
-sector LOD band by overriding m_LodDistance every frame; the side
-effect is that every visible sector enters the HP queue, which on
-dense levels and most widescreen aspects exceeds the canonical 256-
-entry queue capacity. The fix is to relocate the splash-and-scratch
-pool to a virtualized region (psx_runtime_register_region from
-openpete-ram-virtualization.md) and swing these offset knobs to fresh
-sub-offsets past the canonical 0x31A0 splash struct, where each queue
-gets ~16 KB (4096 entries × 4 bytes) of physical space before the
-next sub-bucket. Queues are NULL-terminated, so growth is bytes-
-between-sub-buckets — no count-limit substitution needed.
-
-Two `addi $r, $r, 0x2000` sites at 0x80026DEC / 0x80027340 in the
-same file are NOT substituted: they compose `($s5 >> 2) + 0x2000`
-into a Z-saturation chain (sub + addi -0x1000 + bgez) and have no
-relation to the pool. Confirmed by reading the surrounding context.
-
-The base lui+addiu redirect is value-keyed and lives in code_generator
-as the `lui $X, 0x8007 / addiu $X, $X, lo` pair detector; that
-substitution is not enumerated by this channel because it spans 230
-sites across 50+ files (every renderer + every level overlay) — the
-audit tool can't track it as a per-PC list. It is identity at default
-knob (psx_runtime_g_sony_image_base == 0x8006FCF4), verified against
-aspect_determinism.
-
-Render-side only — these queue heads are populated and consumed
-within a single render-pass invocation of r_environment.s; nothing
-outside the renderer reads the queue contents. The downstream
-gameplay-readable channels that *share* sub-offsets with these
-queues (m_ShadedMobys at +0x2400, g_LevelTransGems at +0x2800)
-remain at canonical bytes via the value-keyed base redirect into a
-region that mirrors the canonical 0x31A0 layout 1:1."""
-# GENERATED sites (kind=offset_add): the recompiler emits `rt = rs + knob`
-# from this table via --channel-sites; no addresses are hardcoded in
-# code_generator.cpp for this shape. See gen_channel_sites.py.
-substitution_sites = [
-    { addr = 0x800259BC, imm = 0x1C00, kind = "offset_add", knob = "psx_runtime_env_hp_queue_offset"  },  # HP-queue head, front-walk init
-    { addr = 0x800259C0, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, front-walk init
-    { addr = 0x800261EC, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue start / NULL terminator
-    { addr = 0x8002679C, imm = 0x1C00, kind = "offset_add", knob = "psx_runtime_env_hp_queue_offset"  },  # HP-queue head, HP-walk init
-    { addr = 0x800267A0, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue head, HP-walk init
-    { addr = 0x800267A4, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, HP-walk init
-    { addr = 0x80027698, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, second HP-walk
-    { addr = 0x80028584, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue head, second HP-walk
-    { addr = 0x80028588, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue head, second HP-walk
-    { addr = 0x800294FC, imm = 0x1E00, kind = "offset_add", knob = "psx_runtime_env_mid_queue_offset" },  # mid-queue read, LP-walk
-    { addr = 0x8002A0AC, imm = 0x2000, kind = "offset_add", knob = "psx_runtime_env_lp_queue_offset"  },  # LP-queue read, LP-walk
-]
-verdict_fn       = "psx_runtime_env_{hp,mid,lp}_queue_offset"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 11 offset_add sites relocating the three env visible-queues (HP/mid/LP heads) into a grown 0x80300000 host region. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "dbg_kill_env_lp_walk"
 status      = "audited_clean"
 description = """
-Debug-only knob (OPENPETE_DBG_KILL_LP=1 env var) that disables the
-env-renderer's LP-walk for visual identification of which cells use
-the LP-walk → HQ-atlas ground-plane render path.
-
-Two PC sites:
-- 0x800261E0: lw $at, 0x0(g_SkipLowPolyWorld). OR'd with 1u when knob
-  set so the following bnez at 0x800261F8 always branches and the
-  pre-LP-walk pass at .L80026228 is skipped.
-- 0x800276B4: lw $s3, 0x0($ra) at the second LP-walk loop top
-  (.L800276B4). When knob set, returns 0 so the following beqz exits
-  the loop immediately — kills the actual primitive-emitting LP-walk.
-
-Both substitutions are identity at default (knob == 0), so the
-recompiler-emitted code is byte-identical to the canonical PSX
-behaviour when the debug knob is unset. Used during the Phase 3
-investigation (commit `8fa68ae`) to prove the LP-walk renders ground
-cells, not horizon backdrop. See plan
-`notes/plans/openpete-disable-lods.md` Phase 3 close-out section."""
-# GENERATED (replace_call): both read memory + apply the debug knob in C.
-# 0x800276B4 is the dbg/world-geo hybrid (LP-kill zero + world-geo stamp).
-substitution_sites = [
-    { addr = 0x800261E0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_dbg_skiplpworld" },  # SkipLowPolyWorld read (OR 1)
-    { addr = 0x800276B4, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_dbg_lpwalk_strip" },  # LP-walk loop top (zero + world-geo stamp)
-]
-verdict_fn       = "psx_runtime_dbg_kill_env_lp_walk"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (deleted with the --no-lod producer stack, whose
+setup was the only place the OPENPETE_DBG_KILL_LP env knob was armed).
+Was: 2 replace_call sites forcing the env-renderer LP-walk off for
+visual identification (Phase 3 investigation, closed since commit
+8fa68ae). The 0x800261E0 g_SkipLowPolyWorld read reverted to the plain
+lw; the 0x800276B4 LP-walk loop head kept its world-geo identity stamp
+by moving into the world_geo_strip_tag channel as a plain append_call
+(it was a dbg/world-geo hybrid)."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_moby_face_offset"
-status      = "gated"
+status      = "audited_clean"
 description = """
-r_moby.s LP-band branch loads the AnimationHeader.m_LpFaces field via
-`lw $fp, 0x1C($ra)` at two PCs (0x8001FE9C, 0x80021674). The HP-band
-branch above each loads `lw $fp, 0x14($ra)` (m_Faces).
-
-Substituted via runtime knob psx_runtime_moby_lp_face_offset, default
-0x1C — identity, byte-identical to the canonical recompiler output.
---no-lod (Phase 4 of openpete-disable-lods.md) swings the knob to
-0x14 so the LP-path load reads m_Faces (high-poly face list) instead.
-
-Render-side only — the loaded value drives only the per-vertex face
-walk inside the same render-pass; nothing outside the renderer reads
-the chosen face pointer."""
-# GENERATED (replace_call): rt = psx_runtime_moby_lp_face_load(cpu, rs) —
-# read $ra + the knob offset (0x1C default / 0x14 under --no-lod) in C.
-substitution_sites = [
-    { addr = 0x8001FE9C, dest = "rt", operand = "cpu,rs", kind = "replace_call", hook = "psx_runtime_moby_lp_face_load" },  # LP-face load, first dispatch
-    { addr = 0x80021674, dest = "rt", operand = "cpu,rs", kind = "replace_call", hook = "psx_runtime_moby_lp_face_load" },  # LP-face load, second dispatch
-]
-verdict_fn       = "psx_runtime_moby_lp_face_offset"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 2 replace_call sites (moby_lp_face_load) swinging the LP-band face-list load from m_LpFaces (+0x1C) to m_Faces (+0x14). The native walk keys its faceblock on openpete_no_lod directly (moby_native.c moby_tier_faceblock). Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_moby_zsf4_distance_neutralize"
-status      = "gated"
+status      = "audited_clean"
 description = """
-The cull passes compute the per-record LOD/colour tier
-ZSF4 = ((moby->m_Renderer(0x4B) & 0x3F) << 8) - viewZ and store its low
-16 bits at rec+0x2E (`sh $t2, 0x2E($fp)` @0x8001F4EC regular,
-@0x80020C9C specular). The renderer forks per record on it
-(block_8001FDD0): >=1024 raw colours, 1..1023 DPCS fade toward the far
-palette hdr+0x20, <=0 LP faces + far palette. So even with the Phase-4
-face knob forcing HP faces, distant mobys under --no-lod still shift to
-the far palette ("colour changes with distance").
-
---no-lod neutralizes the DISTANCE term: the record's TR.z (the exact
-viewZ the formula subtracted) is stored at rec+0x18 one instruction
-earlier, so the hook recovers zsf4_nodist = value + TR.z ==
-(m_Renderer&0x3F)<<8 by pure algebra (no register-layout dependence)
-and stores THAT when it lands in the near band (>=1024) — every
-authored-normal moby renders raw bright colours at any distance.
-Records whose zero-distance value is ALREADY sub-near
-(m_Renderer&0x3F < 4) are effect-AUTHORED fades (e.g. the fireball
-ring puffs drive ZSF4 1024->0 to fade out) — canonical value kept, so
-effect fade-outs survive.
-
-Render-side only: rec+0x2E lives in the g_SonyImage render scratch,
-read back solely by the render passes' ctc2 gte_ctrl[30]; the cull
-verdict (m_WasDrawn) is decided before this store. Identity at default
-(openpete_no_lod == 0). The native renderer reads the STORED value
-(moby_native.c project_all_records), so native and game shift together
-by construction."""
-# GENERATED (void replace_call): no_lod_moby_zsf4_store(cpu, ea, val) —
-# neutralize the distance term under --no-lod, then perform the sh.
-substitution_sites = [
-    { addr = 0x8001F4EC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_no_lod_moby_zsf4_store" },  # regular cull (func_8001F158)
-    { addr = 0x80020C9C, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_no_lod_moby_zsf4_store" },  # specular cull (func_800208FC)
-]
-verdict_fn       = "openpete_no_lod"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 2 void-replace_call sites (no_lod_moby_zsf4_store) neutralizing the ZSF4 distance term at the cull-record tier store. The native walk applies the identical idempotent read-side neutralization (moby_native.c project_all_records). Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_env_texture_tier"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Phase 3 of openpete-disable-lods.md: force HQ texture tier inside
-HP-walk. Despite the name, `g_Environment.m_LQTexturePointer` is a
-paired-tier table — each 16-byte entry packs an HQ descriptor in
-bytes 0..7 and an LQ descriptor in bytes 8..15. HP-walk does a
-per-quad screen-size test (`bgtz $t0` at PCs 0x80026F88 /
-0x80027058 / 0x80027478) and, when the polygon is below the
-threshold, falls through to an `addi $t5, $t5, 0x8` that bumps the
-descriptor pointer from the HQ half to the LQ half.
-
-Under --no-lod, the +8 bump is suppressed at all three sites, so
-every quad reads the HQ descriptor half regardless of screen size.
-
-Pure renderer-side: $t5 is consumed only by the GTE-side texture-
-descriptor fetches that immediately follow.
-
-Earlier (Phase 3 v1, commit c3a411f, reverted in d915c2d) tried to
-mirror m_LQTexturePointer = m_HQTexturePointer. That was the wrong
-intercept — m_HQ is a separate per-quad descriptor pool used only
-by the post-LP loop, with different stride and layout, so mirroring
-sent HP-walk indexing into garbage. The per-quad LOD decision is
-entirely intra-m_LQ, gated by the three +8 bumps targeted here."""
-# GENERATED (replace_call): rt = psx_runtime_no_lod_tier_bump(rs, imm) —
-# `openpete_no_lod ? rs : rs+8` (suppress the HQ->LQ bump), math in widescreen.c.
-substitution_sites = [
-    { addr = 0x80026F94, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # first  per-quad LQ-tier bump
-    { addr = 0x80027064, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # second per-quad LQ-tier bump
-    { addr = 0x80027484, dest = "rt", operand = "rs,imm", kind = "replace_call", hook = "psx_runtime_no_lod_tier_bump" },  # third  per-quad LQ-tier bump
-]
-verdict_fn       = "openpete_no_lod"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 3 replace_call sites (no_lod_tier_bump) suppressing the HP-walk HQ->LQ descriptor +8 bump. The native terrain feeder owns tier selection (terrain_native.c HQ classifier). Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_lod_distance_saturate"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Phase 6 of openpete-disable-lods.md: the three `lw $X, 0x24($at)`
-reads of g_Environment.m_LodDistance in r_environment.s return
-0x7FFFFFFF (INT32_MAX) under --no-lod. Identity at default.
-
-Sites:
-  0x800259B0 → $s6 (front-walk routing gate)
-  0x80026214 → $s3 (LP-walk screen margin)
-  0x800267B0 → $s5 (HP-walk OT-slot + screen-margin cull math)
-
-Effect:
-  - Front-walk classifier admits every cell that survives cone cull
-    into the HP queue (the `bgez $s6 - (Z+0x100)` gate at 0x80025B70
-    always passes; the `blez $s6 - (Z-bias)` HP-push gate at
-    0x80025B90 never trips). The 0x4000 andi gate at 0x80025B80
-    still LP-routes cyclorama tiles (empirically the 71 Level-11
-    cells with HP_POLY_BYTES == 0 are all 0x4000-flagged).
-  - HP-walk's screen-margin cull at 0x80026CFC / 0x80027254
-    (`sub $t3, $s5, $t2; blez $t3, .L80026B74`) never trips, so
-    far-cell projected bboxes still emit prims.
-  - Per Phase 2.5 pool relocation, the HP queue holds 4096 entries
-    in the openpete-only 0x80300000+ region, so the inflated HP
-    load fits.
-
-History: an earlier $s6 saturation experiment (b3f17ee) was
-reverted on the theory that it caused cyclorama Z-order
-regression. User later confirmed that observation came from an
-old emulator test, not the recompiler — saturating m_LodDistance
-in recomp doesn't reproduce it. The misdiagnosis spawned several
-dead-end exploration branches (routing-branch overrides + cull-
-defeat, surgical PC-keyed gates, etc.); see the git log between
-2f6416d and 483e586 for the cautionary record."""
-# GENERATED sites (kind=replace_call): `rt = psx_runtime_no_lod_saturate32(cpu, ea)`
-# — the read + --no-lod INT32_MAX conditional now lives in widescreen.c.
-substitution_sites = [
-    { addr = 0x800259B0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s6 — front-walk m_LodDistance
-    { addr = 0x80026214, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s3 — LP-walk m_LodDistance
-    { addr = 0x800267B0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s5 — HP-walk m_LodDistance
-]
-verdict_fn       = "psx_runtime_no_lod_saturate32"
-verified_against = ["aspect_determinism", "psx_oracle_match"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 3 replace_call sites (no_lod_saturate32) returning INT32_MAX for m_LodDistance loads. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_culling_distance_saturate"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Companion to `no_lod_lod_distance_saturate`: the single
-`lw $s2, 0x28($at)` read of g_Environment.m_CullingDistance at
-PC 0x80026210 in r_environment.s returns 0x7FFFFFFF under
---no-lod. Identity at default.
-
-Site:
-  0x80026210 → $s2 (LP-walk pre-pass radial-distance gate; $s2
-                    becomes m_CullingDistance >> 7, then gates
-                    far-cell early-skip in the loop body)
-
-Effect: cells that pass the front-walk cone cull and would
-normally be dropped by the LP-walk's radial-distance test now
-survive and reach HP-walk. Combined with the m_LodDistance
-saturation, every cone-admitted cell renders at high-poly /
-high-quality regardless of how far away it is.
-
-Gameplay isolation: collision.s and math.s also read offset
-0x28 of g_Environment (10 PCs total) for gameplay-side distance
-math. Those callsites are NOT substituted — they must keep
-seeing the canonical 0x14000 / 0x1C000 / 0x28000 values so
-collision results stay byte-identical to PSX hardware. Only the
-single renderer-side read at 0x80026210 is touched here."""
-substitution_sites = [
-    # GENERATED (replace_call): rt = psx_runtime_no_lod_saturate32(cpu, ea)
-    { addr = 0x80026210, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_saturate32" },  # lw $s2 — LP-walk pre-pass m_CullingDistance
-]
-verdict_fn       = "psx_runtime_no_lod_saturate32"
-verified_against = ["aspect_determinism", "psx_oracle_match"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 1 replace_call site (no_lod_saturate32) returning INT32_MAX for the m_CullingDistance load. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_moby_render_distance_saturate"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Phase 8: per-moby render distance saturation. r_moby.s reads the
-packed m_Renderer half-word at offset 0x50 of the moby struct via
-`lhu $a0, 0x50($fp)` at PC 0x80022B20. The half-word lays out as:
-  byte 0x50 low 7 bits : m_Distance      (authored 7-bit draw range)
-  byte 0x50 bit 7      : m_ShinyRenderer (routes to shiny path via
-                                          bltz at PC 0x80022B38)
-  byte 0x51            : m_RenderRadius  (bbox half-extent, used
-                                          downstream for cull math)
-
-Downstream the m_Distance field is shifted into bits 8..14 and
-serves as the per-axis box-cull threshold at PCs 0x80022B48..
-0x80022B90: a moby is rejected when |camera_delta / 4| >=
-(m_Distance << 8), i.e. roughly when world-axis distance from
-camera exceeds 4 * (m_Distance << 8) units. Authored defaults
-of m_Distance == 16 give ~16 K-unit cutoff — a tenth of the
-in-group env cull radius. Distant mobys are dropped before the
-cone test (Phase 7) gets a chance to see them.
-
-Under --no-lod this channel forces the m_Distance bits to 0x7F
-(max 7-bit value), preserving the shiny flag and the high byte
-(m_SpecularMetalColor[0], used as a +0x200 cull bias via its LSB
-on non-shiny mobys and zeroed by the immediately following
-`sb $zero, 0x51($fp)`). Threshold rises to ~130 K units, matching
-the saturated env cull radius (Phase 6.B).
-
-CRITICAL: only bump mobys whose current m_Distance is non-zero.
-m_Distance == 0 is the "uninitialized / disabled moby slot"
-sentinel — forcing it to 0x7F admits stale moby memory into the
-renderer and hangs during the post-level-load fade-in (verified
-empirically: any bump on zero-distance mobys hangs at frame ~3457
-in the demo's level_11 transition).
-
-Sites (all three moby render paths in r_moby.s):
-  0x8001F1F4 → $a0 (regular  path; lhu of struct + 0x50 via $sp)
-  0x800209A0 → $a0 (specular path; lhu of struct + 0x50 via $sp)
-  0x80022B20 → $a0 (shaded   path; lhu of struct + 0x50 via $fp)
-
-Gameplay isolation: m_Distance is a packed half-word with the
-shiny renderer flag and m_SpecularMetalColor[0]. Substitution at
-this specific PC only affects the renderer's per-moby cull path;
-AI / gameplay reads of m_Distance, m_UpdateDistance,
-m_ShinyRenderer happen at different PCs and stay canonical. Both
-bits we preserve (shiny + spec-color LSB) are essential for
-correct routing/bias math even under --no-lod, so the
-substitution is minimal-perturbation. Identity at default
-(openpete_no_lod==0)."""
-# GENERATED (replace_call): rt = psx_runtime_no_lod_moby_distance(cpu, ea) —
-# reads the m_Renderer half-word + the --no-lod m_Distance saturation (incl.
-# the mdist_thresh_delta record + the m_Distance==0 sentinel guard) now lives
-# in core/features/widescreen.c.
-substitution_sites = [
-    { addr = 0x8001F1F4, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # regular  m_Renderer load
-    { addr = 0x800209A0, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # specular m_Renderer load
-    { addr = 0x80022B20, dest = "rt", operand = "cpu,ea", kind = "replace_call", hook = "psx_runtime_no_lod_moby_distance" },  # shaded   m_Renderer load
-]
-verdict_fn       = "psx_runtime_no_lod_moby_distance"
-verified_against = ["aspect_determinism"]
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 3 replace_call sites (no_lod_moby_distance) saturating the packed m_Renderer low-7-bit m_Distance to 0x7F. The native walk saturates its own reveal threshold (moby_native.c, keyed on openpete_no_lod). Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "no_lod_moby_distance_cull_verdict"
 status      = "gated"
 description = """
-Gameplay-isolation closure PAIRED with no_lod_moby_render_distance_saturate
-(which forces the per-moby m_Distance field to 0x7F under --no-lod). That
-saturation widens the per-axis box-cull threshold so distant mobys render;
-left alone it would also flip the m_WasDrawn cull verdict, leaking an extra
-distant moby into gameplay-readable state (m_WasDrawn → gem spawn → a tick-
-early g_Sparkles allocation → moby-pool drift).
+DISTANCE half of the m_WasDrawn box-cull verdict (companion to the
+cone channel). 21 append_call sites (dist_gate_lower x9 /
+dist_gate_upper x12) after the canonical box-cull add/sub in all
+three moby render paths; each clears native_dist_pass when the cull
+comparand rejects, and the m_WasDrawn=1 stores gate on
+(native_cone_pass && native_dist_pass).
 
-These sites recompute the CANONICAL (un-saturated, 4:3) distance-cull
-verdict alongside the widened render path and clear
-psx_runtime_native_dist_pass when the canonical cull would reject. The
-m_WasDrawn=1 stores (owned by the m_WasDrawn channel) gate on
-(native_cone_pass && native_dist_pass), so saturating m_Distance for
-rendering perturbs no gameplay-readable byte. Identity when --no-lod is off
-(psx_runtime_mdist_thresh_delta == 0).
-
-Two test shapes, three render paths each (regular / specular / shaded):
-  * box-cull LOWER-bound (funct add, code_generator.cpp:859) — a1 =
-    delta/4 + threshold; cull if <= 0. Clears native_dist_pass when the
-    canonical (a1 - mdist_thresh_delta) would reject.
-  * box-cull UPPER-bound (funct sub, code_generator.cpp:983) — a1 =
-    delta/4 - threshold; cull if >= 0. Symmetric back-out.
-  * post-MVMVA proj-Z cull (the 0x...BE4 / 0x...2E8 / 0x...A94 trio) — a
-    SECOND distance cull each path runs after the box-cull, comparing the
-    rotated projection coordinate gte_data[27] against the same saturated
-    threshold. fix #3 patched only the box-cull; the proj-Z cull (fix #4)
-    leaked a far-boundary moby one tick early until this trio was added.
-
-state_regions intentionally empty (same precedent as the m_WasDrawn
-channel): closure is verified at substitution-site granularity + the PSX
-hardware oracle gate, not by hashing a whole moby pool (which carries
-hundreds of unrelated gameplay bytes). See no_lod_moby_render_distance_
-saturate for the saturation half and moby_pool_state for the pool catch-all."""
+HISTORY: built to close the --no-lod m_Distance-saturation leak (the
+saturated .s cull admitted far mobys -> m_WasDrawn=1 -> AI / rand()
+divergence). The producer stack that created the saturated/canonical
+split was deleted 2026-07-06, so the gates now simply replay the .s's
+own canonical verdict (mdist_thresh_delta retired) — kept because they
+are the m_WasDrawn closure architecture shared by the whole channel
+family, and a future producer perturbation would be caught by them.
+"""
 # GENERATED sites (kind=append_call): the recompiler emits the verbatim
 # add/sub then appends a CALL to the named hook passing the dest register
 # (operand="rd"). The verdict math lives in core/features/widescreen.c, not
@@ -1425,95 +1113,30 @@ doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_moby_reg_queue"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Phase 8.5: regular/specular moby visible-queue HEAD + LIMIT relocation.
-r_moby.s func_8001F158 (producer) and func_8001F798 (consumer) compute the
-queue head = g_SonyImage base + 0x1600 and the queue-full LIMIT = base +
-0x2200 via three PC-keyed addi sites. The canonical queue holds only ~54
-entries (0x1600..0x2200, stride 0x38) and the cull loop TERMINATES on
-overflow.
-
-Under --no-lod the saturated distance/LOD culls admit far more mobys than
-54, overflowing the queue and early-exiting the cull loop — late-list
-canonical mobys never get queued (the @2468 g_MobyAllocPtr leak). This
-channel swings the head + limit offsets into a relocated, grown openpete-
-only host region (games/spyro-1/features/no_lod.c MOBY_QUEUE_REGION_*,
-0x10000 / 0x38 ≈ 1170 entries) so the queue can never overflow. Identity at
-default (offset == 0x1600, limit == 0x2200), so the recompiler output is
-byte-identical when --no-lod is off.
-
-Render-side only — the 0x80071xxx visible-queue is populated and consumed
-within a single render-pass invocation of r_moby.s; nothing outside the
-renderer reads it (audited render-side state, gameplay_state_regions.toml
-g_Particles/moby-queue note). Analogous to no_lod_env_queue_offsets but for
-the moby cull queue rather than the env queues.
-
-PC-keyed (not value-keyed) because addi $r,$r,0x1600 / 0x2200 recur
-elsewhere — the immediate is matched alongside the PC (imm == 0x1600 /
-0x2200) in code_generator.cpp:1107/1125."""
-# GENERATED sites (kind=offset_add) — see gen_channel_sites.py / --channel-sites.
-substitution_sites = [
-    { addr = 0x8001F19C, imm = 0x1600, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_offset"       },  # func_8001F158 producer queue head
-    { addr = 0x8001F7E4, imm = 0x1600, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_offset"       },  # func_8001F798 consumer queue head
-    { addr = 0x8001F730, imm = 0x2200, kind = "offset_add", knob = "psx_runtime_moby_reg_queue_limit_offset" },  # func_8001F158 queue-full limit
-]
-verdict_fn       = "psx_runtime_moby_reg_queue_offset / _limit_offset"
-verified_against = ["aspect_determinism", "psx_oracle_match"]
-state_regions    = []  # render-side visible-queue; consumed within the pass
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the 3 offset_add sites relocating the regular/specular moby visible-queue head+limit into a grown 0x80600000 host region (Phase 8.5 overflow fix). Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
-
 
 [[channel]]
 name        = "polybuf_hudmoby_canonical"
-status      = "gated"
+status      = "audited_clean"
 description = """
-g_HudMobys gameplay-state-pointer canonicalization under polybuf host
-relocation. This is the channel the PSX oracle gate caught (openpete
-project notes worked example): when the polygon buffer is host-backed and grown
-(widescreen >=21:9 or --no-lod), the per-frame write cursor D_800757B0 lives
-in openpete-only host vaddr space (0x80400000+). The game then derives
-g_HudMobys = cursor + slot_stride and STORES it to 0x80075710 — a hashed,
-gameplay-readable pointer (HUD-moby pool: gem counters, life icons). Stored
-verbatim, it would carry the host address into gameplay state and diverge
-from hardware.
-
-These four sw sites map the stored host address back to its canonical PSX
-vaddr (psx_runtime_polybuf_to_canon) so g_HudMobys holds the exact value
-real PSX hardware holds, regardless of presentation flags:
-
-  * 0x8001D760 / 0x8001D768  func_8001D718 (Gamestate-11, draw.c:2051/2054):
-        g_HudMobys = D_800757B0 + 0x1BA00. The within-slot offset is
-        preserved by the translator. Also repairs the
-        `D_800756FC == m_HudOTStart` predicate at draw.c:2049, which host-
-        vs-canonical made always-false, silently breaking the Gamestate-11
-        HUD under relocation.
-  * 0x8001EDCC / 0x8001EDD4  GamestateDraw frame-start reset (draw.c:
-        2666/2667): the compiler reuses the END-cursor value (cursor + size)
-        for these stores. Under relocation `size` is the GROWN host slot
-        size (psx_runtime_polybuf_size) which the end cursor D_80075780
-        needs but the HUD pointers must NOT inherit — the HUD-moby pool
-        stays one CANONICAL 0x1C000 slot above the cursor as on hardware.
-        So recover the cursor base (stored value - grown size), map to
-        canonical, re-add the canonical 0x1C000 slot stride.
-
-Identity at 4:3 default with no relocation (psx_runtime_polybuf_to_canon is
-the identity map and psx_runtime_polybuf_size == 0x1C000). Companion to
-widescreen_polybuf_size / widescreen_polybuf_lower (which redirect the
-cursor itself); this channel keeps the DERIVED gameplay pointer canonical —
-the exact invariant the hook-anchor plan calls out ("redirect the access,
-never change the pointer value the game stores")."""
-# GENERATED (void replace_call): map the host cursor back to canonical before
-# storing g_HudMobys. Two hooks (the reset pair recovers the cursor base from
-# the grown end-cursor). Math now in core/features/widescreen.c.
-substitution_sites = [
-    { addr = 0x8001D760, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_store" },  # Gamestate-11 HUD ptr
-    { addr = 0x8001D768, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_store" },  # Gamestate-11 HUD ptr
-    { addr = 0x8001EDCC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
-    { addr = 0x8001EDD4, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_polybuf_hudmoby_reset_store" },  # GamestateDraw frame-start reset
-]
-determinism_critical = true   # gates gameplay-readable state
-verdict_fn       = "psx_runtime_polybuf_to_canon"
-verified_against = ["aspect_determinism", "psx_oracle_match"]
-state_regions    = ["g_HudMobys"]
-doc              = "notes/plans/openpete-polybuf-host-redirect.md"
+RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+machinery that made the ORIGINAL .s renderer draw full detail,
+reachable only via manual `--renderer psycross --no-lod` since 30ec733).
+--no-lod is a native-renderer display policy now (the native feeders
+own detail selection from gamestate).
+Was: the void-replace_call sites (polybuf_hudmoby_store/_reset_store) mapping the g_HudMobys cursor-derived stores back to canonical PSX vaddrs under relocation. Sites reverted to the .s constants; knob + hook deleted.
+Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
+doc              = "notes/plans/openpete-disable-lods.md"

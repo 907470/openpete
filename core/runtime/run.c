@@ -801,11 +801,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
     }
 
-    /* --no-lod: feature module owns scratch-pool relocation, queue-
-     * offset / moby-LP / DBG_KILL_LP knob arming, and polybuf grow.
-     * Module's apply_options ran inside feature_registry_apply_options
-     * above and installed the per-game setup hook; the call below
-     * actually fires the hook when opts->no_lod is set. See
+    /* --no-lod: native-renderer display policy (sets openpete_no_lod +
+     * resolves the fog scale; warns + ignores in PsyCross reference
+     * mode — the game-side producer stack was deleted 2026-07-06). See
      * notes/plans/openpete-disable-lods.md. */
     if (no_lod_apply_options(opts) != 0) {
         return OPENPETE_EXIT_SETUP_ERROR;

@@ -58,23 +58,11 @@ static long s_animsw_cross = 0, s_animsw_snap = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
-/* Cull-record buffer base (stride 0x38). The .s REGULAR cull computes it as
- * g_SonyImage + psx_runtime_moby_reg_queue_offset (offset_add channel at
- * 0x8001F19C/0x8001F7E4); the offset is 0x1600 normally but --no-lod RELOCATES +
- * GROWS the regular visible-queue to a separate host region (0x80600000), so a
- * hardcoded +0x1600 would read the now-empty canonical slot → ZERO records → all
- * regular mobys (enemies, fodder, Sparx) vanish in the native renderer under
- * --no-lod. REC_BASE mirrors the live REGULAR offset.
- *
- * The SPECULAR cull (func_800208FC/func_80020F34, 0x80020xxx) is NOT in the
- * channel substitution, so under --no-lod its queue stays at the CANONICAL
- * 0x1600 (the regular relocation does not apply to it). The native feed must use
- * a PER-PASS base (s_rec_base, set in moby_native_pass) — REGULAR=REC_BASE,
- * SPECULAR=G_SCRATCH+0x1600 — else native SPEC reads the relocated slot (stale
- * regular records) and specular mobys (e.g. the Artisans rescue dragon, cls 0xFA)
- * vanish under --no-lod while regular mobys are fine. (Normal mode: both are
- * 0x1600.) g_sony_image_base is left canonical by --no-lod, so G_SCRATCH is right. */
-#define REC_BASE      (G_SCRATCH + psx_runtime_moby_reg_queue_offset) /* REGULAR base */
+/* Cull-record buffer base (stride 0x38). The .s cull builders compute it as
+ * g_SonyImage + 0x1600 (REGULAR func_8001F158 and SPECULAR func_800208FC both;
+ * the --no-lod queue relocation that once split them was deleted 2026-07-06
+ * with the producer stack — every mode uses the canonical slot now). */
+#define REC_BASE      (G_SCRATCH + 0x1600u)
 static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_native_pass */
 
 #define REC_STRIDE    0x38u
@@ -130,46 +118,6 @@ static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
 static int s_code_hist[256]; static int s_uncoded_hist[256];
 
 /* ---- helpers (shared with the cyclorama harness conventions) -------- */
-/* Dragon-rescue disappear scale, reconstructed for --no-lod.
- *
- * At the end of a dragon-rescue cutscene (g_DragonCutscene.m_State == 5) the game
- * animates the rescued dragon OUT by scaling its cull-record rotation matrix as a
- * render-time effect (draw.c:1924-1938): row0 *= shrink D_8006F3C0[ticks], and for
- * ticks>8 row1 *= squash Cos((ticks-8)*42). It does this in place on the CANONICAL
- * record g_SonyImage.u.m_Draw.unk_0x161C, guarded by `unk_0x1600 != 0`.
- *
- * Under --no-lod the REGULAR visible queue is RELOCATED (REC_BASE = 0x80600000; see
- * the REC_BASE note): func_8001F158 populates the relocated queue and leaves the
- * canonical g_SonyImage record EMPTY, so draw.c's guard reads 0 and SKIPS the scale
- * entirely — the relocated (rendered) record keeps the full-size matrix and the
- * dragon "freezes" instead of animating out (both native AND the .s/PsyCross render).
- * The scaled value therefore exists NOWHERE to read back; we reconstruct draw.c's
- * math from gamestate and apply it to the matrix the native feed decodes.
- *
- * Gated on the queue actually being relocated (offset != 0x1600) so normal mode —
- * where draw.c already baked the scale into the record moby_project_record reads —
- * is NEVER double-scaled. Mirrors the game's own math (shrink read exact from RAM;
- * squash via float cos of the same 4096/turn angle, matching FIXED_MUL by Cos/4096). */
-static void apply_dragon_disappear_scale(CPUState* cpu, uint32_t moby, int M[3][3]) {
-    if (psx_runtime_moby_reg_queue_offset == 0x1600u) return;      /* not relocated → draw.c did it */
-    if (cpu->read_word(G_DRAGON_CUTSCENE + 0x28u) != 5u) return;   /* m_State != disappear */
-    if (moby != cpu->read_word(G_DRAGON_CUTSCENE + 0x88u)) return; /* not the cutscene dragon */
-    int ticks = (int)cpu->read_word(G_DRAGON_CUTSCENE + 0x3Cu);    /* m_CutsceneTicks */
-    /* draw.c indexes D_8006F3C0[ticks] with NO bounds check; state 5 runs ticks
-     * 0..24 (then transitions to state 6, dragon de-queued), and the last frame's
-     * read at [24] is OUT OF the 24-entry array but a small value (~256) that keeps
-     * the dragon tiny — mirror it exactly rather than early-returning (which would
-     * pop the dragon back to full size for that final frame). The upper bound is a
-     * pure safety envelope well past the real max; determinism keeps ticks small. */
-    if (ticks < 0 || ticks >= 64) return;
-    int shrink = (int)(int16_t)cpu->read_half(D_DRAGON_SHRINK + (uint32_t)ticks * 2u);
-    for (int c = 0; c < 3; c++) M[0][c] = (int)lround((double)M[0][c] * shrink / 4096.0);  /* row0 FIXED_MUL shrink */
-    if (ticks > 8) {                                               /* row1 squash Cos((ticks-8)*42) */
-        double squash = cos((double)((ticks - 8) * 42) * (6.283185307179586 / 4096.0));
-        for (int c = 0; c < 3; c++) M[1][c] = (int)lround((double)M[1][c] * squash);
-    }
-}
-
 /* Float RTPS mirror WITH translation: ngte_project_raw (shared, W2.3).
  * Returns view-Z (MAC3); caller owns the near-plane policy. */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
@@ -556,7 +504,6 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, proj_xy* out, int ca
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
-    apply_dragon_disappear_scale(cpu, cpu->read_word(rec + 0x34), M);  /* --no-lod: re-derive draw.c's cutscene shrink */
     return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, out, cap);
 }
 
@@ -635,8 +582,7 @@ static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
  * keeps the far palette under --no-lod too. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0 && !openpete_no_lod)
-                   ? psx_runtime_moby_lp_face_offset : 0x14u;
+    uint32_t off = (zsf4 <= 0 && !openpete_no_lod) ? 0x1Cu : 0x14u;
     return cpu->read_word(header + off);
 }
 
@@ -2595,8 +2541,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     int verify = moby_verify_enabled();
     int feed   = openpete_native_render_enabled();
     s_cur_mat = mat;
-    /* SPECULAR queue is NOT relocated by --no-lod (see REC_BASE note); REGULAR is. */
-    s_rec_base = (mat && mat[0]=='S' && mat[1]=='P') ? (G_SCRATCH + 0x1600u) : REC_BASE;
+    s_rec_base = REC_BASE;
+    (void)mat;
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     render_fn(cpu);                            /* run the real renderer */
@@ -4065,9 +4011,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 }
             }
         }
-        /* --no-lod: the relocated record is unscaled (the transfer above no-ops), so
-         * reconstruct the cutscene disappear shrink from gamestate here too. */
-        apply_dragon_disappear_scale(cpu, mobys[i], f.M);
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the

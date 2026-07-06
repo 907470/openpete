@@ -29,12 +29,12 @@
  * write gate). */
 uint8_t psx_runtime_native_cone_pass = 0;
 
-/* DISTANCE half of the box-cull verdict + the saturated-vs-canonical delta.
- * native_dist_pass starts 1 each iteration; the dist-gate hooks clear it if
- * the canonical (un-saturated) cull would reject. mdist_thresh_delta is the
- * (saturated − canonical) m_Distance<<8 recorded at the m_Renderer load. */
+/* DISTANCE half of the box-cull verdict. native_dist_pass starts 1 each
+ * iteration; the dist-gate hooks clear it if the box cull rejects. (The
+ * saturated-vs-canonical mdist_thresh_delta these once subtracted out was
+ * retired 2026-07-06 with the --no-lod producer stack — the .s cull is
+ * canonical in every mode now, so the gates replay its own verdict.) */
 uint8_t psx_runtime_native_dist_pass = 1;
-int32_t psx_runtime_mdist_thresh_delta = 0;
 
 /* Particle screen-cull verdict (read by the m_03 "drawn"-flag store gate). */
 uint8_t psx_runtime_native_part_pass = 0;
@@ -63,15 +63,14 @@ int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3) {
 }
 
 /* === Box-cull distance verdict (channel no_lod_moby_distance_cull_verdict) ==
- * Appended after the canonical box-cull add/sub; clears native_dist_pass if
- * the canonical (un-saturated) 4:3 cull would reject. Identity when --no-lod
- * is off (mdist_thresh_delta == 0). */
+ * Appended after the canonical box-cull add/sub; clears native_dist_pass
+ * when the cull comparand rejects (replays the .s verdict). */
 void psx_runtime_dist_gate_lower(int32_t v) {
-    if ((int32_t)(v - psx_runtime_mdist_thresh_delta) <= 0)
+    if (v <= 0)
         psx_runtime_native_dist_pass = 0;
 }
 void psx_runtime_dist_gate_upper(int32_t v) {
-    if ((int32_t)(v + psx_runtime_mdist_thresh_delta) >= 0)
+    if (v >= 0)
         psx_runtime_native_dist_pass = 0;
 }
 

@@ -1035,10 +1035,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 {
                     /* Polybuf slot-size end-cursor sites: `ori $X,$X,0xC000`
                      * composing the 0x1C000 slot size → ConstLoad emitting
-                     * `rt = psx_runtime_polybuf_size` (channel
-                     * widescreen_polybuf_size), so widescreen can grow the
-                     * relocated buffer. Addresses + knob in the manifest via
-                     * --channel-sites; identity at default size (0x1C000). */
+                     * `rt = <knob>` — generic manifest-driven ConstLoad for
+                     * ori-composed constants. Addresses + knob live in the
+                     * manifest via --channel-sites; identity at default. */
                     uint32_t rt = get_rt(instr);
                     uint16_t imm = get_imm16_u(instr);
                     if (auto _cs = channel_sites_.find(addr);
@@ -1304,13 +1303,10 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                          *    render iter tops (0x8001F800/0x80020F9C) append
                          *    openpete_moby_render_entry_tag(gp) (identity from
                          *    the 56-byte render-queue entry at *(gp+52)).
-                         *  - ReplaceCall: no_lod m_LodDistance (0x800259B0/
-                         *    26214/267B0) + m_CullingDistance (0x80026210) ->
-                         *    no_lod_saturate32; moby LP-face load (0x8001FE9C/
-                         *    21674) -> moby_lp_face_load; dbg g_SkipLowPolyWorld
-                         *    read (0x800261E0) -> dbg_skiplpworld; and the
-                         *    dbg/world-geo hybrid 7th strip head (0x800276B4) ->
-                         *    dbg_lpwalk_strip (LP-kill zero + world-geo stamp). */
+                         *  - ReplaceCall: generic — `dest = hook(operands)`
+                         *    with the bespoke math host-side (no lw
+                         *    ReplaceCall sites at present; the --no-lod
+                         *    saturation family was retired 2026-07-06). */
                         if (_cs->second.kind == ChannelSite::AppendCall)
                             code = translate_lw(instr)
                                  + emit_channel_append_call(_cs->second, instr);
@@ -1324,12 +1320,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x24: code = translate_lbu(instr); break;    // lbu
             case 0x25:                                         // lhu
                 /* Data-driven lhu channel sites (manifest + --channel-sites):
-                 *  - ReplaceCall: no_lod_moby_render_distance_saturate (regular
-                 *    / specular / shaded m_Renderer reads) -> no_lod_moby_distance.
-                 *  - AppendCall: generic — no lhu AppendCall sites at present
-                 *    (the former transform_interp_moby_queue push at 0x8001F268
-                 *    was retired with the FIFO; identity now comes from the
-                 *    render-queue entry itself — see the lw arm). */
+                 *  generic ReplaceCall/AppendCall — no lhu sites at present
+                 *  (the --no-lod m_Renderer saturation family was retired
+                 *  2026-07-06; the transform_interp_moby_queue push earlier). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
                     && (_cs->second.kind == ChannelSite::AppendCall
@@ -1369,12 +1362,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x2A: code = translate_swl(instr); break;    // swl
             case 0x2B:                                         // sw
                 /* Data-driven sw channel sites (manifest + --channel-sites):
-                 *  - ReplaceCall: g_HudMobys canonicalization (channel
-                 *    polybuf_hudmoby_canonical) — void ReplaceCall stores that
-                 *    map the host-relocated polybuf cursor back to the
-                 *    canonical PSX vaddr before writing the gameplay-readable
-                 *    g_HudMobys pointer. Two hooks (hudmoby_store /
-                 *    hudmoby_reset_store) in widescreen.c. Identity at 4:3.
+                 *  - ReplaceCall: generic void stores — `hook(cpu, ea, val)`
+                 *    (no sw ReplaceCall sites at present; the g_HudMobys
+                 *    polybuf canonicalization was retired 2026-07-06).
                  *  - AppendCall: generic (canonical sw emitted verbatim first;
                  *    the appended call is host-side only). No sw AppendCall
                  *    sites at present — the short-lived moby-queue clear/push
