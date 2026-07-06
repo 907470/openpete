@@ -3045,7 +3045,9 @@ static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
  * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
 typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  uint32_t model, base, moby; int RT[3][3]; int near_ot;
-                 int vzspread; } shaded_rec;   /* vzspread = model-space Z extent (max-min);
+                 int vzspread;
+                 uint32_t ctab; int ctab_len;   /* static baked colour table [model+8] (bytes); 0 len = lit */
+               } shaded_rec;   /* vzspread = model-space Z extent (max-min);
                  * a large extent means a real 3D model that self-occludes → needs the HUD3D
                  * depth pass, vs a thin text/decal overlay that renders fine depth-off. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
@@ -3081,11 +3083,30 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * & 0x80 is the billboard/HUD flag, handled below — nonzero, so it passes.) */
         if (cpu->read_byte(m + 0x50) == 0) continue;
         uint32_t cls = cpu->read_half(m + 0x36);
-        uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
-        uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
+        uint32_t mraw  = cpu->read_word(G_MODELS + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
+        uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
+        uint32_t vraw  = cpu->read_word(model + 0x4u);
+        uint32_t vbase = vraw;                              if (vbase<0x80000000u) vbase|=0x80000000u;
         int count = cpu->read_byte(model + 0x0u) & 0xFF;
         uint32_t faces = cpu->read_word(model + 0xCu); if (faces<0x80000000u) faces|=0x80000000u;  /* shaded face stream */
         int fcount = cpu->read_byte(model + 0x1u) & 0xFF;   /* face count: base model+0xC, count model+0x1, stride 8 */
+        /* STATIC-GOURAUD colour mode (.s block_800230EC..80023268, held-egg fix):
+         * after the vertex loop the .s compares (vbase<<1>>1) against
+         * raw_g_Models_entry + 0x10. Equal (entry stored WITHOUT bit31 and verts
+         * inline at model+0x10) → it SKIPS the per-vertex lighting pre-pass and
+         * takes s4 = [model+8] — the model's BAKED colour table — in the branch
+         * delay slot at 0x800230FC. Mode-0 face colour fields are then BYTE
+         * OFFSETS into that table (0x00BBGGRR words, emitted verbatim). bit31
+         * SET in the entry makes the compare fail → lit-gouraud (+0x2A00 path).
+         * (The egg thief's egg, cls 0x22, is the first static-gouraud moby met:
+         * lit-gouraud painted it uniform gray.) */
+        uint32_t ctab = 0; int ctab_len = 0;
+        if (!(mraw & 0x80000000u) && (vraw & 0x7FFFFFFFu) == ((mraw & 0x7FFFFFFFu) + 0x10u)) {
+            uint32_t craw = cpu->read_word(model + 0x8u);
+            ctab = craw; if (ctab < 0x80000000u) ctab |= 0x80000000u;
+            /* table spans [model+8 ptr, faces ptr) — bound the face-field offsets */
+            ctab_len = (faces > ctab && faces - ctab < 0x2000u) ? (int)(faces - ctab) : 0x800;
+        }
         int sv_off = n;
         int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
         int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
@@ -3239,6 +3260,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             shaded_rec* R = &s_shrecs[s_nshrecs++];
             R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
             R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
+            R->ctab=ctab; R->ctab_len=ctab_len;
             R->vzspread = (vzmax>vzmin) ? (vzmax-vzmin) : 0;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
         }
@@ -3300,14 +3322,17 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         /* Per-vertex gouraud lit colours from the inline normal stream
          * (model+0x10, 3 signed bytes/vertex: byte0=Nz, byte1=Nx, byte2=Ny —
          * same byte layout as the vertex positions). Computed for every moby;
-         * only read for gouraud faces (flat faces light per-face below). */
+         * only read for gouraud faces (flat faces light per-face below).
+         * STATIC-GOURAUD models (R->ctab set) skip this: their mode-0 colour
+         * fields are byte offsets into the baked table, read in the face loop. */
         static uint32_t pcol[256];
         int pcn = vc < 256 ? vc : 256;
-        for (int i = 0; i < pcn; i++) {
-            uint32_t p = R->model + 0x10u + (uint32_t)i*3u;
-            int nz=(int8_t)cpu->read_byte(p), nx=(int8_t)cpu->read_byte(p+1), ny=(int8_t)cpu->read_byte(p+2);
-            pcol[i] = shaded_lit_color(R->RT, nx, ny, nz, R->base, s_sh_nohl?0:1);
-        }
+        if (!R->ctab)
+            for (int i = 0; i < pcn; i++) {
+                uint32_t p = R->model + 0x10u + (uint32_t)i*3u;
+                int nz=(int8_t)cpu->read_byte(p), nx=(int8_t)cpu->read_byte(p+1), ny=(int8_t)cpu->read_byte(p+2);
+                pcol[i] = shaded_lit_color(R->RT, nx, ny, nz, R->base, s_sh_nohl?0:1);
+            }
         /* METAL sub-mode base (word0 bit1): the gem/shiny tint comes from the
          * metal table D_8006E44C[scolor>>21] (8B: word0=base, word1=reflected),
          * NOT the flat gray table — see shaded_metal_color. Read once per moby. */
@@ -3341,6 +3366,17 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                 else           /* flat-basic: directional light, flat table base */
                     c0=c1=c2=c3 = shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
                 mode = (w0 & 2u) ? 2 : 1;
+            } else if (R->ctab) {
+                /* STATIC-GOURAUD: w1 fields are BYTE offsets into the baked
+                 * colour table at [model+8] (.s: t2 = ((w1>>sh)&0x1FC) + s4;
+                 * colour word used verbatim). */
+                uint32_t o0=(w1>>21)&0x1FCu, o1=(w1>>14)&0x1FCu, o2=(w1>>7)&0x1FCu, o3=w1&0x1FCu;
+                uint32_t L=(uint32_t)R->ctab_len;
+                c0 = o0<L ? cpu->read_word(R->ctab+o0)&0xFFFFFFu : 0x808080u;
+                c1 = o1<L ? cpu->read_word(R->ctab+o1)&0xFFFFFFu : 0x808080u;
+                c2 = o2<L ? cpu->read_word(R->ctab+o2)&0xFFFFFFu : 0x808080u;
+                c3 = o3<L ? cpu->read_word(R->ctab+o3)&0xFFFFFFu : 0x808080u;
+                mode = 0;
             } else {
                 int j0=(int)((w1>>21)&0x1FCu)>>2, j1=(int)((w1>>14)&0x1FCu)>>2;
                 int j2=(int)((w1>> 7)&0x1FCu)>>2, j3=(int)( w1     &0x1FCu)>>2;

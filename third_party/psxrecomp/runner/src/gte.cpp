@@ -25,6 +25,7 @@
  * generated code, hand-written thunks, and the interpreter path —
  * those paths look like "unknown caller" downstream. */
 extern "C" uint32_t openpete_gte_caller_pc = 0;
+extern "C" unsigned openpete_frame;
 #include "openpete_world_geo.h"
 #include "openpete_obj_id.h"
 
@@ -331,6 +332,25 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         }
     }
 
+
+    /* OPENPETE_RTPS_BOXLOG="x0,y0,x1,y1,frame": temp forensics — log the caller
+     * PC of every RTPS whose screen point lands in the box on that frame. */
+    {
+        static int s_bl = -2; static int bx0, by0, bx1, by1, bfr;
+        if (s_bl == -2) {
+            const char* e = getenv("OPENPETE_RTPS_BOXLOG");
+            s_bl = (e && sscanf(e, "%d,%d,%d,%d,%d", &bx0,&by0,&bx1,&by1,&bfr) == 5) ? 1 : -1;
+        }
+        if (s_bl == 1) {
+            if ((int)openpete_frame == bfr && sx >= bx0 && sx <= bx1 && sy >= by0 && sy <= by1) {
+                static unsigned s_bl_n = 0;
+                if (s_bl_n < 4000) { s_bl_n++;
+                    fprintf(stderr, "[rtps-box] pc=%08X sx=%d sy=%d sz3=%u\n",
+                            openpete_gte_caller_pc, (int)sx, (int)sy, (unsigned)gte->SZ[3]);
+                }
+            }
+        }
+    }
 
     /* §13.16 audit — see ofx_census_record above. */
     {
@@ -1321,6 +1341,27 @@ static inline int render_probe_enabled() {
 
 extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
     using namespace PSXRecomp::GTE;
+
+    /* OPENPETE_GTE_PCHIST=<frame>: one-frame caller-PC histogram (temp forensics). */
+    {
+        static int s_hist_frame = -2;
+        if (s_hist_frame == -2) {
+            const char* e = getenv("OPENPETE_GTE_PCHIST");
+            s_hist_frame = (e && *e) ? atoi(e) : -1;
+        }
+        if (s_hist_frame >= 0) {
+            static uint32_t pcs[4096]; static uint32_t cnt[4096]; static int n = 0; static int dumped = 0;
+            if ((int)openpete_frame == s_hist_frame) {
+                uint32_t pc = openpete_gte_caller_pc;
+                int i; for (i = 0; i < n; i++) if (pcs[i] == pc) { cnt[i]++; break; }
+                if (i == n && n < 4096) { pcs[n] = pc; cnt[n] = 1; n++; }
+            } else if ((int)openpete_frame > s_hist_frame && !dumped && n) {
+                dumped = 1;
+                for (int i = 0; i < n; i++)
+                    fprintf(stderr, "[gtehist] pc=%08X n=%u cmd?\n", pcs[i], cnt[i]);
+            }
+        }
+    }
 
     /* Snapshot raw pre-state for trace logger before any decode side-effects */
     uint32_t pre_data[32], pre_ctrl[32];

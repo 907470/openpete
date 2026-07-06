@@ -274,6 +274,25 @@ void openpete_native_scene_begin_frame(unsigned frame) {
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
+    /* OPENPETE_SCENE_BOXDBG="x0,y0,x1,y1,fA,fB": temporary forensics — log every
+     * scene tri (any feeder) whose centroid falls in the PSX-screen box for
+     * frames [fA,fB], with layer/texture identity. Display-only. */
+    { static int s_bd = -1; static int bx0,by0,bx1,by1,bfa,bfb;
+      if (s_bd < 0) { const char* e = getenv("OPENPETE_SCENE_BOXDBG");
+          s_bd = 0;
+          if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &bx0,&by0,&bx1,&by1,&bfa,&bfb) == 6) s_bd = 1; }
+      if (s_bd == 1 && (int)s_scene_frame >= bfa && (int)s_scene_frame <= bfb) {
+          float cx = (tri->v[0].sx + tri->v[1].sx + tri->v[2].sx) / 3.0f;
+          float cy = (tri->v[0].sy + tri->v[1].sy + tri->v[2].sy) / 3.0f;
+          if (cx >= bx0 && cx <= bx1 && cy >= by0 && cy <= by1)
+              fprintf(stderr, "[sbox] f=%u cat=%d tex=%d tp=%d,%d cl=%d,%d bpp=%d bl=%d "
+                      "rgba=%08X,%08X,%08X v0=%.1f,%.1f,%.3f v1=%.1f,%.1f v2=%.1f,%.1f uv0=%.0f,%.0f\n",
+                      s_scene_frame, category, tri->textured, tri->tpage_x, tri->tpage_y,
+                      tri->clut_x, tri->clut_y, tri->bpp, tri->blend,
+                      tri->v[0].rgba, tri->v[1].rgba, tri->v[2].rgba,
+                      tri->v[0].sx, tri->v[0].sy, tri->v[0].z, tri->v[1].sx, tri->v[1].sy,
+                      tri->v[2].sx, tri->v[2].sy, tri->v[0].u, tri->v[0].v);
+      } }
     if (s_scene_n < MAX_SCENE_TRIS) {
         s_scene[s_scene_n] = *tri;
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
