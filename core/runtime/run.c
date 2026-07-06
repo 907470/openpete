@@ -786,28 +786,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * widescreen_apply_runtime_knobs below.) This is a step toward retiring the
      * PsyCross --aspect substitution entirely — see openpete-native-renderer.md. */
     /* The game-side cull widening (moby cone, env bounds, clip/SXY-sat
-     * thresholds, cyclorama coverage, polybuf capacity) runs in BOTH
-     * renderer modes via openpete_cull_widen_factor, so the wider Hor+
-     * frustum's edge geometry survives the 4:3 cull before any renderer
-     * sees it. (Gameplay-safe: the render→gameplay channels — m_WasDrawn /
-     * m_03 / sector visibility — are closed at the recompiler level against
-     * the canonical verdict regardless of the cull knobs.) The PROJECTION
-     * widening (openpete_disp_w_factor: GTE OFX + PsyCross GL ortho) stays
-     * PsyCross-only: the native renderer projects canonically and widens
-     * Hor+ at clip level itself, so OFX widening too would double-widen
-     * AND mis-map the native projection. In PsyCross mode the two factors
-     * are equal (byte-identical to before this split). */
+     * thresholds, cyclorama coverage, polybuf capacity) is PsyCross-only,
+     * like the PROJECTION widening (openpete_disp_w_factor: GTE OFX +
+     * PsyCross GL ortho). In PsyCross mode the two factors are equal
+     * (byte-identical to before the projection/cull split).
+     *
+     * Native (vk/ab/diff): the verdict producers run PURE CANONICAL 4:3 —
+     * openpete_cull_widen_factor stays at its 0.0 sentinel, so the render
+     * bracket, env-renderer arm, cyclorama multi-pass, and every
+     * psx_runtime_* cull knob sit at native values (Phase 6 stack-revert
+     * step 1, openpete-native-renderer.md). Off-4:3 coverage is entirely
+     * native-side: the feeders derive from gamestate (terrain PVS sublist,
+     * shaded moby list, cyclorama dome) or host-build the off-4:3 set
+     * (moby/portal reveals). This is the same producer state as the
+     * default no---aspect wide-window config, where it has been the
+     * daily-validated path since the vk promotion; --aspect now only
+     * sizes the window (which drives the native Hor+ display widening). */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         widescreen_apply_disp_w_factor(opts);
         openpete_cull_widen_factor = openpete_disp_w_factor;
     } else if (opts->aspect_w_over_h > 0.0f) {
-        openpete_cull_widen_factor = widescreen_capped_factor(opts);
-        OPL_INFO_F("aspect", "native renderer: --aspect %.4f sizes the window + "
-                   "drives native Hor+ widescreen (clip-level) + game-side cull "
-                   "widening (factor %.3f); PsyCross GTE-OFX/ortho substitution "
-                   "skipped (native projects canonically)",
-                   (double)opts->aspect_w_over_h,
-                   (double)openpete_cull_widen_factor);
+        OPL_INFO_F("aspect", "native renderer: --aspect %.4f sizes the window "
+                   "(drives native Hor+ widescreen at clip level); producers "
+                   "run canonical 4:3 (game-side cull widening retired on the "
+                   "native path — Phase 6 step 1)",
+                   (double)opts->aspect_w_over_h);
     }
 
     /* --no-lod: feature module owns scratch-pool relocation, queue-
