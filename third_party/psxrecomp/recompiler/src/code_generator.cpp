@@ -880,11 +880,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x23: code = translate_subu(instr); break;    // subu
             case 0x24:                                          // and
                 /* AppendCall: generic (canonical and emitted verbatim
-                 * first; the appended call is host-side only). Used by
-                 * channel world_geo_vertex_src's refine marker — the
-                 * near-clip re-RTPS path's `and $a3,$a3,$a2` mask at
-                 * 0x80026A74 is the last unconditionally-executed
-                 * non-cop2 instruction before the refinement RTPS. */
+                 * first; the appended call is host-side only). No sites
+                 * at present (the world_geo_vertex_src refine marker was
+                 * retired 2026-07-06 with the render cache). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
                     && _cs->second.kind == ChannelSite::AppendCall) {
@@ -896,15 +894,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 break;
             case 0x25: code = translate_or(instr); break;      // or
             case 0x26:                                          // xor
-                /* §7.5-R3 dominant-terrain world-geo tag hook (channel
-                 * world_geo_strip_tag). r_environment.s 0x80026238
-                 * `xor $t7,$t7,$s1` yields the aligned strip-base pointer in
-                 * $t7 (= rd); the recompiler appends
-                 * openpete_world_geo_set_current(rd) so gte_rtps_internal can
-                 * stamp a stable cross-frame WORLD batch tag. Address +
-                 * operand + hook live in manifest/render_channels.toml via
-                 * --channel-sites (AppendCall, operand="rd"). READ-ONLY
-                 * host-side stash; no gameplay byte touched. */
+                /* Generic manifest-driven xor AppendCall (no sites at
+                 * present; the world_geo_strip_tag identity stamp was
+                 * retired 2026-07-06 with the render cache). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
                     && _cs->second.kind == ChannelSite::AppendCall) {
@@ -926,19 +918,11 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
         switch (opcode) {
             case 0x08:                                         // addi
                 {
-                    /* Spyro r_moby.s func_80022A2C inline cone-X cull at
-                     * 0x80022C0C: `addi a1, a1, -0x66` (a1 = |MAC1| - 102)
-                     * is part of the test
-                     *   bgez (4*(|MAC1|-102) - 3*(MAC3+77)) → cull
-                     * with slope 3/4 = 4:3 horizontal half-FOV. Substitute
-                     * to also subtract `extra*(MAC3+77)` from a1 so the
-                     * after-shifts test becomes
-                     *   bgez (4*|MAC1| - 408 - (3 + 4*extra)*(MAC3+77))
-                     * which has slope (3+4*extra)/4. Default 0 = native;
-                     * widescreen sets psx_runtime_moby_cone_extra_q12 > 0.
-                     * MAC3 = cpu->gte_data[27]. Address-explicit because
-                     * `addi $r, $r, -0x66` appears in many unrelated
-                     * contexts. */
+                    /* addi channel sites (manifest-driven): the shaded
+                     * cone-X cull at 0x80022C0C routes through
+                     * cone_widen_shaded (m_WasDrawn verdict recording —
+                     * canonical math; the aspect widening it once
+                     * injected was retired 2026-07-06). */
                     uint32_t rs = get_rs(instr);
                     uint32_t rt = get_rt(instr);
                     int16_t imm = (int16_t)get_imm16_u(instr);
@@ -1248,47 +1232,13 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
             case 0x22: code = translate_lwl(instr); break;    // lwl
             case 0x23:                                         // lw
                 {
-                    /* Per-moby tracking hook for openpete UI-moby +
-                     * transform-interp identity tagging. r_moby.s has
-                     * three render functions, each with its own per-
-                     * moby loop iteration boundary:
-                     *
-                     *   0x80022B08  func_80022A2C (shaded)   $s8
-                     *               lw $s8,0($ra) ; addi $ra,$ra,4
-                     *               ; beqz $s8,exit ; iter via $ra
-                     *
-                     *   0x8001F800  func_8001F798 (regular)  $ra
-                     *               (loop top .L8001F7FC at 0x8001F7FC:
-                     *                lw $s3,0($gp) ; lw $ra,4($gp) ;
-                     *                beqz $s3,exit ; iter via $gp+=0x38)
-                     *               After 0x8001F800, $ra holds the
-                     *               current moby pointer.
-                     *
-                     *   0x80020F9C  func_80020F34 (specular) $ra
-                     *               (same structure as func_8001F798,
-                     *                loop top .L80020F98 at 0x80020F98)
-                     *
-                     * After the lw, the named register holds the fresh
-                     * moby pointer; stash it host-side via
-                     * openpete_obj_id_set so gte_rtps_internal can stamp
-                     * a stable per-moby obj_tag (matcher pairs by real
-                     * vaddr instead of falling back to world-ordinal —
-                     * fixes the visible jitter on regular and specular
-                     * mobys that the §7.2 Increment 1 "graceful
-                     * fall-through" path produced once PHASE-C inflated
-                     * the world-ordinal stream 2.7×).
-                     *
-                     * The identity channel (openpete_obj_id) is kept
-                     * SEPARATE from the widescreen UI classifier
-                     * (openpete_ui_moby): only the shaded loop
-                     * (0x80022B08), the one renderer HUD/UI mobys flow
-                     * through, additionally feeds the UI classifier. See
-                     * the per-PC handlers below and openpete_obj_id.h.
-                     *
-                     * Game-agnostic from core/'s perspective: the
-                     * function names and addresses are Spyro-specific,
-                     * but the ranges that classify a moby as UI are
-                     * registered by games/spyro-1/. */
+                    /* Data-driven lw channel sites (manifest +
+                     * --channel-sites): generic AppendCall/ReplaceCall.
+                     * (The per-moby obj_id/ui_moby loop tags and the
+                     * world_geo strip heads that used to be enumerated
+                     * here were retired 2026-07-06 with the render
+                     * cache; the ui_moby ADDRESS-RANGE classifier
+                     * survives, registered statically at boot.) */
                     if (auto _cs = channel_sites_.find(addr);
                                _cs != channel_sites_.end()
                                && (_cs->second.kind == ChannelSite::AppendCall

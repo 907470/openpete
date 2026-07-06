@@ -118,191 +118,44 @@ doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_ui_moby_tag"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Per-moby UI classification + transform-interp identity hook.
-
-TWO SEPARATE host-side channels are fed from these sites — they
-answer two different questions and must never be conflated:
-  * openpete_ui_moby (s_current) — "is the object being projected a
-    HUD/UI element?" Narrow: only the shaded renderer carries HUD/
-    text mobys, so ONLY the shaded site feeds it. Consumed by
-    widescreen_eff_ofx (centring vs Hor+ widening).
-  * openpete_obj_id — "which logical object produced this span?"
-    Broad: every per-object render path feeds it. Consumed only by
-    the render-cache obj_tag emit (transform-interp matcher).
-(They were briefly merged onto s_current, which let g_Spyro /
-g_Cyclorama / popped gameplay-moby vaddrs get range-tested by
-is_current_ui() and mis-classified as UI — breaking Hor+ widening
-for any object whose address fell in the polybuf/HUD range. See
-core/include/openpete_obj_id.h.)
-
-r_moby.s has three render functions; the per-moby loop iteration
-boundary of each gets a hook:
-
-  0x80022B08  func_80022A2C (shaded moby loop) lw $s8,0($ra)
-              → ui_moby_set_current($fp) + obj_id_set($fp)   [BOTH]
-  0x80023B0C  func_80023AC4 (Spyro)            lw $fp,0($fp)
-              → obj_id_set($ra=g_Spyro)                      [identity only]
-  0x8004F088  func_8004F000 (cyclorama)        lw $t3,4($at)
-              → obj_id_set($at=g_Cyclorama)                  [identity only]
-
-The shaded-moby hook passes the loaded-into register (the moby
-vaddr written by the lw itself); the Spyro and cyclorama hooks pass
-the *source* address register — the lw is read-from-singleton-
-struct, and that singleton's vaddr is what we want as identity.
-(g_Spyro is loaded into $ra by the prologue addiu at 0x80023B00;
-g_Cyclorama is loaded into $at by the addiu at 0x8004F078. Both
-registers are still live at the hook PC because the lw reads from
-them rather than into them.)
-
-Regular (func_8001F798) and specular (func_80020F34) renderers get
-their per-instance identity through `openpete_moby_queue`, owned by
-the separate `transform_interp_moby_queue` channel below. (Their
-render-list slots only carry a class-shared m_Props ptr; the queue
-plumbs the real per-instance moby vaddr from func_8001F158's cull
-pass to each render-pass iter.)
-
-The obj_id stamp lets `gte_rtps_internal` write the cache entry's
-obj_tag with a stable per-object identity so the transform-interp
-matcher pairs by real per-object identity across frames (instead of
-the heuristic world-ordinal fallback, which broke once PHASE-C
-inflated the world-ordinal stream 2.7× and starved the regular/
-specular mobys of stable ordinal slots).
-
-The ui_moby stamp (shaded site only) lets widescreen_eff_ofx give UI
-mobys a CONSTANT centring shift `eff_OFX = OFX + (factor-1)*256`
-instead of the standard widening `eff_OFX = OFX * factor`. Spyro's
-HUD render writes EACH icon's screen-X into OFX directly via inline
-CTC2 — so the proportional widening spreads icons apart (measured:
-PSX-X width 384→514 across 4:3→16:9, ratio = factor); the constant
-shift keeps the original 4:3 layout host-centred regardless of OFX.
-
-For non-UI mobys with canonical gameplay OFX (256), both formulas
-produce identical eff_OFX, so determinism is unaffected.
-
-The companion `openpete_world_geo_clear()` is appended to every
-moby-loop hook (not just the shaded one) so terrain strip tags from
-the prior renderer never bleed into moby cache entries."""
-# GENERATED (append_call): the per-renderer identity-tag multi-call sequence
-# is composed into wrapper hooks in core/runtime/openpete_obj_id.c, so the
-# recompiler appends ONE call. moby_loop_tag = ui_moby + obj_id + clear (the
-# shaded loop is the only HUD/UI path, operand = the loaded moby vaddr);
-# obj_loop_tag = obj_id + clear (singletons pass their source-address reg).
-substitution_sites = [
-    { addr = 0x80022B08, operand = "rt", kind = "append_call", hook = "openpete_moby_loop_tag" },  # shaded per-moby loop (ui_moby + obj_id)
-    { addr = 0x80023B0C, operand = "ra", kind = "append_call", hook = "openpete_obj_loop_tag"  },  # Spyro     renderer ($ra=g_Spyro)
-    { addr = 0x8004F088, operand = "at", kind = "append_call", hook = "openpete_obj_loop_tag"  },  # cyclorama renderer ($at=g_Cyclorama)
-]
-verdict_fn       = "openpete_ui_moby_set_current"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # render-side classification only
-doc              = "notes/plans/openpete-widescreen-fov.md"
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static — native moby_native consumers). Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
+doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "transform_interp_moby_queue"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Per-instance moby identity FIFO for the regular (func_8001F798) and
-specular (func_80020F34) renderers. Their render-list slots only
-carry a *class-shared* pointer (likely m_Props / model template);
-tagging cache entries with that made the matcher collapse all same-
-class instances onto one obj_tag → ordinal-pairing-within-bucket →
-visible "blending across the screen" when cull order shifted.
-
-Plumbed via two recompiler substitution sites (3rd layout, 2026-06-09,
-transform-interp plan §11 F0 — both prior layouts misassigned):
-
-  0x8001F800  lw $ra, 4($gp)       func_8001F798 (regular render)
-  0x80020F9C  lw $ra, 4($gp)       func_80020F34 (specular render)
-              — Loop iter top; $gp is the cursor over the 56-byte
-                render-queue entries the cull pass committed. Appends
-                `openpete_moby_render_entry_tag(cpu->gp)`, which
-                reads the per-instance moby vaddr the cull pass
-                stored at entry+52 (`sw $sp, 52($fp)` @ 0x8001F4F0 /
-                0x80020CA4 — written before the entry's variant
-                branches, so EVERY committed entry carries it), tags
-                obj_id with it, and clears the world-geo strip tag.
-                NOTE: feeds the transform-interp identity channel
-                (openpete_obj_id), NOT the widescreen UI classifier —
-                regular/specular mobys are never HUD/UI, so they must
-                not be range-tested by is_current_ui() (doing so
-                broke Hor+ widening; see openpete_obj_id.h).
-
-Identity comes from the very entry being rendered — desync-proof by
-construction. History (why two prior layouts failed):
- 1. Class-shared ptr at entry+4 (reverted ee78276): collapsed all
-    same-class instances onto one tag.
- 2. Host-side FIFO (f94e167, retired 2026-06-09): pushed at the
-    cull-cascade join (0x8001F268), which also fires for mobys that
-    pass distance/frustum but are never appended to the list — a
-    chronic push>pop deficit with no resync (clear() had zero
-    callers) saturated the 1024-ring by ~4000 ticks and shuffled
-    every tag → the "same-class polys stretching between instances"
-    bug. The specular cull had no push at all; its render pops
-    consumed the regular pass's stale leftovers.
-The lesson is recorded here so nobody rebuilds a side-channel for
-data the game already carries per-entry.
-
-READ-ONLY w.r.t. gameplay: the hook reads one PSX RAM word
-(entry+52) via the host accessor and stashes it host-side; nothing
-is written. The canonical lw is emitted verbatim before the call,
-same diag_cone / ui_moby precedent. Implausible values (terminator
-slot garbage; anything outside KSEG0) degrade to tag 0 = the
-world-ordinal fallback."""
-# GENERATED (append_call): operand="gp" passes the render-queue entry
-# cursor; the wrapper openpete_moby_render_entry_tag does
-# obj_id(*(entry+52)) + world_geo_clear (openpete_obj_id.c).
-substitution_sites = [
-    { addr = 0x8001F800, operand = "gp", kind = "append_call", hook = "openpete_moby_render_entry_tag" },  # regular  render iter
-    { addr = 0x80020F9C, operand = "gp", kind = "append_call", hook = "openpete_moby_render_entry_tag" },  # specular render iter
-]
-verdict_fn       = "openpete_moby_render_entry_tag"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # render-side identity tag; no state written
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: render-queue iter-top append_calls (0x8001F800/0x80020F9C moby_render_entry_tag) stamping the per-moby obj_tag from the 56-byte queue entry. Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "untagged_renderer_clear"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Identity-channel hygiene for the renderers that have no per-object
-tag yet (transform-interp §12.1 stragglers). The obj_id / world_geo
-side-channels are set by the tagged renderers' loop hooks and never
-expire, so shadows / flames / particles emitted their cache entries
-under whatever tag the PREVIOUS renderer left behind. Stale-tagged
-shadow batches then entered the matcher's authoritative obj_tag
-pairing — consuming (or failing) the real owner's pair — and
-flickered frozen-red / ordinal-blue in the F9 overlay.
-
-Appends `openpete_untagged_renderer_entry()` (obj_id(0) +
-world_geo_clear) to the first AppendCall-shaped instruction of each
-renderer entry:
-
-  0x80058D6C  sw  func_80058D64  r_flame.s    (flame renderer)
-  0x800573CC  sw  func_800573C8  r_particles.s
-  0x800580FC  sw  func_800580F4  r_particles.s
-  0x800584D0  lw  func_800584C4  r_particles.s
-  0x80059A60  lw  func_80059A48  r_shadows.s
-  0x80059F94  lw  func_80059F8C  r_shadows.s
-
-Their geometry intentionally falls back to obj_tag==0 (world-ordinal /
-centroid) pairing — the pre-tag baseline — until the §12.1 straggler
-pass gives each a true per-slot tag, at which point these clears are
-superseded by per-iteration tag hooks. READ-ONLY host-side; no
-gameplay byte touched."""
-# GENERATED (append_call): no-arg clear at each renderer entry.
-substitution_sites = [
-    { addr = 0x80058D6C, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # flame
-    { addr = 0x800573CC, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles A
-    { addr = 0x800580FC, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles B
-    { addr = 0x800584D0, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # particles C
-    { addr = 0x80059A60, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # shadows A
-    { addr = 0x80059F94, operand = "void", kind = "append_call", hook = "openpete_untagged_renderer_entry" },  # shadows B
-]
-verdict_fn       = "openpete_untagged_renderer_entry"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # render-side identity hygiene; no state written
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: 6 renderer-entry append_calls clearing the obj_id/world_geo stamps so untagged renderers did not inherit a stale tag. Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
@@ -341,207 +194,42 @@ doc              = "notes/plans/openpete-transform-interp.md"
 name        = "world_geo_strip_tag"
 status      = "audited_clean"
 description = """
-transform-interp §7.5-R3 stable cross-frame WORLD batch identity for
-high-FPS interpolation. §7.5-R proved terrain IS reprojectable at the
-render-cache layer (cached rt = live view matrix; forward model
-exact) but the cache carried no stable world key, and the no-hook
-v_world reconstruction was disproven (§7.5-R2: GTE input origin is
-sector-relative, not g_Camera.m_Position).
-
-func_800258F0 in r_environment.s walks 5 strip-list iterations
-chained through $ra (used as a regular register), each followed by
-unrolled vertex inner-loops that hit 1+ RTPS variants. Across the
-function there are 9 RTPS sites in total. The dominant strip-entry
-substitution at `0x80026238: xor $t7,$t7,$s1` (loop `.L80026228`,
-RTPS @ 0x800262C0) appends `openpete_world_geo_set_current($t7)`
-AFTER the xor — $t7 then holds the aligned strip-base pointer, a
-stable per-strip address for static level geometry. PHASE-C
-(2026-05-26) extends the hook to the remaining six strip-list loop
-heads (`lw $reg,0($ra)` at the top of each iteration) so all 8
-non-dominant RTPS sites also receive a stable per-strip tag:
-
-  0x800267E4 ($t9)  → RTPS 0x800268C8, 0x80026930, 0x800269CC, 0x80026A84
-  0x800276B4 ($s3)  → RTPS 0x80027A64, 0x80028180 (outer of nested pair)
-  0x80027720 ($s3)  → same (inner)
-  0x80028590 ($s3)  → RTPS 0x80028C54 (outer of nested pair)
-  0x800285FC ($s3)  → same (inner)
-  0x80029500 ($s3)  → RTPS 0x800299B0 (outer of nested pair)
-  0x8002956C ($s3)  → same (inner)
-
-gte_rtps_internal stamps
-`obj_tag = world_geo ? (world_geo | 0x40000000) : ui_moby`. Bit30 is
-free in 2 MB-RAM KSEG vaddrs, so the world tag never collides with a
-moby vaddr or 0. The companion clear is appended to the EXISTING
-per-moby loop substitution at 0x80022B08 (owned by
-widescreen_ui_moby_tag — not re-listed here to avoid duplicate
-ownership) so moby projections fall back to the moby-vaddr identity.
-
-READ-ONLY w.r.t. gameplay: the appended calls only stash/clear a
-host-side pointer consumed solely by the render cache + interpolation
-matcher; no PSX RAM, cpu state, or gameplay-readable byte is written
-(the original xor / lw is emitted verbatim before the call — same
-diag_cone / ui_moby / envvert precedent). Verified: aspect_determinism
-bit-identical with the substitutions present (gameplay log
-unchanged)."""
-# GENERATED sites (kind=append_call): the recompiler appends
-# `openpete_world_geo_set_current(<operand>)` after the verbatim translation.
-# operand="rd" for the dominant xor (the strip-base result reg), "rt" for the
-# six lw loop heads (the loaded value). See gen_channel_sites.py.
-substitution_sites = [
-    { addr = 0x80026238, operand = "rd", kind = "append_call", hook = "openpete_world_geo_set_current" },  # xor $t7,$t7,$s1 — strip base ptr (dominant)
-    { addr = 0x800276B4, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #7 (ex dbg_kill hybrid)
-    { addr = 0x800267E4, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $t9,0($ra) — strip-list head #2
-    { addr = 0x80027720, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #3 inner
-    { addr = 0x80028590, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 outer
-    { addr = 0x800285FC, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #4 inner
-    { addr = 0x80029500, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 outer
-    { addr = 0x8002956C, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — strip-list head #5 inner
-    # #28a gameplay-sky dome (func_8004EBA8, r_cyclorama.s): the gte_pc
-    # attribution probe measured its two RTPS sites as ~90% of all untagged
-    # cache entries. Same packed-word strip-stream pattern as the env
-    # renderer: per-PIECE pointer = the stable strip identity.
-    { addr = 0x8004EC8C, operand = "rs", kind = "append_call", hook = "openpete_world_geo_set_current_probe" },  # lw $at,0($t6) — visibility-probe piece head ($t6=piece ptr; bit29 probe-tag space, disjoint rank group from the render batches)
-    { addr = 0x8004ED44, operand = "rt", kind = "append_call", hook = "openpete_world_geo_set_current" },  # lw $s3,0($ra) — render-pass visible-piece head
-    # §13.7c content-derived quad identity: FALSIFIED 2026-06-10. The
-    # theory was that the positional list-entry tags above mispair
-    # whole quads when the visible set churns (tier-3/4 harness
-    # tail). Four gather-entry sites (0x8002792C / 0x8002807C /
-    # 0x80028A48 / 0x80029834, rt=$at = the quad's packed corner-
-    # index word) fed hash(strip, word) tags — tags demonstrably
-    # changed (capture md5 differed) yet EVERY harness metric was
-    # identical to 4 digits over 29M vert-frames: positional tags
-    # are already frame-stable in practice, and the tier-3/4 tail is
-    # legitimate near-geometry curvature (chain-metric inflated ~4x;
-    # err-vs-speed r=+0.70). Sites removed; the recompiler's sll/srl
-    # AppendCall dispatch added for this probe is kept (generic
-    # capability, oracle PASS).
-]
-verdict_fn       = "openpete_world_geo_set_current"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # render-side identity tag; no state written
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: terrain strip-head append_calls (dominant xor 0x80026238 + 7 lw loop heads + the cyclorama piece heads) stamping the per-strip WORLD batch identity. Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "world_geo_vertex_src"
 status      = "audited_clean"
 description = """
-transform-interp PHASE-D: source-stable per-vertex WORLD keys. The
-PHASE-B per-strip emission ordinal shifts whenever a strip's emitted/
-cached vertex count varies (sxy-key cache eviction by animating mobys
-sharing a screen pixel; near-clip refinement extra entries) — every
-later vertex then pairs with its NEIGHBOR (spurious deltas, the
-"green flicker on a still camera") or the count-eq gate freezes the
-strip (the "yellow flicker"). The fix keys each terrain vertex by its
-SOURCE ADDRESS in strip data, which the §7.5 envvert probe validated
-as 100% camera-free and per-vertex stable.
-
-The stream-variant loops in func_800258F0 (dominant .L80026228 + the
-three-loop family entered at .L800267E4) software-pipeline one
-packed-vertex `lw $at,0($t7); addi $t7,4` per RTPS, prefetching one
-word ahead — at RTPS time the NEXT vertex's load already fired, so a
-"last load address" stash would be off by one. Each vertex-load site
-instead PUSHES its effective load address (operand="ea") into a small
-FIFO (openpete_world_geo_push_vsrc) and the GTE cache emit POPS the
-oldest (openpete_world_geo_take_vkey): the prologue primes two, each
-iteration pushes/pops one, so pop order equals vertex order exactly.
-The strip-head hooks (channel world_geo_strip_tag) reset the FIFO,
-discarding the final iteration's prefetch overrun.
-
-The near-clip refinement path (.L800269CC loop, 0x80026A58-26A84)
-re-reads V0 from the GTE, scales it x16 and RTPS's the SAME vertex
-again — that RTPS must NOT pop. The marker hook
-(openpete_world_geo_mark_refine, operand="void") on the refine path's
-`and $a3,$a3,$a2` mask (the last unconditionally-executed non-cop2
-instruction before the refinement RTPS) makes the next take_vkey
-reuse the previous key.
-
-The subdivided/LOD variants (RTPS 0x80027A64 / 0x80028180 /
-0x80028C54 / 0x800299B0 = subdivision tiers 1-4) load corner verts
-indirectly through index words and synthesize scratchpad midpoints;
-their per-vertex identity is the scratchpad SLOT offset, namespaced
-PER TIER (push_vsrc_t1..t4, §13.7) because the tiers overlap slot
-addresses while a surviving slot names a different logical vertex on
-the other tier — un-namespaced, a quad's camera-distance tier flip
-cross-paired two representations (midpoint-harness spikes to
-1327 px). A tier flip now misses cleanly into the rigid fill. Key families are distinguished by bit31 (source keys
-are KSEG0 addresses): the matcher keeps the count-eq gate only for
-counter-keyed strips.
-
-READ-ONLY w.r.t. gameplay: the appended calls only stash host-side
-values consumed by the render cache + interpolation matcher; no PSX
-RAM, cpu state, or gameplay-readable byte is written (the original
-lw / and is emitted verbatim before the call — same
-world_geo_strip_tag precedent)."""
-# GENERATED (append_call): push sites pass the lw's effective address
-# (operand="ea" = base reg + sign-extended offset); the refine marker
-# passes nothing (operand="void").
-substitution_sites = [
-    { addr = 0x80026274, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant prologue word 0: lw $at,0($t7)
-    { addr = 0x800262B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant prologue word 1: lw $at,0($t7)
-    { addr = 0x800262D0, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # dominant loop .L800262C0: lw $at,0($t7)
-    { addr = 0x80026864, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # family prologue word 0:   lw $at,0($t7)
-    { addr = 0x80026890, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # family prologue word 1:   lw $at,0($t7)
-    { addr = 0x800268D8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L800268C8 (no-clip):  lw $at,0($t7)
-    { addr = 0x80026940, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L80026930 (clip):     lw $at,0($t7)
-    { addr = 0x800269DC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # loop .L800269CC (nearclip): lw $at,0($t7)
-    { addr = 0x80026A74, operand = "void", kind = "append_call", hook = "openpete_world_geo_mark_refine" }, # refine path: and $a3,$a3,$a2 before re-RTPS
-    # #28a gameplay-sky dome (func_8004EBA8): same pipelined stream, base
-    # $s1, one load per RTPS, no refine path; backedges re-enter via the
-    # hooked piece heads (FIFO reset). The phase-1 visibility probe emits
-    # one un-pushed RTPS per piece -> counter-key 0, a stable 1-vert batch.
-    { addr = 0x8004ED94, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 0: lw $at,0($s1)
-    { addr = 0x8004EDC8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky prologue word 1: lw $at,0($s1)
-    { addr = 0x8004EDF8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc" },   # sky loop .L8004EDD0: lw $at,0($s1)
-    # #28b subdivided/LOD quad variants: the synthesized midpoint grid is
-    # RTPS'd from a fixed scratchpad slot walk (lh X/Y/Z shorts per slot,
-    # stride 0x10, one-deep pipeline like the streams). The SLOT ADDRESS
-    # is the stable per-vertex source key (push_vsrc stamps the source
-    # bit explicitly since 0x1F8000xx lacks bit31). Heads fire per quad,
-    # so the FIFO resets between quads and the final prefetch overrun is
-    # dropped. Push only the first (X, offset+0) lh of each slot.
-    { addr = 0x800279EC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t1" }, # quad-A (tier 1) prime: lh $at,0($t0)
-    { addr = 0x80027A6C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t1" }, # quad-A (tier 1) loop .L80027A64
-    { addr = 0x80028108, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t2" }, # quad-B (tier 2) prime: lh $at,0($t0)
-    { addr = 0x80028188, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t2" }, # quad-B (tier 2) loop .L80028180
-    { addr = 0x80028BDC, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t3" }, # quad-C (tier 3) prime: lh $at,0($t0)
-    { addr = 0x80028C5C, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t3" }, # quad-C (tier 3) loop .L80028C54
-    { addr = 0x80029938, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t4" }, # quad-D (tier 4) prime: lh $at,0($t0)
-    { addr = 0x800299B8, operand = "ea",   kind = "append_call", hook = "openpete_world_geo_push_vsrc_t4" }, # quad-D (tier 4) loop .L800299B0
-]
-verdict_fn       = "openpete_world_geo_push_vsrc"
-verified_against = ["aspect_determinism", "psx_oracle_20k"]
-state_regions    = []  # render-side identity key; no state written
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: the PHASE-D per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "moby_shadow_subtag"
 status      = "audited_clean"
 description = """
-transform-interp: per-moby drop-shadow rank isolation. The shaded
-renderer's secondary pass (three gated ground-projection matrix
-derivations converging at .L80022FEC, RTPS loop at 0x80023040)
-emits the moby's shadow under the moby's own obj_tag. As the LAST
-batch of the tag group, its rank shifted whenever animation
-merged/split the body segments' matrix spans — diag measured the
-shadow batch TAG_ABSENT ~8-15×/tick (solid-red 30 Hz shadows under
-60 fps mobys, the third overlay-session-4 finding). The appended
-hook ORs bit29 into the current obj_id (free in KSEG0 vaddrs;
-bit30 stays clear so the tag remains moby-class) and restarts the
-per-object ordinal counter: shadow batches form their own rank
-group (typically rank 0, stable) and pair shadow-to-shadow with a
-fresh 0..N vkey stream. Anchored at the convergence instruction so
-all three derivation variants are covered, once per pass (loop
-backedges target the inner RTPS, not the convergence).
-
-READ-ONLY w.r.t. gameplay: host-side identity side-channel only
-(same class as the other obj_id/world_geo tag hooks)."""
-# GENERATED (append_call, void operand): hook after the verbatim lw.
-substitution_sites = [
-    { addr = 0x80022FEC, operand = "void", kind = "append_call", hook = "openpete_obj_id_shadow_subtag" },  # lw $s5,4($s6) — shadow-pass loop entry (.L80022FEC)
-]
-verdict_fn       = "openpete_obj_id_shadow_subtag"
-verified_against = ["aspect_determinism", "psx_oracle_20k"]
-state_regions    = []  # render-side identity tag; no state written
+RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+that consumed these tags was deleted with the screen-space matcher +
+PGXP, openpete 92646a6; native interpolation pairs by
+spyro_interp_moby_key, never by these). Was: the shadow-renderer sub-tag append_call disambiguating shadow prims from their owner moby in the cache identity space. Sites revert to
+plain translation at regen; hooks deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
