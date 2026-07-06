@@ -882,29 +882,50 @@ static void moby_build_validate(CPUState* cpu) {
         openpete_frame, s_nrecs, n, noModel, okHdr, okA, okB, okBl, okM, okTR, worstM, worstTR);
 }
 
-/* Append host-built records for mobys the 4:3 cull skipped but that fall in the
- * widescreen reveal margins (projected centroid X outside the 4:3 [0,512] inset,
- * inside the widened bounds). Dedups against the .s 4:3 set and only draws LIVE
- * (animating) mobys — frozen mobys hold a stale pose (display-anim is deferred).
- * Extends s_recs[]/s_proj[]; build_walk_tris then walks the union. Inert at 4:3. */
+/* Last reveal set — hysteresis stand-in for host-revealed mobys (they never
+ * get m_WasDrawn set, so the .s +0x200 range hysteresis needs a host mirror;
+ * membership = revealed on the previous builder call). */
+static uint32_t s_rev_prev[MAX_RECORDS]; static int s_rev_prev_n;
+static int reveal_prev_has(uint32_t m) {
+    for (int i = 0; i < s_rev_prev_n; i++) if (s_rev_prev[i] == m) return 1;
+    return 0;
+}
+
+/* Append host-built records for mobys the canonical 4:3 cull skipped but that
+ * the retired producer widenings WOULD have drawn. Dedups against the .s queue
+ * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
+ * Inert at 4:3 without --no-lod. */
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
 static void append_revealed_regular(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
-    /* Two reveal modes, composable:
-     *  - WIDESCREEN (F > 1): off-4:3 LIVE mobys the canonical 4:3 cone
-     *    skipped (frozen stays excluded — a stale pose beside live
-     *    neighbours reads as a bug).
-     *  - --no-lod (native display policy; the game-side producer stack is
-     *    PsyCross-only now): mobys BEYOND the canonical draw range, live
-     *    or frozen — parity with the retired m_Distance saturation, which
-     *    admitted them stale-posed into the .s queue. Ceiling = the same
-     *    0x7F<<8 view-Z the saturated compare used. */
+    /* Two reveal modes, composable — each mirrors a retired game-side
+     * producer widening, so admission is deliberately liveness-BLIND
+     * (the .s cull never tested liveness; the canonical PSX draws
+     * out-of-update-disk mobys STALE-POSED all the time — drawing is
+     * camera-cull, animation is Spyro's update disk. The live-only v1
+     * of this reveal culled every static prop/chest/idle enemy at the
+     * 4:3 boundary — user-reported 2026-07-05):
+     *  - WIDESCREEN (F > 1): off-4:3 mobys the canonical 4:3 X-cone
+     *    skipped (parity with the retired cone widening).
+     *  - --no-lod (native display policy; the game-side producer stack
+     *    is PsyCross-only now): mobys BEYOND the canonical draw range —
+     *    parity with the retired m_Distance saturation. Ceiling = the
+     *    same 0x7F<<8 view-Z the saturated compare admitted. */
     int nl = openpete_no_lod;
     if (F <= 1.0f && !nl) return;                       /* 4:3, LOD faithful — nothing to reveal */
     float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
-    int32_t spx=(int32_t)cpu->read_word(G_SPYRO+0x00), spy=(int32_t)cpu->read_word(G_SPYRO+0x04);
+    /* OPENPETE_REVEAL_DBG=frame — reveal-admission forensics: dumps every
+     * builder candidate near the window edge (cls/state/rad/rz/sx/bok) on
+     * the target frame, so a missing edge moby can be attributed to its
+     * skip gate without a rebuild (named the cls-0xDF radius-margin tree
+     * and the box-vs-radial range mismatch, 2026-07-05). */
+    static unsigned s_rdbg = 0xFFFFFFFFu;
+    if (s_rdbg == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_REVEAL_DBG");
+                                 s_rdbg = e ? (unsigned)strtoul(e, NULL, 0) : 0xFFFFFFFEu; }
+    int rdbg = (openpete_frame >= s_rdbg && openpete_frame <= s_rdbg + 1u);
+    static uint32_t revlist[MAX_RECORDS];   /* this call's reveals (hysteresis publish) */
     int revealed = 0;
     uint32_t m = cpu->read_word(G_LEVELMOBYS);
     int guard = 0;
@@ -928,40 +949,71 @@ static void append_revealed_regular(CPUState* cpu) {
          * snapshot taken at the last SPEC pass — 1 tick stale at worst. */
         for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { dup = 1; break; }
         if (dup) { m += 0x58; continue; }
-        /* live gate (Spyro-anchored, camera-angle-independent): m_WasDrawn grace,
-         * always-update sentinel, or within the m_UpdateDistance xy-disk of Spyro */
-        uint8_t wasDrawn = cpu->read_byte(m + 0x51), updDist = cpu->read_byte(m + 0x52);
-        int live = wasDrawn != 0;
-        if (!live && updDist != 0) {
-            if (updDist >= 0x80) live = 1;
-            else { double sdx=(double)((int32_t)cpu->read_word(m+0x0C)-spx),
-                          sdy=(double)((int32_t)cpu->read_word(m+0x10)-spy), thr=(double)updDist*1024.0;
-                   if (sdx*sdx + sdy*sdy <= thr*thr) live = 1; }
-        }
-        if (!live && !nl) { m += 0x58; continue; }      /* widescreen-only: cheap-out on frozen */
         moby_fields f;
-        if (!build_moby_record_fields(cpu, m, &f)) { m += 0x58; continue; }  /* shaded/invalid */
-        double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
-        if (rz + 128.0 <= 0.0) { m += 0x58; continue; }                     /* behind camera */
-        uint8_t rad_byte = cpu->read_byte(m + 0x50);
-        if ((rad_byte & 0x7Fu) == 0u) { m += 0x58; continue; }              /* m_Distance==0: uninit/dormant sentinel */
-        double rRad = (double)(rad_byte & 0xFF);
-        int beyond = (rz - rRad * 256.0 >= 0.0);                             /* beyond canonical draw range */
-        if (beyond) {
-            if (!nl) { m += 0x58; continue; }           /* LOD faithful: range pop-out stands */
-            /* --no-lod ceiling parity: the game-side hook saturated the packed
-             * distance to 0x7F, so the .s compare admitted up to 0x7F<<8. */
-            if (rz - 127.0 * 256.0 >= 0.0) { m += 0x58; continue; }
+        int bok = build_moby_record_fields(cpu, m, &f);
+        if (rdbg) {
+            double dsx = 9999.0;
+            if (bok && f.TR_raw[2] > 0) dsx = ofx + (double)f.TR_raw[0] * H / (double)f.TR_raw[2];
+            if (!bok || (dsx > -120.0 && dsx < 40.0))
+                fprintf(stderr, "[rdbg f=%u] m=%08X cls=%04X stt=%02X rad=%02X rz=%d sx=%.0f bok=%d\n",
+                        openpete_frame, m, (unsigned)cpu->read_half(m + 0x36), stt,
+                        (unsigned)cpu->read_byte(m + 0x50), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
+        if (!bok) { m += 0x58; continue; }  /* shaded/invalid */
+        double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
+        /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
+         * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
+        double rr = (double)((int)cpu->read_byte(f.header + 7) << 4);
+        if (rz + rr <= 0.0) { m += 0x58; continue; }                        /* behind camera (.s: MAC3 + r <= 0) */
+        /* Distance admission = the .s cull's EXACT 3-axis box test (F158
+         * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
+         * narrower and dropped far-off-axis mobys the .s draws — the
+         * user-reported \"culled outside 4:3\" tree):
+         *   t4 = (byte[moby+0x50] << 8) + (m_WasDrawn&1 ? 0x200 : 0)
+         *   admit iff every axis: -t4 < (moby[i]-cam[i])>>2 < t4
+         * FULL byte (bit7 included, exactly like the lhu path); dist==0
+         * needs no special sentinel — its box is degenerate and never
+         * admits, same as the .s. Hysteresis: canonical mobys carry live
+         * m_WasDrawn; host-revealed mobys never get the byte set, so
+         * membership in the LAST reveal set stands in for it (same
+         * pop-flicker damping the .s got from the widened render's byte).
+         * --no-lod: the retired game-side hook saturated the LOW 7 bits to
+         * 0x7F when nonzero (bit7 + sentinel preserved) — mirror that on
+         * the effective threshold. */
+        uint8_t rad_byte = cpu->read_byte(m + 0x50);
+        int hyst = ((cpu->read_byte(m + 0x51) & 1u) || reveal_prev_has(m)) ? 0x200 : 0;
+        int32_t cx = (int32_t)cpu->read_word(G_CAMERA + 0x28),
+                cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C),
+                cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+        int32_t d0 = ((int32_t)cpu->read_word(m + 0x0C) - cx) >> 2,
+                d1 = ((int32_t)cpu->read_word(m + 0x10) - cy) >> 2,
+                d2 = ((int32_t)cpu->read_word(m + 0x14) - cz) >> 2;
+        int32_t t4c = ((int32_t)rad_byte << 8) + hyst;               /* canonical threshold */
+        uint32_t eff = rad_byte;
+        if (nl && (eff & 0x7Fu)) eff = (eff & 0x80u) | 0x7Fu;        /* --no-lod saturation parity */
+        int32_t t4e = ((int32_t)eff << 8) + hyst;                    /* effective threshold */
+        #define REVEAL_BOX(t) (d0 > -(t) && d0 < (t) && d1 > -(t) && d1 < (t) && d2 > -(t) && d2 < (t))
+        /* the .s pairs the box test with a view-Z cap on the SAME threshold
+         * (@8001F2E8: reject MAC3 >= t4) — mirror both or far-axis mobys the
+         * .s rejects get over-admitted */
+        int admit_canon = REVEAL_BOX(t4c) && rz < (double)t4c;
+        if (!REVEAL_BOX(t4e) || rz >= (double)t4e) { m += 0x58; continue; } /* out of draw range (canonical or nl ceiling) */
+        #undef REVEAL_BOX
+        if (rz <= 0.0) { m += 0x58; continue; }                              /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
+        /* Radius margin: the .s cone admits by CENTRE ± radius bias
+         * (4(|x| - 25r/32) < 3(z + 19r/32)), so a wide prop whose centroid
+         * sits past the window edge but whose body pokes in is still drawn
+         * (the user-reported edge tree, cls 0xDF, centroid sx=-104 at
+         * xlo=-85). Mirror it as a projected-radius margin on the bounds. */
+        double margin = (25.0 * rr / 32.0) * H / rz;
         int central = (sx >= 0.0 && sx <= 512.0);
-        /* central + in-range = the canonical queue's territory; central +
-         * beyond-range is the no-lod builder's NEW coverage. */
-        if (central && !(nl && beyond)) { m += 0x58; continue; }
-        /* frozen mobys draw only via the no-lod beyond-range clause inside the
-         * canonical cone — off-4:3 frozen stays excluded (widescreen policy). */
-        if (!live && !central) { m += 0x58; continue; }
-        if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
+        /* central + canonically-admitted = the .s queue's territory (anything
+         * there and not in the queue was cull-rejected for a non-box reason —
+         * leave it); central + beyond-canonical is the no-lod clause's NEW
+         * coverage. */
+        if (central && admit_canon) { m += 0x58; continue; }
+        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { m += 0x58; continue; }  /* outside widened view (+radius) */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
@@ -982,9 +1034,13 @@ static void append_revealed_regular(CPUState* cpu) {
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
         fade_snap_put(m, rzsf4);
+        if (revealed < MAX_RECORDS) revlist[revealed] = m;
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
     }
+    /* publish this call's reveal set as the next call's hysteresis set */
+    s_rev_prev_n = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
+    memcpy(s_rev_prev, revlist, (size_t)s_rev_prev_n * sizeof(uint32_t));
     /* OPENPETE_MOBY_REVEAL_CENSUS: per-present reveal counts (flicker check —
      * pre-fix the count alternated N,0,0,0 between canonical and sub-tick
      * presents; post-fix it holds steady). */
