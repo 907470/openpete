@@ -3090,11 +3090,17 @@ static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
  * in out[] and read its face stream. RT/base/model carry the lighting inputs. */
 typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  uint32_t model, base, moby; int RT[3][3]; int near_ot;
-                 int vzspread;
+                 int vzspread; float pvzspread;
                  uint32_t ctab; int ctab_len;   /* static baked colour table [model+8] (bytes); 0 len = lit */
                } shaded_rec;   /* vzspread = model-space Z extent (max-min);
                  * a large extent means a real 3D model that self-occludes → needs the HUD3D
-                 * depth pass, vs a thin text/decal overlay that renders fine depth-off. */
+                 * depth pass, vs a thin text/decal overlay that renders fine depth-off.
+                 * pvzspread = PROJECTED per-vertex view-Z extent (raw project() mac3,
+                 * pre-vz_scale — same 4096-scale unit as model VZ). Catches what the
+                 * static model measure can't: a thin model the game ROTATES (the
+                 * inventory screen's spinning letter/dragon-icon mobys) swings its
+                 * large X extent into view-Z, so it self-occludes despite a small
+                 * model-space Z. Either spread ≥ threshold → HUD3D. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
@@ -3283,6 +3289,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
         int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
+        double pvzmin=1e30, pvzmax=-1e30;  /* projected view-Z extent (rotation-aware half) */
         for (int i=0;i<count && n<cap;i++) {
             uint32_t p=vbase+(uint32_t)i*3u;
             uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
@@ -3295,6 +3302,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)(vzz*vz_scale); out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
@@ -3307,6 +3315,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
             R->ctab=ctab; R->ctab_len=ctab_len;
             R->vzspread = (vzmax>vzmin) ? (vzmax-vzmin) : 0;
+            R->pvzspread = (pvzmax>pvzmin) ? (float)(pvzmax-pvzmin) : 0.0f;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
         }
     }
@@ -3356,8 +3365,30 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * text/decal overlays (small model-space Z extent) are convex enough for
          * painter's order and stay flat HUD (drawn UNDER the player — keeps the
          * level-intro/RESCUED text behind Spyro). Static icons are always 3D → HUD3D;
-         * a near-OT/UI billboard is HUD3D only if its model Z-extent is large. */
+         * a near-OT/UI billboard is HUD3D only if its model Z-extent is large.
+         * ROTATING thin glyphs (the inventory screen spins its letter/dragon-icon
+         * mobys, swinging their width into view-Z — pvzspread measures it) are
+         * NOT promoted here: promotion would move them over the player (DEMO
+         * MODE letters wave at pvzspread 41-95 in ordinary attract gameplay,
+         * where Spyro must cover them — measured via OPENPETE_SHADED_HUDDBG,
+         * which falsified a spread-threshold promotion). Their self-occlusion is
+         * instead fixed INSIDE the flat HUD layer: its draw sorts tris stably
+         * back-to-front by the per-tri z (native_render.c draw_hud_flat_layer),
+         * the depth-off analogue of the PSX OT bucket order. */
         int model_3d = (R->vzspread >= 96);   /* >~3× a text glyph's thickness */
+        { /* OPENPETE_SHADED_HUDDBG=frameLo: per-record HUD routing forensics. */
+            static int s_hd0 = -2;
+            if (s_hd0 == -2) { const char* e = getenv("OPENPETE_SHADED_HUDDBG"); s_hd0 = (e && *e) ? atoi(e) : -1; }
+            if (s_hd0 >= 0 && (int)openpete_frame >= s_hd0 && (int)openpete_frame < s_hd0 + 4)
+                fprintf(stderr, "[hud-route f=%u] moby=%08x cls=%03x near_ot=%d static=%d ui=%d "
+                        "vzspread=%d pvzspread=%.1f -> %s\n",
+                        openpete_frame, R->moby, R->cls, R->near_ot,
+                        openpete_ui_moby_is_addr_static(R->moby), openpete_ui_moby_is_addr_ui(R->moby),
+                        R->vzspread, (double)R->pvzspread,
+                        openpete_ui_moby_is_addr_static(R->moby) ? "HUD3D(static)"
+                        : !(openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? "ACTOR"
+                        : model_3d ? "HUD3D" : "HUDflat");
+        }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)

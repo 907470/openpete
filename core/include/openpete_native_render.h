@@ -153,6 +153,10 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * other mobys like the rescued dragon) but write no depth — so the player Spyro,
  * drawn next, still covers them (Spyro flies in front of the intro text). Mirrors
  * the PSX moby OT: near-slot UI over other mobys, the player rendered on top.
+ * WITHIN the layer, untextured tris draw back-to-front by centroid z (stable:
+ * equal-z 2D content keeps submission order) — the depth-off analogue of the PSX
+ * OT bucket order, so the rotating near-OT mobys (the inventory screen's spinning
+ * letters/dragon icons) self-occlude correctly instead of painting inside-out.
  * Routed independently of `blend`. Tagged by the feeder from the UI-moby classifier
  * OR the .s billboard OT-bias (see moby_native near_ot). */
 #define OPENPETE_SCENE_HUD   2

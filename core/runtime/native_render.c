@@ -2582,6 +2582,19 @@ static uint32_t bg_from_ref_corner(void)
  * scene index of each textured block-tri, in VB order, so the draw side can read
  * a tri's material and coalesce adjacent same-material runs into one draw. */
 static int s_txscene[MAX_SCENE_TRIS];
+/* Flat-HUD within-layer painter order (see the bucket-6 build in render_scene):
+ * back-to-front by centroid z, ties broken by submission index so equal-z runs
+ * (all the 2D-UI content at z=0) keep submission order — a STABLE descending
+ * sort built on qsort. */
+typedef struct { float z; int t; } hud_paint_t;
+static int hud_paint_cmp(const void* pa, const void* pb) {
+    const hud_paint_t* a = (const hud_paint_t*)pa;
+    const hud_paint_t* b = (const hud_paint_t*)pb;
+    if (a->z > b->z) return -1;   /* farther first */
+    if (a->z < b->z) return 1;
+    return (a->t < b->t) ? -1 : (a->t > b->t) ? 1 : 0;
+}
+
 static const scene_tri_t* s_txsort_scene;   /* qsort context (set per call) */
 static int tex_mat_cmp(const void* pa, const void* pb) {
     const scene_tri_t* a = &s_txsort_scene[*(const int*)pa];
@@ -2839,6 +2852,12 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                       s_nr.hd_tex_pipe);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
     }
     if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
+        /* The slot-6 VB range is depth-sorted back-to-front at build time (see
+         * the bucket-6 build in render_scene) so rotating near-OT mobys — the
+         * inventory letters/icons — self-occlude correctly despite the
+         * depth-off pipe. (The textured HUD range above stays submission-order:
+         * its content is constant-z 2D sprites; extend the sort there if a
+         * rotating TEXTURED near-OT moby ever appears.) */
         rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
@@ -3095,19 +3114,38 @@ static bool draw_native_scene(bool full_extent)
         }
         ut_count[gi] = n - ut_first[gi];
     }
-    /* HUD untextured: every HUD-category untextured tri (any blend), painter's
-     * order = submission order; the overlay pipe ignores depth so they sit on top. */
+    /* HUD untextured: every HUD-category untextured tri (any blend). The pipe is
+     * depth-test OFF by design (the layer must paint over the world uncondition-
+     * ally yet stay under the player), so ordering INSIDE the layer is painter's.
+     * Submission order is wrong for the near-OT mobys the game ROTATES — the
+     * inventory screen's spinning letter/dragon-icon mobys painted their back
+     * faces over their front faces. Sort the bucket stably BACK-TO-FRONT by
+     * centroid z (the tris carry real view-Z-derived depth), the depth-off
+     * analogue of the PSX OT bucket order — finer, per-tri — so a rotated glyph
+     * self-occludes correctly at every phase. Stability (z ties break on
+     * submission index) keeps every constant-z run — the 2D-UI carries at z=0,
+     * flat per-glyph quads — in submission order, i.e. exactly the old draw. */
     ut_first[6] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD || n + 3 > SCENE_VB_VERTS) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+    {
+        static hud_paint_t ho[MAX_SCENE_TRIS];
+        int hn = 0;
+        for (int t = 0; t < scene_n; t++) {
+            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
+            ho[hn].z = (scene[t].v[0].z + scene[t].v[1].z + scene[t].v[2].z) * (1.0f/3.0f);
+            ho[hn].t = t; hn++;
         }
-        n += 3;
+        qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
+        for (int i = 0; i < hn && n + 3 <= SCENE_VB_VERTS; i++) {
+            int t = ho[i].t;
+            for (int k = 0; k < 3; k++) {
+                float cx, cy;
+                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                rhi_vertex *o = &buf[n + k];
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
+            }
+            n += 3;
+        }
     }
     ut_count[6] = n - ut_first[6];
     /* OVERLAY untextured: HUD-OT 2D flat quads (letterbox bars). Drawn dead last,
