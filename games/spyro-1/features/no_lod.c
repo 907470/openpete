@@ -233,7 +233,8 @@ static int no_lod_setup(void) {
  * still runs. Host-only memory; no gameplay-readable byte touched. */
 static int no_lod_clear_moby_queue(CPUState* cpu, uint32_t addr) {
     (void)cpu; (void)addr;
-    if (openpete_no_lod) memset(s_moby_queue_region, 0, sizeof(s_moby_queue_region));
+    if (openpete_no_lod_producers)
+        memset(s_moby_queue_region, 0, sizeof(s_moby_queue_region));
     return 0;  /* run the real func_8001F158 body */
 }
 
@@ -262,14 +263,16 @@ const feature_module_t no_lod_module = {
  * Named-hook implementations the recompiler calls (generated from
  * manifest/render_channels.toml, the no_lod_* + dbg_kill_env_lp_walk
  * channels). The bespoke read+conditional math lives here, host-side,
- * instead of in the vendored recompiler. Identity when --no-lod is off
- * (openpete_no_lod == 0). Moved out of core/features/widescreen.c so the
- * feature is siloed. */
+ * instead of in the vendored recompiler. Identity unless the game-side
+ * producer stack is armed (openpete_no_lod_producers — PsyCross renderer
+ * only; on the native path --no-lod is a display policy and the .s
+ * producers run canonical). Moved out of core/features/widescreen.c so
+ * the feature is siloed. */
 
 /* env distance-field saturate: under --no-lod return INT32_MAX so the cull
  * admits every cell (m_LodDistance ×3, m_CullingDistance ×1). */
 uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr) {
-    return openpete_no_lod ? 0x7FFFFFFFu : cpu->read_word(addr);
+    return openpete_no_lod_producers ? 0x7FFFFFFFu : cpu->read_word(addr);
 }
 /* packed m_Renderer half-word: under --no-lod saturate the low-7-bit
  * m_Distance to 0x7F (only when non-zero — 0 is the uninit-slot sentinel),
@@ -277,7 +280,7 @@ uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr) {
  * delta for the dist-gate verdict (psx_runtime_mdist_thresh_delta). */
 uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr) {
     uint32_t v = cpu->read_half(addr);
-    if (openpete_no_lod && (v & 0x7Fu) != 0u) {
+    if (openpete_no_lod_producers && (v & 0x7Fu) != 0u) {
         psx_runtime_mdist_thresh_delta = (int32_t)((0x7Fu - (v & 0x7Fu)) << 8);
         return (v & 0xFF80u) | 0x7Fu;
     }
@@ -287,7 +290,7 @@ uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr) {
 /* env HP-walk texture LOD: suppress the `addi $t5,$t5,8` HQ->LQ descriptor
  * bump so every quad reads the HQ half. */
 int32_t psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump) {
-    return openpete_no_lod ? base : (base + bump);
+    return openpete_no_lod_producers ? base : (base + bump);
 }
 /* moby model LOD collapse: the LP-band face-list load reads m_LpFaces (offset
  * 0x1C) by default; --no-lod swings the knob to 0x14 (m_Faces, high-poly). */
@@ -308,7 +311,7 @@ uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base) {
  * still fade. Identity when --no-lod is off. Render-scratch only (rec+0x2E is
  * read back solely by the render passes via ctc2 gte_ctrl[30]). */
 void psx_runtime_no_lod_moby_zsf4_store(CPUState* cpu, uint32_t addr, uint32_t val) {
-    if (openpete_no_lod) {
+    if (openpete_no_lod_producers) {
         int32_t zsf4_nodist = (int32_t)val
                             + (int32_t)cpu->read_word(addr - 0x2Eu + 0x18u);
         if (zsf4_nodist >= 1024) val = (uint32_t)zsf4_nodist;

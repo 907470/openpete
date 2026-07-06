@@ -160,8 +160,15 @@ extern uint32_t psx_runtime_moby_reg_queue_limit_offset; /* default 0x2200 */
 /* --no-lod feature flag. Read by the recompiler-emitted lw substitution
  * at PC 0x80026214 (r_environment.s m_LodDistance load) to inject an
  * always-false LOD predicate without mutating g_Environment.m_LodDistance.
- * Defined in core/runtime/fiber.c. */
+ * Defined in core/features/no_lod.c. */
 extern int openpete_no_lod;
+
+/* Game-side producer arming (PsyCross renderer only). The no_lod_*
+ * substitution hooks key on THIS, not on openpete_no_lod: on the native
+ * path --no-lod is a display policy (the native feeders derive detail
+ * from gamestate) and the .s producers run pure canonical 4:3.
+ * Defined in core/features/no_lod.c. */
+extern int openpete_no_lod_producers;
 
 /* Debug knob: when non-zero, force the env-renderer's
  * `g_SkipLowPolyWorld` read at PC 0x800261E0 to return 1, which makes

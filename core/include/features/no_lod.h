@@ -30,12 +30,21 @@
 extern "C" {
 #endif
 
-/* --no-lod: collapse the sector LOD band + grow env-renderer scratch
- * pool. Read by recompiler-emitted substitutions (m_LodDistance load,
- * moby LP-face load, etc.) and by core/features/widescreen.c when
- * sizing the host-backed polybuf. Set once at boot from --no-lod.
- * See notes/plans/openpete-disable-lods.md. */
+/* --no-lod FEATURE flag: full detail at any distance. Set once at boot
+ * from --no-lod, in every renderer mode. The native feeders read it as
+ * a DISPLAY policy (moby zsf4/tier neutralization + far-record builder
+ * in moby_native.c, terrain HQ classifier, portal always-dome, fog
+ * default). See notes/plans/openpete-disable-lods.md. */
 extern int openpete_no_lod;
+
+/* Game-side PRODUCER arming (PsyCross renderer only): the relocated +
+ * grown env/moby queues, the m_LodDistance / m_Distance / zsf4 / tier
+ * saturation hooks, the moby LP-face knob, and the polybuf grow — the
+ * machinery that makes the ORIGINAL .s renderer draw full detail. On
+ * the native path the .s producers run pure canonical 4:3 (Phase 6
+ * stack-revert; the native feeders own no-LOD), so this stays 0 there
+ * and every no_lod_* substitution hook is identity. */
+extern int openpete_no_lod_producers;
 
 /* --fog-scale: terrain fog-distance multiplier, resolved at boot in
  * no_lod_apply_options (explicit --fog-scale wins; else 4.0 under

@@ -294,7 +294,7 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
          *
          * See notes/plans/openpete-polybuf-host-redirect.md. */
         float thresh_factor = openpete_cull_widen_factor;
-        if (thresh_factor > 1.5f || openpete_no_lod) {
+        if (thresh_factor > 1.5f || openpete_no_lod_producers) {
             uint32_t size_per_slot =
                 ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
                 & ~0x3FFFu;
@@ -307,7 +307,7 @@ void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
              * (clip_x_threshold, moby cone, env_cell_x_bound, sxy_sat)
              * while the framebuffer still draws the full wide aspect —
              * visible as missing right-edge polys at 21:9+ under --no-lod. */
-            if (openpete_no_lod && size_per_slot < 0x100000u) {
+            if (openpete_no_lod_producers && size_per_slot < 0x100000u) {
                 size_per_slot = 0x100000u;
             }
             if (widescreen_polybuf_setup(size_per_slot, 0x80400000u) == 0) {

@@ -625,14 +625,18 @@ static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
  *                      below -2048 (g_SkipLowPolyWorld > 0) DPCS-faded toward
  *                      the cyclorama fog colour by min(-(ZSF4+2048),2047)<<1
  *                      [.L8001FE98..FECC]
- * The face load rides the same --no-lod knob the .s uses
- * (psx_runtime_moby_lp_face_offset: 0x1C canonical -> m_LpFaces, 0x14 under
- * --no-lod -> m_Faces), so native and game flip to HP-everywhere TOGETHER.
- * Colours stay tier-faithful in both modes — the game keeps the far palette
- * under --no-lod too (only the face pointer is hooked). */
+ * Under --no-lod the face select goes HP-everywhere NATIVELY (keyed on the
+ * flag, not the game-side psx_runtime_moby_lp_face_offset knob — the knob
+ * only arms in PsyCross mode now; on the native path the .s producers run
+ * canonical and the native walk owns the tier). The zsf4≤0 residue under
+ * --no-lod is the effect-AUTHORED fades (m_Renderer&0x3F < 4, exempt from
+ * the zsf4 neutralization) — the game-side knob gave those HP faces too,
+ * so mirror that. Colours stay tier-faithful in both modes — the game
+ * keeps the far palette under --no-lod too. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0) ? psx_runtime_moby_lp_face_offset : 0x14u;
+    uint32_t off = (zsf4 <= 0 && !openpete_no_lod)
+                   ? psx_runtime_moby_lp_face_offset : 0x14u;
     return cpu->read_word(header + off);
 }
 
@@ -687,6 +691,21 @@ static int project_all_records_inner(CPUState* cpu) {
             /* ZSF4 LOD/colour-fade tier = high16 of the matrix word @rec+0x2C
              * (renderer: ctc2/cfc2 gte_ctrl[30]); see moby_tier_faceblock */
             int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
+            /* --no-lod: neutralize the DISTANCE term host-side (READ-side twin
+             * of the game-side zsf4-store hook, which only arms in PsyCross
+             * mode now; idempotent when a store hook did run). Same carve-out
+             * as the hook: only when the zero-distance tier is near-band
+             * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring
+             * puffs shrink m_Renderer) and keeps the canonical value.
+             * Snapshotted into fade_snap below, so the sub-tick re-extract
+             * inherits the neutralized tier too. */
+            if (openpete_no_lod) {
+                uint32_t mob = cpu->read_word(rec + 0x34);
+                if (mob >= 0x80000000u) {
+                    int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
+                    if ((md << 8) >= 1024) zsf4 = md << 8;
+                }
+            }
             s_recs[nrec] = (rec_meta){ rec, off, got, header,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
                 moby_tier_faceblock(cpu, header, zsf4), w0,
@@ -871,7 +890,17 @@ static void moby_build_validate(CPUState* cpu) {
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
 static void append_revealed_regular(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
-    if (F <= 1.0f) return;                              /* 4:3 — nothing to reveal */
+    /* Two reveal modes, composable:
+     *  - WIDESCREEN (F > 1): off-4:3 LIVE mobys the canonical 4:3 cone
+     *    skipped (frozen stays excluded — a stale pose beside live
+     *    neighbours reads as a bug).
+     *  - --no-lod (native display policy; the game-side producer stack is
+     *    PsyCross-only now): mobys BEYOND the canonical draw range, live
+     *    or frozen — parity with the retired m_Distance saturation, which
+     *    admitted them stale-posed into the .s queue. Ceiling = the same
+     *    0x7F<<8 view-Z the saturated compare used. */
+    int nl = openpete_no_lod;
+    if (F <= 1.0f && !nl) return;                       /* 4:3, LOD faithful — nothing to reveal */
     float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -909,15 +938,29 @@ static void append_revealed_regular(CPUState* cpu) {
                           sdy=(double)((int32_t)cpu->read_word(m+0x10)-spy), thr=(double)updDist*1024.0;
                    if (sdx*sdx + sdy*sdy <= thr*thr) live = 1; }
         }
-        if (!live) { m += 0x58; continue; }
+        if (!live && !nl) { m += 0x58; continue; }      /* widescreen-only: cheap-out on frozen */
         moby_fields f;
         if (!build_moby_record_fields(cpu, m, &f)) { m += 0x58; continue; }  /* shaded/invalid */
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         if (rz + 128.0 <= 0.0) { m += 0x58; continue; }                     /* behind camera */
-        double rRad = (double)(cpu->read_byte(m + 0x50) & 0xFF);
-        if (rz - rRad * 256.0 >= 0.0) { m += 0x58; continue; }              /* beyond render distance */
+        uint8_t rad_byte = cpu->read_byte(m + 0x50);
+        if ((rad_byte & 0x7Fu) == 0u) { m += 0x58; continue; }              /* m_Distance==0: uninit/dormant sentinel */
+        double rRad = (double)(rad_byte & 0xFF);
+        int beyond = (rz - rRad * 256.0 >= 0.0);                             /* beyond canonical draw range */
+        if (beyond) {
+            if (!nl) { m += 0x58; continue; }           /* LOD faithful: range pop-out stands */
+            /* --no-lod ceiling parity: the game-side hook saturated the packed
+             * distance to 0x7F, so the .s compare admitted up to 0x7F<<8. */
+            if (rz - 127.0 * 256.0 >= 0.0) { m += 0x58; continue; }
+        }
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
-        if (sx >= 0.0 && sx <= 512.0) { m += 0x58; continue; }              /* central 4:3 — leave untouched */
+        int central = (sx >= 0.0 && sx <= 512.0);
+        /* central + in-range = the canonical queue's territory; central +
+         * beyond-range is the no-lod builder's NEW coverage. */
+        if (central && !(nl && beyond)) { m += 0x58; continue; }
+        /* frozen mobys draw only via the no-lod beyond-range clause inside the
+         * canonical cone — off-4:3 frozen stays excluded (widescreen policy). */
+        if (!live && !central) { m += 0x58; continue; }
         if (sx < (double)xlo || sx > (double)xhi) { m += 0x58; continue; }  /* outside widened view */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
