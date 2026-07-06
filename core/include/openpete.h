@@ -110,21 +110,6 @@ typedef struct {
      * notes/plans/openpete-widescreen-fov.md "FOV slider". */
     float fov_deg;
 
-    /* PGXP (Parallel/Precision Geometry Transform Pipeline) toggle.
-     * -1 = unset (defaults applied at boot); 0 = off; 1 = on.
-     * When 1, PsyCross's g_cfg_pgxpTextureCorrection and g_cfg_pgxpZBuffer
-     * are enabled — gameplay GTE calls populate a sub-pixel-precision
-     * vertex cache that the renderer uses for perspective-correct UV
-     * interpolation and a real Z-buffer (vs PSX's ordering-table-only
-     * depth). When 0, the cache stays unread and rendering is bit-
-     * identical to USE_PGXP=0. Defaults to 0 (off): the perspective-
-     * correct look diverges from canonical PSX and hurts 1:1 comparison
-     * shots, so it's opt-in via --pgxp 1 (which passed the per-level soak
-     * — see the run.c boot block). Display-only; gameplay state is the
-     * same either way.
-     * See notes/plans/openpete-internal-resolution.md "Phase 2". */
-    int pgxp_enable;
-
     /* Target display aspect ratio (width / height). 0 = no override
      * (4:3 native). >0 widens the DISPENV / DRAWENV horizontally and
      * re-centres SetGeomOffset so the GTE projects geometry across the
@@ -403,28 +388,6 @@ typedef struct {
      * notes/plans/openpete-frame-pacing.md and
      * scripts/measure-pacing.py. */
     const char* frame_time_log_path;
-
-    /* --vertex-trace-log PATH (default NULL): write one 72-byte record
-     * per matcher batch per OT walk (sim-due + intermediate). Used by
-     * scripts/analyze-vtrace.py to diagnose substitute-pipeline issues
-     * empirically. Off by default. */
-    const char* vertex_trace_log_path;
-
-    /* --substitute-clamp-px N (default 8): max per-axis per-vertex
-     * applied delta in pixels. 0 disables substitute entirely. Bounds
-     * the worst visible flicker from constant-velocity over-prediction
-     * at intermediate renders. <0 = unset (use compiled default). */
-    float substitute_clamp_px;
-
-    /* --debug-highlight-smoothed: paint actively-smoothed batches solid
-     * untextured red (diagnostic for the rigid/animated split).
-     * -1 = unset (fall back to env), 0 = off, 1 = on. Live-toggle F9. */
-    int debug_highlight_smoothed;
-
-    /* --debug-black-intermediates: present a single black prim instead
-     * of the interpolated OT on intermediate renders (presentation
-     * isolation test). -1 unset / 0 off / 1 on. Live-toggle F10. */
-    int debug_black_intermediates;
 
     /* --record PATH: capture gameplay video. True VFR — one encoded frame
      * per game-presented frame, PTS = wall-clock capture time, so playback

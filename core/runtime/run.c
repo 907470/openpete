@@ -134,6 +134,12 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * (the -og + native -ab/-diff reference variants). Read by psyq_DrawOTag. */
 int openpete_psycross_renders = 1;
 
+/* Master interpolation/frame-gen toggle ('I' key). Gates the native
+ * sub-tick intermediate presents; 1 = smooth (default), 0 = canonical
+ * ~29.97 fps only. (Moved here from the deleted screen-space render
+ * matcher, whose substitute path it also used to gate.) */
+int g_openpete_interp_enabled = 1;
+
 /* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
  * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
@@ -752,29 +758,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
     }
 
-    /* --pgxp 0|1: PGXP cache consumer toggle (PsyCross-side). The
-     * GTE-side emit (psxrecomp gte_rtps_internal) always populates
-     * the cache when USE_PGXP=1 and render_pass_active; these flags
-     * decide whether the consumer (ApplyVertexPGXP) actually reads
-     * from it. Default 0: PGXP's perspective-correct UV / Z-buffer
-     * diverges from the canonical PSX look, which hurts 1:1 comparison
-     * shots, so it's opt-in (--pgxp 1). It passed the per-level soak
-     * across all 6 levels at Day 1c (2026-05-26), so enabling it is
-     * supported — it's just not the default. Display-only either way
-     * (gameplay state is identical). See notes/plans/openpete-pgxp.md. */
-    {
-        int want_pgxp = (opts->pgxp_enable >= 0) ? opts->pgxp_enable : 0;
-        g_cfg_pgxpTextureCorrection = want_pgxp;
-        g_cfg_pgxpZBuffer = want_pgxp;
-        {
-            extern int g_openpete_pgxp_perspective;
-            g_openpete_pgxp_perspective = want_pgxp;
-        }
-        OPL_INFO_F("pgxp", "consumer flags texture_correction=%d zbuffer=%d "
-                   "(--pgxp %s)", want_pgxp, want_pgxp,
-                   (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 0");
-    }
-
     /* --fov derivation (GTE H override) lives in core/features/
      * widescreen.c — PsyCross reference mode only (the native renderer
      * projects canonically; its FOV policy is Phase-7 work).
@@ -1272,58 +1255,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         frame_time_log_start_ns = op_now();
     }
 
-    /* Substitute clamp — apply CLI override or env, else compiled default. */
-    {
-        extern float g_openpete_substitute_clamp_px;
-        if (opts->substitute_clamp_px >= 0.0f) {
-            g_openpete_substitute_clamp_px = opts->substitute_clamp_px;
-        } else {
-            const char* e = getenv("OPENPETE_SUBSTITUTE_CLAMP_PX");
-            if (e && *e) g_openpete_substitute_clamp_px = (float)atof(e);
-        }
-        OPL_INFO_F("render", "substitute clamp = %.1f px/render (0 = disabled)",
-                   (double)g_openpete_substitute_clamp_px);
-    }
-
-    /* Debug-highlight-smoothed — CLI flag wins, else env. A real global
-     * (not a getenv at draw time) so it works across the WSL2→Win32
-     * boundary where bare env vars never reach the .exe. */
-    {
-        extern int g_openpete_dbg_highlight_smoothed;
-        if (opts->debug_highlight_smoothed >= 0) {
-            g_openpete_dbg_highlight_smoothed = opts->debug_highlight_smoothed;
-        } else {
-            const char* e = getenv("OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED");
-            if (e && *e) g_openpete_dbg_highlight_smoothed = (atoi(e) != 0);
-        }
-        OPL_INFO_F("render",
-                   "debug-highlight-smoothed = %d (F9 toggles live)",
-                   g_openpete_dbg_highlight_smoothed);
-    }
-    {
-        extern int g_openpete_dbg_black_present;
-        if (opts->debug_black_intermediates >= 0) {
-            g_openpete_dbg_black_present = opts->debug_black_intermediates;
-        } else {
-            const char* e = getenv("OPENPETE_DEBUG_BLACK_INTERMEDIATES");
-            if (e && *e) g_openpete_dbg_black_present = (atoi(e) != 0);
-        }
-        OPL_INFO_F("render",
-                   "debug-black-intermediates = %d (F10 toggles live)",
-                   g_openpete_dbg_black_present);
-    }
-
-    /* Vertex trace — see openpete_vertex_trace.h. Off unless
-     * --vertex-trace-log PATH given. */
-    if (opts->vertex_trace_log_path && *opts->vertex_trace_log_path) {
-        extern int openpete_vtrace_open(const char* path);
-        if (openpete_vtrace_open(opts->vertex_trace_log_path) != 0) {
-            fprintf(stderr, "openpete: failed to open --vertex-trace-log %s\n",
-                    opts->vertex_trace_log_path);
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-    }
-
     /* Input pump rate. We used to throttle to 120 Hz when Tab was held
      * to keep per-iter cost down at 1000+ Hz, but that broke BK2 replay
      * determinism: g_PsyX_Pad_InputOverride is set per host iter, and
@@ -1350,8 +1281,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool g_paused = false;
     bool g_step_one = false;
     bool prev_pause_key = false;
-    bool prev_dbg_key = false;
-    bool prev_blk_key = false;
     bool prev_i_key = false;
     bool prev_fps_key = false;
     bool prev_alt_enter = false;
@@ -1500,34 +1429,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             prev_pause_key = pause_k;
 
-            /* F9: live-toggle the smoothed-batch red overlay. */
-            bool dbg_k = kbd_pre && kbd_pre[SDL_SCANCODE_F9];
-            if (dbg_k && !prev_dbg_key) {
-                extern int g_openpete_dbg_highlight_smoothed;
-                g_openpete_dbg_highlight_smoothed =
-                    !g_openpete_dbg_highlight_smoothed;
-                OPL_INFO_F("render", "debug-highlight-smoothed -> %d",
-                           g_openpete_dbg_highlight_smoothed);
-            }
-            prev_dbg_key = dbg_k;
-
-            /* F10: live-toggle the black-intermediate presentation test. */
-            bool blk_k = kbd_pre && kbd_pre[SDL_SCANCODE_F10];
-            if (blk_k && !prev_blk_key) {
-                extern int g_openpete_dbg_black_present;
-                g_openpete_dbg_black_present =
-                    !g_openpete_dbg_black_present;
-                OPL_INFO_F("render", "debug-black-intermediates -> %d",
-                           g_openpete_dbg_black_present);
-            }
-            prev_blk_key = blk_k;
-
             /* I: live on/off A/B for interpolation itself. Off =
              * intermediate renders present the lagged frame unchanged
              * (clean "is frame-gen doing anything perceptible?" test). */
             bool i_k = kbd_pre && kbd_pre[SDL_SCANCODE_I];
             if (i_k && !prev_i_key) {
-                extern int g_openpete_interp_enabled;
                 g_openpete_interp_enabled = !g_openpete_interp_enabled;
                 OPL_INFO_F("render", "interpolation -> %s",
                            g_openpete_interp_enabled ? "ON" : "OFF");
@@ -1571,33 +1477,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (yield_now) {
             g_step_one = false;
             game_on_frame_pre(&g_game.cpu, openpete_frame);
-            /* Renderer-foundation Phase 2.1 — advance the sim-tick
-             * timestamp + period. The exact tick-origin is re-stamped by
-             * psyq_DrawOTag→mark_now (Phase 2.1 hotfix) so this call's
-             * tick value is overridden; we keep it only to set the
-             * sim_period_ns the compute_alpha clamp uses. */
-            {
-                extern void openpete_render_sim_tick_advance_time(
-                    int64_t sim_tick_ns, int64_t sim_period_ns);
-                openpete_render_sim_tick_advance_time(op_now(),
-                                                      2 * sim_period_ns);
-            }
-            /* Renderer-foundation: arm the deferred cache rotate. The
-             * actual ring advance happens on the FIRST emit_vertex of
-             * this yield's GTE pass. PadVSync-only yields produce no
-             * emits, so the arm is harmlessly carried over to the next
-             * yield that does run GTE — keeps the cache aligned with
-             * the 30 Hz GAME FRAME cadence on a 60 Hz VBL fiber.
-             *
-             * Earlier iterations tried (a) post-EndScene rotate, which
-             * left cache.prev = THIS frame's emits during intermediate
-             * walks of LAST frame's OT — stretching artifacts; and
-             * (b) unconditional pre-co_switch rotate, which destroyed
-             * data on PadVSync-only yields — 86% miss rate in soak. */
-            {
-                extern void openpete_render_cache_arm_rotate(void);
-                openpete_render_cache_arm_rotate();
-            }
             {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                 co_switch((cothread_t)openpete_game_fiber);
@@ -1947,12 +1826,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                frame_time_log_target_period_ns, openpete_frame);
         }
 
-        /* Renderer-foundation Phase 2.1 — intermediate render between
-         * sim ticks. When render-fps > sim and we have a saved OT from
-         * the last DrawOTag, re-walk it through PsyCross with a fresh
-         * substitute alpha. Each intermediate iter presents a smoothed
-         * intermediate frame; alpha advances across the sim period via
-         * openpete_render_compute_alpha(op_now()).
+        /* Native sub-tick intermediate render between sim ticks
+         * (--render-fps > 30). Each intermediate iter rebuilds the
+         * native scene against interpolated gamestate and presents it.
+         * (The legacy PsyCross screen-space re-emit that used to be the
+         * fallback here was deleted 2026-07-06 with the render matcher.)
          *
          * Conditions:
          *  - Not headless / unlock mode (no display target).
@@ -1969,25 +1847,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          *    "render-fps plus 30"). did_present_this_iter is the exact
          *    predicate: present an interpolated frame iff a real one
          *    wasn't already shown this iteration.
-         *  - At least one DrawOTag has fired (saved OT available).
          *  - Not paused without step pending. */
-        extern uint8_t** openpete_last_ot_slot_host_ptr;
-        extern int       openpete_last_ot_slot_count;
-        extern void      openpete_re_emit_last_ot(void);
-        /* Headless gate is lifted when --vertex-trace-log is on so the
-         * harness can characterize the substitute pipeline without a
-         * display surface. BeginScene/EndScene are no-ops in headless,
-         * but prepare_substitute still runs and writes trace records. */
-        extern int openpete_vtrace_enabled(void);
-        extern int g_openpete_interp_enabled;
-        const bool headless_block = opts->headless && !openpete_vtrace_enabled();
+        const bool headless_block = opts->headless;
 
-        /* Native sub-tick re-feed (high-FPS spine). When the native Vulkan
-         * renderer is the visible window (--renderer vk|ab|diff), the PsyCross
-         * window is hidden, so the legacy OT re-emit below would present to a
-         * dead surface. Instead rebuild the native scene against interpolated
-         * gamestate and present that. Same gates as the PsyCross intermediate.
-         * If this fires, the PsyCross block is skipped (mutually exclusive). */
+        /* Native sub-tick re-feed (high-FPS spine): rebuild the native
+         * scene against interpolated gamestate and present that. */
         openpete_native_reextract_fn native_re = openpete_native_get_reextract();
         const bool native_intermediate =
             !headless_block && !openpete_unlock_fps &&
@@ -2044,46 +1908,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            path, openpete_frame, s_presents_captured);
                 s_presents_captured++;
             }
-        }
-
-        if (!native_intermediate &&
-            !headless_block && !openpete_unlock_fps &&
-            g_openpete_interp_enabled &&   /* 'I' off → no intermediates → ~29.97 fps */
-            opts->render_fps > 0 &&
-            !did_present_this_iter &&
-            openpete_last_ot_slot_host_ptr &&
-            openpete_last_ot_slot_count > 0 &&
-            !(g_paused && !g_step_one)) {
-            if (PsyX_BeginScene()) {
-                /* nothing else needed — re_emit does ClearSplits */
-            }
-            openpete_re_emit_last_ot();
-            /* Multi-present capture, intermediate-frame leg. Same
-             * counter as the canonical block above; this branch fires
-             * only when --render-fps > 30 and an interpolated present
-             * is being drawn between sim ticks. Comparing capture index
-             * 0 (canonical) against 1+ (intermediate) is exactly how
-             * the visual harness detects whether interp deltas reach
-             * the GL submit at high render-fps (the §7.5-R3 PHASE-B
-             * 480fps NO-blue investigation). */
-            if (opts->screenshot_presents_start >= 0
-                    && (int)openpete_frame >= opts->screenshot_presents_start
-                    && s_presents_captured < opts->screenshot_presents_count) {
-                char path[1024];
-                openpete_screenshot_format_path(opts->screenshot_output,
-                                                (int)openpete_frame,
-                                                s_presents_captured,
-                                                path, sizeof(path));
-                openpete_psyx_take_screenshot(path);
-                OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u (present=%d, intermediate)",
-                           path, openpete_frame, s_presents_captured);
-                s_presents_captured++;
-            }
-            PsyX_EndScene();
-            /* No cache rotate here — sim_tick_advanced fires only at
-             * sim-due iters. Intermediate renders reuse the cache state
-             * from the most recent sim tick. */
         }
 
         /* RAM dump runs outside the present_pending gate so a request for
@@ -2414,10 +2238,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
-    {
-        extern void openpete_vtrace_close(void);
-        openpete_vtrace_close();
-    }
     if (openpete_interp_enabled()) {
         OPL_INFO_F("interp",
                    "captured=%llu, dedupe-skipped=%llu",

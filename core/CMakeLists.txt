@@ -63,19 +63,16 @@ add_library(openpete_core STATIC
     # MakeVertexTriangle/Quad) to recover world-space + matrix state at
     # draw time. Phase 0 foundation for draw-call matching and renderer-
     # side lerp. See notes/plans/openpete-renderer-foundation.md.
-    runtime/openpete_render_cache.c
 
     # Draw-call matcher (renderer-foundation Phase 1). Groups OT prims
     # by matrix_span_id, hashes each batch by geometric fingerprint,
     # matches curr-frame batches against prev-frame. Produces stable
     # object_ids that Phase 2 lerp will use as identity for T/R/S
     # decompose + interpolate. No render changes in Phase 1.
-    runtime/openpete_render_matcher.c
 
     # Per-batch binary trace for the substitute pipeline. Off unless
     # --vertex-trace-log PATH is given. Consumed by
     # scripts/analyze-vtrace.py.
-    runtime/openpete_vertex_trace.c
 
     # Native Vulkan renderer A/B harness (--native-ab). Host-side display
     # consumer built on core/rhi; never writes PSX RAM. Phase 1c of

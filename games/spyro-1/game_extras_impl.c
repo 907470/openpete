@@ -14,7 +14,6 @@
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
-#include "openpete_render_cache.h"
 #include "features/text_moby_native.h"
 
 #include <ctype.h>
@@ -145,87 +144,6 @@ static void install_watch_from_env(CPUState* cpu) {
             g_watch.lo, g_watch.hi, g_watch.frame_max);
 }
 
-/* PGXP Day 4 Phase 1.3 / 2.5: Spyro-specific PC→perspective classifier.
- *
- * Prim-classes identified empirically (Phase 1.1 PC dump + Phase 0
- * function survey):
- *   tracer       : func_80017B48          0x80017B48..0x80017BFC
- *   moby_proj    : func_8001F798/F158 + func_80022A2C
- *                  0x8001F000..0x80023AC4 (covers both ranges contiguously)
- *   spyro_mesh   : func_80023AC4 and its many leaf helpers
- *                  0x80023AC4..0x80025000 (rough; helpers extend higher)
- *   terrain      : func_800258F0          0x800258F0..0x800276A0
- *   cyclorama    : func_8004EBA8          0x8004EBA8..0x8004F000
- *   particles    : func_800573C8 + func_80058D64
- *                  0x800573C8..0x80059474
- *   shadow       : func_80059F8C          0x80059F8C..0x8005A470
- *
- * Phase 2.5 bisection: each class has its own env gate. By default ALL
- * are off (= shipping Day 1c). Set OPENPETE_PGXP_<CLASS>=1 to opt in.
- * Used to isolate which class causes the level-10 missing-geo
- * regression. */
-static int s_pgxp_class_init = 0;
-static int s_persp_tracer = 0;
-static int s_persp_moby   = 0;
-static int s_persp_spyro  = 0;
-static int s_persp_terr   = 0;
-static int s_persp_cyc    = 0;
-static int s_persp_part   = 0;
-static int s_persp_shad   = 0;
-static int s_persp_other  = 0;  /* PCs that don't match any known range */
-
-static int env_tri(const char* name, int dflt) {
-    const char* v = getenv(name);
-    if (!v || !v[0]) return dflt;
-    return (v[0] != '0') ? 1 : 0;
-}
-
-/* Defaults promoted 2026-06-10 (perspective evaluation): the 3D
- * prim classes (moby/spyro/terrain) run perspective whenever the
- * master allows (= --pgxp). The level-10 missing-geo regression the
- * bisection gates were built for no longer reproduces (identical-
- * frame screenshot diff over the full demo: changes confined to
- * texture interpolation on large oblique polys; zero geometry
- * deltas). 2D/affine-authored classes stay OFF by design: cyclorama
- * gradient is affine-authored, tracer/particles/shadow are flat.
- * All remain env-overridable in both directions. */
-static void spyro_pgxp_init_classes(void) {
-    if (s_pgxp_class_init) return;
-    s_persp_tracer = env_tri("OPENPETE_PGXP_TRACER",    0);
-    s_persp_moby   = env_tri("OPENPETE_PGXP_MOBY",      1);
-    s_persp_spyro  = env_tri("OPENPETE_PGXP_SPYRO",     1);
-    /* Terrain demoted back to default-OFF (2026-06-10, user report:
-     * "pretty broken with world geo"). Static-frame evaluation missed
-     * the failure mode: at ~80% cache-hit rates the per-prim
-     * coherence demote leaves NEIGHBORING terrain prims on different
-     * interpolation paths (hyperbolic vs affine), and the patchwork
-     * re-rolls per frame as hit patterns shift — invisible in single
-     * screenshots, visible swimming in motion. Re-enable only after
-     * a region-coherent demote (or ~100% hit coverage) exists. */
-    s_persp_terr   = env_tri("OPENPETE_PGXP_TERRAIN",   0);
-    s_persp_cyc    = env_tri("OPENPETE_PGXP_CYCLORAMA", 0);
-    s_persp_part   = env_tri("OPENPETE_PGXP_PARTICLES", 0);
-    s_persp_shad   = env_tri("OPENPETE_PGXP_SHADOW",    0);
-    s_persp_other  = env_tri("OPENPETE_PGXP_OTHER",     0);
-    s_pgxp_class_init = 1;
-    fprintf(stderr, "[PGXP-CLASS] tracer=%d moby=%d spyro=%d terrain=%d cyclorama=%d particles=%d shadow=%d other=%d\n",
-            s_persp_tracer, s_persp_moby, s_persp_spyro, s_persp_terr,
-            s_persp_cyc, s_persp_part, s_persp_shad, s_persp_other);
-}
-
-static int spyro_pgxp_classify(uint32_t pc, int is_canonical) {
-    spyro_pgxp_init_classes();
-    if (!is_canonical) return 0;
-    if (pc >= 0x80017B48u && pc < 0x80017BFCu)  return s_persp_tracer;
-    if (pc >= 0x8001F000u && pc < 0x80023AC4u)  return s_persp_moby;
-    if (pc >= 0x80023AC4u && pc < 0x80025000u)  return s_persp_spyro;
-    if (pc >= 0x800258F0u && pc < 0x800276A0u)  return s_persp_terr;
-    if (pc >= 0x8004EBA8u && pc < 0x8004F000u)  return s_persp_cyc;
-    if (pc >= 0x800573C8u && pc < 0x80059474u)  return s_persp_part;
-    if (pc >= 0x80059F8Cu && pc < 0x8005A470u)  return s_persp_shad;
-    return s_persp_other;
-}
-
 void game_apply_runtime_quirks(CPUState* cpu) {
     (void)cpu;
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
@@ -311,38 +229,6 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
     }
     int16_t pad = 0; memcpy(b + 46, &pad, 2);
     fwrite(b, 1, 48, s_ev_fp);
-}
-
-/* §7.5 re-validation callback. Read-only: emits one 80B record per
- * world (obj_tag==0) render-cache entry. Layout (v2):
- *   0  u32 frame      4  u32 sxy_key   8  u32 obj_tag
- *   12 i16 rt[9]      30 i16 v_local[3]
- *   36 i32 tr[3]      48 i32 mac[3]
- *   60 i32 campos[3]  72 u32 pad[2]    (=80) */
-typedef struct { FILE* fp; uint32_t left; int32_t campos[3]; }
-    openpete_wr_ud_t;
-
-static void openpete_worldrt_dump_cb(
-        const openpete_render_cache_entry_t* e, void* userdata) {
-    openpete_wr_ud_t* ud = (openpete_wr_ud_t*)userdata;
-    if (!ud || !ud->fp || ud->left == 0) return;
-    if (e->obj_tag != 0u) return;            /* world / non-moby only */
-    ud->left--;
-    uint8_t r[80];
-    memcpy(r +  0, &openpete_frame, 4);
-    memcpy(r +  4, &e->sxy_key, 4);
-    memcpy(r +  8, &e->obj_tag, 4);
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            int16_t v = e->rt[i][j];
-            memcpy(r + 12 + (i*3 + j) * 2, &v, 2);
-        }
-    memcpy(r + 30, e->v_local, 6);
-    memcpy(r + 36, e->tr, 12);
-    memcpy(r + 48, e->mac, 12);
-    memcpy(r + 60, ud->campos, 12);
-    uint32_t z[2] = {0,0}; memcpy(r + 72, z, 8);
-    fwrite(r, 1, 80, ud->fp);
 }
 
 void openpete_diag_cone_dump(void* cpu_v,
@@ -571,10 +457,6 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     static int s_watch_init_done = 0;
     if (!s_watch_init_done) {
         s_watch_init_done = 1;
-        /* Register the PGXP per-prim-class classifier here — first
-         * non-trivial frame hook that fires (game_apply_runtime_quirks
-         * is declared but unwired). */
-        openpete_pgxp_classify_fn = spyro_pgxp_classify;
         install_watch_from_env(cpu);
         /* Register the static UI-moby range. g_Hud.m_Mobys[12] lives
          * at PSX vaddr 0x80077FEC (g_Hud at 0x80077FA8 + offset 0x44),
@@ -902,14 +784,9 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
                     if (px3 >= 0 && px3 < 1024 &&
                         py3 >= 0 && py3 < 512 &&
                         pz3 >= 0 && pz3 < 65536) {
-                        /* bit27 = UI marker: screen-anchored text.
-                         * The render-cache PGXP mirror must apply
-                         * the UI CENTRING (not the world widening)
-                         * to these — it can only see the tag, and a
-                         * normalized tag is not an address the
-                         * is_addr_ui ranges can match (§13.16: the
-                         * widened PGXP path vs centred RTPS path was
-                         * the two-position HUD flicker). Free bit:
+                        /* bit27 = UI marker: screen-anchored text
+                         * (historically consumed by the deleted PGXP
+                         * mirror's UI-centring branch). Free bit:
                          * occurrence/position fields stay below
                          * bit20, cls<<9 tops at bit19. */
                         return 0x18000000u
@@ -923,22 +800,6 @@ static uint32_t spyro_obj_id_normalize(uint32_t addr) {
                               | (occ & 0x1FFu);
         }
     }
-    }
-}
-
-/* #28 attribution probe state + callback (see game_on_frame). */
-static struct { uint32_t pc; uint32_t n; } s_tag0_h[32];
-static uint32_t s_tag0_hn = 0, s_tag0_ticks = 0;
-static void tag0_pc_histo_cb(const openpete_render_cache_entry_t* e,
-                             void* ud) {
-    (void)ud;
-    if (e->obj_tag != 0u) return;
-    for (uint32_t i = 0; i < s_tag0_hn; i++)
-        if (s_tag0_h[i].pc == e->gte_pc) { s_tag0_h[i].n++; return; }
-    if (s_tag0_hn < 32) {
-        s_tag0_h[s_tag0_hn].pc = e->gte_pc;
-        s_tag0_h[s_tag0_hn].n  = 1;
-        s_tag0_hn++;
     }
 }
 
@@ -1024,117 +885,6 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
                 uint32_t cstate = cpu->read_word(C + 0x58u);
                 memcpy(cb + 44, &cstate, 4);
                 fwrite(cb, 1, 48, s_cam_fp);
-            }
-        }
-    }
-
-    /* --- §5 / #24 camera-cut snap detector (transform-interp).
-     * Compares g_Camera.m_Position (+0x28, 3×i32) tick-over-tick and
-     * arms the core-side snap flag when the L1 jump exceeds the
-     * threshold, so the display cycle spanning a hard cut presents
-     * the lagged OT unchanged instead of lerping the whole screen
-     * toward the post-cut viewpoint.
-     *
-     * Threshold calibrated on the 20k attract-demo camera log
-     * (OPENPETE_CAM_LOG): continuous motion maxes at 1,218 units/tick
-     * (fastest pans, every demo loop) while genuine cuts (level
-     * transitions, demo vantage jumps) all measure ≥140,095 — a >100×
-     * separation; 5000 sits mid-gap. Rotation deliberately does NOT
-     * trigger: the demo's level fly-in spirals spin at ~4,100
-     * BAMS/tick sustained, which is exactly the smooth fast motion
-     * the lerp exists to smooth. READ-ONLY against PSX RAM; writes
-     * only a host-side render flag. Env: OPENPETE_SNAP_POS_L1
-     * (default 5000, 0 disables), OPENPETE_SNAP_LOG=1 logs snaps. */
-    {
-        static int     s_cut_init = 0;
-        static int32_t s_cut_prev[3];
-        static int64_t s_cut_thresh = -1;
-        static int     s_cut_log = -1;
-        if (s_cut_thresh < 0) {
-            const char* t = getenv("OPENPETE_SNAP_POS_L1");
-            s_cut_thresh = (t && *t) ? atoll(t) : 5000;
-            const char* l = getenv("OPENPETE_SNAP_LOG");
-            s_cut_log = (l && *l && atoi(l) != 0) ? 1 : 0;
-        }
-        const uint32_t C = 0x80076DD0u;  /* g_Camera */
-        int32_t p[3];
-        int k, snap = 0;
-        for (k = 0; k < 3; k++)
-            p[k] = (int32_t)cpu->read_word(C + 0x28u + (uint32_t)k * 4u);
-        if (s_cut_init && s_cut_thresh > 0) {
-            int64_t l1 = 0;
-            for (k = 0; k < 3; k++) {
-                int64_t d = (int64_t)p[k] - (int64_t)s_cut_prev[k];
-                l1 += (d < 0) ? -d : d;
-            }
-            snap = (l1 > s_cut_thresh);
-            if (snap && s_cut_log)
-                fprintf(stderr, "[interp-snap] tick=%u dpos_l1=%lld\n",
-                        openpete_frame, (long long)l1);
-        }
-        for (k = 0; k < 3; k++) s_cut_prev[k] = p[k];
-        s_cut_init = 1;
-        openpete_render_interp_snap_set(snap);
-    }
-
-    /* --- #28 attribution probe: histogram UNTAGGED (obj_tag==0)
-     * render-cache entries by gte_pc to name the straggler renderers
-     * still on the legacy path (the F9 "blue" geometry). Read-only,
-     * env OPENPETE_TAG0_PC_HISTO=1, prints every 300 ticks. */
-    if (getenv("OPENPETE_TAG0_PC_HISTO")) {
-        openpete_render_cache_for_each_prev_entry(tag0_pc_histo_cb, NULL);
-        if (++s_tag0_ticks % 300u == 0u) {
-            fprintf(stderr, "[tag0-pc] tick=%u:", openpete_frame);
-            for (uint32_t i = 0; i < s_tag0_hn; i++)
-                fprintf(stderr, " %08X=%u", s_tag0_h[i].pc, s_tag0_h[i].n);
-            fprintf(stderr, "\n");
-            memset(s_tag0_h, 0, sizeof(s_tag0_h)); s_tag0_hn = 0;
-        }
-    }
-
-    /* --- §7.5 re-validation: world render-cache RT/TR/mac dump.
-     * Read-only. Iterates the curr render-cache generation and writes
-     * one 64B record per world (obj_tag==0) entry, capped per frame.
-     * Offline analysis answers the decisive question: does cached `rt`
-     * for world entries VARY frame-to-frame (⇒ rt = live view matrix,
-     * §7.5's "static cached RT" premise is falsified ⇒ world IS
-     * reprojectable at the cache layer) or is it constant (⇒ §7.5
-     * stands). Env OPENPETE_WORLDRT_LOG / _SKIP / _FRAMES / _CAP. */
-    {
-        static FILE* s_wr_fp = NULL;
-        static int   s_wr_init = 0;
-        static uint32_t s_wr_skip = 0, s_wr_cap = 120,
-                        s_wr_perfr = 96, s_wr_n = 0;
-        if (!s_wr_init) {
-            s_wr_init = 1;
-            const char* p = getenv("OPENPETE_WORLDRT_LOG");
-            if (p && *p) {
-                const char* sk = getenv("OPENPETE_WORLDRT_LOG_SKIP");
-                if (sk && *sk) s_wr_skip = (uint32_t)atoi(sk);
-                const char* fl = getenv("OPENPETE_WORLDRT_LOG_FRAMES");
-                if (fl && *fl) s_wr_cap = (uint32_t)atoi(fl);
-                const char* pc = getenv("OPENPETE_WORLDRT_LOG_CAP");
-                if (pc && *pc) s_wr_perfr = (uint32_t)atoi(pc);
-                s_wr_fp = fopen(p, "wb");
-                if (s_wr_fp) {
-                    uint32_t h[8] = { 0x30545257u /*"WRT0"*/, 2u, 80u,
-                                      0,0,0,0,0 };
-                    fwrite(h, sizeof(h), 1, s_wr_fp);
-                }
-            }
-        }
-        if (s_wr_fp && openpete_frame >= s_wr_skip) {
-            if (s_wr_n >= s_wr_cap) {
-                fflush(s_wr_fp); fclose(s_wr_fp); s_wr_fp = NULL;
-            } else {
-                s_wr_n++;
-                openpete_wr_ud_t ud;
-                ud.fp = s_wr_fp; ud.left = s_wr_perfr;
-                for (int k = 0; k < 3; k++)   /* g_Camera.m_Position */
-                    ud.campos[k] =
-                        (int32_t)cpu->read_word(0x80076DD0u + 0x28u + k*4u);
-                openpete_render_cache_for_each_curr_entry(
-                    openpete_worldrt_dump_cb, &ud);
             }
         }
     }

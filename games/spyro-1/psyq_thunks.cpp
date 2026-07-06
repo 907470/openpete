@@ -38,25 +38,15 @@ extern "C" {
 #include "psx/libpad.h"
 #include "psx/libspu.h"
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
-extern "C" void openpete_render_matcher_prepare_substitute(void);
-extern "C" void openpete_render_sim_tick_mark_now(void);
-extern "C" void openpete_render_substitute_alpha_snapshot_intermediate(void);
-extern "C" void openpete_vtrace_set_iter_kind(int kind);
 
-extern "C" float g_openpete_substitute_alpha_snapshot;
-
-/* Interpolation frame-gen: 1-game-frame-lag display. Each psyq_DrawOTag
- * captures the OT into a private host buffer; we DISPLAY the previously-
- * captured one (the lagged "from" frame) and interpolate toward the
- * just-captured one's positions via the matcher's delta_sxy. Two
- * ping-pong buffers: `g_ot_cur` = OT just built this DrawOTag (saved
- * "to"-side reference frame); `g_ot_prev` = the lagged OT we actually
- * walk for display. See notes/plans/openpete-interpolation-frame-
- * gen.md "Display lag invariant".
+/* Saved-OT capture: each psyq_DrawOTag rebuilds the PSX OT chain into a
+ * host scratch buffer (PsyCross P_TAG slots, guest->host translated)
+ * and the display walk parses that. (The 1-game-frame-lag ping-pong +
+ * screen-space matcher that used to live here was deleted 2026-07-06 —
+ * the reference walk shows the just-built OT, bit-original.)
  *
  * Sizing (measured over a 20k-frame demo): 4:3 peaks at 2,255 slots /
- * 94 KB; 64:9 super-ultrawide at 5,097 slots / 215 KB. 1 MB scratch +
- * 8192 slots per buffer is ~4.7× headroom over the 64:9 worst case. */
+ * 94 KB. 1 MB scratch + 8192 slots is ample headroom. */
 #define OT_SCRATCH_SZ  (1u * 1024u * 1024u)
 #define OT_MAX_SLOTS   8192
 
@@ -67,116 +57,21 @@ typedef struct {
     size_t   scratch_used;
 } saved_ot_t;
 
-static saved_ot_t  s_ot_buf[2];
+static saved_ot_t  s_ot_buf[1];
 static saved_ot_t* g_ot_cur  = &s_ot_buf[0];  /* built this DrawOTag */
-static saved_ot_t* g_ot_prev = &s_ot_buf[1];  /* lagged — displayed  */
-static bool        s_ot_has_prev   = false;
-static uint32_t    s_ot_build_count = 0;
 
-/* run.c's intermediate-render gate still reads these (non-NULL +
- * count>0 means "a lagged OT exists to re-walk"). Point them at the
- * buffer we actually display. */
-extern "C" uint8_t** openpete_last_ot_slot_host_ptr = NULL;
-extern "C" int       openpete_last_ot_slot_count    = 0;
-
-extern "C" int g_openpete_dbg_black_present;  /* presentation isolation test */
-
-/* Presentation isolation test. Builds (once) a host OT containing a
- * single fullscreen flat-black POLY_F4 in the EXACT slot format
- * psyq_DrawOTag emits, and returns its head. Walked through the SAME
- * ParsePrimitivesLinkedList → DrawAllSplits → EndScene path the real
- * intermediate uses — only the OT contents differ. So: working
- * intermediate presentation → screen strobes black with ~30 Hz game
- * flashes (sim-due frames are untouched); broken presentation → normal
- * game, no black at all. This faithfully exercises the codepath in
- * doubt instead of side-injecting a clear. */
-static u_long* openpete_black_intermediate_ot(void) {
-    static uint8_t buf[32];
-    static bool    init = false;
-    if (!init) {
-        init = true;
-        uintptr_t next = (uintptr_t)&prim_terminator;
-        std::memcpy(buf + 0, &next, sizeof(uintptr_t));   /* slot addr → end */
-        uint16_t len = 5u, pgxp = 0xFFFFu;                /* POLY_F4 = 5 longs */
-        std::memcpy(buf + 8,  &len,  2);
-        std::memcpy(buf + 10, &pgxp, 2);
-        auto pack = [](int x, int y) -> uint32_t {
-            return ((uint32_t)(uint16_t)(int16_t)x) |
-                   (((uint32_t)(uint16_t)(int16_t)y) << 16);
-        };
-        uint32_t w[5];
-        w[0] = (0x28u << 24);                 /* POLY_F4 opaque, RGB=0 (black) */
-        w[1] = pack(-2048, -2048);            /* x0,y0 TL */
-        w[2] = pack( 2047, -2048);            /* x1,y1 TR */
-        w[3] = pack(-2048,  2047);            /* x2,y2 BL */
-        w[4] = pack( 2047,  2047);            /* x3,y3 BR */
-        std::memcpy(buf + 12, w, sizeof(w));  /* payload, like host+4 copy */
-    }
-    return (u_long*)buf;
-}
-
-/* Shared display walk. Walks the LAGGED OT (g_ot_prev) through
- * PsyCross; the matcher's prepare_substitute pairs gen_prev2 ("from",
- * = this OT's own generation) against gen_prev ("to") and the OT-walk
- * lerps per-batch by alpha. sim_due → alpha snapshot 0 (shows the
- * lagged frame exactly); intermediate → alpha ramps 0→1 toward the
- * next frame. Caller owns PsyX BeginScene/EndScene framing. */
-extern "C" void openpete_render_walk_lagged_ot(int sim_due) {
-    extern int g_openpete_interp_enabled;
+/* Display walk: parse the just-captured OT through PsyCross
+ * (bit-original PSX presentation; the lagged/matcher path is gone).
+ * Caller owns PsyX BeginScene/EndScene framing. */
+extern "C" void openpete_render_walk_ot(void) {
     extern void ClearSplits(void);
     extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
     extern void DrawAllSplits(void);
 
-    /* 'I' off → full frame-gen bypass: present the CURRENT OT (no
-     * 1-frame lag), no matcher, no substitute = bit-original Spyro
-     * presentation. run.c also skips the intermediate-render block, so
-     * the present rate falls back to the game's native ~29.97 fps —
-     * a true whole-system A/B against the interpolated path. */
-    if (!g_openpete_interp_enabled) {
-        if (g_ot_cur->slot_count <= 0) return;
-        ClearSplits();
-        openpete_render_sim_tick_mark_now();   /* keep alpha origin sane */
-        ParsePrimitivesLinkedList((u_long*)g_ot_cur->slots[0], 0);
-        DrawAllSplits();
-        return;
-    }
-
-    saved_ot_t* disp = s_ot_has_prev ? g_ot_prev : g_ot_cur;
-    if (disp->slot_count <= 0) return;
+    if (g_ot_cur->slot_count <= 0) return;
     ClearSplits();
-    if (sim_due) {
-        /* Pin sim-tick origin to NOW so substitute reads alpha ≈ 0 for
-         * this walk (the lagged frame is ground truth at alpha=0). */
-        openpete_render_sim_tick_mark_now();
-        openpete_vtrace_set_iter_kind(0);
-    } else {
-        /* Pin alpha once for the whole walk (no per-vertex op_now
-         * drift across a multi-ms ParsePrimitivesLinkedList). */
-        openpete_render_substitute_alpha_snapshot_intermediate();
-        openpete_vtrace_set_iter_kind(1);
-    }
-    /* First-frame fallback: no lagged OT yet → display g_ot_cur with
-     * substitute forced off (alpha=0). One startup frame, no lag, no
-     * smoothing — imperceptible. */
-    if (!s_ot_has_prev) g_openpete_substitute_alpha_snapshot = 0.0f;
-    openpete_render_matcher_prepare_substitute();
-    /* Presentation isolation: on INTERMEDIATE frames only, swap the OT
-     * contents for a single fullscreen black prim. Everything else
-     * (alpha snapshot, prepare_substitute, ParsePrimitivesLinkedList,
-     * DrawAllSplits, the run.c EndScene present) is byte-for-byte the
-     * real intermediate path — so this proves whether intermediate
-     * frames actually reach the display. sim-due untouched. */
-    u_long* head = (!sim_due && g_openpete_dbg_black_present)
-        ? openpete_black_intermediate_ot()
-        : (u_long*)disp->slots[0];
-    ParsePrimitivesLinkedList(head, 0);
+    ParsePrimitivesLinkedList((u_long*)g_ot_cur->slots[0], 0);
     DrawAllSplits();
-}
-
-/* Public re-emit entry (intermediate render): re-walk the lagged OT
- * with a fresh interpolation alpha. run.c owns BeginScene/EndScene. */
-extern "C" void openpete_re_emit_last_ot(void) {
-    openpete_render_walk_lagged_ot(/*sim_due=*/0);
 }
 #include "psx/libmcrd.h"
 #include "psx/libapi.h"
@@ -666,9 +561,8 @@ void psyq_SetDrawMode(CPUState* cpu) {
  * Each frame we rebuild the chain in host scratch memory: one PsyCross-style
  * P_TAG slot per PSX entry, payload memcpy'd verbatim, addr fields chained to
  * the next host slot, last slot pointed at PsyCross's `prim_terminator`. */
-/* OT-walk scratch now lives in the ping-pong saved_ot_t buffers
- * (s_ot_buf[2], declared above with the interpolation plumbing). Each
- * DrawOTag builds into g_ot_cur and displays the lagged g_ot_prev. */
+/* OT-walk scratch lives in the saved_ot_t buffer declared above; each
+ * DrawOTag rebuilds it and the display walk parses it. */
 
 void psyq_DrawOTag(CPUState* cpu) {
     /* First DrawOTag is the natural transition from "boot init" to "game is
@@ -681,15 +575,6 @@ void psyq_DrawOTag(CPUState* cpu) {
                    "anchored to 0", SDL_GetAtomicInt(&openpete_vbl));
     }
 
-    /* 1-game-frame-lag: ping-pong the capture buffers. After the swap
-     * g_ot_cur points at the OLDEST buffer (built 2 DrawOTags ago, no
-     * longer displayed — safe to overwrite) and g_ot_prev points at
-     * the OT built last DrawOTag = the lagged frame we now display.
-     * The buffer being overwritten was last displayed during the cycle
-     * that just ended, so no buffer is read and written in one cycle. */
-    { saved_ot_t* t = g_ot_prev; g_ot_prev = g_ot_cur; g_ot_cur = t; }
-    s_ot_build_count++;
-    s_ot_has_prev = (s_ot_build_count >= 2u);
     saved_ot_t* B = g_ot_cur;
     uint8_t*  g_ot_scratch      = B->scratch;
     size_t&   g_ot_scratch_used = B->scratch_used;
@@ -1060,31 +945,15 @@ void psyq_DrawOTag(CPUState* cpu) {
          * PsyCross does not rasterize the OT at all — the native renderer draws
          * everything from gamestate. Skip the GL walk entirely (and don't open a
          * PsyX scene, so PsyX_EndScene auto-no-ops via begin_scene_flag → no
-         * GR_StoreFrameBuffer, no second vsync swap on the hidden window). Keep
-         * ONLY the sim-tick timing pin that walk_lagged_ot would normally set, so
-         * the native interpolation alpha still has a correct origin. */
+         * GR_StoreFrameBuffer, no second vsync swap on the hidden window). */
         extern int openpete_psycross_renders;
         if (openpete_psycross_renders) {
             if (PsyX_BeginScene()) {
                 ClearSplits();
             }
-            /* Sim-due display walk. We just captured OT#N into g_ot_cur;
-             * walk_lagged(1) DISPLAYS the lagged g_ot_prev (OT#(N-1)) and
-             * lerps toward OT#N's positions via the matcher. mark_now() (in
-             * walk_lagged) pins the sim-tick origin to this moment so the
-             * sim-due render reads alpha ≈ 0 = the lagged frame exactly;
-             * intermediate re-walks ramp alpha 0→1 from here. */
-            extern void openpete_render_walk_lagged_ot(int sim_due);
-            openpete_render_walk_lagged_ot(/*sim_due=*/1);
-        } else {
-            openpete_render_sim_tick_mark_now();
-        }
-        /* Point run.c's intermediate-render gate at the buffer we
-         * actually display (the lagged one once it exists). */
-        {
-            saved_ot_t* disp = s_ot_has_prev ? g_ot_prev : g_ot_cur;
-            openpete_last_ot_slot_host_ptr = disp->slots;
-            openpete_last_ot_slot_count    = disp->slot_count;
+            /* Sim-due display walk of the OT just captured. */
+            extern void openpete_render_walk_ot(void);
+            openpete_render_walk_ot();
         }
         /* Tell the host loop this iter's GL backbuffer holds fresh game pixels.
          * Spyro is a 30fps game: it calls VSync(0) twice per logical frame, so

@@ -289,7 +289,6 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, 4 = fog\n"
         "                             saturates 4x farther (the classic --no-lod far-detail look).\n"
         "                             Default: 1, or 4 when --no-lod is set. Range [0.25,16].\n"
-        "  --pgxp 0|1                 PGXP sub-pixel vertex precision (default 0; --pgxp 1 enables perspective UV)\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
         "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
@@ -360,11 +359,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
         "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
         "                             Primary determinism gate — see check_aspect_determinism.sh\n"
-        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
-        "  --vertex-trace-log PATH    write per-matcher-batch binary trace (32B header + 72B/record) for scripts/analyze-vtrace.py\n"
-        "  --substitute-clamp-px N    max per-axis per-vertex applied delta in pixels (default 0 = substitute off); >0 enables clamped extrapolation\n"
-        "  --debug-highlight-smoothed paint actively-smoothed batches solid red (diagnostic); live-toggle F9\n"
-        "  --debug-black-intermediates present a black prim instead of the interp OT on intermediate frames (presentation test); live-toggle F10\n",
+        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n",
         stderr);
 #endif
 }
@@ -382,10 +377,6 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
-    opts->pgxp_enable         = -1;    /* -1 = unset; defaults applied at boot */
-    opts->substitute_clamp_px = -1.0f; /* -1 = unset; use compiled default */
-    opts->debug_highlight_smoothed = -1; /* -1 = unset; fall back to env */
-    opts->debug_black_intermediates = -1; /* -1 = unset; fall back to env */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / F11 */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
@@ -538,14 +529,6 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 if (opts->fog_scale < 0.25f) opts->fog_scale = 0.25f;
                 if (opts->fog_scale > 16.0f) opts->fog_scale = 16.0f;
             }
-        } else if (strcmp(a, "--pgxp") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            int n = atoi(v);
-            if (n != 0 && n != 1) {
-                fprintf(stderr, "openpete: --pgxp expects 0 or 1, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->pgxp_enable = n; i++;
         } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
                    strcmp(a, "--screenshot-on-tick") == 0) {
             bool ticks = (a[16] == 't');   /* "--screenshot-on-[t]ick" */
@@ -743,16 +726,6 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--frame-time-log") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->frame_time_log_path = v; i++;
-        } else if (strcmp(a, "--vertex-trace-log") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->vertex_trace_log_path = v; i++;
-        } else if (strcmp(a, "--substitute-clamp-px") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->substitute_clamp_px = (float)atof(v); i++;
-        } else if (strcmp(a, "--debug-highlight-smoothed") == 0) {
-            opts->debug_highlight_smoothed = 1;  /* boolean flag, no value */
-        } else if (strcmp(a, "--debug-black-intermediates") == 0) {
-            opts->debug_black_intermediates = 1; /* boolean flag, no value */
         } else if (strcmp(a, "--psxtrace-verify") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->psxtrace_verify_path = v; i++;

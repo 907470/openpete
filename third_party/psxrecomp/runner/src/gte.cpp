@@ -17,7 +17,6 @@
 
 /* Renderer-foundation Phase 0 (world-space cache). gte_rtps_internal
  * emits per-vertex entries here; PsyCross's OT walker consumes them. */
-#include "openpete_render_cache.h"
 
 /* Day 4 Phase 1.1: PC-of-issuing-instruction for the current GTE op.
  * Recompiled code writes this immediately before each gte_execute()
@@ -26,8 +25,6 @@
  * those paths look like "unknown caller" downstream. */
 extern "C" uint32_t openpete_gte_caller_pc = 0;
 extern "C" unsigned openpete_frame;
-#include "openpete_world_geo.h"
-#include "openpete_obj_id.h"
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
@@ -333,8 +330,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
                           s_ofxc = (e && *e) ? 1 : 0; }
         if (s_ofxc && gte->OFX != (256 << 16))
             ofx_census_record(openpete_gte_caller_pc, (int32_t)gte->OFX,
-                              /*render_pass=*/0,
-                              openpete_render_cache_rotation_count());
+                              /*render_pass=*/0, openpete_frame);
     }
 
     /* Side-channel canonical SX for openpete render→gameplay channel
@@ -350,67 +346,6 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
      * 0x02000000) — exact verdict, no rounding. */
     int64_t canonical_sx_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
     widescreen_push_canonical_sx_q16(canonical_sx_q16);
-
-    /* Render-cache emit (renderer-foundation Phase 0). The packed sxy
-     * just pushed onto SXY[2] is the int16-saturated form that the game
-     * will subsequently mfc2 into prim packets — so it's also the key
-     * the OT walker will look up by at draw time. We store the
-     * canonical OFX so the matcher sees aspect-independent world
-     * coords (== the live projection OFX since the Hor+ retirement). */
-    {
-        openpete_render_cache_entry_t e;
-        e.sxy_key = gte->SXY[2];
-        e.seq = 0;                /* filled by cache */
-        e.matrix_span_id = 0;     /* filled by cache */
-        e.mac[0] = gte->MAC1;
-        e.mac[1] = gte->MAC2;
-        e.mac[2] = gte->MAC3;
-        e.v_local[0] = V[0];
-        e.v_local[1] = V[1];
-        e.v_local[2] = V[2];
-        e._pad0 = 0;
-        std::memcpy(e.rt, gte->RT, sizeof(e.rt));
-        e.tr[0] = gte->TR[0]; e.tr[1] = gte->TR[1]; e.tr[2] = gte->TR[2];
-        e.ofx = (int32_t)gte->OFX;
-        e.ofy = (int32_t)gte->OFY;
-        e.h = (uint16_t)gte->H;
-        /* Day 4 Phase 1.1: tag with the calling instruction's PC.
-         * Recompiled code sets openpete_gte_caller_pc before each
-         * gte_execute() call; pre-regen code, thunks, and the
-         * interpreter leave it 0 (== "unknown caller"). */
-        e.gte_pc = openpete_gte_caller_pc;
-        /* e.world_vidx set in the obj_tag block below (was _pad1). */
-        /* transform-interp §4: real per-moby identity from the
-         * recompiler's per-moby ui-moby capture (0 = world/non-moby). */
-        {
-            /* §7.5-R3: stable cross-frame WORLD batch identity. When
-             * the recompiler's terrain strip-entry injection has a
-             * strip ptr stashed (and the per-moby loop hasn't cleared
-             * it), tag this vertex with strip|BIT30 — disjoint from
-             * moby vaddrs (0x80xxxxxx) and 0. Otherwise fall back to
-             * the per-moby vaddr (UI/gameplay moby identity). */
-            uint32_t wg = openpete_world_geo_get_current();
-            if (wg) {
-                e.obj_tag = wg | OPENPETE_WORLD_GEO_TAG_BIT;
-                /* PHASE-D source address (stream variants) or PHASE-B
-                 * per-strip ordinal (LOD-variant fallback) — exact
-                 * cross-frame per-vertex world key (v_local is camera-
-                 * relative for terrain and useless as a key). */
-                e.world_vkey = openpete_world_geo_take_vkey();
-            } else {
-                /* Per-object identity (regular/specular/shaded/Spyro/
-                 * cyclorama). Read the dedicated obj_id channel, NOT the
-                 * widescreen UI classifier (openpete_ui_moby), so the two
-                 * concerns stay decoupled. #25: tagged objects also get a
-                 * per-object emission ordinal as their per-vertex key so
-                 * animated meshes pair pose-to-pose (v_local churns under
-                 * keyframe morphing — the old key froze them at 30 Hz). */
-                e.obj_tag    = openpete_obj_id_get();
-                e.world_vkey = e.obj_tag ? openpete_obj_id_next_vidx() : 0;
-            }
-        }
-        openpete_render_cache_emit_vertex(&e);
-    }
 
     // Step 5: Depth cueing (MAC0/IR0) — only for last vertex of RTPT or RTPS
     if (setMac0) {
