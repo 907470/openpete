@@ -4315,8 +4315,13 @@ int openpete_native_render_screenshot_all(const char *base)
     bool have_ref = sync_reference_texture();
     ensure_native_rtt(true);
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
-    if (!have_ref || !s_nr.native_rtt || !s_nr.readback ||
-        s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
+    /* -ab/-diff need the PsyCross reference readback; without one (pure vk with
+     * PsyCross in null-GPU library mode — no FBO exists at all) the dump writes
+     * the -vk variant alone. ref_w/ref_h are still valid: the present path
+     * derives them from gamestate when there is no reference (see the
+     * !have_ref branch in openpete_native_render_frame). */
+    bool with_ref = have_ref && s_nr.readback != NULL;
+    if (!s_nr.native_rtt || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return 1;
 
     /* Compose every variant at the REFERENCE resolution rather than the window
@@ -4355,10 +4360,10 @@ int openpete_native_render_screenshot_all(const char *base)
     rhi_end_frame(s_nr.dev);
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
-    unsigned char *ref = malloc(frame_px * 4);          /* reference, top-down  */
-    unsigned char *ab  = malloc(frame_px * 4 * 2);      /* native | reference   */
-    unsigned char *dif = malloc(frame_px * 4);          /* |native - reference| */
-    if (!nat || !ref || !ab || !dif) {
+    unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */
+    unsigned char *ab  = with_ref ? malloc(frame_px * 4 * 2) : NULL;  /* native | reference   */
+    unsigned char *dif = with_ref ? malloc(frame_px * 4)     : NULL;  /* |native - reference| */
+    if (!nat || (with_ref && (!ref || !ab || !dif))) {
         free(nat); free(ref); free(ab); free(dif);
         return 1;
     }
@@ -4368,26 +4373,28 @@ int openpete_native_render_screenshot_all(const char *base)
         free(nat); free(ref); free(ab); free(dif);
         return 1;
     }
-    /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
-    for (int y = 0; y < H; y++)
-        memcpy(&ref[(size_t)y * W * 4],
-               &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
-    /* Empty native scene (load/transition frames): mirror the reference so -vk
-     * shows the framebuffer and -diff reads ~zero instead of a flat clear. */
-    if (scene_n <= 0) memcpy(nat, ref, frame_px * 4);
+    if (with_ref) {
+        /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
+        for (int y = 0; y < H; y++)
+            memcpy(&ref[(size_t)y * W * 4],
+                   &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
+        /* Empty native scene (load/transition frames): mirror the reference so -vk
+         * shows the framebuffer and -diff reads ~zero instead of a flat clear. */
+        if (scene_n <= 0) memcpy(nat, ref, frame_px * 4);
 
-    /* -ab: native on the left, reference on the right (2W wide). */
-    for (int y = 0; y < H; y++) {
-        memcpy(&ab[(size_t)y * (2 * W) * 4],         &nat[(size_t)y * W * 4], (size_t)W * 4);
-        memcpy(&ab[((size_t)y * (2 * W) + W) * 4],   &ref[(size_t)y * W * 4], (size_t)W * 4);
-    }
-    /* -diff: per-channel absolute difference, opaque. */
-    for (size_t i = 0; i < frame_px; i++) {
-        for (int c = 0; c < 3; c++) {
-            int d = (int)nat[i * 4 + c] - (int)ref[i * 4 + c];
-            dif[i * 4 + c] = (unsigned char)(d < 0 ? -d : d);
+        /* -ab: native on the left, reference on the right (2W wide). */
+        for (int y = 0; y < H; y++) {
+            memcpy(&ab[(size_t)y * (2 * W) * 4],         &nat[(size_t)y * W * 4], (size_t)W * 4);
+            memcpy(&ab[((size_t)y * (2 * W) + W) * 4],   &ref[(size_t)y * W * 4], (size_t)W * 4);
         }
-        dif[i * 4 + 3] = 0xFF;
+        /* -diff: per-channel absolute difference, opaque. */
+        for (size_t i = 0; i < frame_px; i++) {
+            for (int c = 0; c < 3; c++) {
+                int d = (int)nat[i * 4 + c] - (int)ref[i * 4 + c];
+                dif[i * 4 + c] = (unsigned char)(d < 0 ? -d : d);
+            }
+            dif[i * 4 + 3] = 0xFF;
+        }
     }
 
     /* W1.3: machine-readable native-vs-PsyCross fidelity metric for the headless
@@ -4398,7 +4405,7 @@ int openpete_native_render_screenshot_all(const char *base)
      * abs diff, matching the live --render-stats semantics (DIFF_STATS_TOL); the
      * line is keyed by the output path so the gate script maps it back to the
      * (scene, frame). Reuses the just-built `dif` (abs per-channel diff). */
-    if (s_nr.stats_enabled) {
+    if (s_nr.stats_enabled && with_ref) {
         double sum = 0.0; int maxd = 0; uint64_t over = 0;
         for (size_t i = 0; i < frame_px; i++) {
             int dr = dif[i * 4 + 0], dg = dif[i * 4 + 1], db = dif[i * 4 + 2];
@@ -4423,14 +4430,19 @@ int openpete_native_render_screenshot_all(const char *base)
     } else if (openpete_write_png_rgba(path, nat, W, H) == 0)
         OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
     else rc = 1;
-    path_with_suffix(base, "-ab", path, sizeof(path));
-    if (openpete_write_png_rgba(path, ab, 2 * W, H) == 0)
-        OPL_INFO_F("native", "ab screenshot %dx%d -> %s", 2 * W, H, path);
-    else rc = 1;
-    path_with_suffix(base, "-diff", path, sizeof(path));
-    if (openpete_write_png_rgba(path, dif, W, H) == 0)
-        OPL_INFO_F("native", "diff screenshot %dx%d -> %s", W, H, path);
-    else rc = 1;
+    if (with_ref) {
+        path_with_suffix(base, "-ab", path, sizeof(path));
+        if (openpete_write_png_rgba(path, ab, 2 * W, H) == 0)
+            OPL_INFO_F("native", "ab screenshot %dx%d -> %s", 2 * W, H, path);
+        else rc = 1;
+        path_with_suffix(base, "-diff", path, sizeof(path));
+        if (openpete_write_png_rgba(path, dif, W, H) == 0)
+            OPL_INFO_F("native", "diff screenshot %dx%d -> %s", W, H, path);
+        else rc = 1;
+    } else {
+        OPL_INFO_F("native", "%s", "-ab/-diff variants skipped (no PsyCross "
+                   "reference — null-GPU library mode)");
+    }
 
     free(nat); free(ref); free(ab); free(dif); free(live);
     return rc;

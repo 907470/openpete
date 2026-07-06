@@ -60,6 +60,14 @@ extern "C" void openpete_debug_triangle_init(void) {
  * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
  * flip. We re-implement here with an explicit row flip. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
+    /* PsyCross in null-GPU library mode has no GL context — every gl* pointer
+     * is unloaded and GR_PresentCroppedToWindow/glReadPixels would segfault.
+     * The -og reference screenshot simply doesn't exist in that mode. */
+    if (g_psyx_null_gpu) {
+        SDL_Log("[screenshot] -og skipped (%s): PsyCross null-GPU library mode",
+                path ? path : "?");
+        return;
+    }
     const int is_png = openpete_screenshot_path_is_png(path);
     /* PNG wants RGBA byte order; BMP path keeps the BGRA mask layout it
      * already used. Read in the format the destination needs to skip a
