@@ -3671,10 +3671,12 @@ static bool draw_native_scene(bool full_extent)
                 rhi_clear_stencil(s_nr.dev);
                 rhi_bind_pipeline(s_nr.dev, s_nr.portal_mask_pipe);
                 /* dynamic bias must be (re)set after THIS bind (see the note
-                 * at the shadow group). Default neutral — the tie-break offset
-                 * is already baked into the mask z (portal_sky_depth's
-                 * −0.0015); OPENPETE_PORTAL_MASK_BIAS adds the optional
-                 * close-range pull (see portal_mask_bias). */
+                 * at the shadow group). Default neutral — the tie-break margin
+                 * is already baked into the mask z (the feeder's world-unit
+                 * PORTAL_SKY_EPS_VZ pull); OPENPETE_PORTAL_MASK_BIAS adds the
+                 * optional close-range pull (see portal_mask_bias). NB a pull
+                 * here moves only the MASK — the sky colours depth-test
+                 * unbiased, so it cannot widen sky coverage on its own. */
                 {
                     float c, s, cl;
                     portal_mask_bias(&c, &s, &cl);

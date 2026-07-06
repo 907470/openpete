@@ -57,6 +57,7 @@
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* portal_native_reextract export */
+#include "portal_native.h" /* cross-feeder exports (terrain OT-conformance clamp) */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 
 #include <math.h>
@@ -313,6 +314,58 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
     return 1;
 }
 
+/* The same screen-space inv-vz field, computed ANALYTICALLY from the outline's
+ * WORLD points + the live camera — no projected points needed, so it stays
+ * valid at close/steep range where an outline point drops behind the camera
+ * and fit_invz's projected-point construction is unavailable. (The old
+ * fallback collapsed the sky to ONE constant depth there: at a close, acutely
+ * angled portal the floor ate the opening's near side — the f2945 failure
+ * mode re-appearing in exactly the close+steep case the plane fit was built
+ * for.) Mirrors project_world's GTE convention (V = (-Δy,-Δz,Δx), MAC = M·V):
+ * for the view-space plane n·P = k, dividing by vz gives
+ *   1/vz = ( n_x·(sx−ofx)/H + n_y·(sy−ofy)/H + n_z ) / k
+ * which is the a·x + b·y + c form plane_depth consumes. Returns 0 when
+ * degenerate (collinear outline points / camera on the plane). */
+static int portal_plane_invz(CPUState* cpu, uint32_t p,
+                             double* pa, double* pb, double* pc) {
+    int npts = (int32_t)cpu->read_word(p + 0x04);
+    if (npts < 3 || npts > 16) return 0;
+    int M[3][3];
+    ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
+    int cx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
+    int cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
+    int cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+    int idx[3] = { 0, npts / 3, (2 * npts) / 3 };        /* spread trio (fit_invz) */
+    if (idx[1] == idx[0]) idx[1] = 1;
+    if (idx[2] == idx[1]) idx[2] = npts - 1;
+    if (idx[2] == idx[0]) return 0;
+    double V[3][3];
+    for (int k = 0; k < 3; k++) {
+        int wx = (int32_t)cpu->read_word(p + 0x20 + idx[k]*12);
+        int wy = (int32_t)cpu->read_word(p + 0x24 + idx[k]*12);
+        int wz = (int32_t)cpu->read_word(p + 0x28 + idx[k]*12);
+        ngte_mac(M, -((double)wy - cy), -((double)wz - cz), ((double)wx - cx),
+                 &V[k][0], &V[k][1], &V[k][2]);
+    }
+    double e1x = V[1][0]-V[0][0], e1y = V[1][1]-V[0][1], e1z = V[1][2]-V[0][2];
+    double e2x = V[2][0]-V[0][0], e2y = V[2][1]-V[0][1], e2z = V[2][2]-V[0][2];
+    double nx = e1y*e2z - e1z*e2y;
+    double ny = e1z*e2x - e1x*e2z;
+    double nz = e1x*e2y - e1y*e2x;
+    double nn = sqrt(nx*nx + ny*ny + nz*nz);
+    if (nn < 1e-6) return 0;                             /* collinear outline */
+    double k0 = nx*V[0][0] + ny*V[0][1] + nz*V[0][2];    /* n·P = k0, cam at origin */
+    if (k0 > -1e-3*nn && k0 < 1e-3*nn) return 0;         /* camera ~on the plane */
+    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    if (H < 1.0) return 0;
+    *pa = nx / (H * k0);
+    *pb = ny / (H * k0);
+    *pc = (nz - nx*ofx/H - ny*ofy/H) / k0;
+    return 1;
+}
+
 /* The portal cyclorama (the gouraud dome AND the flat far/medium preview) sits on
  * the portal OPENING PLANE. The original confines it to the arch purely by OT
  * painter's order — RenderPortals paints the sky OVER everything seen through the
@@ -328,24 +381,31 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  * and can flicker. (The backstop push-back once noted here was retired by the W2.6
  * stencil groups' in-group painter order.) */
 
-/* A small CONSTANT offset in NDC depth-buffer space (0..1) pulling the portal sky a
- * hair toward the camera, so it consistently wins the z-fight against the thin
+/* The portal sky's tie-break margin, in WORLD view-Z units: the sky is pulled
+ * toward the camera by this much (subtracted in the vz domain, then converted
+ * through the depth curve) so it consistently wins the z-fight against the thin
  * decorative "inner frame" band many arches carry coincident with the opening
- * plane. This is the "offset the Z" fix — and crucially it is a fixed offset in
- * DEPTH-BUFFER units, NOT the removed PORTAL_PLANE_FRONT_BIAS which scaled VIEW-Z (a
- * distance-proportional, multi-pixel nudge that beat the much-nearer arch stone at
- * the rim and poked the sky out past the SIDES). A constant NDC offset is tiny
- * everywhere, so the rim sliver where it beats the stone stays sub-pixel at any
- * distance or angle, while still clearing the coincident-frame z-fight. Applied to
- * the WHOLE portal sky (dome, flat preview, AND backstop) so all paths shift
- * together and the far↔medium↔close distance crossfade has no discontinuity. (A hardware slope-scaled polygon offset — pipeline `depthBias` — is the
- * fuller version, but it needs the shared `native_render.c` draw path; this
- * feeder-side constant is the equivalent that touches only this file.) Tunable. */
-#define PORTAL_CYCLORAMA_DEPTH_OFFSET 0.0015f
+ * plane. HISTORY: this was a constant NDC offset (0.0015) — but a fixed
+ * DEPTH-BUFFER offset is distance-PROPORTIONAL in world units through
+ * d = vz/(vz+4096): ~10 units at vz 1000, ~55 at vz 8000, ~450 at vz 30000. At
+ * mid/far range that envelope swallowed the arch's own stone wherever its
+ * surface ran within it of the opening plane (the jamb/rim seen at a grazing
+ * camera angle), so the sky poked out past the arch sides — the same failure
+ * mode that killed the old multiplicative PORTAL_PLANE_FRONT_BIAS, just
+ * smaller. A WORLD-unit margin keeps the same tie-break at every distance
+ * while the sliver where it can beat real stone stays O(16 world units) —
+ * sub-pixel at any range. The margin still exceeds raster interpolation error
+ * by orders of magnitude at all playable distances. Applied to the WHOLE
+ * portal sky (dome, flat preview, AND backstop) so all paths shift together
+ * and the far/medium/close distance crossfade has no discontinuity. The
+ * matching terrain-side OT-conformance clamp (terrain_native.c) pushes
+ * straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped faces
+ * always lose to the sky and unclamped coincident bands always win to it. */
+#define PORTAL_SKY_EPS_VZ 16.0
 static float portal_cyclorama_depth(double vz) {
-    float z = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz))
-              - PORTAL_CYCLORAMA_DEPTH_OFFSET;
-    return z < 0.0f ? 0.0f : z;
+    double v = vz - PORTAL_SKY_EPS_VZ;
+    if (v < 1.0) v = 1.0;
+    return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
 }
 /* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
  *
@@ -376,10 +436,10 @@ static int portal_sky_depth_mode(void) {
 static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
 static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
 static float ring_depth(void) {
-    /* +OFFSET (not −): the ring construction wants the sky BEHIND the outline
-     * it was measured from — the same constant, opposite direction. */
-    float z = openpete_native_depth_from_viewz(openpete_worldvz_full((float)s_ring_vz))
-              + PORTAL_CYCLORAMA_DEPTH_OFFSET;
+    /* +EPS (not −): the ring construction wants the sky BEHIND the outline
+     * it was measured from — the same margin, opposite direction. */
+    float z = openpete_native_depth_from_viewz(
+                  openpete_worldvz_full((float)(s_ring_vz + PORTAL_SKY_EPS_VZ)));
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
@@ -469,6 +529,53 @@ static unsigned s_sky_fed_frame = 0;
 int openpete_portal_sky_recent(void) {
     return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
 }
+/* Plane provider for the terrain OT-conformance clamp (portal_native.h). One
+ * entry per portal captured by the canonical leaf hooks this/last frame
+ * (s_pcap holds a flat AND a dome entry for a close portal — dedup by the
+ * Portal*). The plane + bbox are derived LIVE from g_Portals and the camera,
+ * NOT from the capture, so the sub-tick reextract's interpolated camera
+ * bracket yields a plane consistent with the terrain verts of the same
+ * present. */
+int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int max) {
+    if (!s_pcap_valid || s_pcap_n == 0) return 0;
+    if (openpete_frame - s_pcap_frame > 2u) return 0;
+    int n = 0;
+    for (int i = 0; i < s_pcap_n && n < max; i++) {
+        uint32_t p = s_pcap[i].portal;
+        if (!p) continue;
+        int dup = 0;
+        for (int j = 0; j < n; j++) if (out[j].portal == p) { dup = 1; break; }
+        if (dup) continue;
+        openpete_portal_skyplane* o = &out[n];
+        if (!portal_plane_invz(cpu, p, &o->a, &o->b, &o->c)) continue;
+        o->back_vz = portal_outline_maxvz(cpu, p);
+        if (o->back_vz <= 1.0) continue;      /* whole outline behind the camera */
+        ppt poly[16];
+        int pn = portal_outline_screen(cpu, p, poly, 16);
+        /* The sink needs the projected outline POLYGON (coverage confinement)
+         * — with a point behind the camera there is none, so no sinking for
+         * that portal (point-blank/entering: the near-cover path rules). */
+        if (pn < 3) continue;
+        double sum = 0.0;                     /* mirror the .s sky bucket B */
+        for (int k = 0; k < pn; k++) sum += poly[k].vz;
+        long B = (long)(sum / (double)pn) >> 7;
+        if (B >= 256) B += 64;
+        if (B > 2047) B = 2047;
+        if (B < 1) B = 1;
+        o->ot_vz = 128.0 * (double)B;
+        float x0 = poly[0].x, x1 = poly[0].x, y0 = poly[0].y, y1 = poly[0].y;
+        for (int k = 1; k < pn; k++) {
+            if (poly[k].x < x0) x0 = poly[k].x; if (poly[k].x > x1) x1 = poly[k].x;
+            if (poly[k].y < y0) y0 = poly[k].y; if (poly[k].y > y1) y1 = poly[k].y;
+        }
+        o->x0 = x0; o->x1 = x1; o->y0 = y0; o->y1 = y1;
+        o->pn = pn;
+        for (int k = 0; k < pn; k++) { o->px[k] = poly[k].x; o->py[k] = poly[k].y; }
+        o->portal = p;
+        n++;
+    }
+    return n;
+}
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
@@ -538,10 +645,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     else
         s_ot_vz = 0.0;
     if (pn >= 3) {
-        s_ring_vz = 0.0;
-        for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
         if (s_ot_vz <= 0.0) set_ot_sky_vz(poly, pn);
-        s_sky_fed_frame = openpete_frame;
         /* Mirror check (canonical only; a0 live means the .s just computed
          * D_PORTAL_DEPTH for THIS portal): our bucket must equal the .s's. */
         if (portal_dump_enabled() && rgb_override == PORTAL_RGB_RESOLVE) {
@@ -558,6 +662,17 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                         openpete_frame, mirB, s_ot_vz);
             }
         }
+        /* Coverage = the OUTLINE FAN. Ground truth (f2439 OT dump, slots
+         * 483-487): the .s flat leaf fans the OPENING POLYGON, not the clip
+         * rect — below the outline's bottom edge the sky never rasters and
+         * the .s shows the floor/sill there. (A rect + two-region-split
+         * variant was tried 2026-07-06 and over-covered exactly that band —
+         * sky where og shows the walkway.) The wedge-class artifact at the
+         * base is NOT a coverage problem: it is the depth test, fixed by the
+         * terrain OT-conformance sink. */
+        s_ring_vz = 0.0;
+        for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
+        s_sky_fed_frame = openpete_frame;
         float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
@@ -577,25 +692,32 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     }
 
     /* Fallback (an outline point behind the camera / no match): the axis-aligned
-     * clip rect at the farthest-outline constant depth. vz<=1 means the plane
-     * centre is AT/BEHIND the camera — Spyro is entering and the camera has
-     * crossed the portal: the preview must cover the level being left (the
-     * PSX sky bucket was nearest-OT at that point), so go NEAR, not far (the
-     * old 16384 far-sentinel let current-level mobys repaint over the preview
-     * mid-entry). The sky repaints after the ACTOR group; the PLAYER group
-     * draws later, so Spyro himself is never covered. */
+     * clip rect. vz<=1 means the plane centre is AT/BEHIND the camera — Spyro
+     * is entering and the camera has crossed the portal: the preview must
+     * cover the level being left (the PSX sky bucket was nearest-OT at that
+     * point), so go NEAR, not far (the old 16384 far-sentinel let
+     * current-level mobys repaint over the preview mid-entry). The sky
+     * repaints after the ACTOR group; the PLAYER group draws later, so Spyro
+     * himself is never covered.
+     *
+     * Depth: the ANALYTIC opening plane when available (computed from the
+     * outline's world points, so points behind the camera don't invalidate
+     * it) — a close, acutely-angled portal keeps per-pixel plane depth and
+     * the floor still meets the opening's near side instead of eating it (the
+     * f2945 failure re-appeared here as one constant farthest-outline depth).
+     * Constant farthest-outline depth remains the last resort. */
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* crossed → nearest (was 16384 far-sentinel) */
     float depth = portal_cyclorama_depth(vz);
+    float cz3 = 0.0f;
+    int cm3 = sky_const_depth(&cz3);
     /* Constant-depth modes apply to the fallback rect too (the pn<3 case IS
      * the common close/steep one) — except mid-entry (crossed), where the
      * near cover must win everything. */
-    {
-        float cz3 = 0.0f;
-        int cm3 = sky_const_depth(&cz3);
-        if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
-    }
+    if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
+    double fa = 0, fb = 0, fc = 0;
+    int fplane = (!crossed && p) && portal_plane_invz(cpu, p, &fa, &fb, &fc);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -604,8 +726,16 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
         memset(&t, 0, sizeof t);
         t.textured = 0; t.blend = 0;
         for (int k = 0; k < 3; k++) {
+            float z = depth;
+            if (fplane) {
+                double inv = fa * cxx[idx[ti][k]] + fb * cyy[idx[ti][k]] + fc;
+                if (inv > 1e-9) {           /* plane behind camera at this corner → constant */
+                    z = portal_cyclorama_depth(1.0 / inv);
+                    if (cm3) z = sky_min2(z, cz3, cm3);
+                }
+            }
             t.v[k].sx = cxx[idx[ti][k]]; t.v[k].sy = cyy[idx[ti][k]];
-            t.v[k].z = depth; t.v[k].u = 0.0f; t.v[k].v = 0.0f; t.v[k].rgba = rgba;
+            t.v[k].z = z; t.v[k].u = 0.0f; t.v[k].v = 0.0f; t.v[k].rgba = rgba;
         }
         portal_add_sky_tri(&t);
     }
@@ -656,13 +786,42 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
  *     the preview inside the opening.
  * Resolution: split each sky face by the OUTLINE polygon. Inside the opening
  * -> plane depth (f2945 semantics); outside (the rect spill) -> behind-ring
- * depth nudged a hair FARTHER (+0.0015 NDC) so the ring wins even where the
+ * depth nudged a hair FARTHER (+PORTAL_SKY_EPS_VZ) so the ring wins even where the
  * spill grazes the outline's farthest point. Mirrors the PSX partition
  * exactly: the opening is where the preview must win; the spill is where the
  * world must win. */
 static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
 static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
 static float s_skyout_back = 1.0f;/* behind-ring depth for the outside region */
+
+/* Register the projected outline for the two-region split (both the dome and
+ * the flat-fill paths): orient CCW by the centroid side, set the behind-ring
+ * depth from the farthest outline point + the sky margin. Also refreshes
+ * s_ring_vz / the portal-guard recency. */
+static void register_skyout(const ppt* poly, int pn) {
+    double maxvz = 0.0, mx = 0.0, my = 0.0;
+    for (int i = 0; i < pn; i++) {
+        if (poly[i].vz > maxvz) maxvz = poly[i].vz;
+        mx += poly[i].x; my += poly[i].y;
+    }
+    mx /= pn; my /= pn;
+    /* orient so the polygon interior (its centroid) is LEFT of edge 0 —
+     * the side clip_dir keeps on the inside pass */
+    double sgn = ((double)poly[1].x - poly[0].x) * (my - poly[0].y)
+               - ((double)poly[1].y - poly[0].y) * (mx - poly[0].x);
+    for (int i = 0; i < pn; i++) {
+        const ppt* q = (sgn >= 0.0) ? &poly[i] : &poly[pn - 1 - i];
+        s_skyout[i].x = q->x; s_skyout[i].y = q->y;
+        s_skyout[i].r = s_skyout[i].g = s_skyout[i].b = 0.0f;
+    }
+    s_skyout_n = pn;
+    s_ring_vz = maxvz;
+    s_sky_fed_frame = openpete_frame;
+    s_skyout_back = openpete_native_depth_from_viewz(
+                        openpete_worldvz_full((float)(maxvz + PORTAL_SKY_EPS_VZ)));
+    /* behind the ring, same world-unit margin as ring_depth */
+    if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
+}
 
 /* General half-plane clip: keep points on the LEFT of a->b (CCW inside). */
 static int clip_dir(const pgv* in, int n, pgv* out,
@@ -829,34 +988,20 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
     double pa = 0, pb = 0, pc = 0;
     int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
+    /* Analytic plane when the projected fit is unavailable (a point behind
+     * the camera — the common close/steep case): per-pixel plane depth
+     * instead of the constant rect fallback, so the floor meets the
+     * opening's near edge instead of eating it. No outline registration
+     * (s_skyout stays 0): the whole dome sits at plane depth incl. the rect
+     * spill, which now only beats stone within the O(16-unit) sky margin. */
+    if (!use_plane && !crossed && p && portal_plane_invz(cpu, p, &pa, &pb, &pc))
+        use_plane = 1;
     /* Register the outline for the two-region sky-depth split (see
      * emit_split_by_outline): orient CCW by signed area; behind-ring depth =
-     * the farthest outline point, nudged a hair FARTHER (+0.0015 NDC) so the
+     * the farthest outline point, nudged a hair FARTHER (+PORTAL_SKY_EPS_VZ) so the
      * ring geometry wins even where the spill grazes its far tangent. */
     s_skyout_n = 0;
-    if (use_plane) {
-        double maxvz = 0.0, mx = 0.0, my = 0.0;
-        for (int i = 0; i < pn; i++) {
-            if (poly[i].vz > maxvz) maxvz = poly[i].vz;
-            mx += poly[i].x; my += poly[i].y;
-        }
-        mx /= pn; my /= pn;
-        /* orient so the polygon interior (its centroid) is LEFT of edge 0 —
-         * the side clip_dir keeps on the inside pass */
-        double sgn = ((double)poly[1].x - poly[0].x) * (my - poly[0].y)
-                   - ((double)poly[1].y - poly[0].y) * (mx - poly[0].x);
-        for (int i = 0; i < pn; i++) {
-            const ppt* q = (sgn >= 0.0) ? &poly[i] : &poly[pn - 1 - i];
-            s_skyout[i].x = q->x; s_skyout[i].y = q->y;
-            s_skyout[i].r = s_skyout[i].g = s_skyout[i].b = 0.0f;
-        }
-        s_skyout_n = pn;
-        s_ring_vz = maxvz;
-        s_sky_fed_frame = openpete_frame;
-        s_skyout_back = openpete_native_depth_from_viewz(openpete_worldvz_full((float)maxvz))
-                        + PORTAL_CYCLORAMA_DEPTH_OFFSET;   /* behind the ring, same constant as ring_depth */
-        if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
-    }
+    if (use_plane && pn >= 3) register_skyout(poly, pn);
 
     /* Widescreen un-clamp: the .s clip rect D_8007AA00 is the GPU scissor, clamped
      * to the 4:3 framebuffer [0,512]. For a portal at the screen edge the outline

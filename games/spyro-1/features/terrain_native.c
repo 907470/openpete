@@ -34,7 +34,7 @@
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 
-extern int openpete_portal_sky_recent(void);   /* portal_native.c (portal-guard gate) */
+#include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
 
 #include <math.h>
 #include <stdint.h>
@@ -266,11 +266,14 @@ typedef struct {
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
+    float otkey;                                   /* parent face's .s OT key (full-world mean
+                                                    * vz of the 4 corners; portal conformance) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
 static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
+static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -521,6 +524,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
     t->sec = (int16_t)s_emit_sec; t->face = (int16_t)s_emit_face;
+    t->otkey = s_emit_otkey;
     if (m->textured) s_tex_tris++;
 }
 
@@ -571,6 +575,13 @@ static cvert cv_mid(cvert a, cvert b) {
 static void emit_quad_cv(cvert tl, cvert tr, cvert bl, cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
+    /* Portal OT-conformance key: near-subdivided (deferred) faces are drained
+     * into the OT as 4 SEPARATE sub-quad prims, EACH bucketed by its own
+     * corner sum — the .s sky-vs-floor boundary at a portal base is at
+     * SUB-QUAD granularity (og f2440: the walkway's near sub-quads paint over
+     * the preview, its far ones are covered). Override the parent face's key
+     * with this sub-quad's own. */
+    s_emit_otkey = (float)((tl.m3 + tr.m3 + bl.m3 + br.m3) * 4.0);
     clip_push_tri(tl, tr, bl, m);
     clip_push_tri(tr, bl, br, m);
 }
@@ -1513,6 +1524,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             int quad = F->quad;
             s_dbg_faces++;
             s_emit_sec = (int)i; s_emit_face = f;   /* fardbg attribution identity */
+            /* Portal OT-conformance key: the face's .s OT bucket base — the
+             * raw 4-corner view-Z sum ((Σ4 SZ)>>7 in the walk; .s tris sum
+             * the shared i2==i3 corner twice, and so does this), expressed
+             * as the full-world corner MEAN. Ambient per face so every ttri
+             * it emits (direct, near-clipped, or the 2x2 subdivide) carries
+             * the PARENT face's key — the .s verdict is per-face, and a
+             * split tri's own 3-vert mean can land on the other side of the
+             * sky's bucket (the fix4 left-edge blue triangle). */
+            s_emit_otkey = (float)((sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + sv[i3].m3) * 4.0);
             /* .s HP-walk texture-fog select (generated C block_80027040-809C,
              * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
              * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
@@ -2013,10 +2033,151 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
 static int s_notex = -1;   /* OPENPETE_TERRAIN_NOTEX: force untextured (debug) */
 static int s_tiercolor = -1;  /* OPENPETE_TERRAIN_TIERCOLOR: LP=red, HP=blue */
 static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only */
-static void terrain_feed_native(void) {
+
+/* ---- portal OT-conformance clamp (the PSX per-face painter verdict) --------
+ * The .s draws the portal sky at ONE OT bucket; a terrain face whose OT key
+ * (mean view-Z) sorts BEHIND it is drawn BEFORE the sky in the walk, so the
+ * sky covers ALL of it — including any part that pokes through the opening
+ * plane toward the camera. The threshold/walkway at a portal base is exactly
+ * that: one face spanning from just in front of the plane deep into the
+ * throat behind it. Native's per-PIXEL depth let its near lip beat the sky —
+ * a gray wedge ballooning out of the sill, breaking the sky↔ground connection
+ * (portal-ground-disocclusion f2440; worse the more acute the camera angle).
+ *
+ * Mirror the verdict per face with the .s's OWN comparison: the sky inserts
+ * at bucket B = (mean outline SZ) >> 7 (mirrored + validated in
+ * portal_native, exported as ot_vz = 128·B); a terrain face's key is its
+ * corner-mean view-Z >> 7. Key behind B ⇒ the face draws BEFORE the sky ⇒
+ * the sky covers it whole-face. Any such face is sunk — max()'d, never
+ * pulled forward — behind the sky's behind-ring spill depth, so it loses the
+ * depth test (mask AND colours) in BOTH split regions (per-pixel plane
+ * inside the outline, behind-ring on the rect spill). Faces with a nearer
+ * key (the floor in front, the arch stone) are untouched and keep beating
+ * the sky — the other half of the PSX verdict.
+ *
+ * Why not a geometric plane-straddle rule: the threshold pad at a portal
+ * base can be DEPTH-COINCIDENT with the opening plane at every vertex
+ * (f2440 probe: vz within 2 units of the plane field at all 3 verts) while
+ * its .s key (26) sorts strictly behind the sky's (21) — B comes from the
+ * OUTLINE MEAN, which at a downward/angled view sits several hundred units
+ * NEARER than the plane's depth at the base. Only the bucket comparison
+ * reproduces that. A half-bucket (+64) margin keeps sub-bucket jitter from
+ * flapping the verdict; the tri's 3-vert mean stands in for the .s quad's
+ * 4-corner sum (the two halves of a boundary quad can split the verdict —
+ * accepted: the contest band is half a bucket wide, where PSX itself
+ * flickers).
+ *
+ * Actors are deliberately NOT conformed: their native depth is true
+ * per-pixel and the sky's plane depth preserves their layering exactly (a
+ * bucket-depth sky would swallow a fairy hovering at the portal base).
+ *
+ * Depth-buffer side effects are bounded: anything genuinely nearer (Spyro's
+ * feet on the sill, actors, the step's front face) still wins vs the sunken
+ * face; the geometry that newly loses to it sits inside the portal throat —
+ * behind the opening, where the sky covers everything anyway. */
+#define PORTAL_CLAMP_EPS_VZ 32.0   /* full-world; 2x the sky's PORTAL_SKY_EPS_VZ margin */
+static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
+static openpete_portal_skyplane s_pplane[6];
+static int s_pplane_n = 0;
+
+/* Conform one built tri against the active portal skies. Returns 1 and fills
+ * ovz[3] (world/16 scale, the ttri unit) when the face is sky-covered. */
+static int s_pconform_dbg = -1;   /* OPENPETE_TERRAIN_PORTAL_CONFORM_DBG=x,y probe pixel */
+static float s_pcdbg_x, s_pcdbg_y;
+/* Point-in-polygon (crossing test) against a skyplane's projected outline. */
+static int skyplane_contains(const openpete_portal_skyplane* pp, float x, float y) {
+    int in = 0;
+    for (int i = 0, j = pp->pn - 1; i < pp->pn; j = i++) {
+        if ((pp->py[i] > y) != (pp->py[j] > y) &&
+            x < (pp->px[j] - pp->px[i]) * (y - pp->py[i]) / (pp->py[j] - pp->py[i]) + pp->px[i])
+            in = !in;
+    }
+    return in;
+}
+static int portal_conform_vz(const ttri* t, float ovz[3]) {
+    for (int pi = 0; pi < s_pplane_n; pi++) {
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
+        /* Confinement: the face's screen CENTROID must be inside the outline
+         * polygon — only there does the sky raster (fan / dome) and win;
+         * sinking outside it punches through to the world behind (mc f3040). */
+        float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
+        float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
+        int inbb = (cx >= pp->x0 && cx <= pp->x1 && cy >= pp->y0 && cy <= pp->y1)
+                   && skyplane_contains(pp, cx, cy);
+        int dbg = 0;
+        if (s_pconform_dbg > 0) {   /* face covers the probe pixel's bbox? */
+            float xlo = t->sx[0], xhi = t->sx[0], ylo = t->sy[0], yhi = t->sy[0];
+            for (int k = 1; k < 3; k++) {
+                if (t->sx[k] < xlo) xlo = t->sx[k]; if (t->sx[k] > xhi) xhi = t->sx[k];
+                if (t->sy[k] < ylo) ylo = t->sy[k]; if (t->sy[k] > yhi) yhi = t->sy[k];
+            }
+            dbg = (s_pcdbg_x >= xlo && s_pcdbg_x <= xhi &&
+                   s_pcdbg_y >= ylo && s_pcdbg_y <= yhi);
+        }
+        if (!inbb) {
+            if (dbg) fprintf(stderr, "[pconf f=%u] sec=%d face=%d NOT-INBB bbox=(%.0f,%.0f)-(%.0f,%.0f)\n",
+                             openpete_frame, t->sec, t->face, pp->x0, pp->y0, pp->x1, pp->y1);
+            continue;
+        }
+        /* The face's .s OT key: the parent face's 4-corner mean when the walk
+         * recorded it (always, today), else the tri's own 3-vert mean. */
+        double mean = (t->otkey > 0.0f) ? (double)t->otkey
+                                        : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
+        int covered = (mean >= pp->ot_vz + 64.0);   /* face key behind the sky's B (half-bucket margin) */
+        if (dbg)
+            fprintf(stderr, "[pconf f=%u] sec=%d face=%d tier=%d mean=%.0f skyot=%.0f back=%.0f covered=%d\n",
+                    openpete_frame, t->sec, t->face, t->tier, mean, pp->ot_vz,
+                    pp->back_vz, covered);
+        if (covered) {
+            /* Sink each vertex to just behind the OPENING-PLANE FIELD on its
+             * own pixel ray (never pulled forward) — the face then loses to
+             * the sky exactly where the sky rasters (the sky sits at
+             * plane − PORTAL_SKY_EPS_VZ inside the outline) while BELOW the
+             * sky's rect it keeps beating the throat floor behind it, which
+             * the .s also shows (the sill bar peeks out under the preview —
+             * sinking to the behind-ring depth erased it there). Linear
+             * screen interpolation of the sunk verts only sags DEEPER than
+             * the convex plane field, so the sky still wins the interior. */
+            int changed = 0;
+            for (int k = 0; k < 3; k++) {
+                ovz[k] = (float)t->vz[k];
+                double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
+                if (inv <= 1e-9) continue;       /* plane behind camera on this ray */
+                float sunk = (float)((1.0 / inv + PORTAL_CLAMP_EPS_VZ) / 16.0);
+                if (ovz[k] < sunk) { ovz[k] = sunk; changed = 1; }
+            }
+            if (changed) return 1;
+        }
+    }
+    return 0;
+}
+
+static void terrain_feed_native(CPUState* cpu) {
     if (s_notex < 0) { const char* e = getenv("OPENPETE_TERRAIN_NOTEX"); s_notex = (e && *e && *e != '0'); }
     if (s_tiercolor < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIERCOLOR"); s_tiercolor = (e && *e && *e != '0'); }
     if (s_tieronly == -2) { const char* e = getenv("OPENPETE_TERRAIN_TIERONLY"); s_tieronly = e ? atoi(e) : 0; }
+    if (s_pconform < 0) { const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM"); s_pconform = (e && *e) ? (*e != '0') : 1; }
+    if (s_pconform_dbg < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM_DBG");
+        s_pconform_dbg = 0;
+        if (e && *e && sscanf(e, "%f,%f", &s_pcdbg_x, &s_pcdbg_y) == 2) s_pconform_dbg = 1;
+    }
+    /* Active portal-sky opening planes, derived against THIS present's camera
+     * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
+    s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, s_pplane, 6) : 0;
+    if (s_pconform_dbg > 0 && s_pplane_n > 0) {
+        static int lines = 0;
+        if (lines < 24) {
+            lines++;
+            fprintf(stderr, "[pconf f=%u] planes=%d", openpete_frame, s_pplane_n);
+            for (int i = 0; i < s_pplane_n; i++)
+                fprintf(stderr, " [%d]p=%08X skyot=%.0f back=%.0f bbox=(%.0f,%.0f)-(%.0f,%.0f)",
+                        i, s_pplane[i].portal, s_pplane[i].ot_vz, s_pplane[i].back_vz,
+                        s_pplane[i].x0, s_pplane[i].y0, s_pplane[i].x1, s_pplane[i].y1);
+            fprintf(stderr, "\n");
+        }
+    }
     { static int s_cap = -1, s_peak = 0;
       if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
@@ -2030,6 +2191,9 @@ static void terrain_feed_native(void) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
         if (s_tieronly == 2 &&  t->tier) continue;   /* HP only */
+        /* Portal OT-conformance clamp (see portal_conform_vz above). */
+        float pcvz[3]; int pclamp = 0;
+        if (s_pplane_n) pclamp = portal_conform_vz(t, pcvz);
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         int tex = (!s_flat && !s_notex && !s_tiercolor) ? t->textured : 0;
         tri.textured = tex; tri.blend = tex ? t->blend : 0;
@@ -2099,7 +2263,8 @@ static void terrain_feed_native(void) {
              * which a distance-PROPORTIONAL pull models correctly. Retained,
              * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
              * LP, where it is inert — nothing shares its surface.) */
-            openpete_worldvz wz = openpete_worldvz_scaled((float)t->vz[k], 16.0f);
+            openpete_worldvz wz = openpete_worldvz_scaled(
+                pclamp ? pcvz[k] : (float)t->vz[k], 16.0f);
             /* FILL depth = the SAME ×1.03 as its canonical LP twin, so the two
              * copies TIE exactly (fill drawn later wins where quantize+grow
              * differ) instead of the fill sitting 3% NEARER — which let a
@@ -2472,7 +2637,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     if (feed && endp > startp && render_path_enabled(RP_TERRAIN)) {
         terrain_build(cpu, occGroup);               /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
-        terrain_feed_native();                      /* push tris to the scene */
+        terrain_feed_native(cpu);                   /* push tris to the scene */
     }
 
     if (verify && openpete_frame >= terrain_verify_frame()) {
@@ -2502,7 +2667,7 @@ void terrain_native_reextract(CPUState* cpu) {
      * mask is clear for RP_TERRAIN on those frames, so we skip. */
     if (!render_path_canon_drawn(RP_TERRAIN)) return;
     terrain_build(cpu, s_terrain_saved_occGroup);
-    terrain_feed_native();
+    terrain_feed_native(cpu);
 }
 
 static const feature_dispatch_entry_t terrain_dispatch[] = {
