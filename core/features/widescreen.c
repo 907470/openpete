@@ -1,13 +1,30 @@
 // core/features/widescreen.c — see widescreen.h.
 //
-// Verbatim moved from core/runtime/run.c as Phase 2.1a of
-// notes/plans/openpete-feature-modules.md. No logic changes.
+// 2026-07-06: the PsyCross-mode --aspect substitution stack was RETIRED
+// (Phase 6 of notes/plans/openpete-native-renderer.md). The projection
+// widening (disp_w_factor: GTE OFX + GL ortho), the cull-widening knobs
+// (clip mask/threshold, moby cone, env bounds, SXY saturation, portal
+// clamp, 2D full-bleed), the render bracket and the cyclorama multi-pass
+// all deleted — every renderer mode now runs the game's verdict producers
+// pure canonical 4:3, and widescreen is a native-renderer display policy
+// (window-derived s_nr.ws_factor; see core/runtime/native_render.c).
+//
+// What remains here:
+//   * --fov: the GTE H override (widescreen_eff_h consumer in
+//     gte_rtps_internal). PsyCross-reference-mode feature; the native
+//     renderer will grow its own FOV policy with the Phase-7 projection
+//     work.
+//   * The canonical-SX q16 FIFO: verdict machinery for the particle /
+//     sparkle render->gameplay channels (games/spyro-1/features/
+//     render_decouple.c reads it; the GTE stashes every RTPS).
+//   * The polybuf relocation block: still armed by the --no-lod
+//     PsyCross-mode producer stack (openpete_no_lod_producers); deletes
+//     with it.
 
 #include "features/widescreen.h"
 
-#include "openpete_fiber.h"   /* openpete_disp_w_factor, openpete_fov_h_override */
+#include "openpete_fiber.h"   /* openpete_fov_h_override */
 #include "openpete_log.h"
-#include "openpete_world_geo.h" /* openpete_world_geo_set_current (dbg/world hybrid hook) */
 #include "psx_runtime.h"      /* psx_runtime_register_region, polybuf_size */
 
 #include <math.h>
@@ -16,84 +33,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* PsyCross runtime Hor+ aspect factor — see PsyX_public.h. We set it
- * post-PsyX_Initialise so the GL ortho widens by openpete's
- * disp_w_factor without touching VRAM-facing widths. */
-extern float g_psyx_render_aspect_factor;
-
-/* === Knob storage ====================================================
- * Phase 2.1c of notes/plans/openpete-feature-modules.md — these
- * globals previously lived in core/runtime/dispatch.c. The recompiler-
- * generated C reaches them via psx_runtime.h externs; the defining TU
- * is now this feature module. Defaults preserve byte-identical 4:3
- * behaviour; widescreen_apply_runtime_knobs() above writes the widened
- * values when --aspect is active.
- */
-
-/* Per-vertex screen-space clip mask used by recompiled `andi reg, 0xFE00`
- * cull patterns (Spyro's r_environment.s SXY2 clip). Default 0xFE00 ==
- * native PSX behavior; openpete widens to 0xF800 when --aspect is set so
- * widescreen-extra primitives (SX > 512) survive the cull. */
-uint32_t psx_runtime_clip_x_mask = 0xFE00u;
-
-/* Cyclorama right-edge clip threshold; default 512<<16 (native). */
-uint32_t psx_runtime_clip_x_threshold = 0x02000000u;
-
-/* r_moby.s func_80022A2C inline cone-X cull widening. Default 0
- * preserves native 4:3 cone (slope 0.75). */
-int32_t psx_runtime_moby_cone_extra_q12 = 0;
-
-/* Companion to _moby_cone_extra_q12: X-bias aspect scaling. Q12 of
- * (factor-1), so 0 = identity. See psx_runtime.h. */
-int32_t psx_runtime_moby_cone_bias_scale_q12 = 0;
-
-/* Phase 7.2 near-Z clamp soften. Floor used by the cone substitutions'
- * mac3p clamp; default 0 preserves the existing native clamp. */
-int32_t psx_runtime_moby_cone_mac3p_floor = 0;
-
-/* r_environment.s func_800258F0 per-vertex camera-space X-bound cull.
- * Default 0x100 (= 256, native). Widened during the render pass to
- * 0x100 * thresh_factor; reset to 0x100 outside render so the
- * gameplay-side GTE work sees canonical bounds. See psx_runtime.h. */
-uint32_t psx_runtime_env_cell_x_bound = 0x100u;
-
-/* GTE SX/SY saturation bound. Default 0x400 = native PSX hardware
- * (±0x400 signed 11-bit clamp on push_sxy). See psx_runtime.h. */
-uint32_t psx_runtime_sxy_sat_bound = 0x400u;
-
-
-/* Canonical 4:3 right-edge threshold expressed in widened-SX coords.
- * Default 0x02000000 (no widening). Set by widescreen_apply_runtime_knobs
- * to (0x200 + delta_OFX) << 16 when --aspect widens factor != 1.0. */
-uint32_t psx_runtime_native_clip_x_in_widened_space = 0x02000000u;
-
-/* Canonical 4:3 LEFT-edge threshold in widened-SX coords. Default 0
- * (no widening = native left edge at SX=0). Set to delta_OFX << 16
- * when --aspect widens factor != 1.0. */
-uint32_t psx_runtime_native_clip_x_low_in_widened_space = 0u;
-
 /* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
  * after each projection in a 3-deep FIFO matching push_sxy semantics.
  * sx2_q16 is the latest projection (= what mfc2 C2_SXY2 reads, but in
  * full q16 precision before int16 truncation). Used by the particle
  * cull substitutions in r_particles.s to compute exact canonical 4:3
- * verdicts without delta-OFX rounding errors. */
+ * verdicts without truncation ambiguity at the [0,512) boundaries. */
 int64_t openpete_canonical_sx0_q16 = 0;
 int64_t openpete_canonical_sx1_q16 = 0;
 int64_t openpete_canonical_sx2_q16 = 0;
 
-/* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp. Defaults
- * 512 / 513 preserve native 4:3 behavior. */
-uint32_t psx_runtime_portal_clip_x_max = 0x200u;
-uint32_t psx_runtime_portal_clip_x_max_plus_1 = 0x201u;
-
-/* 2D full-bleed primitive width (cutscene letterbox + fade overlay).
- * Default 512 = byte-identical 4:3. */
-uint32_t psx_runtime_fullbleed_x_max = 0x200u;
-
 /* Spyro polybuf slot size. Default 0x1C000 = byte-identical to the
- * native PSX layout (4BEF8.c:25-27 + draw.c:947/1561/2665). Widened
- * by the 21:9 / 32:9 path once the relocated buffer is registered.
+ * native PSX layout (4BEF8.c:25-27 + draw.c:947/1561/2665). Grown by
+ * the --no-lod producer stack once the relocated buffer is registered.
  * See psx_runtime.h for the substitution-PC list. */
 uint32_t psx_runtime_polybuf_size = 0x0001C000u;
 
@@ -103,7 +55,7 @@ uint32_t psx_runtime_polybuf_size = 0x0001C000u;
  * reset paths (pause-resume bracket and Gamestate-10 entry). Without
  * the substitution, those resets re-anchor D_800757B0 at the canonical
  * buffer while D_80075780 is `canonical_lower + psx_runtime_polybuf_size`
- * (per the polybuf_size sub), so a widened scene overruns into
+ * (per the polybuf_size sub), so a relocated-buffer scene overruns into
  * m_HigherPolyBuffer / HudOTStart and DrawOTag follows a corrupted
  * P_TAG into a hang. The third polybuf_size site (GamestateDraw
  * bracket) reads `db->m_PolyBuf` directly — that pointer is already
@@ -111,99 +63,12 @@ uint32_t psx_runtime_polybuf_size = 0x0001C000u;
  * substitution is needed there. See psx_runtime.h for the PC list. */
 uint32_t psx_runtime_polybuf_lower = 0u;
 
-/* The capped Hor+ factor for --aspect, shared by the PsyCross
- * disp_w_factor path (below) and the native cull-factor path (run.c).
- * Both the projection widening and the cull widening overflow Spyro's
- * PSX-side prim buffer the same way at high factor, so both honour the
- * same conservative cap. Returns 0 when --aspect isn't set. */
-float widescreen_capped_factor(const openpete_options_t* opts) {
-    if (!opts || opts->aspect_w_over_h <= 0.0f) return 0.0f;
-    float f = opts->aspect_w_over_h / (4.0f / 3.0f);
-    float max_factor = 16.0f;  /* see widescreen_apply_disp_w_factor for why */
-    if (getenv("OPENPETE_MAX_ASPECT_FACTOR")) {
-        float v = (float)atof(getenv("OPENPETE_MAX_ASPECT_FACTOR"));
-        if (v > 0.0f) max_factor = v;
-    }
-    if (f > max_factor) f = max_factor;
-    return f;
-}
-
-void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
-    /* --aspect: widen the framebuffer + GTE offset so the GTE projects
-     * vertices across a wider screen (Hor+ widescreen). The factor
-     * stays as a float global; thunks multiply at every Set*Env / offset
-     * call. 0.0f sentinel keeps the multiplier inactive when no
-     * override is requested. */
-    if (opts->aspect_w_over_h > 0.0f) {
-        openpete_disp_w_factor = opts->aspect_w_over_h / (4.0f / 3.0f);
-        /* Cap the widening factor.
-         *
-         * Hard math ceiling: the GTE stores screen-X as signed 16-bit, and
-         * a visible right-edge vertex projects to SX = 512*factor. So
-         * 512*factor <= 32767 -> factor <= 63.998 (~768:9, ~176.2 deg FOV)
-         * is the absolute representable maximum; beyond it visible geometry
-         * saturates. (FOV asymptotes to 180 deg only at factor = infinity.)
-         *
-         * Practical ceiling (lower): a render-time, factor-dependent prim
-         * buffer miscomputes its base at high factor and overruns the
-         * gameplay globals (g_Gamestate etc.), hanging main(). The overflow
-         * is prim-count-driven (more visible geometry at wide FOV) and
-         * LAYOUT-SENSITIVE / non-monotonic in factor: empirically factor 32
-         * (384:9) survives the whole demo deep, 38 hangs at vbl 1550, yet 40
-         * passed a shorter run — so the exact edge shifts with build and
-         * platform. We therefore default-cap conservatively at 16 (192:9,
-         * ~165 deg FOV — already 6x the widest real display and within ~11
-         * deg of the 176 deg int16 ceiling). On a tested config you can push
-         * via OPENPETE_MAX_ASPECT_FACTOR (32 cleared the demo here). The
-         * proper fix that unlocks the full 768:9 ceiling is to relocate the
-         * offending prim buffer into a virtualized region, so its overflow
-         * discards via mem_ptr instead of corrupting RAM. */
-        float max_factor = 16.0f;  /* conservative; int16 ceiling is 63.998 */
-        if (getenv("OPENPETE_MAX_ASPECT_FACTOR")) {
-            float v = (float)atof(getenv("OPENPETE_MAX_ASPECT_FACTOR"));
-            if (v > 0.0f) max_factor = v;
-        }
-        if (openpete_disp_w_factor > max_factor) {
-            OPL_WARN_F("aspect", "aspect %.4f -> factor %.2f exceeds cap "
-                       "%.2f; clamping (FOV is already ~%.0f deg; raise via "
-                       "OPENPETE_MAX_ASPECT_FACTOR, int16 ceiling 63.998)",
-                       (double)opts->aspect_w_over_h,
-                       (double)openpete_disp_w_factor, (double)max_factor,
-                       (double)(2.0 * atan(160.0 * max_factor / 341.0)
-                                * 180.0 / M_PI));
-            openpete_disp_w_factor = max_factor;
-        }
-        OPL_INFO_F("aspect", "Hor+ widescreen: aspect=%.4f -> "
-                   "disp_w_factor=%.4f (GTE offset 256 -> ~%d, GL ortho "
-                   "widens via PsyCross g_psyx_render_aspect_factor; VRAM "
-                   "DISPENV/DRAWENV stay at native 512 to preserve "
-                   "texture pages)",
-                   (double)opts->aspect_w_over_h, (double)openpete_disp_w_factor,
-                   (int)(256.0f * openpete_disp_w_factor + 0.5f));
-    }
-
-    /* --fov / --aspect FOV resolution.
-     *
-     * Spyro's native horizontal FOV at 4:3 is 2*atan(160/341) ≈ 50.4°
-     * (PSX visible half-width 160 / GTE H 341).
-     *
-     * For true Hor+ widescreen via --aspect alone we leave GTE H at the
-     * game's native value: widening OFX (256 -> 256*factor) plus the GL
-     * ortho widening already place the projection centre at the centre
-     * of the wider framebuffer, and the wider framebuffer admits more
-     * horizontal angular range at unchanged H. Vertical FOV is preserved
-     * because half_screen_h / H is unchanged. (Earlier versions also
-     * scaled H down by disp_w_factor; that double-applied widening on
-     * top of OFX, zooming both axes out by 1/factor — the 4:3 view ended
-     * up uniformly compressed inside the 16:9 frame instead of being its
-     * centered crop.)
-     *
-     * --fov still overrides H to the user's explicit horizontal FOV at
-     * the PSX 320-wide visible plane. It composes with --aspect (the
-     * user-chosen cone lands centred in the widened window via OFX
-     * widening) but no longer auto-derives from the aspect factor.
-     *
-     * 0 = no override sentinel for openpete_fov_h_override. */
+void widescreen_apply_fov(const openpete_options_t* opts) {
+    /* --fov: override the GTE H register to the user's explicit
+     * horizontal FOV at the PSX 320-wide visible plane. Spyro's native
+     * horizontal FOV at 4:3 is 2*atan(160/341) ≈ 50.4° (PSX visible
+     * half-width 160 / GTE H 341). Consumed by widescreen_eff_h in
+     * gte_rtps_internal. 0 = no-override sentinel. */
     if (opts->fov_deg > 0.0f) {
         double half = (double)opts->fov_deg * 0.5 * (M_PI / 180.0);
         double h = 160.0 / tan(half);
@@ -213,332 +78,6 @@ void widescreen_apply_disp_w_factor(const openpete_options_t* opts) {
         OPL_INFO_F("fov", "override active: --fov=%.2f° -> GTE H=%d "
                    "(native h_fov ~50.4° at H=341)",
                    (double)opts->fov_deg, openpete_fov_h_override);
-    } else if (openpete_disp_w_factor > 0.0f) {
-        /* --aspect only: keep native H. Hor+ widening is achieved by
-         * OFX scaling + GL ortho widening alone. */
-        double tan_h_native = 256.0 / 341.0;
-        double tan_h_widened = tan_h_native * (double)openpete_disp_w_factor;
-        double new_h_fov_deg = 2.0 * atan(tan_h_widened) * (180.0 / M_PI);
-        OPL_INFO_F("fov", "Hor+ from --aspect (H unchanged at native): "
-                   "h_fov ~%.1f° (4:3 native ~50.4°), vertical FOV "
-                   "preserved at ~38.7°",
-                   new_h_fov_deg);
-    }
-}
-
-void widescreen_apply_runtime_knobs(const openpete_options_t* opts) {
-    (void)opts;  /* derives entirely from the widening factors set above */
-
-    /* PROJECTION-side: push the host's Hor+ widening factor into PsyCross's
-     * GL ortho. Must happen after PsyX_Initialise (the symbol exists at link
-     * time but the GL backend's per-scene state lives behind the
-     * initialiser). Keyed on openpete_disp_w_factor (PsyCross-only): the
-     * native renderer doesn't present through PsyCross's FBO, so its ortho
-     * stays at the 1.0f default. 0.0f openpete sentinel = no override. */
-    if (openpete_disp_w_factor > 0.0f) {
-        g_psyx_render_aspect_factor = openpete_disp_w_factor;
-    }
-
-    /* CULL-side: every knob below is driven by openpete_cull_widen_factor so
-     * the wider Hor+ frustum's edge geometry survives the game's 4:3 cull in
-     * BOTH renderer modes (the native renderer projects canonically and
-     * widens at clip level, so it still needs the game to stop culling the
-     * edges). In PsyCross mode cull_factor == disp_w_factor, so this block is
-     * byte-identical to before the projection/cull split. The few PROJECTION-
-     * coordinate knobs inside (particle canonical-cull thresholds, 2D
-     * full-bleed width) stay gated on openpete_disp_w_factor — see below. */
-    if (openpete_cull_widen_factor > 0.0f) {
-        /* Widen psxrecomp's per-vertex clip mask so the env renderer's
-         * `andi SXY2, 0xFE00` cull (r_environment.s:714, 1145, 1255)
-         * doesn't drop widescreen-extra primitives whose SX legitimately
-         * exceeds 512. The mask is set below, after thresh_factor is
-         * known, because it must track the widened framebuffer edge:
-         * a fixed 0xF800 only admits |SX| < 2048 = 512*4, so it culled
-         * the outer half of env geometry at factors above 4 (e.g. 96:9
-         * = factor 8, edge SX 4096). See psx_runtime.h. */
-        extern uint32_t psx_runtime_clip_x_mask;
-        extern uint32_t psx_runtime_clip_x_threshold;
-        /* Edge = 512 * factor (visible right edge in PSX coords). Capped at
-         * 1.5: above that, the original Spyro poly buffer (0x1c000 bytes
-         * per slot in src/4BEF8.c) overflows when env emits the extra
-         * off-axis primitives, corrupting the trailing OT and crashing
-         * downstream. The PsyCross host-side vertex/OT buffers were bumped
-         * to remove their crash modes (DrawSplit strlen, DrawOTag scratch);
-         * the remaining ceiling is the PSX-side poly buffer.
-         *
-         * Lifting this cap was attempted via polybuf relocation through
-         * the RAM virtualization primitive (Step 3 of
-         * notes/plans/openpete-ram-virtualization.md) but uncovered a
-         * deeper coupling: m_LowerPolyBuffer anchors transient scratch
-         * BELOW it (m_LowerPolyBuffer - 0x40000 for titlescreen / update
-         * image loads, m_LowerPolyBuffer - cycloramaSize for cyclorama
-         * loads, m_LowerPolyBuffer - 0x2000 for memcard saves). Those
-         * scratch regions are gameplay-readable, so they can't move
-         * into a presentation-only registered region. See plan for the
-         * follow-up work — keeping the 1.5 cap until it lands. */
-        /* Polybuf cap (Option B host-side redirect).
-         *
-         * Beyond factor 1.5 the polybuf overflows the canonical
-         * 0x1C000 slot; under Option B we register a host-backed
-         * region of size ~ceil(0x1C000 * factor) per slot and
-         * redirect g_DB[].m_PolyBuf into it. The layout anchor
-         * (m_LowerPolyBuffer) stays canonical so the gameplay-
-         * readable scratch zones (titlescreen image, cyclorama
-         * dest, memcard, flight stash) are unaffected.
-         *
-         * If registration succeeds we lift the cap to 2.0 (the
-         * cyclorama row-0 / moby cone visual ceiling). If it
-         * fails (host alloc failure, region overlap), we fall
-         * back to the 1.5 cap so prims continue to fit in the
-         * canonical polybuf without overflow.
-         *
-         * See notes/plans/openpete-polybuf-host-redirect.md. */
-        float thresh_factor = openpete_cull_widen_factor;
-        if (thresh_factor > 1.5f || openpete_no_lod_producers) {
-            uint32_t size_per_slot =
-                ((uint32_t)((float)0x1C000 * thresh_factor) + 0x3FFFu)
-                & ~0x3FFFu;
-            /* --no-lod arms a 1 MB polybuf in game_apply_no_lod() before
-             * this runs. widescreen_polybuf_setup is non-idempotent for
-             * different sizes — bump our requested size up to the already-
-             * armed value so the re-registration matches and returns 0
-             * (idempotent). Otherwise the rc=2 reject below trips the
-             * thresh_factor=1.5 fallback, clamping every right-edge cull
-             * (clip_x_threshold, moby cone, env_cell_x_bound, sxy_sat)
-             * while the framebuffer still draws the full wide aspect —
-             * visible as missing right-edge polys at 21:9+ under --no-lod. */
-            if (openpete_no_lod_producers && size_per_slot < 0x100000u) {
-                size_per_slot = 0x100000u;
-            }
-            if (widescreen_polybuf_setup(size_per_slot, 0x80400000u) == 0) {
-                /* No upper cap once the host-backed polybuf is armed:
-                 * cull surfaces (env clip_x_threshold, portal clamp, moby
-                 * cone, cyclorama row-0) all scale linearly with
-                 * thresh_factor and the polybuf can hold the wider scene.
-                 * 32:9 (factor 2.667) and beyond render to the full
-                 * host-ortho width without right-edge cutoff. */
-            } else {
-                OPL_WARN_F("aspect", "polybuf host-redirect failed "
-                           "(size_per_slot=0x%X); falling back to 1.5 "
-                           "cap on clip_x_threshold",
-                           (unsigned)size_per_slot);
-                thresh_factor = 1.5f;
-            }
-        }
-        uint32_t edge = (uint32_t)((float)512.0f * thresh_factor);
-        psx_runtime_clip_x_threshold = edge << 16;
-
-        /* Per-vertex SX-overflow mask, scaled to the widened edge. The
-         * env cull is `(SX & mask) != 0 -> drop`; native 0xFE00 admits
-         * SX in [0, 512), and each power-of-two doubling of the edge
-         * frees one more low bit (0xFC00 <1024, 0xF800 <2048, 0xF000
-         * <4096, 0xE000 <8192). Pick the smallest power-of-two admit
-         * bound >= 512*thresh_factor so every vertex up to the rendered
-         * right edge survives the AND-fold while off-screen verts (and
-         * negatives) are still rejected. Without this the mask would
-         * cull the outer half of env geometry beyond factor 4. Capped
-         * at 0x4000 (mask 0xC000) so the cull stays meaningful even at
-         * absurd factors; the GTE SXY saturation bound (0x400*factor)
-         * is the real off-screen limit. */
-        {
-            uint32_t admit = (uint32_t)ceilf(512.0f * thresh_factor);
-            uint32_t pow2  = 0x200u;
-            while (pow2 < admit && pow2 < 0x4000u) pow2 <<= 1;
-            psx_runtime_clip_x_mask = (~(pow2 - 1u)) & 0xFFFFu;
-            /* Diagnostic override for A/B (e.g. 0xF800 = the old fixed
-             * factor-4 ceiling) — env-gated, default off. */
-            if (getenv("OPENPETE_CLIP_X_MASK")) {
-                psx_runtime_clip_x_mask =
-                    (uint32_t)strtoul(getenv("OPENPETE_CLIP_X_MASK"), NULL, 0)
-                    & 0xFFFFu;
-            }
-        }
-        /* Canonical 4:3 right-edge in widened-SX coords: native edge
-         * 0x200 plus the OFX delta-shift `(factor - 1) * 256`. The
-         * particle screen-cull substitution gates m_03 stores against
-         * this so gameplay sees the 4:3 verdict regardless of
-         * widening. See psx_runtime.h. */
-        extern uint32_t psx_runtime_native_clip_x_in_widened_space;
-        extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
-        /* Delta-OFX in Q16 (matches gte.cpp `eff_OFX = OFX * factor` math).
-         * Truncated-to-pixel rounding off-by-one'd the boundary case
-         * (SX=511 canonical → SX=597 widened with actual fractional delta
-         * 85.333 px, but pixel-truncated delta 85 puts the threshold at
-         * 597 itself, rejecting the SX=597 widened vertex). Keeping the
-         * delta in Q16 throughout closes the rounding gap. */
-        int64_t ofx_canonical_q16 = (int64_t)0x01000000;  /* 256<<16, the
-            canonical PSX OFX value Spyro's renderer uses; gte.cpp scales
-            this when openpete_render_pass_active && factor>0. */
-        /* PROJECTION factor, not the cull factor: the particle screen-cull
-         * substitution compares the *projected* SX against this threshold.
-         * In native mode the projection is canonical (disp_w_factor == 0), so
-         * delta_ofx must be 0 → the threshold stays the bare canonical 4:3
-         * edge (0x02000000) and the substitution computes the right verdict
-         * against the canonical SX it sees. In PsyCross mode this is
-         * thresh_factor (cull factor == the OFX widening), byte-identical. */
-        float part_proj_factor =
-            (openpete_disp_w_factor > 0.0f) ? thresh_factor : 1.0f;
-        int64_t ofx_widened_q16 = (int64_t)((double)ofx_canonical_q16
-                                             * (double)part_proj_factor);
-        uint32_t delta_ofx_q16 = (uint32_t)(ofx_widened_q16 - ofx_canonical_q16);
-        psx_runtime_native_clip_x_in_widened_space     = 0x02000000u + delta_ofx_q16;
-        psx_runtime_native_clip_x_low_in_widened_space = delta_ofx_q16;
-        OPL_INFO_F("aspect", "particle canonical-cull thresholds (Q16): "
-                   "low=0x%08X high=0x%08X (delta_ofx_q16 0x%08X = %.3fpx)",
-                   (unsigned)psx_runtime_native_clip_x_low_in_widened_space,
-                   (unsigned)psx_runtime_native_clip_x_in_widened_space,
-                   (unsigned)delta_ofx_q16,
-                   (double)delta_ofx_q16 / 65536.0);
-        OPL_INFO_F("aspect", "widened cull bounds: clip_x_mask "
-                   "0xFE00 -> 0x%04X (env SX-overflow), clip_x_threshold "
-                   "0x02000000 -> %u<<16 (env+cyclorama+moby+particles "
-                   "right-edge cull, factor=%.3f)",
-                   (unsigned)psx_runtime_clip_x_mask,
-                   (unsigned)edge,
-                   (double)(thresh_factor));
-
-        /* r_moby.s func_80022A2C inline X-cone cull widening. The hardcoded
-         * 0.75 slope (= 4:3 horizontal half-FOV, tan(36.87°)) culls
-         * mobys whose world-space angle from camera-forward exceeds ~37°.
-         * With H unchanged at native 341 and OFX widened to 256*factor,
-         * the framebuffer right edge sx = 512*factor admits IR1/SZ up to
-         * (512*factor - 256*factor)/341 = 256*factor/341 = 0.7507*factor.
-         * But the env right-edge cull (clip_x_threshold above) caps the
-         * effective right edge at 512*thresh_factor, so we use the same
-         * thresh_factor here to keep the cone matched to the actually-
-         * rendered right side at 21:9+ (where the cap kicks in).
-         *
-         * Substitution at addi-(-102) injects `-extra*(MAC3+77)`, so after
-         * the chain the test becomes 4|x| - 408 - (3 + 4*extra)*(MAC3+77)
-         * >= 0; new slope = (3 + 4*extra)/4. To match the visible cone:
-         * extra = 0.7507*thresh_factor - 0.75.
-         * Q12: extra_q12 = round(extra * 4096). */
-        /* Stage the widened cone value into a host-side global; the
-         * GamestateDraw dispatch hook swaps it into psx_runtime_moby_cone_extra_q12
-         * for the render pass and zeroes it on exit, so func_80022A2C's
-         * gameplay-side callers (moby ticking) keep seeing the native cone. */
-        extern int32_t psx_runtime_moby_cone_extra_q12;
-        extern int32_t openpete_moby_cone_extra_q12_render;
-        float extra_f = (256.0f / 341.0f) * thresh_factor - 0.75f;
-        if (extra_f < 0.0f) extra_f = 0.0f;
-        if (getenv("OPENPETE_MOBY_CONE_EXTRA")) {
-            extra_f = (float)atof(getenv("OPENPETE_MOBY_CONE_EXTRA"));
-            if (extra_f < 0.0f) extra_f = 0.0f;
-        }
-        openpete_moby_cone_extra_q12_render = (int32_t)(extra_f * 4096.0f);
-        psx_runtime_moby_cone_extra_q12 = 0;  /* native cone outside render pass */
-
-        /* Companion X-bias scale. The slope-only widening above leaves a
-         * near-Z slice with native cone width because the X-bias term
-         * (102 in shaded, per-moby radius in regular/specular) doesn't
-         * scale with aspect — and the `mac3p<0` clamp collapses the slope
-         * widening near the camera plane. Multiplying the X-bias by the
-         * factor restores aspect-proportional headroom at every Z. Q12 of
-         * (factor-1) so 0 = identity. Render-pass only. */
-        extern int32_t psx_runtime_moby_cone_bias_scale_q12;
-        extern int32_t openpete_moby_cone_bias_scale_q12_render;
-        float bias_scale = thresh_factor - 1.0f;
-        if (bias_scale < 0.0f) bias_scale = 0.0f;
-        if (getenv("OPENPETE_MOBY_CONE_BIAS_SCALE")) {
-            bias_scale = (float)atof(getenv("OPENPETE_MOBY_CONE_BIAS_SCALE"));
-            if (bias_scale < 0.0f) bias_scale = 0.0f;
-        }
-        openpete_moby_cone_bias_scale_q12_render =
-            (int32_t)(bias_scale * 4096.0f);
-        psx_runtime_moby_cone_bias_scale_q12 = 0;  /* native outside render */
-
-        /* Phase 7.2: near-Z clamp soften. Lifts the mac3p->0 clamp to a
-         * small positive floor so slope widening still applies a partial
-         * cone in the strip right at the camera plane. Trades a tiny
-         * near-Z over-admit (geometrically meaningless — the cone is
-         * ill-defined behind-Z) for fewer aspect-asymmetric clips of
-         * mobys at the screen edge near the camera. Default value 64
-         * tuned to lift the floor by ~half the typical Z-bias (77 for
-         * shaded), so slope widening gets meaningful traction even when
-         * mac3p would have been clamped. Tunable via env var. */
-        extern int32_t psx_runtime_moby_cone_mac3p_floor;
-        extern int32_t openpete_moby_cone_mac3p_floor_render;
-        int32_t mac3p_floor = 64;
-        if (getenv("OPENPETE_MOBY_CONE_MAC3P_FLOOR")) {
-            mac3p_floor = atoi(getenv("OPENPETE_MOBY_CONE_MAC3P_FLOOR"));
-            if (mac3p_floor < 0) mac3p_floor = 0;
-        }
-        openpete_moby_cone_mac3p_floor_render = mac3p_floor;
-        psx_runtime_moby_cone_mac3p_floor = 0;  /* native outside render */
-
-        /* r_environment.s per-vertex lateral bound widening (render-pass
-         * only). Native admits |MAC1| < 256; widescreen admits up to
-         * 256 * thresh_factor so the env renderer projects vertices
-         * across the full Hor+-widened framebuffer instead of leaving
-         * the side strips uncovered (32:9 = factor 2.667, the right
-         * 1/3 was bg-color before this). Y-axis bound is left native
-         * since vertical FOV is preserved. */
-        extern uint32_t psx_runtime_env_cell_x_bound;
-        extern uint32_t openpete_env_cell_x_bound_render;
-        openpete_env_cell_x_bound_render =
-            (uint32_t)((float)0x100 * thresh_factor);
-        psx_runtime_env_cell_x_bound = 0x100u;  /* native outside render */
-
-        /* GTE SXY saturation bound — render-pass-only widening. Native
-         * 0x400 clips widescreen vertices at PSX-X 1023. Widen to
-         * 0x400 * thresh_factor during render. See psx_runtime.h. */
-        extern uint32_t psx_runtime_sxy_sat_bound;
-        extern uint32_t openpete_sxy_sat_bound_render;
-        openpete_sxy_sat_bound_render =
-            (uint32_t)((float)0x400 * thresh_factor);
-        psx_runtime_sxy_sat_bound = 0x400u;  /* native outside render */
-
-        /* r_cyclorama.s func_80050BD0 portal clip-rect X-upper clamp.
-         * Native code clamps the per-portal clip rect's right edge to
-         * sx=512 (4:3 framebuffer width), so the cyclorama dome drawn
-         * inside a level-entry portal gets cut off on the right at any
-         * widening. Widen the clamp to 512*thresh_factor so the rect
-         * matches the OFX-widened framebuffer; uses thresh_factor (cap
-         * 1.5) so all right-edge cull surfaces line up. Default 512/513
-         * preserves byte-identical 4:3. */
-        extern uint32_t psx_runtime_portal_clip_x_max;
-        extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
-        uint32_t portal_x_max = (uint32_t)(512.0f * thresh_factor);
-        psx_runtime_portal_clip_x_max         = portal_x_max;
-        psx_runtime_portal_clip_x_max_plus_1  = portal_x_max + 1u;
-
-        /* 2D full-bleed prims (cutscene letterbox bars in func_80018F30,
-         * fade-to-color overlay in func_800190D4). The PsyCross host ortho
-         * widens to disp.w * openpete_disp_w_factor (left-anchored), so
-         * widen these prims' PSX X-extent by the same factor — uncapped,
-         * since this is a single screen-aligned quad (no poly-buffer or
-         * cull-surface coupling). See psx_runtime.h. */
-        extern uint32_t psx_runtime_fullbleed_x_max;
-        /* PROJECTION-side: these 2D prims widen to span the PsyCross ortho,
-         * which is keyed on openpete_disp_w_factor. In native mode the bars
-         * stay canonical [0,512] and the native UI feeder (ui_sprite_native.c
-         * feed_f4) re-centres + widens them itself, so leave the knob at its
-         * 512 default (disp_w_factor == 0 → fullbleed_x_max_f == 512).
-         * ceil() not truncate: at 16:9 (factor 4/3) the exact width is
-         * 682.666..., and truncating to 682 leaves a 1-PSX-px / ~1-host-px
-         * sliver of the right edge uncovered. PsyCross ortho extends to
-         * disp.w * factor (a float); the prim's PSX-X end must be >= that
-         * after the host-px mapping, so round up. */
-        float fullbleed_x_max_f = (openpete_disp_w_factor > 0.0f)
-            ? 512.0f * openpete_disp_w_factor : 512.0f;
-        psx_runtime_fullbleed_x_max = (uint32_t)ceilf(fullbleed_x_max_f);
-        OPL_INFO_F("aspect", "2D full-bleed X-max: 512 -> %u "
-                   "(exact %.3f, factor=%.3f; letterbox/fade cover full "
-                   "host width)",
-                   (unsigned)psx_runtime_fullbleed_x_max,
-                   (double)fullbleed_x_max_f,
-                   (double)openpete_disp_w_factor);
-        OPL_INFO_F("aspect", "portal clip-rect X-clamp: 512 -> %u "
-                   "(thresh_factor=%.3f)",
-                   (unsigned)portal_x_max, (double)thresh_factor);
-        OPL_INFO_F("aspect", "moby cone-X widening: extra_q12=%d "
-                   "(slope %.3f -> %.3f, admit half-FOV ~%.1f° -> ~%.1f°)",
-                   (int)psx_runtime_moby_cone_extra_q12,
-                   0.75,
-                   (double)((3.0f + 4.0f * extra_f) / 4.0f),
-                   36.87,
-                   (double)(57.2958f * atan2f((3.0f + 4.0f * extra_f) / 4.0f,
-                                              1.0f)));
     }
 }
 
@@ -584,7 +123,7 @@ void widescreen_polybuf_set_canonical(uint32_t canon_lo, uint32_t canon_hi) {
  * pointers must keep the value real hardware would hold even though the
  * prim backing store is relocated to host memory for capacity (see
  * notes/plans/openpete-polybuf-host-redirect.md). Identity when the
- * polybuf isn't relocated (4:3 default) or the address falls outside the
+ * polybuf isn't relocated (default) or the address falls outside the
  * registered region, so substituted sites stay byte-identical. */
 uint32_t psx_runtime_polybuf_to_canon(uint32_t host_addr) {
     if (!s_polybuf_active) return host_addr;
@@ -641,4 +180,3 @@ int widescreen_polybuf_setup(uint32_t size_per_slot, uint32_t psx_base) {
                psx_base, psx_base + size_per_slot);
     return 0;
 }
-

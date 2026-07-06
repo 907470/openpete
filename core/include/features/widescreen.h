@@ -1,26 +1,14 @@
-// core/features/widescreen.h — Hor+ widescreen + FOV slider feature.
+// core/features/widescreen.h — FOV slider + polybuf relocation.
 //
-// See notes/plans/openpete-widescreen-fov.md for full design + history;
-// notes/plans/openpete-feature-modules.md for the consolidation plan.
+// 2026-07-06: the PsyCross-mode --aspect substitution stack (projection
+// widening, cull-widening knobs, render bracket, cyclorama multi-pass)
+// was RETIRED — see the widescreen.c header note and Phase 6 of
+// notes/plans/openpete-native-renderer.md. Widescreen is a native-
+// renderer display policy now (window-derived; core/runtime/
+// native_render.c). --aspect only sizes the window.
 //
-// Two entry points, called from core/runtime/run.c at fixed phase
-// boundaries:
-//
-//   widescreen_apply_disp_w_factor(opts)
-//     Sets openpete_disp_w_factor + openpete_fov_h_override from
-//     --aspect / --fov. Called BEFORE PsyX_Initialise so the GTE/CPUState
-//     boot sees the right values.
-//
-//   widescreen_apply_runtime_knobs(opts)
-//     Populates the psx_runtime_* knobs that gate the recompiler's
-//     address-keyed substitutions, plus PsyCross's
-//     g_psyx_render_aspect_factor. Called AFTER PsyX_Initialise because
-//     PsyCross's per-scene state needs the initialiser to have run.
-//
-// Phase 2.1a of the consolidation plan: just the apply_options math is
-// here. Knob storage stays in core/runtime/dispatch.c (Phase 2.1c) and
-// per-vaddr dispatch arms stay in games/spyro-1/game_extras_impl.c
-// (Phase 2.1b).
+// See notes/plans/openpete-widescreen-fov.md for the feature's full
+// design + history.
 
 #ifndef OPENPETE_FEATURES_WIDESCREEN_H
 #define OPENPETE_FEATURES_WIDESCREEN_H
@@ -31,26 +19,22 @@
 extern "C" {
 #endif
 
-void widescreen_apply_disp_w_factor(const openpete_options_t* opts);
-void widescreen_apply_runtime_knobs(const openpete_options_t* opts);
-
-/* The capped Hor+ factor for --aspect (F = aspect/(4:3), clamped to the
- * overflow ceiling). Shared by the PsyCross disp_w_factor path and the
- * native cull-widen-factor path so the cap can't drift. 0 if --aspect
- * isn't set. */
-float widescreen_capped_factor(const openpete_options_t* opts);
+/* --fov: derive openpete_fov_h_override (GTE H override) from
+ * opts->fov_deg. Called from run.c before PsyX_Initialise, PsyCross
+ * renderer mode only (the native renderer projects canonically; its
+ * FOV policy is Phase-7 work). */
+void widescreen_apply_fov(const openpete_options_t* opts);
 
 /* --- Polybuf relocation (RAM virtualization first consumer) --------------
  *
  * Spyro's double-buffered polygon buffer (0x1C000 per slot in matching
- * decomp) overflows at wide aspect ratios — the cone-cull admits more
- * cells than the buffer can hold. To unblock 21:9 / 32:9, allocate a
- * larger host-backed buffer via the RAM virtualization primitive and
- * post-hook AllocateBuffers (the per-game dispatch arm in
- * games/spyro-1/game_extras_impl.c hooks the Spyro-specific PC) to
- * overwrite the canonical
- * polybuf pointers with addresses in the registered region. See
- * notes/plans/openpete-widescreen-fov.md and
+ * decomp) overflows when the --no-lod producer stack admits far-LOD
+ * geometry. Allocate a larger host-backed buffer via the RAM
+ * virtualization primitive and post-hook AllocateBuffers (the per-game
+ * dispatch arm in games/spyro-1/game_extras_impl.c hooks the
+ * Spyro-specific PC) to overwrite the canonical polybuf pointers with
+ * addresses in the registered region. See
+ * notes/plans/openpete-polybuf-host-redirect.md and
  * notes/plans/openpete-ram-virtualization.md.
  *
  * widescreen_polybuf_setup() is idempotent. Returns 0 on success;

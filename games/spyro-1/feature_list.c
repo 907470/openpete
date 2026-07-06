@@ -9,7 +9,6 @@
 
 #include <stddef.h>
 
-extern const feature_module_t widescreen_module;
 extern const feature_module_t no_lod_module;
 extern const feature_module_t render_paths_module;
 extern const feature_module_t cyclorama_native_module;
@@ -25,7 +24,6 @@ extern const feature_module_t portal_native_module;
 extern const feature_module_t transition_native_module;
 
 const feature_module_t* const openpete_features[] = {
-    &widescreen_module,
     &no_lod_module,
     /* --render-paths: parse the path-isolation selection at startup (apply_options
      * only; the per-path polybuf brackets live in the native feature modules and
@@ -33,8 +31,7 @@ const feature_module_t* const openpete_features[] = {
     &render_paths_module,
     /* Phase 2 native-renderer cyclorama spike + A/B verify harness.
      * Hooks 0x8004EBA8 only when OPENPETE_CYC_VERIFY is set; otherwise an
-     * inert fall-through. Registered after widescreen so its cyclorama-360
-     * arm keeps first dibs at wide aspect (it defers at native 4:3). */
+     * inert fall-through. */
     &cyclorama_native_module,
     /* Phase 3 native-renderer moby spike + A/B verify harness. Hooks the
      * REGULAR material renderer 0x8001F798 only when OPENPETE_MOBY_VERIFY or

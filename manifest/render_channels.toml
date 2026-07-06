@@ -28,10 +28,10 @@
 #                    so the audit trail isn't lost.
 #
 # A `gated` channel may have its substitution_sites empty *iff* it
-# also sets `gated_via = "<other_channel_name>"` — used when one
-# channel closes as a side effect of another's substitutions (e.g.
-# class_skip_flags is gated via widescreen_clip_x_threshold). The
-# audit verifies the referenced channel exists and is itself gated.
+# also sets `gated_via = "<other_channel_name>"` (closure as a side
+# effect of another channel's substitutions) or a `verdict_fn`
+# (openpete-side gating). The audit verifies the referenced channel
+# exists and is itself gated.
 #
 # See notes/plans/openpete-determinism-enforcement.md Phase 4.
 
@@ -88,67 +88,32 @@ doc              = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "widescreen_clip_x_threshold"
-status      = "gated"
+status      = "audited_clean"
 description = """
-Per-vertex SX right-edge clip threshold (0x200 == 512) hardcoded
-via `lui $r, 0x200` across the cyclorama / moby / particle /
-environment renderers. Substituted with psx_runtime_clip_x_threshold
-so widescreen widens the clip without altering native PSX
-behavior — default 0x02000000 == byte-identical 4:3."""
-# GENERATED sites (kind=const_load): the recompiler emits `rt = knob`
-# (replacing the hardcoded `lui $rt, 0x200`) from this table via
-# --channel-sites; no addresses hardcoded in code_generator.cpp. imm=0x0200
-# is the lui immediate (512<<16 threshold) the site must carry.
-substitution_sites = [
-    { addr = 0x8004ED8C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_cyclorama.s lui $t7
-    { addr = 0x8004F1A8, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_cyclorama.s lui $t7 (2nd)
-    { addr = 0x8001F9F4, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $t9 (1st)
-    { addr = 0x80021190, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $t9 (2nd)
-    { addr = 0x80022FF8, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_moby.s lui $s0 (3rd)
-    { addr = 0x800574BC, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_particles.s lui $s6
-    { addr = 0x8002626C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },  # r_environment.s
-    { addr = 0x8002652C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x800266E0, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x8002684C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x80027924, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x80027A60, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x80028074, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x8002817C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x80028A40, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x80028C50, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x8002982C, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x800299AC, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x8002A2F4, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-    { addr = 0x8002A4C0, imm = 0x0200, kind = "const_load", knob = "psx_runtime_clip_x_threshold" },
-]
-verdict_fn       = "psx_runtime_clip_x_threshold"
-verified_against = ["aspect_determinism"]
-# Pure presentation-side widening — no gameplay-state region directly
-# tied to this channel; "gated" status here means "verified to not
-# leak via the harness", not "intercepts a known gameplay write".
+RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+Was: per-vertex SX right-edge clip threshold (`lui $r, 0x200` == 512)
+across the cyclorama / moby / particle / environment renderers,
+substituted with psx_runtime_clip_x_threshold so PsyCross-mode Hor+
+could widen the clip. The native renderer widens at the display/clip
+layer from canonical producers, so no mode widens the game-side cull
+any more — the 20 const_load sites reverted to the hardcoded 512 and
+the knob was deleted. Entry kept for the audit trail."""
+substitution_sites = []
 state_regions    = []
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_portal_clip_rect"
-status      = "gated"
+status      = "audited_clean"
 description = """
-func_80050BD0 portal clip-rect X-upper clamp (`addiu $r, $zero,
-0x200`) and its associated `slti $r, 0x201` test. Substituted with
-psx_runtime_portal_clip_x_max so widescreen widens the per-portal
-clip rect's right edge. Default 512 == byte-identical 4:3."""
-substitution_sites = [
-    # addiu $s4,$zero,0x200 — GENERATED (kind=const_load, rt=knob)
-    { addr = 0x80051804, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
-    { addr = 0x80051E98, imm = 0x0200, kind = "const_load", knob = "psx_runtime_portal_clip_x_max" },
-    # slti $r,$r,0x201 — GENERATED (replace_call): rt = psx_runtime_portal_clip_slt(rs)
-    # = `rs < portal_clip_x_max_plus_1` (the widened compare lives in widescreen.c).
-    { addr = 0x800517F4, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_portal_clip_slt" },
-    { addr = 0x80051E88, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_portal_clip_slt" },
-]
-verdict_fn       = "psx_runtime_portal_clip_x_max"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # presentation-side; see widescreen_clip_x_threshold note
+RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+Was: func_80050BD0 portal clip-rect X-upper clamp (const_load 0x200 +
+`slti 0x201` replace_call -> psx_runtime_portal_clip_slt) widened for
+PsyCross-mode Hor+. Producers run canonical 4:3 in every mode now;
+sites reverted to the hardcoded 512/513 and the knob + hook were
+deleted. Entry kept for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
@@ -583,56 +548,34 @@ doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
-status      = "gated"
+status      = "audited_clean"
 description = """
-2D full-bleed primitive X-width for cutscene letterbox bars
-(func_80018F30) and fade-to-color overlay (func_800190D4). Both
-functions emit POLY_F4s sized to the native 4:3 framebuffer width
-(`li $r, 0x200`). With Hor+ widening the host GL ortho widens to
-disp.w * factor (left-anchored), so the unmodified 512-wide prims
-only cover the leftmost 4:3 inset. Substituted with
-psx_runtime_fullbleed_x_max = 512 * openpete_disp_w_factor under
---aspect so fades and cutscene bars span the full host window.
-Default 512 == byte-identical 4:3."""
-# GENERATED sites (kind=const_load): `li $r, 0x200` == addiu $r,$zero,0x200,
-# emitted as `rt = knob` from the manifest via --channel-sites.
-substitution_sites = [
-    { addr = 0x80019004, imm = 0x0200, kind = "const_load", knob = "psx_runtime_fullbleed_x_max" },  # func_80018F30 letterbox: li $s1, 0x200
-    { addr = 0x80019138, imm = 0x0200, kind = "const_load", knob = "psx_runtime_fullbleed_x_max" },  # func_800190D4 fade:      li $v1, 0x200
-]
-verdict_fn       = "psx_runtime_fullbleed_x_max"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # presentation-side; render-time only
+RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+Was: 2D full-bleed prim X-width (cutscene letterbox func_80018F30 +
+fade overlay func_800190D4) widened via psx_runtime_fullbleed_x_max
+to span the PsyCross-widened GL ortho. Native mode always kept these
+canonical (ui_sprite_native.c re-centres + widens the bars itself);
+with PsyCross-mode --aspect retired the sites reverted to the
+hardcoded 512 and the knob was deleted. Entry kept for the audit
+trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_env_cell_x_bound"
-status      = "gated"
+status      = "audited_clean"
 description = """
-r_environment.s func_800258F0 has a per-vertex lateral-bound cull
-right after RTPS at 0x80026A2C..0x80026A50 testing |MAC1| < 256 &&
-|MAC2| < 256 (camera-space X/Y bound). The X-axis bound caps the
-horizontal world-extent that gets projected: at 32:9 (factor 2.667)
-the visible angular width is ~127°, but ±256 only admits ~74° worth
-of vertices, leaving the right ~1/3 of the rendered frame uncovered
-by env strips (bg-color shows through). Widening this bound to
-256 * thresh_factor admits the rest of the frustum.
-
-Render-pass only: armed in the GamestateDraw bracket
-(games/spyro-1/features/widescreen.c on_8001ED5C_render_bracket) so
-gameplay-side GTE work outside the render pass sees the canonical
-±256 bound. Y-axis is left untouched — vertical FOV is preserved.
-
-Default 0x100 == byte-identical 4:3."""
-# GENERATED: +0x100 is offset_add (rt = rs + bound); the companion -0x200
-# is replace_call -> env_cell_x_bound_neg (rt = rs - 2*bound, in widescreen.c).
-substitution_sites = [
-    { addr = 0x80026A34, imm = 0x100, kind = "offset_add", knob = "psx_runtime_env_cell_x_bound" },  # addi $a2,$a2,+0x100 (X+bound)
-    { addr = 0x80026A3C, dest = "rt", operand = "rs", kind = "replace_call", hook = "psx_runtime_env_cell_x_bound_neg" },  # addi $a2,$a2,-0x200 (X-bound)
-]
-verdict_fn       = "psx_runtime_env_cell_x_bound"
-verified_against = ["aspect_determinism"]
-state_regions    = []  # render-pass only; bound restored to native outside
+RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+Was: r_environment.s per-vertex lateral bound (|MAC1| < 256) widened
+render-pass-only (offset_add knob + env_cell_x_bound_neg companion
+hook) so PsyCross-mode Hor+ admitted off-4:3 env vertices. The native
+terrain feeder derives coverage from the aspect-independent PVS
+sublist, so no mode needs the widened bound — sites reverted to the
+hardcoded +0x100/-0x200 and the knob + hook were deleted. Entry kept
+for the audit trail."""
+substitution_sites = []
+state_regions    = []
 doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
@@ -1035,58 +978,27 @@ doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "class_skip_flags"
-status      = "gated"
+status      = "audited_clean"
 description = """
-"Rendered world sectors flags" — D_800771C8, 256 bytes (the
-manifest's earlier 0x40 was undersized; func_800258F0 actually
-clears 0x100 bytes). Written by r_environment.s at PC 0x80025B50
-(`sb $fp, 0x0($s5)`) during the env-renderer's per-sector cull
-pass; read by func_800521C0 (moby_lists.s) which clears
+"Rendered world sectors flags" — D_800771C8, 256 bytes. Written by
+r_environment.s at PC 0x80025B50 during the env-renderer's per-sector
+cull pass; read by func_800521C0 (moby_lists.s) which clears
 m_WasDrawn=0 on every moby whose owning sector wasn't rendered.
-Genuine render→gameplay channel.
+Genuine render->gameplay channel.
 
-ROOT CAUSE (traced 2026-05-04 via MVMVA-trace at PC 0x80025A68):
-
-  The leak originated in openpete's own
-  game_extras_impl.c env-renderer wrapper: it scaled
-  g_Camera.m_ViewMatrix.m[0][0..2] by 1/disp_w_factor before
-  calling func_800258F0 to widen the per-cell cone-cull for Hor+
-  rendering. The cull at 0x80025B50 also writes the per-sector
-  visibility byte that gameplay reads, so the matrix widening
-  leaked into D_800771C8. GTE MVMVA-trace confirmed M[0][0] and
-  M[0][2] differed by exactly the aspect factor (1.334 = 16:9 /
-  4:3) across runs — only row 0, only first/third columns,
-  matching the row-0-X widening. No psxrecomp substitution
-  involvement.
-
-CLOSURE:
-
-  Pre-compute a 256-byte canonical visibility mask in C *before*
-  the matrix widening, by replicating the asm's three cull
-  conditions (behind-camera, front-face X cone, front-face Y cone)
-  with the canonical (un-widened) ViewMatrix. After
-  func_800258F0 returns with widened D_800771C8, AND the table
-  with the canonical mask: bytes the widened cull set to 0xFF
-  that the canonical cull would not have passed get cleared back
-  to 0. Render queues + emitted prims (already populated by the
-  widened pass) are untouched, so Hor+ visual coverage is
-  preserved.
-
-  Implementation gotcha caught during the trace: the asm has a
-  delay-slot `add $t4, $t4, $t5` after the behind-camera test
-  (line 137 of r_environment.s) that turns the front-face Z
-  adjust into 19E/32 not 9E/16. Missing that constant in the
-  initial C cull was a silent false-negative on cells like
-  cell-36 in the title-autoplay scenario; corrected during the
-  same fix.
-
-  See games/spyro-1/game_extras_impl.c (canonical_mask block)."""
+CLOSED BY CONSTRUCTION 2026-07-06 (PsyCross --aspect substitution
+stack deleted). The only thing that ever perturbed this table was
+openpete's own env-renderer widening (m_ViewMatrix row-0 scale in the
+PsyCross-mode Hor+ arm, traced 2026-05-04 via MVMVA-trace at PC
+0x80025A68); the closure was a C-side canonical-mask AND in that same
+arm. With the widening arm deleted, every mode runs the canonical
+cull and writes the canonical verdict directly — no interception
+needed. The full root-cause + closure history (including the
+delay-slot 19E/32 gotcha in the C replica) lives in git history and
+notes/plans/spyro-moby-update-vs-render.md."""
 substitution_sites = []
-verdict_fn         = "openpete-side: canonical_mask AND in env-renderer wrapper"
-verified_against   = ["aspect_determinism"]
 state_regions      = ["render_channel:class_skip_flags"]
 doc                = "notes/plans/spyro-moby-update-vs-render.md"
-
 
 [[channel]]
 name        = "no_lod_env_queue_offsets"

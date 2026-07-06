@@ -1265,11 +1265,6 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * notes/plans/openpete-widescreen-fov.md item 2. */
 extern void func_8005B6F8(CPUState* cpu);
 
-/* (widescreen-related extern decls + env-renderer instrumentation
- * moved to games/spyro-1/features/widescreen.c — see Phase 2.1b in
- * notes/plans/openpete-feature-modules.md.) */
-extern float    openpete_disp_w_factor;  /* still consumed by gem-trace below */
-
 /* Phase 3/4 — native-decomp dispatch table. Generated from
  * manifest/native.toml by tools/gen_dispatch.py; see
  * generated/native_dispatch.c. Each [[dispatch]] entry there names a

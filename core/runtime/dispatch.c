@@ -127,7 +127,6 @@ void      (*openpete_psxtrace_dispatch_hook)(uint32_t addr) = NULL;
  * RAM and consuming two golden records for one real frame (a measurement
  * artifact, not a gameplay change). Suppress the anchor during the render
  * pass so exactly one record is consumed per game frame. */
-extern int openpete_render_pass_active;
 
 /* Write a 528-byte 'CSv1' CPU dump matching the format produced by
  * scripts/pcsx-redux-ram-dump.lua (so a single diff helper can post-
@@ -319,8 +318,7 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     }
     if (openpete_psxtrace_dispatch_hook &&
         openpete_psxtrace_anchor_pc != 0u &&
-        addr == openpete_psxtrace_anchor_pc &&
-        !openpete_render_pass_active) {
+        addr == openpete_psxtrace_anchor_pc) {
         openpete_psxtrace_anchor_hits++;
         if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
             openpete_psxtrace_dispatch_hook(addr);

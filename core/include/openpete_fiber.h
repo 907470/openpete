@@ -70,28 +70,10 @@ void openpete_yield_to_host(void);
 void openpete_yield_to_host_no_tick(void);
 
 /* Horizontal-FOV override expressed as a target GTE H register value.
- * 0 = no override (the game's SetGeomScreen argument is forwarded
- * verbatim). Set once at boot from --fov; psyq_SetGeomScreen replaces
- * the H argument with this when non-zero. See
+ * 0 = no override. Set once at boot from --fov (PsyCross renderer
+ * mode); consumed by widescreen_eff_h in gte_rtps_internal. See
  * notes/plans/openpete-widescreen-fov.md "FOV slider". */
 extern int openpete_fov_h_override;
-
-/* DISPENV/DRAWENV horizontal widening factor for Hor+ widescreen.
- * 1.0f (or 0.0f as a "not set" sentinel) = native 4:3, no widening.
- * Computed at boot from --aspect as `aspect_w_over_h / (4.0/3.0)`. The
- * SetDefDispEnv / SetDefDrawEnv / SetGeomOffset thunks multiply their
- * width / x-offset arguments by this factor so PsyCross's GR_Ortho2D
- * projects the GTE-emitted vertices across the wider framebuffer. */
-extern float openpete_disp_w_factor;
-
-/* Hor+ factor that the game-side culls must admit, set in BOTH renderer
- * modes. Decoupled from openpete_disp_w_factor (which is the PROJECTION
- * widening — GTE OFX + PsyCross ortho — and stays PsyCross-only, since the
- * native renderer projects canonically and widens at clip level itself).
- * Equal to disp_w_factor in PsyCross mode; F = aspect/(4:3) with
- * disp_w_factor == 0 in native mode. See the definition in
- * core/runtime/fiber.c for the full rationale. */
-extern float openpete_cull_widen_factor;
 
 /* openpete_no_lod has moved to core/features/no_lod.h (declared there
  * and in third_party/psxrecomp/runner/include/psx_runtime.h for the

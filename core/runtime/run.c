@@ -735,6 +735,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * cropped aspect = requested_aspect × 240/224. User-provided --window
      * always wins. */
     if (opts->aspect_w_over_h > 0.0f &&
+        opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
+        /* The PsyCross-mode Hor+ substitution stack was retired 2026-07-06
+         * (Phase 6, openpete-native-renderer.md): the reference renderer
+         * draws canonical 4:3 only, so a widened window would just
+         * stretch it. Native modes keep --aspect (window-driven Hor+). */
+        OPL_WARN_F("aspect", "--aspect is native-renderer-only (the PsyCross "
+                   "Hor+ substitution stack was retired); the PsyCross "
+                   "reference renders canonical 4:3 — flag ignored");
+    } else if (opts->aspect_w_over_h > 0.0f &&
         opts->window_w <= 0 && opts->window_h <= 0) {
         const float crop_factor = 240.0f / 224.0f;
         win_w = (int)((float)WIN_H * opts->aspect_w_over_h * crop_factor + 0.5f);
@@ -743,11 +752,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
     }
 
-    /* --aspect: widen the framebuffer + GTE offset so the GTE projects
-     * vertices across a wider screen (Hor+ widescreen). The factor
-     * stays as a float global; thunks multiply at every Set*Env / offset
-     * call. 0.0f sentinel keeps the multiplier inactive when no
-     * override is requested. */
     /* --pgxp 0|1: PGXP cache consumer toggle (PsyCross-side). The
      * GTE-side emit (psxrecomp gte_rtps_internal) always populates
      * the cache when USE_PGXP=1 and render_pass_active; these flags
@@ -771,46 +775,30 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    (opts->pgxp_enable >= 0) ? (want_pgxp ? "1" : "0") : "default 0");
     }
 
-    /* --aspect / --fov derivation lives in core/features/widescreen.c.
-     * Sets openpete_disp_w_factor + openpete_fov_h_override; must run
-     * before PsyX_Initialise.
+    /* --fov derivation (GTE H override) lives in core/features/
+     * widescreen.c — PsyCross reference mode only (the native renderer
+     * projects canonically; its FOV policy is Phase-7 work).
      *
-     * PsyCross-renderer ONLY. The native renderer (vk/ab/diff) owns widescreen
-     * as a DISPLAY policy: it reads a CANONICAL GTE (offset 256, native H) and
-     * widens Hor+ from the window aspect itself. If the PsyCross substitution
-     * also ran, the two would double-widen AND the shifted GTE offset (256->341
-     * at 16:9) would mis-map the native projection — the cause of the "stretched
-     * --aspect + vk" report. --aspect still sizes the auto window above, which is
-     * exactly what drives the native widen; the substitution stays off. (Leaving
-     * openpete_disp_w_factor at its 0.0 sentinel also no-ops
-     * widescreen_apply_runtime_knobs below.) This is a step toward retiring the
-     * PsyCross --aspect substitution entirely — see openpete-native-renderer.md. */
-    /* The game-side cull widening (moby cone, env bounds, clip/SXY-sat
-     * thresholds, cyclorama coverage, polybuf capacity) is PsyCross-only,
-     * like the PROJECTION widening (openpete_disp_w_factor: GTE OFX +
-     * PsyCross GL ortho). In PsyCross mode the two factors are equal
-     * (byte-identical to before the projection/cull split).
-     *
-     * Native (vk/ab/diff): the verdict producers run PURE CANONICAL 4:3 —
-     * openpete_cull_widen_factor stays at its 0.0 sentinel, so the render
-     * bracket, env-renderer arm, cyclorama multi-pass, and every
-     * psx_runtime_* cull knob sit at native values (Phase 6 stack-revert
-     * step 1, openpete-native-renderer.md). Off-4:3 coverage is entirely
-     * native-side: the feeders derive from gamestate (terrain PVS sublist,
-     * shaded moby list, cyclorama dome) or host-build the off-4:3 set
-     * (moby/portal reveals). This is the same producer state as the
-     * default no---aspect wide-window config, where it has been the
-     * daily-validated path since the vk promotion; --aspect now only
-     * sizes the window (which drives the native Hor+ display widening). */
+     * The PsyCross-mode --aspect substitution stack — projection widening
+     * (GTE OFX + GL ortho), the cull-widening knobs, the render bracket,
+     * env all-walk arm and cyclorama multi-pass — was RETIRED 2026-07-06
+     * (Phase 6, openpete-native-renderer.md). Every renderer mode now runs
+     * the game's verdict producers pure canonical 4:3 by construction;
+     * widescreen is a native-renderer display policy driven by the window
+     * aspect (--aspect only sizes the window above). */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
-        widescreen_apply_disp_w_factor(opts);
-        openpete_cull_widen_factor = openpete_disp_w_factor;
-    } else if (opts->aspect_w_over_h > 0.0f) {
-        OPL_INFO_F("aspect", "native renderer: --aspect %.4f sizes the window "
-                   "(drives native Hor+ widescreen at clip level); producers "
-                   "run canonical 4:3 (game-side cull widening retired on the "
-                   "native path — Phase 6 step 1)",
-                   (double)opts->aspect_w_over_h);
+        widescreen_apply_fov(opts);
+    } else {
+        if (opts->fov_deg > 0.0f) {
+            OPL_WARN_F("fov", "--fov is PsyCross-reference-mode only for now "
+                       "(native FOV policy is Phase-7 work); ignored");
+        }
+        if (opts->aspect_w_over_h > 0.0f) {
+            OPL_INFO_F("aspect", "--aspect %.4f sizes the window; the native "
+                       "renderer widens Hor+ at the display layer from "
+                       "canonical 4:3 producers",
+                       (double)opts->aspect_w_over_h);
+        }
     }
 
     /* --no-lod: feature module owns scratch-pool relocation, queue-
@@ -874,11 +862,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
                     /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
-
-    /* Hor+ post-PsyX knob population — see core/features/widescreen.c.
-     * Sets g_psyx_render_aspect_factor + every psx_runtime_* knob the
-     * recompiler's address-keyed substitutions consult. */
-    widescreen_apply_runtime_knobs(opts);
 
     /* App icon decoded at build time from the PSX save-file header
      * (the red gem from the BIOS memory-card screen). The Win32 .rc

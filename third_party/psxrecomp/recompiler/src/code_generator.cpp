@@ -468,18 +468,6 @@ std::string CodeGenerator::translate_andi(uint32_t instr) {
         return "/* nop: write to $zero */";
     }
 
-    /* Spyro's handwritten env renderer (r_environment.s) builds a
-     * per-vertex screen-bounds clip mask via `andi $reg, SXY2, 0xFE00`
-     * — bits 9..15 of SX, rejecting SX outside [0, 512). For widescreen
-     * SX legitimately exceeds 512; substitute the literal with a
-     * runtime-tunable mask so openpete can widen it without altering
-     * native PSX behavior (default 0xFE00 == identity). See
-     * psx_runtime.h `psx_runtime_clip_x_mask`. */
-    if (imm == 0xFE00u) {
-        return fmt::format("{} = {} & psx_runtime_clip_x_mask;",
-                           reg_name(rt), reg_name(rs));
-    }
-
     return fmt::format("{} = {} & 0x{:04X};", reg_name(rt), reg_name(rs), imm);
 }
 

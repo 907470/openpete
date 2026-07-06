@@ -9,7 +9,7 @@
 #include "psx/gtereg.h"   // PsyCross GTERegisters / GTE_operator (used as
                           // ground-truth reference for the GTE trace logger)
 
-/* Hor+ widescreen GTE hooks (eff_H, eff_OFX, canonical-SX FIFO).
+/* FOV + verdict GTE hooks (eff_H, canonical-SX FIFO).
  * static inline — codegen byte-identical to the open-coded math this
  * replaced; verified via objdump-diff. See
  * .claude/plans/openpete-feature-modules.md Phase 3. */
@@ -292,46 +292,20 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     // Step 2: Push SZ FIFO
     gte->push_sz(gte->MAC3);
 
-    /* Hor+ widescreen / FOV slider — see core/features/widescreen_gte_inline.h.
-     * widescreen_eff_h applies the --fov H override; widescreen_eff_ofx
-     * widens OFX with the UI-moby per-element exception. 0/identity
-     * sentinels reduce to native PSX GTE math when widescreen is off. */
+    /* --fov GTE H override — see core/features/widescreen_gte_inline.h.
+     * 0 sentinel reduces to native PSX GTE math. (The Hor+ OFX widening
+     * that used to sit next to this was retired 2026-07-06 with the
+     * PsyCross-mode --aspect substitution stack; projection is always
+     * canonical now.) */
     int32_t eff_H   = widescreen_eff_h((int32_t)gte->H);
-    int64_t eff_OFX = widescreen_eff_ofx((int64_t)gte->OFX);
 
     // Step 3: Perspective division
     int32_t h_div_sz = gte_divide((uint16_t)eff_H, gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates
-    int64_t sx = (eff_OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
+    int64_t sx = ((int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
     int64_t sy = (gte->OFY + (int64_t)gte->IR2 * h_div_sz) >> 16;
     gte->push_sxy(sx, sy);
-
-    /* §13.16 diag (OPENPETE_HUD_ROW_LOG=1): identity + UI verdict of
-     * every projection landing in the HUD rows under widescreen —
-     * names the renderer/identity of the in-level HUD digits that
-     * never reach the UI classifier. */
-    if (openpete_render_pass_active && sy >= 0 && sy < 40 &&
-        sx >= -64 && sx < 1024) {
-        static int s_hrl = -1;
-        if (s_hrl < 0) { const char* e = getenv("OPENPETE_HUD_ROW_LOG");
-                         s_hrl = (e && *e) ? 1 : 0; }
-        if (s_hrl) {
-            static unsigned s_hrl_n = 0;
-            unsigned rot = openpete_render_cache_rotation_count();
-            uint32_t cur = openpete_ui_moby_get_current();
-            if (cur != 0u && rot >= 1040u && s_hrl_n < 30000u) {
-                s_hrl_n++;
-                fprintf(stderr,
-                        "[hud-row] r=%u cur=%08X ui=%d pc=%08X sx=%d "
-                        "sy=%d ofx=%d\n", rot, cur,
-                        openpete_ui_moby_is_current_ui(),
-                        openpete_gte_caller_pc, (int)sx, (int)sy,
-                        (int)(gte->OFX >> 16));
-            }
-        }
-    }
-
 
     /* OPENPETE_RTPS_BOXLOG="x0,y0,x1,y1,frame": temp forensics — log the caller
      * PC of every RTPS whose screen point lands in the box on that frame. */
@@ -359,7 +333,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
                           s_ofxc = (e && *e) ? 1 : 0; }
         if (s_ofxc && gte->OFX != (256 << 16))
             ofx_census_record(openpete_gte_caller_pc, (int32_t)gte->OFX,
-                              openpete_render_pass_active,
+                              /*render_pass=*/0,
                               openpete_render_cache_rotation_count());
     }
 
@@ -381,8 +355,8 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
      * just pushed onto SXY[2] is the int16-saturated form that the game
      * will subsequently mfc2 into prim packets — so it's also the key
      * the OT walker will look up by at draw time. We store the
-     * *canonical* (pre-Hor+) OFX so the matcher sees aspect-independent
-     * world coords; the live projection path still uses eff_OFX above. */
+     * canonical OFX so the matcher sees aspect-independent world
+     * coords (== the live projection OFX since the Hor+ retirement). */
     {
         openpete_render_cache_entry_t e;
         e.sxy_key = gte->SXY[2];
@@ -407,8 +381,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         e.gte_pc = openpete_gte_caller_pc;
         /* e.world_vidx set in the obj_tag block below (was _pad1). */
         /* transform-interp §4: real per-moby identity from the
-         * recompiler's per-moby ui-moby capture (0 = world/non-moby).
-         * Same side-channel widescreen_eff_ofx already consumes. */
+         * recompiler's per-moby ui-moby capture (0 = world/non-moby). */
         {
             /* §7.5-R3: stable cross-frame WORLD batch identity. When
              * the recompiler's terrain strip-entry injection has a

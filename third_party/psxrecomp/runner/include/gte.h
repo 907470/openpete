@@ -3,10 +3,6 @@
 #include <cstdint>
 #include <cstring>
 
-extern "C" {
-extern uint32_t psx_runtime_sxy_sat_bound;
-}
-
 namespace PSXRecomp {
 namespace GTE {
 
@@ -113,24 +109,9 @@ struct GTEState {
 
     void push_sxy(int64_t sx, int64_t sy) {
         // Saturate to screen coordinates and set flags. PSX hardware
-        // clamps SX/SY to ±0x400 (signed 11-bit). For Hor+ widescreen
-        // the projected SX legitimately exceeds 0x400 (e.g. 32:9 right
-        // edge ≈ 1366), so clamping at 0x3FF cuts off the right side
-        // of the rendered scene at FBO-X = 0x400/(0x400*factor) of the
-        // full width. The widened bound is render-pass-only — gameplay-
-        // side GTE work outside the render pass keeps native ±0x400 so
-        // any gameplay code that reads SXY sees canonical 4:3 values.
-        /* The SXY FIFO stores int16, so the saturation bound cannot exceed
-         * the int16 range. The Hor+ widened bound (0x400*factor) crosses
-         * 0x8000 at factor 32 (~384:9); past that, casting sat_hi to int16
-         * below wraps to a large NEGATIVE value, so a far-right vertex
-         * "saturates" to the far left — a degenerate coordinate that can
-         * spin downstream gameplay/camera math (observed as a hang at
-         * 512:9). Clamp to the representable int16 range. */
-        int32_t sat_lo = -(int32_t)::psx_runtime_sxy_sat_bound;
-        int32_t sat_hi =  (int32_t)::psx_runtime_sxy_sat_bound - 1;
-        if (sat_hi > 32767)  sat_hi = 32767;
-        if (sat_lo < -32768) sat_lo = -32768;
+        // clamps SX/SY to ±0x400 (signed 11-bit).
+        const int32_t sat_lo = -0x400;
+        const int32_t sat_hi =  0x400 - 1;
         int16_t sx_sat, sy_sat;
         if (sx < sat_lo)     { sx_sat = (int16_t)sat_lo; FLAG |= FLAG_SX2_SAT; }
         else if (sx > sat_hi){ sx_sat = (int16_t)sat_hi; FLAG |= FLAG_SX2_SAT; }

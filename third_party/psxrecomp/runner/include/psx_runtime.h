@@ -82,25 +82,6 @@ uint8_t* psx_get_scratch(void);
 /* Frame-gated GP1 display command tracker (called from gpu_write_gp1). */
 void diag_track_gp1(uint32_t cmd);
 
-/* Per-vertex screen-space clip mask used by handwritten asm cull
- * patterns (e.g. r_environment.s `andi $a1, $v0, 0xFE00`). The
- * mask tests bits 9..15 of SX from C2_SXY2, rejecting strips whose
- * vertices all lie outside [0, 512). For widescreen rendering
- * where SX legitimately exceeds 512, openpete widens this at boot
- * to e.g. 0xF800 (covers [-2048, 2047]). Default 0xFE00 preserves
- * native PSX behavior. Generated code with `andi imm=0xFE00`
- * substitutes this variable for the literal so the bound is
- * runtime-tunable without re-recompiling. */
-extern uint32_t psx_runtime_clip_x_mask;
-
-/* Cyclorama (r_cyclorama.s) right-edge clip threshold. Used at the
- * `sub $a, ($SX << 16), $reg` cull site to test SX < 512. Default
- * 0x02000000u (512 << 16) = native behavior; openpete widens to
- * 0x08000000u (2048 << 16) when --aspect is set. Substituted at
- * specific addresses by code_generator translate_lui — see comment
- * there. */
-extern uint32_t psx_runtime_clip_x_threshold;
-
 /* r_environment.s queue-head sub-offsets within g_SonyImage (or its
  * relocated mirror). Default values match the canonical splash struct:
  *   HP  queue head at +0x1C00 (m_WorldNearQueued)
@@ -178,85 +159,12 @@ extern int openpete_no_lod_producers;
  * env var. Used to visually identify what cells the LP-walk renders. */
 extern int psx_runtime_dbg_kill_env_lp_walk;
 
-/* Spyro r_moby.s func_80022A2C inline cone-X cull. The cull tests
- *   bgez (4*(|MAC1|-102) - 3*(MAC3+77))
- * with slope 3/4 = tan(36.87°) = 4:3 horizontal half-FOV. For
- * widescreen the demanded horizontal cone is wider, so subtract an
- * additional `extra * (MAC3+77)` from a1 inside the addi at
- * 0x80022C0C — effectively raises z-multiplier from 3 to (3 + 4*extra),
- * widening the admit slope to 4 / (3 + 4*extra).
- *
- * Q12 fixed-point. Default 0 (slope unchanged, 4:3 native). For 16:9
- * (factor 1.333), set to 4096*(factor-1) = ~1366 → slope 4/4.33 ≈ 0.92,
- * admits ~43°. Tune via OPENPETE_MOBY_CONE_EXTRA env var. */
-extern int32_t psx_runtime_moby_cone_extra_q12;
-
-/* Companion X-bias scale to the slope widening above. The cone test in
- * all three moby paths reduces to
- *   admit if  |MAC1| < X_bias + slope*(MAC3 + Z_bias)
- * where slope=3/4 native, and X_bias is 102 (shaded) or the per-moby
- * `a2` value (regular/specular). The slope widening alone leaves a
- * near-Z slice with native cone width because the X-bias term doesn't
- * scale with aspect — and the `mac3p<0` clamp collapses the slope
- * widening to zero in that strip too. This knob multiplies the X-bias
- * by (1 + bias_scale_q12/4096), restoring aspect-proportional X-
- * headroom even at MAC3+Z_bias ≤ 0.
- *
- * Q12 fixed-point of (factor-1). Default 0 = bias unchanged. For 16:9
- * (factor 1.333) set 0.333*4096 = 1365. Render-pass-only — swapped in
- * around the GamestateDraw call, zeroed outside, so gameplay-side
- * func_80022A2C callers (moby ticking) still see the canonical bias. */
-extern int32_t psx_runtime_moby_cone_bias_scale_q12;
-
-/* Phase 7.2: near-Z clamp soften. The cone widening clamps mac3p to >=
- * this floor before multiplying by extra_q12; native floor is 0 (the
- * proj_cone_extra_signed_clamp fix) which collapses slope widening to
- * zero whenever MAC3+Z_bias is negative — i.e. mobys near or behind
- * the camera plane fall back to native cone width. Setting a small
- * positive floor preserves a partial slope widening in that strip,
- * giving aspect-proportional headroom even at near-Z. Default 0 =
- * preserve existing clamp behaviour. Render-pass-only; staged by
- * widescreen.c. */
-extern int32_t psx_runtime_moby_cone_mac3p_floor;
-
-/* r_environment.s func_800258F0 per-vertex lateral bound cull at
- * 0x80026A2C..0x80026A50. After RTPS the asm tests
- *   |MAC1| < 256 && |MAC2| < 256
- * via two `addi $a2, +0x100` / `addi $a2, -0x200` chains (and same
- * for $a3). The X-axis bound (0x80026A34 / 0x80026A3C) is what limits
- * the lateral world-extent admitted to per-vertex projection — at
- * 32:9 (factor 2.667) the visible horizontal half-extent is 2.667×
- * native, so the native ±256 admit rejects vertices whose post-MVMVA
- * camera-space X exceeds 256, leaving the right side of the rendered
- * frame uncovered (no env strips emitted there).
- *
- * Single knob in MAC-1 units. Default 0x100 (= +256, native pre-add).
- * The `+0x100` site uses `psx_runtime_env_cell_x_bound` directly; the
- * `-0x200` site subtracts 2× the bound. Y-axis (`$a3`, 0x80026A44 /
- * 0x80026A4C) is left native — vertical FOV doesn't change. Render-
- * pass-only: armed in the GamestateDraw pre/post hook so gameplay-
- * side GTE work outside the render pass sees the canonical native
- * bound. */
-extern uint32_t psx_runtime_env_cell_x_bound;
-
-/* GTE push_sxy SX/SY saturation bound (in pixels, magnitude). Native
- * PSX hardware clamps to ±0x400 (signed 11-bit), which cuts off
- * Hor+-widescreen vertices whose projected SX exceeds 0x400 — visible
- * as a hard right-edge cap at PSX-X 1023 regardless of how wide the
- * GL ortho is. Default 0x400 (native). Render-pass setup widens to
- * (uint32_t)(0x400 * thresh_factor) so 32:9 (factor 2.667) admits SX
- * up to ~2730. Reset to 0x400 outside render pass so gameplay GTE
- * reads see canonical SXY. */
-extern uint32_t psx_runtime_sxy_sat_bound;
-
 /* Per-iteration scratch flag set inside each render-bucket walker's
  * cone test (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1
- * iff the moby would have passed the *native 4:3* cone test, regardless
- * of the actual cone width used for emit. The substituted
+ * iff the moby passed the native 4:3 cone test. The substituted
  * `sb $a0, 0x51($fp)` sites (0x8001F4CC / 0x80020C7C / 0x80022D98) read
- * this flag and only set m_WasDrawn=1 when it's set. Effect: the
- * render→gameplay channel (m_WasDrawn) stays 4:3-equivalent while
- * widescreen rendering still admits + emits edge mobys. */
+ * this flag and only set m_WasDrawn=1 when it's set — the m_WasDrawn
+ * render→gameplay channel's verdict gate. */
 extern uint8_t psx_runtime_native_cone_pass;
 
 /* Companion to native_cone_pass for the DISTANCE half of the moby cull
@@ -281,8 +189,8 @@ extern int32_t psx_runtime_mdist_thresh_delta;
  *   _lower : box-cull lower-bound (cull if v - delta <= 0)
  *   _upper : box-cull upper-bound + post-MVMVA proj-Z (cull if v + delta >= 0)
  * Each clears native_dist_pass when the canonical (un-saturated) 4:3 cull
- * would reject. Defined in core/features/widescreen.c. Identity when
- * --no-lod is off (mdist_thresh_delta == 0). This is the named-hook form of
+ * would reject. Defined in games/spyro-1/features/render_decouple.c.
+ * Identity when --no-lod is off (mdist_thresh_delta == 0). This is the named-hook form of
  * what used to be an inline `if (...) native_dist_pass = 0;` in the
  * recompiler — the verdict math now lives host-side, not in third_party. */
 void psx_runtime_dist_gate_lower(int32_t v);
@@ -300,30 +208,29 @@ void psx_runtime_dist_gate_upper(int32_t v);
  *                  non-zero — 0 is the uninit-slot sentinel), preserving the
  *                  shiny bit + byte 0x51, and record the canonical-distance
  *                  delta in mdist_thresh_delta for the dist-gate hooks.
- * Identity when --no-lod is off. Defined in core/features/widescreen.c. */
+ * Identity when --no-lod is off. Defined in games/spyro-1/features/no_lod.c. */
 uint32_t psx_runtime_no_lod_saturate32(CPUState* cpu, uint32_t addr);
 uint32_t psx_runtime_no_lod_moby_distance(CPUState* cpu, uint32_t addr);
 
 /* Moby cone-X cull ReplaceCall hooks (channel m_WasDrawn cone-compute sites).
  * Record the canonical 4:3 cone verdict in native_cone_pass and return the
- * widened cull comparand. _permoby(mac1,a2,mac3,a3) for regular/specular;
- * _shaded(mac1,mac3) for the fixed-102/77 shaded path. Identity at default
- * knobs. Defined in core/features/widescreen.c. */
+ * canonical comparand. _permoby(mac1,a2,mac3,a3) for regular/specular;
+ * _shaded(mac1,mac3) for the fixed-102/77 shaded path. Defined in
+ * games/spyro-1/features/render_decouple.c. */
 int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
                                        int32_t mac3, int32_t a3);
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
 
 /* Misc ReplaceCall hooks (moved out of the recompiler; defined in
- * core/features/widescreen.c). Each is identity at its default knob. */
+ * games/spyro-1/features/no_lod.c). Each is identity at its default knob. */
 int32_t  psx_runtime_no_lod_tier_bump(int32_t base, int32_t bump);
 uint32_t psx_runtime_moby_lp_face_load(CPUState* cpu, uint32_t base);
-int32_t  psx_runtime_env_cell_x_bound_neg(int32_t base);
-int32_t  psx_runtime_portal_clip_slt(int32_t v);
 uint32_t psx_runtime_dbg_skiplpworld(CPUState* cpu, uint32_t addr);
 uint32_t psx_runtime_dbg_lpwalk_strip(CPUState* cpu, uint32_t addr);
 
 /* Flag-gated store hooks (void ReplaceCall — emitted as `hook(cpu, ea, val);`
- * replacing the original sb). Defined in core/features/widescreen.c. */
+ * replacing the original sb). Defined in games/spyro-1/features/
+ * render_decouple.c. */
 void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
@@ -333,8 +240,9 @@ void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_no_lod_moby_zsf4_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
 /* Particle / sparkle canonical-SX cull hooks (defined in
- * core/features/widescreen.c). Set native_part_pass from the canonical SX
- * side channel / return the canonical SX, replacing inline recompiler math. */
+ * games/spyro-1/features/render_decouple.c). Set native_part_pass from the
+ * canonical SX side channel / return the canonical SX, replacing inline
+ * recompiler math. */
 int32_t psx_runtime_part_cull_sx1(int32_t a, int32_t b);
 int32_t psx_runtime_part_cull_sx2(int32_t a, int32_t b);
 int32_t psx_runtime_part_cull_4vert(int32_t v);
@@ -347,39 +255,13 @@ void psx_runtime_polybuf_hudmoby_reset_store(CPUState* cpu, uint32_t addr, uint3
 
 /* Per-iteration scratch flag for the particle renderer (r_particles.s).
  * Same shape as psx_runtime_native_cone_pass but for the screen-space
- * X-cull test against $s6 (= psx_runtime_clip_x_threshold). Each
- * `sub _, _, $s6` site preceding a `sb $s2, -0x1D($ra)` (m_03 = "drawn")
- * records whether the comparand would also pass the *canonical* 4:3
- * threshold (0x02000000). The substituted sb at 0x80057720 / 0x80057A10 /
- * 0x80057B20 / 0x80057CDC reads this flag and only writes m_03=1 when
- * the canonical 4:3 cull would have admitted the particle — keeping
- * gameplay-readable bytes 4:3-equivalent while the widened cull still
- * admits + emits prims for visual coverage outside 4:3. */
+ * X-cull test. The part_cull hooks at the `sub _, _, $s6` sites record
+ * the canonical 4:3 verdict from the canonical-SX q16 FIFO below; the
+ * substituted sb at 0x80057720 / 0x80057A10 / 0x80057B20 / 0x80057CDC
+ * reads this flag and only writes m_03=1 when the canonical cull
+ * admitted the particle — the particle_drawn_flag channel's verdict
+ * gate. */
 extern uint8_t psx_runtime_native_part_pass;
-
-/* Canonical 4:3 right-edge threshold expressed in *widened*-SX
- * coordinates. OFX widening shifts every projected SX uniformly by
- * `(factor - 1) * 256`, so a particle's SX in widened coords is
- * SX_widened = SX_native + delta_OFX. To replay the canonical cull
- * verdict against widened SX values, compare against
- * (0x200 + delta_OFX) << 16 instead of the bare 0x02000000. Set per
- * frame in run.c alongside psx_runtime_clip_x_threshold; defaults to
- * 0x02000000 (native 4:3, no shift). Read by the particle-cull
- * substitution at PCs 0x80057A04 / B14 / CB4 (and the 4-vertex
- * canonical OR at 0x800576EC). */
-extern uint32_t psx_runtime_native_clip_x_in_widened_space;
-
-/* Canonical 4:3 LEFT-edge threshold expressed in *widened*-SX
- * coordinates. The particle cull at 0x80057A00 (and friends) does
- * `blez (SX << 16), exit` — i.e. canonical-mode rejects when SX <= 0.
- * In widened coords SX_widened = SX_canonical + delta_OFX, so the
- * canonical-pass test in widened space is
- *   (SX_widened << 16) > (delta_OFX << 16).
- * This var holds (delta_OFX << 16); 0 means no widening (= native
- * 4:3 left edge at SX=0). Read by the same particle-cull substitution
- * at PCs 0x80057A04 / B14 / CB4 / F28 / 801C and the 4-vertex SLL OR
- * at 0x800576EC, AND-combined with the right-edge test. */
-extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
 
 /* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
  * after each projection. 3-deep FIFO matching push_sxy semantics —
@@ -391,40 +273,6 @@ extern uint32_t psx_runtime_native_clip_x_low_in_widened_space;
 extern int64_t openpete_canonical_sx0_q16;
 extern int64_t openpete_canonical_sx1_q16;
 extern int64_t openpete_canonical_sx2_q16;
-
-/* Spyro r_cyclorama.s func_80050BD0 portal-cyclorama clip-rect X-upper
- * clamp. The dispatcher computes a per-portal screen-space clip rect
- * (D_8007AA00..0C) then clamps the upper-X corner with
- *   slti  $v0, $s4, 0x201   ; (s4 >= 513?)
- *   addiu $s4, $zero, 0x200 ; clamp to native 4:3 width 512
- * at two sites (0x800517F4 / 0x80051804 and 0x80051E88 / 0x80051E98).
- * With OFX widened, portals span past sx=512 but the clip rect can't,
- * so the cyclorama dome inside the portal opening is cut off on the
- * right and the portal shows BG color where the dome should fill.
- *
- * `_max` substitutes for the addiu imm (clamp ceiling); `_max_plus_1`
- * substitutes for the slti imm (test threshold = max + 1). Defaults
- * 512 / 513 preserve native 4:3 behavior. openpete widens these to
- * 512*thresh_factor / +1 when --aspect is set, capped to match the
- * env right-edge threshold so all clip surfaces line up. */
-extern uint32_t psx_runtime_portal_clip_x_max;
-extern uint32_t psx_runtime_portal_clip_x_max_plus_1;
-
-/* Spyro 2D full-bleed primitive width clamp. Two render-side functions
- * emit POLY_F4s sized to the native 4:3 framebuffer width (PSX X = 0..512):
- *   - func_80018F30 (cutscene letterbox bars), li $s1, 0x200 at 0x80019004
- *   - func_800190D4 (fade-to-color overlay),   li $v1, 0x200 at 0x80019138
- * With Hor+ widening the host GL ortho widens to disp.w * factor, so the
- * 512-wide PSX prims map only to the leftmost 4:3 inset of the host window
- * — fades and cutscene bars leave the side bars unfilled. Substitute the
- * 512 immediate with this knob so openpete can widen the prim's right edge
- * to 512 * openpete_disp_w_factor under --aspect. The PsyCross ortho is
- * left-anchored (PSX x=0 -> host x=0), so widening the right edge is
- * sufficient. Default 512 = byte-identical 4:3 behaviour.
- *
- * Render-side only; no gameplay-readable RAM is touched (the writes go to
- * the OT/poly buffer that DrawOTag consumes). */
-extern uint32_t psx_runtime_fullbleed_x_max;
 
 /* Spyro double-buffered polygon-buffer slot size, in bytes. Spyro
  * allocates `0x1C000` per slot in 4BEF8.c:25-27 (matching decomp). The

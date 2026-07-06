@@ -39,7 +39,6 @@
 
 #include "openpete_render_cache.h"
 #include "openpete_time.h"
-#include "openpete_ui_moby.h"
 #include "openpete_vertex_trace.h"  /* openpete_spanlog_enabled/record */
 
 #include <stdio.h>
@@ -51,7 +50,6 @@
  * interp reproject below must mirror the same widening the live
  * projection applied, since vd.px is an ABSOLUTE screen position that
  * the renderer uses verbatim. */
-extern float openpete_disp_w_factor;   /* 0 / 1.0 = no Hor+ widening */
 extern int   openpete_fov_h_override;  /* 0 = no --fov H override */
 
 /* Defined in run.c. 1 while PsyCross rasterizes the OT (headless / psycross /
@@ -497,37 +495,6 @@ int openpete_render_cache_pgxp_project(const openpete_render_cache_entry_t* ep,
     float fofx = (float)e.ofx * (1.0f / 65536.0f);
     const float fofy = (float)e.ofy * (1.0f / 65536.0f);
 
-    /* Mirror the live Hor+ OFX widening (widescreen_eff_ofx). The cache
-     * deliberately stores the CANONICAL (pre-Hor+) OFX (for the
-     * is_canonical discriminator + aspect-independent semantics), but
-     * out->px is an ABSOLUTE screen position the renderer writes to
-     * v->x verbatim — so it must match the widened live projection.
-     * Without this, every PGXP-hit vertex lands at the canonical 4:3
-     * origin (left-aligned under PsyCross's left-anchored widened ortho)
-     * while PGXP-miss verts keep the widened int16 SXY, so triangles
-     * spanning the two stretch toward the left edge. UI mobys get the
-     * constant centring shift; everything else gets the proportional
-     * widening — exactly as widescreen_eff_ofx does live. Identity when
-     * disp_w_factor <= 1.0 (no --aspect), so 4:3 is byte-unchanged. */
-    if (openpete_disp_w_factor > 1.0f) {
-        /* §13.16: normalized screen-anchored text tags carry the UI
-         * marker (bit28|bit27) instead of an address — the live RTPS
-         * centred them via is_current_ui, and the mirror must agree
-         * or PGXP-hit glyph verts land at the WIDENED position while
-         * the int16 path stays centred (the two-position HUD
-         * flicker). */
-        /* §13.16: non-canonical OFX = glyph-emit idiom → centring,
-         * mirroring widescreen_eff_ofx (the in-level HUD projects
-         * inside the Spyro renderer where no per-moby classifier
-         * fires; the OFX value is the authoritative UI signal). */
-        if (e.ofx != (256 << 16) ||
-            openpete_ui_moby_is_addr_ui(e.obj_tag) ||
-            (e.obj_tag & 0x18000000u) == 0x18000000u) {
-            fofx += (float)((openpete_disp_w_factor - 1.0f) * 256.0f);
-        } else {
-            fofx *= openpete_disp_w_factor;
-        }
-    }
 
     /* Float-precision SXY in PSX pixel space (same coord space the
      * int16 SXY path produces, just with sub-pixel detail preserved). */

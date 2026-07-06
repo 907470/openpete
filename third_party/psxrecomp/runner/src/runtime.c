@@ -15,11 +15,6 @@
 #include "diag_log.h"
 #include "game_extras.h"
 
-/* Default to native PSX 0xFE00 (rejects SX outside [0, 512)). openpete
- * overrides this at boot when --aspect is set so handwritten-asm cull
- * patterns admit widescreen-extra geometry. See psx_runtime.h. */
-uint32_t psx_runtime_clip_x_mask = 0xFE00u;
-
 /* ---------------------------------------------------------------------------
  * PS1 memory regions
  *
