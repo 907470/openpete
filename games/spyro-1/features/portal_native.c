@@ -1348,13 +1348,16 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * centroid is off the 4:3 screen, so at wide AR a portal in the side margin shows
  * no destination-sky preview (the arch frames empty world). After the real
  * RenderPortals has fed the on-4:3 portals via the leaves, walk g_Portals and draw
- * a FLAT destination-sky preview for each portal that is off-4:3 but inside the
- * widened view and was NOT already fed by a leaf. Mirrors feed_portal_quad's
- * outline-polygon fill (tilted-plane per-vertex view-Z, front-biased) so the stone
- * arch occludes it into the opening shape and it occludes the world behind. Flat
- * only: a margin portal is to the SIDE, never the close one you walk into head-on
- * (that one is centred / on-4:3), so the gradient dome isn't needed here. Inert at
- * 4:3 (F=1). Display-only — reads g_Portals + camera, never writes PSX RAM. */
+ * a destination-sky preview for each portal that is off-4:3 but inside the
+ * widened view and was NOT already fed by a leaf: the flat outline-polygon fill
+ * (tilted-plane per-vertex view-Z, front-biased) so the stone arch occludes it
+ * into the opening shape, PLUS the gradient dome whenever the portal is within
+ * the .s's own dome range (mirrored distance rule + DPCS crossfade below — the
+ * original flat-only reveal assumed a margin portal is never close, which broke
+ * once edge-STRADDLING portals started revealing: a nearby arch at the screen
+ * edge showed the solid colour where the .s-at-centre shows the sky cyclorama).
+ * Inert at 4:3 (F=1). Display-only — reads g_Portals + camera, never writes PSX
+ * RAM (D_CLIPRECT is bracketed save/restore render scratch). */
 static void feed_revealed_portals(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
     if (F <= 1.0f) return;
@@ -1415,15 +1418,40 @@ static void feed_revealed_portals(CPUState* cpu) {
          * D_CLIPRECT for a culled portal; bbox computed at the gate above).
          * feed_portal_quad re-projects the outline against the interpolated
          * camera on replay. */
-        /* --no-lod always-dome, off-4:3 half (user report 2026-07-03: revealed
-         * portals still fell back to the flat colour). Same recipe as the
-         * leaf-hook forced dome: derived shared matrix via gte_ctrl; the base
-         * clip rect (RenderPortals set none for a culled portal) = the
-         * projected-outline bbox, written into D_CLIPRECT and RESTORED (render
-         * scratch, but keep canonical bytes canonical). canonical=0 + hint 0:
-         * a culled portal's live D_PORTAL_DEPTH is another portal's bucket. */
+        /* Destination DOME for revealed portals, distance rule mirrored from
+         * RenderPortals (calibrated 2026-07-06; user report: the reveal showed
+         * the solid LQ colour where the player expects the sky cyclorama).
+         * The .s leaf selection (0x80051858) draws the dome whenever its
+         * distance metric t4 < 16384, with the medium band [12288,16384)
+         * DPCS-fading the dome toward the flat colour by (t4-12288)/4096 — at
+         * the boundary the dome is 100% faded, so the far flat-only side
+         * crossfades seamlessly and the ~2% mirror error is invisible. t4
+         * tracks the OUTLINE MEAN view-Z (back-solved from live IR0 at
+         * cyclorama-portal f1811/f1831: t4/mean = 0.956/0.955; far/medium flip
+         * observed between mean 18010 and 15949, consistent). The reveal fades
+         * toward its OWN flat colour (the destination bg it fans below) so the
+         * crossfade converges on what the far reveal already shows. --no-lod
+         * keeps its unconditional un-faded dome.
+         *
+         * Same recipe as the leaf-hook forced dome: derived shared matrix via
+         * gte_ctrl; the base clip rect (RenderPortals set none for a culled
+         * portal) = the projected-outline bbox, written into D_CLIPRECT and
+         * RESTORED (render scratch, but keep canonical bytes canonical).
+         * canonical=0 + hint 0: a culled portal's live D_PORTAL_DEPTH is
+         * another portal's bucket. */
+        double rev_mean = 0.0;
+        for (int k = 0; k < pn; k++) rev_mean += poly[k].vz;
+        rev_mean /= pn;
+        int rev_nolod = nolod_portal_dome_on();
+        int rev_want = rev_nolod || rev_mean < 16384.0;
+        uint32_t rev_fog = 0; double rev_fog_t = 0.0;
+        if (rev_want && !rev_nolod && rev_mean > 12288.0) {
+            rev_fog = rgb;
+            rev_fog_t = (rev_mean - 12288.0) / 4096.0;
+            if (rev_fog_t > 1.0) rev_fog_t = 1.0;
+        }
         int rev_dome = 0; int rev_M[3][3];
-        if (nolod_portal_dome_on()) {
+        if (rev_want) {
             derive_dome_matrix(cpu, rev_M);
             uint32_t save_gte[5], save_clip[4];
             for (int j = 0; j < 5; j++) save_gte[j] = cpu->gte_ctrl[j];
@@ -1437,7 +1465,7 @@ static void feed_revealed_portals(CPUState* cpu) {
             cpu->gte_ctrl[2] = (uint32_t)(uint16_t)rev_M[1][1] | ((uint32_t)(uint16_t)rev_M[1][2] << 16);
             cpu->gte_ctrl[3] = (uint32_t)(uint16_t)rev_M[2][0] | ((uint32_t)(uint16_t)rev_M[2][1] << 16);
             cpu->gte_ctrl[4] = (uint32_t)(uint16_t)rev_M[2][2];
-            rev_dome = feed_portal_dome(cpu, skybox, 0, /*canonical=*/0, 0, 0.0);
+            rev_dome = feed_portal_dome(cpu, skybox, 0, /*canonical=*/0, rev_fog, rev_fog_t);
             for (int j = 0; j < 5; j++) cpu->gte_ctrl[j] = save_gte[j];
             for (int j = 0; j < 4; j++) cpu->write_word(D_CLIPRECT + j * 4u, save_clip[j]);
         }
@@ -1449,8 +1477,8 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->is_dome       = rev_dome;
             c->skybox        = rev_dome ? skybox : 0;
             c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
-            c->fog_rgb       = 0;
-            c->fog_t         = 0.0;
+            c->fog_rgb       = rev_fog;
+            c->fog_t         = rev_fog_t;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
             c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
             if (rev_dome && !s_dome_curr_valid) {
