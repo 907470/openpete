@@ -237,17 +237,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         # binary; otherwise stdout/stderr aren't attached to the parent
         # terminal when launched via WSL2 interop.
         -mconsole
-        # Disable ASLR. The Phase 3/4 native-decomp globals are link-aliased
-        # into g_ram via -Wl,--defsym=name=g_ram+offset. On ELF this produces
-        # a PIE-aware relocation; on PE/COFF the MinGW linker can't represent
-        # the absolute symbol ("stripping non-representable symbol …"), so
-        # the absolute address gets baked into call sites with no entry in
+        )
+    if(NOT OPENPETE_SKIP_DECOMP)
+        # Disable ASLR — DECOMP MODE ONLY. The Phase 3/4 native-decomp
+        # globals are link-aliased into g_ram via
+        # -Wl,--defsym=name=g_ram+offset. On ELF this produces a PIE-aware
+        # relocation; on PE/COFF the MinGW linker can't represent the
+        # absolute symbol ("stripping non-representable symbol …"), so the
+        # absolute address gets baked into call sites with no entry in
         # .reloc. ASLR then moves g_ram at load time, the baked addresses
-        # rot, and the first decomp global access faults. Pinning the image
-        # base sidesteps this until we move to a real PE-friendly aliasing
-        # mechanism (see plan §8: linker script vs def-file vs macro indirection).
-        -Wl,--disable-dynamicbase
-        -Wl,--disable-high-entropy-va)
+        # rot, and the first decomp global access faults. Full-recomp
+        # builds (SKIP_DECOMP=ON — every release/dist preset) have no
+        # defsym aliases, so they keep ASLR (distribution D3: helps the
+        # AV/SmartScreen posture).
+        target_link_options(openpete-spyro1 PRIVATE
+            -Wl,--disable-dynamicbase
+            -Wl,--disable-high-entropy-va)
+    endif()
 endif()
 
 # Generated C addresses psx_runtime.h via the include path provided by
