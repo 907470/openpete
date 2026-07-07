@@ -13,6 +13,7 @@ games/*/manifest/globals.toml
 tools/__pycache__/
 tools/rewrite/__pycache__/
 third_party/psxrecomp/build/
+third_party/psxrecomp/build-mingw/
 
 # Run artefacts (PsyX log, screenshot dump path).
 Spyro the Dragon.log
@@ -28,3 +29,6 @@ screenshot*.bmp
 third_party/ffmpeg-mingw/
 third_party/ffmpeg-mingw-build/
 dist/
+
+# Stray disc-library from running an exe at the repo root (dist runtime dir).
+/library/
