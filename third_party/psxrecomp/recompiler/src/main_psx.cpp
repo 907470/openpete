@@ -256,12 +256,21 @@ int main(int argc, char** argv) {
         fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
         fmt::print("  --channel-sites=<file>        Render-channel substitution table (from render_channels.toml)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
+        fmt::print("  --raw-bin                     Input is a raw code blob (no PS-X EXE header);\n");
+        fmt::print("                                requires --load-addr. Replaces the out-of-tree\n");
+        fmt::print("                                synth_overlay_exe.py wrapper for overlay blobs.\n");
+        fmt::print("  --load-addr=<hex-addr>        KSEG0 load address for --raw-bin input\n");
+        fmt::print("  --output-stem=<name>          Basename for <stem>_full.c/_dispatch.c\n");
+        fmt::print("                                (default: the input filename)\n");
         return 0;
     }
 
     std::filesystem::path exe_path = argv[1];
     std::string output_dir       = "generated";
     std::string extra_funcs_path;
+    bool raw_bin = false;
+    uint32_t raw_load_addr = 0;
+    std::string output_stem;
     std::string external_syms_path;
     std::string manual_impl_path;
     std::string external_prefix;   // prepended to every PSYQ symbol name
@@ -284,6 +293,10 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         std::string v;
         if (!(v = take_value(a, "--output-dir")).empty())            output_dir = v;
+        else if (a == "--raw-bin")                                    raw_bin = true;
+        else if (!(v = take_value(a, "--output-stem")).empty())       output_stem = v;
+        else if (!(v = take_value(a, "--load-addr")).empty())
+            raw_load_addr = (uint32_t)std::strtoul(v.c_str(), nullptr, 0);
         else if (!(v = take_value(a, "--extra-funcs")).empty())      extra_funcs_path = v;
         else if (!(v = take_value(a, "--external-symbols")).empty()) external_syms_path = v;
         else if (!(v = take_value(a, "--manual-impl")).empty())      manual_impl_path = v;
@@ -316,9 +329,43 @@ int main(int argc, char** argv) {
 
     // Parse the PS1-EXE file
     std::string error_msg;
+    if (raw_bin && (raw_load_addr < 0x80000000u || raw_load_addr >= 0xA0000000u)) {
+        fmt::print(stderr, "--raw-bin requires a KSEG0 --load-addr\n");
+        return 1;
+    }
+
     fmt::print("Parsing PS1-EXE: {}\n", exe_path.string());
 
-    auto exe = PSXRecomp::PS1ExeParser::parse_file(exe_path, error_msg);
+    std::optional<PSXRecomp::PS1Executable> exe;
+    if (raw_bin) {
+        /* Raw overlay blob: synthesize the 2 KiB PS-X EXE header in memory
+         * — byte-identical to tools/synth_overlay_exe.py's wrapper (magic,
+         * pc0 = t_addr = load address, gp = 0, t_size = blob size; entry
+         * is a placeholder — real entries come from --extra-funcs). */
+        std::ifstream rf(exe_path, std::ios::binary);
+        if (!rf) {
+            fmt::print(stderr, "Failed to open raw binary: {}\n", exe_path.string());
+            return 1;
+        }
+        std::vector<uint8_t> buf(2048, 0);
+        buf.insert(buf.end(), std::istreambuf_iterator<char>(rf),
+                   std::istreambuf_iterator<char>());
+        const uint32_t body_size = (uint32_t)(buf.size() - 2048);
+        std::memcpy(buf.data(), "PS-X EXE", 8);
+        auto put32 = [&](size_t off, uint32_t v) {
+            buf[off]     = (uint8_t)(v);
+            buf[off + 1] = (uint8_t)(v >> 8);
+            buf[off + 2] = (uint8_t)(v >> 16);
+            buf[off + 3] = (uint8_t)(v >> 24);
+        };
+        put32(0x10, raw_load_addr);  /* initial_pc  */
+        put32(0x14, 0);              /* initial_gp  */
+        put32(0x18, raw_load_addr);  /* load_address */
+        put32(0x1C, body_size);      /* file_size   */
+        exe = PSXRecomp::PS1ExeParser::parse_buffer(buf, error_msg);
+    } else {
+        exe = PSXRecomp::PS1ExeParser::parse_file(exe_path, error_msg);
+    }
 
     if (!exe.has_value()) {
         fmt::print(stderr, "Failed to parse PS1-EXE: {}\n", error_msg);
@@ -735,7 +782,8 @@ int main(int argc, char** argv) {
 
     // Use filename() not stem() because ".28" in SCUS_942.28 is part of the
     // serial, not an extension.
-    std::string exe_stem = exe_path.filename().string();
+    std::string exe_stem =
+        output_stem.empty() ? exe_path.filename().string() : output_stem;
 
     std::filesystem::create_directories(output_dir);
     std::string output_filename   = output_dir + "/" + exe_stem + "_full.c";

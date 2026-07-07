@@ -90,12 +90,16 @@ of its assumptions: (a) they're raw blobs with no PS1-EXE header, and (b) they
 all share one virtual address, so their symbols collide. The pipeline in
 `scripts/regen-recomp.sh` solves both.
 
-### 4.1 Synthesize a PS1-EXE wrapper
+### 4.1 Raw-blob input (`--raw-bin`)
 
-`tools/synth_overlay_exe.py` prepends a 2 KiB `PS-X EXE` header in front of the
-raw `.ovl` bytes, with `load_address = 0x8007AA38`. The result is byte-identical
+PSXRecomp ingests the raw `.ovl` bytes directly:
+`--raw-bin --load-addr=0x8007AA38 --output-stem=<name>.bin`. Internally it
+synthesizes the 2 KiB `PS-X EXE` header the parser expects — byte-identical
 to a real EXE that loads the overlay at its window; only the entry point is
-faked (real entries come from `--forced-entry`/`--extra-funcs`, not the header).
+faked (real entries come from `--forced-entry`/`--extra-funcs`, not the
+header). This replaced the out-of-tree `tools/synth_overlay_exe.py` wrapper
+(distribution D2.2) so the first-boot pipeline can recompile carved overlay
+segments with no python.
 
 ### 4.2 Per-overlay symbol namespace
 

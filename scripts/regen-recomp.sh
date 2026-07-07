@@ -20,7 +20,6 @@
 #   games/spyro-1/generated/PSX.EXE_full.c
 #   games/spyro-1/generated/PSX.EXE_dispatch.c
 #   games/spyro-1/generated/discovered_functions.log
-#   games/spyro-1/generated/<name>.bin                       (synth EXE)
 #   games/spyro-1/generated/<name>/<name>.bin_full.c
 #   games/spyro-1/generated/<name>/<name>.bin_dispatch.c
 #   games/spyro-1/generated/<name>/jumptable_targets.txt
@@ -48,7 +47,6 @@ fi
 
 OUT="games/spyro-1/generated"
 WAD_DIR="games/spyro-1/spyro-1/build/wad"
-SYNTH="tools/synth_overlay_exe.py"
 JTBL_TOOL="tools/extract_jumptable_targets.py"
 FNPTR_TOOL="tools/extract_overlay_func_pointers.py"
 PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
@@ -142,6 +140,12 @@ process_overlay() {
     local asm_targets
     asm_targets=$(asm_targets_for "$name")
     local base_args=(
+        # Raw overlay blob straight from the decomp's build/wad — the
+        # recompiler synthesizes the PS-X EXE header internally
+        # (--raw-bin, D2.2; replaces tools/synth_overlay_exe.py).
+        --raw-bin
+        --load-addr="$load_addr"
+        --output-stem="$name.bin"
         --output-dir="$OUT/$name"
         --external-symbols="$PSYQ_MANIFEST"
         --external-prefix=psyq_
@@ -150,8 +154,7 @@ process_overlay() {
         ${PCTRACK_FLAG:+$PCTRACK_FLAG}
     )
 
-    echo "[regen] $name: synth + first-pass recomp"
-    python3 "$SYNTH" "$ovl_path" "$OUT/$name.bin" --load-addr="$load_addr"
+    echo "[regen] $name: first-pass recomp"
     # First pass: handwritten-asm dispatch targets + fn-pointer-table
     # constants harvested from main EXE (jtbl doesn't exist yet).
     # The fn-pointer list is filtered per-overlay to drop entries that
@@ -172,7 +175,7 @@ process_overlay() {
             --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
         cat "$fnptr_filtered" >> "$first_funcs"
     fi
-    "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+    "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$first_funcs" "${extra_args[@]}"
 
     local jtbl="$OUT/$name/jumptable_targets.txt"
@@ -190,7 +193,7 @@ process_overlay() {
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
     [[ -f "$fnptr_filtered" ]] && cat "$fnptr_filtered" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
-    "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+    "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$second_funcs" \
         --emit-external-jals="$OUT/$name/external_jals.txt" \
         "${extra_args[@]}"
@@ -212,7 +215,7 @@ process_overlay() {
         local third_funcs="$OUT/$name/extra_funcs.combined.txt"
         cat "$second_funcs" "$cont_funcs" > "$third_funcs"
         echo "[regen] $name: third-pass recomp with jal-cont entries"
-        "$PSXRECOMP" "$OUT/$name.bin" "${base_args[@]}" \
+        "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
             --extra-funcs="$third_funcs" \
             --emit-external-jals="$OUT/$name/external_jals.txt" \
             "${extra_args[@]}"

@@ -47,9 +47,13 @@ check "main_exe (full)"     "$OUT/PSX.EXE_full.c"     "$TMP/main_exe/PSX.EXE_ful
 check "main_exe (dispatch)" "$OUT/PSX.EXE_dispatch.c" "$TMP/main_exe/PSX.EXE_dispatch.c"
 
 # --- overlays ---------------------------------------------------------------
-while read -r name; do
+# Boot-shaped invocation: raw .ovl straight from the WAD dir + --raw-bin,
+# exactly what the first-boot pipeline runs against carved segments.
+WAD_DIR=games/spyro-1/spyro-1/build/wad
+while IFS=$'\t' read -r name wad; do
     mkdir -p "$TMP/$name"
-    "$PSXRECOMP" "$OUT/$name.bin" \
+    "$PSXRECOMP" "$WAD_DIR/$wad" \
+        --raw-bin --load-addr=0x8007AA38 --output-stem="$name.bin" \
         --output-dir="$TMP/$name" \
         --external-symbols="$PSYQ" \
         --external-prefix=psyq_ \
@@ -60,7 +64,14 @@ while read -r name; do
         "$TMP/$name/$name.bin_dispatch.c"
     check "$name (full)"     "$OUT/$name/$name.bin_full.c"     "$TMP/$name/$name.bin_full.c"
     check "$name (dispatch)" "$OUT/$name/$name.bin_dispatch.c" "$TMP/$name/$name.bin_dispatch.c"
-done < <(grep -oP '^name = "\K[^"]+' "$MAN/manifest.toml")
+done < <(python3 - "$MAN/manifest.toml" <<'PYEOF'
+import re, sys
+toml = open(sys.argv[1]).read()
+for m in re.finditer(r'\[\[overlay\]\]\nname = "([^"]+)"(?:.*?)wad_file = "([^"]+)"',
+                     toml, re.S):
+    print(f"{m.group(1)}\t{m.group(2)}")
+PYEOF
+)
 
 if [[ $fail -ne 0 ]]; then
     echo "[verify-manifest] FAIL — manifest does not reproduce the regen output"
