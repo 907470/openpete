@@ -237,12 +237,21 @@ static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
 }
 
 /* Default-empty fallback for the gameplay-state regions table. Per-game
- * TUs override this by defining their own non-weak symbols (see
- * games/spyro-1/spyro_state_regions.c). Without an override the hash
- * log is the FNV1a-64 offset basis on every frame — useless but
- * link-safe, so a smoke build of core/ alone still works. */
-__attribute__((weak)) const OpenpeteStateRegion* openpete_state_regions = NULL;
-__attribute__((weak)) size_t openpete_state_region_count = 0;
+ * TUs call openpete_state_regions_register() from game main (explicit
+ * registration, NOT weak-symbol override: MinGW's PE/COFF linker
+ * mis-resolves weak overrides in this configuration — count resolved
+ * strong while the pointer resolved weak-NULL, a NULL deref the moment
+ * --psxtrace-verify computed the first hash on Windows). Without
+ * registration the hash log is the FNV1a-64 offset basis on every
+ * frame — useless but link-safe. */
+const OpenpeteStateRegion* openpete_state_regions = NULL;
+size_t openpete_state_region_count = 0;
+
+void openpete_state_regions_register(const OpenpeteStateRegion* regions,
+                                     size_t count) {
+    openpete_state_regions = regions;
+    openpete_state_region_count = count;
+}
 
 /* FNV1a-64 hash over every gameplay-readable region the per-game TU
  * registered. The harness consumes this log as the primary

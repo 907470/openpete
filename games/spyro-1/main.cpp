@@ -14,6 +14,7 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
+extern "C" void spyro_state_regions_register(void);
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"
 
@@ -85,6 +86,10 @@ int main(int argc, char** argv) {
      * — MinGW's PE/COFF linker mis-resolves weak overrides in this
      * configuration. */
     spyro_interp_register();
+    /* Same explicit-registration rationale as spyro_interp_register()
+     * (see comment above): the state-region table moved off the
+     * weak-symbol pattern too. */
+    spyro_state_regions_register();
 
     /* High-FPS spine: register the sub-tick re-feed orchestrator with the
      * native renderer so intermediate presents rebuild the scene against an

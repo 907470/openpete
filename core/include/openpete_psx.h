@@ -129,6 +129,12 @@ typedef struct {
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;
 
+/* Install the per-game region table. Call from game main before
+ * openpete_run() (explicit registration — weak-symbol override
+ * mis-resolves under the MinGW PE linker). */
+void openpete_state_regions_register(const OpenpeteStateRegion* regions,
+                                     size_t count);
+
 /* Map a PSX virtual address to a host pointer. Returns NULL if `addr` is
  * unmapped, OR if `addr == 0` (treated as PSX NULL). PSYQ thunks use this
  * to translate pointer arguments (held in cpu->aN as PSX vaddrs) to host
