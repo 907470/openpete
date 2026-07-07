@@ -129,7 +129,7 @@ extern "C" {
  *
  * Each saved cb is dispatched on the *same* CPUState that registered it,
  * with its registers temporarily clobbered for the call. */
-extern "C" int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
+#include "openpete_recomp_module.h"
 
 static uint32_t g_cd_read_cb     = 0;
 /* Native cd.c (post-rewriter) registers a host-side callback via
@@ -147,7 +147,7 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     uint32_t s_a0 = cpu->a0, s_a1 = cpu->a1, s_a2 = cpu->a2, s_a3 = cpu->a3;
     uint32_t s_ra = cpu->ra, s_v0 = cpu->v0, s_v1 = cpu->v1;
     cpu->a0 = a0; cpu->a1 = a1; cpu->ra = 0xDEADBEEF;
-    if (!psx_dispatch_compiled(cpu, cb_addr)) {
+    if (!openpete_recomp_module_get()->dispatch(cpu, cb_addr)) {
         OPL_WARN_F("thunks", "callback 0x%08X has no compiled body", cb_addr);
     }
     cpu->a0 = s_a0; cpu->a1 = s_a1; cpu->a2 = s_a2; cpu->a3 = s_a3;

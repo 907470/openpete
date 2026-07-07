@@ -7,12 +7,21 @@
 #include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "game_extras.h"
+#include "openpete_recomp_module.h"
+
+extern "C" const openpete_recomp_module spyro1_recomp_module; /* module_main.c */
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"
 
 #include <cstdio>
 
 int main(int argc, char** argv) {
+    /* Distribution D0: the runtime reaches recompiled code only through
+     * the recomp-module descriptor. The static build registers the
+     * built-in module here; the D1 module loader replaces this with
+     * dlopen + dlsym of the same descriptor. Must precede any dispatch. */
+    if (openpete_recomp_register(&spyro1_recomp_module) != 0) return 1;
+
     /* MinGW buffers stderr when it isn't a TTY (true for `>file 2>&1`
      * and for WSL2 interop pipes). abort() — which the PSYQ stubs use to
      * surface unimplemented-surface hits — doesn't flush, so otherwise

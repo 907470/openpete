@@ -146,9 +146,10 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
 
 /* --- Dispatch ------------------------------------------------------------ */
 
-/* Defined in generated <stem>_dispatch.c — calls the recompiled function
- * registered for `addr`. Returns 1 if dispatched, 0 otherwise. */
-int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
+/* The recompiled-code dispatch entry lives behind the recomp-module
+ * descriptor (openpete_recomp_module.h) — core carries no link-time
+ * reference to generated code. Game code that needs to re-enter the
+ * recompiled world uses openpete_recomp_module_get()->dispatch. */
 
 /* Call a PSX function by vaddr from native C/C++ code. Used by the source
  * rewriter for `(*FN_PTR_GLOBAL)(args...)` call sites in matching-decomp,

@@ -82,6 +82,42 @@ else()
         ${SPYRO_GENERATED}/native_thunks.cpp)
 endif()
 
+# --- ROM-derived recomp module (distribution seam, plan D0) -------------
+#
+# Everything ROM-derived lives in this OBJECT library behind the
+# openpete_recomp_module descriptor (module_main.c): the recompiled main
+# EXE + every overlay, the overlay registry, and dispatch_chain.c. The
+# static build links the objects straight into the exe (byte-identical
+# link semantics — OBJECT, not STATIC, so no archive member pulling);
+# the distribution build (D1) compiles the same sources into
+# spyro1-recomp.{so,dll} on the user's machine at first boot.
+# psyq_stubs.c intentionally stays EXE-side next to psyq_thunks.cpp —
+# PE has no dynamic symbol preemption, so module-side weak stubs would
+# shadow the strong thunks on Windows (D0-spike finding).
+add_library(spyro1_recomp_module OBJECT
+    # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
+    # `psx_dispatch_main_exe` by regen-recomp.sh.
+    ${SPYRO_GENERATED}/PSX.EXE_full.c
+    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
+    # Every translated overlay (titlescreen, credits, level_10..level_64).
+    ${SPYRO_OVERLAY_FULL_C}
+    ${SPYRO_OVERLAY_DISPATCH_C}
+    # Auto-generated overlay registry — id-magic -> dispatcher.
+    ${SPYRO_GENERATED}/spyro_overlay_table.c
+    # Fans psx_dispatch_compiled out to main EXE + active overlay.
+    dispatch_chain.c
+    # The descriptor the host resolves (openpete_recomp_module.h).
+    module_main.c
+)
+target_include_directories(spyro1_recomp_module PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${SPYRO_GENERATED})
+# Usage requirements only (psx_runtime.h et al. via psxrecomp/runner/include).
+target_link_libraries(spyro1_recomp_module PRIVATE openpete_core)
+set_target_properties(spyro1_recomp_module PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON)
+
 add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
@@ -111,21 +147,7 @@ add_executable(openpete-spyro1
     # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
     ${SPYRO_DECOMP_TUS}
 
-    # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
-    # `psx_dispatch_main_exe` by regen-recomp.sh.
-    ${SPYRO_GENERATED}/PSX.EXE_full.c
-    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
-
-    # Every translated overlay (titlescreen, credits, level_10..level_64).
-    # Function symbols use unique `func_<name>_` prefixes; dispatch fns
-    # are unique-named via sed. Both globs above feed in here.
-    ${SPYRO_OVERLAY_FULL_C}
-    ${SPYRO_OVERLAY_DISPATCH_C}
-
-    # Auto-generated overlay registry — id-magic -> dispatcher.
-    ${SPYRO_GENERATED}/spyro_overlay_table.c
-
-    dispatch_chain.c
+    # ROM-derived recomp code lives in spyro1_recomp_module (above).
 
     # Hand-written PSYQ → PsyCross ABI thunks. Listed BEFORE the
     # generated stubs so under MinGW link order lets the thunk's strong
@@ -223,7 +245,9 @@ target_sources(openpete-spyro1 PRIVATE
     # Sub-tick re-feed orchestrator (native-renderer high-FPS spine, step 2).
     spyro_native_reextract.c)
 
-target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
+target_link_libraries(openpete-spyro1 PRIVATE
+    spyro1_recomp_module
+    openpete_core)
 
 # App icon decoded from the PSX save-file header's CLUT+icon data
 # (see spyro-1/include/save_file.h:39). The same generator emits a

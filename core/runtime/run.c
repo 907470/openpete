@@ -9,6 +9,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
+#include "openpete_recomp_module.h"
 #include "openpete_ticker.h"
 #include "openpete_time.h"
 #include "openpete_frame_time_log.h"
@@ -586,7 +587,7 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     }
 
     OPL_INFO_F("boot", "dispatching recompiled function at 0x%08X", entry);
-    int matched = psx_dispatch_compiled(&cpu, entry);
+    int matched = openpete_recomp_module_get()->dispatch(&cpu, entry);
     if (!matched) {
         OPL_ERROR_F("boot", "no recompiled function at 0x%08X", entry);
         return OPENPETE_EXIT_PANIC;
@@ -643,7 +644,7 @@ static void game_fiber_entry(void) {
         g_game.cpu.gp = g_game.gp;
     }
     OPL_INFO_F("boot", "game fiber: dispatching 0x%08X", g_game.entry);
-    g_game.dispatch_ok = psx_dispatch_compiled(&g_game.cpu, g_game.entry);
+    g_game.dispatch_ok = openpete_recomp_module_get()->dispatch(&g_game.cpu, g_game.entry);
     if (!g_game.dispatch_ok) {
         OPL_ERROR_F("boot", "game fiber: no compiled body at 0x%08X", g_game.entry);
     } else {
