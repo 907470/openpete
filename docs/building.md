@@ -5,14 +5,20 @@
 ### Linux (Ubuntu / Debian-flavored)
 ```bash
 sudo apt install build-essential cmake ninja-build python3 \
-                 libsdl2-dev libgl1-mesa-dev libasound2-dev libpulse-dev
+                 libopenal-dev libgl1-mesa-dev \
+                 libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
 # For cross-compile to Windows from WSL2:
 sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 ```
 
+SDL is vendored (SDL3, built from `third_party/SDL/` and statically
+linked) — no `libsdl*-dev` needed. `libopenal-dev` is PsyCross's audio
+backend; the `libav*` packages are only for `--record` video capture (the
+MinGW cross build compiles `--record` out, so they're optional there).
+
 ### macOS
 ```bash
-brew install cmake ninja python sdl2
+brew install cmake ninja python openal-soft ffmpeg
 ```
 
 ### Windows native (MSVC)
@@ -37,53 +43,116 @@ Phase 0b can configure and build OpenPete without it; later phases cannot.
 
 ## Configure + build
 
-OpenPete uses CMake presets. The named presets in `CMakePresets.json` are:
+OpenPete uses CMake presets. Every build sits on two axes: the **target**
+(which OS) and the **recomp linkage** (how the ROM-derived game code
+reaches the binary). The linkage axis is the one that matters day to day.
 
-| Preset             | Target                                   |
-|--------------------|------------------------------------------|
-| `linux-debug`      | Linux native, Debug                      |
-| `linux-release`    | Linux native, RelWithDebInfo             |
-| `windows-mingw`    | Windows x64 cross from Linux/WSL2 (MinGW)|
-| `windows-msvc`     | Windows native MSVC (placeholder)        |
-| `macos-universal`  | macOS universal x86_64 + arm64 (placeholder) |
+### The two linkage modes (this is the important part)
+
+The recompiled game code can be joined to the runtime two ways, selected
+by the `OPENPETE_RECOMP_LINKAGE` cache variable:
+
+- **`static` (default) — the dev build.** The recompiled C is linked
+  straight into the exe. One self-contained binary; run it with `--disc`
+  and it boots immediately. This is what you build and test against all
+  day. No first-boot recompile, because there is nothing left to compile.
+
+- **`shared` — the distribution build.** The recompiled code is *not* in
+  the exe. Instead the exe ships with a recompiler + compiler and builds
+  the game module (`spyro1-recomp.{so,dll}`) from the user's disc on
+  first run, caching it in a local `library/` folder. This is the
+  end-user experience (drop a disc → recompile → play) and the subject of
+  `notes/plans/openpete-distribution-local-recomp.md`.
+
+Both modes build from the *same sources* — `shared` is an additive second
+linkage, not a fork. The static build's link semantics are byte-identical
+to before the distribution work, so the dev loop is unchanged.
+
+### Preset table
+
+| Preset                  | Target                          | Linkage | Notes |
+|-------------------------|---------------------------------|---------|-------|
+| `linux-debug`           | Linux native, Debug             | static  | decomp-mode dev / bisect |
+| `linux-release`         | Linux native, RelWithDebInfo    | static  | **the default dev build** |
+| `windows-mingw`         | Windows x64 cross (MinGW)       | static  | dev build you run via WSL2 |
+| `windows-mingw-opt`     | Windows x64 cross (MinGW) + LTO | static  | distributable static exe; slow link |
+| `linux-release-shared`  | Linux native                    | shared  | distribution build |
+| `windows-mingw-shared`  | Windows x64 cross (MinGW)       | shared  | distribution build |
+| `windows-msvc`          | Windows native MSVC             | static  | placeholder, unvalidated |
+| `macos-universal`       | macOS x86_64 + arm64            | static  | placeholder, unvalidated |
+| `wasm`                  | Emscripten / browser            | static  | placeholder |
+
+`linux-release`, `windows-mingw`, and the `*-shared` presets all imply
+`OPENPETE_SKIP_DECOMP=ON` (full-recompilation mode); `shared` *requires*
+it (the hybrid decomp path is static-only). The `*-shared` presets also
+pin `OPENPETE_ROM_FREE_ICON=ON` so no game bytes are baked in.
+
+### Dev build (static — what you use to iterate)
 
 ```bash
 cmake --preset linux-release
 cmake --build build/linux-release -j
+./build/linux-release/games/spyro-1/openpete-spyro1 \
+    --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --headless \
+    --bk2 games/spyro-1/bk2/<name>.bk2 --screenshot-on-frame 3600 \
+    --screenshot-output shot.png
 ```
 
-For the cross-compile path:
+Cross-compiled Windows dev build (run it straight from WSL2 — real GPU):
 
 ```bash
-cmake --preset windows-mingw
-cmake --build build/windows-mingw -j
-# Run from WSL2 directly:
-./build/windows-mingw/games/spyro-1/openpete-spyro1.exe --help
+cmake --build --preset windows-mingw
+build/windows-mingw/games/spyro-1/openpete-spyro1.exe [--args]
 ```
+
+Run these **from the repo root** — the staged `openpete.opts` beside the
+exe supplies `--disc` as a repo-relative path. An explicit `--disc` on
+the command line overrides it and bypasses the disc library entirely, so
+the dev loop never touches the first-boot machinery.
 
 Output binary: `build/<preset>/games/spyro-1/openpete-spyro1[.exe]`.
 
-## SDL2 sources
+### Distribution build (shared — the end-user experience)
 
-For Phase 0b:
-- **Linux native** uses the system `libsdl2-dev` package (whatever the
-  distro ships).
-- **MinGW cross-compile** uses the vendored prebuilt at
-  `third_party/SDL2-mingw/`, statically linked into the `.exe` so it runs
-  as a single file (no `SDL2.dll` shipped alongside).
+```bash
+# Build the shared exe + its recompiler
+cmake --preset windows-mingw-shared      # or linux-release-shared
+cmake --build build/windows-mingw-shared -j
+```
 
-A submodule of SDL itself lives at `third_party/SDL/` (release-2.30.x branch)
-for future use — at some point we'll switch the build to compile SDL from
-source and retire the prebuilt. Until then it's just present so the tree
-matches the spec.
+This does **not** produce a playable folder by itself — the shared exe
+needs its recomp inputs (manifests, module source kit, PSXRecomp, and on
+Windows the bundled clang) staged next to it. `scripts/package-dist.sh`
+assembles the shippable archive:
+
+```bash
+# Linux (system cc used at first boot in v1)
+scripts/package-dist.sh linux
+
+# Windows (bundle a trimmed llvm-mingw for the first-boot compile)
+scripts/package-dist.sh windows --toolchain /path/to/llvm-mingw-ucrt-x86_64
+```
+
+The archive lands in `dist/`. Extract it anywhere, run the exe with no
+arguments, drag a disc onto the splash, and it recompiles + plays — the
+whole path is checked end-to-end by `scripts/check_dist_first_boot.sh`.
+`OPENPETE_PSXRECOMP` / `OPENPETE_CC` override the bundled tools for dev
+testing of the shared path.
+
+## SDL
+
+SDL3 is built from source from the `third_party/SDL/` submodule and
+statically linked (`libSDL3.a`) on both Linux and the MinGW cross build —
+one self-contained binary, no `SDL3.dll` alongside. No system `libsdl*`
+package is required.
 
 ## Troubleshooting
 
 - **`cmake: command not found`** — install via your package manager. Minimum
   version is 3.22.
-- **`SDL2 not found`** during MinGW configure — make sure
-  `third_party/SDL2-mingw/x86_64-w64-mingw32/lib/cmake/SDL2/` exists
-  (vendored at Phase 0).
+- **SDL fails to configure/build** — ensure the `third_party/SDL/`
+  submodule is checked out (`git submodule update --init --recursive`);
+  SDL3 builds from source as part of the CMake configure.
 - **MinGW linker errors about `__chkstk_ms` / pthread symbols** — the
   toolchain file at `cmake/toolchains/mingw-w64.cmake` sets the right
   `-static*` flags; don't override `CMAKE_EXE_LINKER_FLAGS` in your own
