@@ -220,6 +220,7 @@ add_executable(openpete-spyro1
     psyq_thunks.cpp
     recomp_extract.cpp
     disc_library.cpp
+    splash.c
     write_trace.cpp
 
     # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any

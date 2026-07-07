@@ -41,6 +41,15 @@
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
 
+/* Optional UI progress hook (splash); NULL = console-only. Defined in
+ * disc_library.cpp (linked in both linkage modes). */
+extern "C" {
+extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
+}
+static void progress(const char* stage, int done, int total) {
+    if (spyro1_progress_cb) spyro1_progress_cb(stage, done, total);
+}
+
 namespace fs = std::filesystem;
 
 #ifdef _WIN32
@@ -323,6 +332,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
 
     /* 1. extract ---------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");
+    progress("READING GAME CODE FROM YOUR DISC", 0, 0);
     if (spyro1_extract_recomp_inputs(disc_path, inputs.string().c_str()) != 0)
         return -1;
 
@@ -367,6 +377,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     /* 2. recompile -------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] recompiling MIPS -> C (%zu binaries)...\n",
                  ovls.size() + 1);
+    progress("TRANSLATING GAME CODE", 0, (int)ovls.size() + 1);
     {
         std::ostringstream c;
         c << q << psxrecomp << q << " " << q << (inputs / "PSX.EXE").string() << q
@@ -381,6 +392,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
                           "psx_dispatch_compiled", "psx_dispatch_main_exe"))
             return -1;
     }
+    int ovl_done = 1;
+    progress("TRANSLATING GAME CODE", ovl_done, (int)ovls.size() + 1);
     for (auto& o : ovls) {
         std::ostringstream c;
         c << q << psxrecomp << q << " " << q << (inputs / (o.name + ".ovl")).string() << q
@@ -396,6 +409,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
         if (!rename_token(gen / (o.name + ".bin_dispatch.c"),
                           "psx_dispatch_compiled", "psx_dispatch_" + o.name))
             return -1;
+        progress("TRANSLATING GAME CODE", ++ovl_done, (int)ovls.size() + 1);
     }
     if (!emit_overlay_table(gen / "spyro_overlay_table.c", ovls)) return -1;
 
@@ -453,12 +467,29 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     {
         std::vector<std::thread> pool;
         for (unsigned t = 0; t < jobs; t++) pool.emplace_back(worker);
+        /* Progress from THIS thread (SDL rendering is not thread-safe);
+         * workers only bump the counter. */
+        size_t last = (size_t)-1;
+        while (done.load() < tus.size() && !failed.load()) {
+            size_t d = done.load();
+            if (d != last) {
+                progress("BUILDING FOR YOUR PC", (int)d, (int)tus.size());
+                last = d;
+            }
+#ifdef _WIN32
+            Sleep(50);
+#else
+            usleep(50 * 1000);
+#endif
+        }
         for (auto& t : pool) t.join();
+        progress("BUILDING FOR YOUR PC", (int)tus.size(), (int)tus.size());
     }
     if (failed.load()) return -1;
 
     /* 4. link ------------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] linking module...\n");
+    progress("LINKING", 0, 0);
     {
         /* Object list via a response file: 79 absolute paths overflow
          * cmd.exe's 8191-char command limit. Paths are normalized to

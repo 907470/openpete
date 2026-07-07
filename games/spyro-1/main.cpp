@@ -15,6 +15,10 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
 extern "C" void spyro_state_regions_register(void);
+#include "splash.h"
+extern "C" {
+extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
+}
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"
 
@@ -54,11 +58,29 @@ int main(int argc, char** argv) {
     /* Distribution D2.5: resolve disc + module through the
      * content-addressed library (--ingest copies an image in; no disc
      * at all boots the most recent library entry). Explicit --disc
-     * bypasses the library entirely (dev/CI path). */
+     * bypasses the library entirely (dev/CI path). The splash renders
+     * the waits (ingest copy, first-boot build), the version selector,
+     * and the drag-a-disc first-run screen; it lazy-opens only when
+     * one of those is actually needed. */
+    spyro1_splash_set_enabled(!opts.headless);
+    spyro1_progress_cb = spyro1_splash_progress;
+
     static char library_module_path[4096];
     if (spyro1_library_resolve(&opts, library_module_path,
                                sizeof library_module_path) != 0)
         return 1;
+
+    if (!opts.disc_path && !opts.exe_path && !opts.headless) {
+        /* Nothing to boot anywhere: first run. DROP mode. */
+        if (spyro1_splash_open() == 0) {
+            const char* dropped = spyro1_splash_wait_for_disc();
+            if (!dropped) return 0;   /* user closed the window */
+            opts.ingest_path = dropped;
+            if (spyro1_library_resolve(&opts, library_module_path,
+                                       sizeof library_module_path) != 0)
+                return 1;
+        }
+    }
 
     {
         int src_rc = openpete_options_require_exe_source(&opts);
@@ -78,6 +100,10 @@ int main(int argc, char** argv) {
     int allow_build = (opts.recomp_module_path == NULL);
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
         return 1;
+
+    /* In-process continuation: the splash's job ends where the game
+     * window begins. */
+    spyro1_splash_close();
 
     /* fps-unlock Phase 2: register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called

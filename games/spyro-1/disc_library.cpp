@@ -37,6 +37,20 @@ namespace fs = std::filesystem;
 
 extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap);
 
+/* UI progress hook: NULL = console-only. The splash (splash.c) installs
+ * itself here from game main when a window is allowed. */
+extern "C" {
+void (*spyro1_progress_cb)(const char* stage, int done, int total) = nullptr;
+}
+
+/* Splash selector (splash.c). Weak coupling by declaration only — the
+ * splash TU is always linked into the game exe. */
+extern "C" int spyro1_splash_active(void);
+extern "C" int spyro1_splash_open(void);
+extern "C" int spyro1_splash_select(const char* const* labels, int count);
+extern "C" const char* spyro1_splash_dropped_path(void);
+extern "C" int spyro1_splash_ui_enabled(void);
+
 namespace {
 
 /* README-pinned retail NTSC-U disc hash. */
@@ -86,12 +100,19 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     if (!in) return false;
     std::ofstream out(dst, std::ios::binary | std::ios::trunc);
     if (!out) return false;
+    std::error_code sec;
+    const uintmax_t total_bytes = fs::file_size(src, sec);
+    uintmax_t seen = 0;
     openpete_sha256_ctx c;
     openpete_sha256_init(&c);
     std::vector<char> buf(1 << 20);
     while (in.read(buf.data(), (std::streamsize)buf.size()) || in.gcount() > 0) {
         openpete_sha256_update(&c, buf.data(), (size_t)in.gcount());
         out.write(buf.data(), in.gcount());
+        seen += (uintmax_t)in.gcount();
+        if (spyro1_progress_cb && total_bytes && (seen % (64u << 20) < (1u << 20)))
+            spyro1_progress_cb("COPYING DISC TO YOUR LIBRARY",
+                               (int)(seen >> 20), (int)(total_bytes >> 20));
         if (!in) break;
     }
     uint8_t d[32];
@@ -267,10 +288,30 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
     Meta* pick = &entries[0];
     for (auto& m : entries)
         if (m.last_played > pick->last_played) pick = &m;
-    if (entries.size() > 1)
+    if (entries.size() > 1 && spyro1_splash_ui_enabled()) {
+        /* Version selector: most-recent first, then the rest. */
+        std::vector<Meta*> order;
+        order.push_back(pick);
+        for (auto& m : entries)
+            if (&m != pick) order.push_back(&m);
+        std::vector<std::string> label_store;
+        for (auto* m : order) label_store.push_back(m->label);
+        std::vector<const char*> labels;
+        for (auto& l : label_store) labels.push_back(l.c_str());
+        if (spyro1_splash_open() == 0) {
+            int sel = spyro1_splash_select(labels.data(), (int)labels.size());
+            if (sel == -1) return -1;              /* user quit */
+            if (sel == -2) {                       /* dropped a new disc */
+                opts->ingest_path = spyro1_splash_dropped_path();
+                return spyro1_library_resolve(opts, module_path_out,
+                                              module_path_cap);
+            }
+            pick = order[(size_t)sel];
+        }
+    } else if (entries.size() > 1) {
         std::fprintf(stderr,
                      "[library] %zu versions installed — booting most recent "
-                     "'%s' (version selector UI comes with the splash)\n",
-                     entries.size(), pick->label.c_str());
+                     "'%s'\n", entries.size(), pick->label.c_str());
+    }
     return boot_entry(opts, *pick, module_path_out, module_path_cap);
 }
