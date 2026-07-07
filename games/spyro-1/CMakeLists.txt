@@ -378,34 +378,53 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
     endif()
 endif()
 
-# App icon decoded from the PSX save-file header's CLUT+icon data
-# (see spyro-1/include/save_file.h:39). The same generator emits a
-# .ico for the Win32 resource compiler and a C source for
-# SDL_SetWindowIcon at runtime; the runtime path covers Linux/macOS
-# and is also a fallback on Windows for the live window.
-set(_spyro_icon_src
-    ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
-set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
+# App icon. Two sources (distribution D3):
+#   OPENPETE_ROM_FREE_ICON=OFF (dev default) — decoded from the PSX
+#     save-file header's CLUT+icon data (save_file.h:39): the authentic
+#     memcard icon, which is GAME BYTES and must not ship.
+#   OPENPETE_ROM_FREE_ICON=ON (dist presets) — original procedural icon
+#     from tools/gen_dist_icon.py; also drops the build's dependency on
+#     the private decomp submodule's assets.
+# Either path emits a .ico for the Win32 resource and a C source for
+# SDL_SetWindowIcon (Linux/macOS + live-window fallback on Windows).
+option(OPENPETE_ROM_FREE_ICON
+       "Use the original (non-ROM) distribution icon" OFF)
 set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
+if(OPENPETE_ROM_FREE_ICON)
+    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
+    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c})
+    set(_spyro_icon_deps ${_spyro_icon_tool})
+else()
+    set(_spyro_icon_src
+        ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
+    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
+    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+        --c ${_spyro_icon_c})
+    set(_spyro_icon_deps ${_spyro_icon_src} ${_spyro_icon_tool})
+endif()
 add_custom_command(
     OUTPUT  ${_spyro_icon_c}
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${CMAKE_CURRENT_BINARY_DIR}/gen
-    COMMAND python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-            --c ${_spyro_icon_c}
-    DEPENDS ${_spyro_icon_src} ${_spyro_icon_tool}
-    COMMENT "Decoding PSX memcard icon → openpete_spyro1_icon.c")
+    COMMAND ${_spyro_icon_c_cmd}
+    DEPENDS ${_spyro_icon_deps}
+    COMMENT "Generating openpete_spyro1_icon.c")
 target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_c})
 
 if(WIN32)
     set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
     set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
+    if(OPENPETE_ROM_FREE_ICON)
+        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} --ico ${_spyro_icon_ico})
+    else()
+        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+            --ico ${_spyro_icon_ico})
+    endif()
     add_custom_command(
         OUTPUT  ${_spyro_icon_ico}
-        COMMAND python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-                --ico ${_spyro_icon_ico}
-        DEPENDS ${_spyro_icon_src} ${_spyro_icon_tool}
-        COMMENT "Decoding PSX memcard icon → openpete-spyro1.ico")
+        COMMAND ${_spyro_icon_ico_cmd}
+        DEPENDS ${_spyro_icon_deps}
+        COMMENT "Generating openpete-spyro1.ico")
     file(GENERATE OUTPUT ${_spyro_icon_rc}
          CONTENT "1 ICON \"${_spyro_icon_ico}\"\n")
     target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})

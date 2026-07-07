@@ -89,7 +89,8 @@
       "inherits": "linux-release",
       "binaryDir": "${sourceDir}/build/linux-release-shared",
       "cacheVariables": {
-        "OPENPETE_RECOMP_LINKAGE": "shared"
+        "OPENPETE_RECOMP_LINKAGE": "shared",
+        "OPENPETE_ROM_FREE_ICON": "ON"
       }
     },
     {
@@ -98,7 +99,8 @@
       "inherits": "windows-mingw",
       "binaryDir": "${sourceDir}/build/windows-mingw-shared",
       "cacheVariables": {
-        "OPENPETE_RECOMP_LINKAGE": "shared"
+        "OPENPETE_RECOMP_LINKAGE": "shared",
+        "OPENPETE_ROM_FREE_ICON": "ON"
       }
     }
   ],
