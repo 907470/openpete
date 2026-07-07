@@ -1,0 +1,29 @@
+# module_abi_exports.txt — non-psyq symbols the shared-linkage recomp
+# module imports from the exe (distribution D1). One symbol per line;
+# append ` DATA` for data symbols (PE .def needs the distinction).
+#
+# Source of truth for tools/gen_module_exports.py, which emits both the
+# PE export .def and the archive-pull keep-alive TU. SELF-ENFORCING in
+# both directions: a module import missing here fails the module link
+# (undefined symbol); an entry the exe doesn't define fails the exe link
+# (keep-alive reference). Derived from the D0-spike symbol-traffic
+# audit (plan openpete-distribution-local-recomp, "D0-spike results").
+call_by_address
+gte_execute
+psx_syscall
+psx_override_dispatch
+openpete_logf
+openpete_envvert_probe
+openpete_gte_caller_pc DATA
+psx_runtime_g_sony_image_base DATA
+psx_runtime_cone_widen_permoby
+psx_runtime_cone_widen_shaded
+psx_runtime_dist_gate_lower
+psx_runtime_dist_gate_upper
+psx_runtime_mwasdrawn_clear_store
+psx_runtime_mwasdrawn_store
+psx_runtime_part_cull_4vert
+psx_runtime_part_cull_sx1
+psx_runtime_part_cull_sx2
+psx_runtime_part_drawn_store
+psx_runtime_sparkle_canon_sx

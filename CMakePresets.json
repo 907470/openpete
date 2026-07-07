@@ -1,20 +1,29 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "linux-debug",
       "displayName": "Linux native (Debug)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "linux-release",
       "displayName": "Linux native (RelWithDebInfo)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "OPENPETE_SKIP_DECOMP": "ON" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "OPENPETE_SKIP_DECOMP": "ON"
+      }
     },
     {
       "name": "windows-mingw",
@@ -44,8 +53,12 @@
       "displayName": "Windows native MSVC (placeholder; not validated this phase)",
       "generator": "Visual Studio 17 2022",
       "binaryDir": "${sourceDir}/build/windows-msvc",
-      "architecture": { "value": "x64" },
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "architecture": {
+        "value": "x64"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
     },
     {
       "name": "macos-universal",
@@ -69,15 +82,62 @@
         "OPENPETE_BUILD_PCSX_REDUX_GTE": "OFF",
         "OPENPETE_BUILD_TESTS": "OFF"
       }
+    },
+    {
+      "name": "linux-release-shared",
+      "displayName": "linux-release + shared recomp module (distribution D1)",
+      "inherits": "linux-release",
+      "binaryDir": "${sourceDir}/build/linux-release-shared",
+      "cacheVariables": {
+        "OPENPETE_RECOMP_LINKAGE": "shared"
+      }
+    },
+    {
+      "name": "windows-mingw-shared",
+      "displayName": "windows-mingw + shared recomp module (distribution D1)",
+      "inherits": "windows-mingw",
+      "binaryDir": "${sourceDir}/build/windows-mingw-shared",
+      "cacheVariables": {
+        "OPENPETE_RECOMP_LINKAGE": "shared"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "linux-debug",     "configurePreset": "linux-debug" },
-    { "name": "linux-release",   "configurePreset": "linux-release" },
-    { "name": "windows-mingw",   "configurePreset": "windows-mingw" },
-    { "name": "windows-mingw-opt", "configurePreset": "windows-mingw-opt" },
-    { "name": "windows-msvc",    "configurePreset": "windows-msvc" },
-    { "name": "macos-universal", "configurePreset": "macos-universal" },
-    { "name": "wasm",            "configurePreset": "wasm" }
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "windows-mingw",
+      "configurePreset": "windows-mingw"
+    },
+    {
+      "name": "windows-mingw-opt",
+      "configurePreset": "windows-mingw-opt"
+    },
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "macos-universal",
+      "configurePreset": "macos-universal"
+    },
+    {
+      "name": "wasm",
+      "configurePreset": "wasm"
+    },
+    {
+      "name": "linux-release-shared",
+      "configurePreset": "linux-release-shared"
+    },
+    {
+      "name": "windows-mingw-shared",
+      "configurePreset": "windows-mingw-shared"
+    }
   ]
 }

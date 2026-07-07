@@ -321,6 +321,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --frame-limit N            exit after N rendered frames\n"
         "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
         "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
+        "  --recomp-module PATH       shared-linkage builds: load the recomp module\n"
+        "                             from PATH instead of the default next to the exe\n"
         "  --render-paths LIST        render ONLY these paths in both renderers, e.g.\n"
         "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"
         "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
@@ -608,6 +610,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--exe-path") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->exe_path = v; i++;
+        } else if (strcmp(a, "--recomp-module") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->recomp_module_path = v; i++;
         } else if (strcmp(a, "--test-recomp-call") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->test_recomp_call_addr = (uint32_t)strtoul(v, NULL, 0); i++;

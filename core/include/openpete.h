@@ -219,6 +219,10 @@ typedef struct {
     /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
     const char* disc_path;
     const char* exe_path;          /* Direct PSX EXE bytes (overrides disc) */
+    const char* recomp_module_path; /* Shared-linkage builds: override the
+                                       recomp-module path (default: platform
+                                       library name next to the exe). Ignored
+                                       by static builds. */
 
     /* Phase 1b bring-up smoke test: skip the run loop and instead boot the
      * PSX EXE, dispatch a single recompiled function at this address, and

@@ -82,19 +82,32 @@ else()
         ${SPYRO_GENERATED}/native_thunks.cpp)
 endif()
 
-# --- ROM-derived recomp module (distribution seam, plan D0) -------------
+# --- ROM-derived recomp module (distribution seam, plan D0/D1) ----------
 #
-# Everything ROM-derived lives in this OBJECT library behind the
+# Everything ROM-derived lives in this library behind the
 # openpete_recomp_module descriptor (module_main.c): the recompiled main
-# EXE + every overlay, the overlay registry, and dispatch_chain.c. The
-# static build links the objects straight into the exe (byte-identical
-# link semantics — OBJECT, not STATIC, so no archive member pulling);
-# the distribution build (D1) compiles the same sources into
-# spyro1-recomp.{so,dll} on the user's machine at first boot.
+# EXE + every overlay, the overlay registry, and dispatch_chain.c.
 # psyq_stubs.c intentionally stays EXE-side next to psyq_thunks.cpp —
 # PE has no dynamic symbol preemption, so module-side weak stubs would
 # shadow the strong thunks on Windows (D0-spike finding).
-add_library(spyro1_recomp_module OBJECT
+#
+# OPENPETE_RECOMP_LINKAGE selects how it reaches the exe:
+#   static — OBJECT library linked straight in (dev default;
+#            byte-identical link semantics, no archive member pulling).
+#   shared — spyro1-recomp.{so,dll} + dlopen loader (distribution D1;
+#            the same sources users boot-compile in D2).
+set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
+    "Recomp module linkage: static (dev) or shared (distribution)")
+set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
+
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND NOT OPENPETE_SKIP_DECOMP)
+    message(FATAL_ERROR
+        "OPENPETE_RECOMP_LINKAGE=shared requires OPENPETE_SKIP_DECOMP=ON "
+        "(hybrid decomp mode is static-only: --defsym aliases + native "
+        "thunks assume one image)")
+endif()
+
+set(SPYRO_MODULE_SOURCES
     # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
     # `psx_dispatch_main_exe` by regen-recomp.sh.
     ${SPYRO_GENERATED}/PSX.EXE_full.c
@@ -107,16 +120,64 @@ add_library(spyro1_recomp_module OBJECT
     # Fans psx_dispatch_compiled out to main EXE + active overlay.
     dispatch_chain.c
     # The descriptor the host resolves (openpete_recomp_module.h).
-    module_main.c
-)
+    module_main.c)
+
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+    add_library(spyro1_recomp_module SHARED ${SPYRO_MODULE_SOURCES})
+    set_target_properties(spyro1_recomp_module PROPERTIES
+        OUTPUT_NAME "spyro1-recomp"
+        PREFIX ""                       # spyro1-recomp.so, not lib*.so
+        POSITION_INDEPENDENT_CODE ON)
+    if(NOT WIN32)
+        # Bind module-internal references internally — matches PE
+        # semantics (no cross-image preemption) so both OSes behave
+        # identically, and skips PLT interposition on internal calls.
+        target_link_options(spyro1_recomp_module PRIVATE
+            -Wl,-Bsymbolic-functions)
+        # Module->host imports resolve at dlopen against the exe's
+        # -rdynamic exports; leave them undefined at link.
+        target_link_options(spyro1_recomp_module PRIVATE
+            -Wl,--unresolved-symbols=ignore-all)
+    endif()
+else()
+    add_library(spyro1_recomp_module OBJECT ${SPYRO_MODULE_SOURCES})
+    # Usage requirements only (psx_runtime.h et al.); OBJECT libraries
+    # don't embed their dependencies.
+    target_link_libraries(spyro1_recomp_module PRIVATE openpete_core)
+endif()
 target_include_directories(spyro1_recomp_module PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${SPYRO_GENERATED})
-# Usage requirements only (psx_runtime.h et al. via psxrecomp/runner/include).
-target_link_libraries(spyro1_recomp_module PRIVATE openpete_core)
+    ${SPYRO_GENERATED}
+    # Include dirs only — the shared module must NOT link openpete_core
+    # (a second copy of core state inside the module would be wrong).
+    $<TARGET_PROPERTY:openpete_core,INTERFACE_INCLUDE_DIRECTORIES>)
 set_target_properties(spyro1_recomp_module PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON)
+
+# Host-side attach TU + (shared) the generated export surface.
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+    set(_module_def       ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_module_exports.def)
+    set(_module_keepalive ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_abi_keepalive.gen.c)
+    add_custom_command(
+        OUTPUT  ${_module_def} ${_module_keepalive}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_module_exports.py
+                --psyq   ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
+                --extras ${CMAKE_CURRENT_SOURCE_DIR}/manifest/module_abi_exports.txt
+                --image  openpete-spyro1.exe
+                --def-out ${_module_def}
+                --keepalive-out ${_module_keepalive}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
+                ${CMAKE_CURRENT_SOURCE_DIR}/manifest/module_abi_exports.txt
+                ${CMAKE_SOURCE_DIR}/tools/gen_module_exports.py
+        COMMENT "Generating recomp-module export surface (.def + keep-alive)")
+    set(SPYRO_RECOMP_ATTACH_SOURCES
+        recomp_attach_shared.c
+        ${_module_keepalive})
+else()
+    set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
+endif()
 
 add_executable(openpete-spyro1
     main.cpp
@@ -147,7 +208,9 @@ add_executable(openpete-spyro1
     # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
     ${SPYRO_DECOMP_TUS}
 
-    # ROM-derived recomp code lives in spyro1_recomp_module (above).
+    # ROM-derived recomp code lives in spyro1_recomp_module (above);
+    # the attach TU registers it (static) or dlopens it (shared).
+    ${SPYRO_RECOMP_ATTACH_SOURCES}
 
     # Hand-written PSYQ → PsyCross ABI thunks. Listed BEFORE the
     # generated stubs so under MinGW link order lets the thunk's strong
@@ -245,9 +308,34 @@ target_sources(openpete-spyro1 PRIVATE
     # Sub-tick re-feed orchestrator (native-renderer high-FPS spine, step 2).
     spyro_native_reextract.c)
 
-target_link_libraries(openpete-spyro1 PRIVATE
-    spyro1_recomp_module
-    openpete_core)
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "static")
+    target_link_libraries(openpete-spyro1 PRIVATE spyro1_recomp_module)
+else()
+    target_link_libraries(openpete-spyro1 PRIVATE ${CMAKE_DL_LIBS})
+    if(WIN32)
+        # The exe exports exactly the curated surface (the .def rides the
+        # link line); the module DLL links an implib generated from the
+        # same .def so its imports name openpete-spyro1.exe.
+        target_link_options(openpete-spyro1 PRIVATE ${_module_def})
+        set_property(TARGET openpete-spyro1 APPEND PROPERTY
+            LINK_DEPENDS ${_module_def})
+        if(NOT CMAKE_DLLTOOL)
+            set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
+        endif()
+        set(_module_implib
+            ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
+        add_custom_command(
+            OUTPUT  ${_module_implib}
+            COMMAND ${CMAKE_DLLTOOL} -d ${_module_def} -l ${_module_implib}
+                    -D openpete-spyro1.exe
+            DEPENDS ${_module_def}
+            COMMENT "dlltool: exe-export implib for the recomp module")
+        add_custom_target(spyro1_module_implib DEPENDS ${_module_implib})
+        add_dependencies(spyro1_recomp_module spyro1_module_implib)
+        target_link_libraries(spyro1_recomp_module PRIVATE ${_module_implib})
+    endif()
+endif()
+target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
 # App icon decoded from the PSX save-file header's CLUT+icon data
 # (see spyro-1/include/save_file.h:39). The same generator emits a
