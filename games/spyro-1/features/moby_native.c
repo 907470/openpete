@@ -3011,6 +3011,49 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
+/* One NTSC game-logic tick in ns: 1001/30000 s = 33.3667 ms = the 59.94 Hz
+ * (60000/1001) NTSC VBL halved = 29.97 Hz (the 1001 is the NTSC 1.001 factor —
+ * NOT a plain 30 Hz / 33.3333 ms). The interp denominator cap; same constant as
+ * TICK_PERIOD_NS in spyro_native_reextract.c. (The measured per-object gap the
+ * alpha actually divides by tracks the real VBL cadence; this only caps it.) */
+#define MOBY_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+
+/* OPENPETE_MOBY_SNAP_STALE=0 restores the pre-fix behaviour (interpolate across
+ * a stale-prev pair) for same-window A/B. Default on. */
+static int moby_interp_stale_snap_enabled(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_STALE"); s = (e && *e) ? (*e != '0') : 1; }
+    return s;
+}
+
+/* A per-object interp pair is STALE when the distinct-state gap exceeds ~1.5
+ * ticks: the ring only rolls prev←curr on a change, so a gap that big means the
+ * prev straddles a static stretch — the pair is a DISCONTINUITY, not continuous
+ * motion.
+ *
+ * Used ONLY by the billboard-POSITION lerp below, which is reached only by mobys
+ * that miss the primary sub-tick position path (openpete_native_interp_pos) —
+ * i.e. HUD-pool text / tally / icon mobys, whose identity is fragile: a text
+ * glyph keys by (class+slot), which is not a stable per-glyph identity across a
+ * HUD relayout. At a submenu switch the pool re-lays out and a slot's key can
+ * name a different logical letter, so its prev is the ~20-tick-old glyph that
+ * last held the slot; lerping the ~15px position delta over that ~20-tick gap
+ * crawled the letter across the screen (the pause-menu text "swim"). Snapping
+ * presents the letter in place. A genuinely moving billboard (a flying tally
+ * gem, a sliding-in HUD icon) rolls every tick (gap == 1 tick) → NOT stale →
+ * still interpolates.
+ *
+ * NOT applied to the rotation (shaded_compose_euler) or keyframe-shape
+ * (moby_prev_keyframe) lerps: those legitimately sweep a delta over a multi-tick
+ * gap for SLOWLY-rotating / slowly-animating mobys (gems, idle dragons) whose
+ * sub-byte-per-tick change only rolls the record every few ticks — snapping them
+ * would restore the 1.4°/step stair-step that sub-tick interp exists to remove.
+ * OPENPETE_MOBY_SNAP_STALE=0 reverts (interpolate across the stale pair). */
+static int moby_interp_pair_stale(op_time_t prev_ns, op_time_t curr_ns) {
+    if (!moby_interp_stale_snap_enabled()) return 0;
+    return (curr_ns - prev_ns) > MOBY_TICK_PERIOD_NS + MOBY_TICK_PERIOD_NS / 2;
+}
+
 static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
     int sy, cy, sx, cx, sz, cz;
     /* When rotation interp is active and this moby has a paired prev/curr snapshot,
@@ -3364,7 +3407,12 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                      * 64 px/tick is ~4x the tally gem's flight speed; a same-class
                      * slot shift (gem inheriting another gem's slot) jumps farther
                      * and snaps. */
-                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 64.0*64.0) {
+                    /* stale prev = a relaid-out submenu glyph paired with the old
+                     * glyph that last held its pool slot → snap (leave bf at the
+                     * canonical curr) so the letter appears in place instead of
+                     * swimming from the previous word's position. */
+                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 64.0*64.0 &&
+                        !moby_interp_pair_stale(o->prev_ns, o->curr_ns)) {
                         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
                         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
                         bfx = (double)pp[0] + ddx * t;
