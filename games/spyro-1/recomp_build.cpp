@@ -254,38 +254,92 @@ std::string find_cc(const fs::path& base) {
  * bundled one) invalidates cached modules instead of silently reusing a
  * dir built by a different optimizer. Empty string if the probe fails
  * (degrades to psxrecomp-only keying, the prior behavior). */
-std::string cc_identity(const std::string& cc) {
-    if (cc.empty()) return "";
-    std::string cmd = "\"" + cc + "\" --version 2>&1";
+std::string run_capture(const std::string& cmd) {
 #ifdef _WIN32
     FILE* p = _popen(cmd.c_str(), "r");
 #else
     FILE* p = popen(cmd.c_str(), "r");
 #endif
     if (!p) return "";
-    char line[512] = {0};
-    if (!std::fgets(line, sizeof line, p)) line[0] = 0;
+    std::string out;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
 #ifdef _WIN32
     _pclose(p);
 #else
     pclose(p);
 #endif
-    /* strip trailing newline */
-    for (char* c = line; *c; ++c) if (*c == '\n' || *c == '\r') { *c = 0; break; }
-    return line;
+    return out;
+}
+
+std::string cc_identity(const std::string& cc) {
+    if (cc.empty()) return "";
+    std::string v = run_capture("\"" + cc + "\" --version 2>&1");
+    /* first line only */
+    size_t nl = v.find_first_of("\r\n");
+    return nl == std::string::npos ? v : v.substr(0, nl);
+}
+
+/* Per-machine target-tuning flag for the module compile. Because the
+ * module is compiled ON the user's machine, we CAN target their exact
+ * CPU — a prebuilt binary can't. Determinism-safe: the recompiled code
+ * is pure INTEGER MIPS translation (verified: no float/double), so
+ * -march changes instruction selection but not results (full 20k oracle
+ * PASS with -march=native), and the fixed-point GTE math lives in the
+ * prebuilt runtime, not here.
+ *
+ * DEFAULT OFF, though — measured 2026-07-07: `-march=native` gave 0%
+ * speedup on the attract-demo workload. The hot code (GTE, renderer,
+ * PsyCross) is in the prebuilt runtime we can't tune per-user; the
+ * module is branchy integer dispatch that neither vectorizes nor
+ * dominates frame time. So the default is the portable baseline (no
+ * -march) — CI-identical codegen for every user, no per-CPU cache
+ * fragmentation. Opt in with OPENPETE_MODULE_MARCH=native (or a specific
+ * value like x86-64-v3) if a heavier workload or CPU shows a benefit. */
+std::string module_march() {
+    const char* e = getenv("OPENPETE_MODULE_MARCH");
+    std::string m = e ? e : "";
+    if (m.empty() || m == "none" || m == "off") return "";
+    return m;
+}
+
+std::string module_arch_flags() {
+    std::string m = module_march();
+    if (m.empty()) return "";
+    return " -march=" + m + " -mtune=native -ffp-contract=off";
+}
+
+/* Fingerprint the exact target the compiler will emit for module_march():
+ * its predefined macros (`__AVX2__`, feature set, target CPU). Folding
+ * this into the stamp makes a native-built module dir CPU-specific, so a
+ * library copied to a different machine rebuilds instead of executing an
+ * illegal instruction. */
+std::string cc_target_fingerprint(const std::string& cc) {
+    std::string m = module_march();
+    if (cc.empty() || m.empty()) return "";
+#ifdef _WIN32
+    const char* nul = "NUL";
+#else
+    const char* nul = "/dev/null";
+#endif
+    return run_capture("\"" + cc + "\" -march=" + m +
+                       " -dM -E -x c \"" + nul + "\" 2>&1");
 }
 
 /* The codegen identity for cache keying: hash of (PSXRecomp binary +
- * compiler identity) at a fixed opt level. Library entries key module
- * dirs by this, so an engine/toolchain update rebuilds under a fresh
- * dir. Shared by the dir-keying entry point and the in-build descriptor
- * stamp so they never disagree. */
+ * compiler identity + native-target feature set) at a fixed opt level.
+ * Library entries key module dirs by this, so a toolchain bump, a
+ * compiler swap, OR a different-CPU copy rebuilds under a fresh dir.
+ * Shared by the dir-keying entry point and the in-build descriptor stamp
+ * so they never disagree. */
 std::string compute_codegen_stamp(const fs::path& base) {
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) return "";
     uint64_t h = fnv1a_file(psxrecomp);
-    const std::string id = cc_identity(find_cc(base));
-    for (char c : id) { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+    const std::string cc = find_cc(base);
+    for (char c : cc_identity(cc))          { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+    for (char c : cc_target_fingerprint(cc)){ h ^= (uint8_t)c; h *= 0x100000001b3ull; }
     return "fnv1a-" + hex64(h) + "-O2";
 }
 
@@ -457,13 +511,17 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     tus.push_back(src / "dispatch_chain.c");
     tus.push_back(src / "module_main.c");
 
+    const std::string arch = module_arch_flags();  /* -march=native etc. */
 #ifdef _WIN32
     const std::string common =
-        " -c -O2 -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2" + arch + " -w -std=gnu99 -I" + q + src.string() + q;
 #else
     const std::string common =
-        " -c -O2 -fPIC -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2 -fPIC" + arch + " -w -std=gnu99 -I" + q + src.string() + q;
 #endif
+    if (!arch.empty())
+        std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",
+                     module_march().c_str());
 #ifdef _WIN32
     /* MSVCRT argv parsing unescapes \" — no single-quote idiom on cmd. */
     const std::string stamps =
