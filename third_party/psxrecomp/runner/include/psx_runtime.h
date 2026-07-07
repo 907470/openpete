@@ -4,6 +4,22 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* Cross-boundary DATA symbols (distribution shared linkage). On PE, a
+ * dlopen'd module writing an exe-exported *data* symbol relies on MinGW
+ * runtime pseudo-relocation — a brittle mechanism (it broke a Windows
+ * shared build after a toolchain bump; the generated code writes
+ * openpete_gte_caller_pc hundreds of times per frame). When compiling the
+ * recomp MODULE on Windows, mark these __declspec(dllimport) so the
+ * compiler routes reads/writes through the import table (__imp_) directly,
+ * with no pseudo-reloc. The exe (which DEFINES them) and every non-Windows
+ * / non-module build see a plain extern. OPENPETE_RECOMP_MODULE_BUILD is
+ * defined only for module TUs (CMake shared target + first-boot compile). */
+#if defined(_WIN32) && defined(OPENPETE_RECOMP_MODULE_BUILD)
+#  define OPENPETE_ABI_DATA __declspec(dllimport)
+#else
+#  define OPENPETE_ABI_DATA
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,7 +83,7 @@ void gte_execute(CPUState* cpu, uint32_t cmd);
  * the function that produced it — used for per-prim-class
  * discrimination (cyclorama vs world-moby vs Spyro mesh vs HUD).
  * 0 = unknown (pre-regen generated code or interpreter path). */
-extern uint32_t openpete_gte_caller_pc;
+OPENPETE_ABI_DATA extern uint32_t openpete_gte_caller_pc;
 
 /* GTE register transfer helpers (for overlay interpreter) */
 uint32_t gte_read_data(CPUState* cpu, uint8_t reg);
@@ -89,7 +105,7 @@ void diag_track_gp1(uint32_t cmd);
  * pair substitution emits code that resolves to the new base + offset
  * for any (lui $X, 0x8007 / addiu $X, $X, lo) pair landing in the pool
  * range [0x8006FCF4, 0x80072894). See code_generator translate_lui. */
-extern uint32_t psx_runtime_g_sony_image_base;
+OPENPETE_ABI_DATA extern uint32_t psx_runtime_g_sony_image_base;
 
 /* --no-lod feature flag (native-renderer display policy; the native
  * feeders key detail selection on it). No generated code reads it —

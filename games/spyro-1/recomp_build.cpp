@@ -512,12 +512,15 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     tus.push_back(src / "module_main.c");
 
     const std::string arch = module_arch_flags();  /* -march=native etc. */
+    /* Route exe-exported DATA symbols through the import table on PE
+     * (psx_runtime.h) — no fragile pseudo-relocation. */
+    const std::string moddef = " -DOPENPETE_RECOMP_MODULE_BUILD";
 #ifdef _WIN32
     const std::string common =
-        " -c -O2" + arch + " -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2" + arch + moddef + " -w -std=gnu99 -I" + q + src.string() + q;
 #else
     const std::string common =
-        " -c -O2 -fPIC" + arch + " -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2 -fPIC" + arch + moddef + " -w -std=gnu99 -I" + q + src.string() + q;
 #endif
     if (!arch.empty())
         std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",

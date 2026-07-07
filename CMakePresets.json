@@ -90,7 +90,8 @@
       "binaryDir": "${sourceDir}/build/linux-release-shared",
       "cacheVariables": {
         "OPENPETE_RECOMP_LINKAGE": "shared",
-        "OPENPETE_ROM_FREE_ICON": "ON"
+        "OPENPETE_ROM_FREE_ICON": "ON",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
       }
     },
     {

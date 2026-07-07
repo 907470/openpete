@@ -9,6 +9,38 @@
 #include "game_extras.h"
 #include "recomp_attach.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <cstdio>
+/* Distribution Windows builds link as a GUI subsystem app (-mwindows) so
+ * no console window pops up when an end user double-clicks. But when the
+ * exe is launched from a terminal or with redirected output — cmd.exe, a
+ * `> log` redirect, or WSL2 interop (which passes inherited *pipe*
+ * handles, not a console) — we still want logs to flow. So: attach to a
+ * parent console if there is one, then bind the C stdio streams to
+ * whatever the standard OS handles actually point at (console, pipe, or
+ * file). Harmless no-op for console-subsystem (dev) builds. */
+static void reconnect_std(DWORD which, FILE* stream) {
+    HANDLE h = GetStdHandle(which);
+    if (!h || h == INVALID_HANDLE_VALUE) return;
+    int fd = _open_osfhandle((intptr_t)h, _O_TEXT);
+    if (fd == -1) return;
+    int target = _fileno(stream);
+    if (fd != target) { _dup2(fd, target); _close(fd); }
+    setvbuf(stream, NULL, _IONBF, 0);
+}
+static void openpete_attach_parent_console(void) {
+    AttachConsole(ATTACH_PARENT_PROCESS);   /* ok if it fails (pipe/file) */
+    reconnect_std(STD_OUTPUT_HANDLE, stdout);
+    reconnect_std(STD_ERROR_HANDLE,  stderr);
+    reconnect_std(STD_INPUT_HANDLE,  stdin);
+}
+#else
+static void openpete_attach_parent_console(void) {}
+#endif
+
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
@@ -25,6 +57,9 @@ extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
 #include <cstdio>
 
 int main(int argc, char** argv) {
+    /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
+     * (distribution) Windows build; no-op elsewhere. Before any output. */
+    openpete_attach_parent_console();
 
     /* MinGW buffers stderr when it isn't a TTY (true for `>file 2>&1`
      * and for WSL2 interop pipes). abort() — which the PSYQ stubs use to

@@ -124,10 +124,21 @@ set(SPYRO_MODULE_SOURCES
 
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
     add_library(spyro1_recomp_module SHARED ${SPYRO_MODULE_SOURCES})
+    # Route the exe-exported DATA symbols through the import table
+    # (__declspec(dllimport)) instead of fragile PE pseudo-relocation —
+    # see psx_runtime.h. Module TUs only; the exe DEFINES those symbols.
+    target_compile_definitions(spyro1_recomp_module PRIVATE
+        OPENPETE_RECOMP_MODULE_BUILD)
     set_target_properties(spyro1_recomp_module PROPERTIES
         OUTPUT_NAME "spyro1-recomp"
         PREFIX ""                       # spyro1-recomp.so, not lib*.so
-        POSITION_INDEPENDENT_CODE ON)
+        POSITION_INDEPENDENT_CODE ON
+        # LTO stays OFF for the module even when the preset turns on IPO
+        # globally: the shipped module is compiled at first boot (plain
+        # -O2, no LTO — LTO over ~1.6M lines would blow the boot budget),
+        # so this CMake-built .so/.dll is only a dev artifact and gets no
+        # value from LTO. The base exe + runtime DO get LTO (below).
+        INTERPROCEDURAL_OPTIMIZATION OFF)
     if(NOT WIN32)
         # Bind module-internal references internally — matches PE
         # semantics (no cross-image preemption) so both OSes behave
@@ -233,12 +244,17 @@ add_executable(openpete-spyro1
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     target_link_options(openpete-spyro1 PRIVATE
-        -Wl,--allow-multiple-definition
-        # Override SDL3main's -mwindows so the .exe is a console-subsystem
-        # binary; otherwise stdout/stderr aren't attached to the parent
-        # terminal when launched via WSL2 interop.
-        -mconsole
-        )
+        -Wl,--allow-multiple-definition)
+    if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+        # Distribution build: GUI subsystem so no console window pops up
+        # for end users. main.cpp reattaches stdout/stderr to the parent
+        # console when launched from a terminal (dev/CI keep their logs).
+        target_link_options(openpete-spyro1 PRIVATE -mwindows)
+    else()
+        # Dev build: console subsystem so stdout/stderr land in the parent
+        # terminal (incl. WSL2 interop) with no extra plumbing.
+        target_link_options(openpete-spyro1 PRIVATE -mconsole)
+    endif()
     if(NOT OPENPETE_SKIP_DECOMP)
         # Disable ASLR — DECOMP MODE ONLY. The Phase 3/4 native-decomp
         # globals are link-aliased into g_ram via
