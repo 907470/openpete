@@ -1,0 +1,45 @@
+# OpenPete — Spyro the Dragon PC port (@VERSION@, @PLATFORM@)
+
+OpenPete plays *Spyro the Dragon* (PSX, 1998) natively on your PC —
+widescreen, high framerate, HD texture packs — while keeping gameplay
+**bit-identical to original PlayStation hardware**.
+
+**You need your own disc.** OpenPete ships no game content: on first
+run it reads your disc image, rebuilds the game's code for your machine,
+and stores everything in a `library/` folder next to the program. This
+takes under a minute; after that the original file is never needed
+again.
+
+## Quick start
+
+1. Dump your *Spyro the Dragon* (NTSC-U) disc to a `.bin`/`.cue` pair.
+2. Run:
+
+   Linux:   `./openpete-spyro1 --ingest /path/to/SpyroTheDragon.cue`
+   Windows: `openpete-spyro1.exe --ingest C:\path\to\SpyroTheDragon.cue`
+
+3. That's it. Next time, just run `openpete-spyro1` with no arguments.
+
+Useful flags: `--aspect 16:9`, `--fov 90`, `--no-lod`, `--window WxH`.
+Run with `--help` for everything else. Persistent defaults go in an
+`openpete.opts` file next to the program (one flag per line).
+
+## What first run does
+
+Your disc's game code is recompiled to native code *on your machine*
+(`library/<id>/modules/`). Nothing derived from the disc ever leaves
+your computer, and OpenPete never phones home — the whole process works
+offline. Modified discs (romhacks) are detected and run best-effort.
+
+## Notes
+
+- Linux: a C compiler (`cc`) must be installed for the first run
+  (`sudo apt install gcc` or equivalent). Windows bundles its own.
+- Do not share your `library/` folder — it contains your game data.
+- Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
+  very deep folders can hit Windows' path-length limit during first run.
+- Custom music: drop WAVs in `assets/music/` (see `manifest.txt`).
+- HD textures: drop PNGs in `assets/textures/replacements/`.
+
+*OpenPete is not affiliated with Sony, Insomniac Games, or Activision.
+Spyro the Dragon is a trademark of its respective owners.*

@@ -309,9 +309,17 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     fs::create_directories(fs::path(out_module_path).parent_path(), ec);
     fs::remove_all(work, ec);
     const fs::path inputs = work / "inputs", gen = work / "gen", obj = work / "obj";
-    fs::create_directories(inputs);
-    fs::create_directories(gen);
-    fs::create_directories(obj);
+    fs::create_directories(inputs, ec);
+    fs::create_directories(gen, ec);
+    fs::create_directories(obj, ec);
+    if (ec || !fs::exists(obj)) {
+        std::fprintf(stderr,
+            "openpete: cannot create the module build directory (%s): %s\n"
+            "  (deep install paths can exceed Windows' path limit — move "
+            "the install to a shorter path)\n",
+            work.string().c_str(), ec.message().c_str());
+        return -1;
+    }
 
     /* 1. extract ---------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");

@@ -101,10 +101,12 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
 }
 
 void write_meta(const fs::path& entry, const std::string& label,
-                const std::string& source, long long last_played) {
+                const std::string& source, const std::string& sha,
+                long long last_played) {
     std::ofstream f(entry / "meta.toml", std::ios::trunc);
     f << "label = \"" << label << "\"\n"
       << "source = \"" << source << "\"\n"
+      << "sha256 = \"" << sha << "\"\n"
       << "last_played = " << last_played << "\n";
 }
 
@@ -112,6 +114,7 @@ struct Meta {
     fs::path dir;
     std::string label;
     std::string source;
+    std::string sha;
     long long last_played = 0;
 };
 
@@ -125,6 +128,8 @@ bool read_meta(const fs::path& entry, Meta& m) {
             m.label = line.substr(9, line.size() - 10);
         else if (line.rfind("source = \"", 0) == 0)
             m.source = line.substr(10, line.size() - 11);
+        else if (line.rfind("sha256 = \"", 0) == 0)
+            m.sha = line.substr(10, line.size() - 11);
         else if (line.rfind("last_played = ", 0) == 0)
             m.last_played = atoll(line.c_str() + 14);
     }
@@ -132,7 +137,7 @@ bool read_meta(const fs::path& entry, Meta& m) {
 }
 
 void touch_last_played(const Meta& m) {
-    write_meta(m.dir, m.label, m.source, (long long)time(nullptr));
+    write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr));
 }
 
 /* The entry's cue is what the runtime consumes; single data track,
@@ -214,7 +219,14 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
             fs::remove_all(tmp, ec);
             return -1;
         }
-        fs::path entry = root / sha;
+        /* Entry dirname = first 16 hex of the sha256 (2^64 space — the
+         * full hash lives in meta.toml). Keeps the deepest module-build
+         * paths inside Windows' 260-char budget even under long install
+         * prefixes. */
+        char short_id[17];
+        std::memcpy(short_id, sha, 16);
+        short_id[16] = 0;
+        fs::path entry = root / short_id;
         if (fs::exists(entry / "disc.bin")) {
             std::fprintf(stderr, "[library] already in your library (%s)\n", sha);
             fs::remove_all(tmp, ec);
@@ -230,7 +242,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
             std::string label = (std::strcmp(sha, kRetailSha) == 0)
                                     ? "Spyro the Dragon (NTSC-U)"
                                     : bin.filename().string();
-            write_meta(entry, label, bin.filename().string(),
+            write_meta(entry, label, bin.filename().string(), sha,
                        (long long)time(nullptr));
             std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
         }

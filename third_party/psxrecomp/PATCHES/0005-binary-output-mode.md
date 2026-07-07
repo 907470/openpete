@@ -10,3 +10,8 @@ cross-platform output identity (and every hash/cache keyed on the
 generated C). Verified: the Windows exe's output is now byte-identical
 to the Linux build's across the Spyro corpus; POSIX behavior unchanged
 (binary mode is a no-op there).
+
+**Addendum:** output-file and dispatch-file write failures now return
+exit code 1 (previously a stderr warning + exit 0 — a caller checking
+the exit status, like openpete's first-boot orchestrator, sailed past a
+MAX_PATH-truncated write and failed later with a confusing link error).

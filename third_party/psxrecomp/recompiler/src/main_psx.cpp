@@ -802,7 +802,8 @@ int main(int argc, char** argv) {
                   std::count(full_c_code.begin(), full_c_code.end(), '\n'),
                   output_filename);
     } else {
-        fmt::print(stderr, "⚠ Failed to write output file\n\n");
+        fmt::print(stderr, "⚠ Failed to write output file: {}\n\n", output_filename);
+        return 1;
     }
 
     // Discovered-functions log — every function the analyzer landed on, in
@@ -884,7 +885,9 @@ int main(int argc, char** argv) {
             dispatch_file.close();
             fmt::print("✓ Dispatch table written ({} entries)\n\n", total);
         } else {
-            fmt::print(stderr, "⚠ Failed to write dispatch file\n\n");
+            fmt::print(stderr, "⚠ Failed to write dispatch file: {}\n\n",
+                       dispatch_filename);
+            return 1;
         }
     }
 
