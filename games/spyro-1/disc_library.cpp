@@ -26,7 +26,9 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <limits.h>
 #endif
@@ -42,7 +44,15 @@ constexpr const char* kRetailSha =
     "95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f";
 
 std::string exe_dir() {
-#ifndef _WIN32
+#ifdef _WIN32
+    char exe[4096];
+    DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
+    if (len > 0 && len < sizeof exe) {
+        for (char* p = exe; *p; ++p) if (*p == '\\') *p = '/';
+        if (char* slash = strrchr(exe, '/')) { *slash = 0; return exe; }
+    }
+    return ".";
+#else
     char exe[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (len > 0) {
@@ -50,9 +60,6 @@ std::string exe_dir() {
         if (char* slash = strrchr(exe, '/')) { *slash = 0; return exe; }
     }
     return ".";
-#else
-    return ".";  /* Windows library path lands with the D3 packaging pass;
-                  * "." == the app dir under normal launch there. */
 #endif
 }
 
@@ -151,7 +158,11 @@ int boot_entry(openpete_options_t* opts, Meta& m,
     if (module_path_out && module_path_cap) {
         char stamp[128];
         if (spyro1_recomp_codegen_stamp(stamp, sizeof stamp) == 0) {
+#ifdef _WIN32
+            fs::path mod = m.dir / "modules" / stamp / "spyro1-recomp.dll";
+#else
             fs::path mod = m.dir / "modules" / stamp / "spyro1-recomp.so";
+#endif
             std::error_code ec;
             fs::create_directories(mod.parent_path(), ec);
             std::snprintf(module_path_out, module_path_cap, "%s",

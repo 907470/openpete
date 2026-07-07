@@ -368,11 +368,26 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
             ${_rdir}/src
         VERBATIM)
-    if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
+    if(WIN32)
+        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build-mingw/PSXRecomp.exe)
+    else()
+        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
+    endif()
+    if(EXISTS ${_psxrecomp_bin})
         add_custom_command(TARGET openpete-spyro1 POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp
+                ${_psxrecomp_bin}
+                ${_rdir}/tools
+            VERBATIM)
+    endif()
+    if(WIN32)
+        # The module DLL links against the exe's export implib at first
+        # boot — stage it with the tools.
+        add_custom_command(TARGET openpete-spyro1 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_module_implib}
                 ${_rdir}/tools
             VERBATIM)
     endif()

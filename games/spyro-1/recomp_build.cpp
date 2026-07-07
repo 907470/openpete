@@ -12,8 +12,10 @@
 // kit), recomp/tools/PSXRecomp when packaged. The host compiler is
 // $OPENPETE_CC or `cc` until D3 bundles a pinned clang.
 //
-// Linux-first: the Windows orchestrator lands with the D3 toolchain
-// bundle (no system compiler exists on user Windows boxes anyway).
+// Cross-platform: POSIX uses the bundled clang / $OPENPETE_CC / cc;
+// Windows requires the bundled llvm-mingw next to the exe
+// (recomp/tools/llvm-mingw) and links against the staged exe-export
+// implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_log.h"
 
 #include <cstdint>
@@ -28,7 +30,9 @@
 #include <thread>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <limits.h>
 #endif
@@ -38,6 +42,12 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 
 namespace fs = std::filesystem;
 
+#ifdef _WIN32
+#define QUIET_REDIR " > NUL"
+#else
+#define QUIET_REDIR " > /dev/null"
+#endif
+
 namespace {
 
 struct Overlay {
@@ -46,7 +56,14 @@ struct Overlay {
 };
 
 std::string exe_dir() {
-#ifndef _WIN32
+#ifdef _WIN32
+    char exe[4096];
+    DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
+    if (len > 0 && len < sizeof exe) {
+        for (char* p = exe; *p; ++p) if (*p == '\\') *p = '/';
+        if (char* slash = strrchr(exe, '/')) { *slash = 0; return exe; }
+    }
+#else
     char exe[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (len > 0) {
@@ -58,7 +75,15 @@ std::string exe_dir() {
 }
 
 bool run(const std::string& cmd) {
+#ifdef _WIN32
+    /* cmd.exe /C strips the outermost quotes when the command contains
+     * more than one quoted token — the classic system() trap. Wrapping
+     * the whole command in one extra pair of quotes defeats it. */
+    const std::string wrapped = "\"" + cmd + "\"";
+    int rc = std::system(wrapped.c_str());
+#else
     int rc = std::system(cmd.c_str());
+#endif
     if (rc != 0) OPL_ERROR_F("recomp-build", "command failed (%d): %s", rc, cmd.c_str());
     return rc == 0;
 }
@@ -150,17 +175,43 @@ bool emit_overlay_table(const fs::path& out, const std::vector<Overlay>& ovls) {
     return f.good();
 }
 
+#ifdef _WIN32
+#define PSXRECOMP_NAME "PSXRecomp.exe"
+#define PSXRECOMP_DEVDIR "build-mingw"
+#else
+#define PSXRECOMP_NAME "PSXRecomp"
+#define PSXRECOMP_DEVDIR "build"
+#endif
+
 std::string find_psxrecomp(const fs::path& base) {
     if (const char* env = getenv("OPENPETE_PSXRECOMP")) return env;
-    fs::path staged = base / "recomp" / "tools" / "PSXRecomp";
+    fs::path staged = base / "recomp" / "tools" / PSXRECOMP_NAME;
     if (fs::exists(staged)) return staged.string();
     /* dev fallback: the repo build */
     fs::path repo = base / ".." / ".." / ".." / ".." /
-                    "third_party" / "psxrecomp" / "build" / "PSXRecomp";
+                    "third_party" / "psxrecomp" / PSXRECOMP_DEVDIR / PSXRECOMP_NAME;
     std::error_code ec;
     fs::path canon = fs::canonical(repo, ec);
     if (!ec && fs::exists(canon)) return canon.string();
     return "";
+}
+
+/* The compiler for the module build. Windows: the bundled llvm-mingw
+ * next to the exe (no system compiler exists there); POSIX: bundled
+ * first, then $OPENPETE_CC, then cc. */
+std::string find_cc(const fs::path& base) {
+#ifdef _WIN32
+    fs::path bundled = base / "recomp" / "tools" / "llvm-mingw" / "bin" /
+                       "x86_64-w64-mingw32-clang.exe";
+    if (fs::exists(bundled)) return bundled.string();
+    if (const char* env = getenv("OPENPETE_CC")) return env;
+    return "";
+#else
+    fs::path bundled = base / "recomp" / "tools" / "clang" / "bin" / "clang";
+    if (fs::exists(bundled)) return bundled.string();
+    if (const char* env = getenv("OPENPETE_CC")) return env;
+    return "cc";
+#endif
 }
 
 }  // namespace
@@ -178,14 +229,6 @@ extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
 
 extern "C" int spyro1_recomp_build_module(const char* disc_path,
                                           const char* out_module_path) {
-#ifdef _WIN32
-    (void)disc_path; (void)out_module_path;
-    std::fprintf(stderr,
-        "openpete: no recomp module found, and the Windows first-boot build "
-        "ships with the bundled toolchain (distribution D3). Build the module "
-        "with the windows-mingw-shared preset for now.\n");
-    return -1;
-#else
     if (!disc_path) {
         std::fprintf(stderr, "openpete: first-boot module build needs --disc\n");
         return -1;
@@ -198,7 +241,20 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
      * modding framework's link-time override chains re-link from these
      * objects); inputs/gen are scratch. */
     const fs::path work = fs::path(out_module_path).parent_path() / "build";
-    const std::string cc = getenv("OPENPETE_CC") ? getenv("OPENPETE_CC") : "cc";
+    /* Shell quote: cmd.exe double-quotes on Windows, single elsewhere. */
+#ifdef _WIN32
+    const std::string q = "\"";
+#else
+    const std::string q = "'";
+#endif
+    const std::string cc = find_cc(base);
+    if (cc.empty()) {
+        std::fprintf(stderr,
+            "openpete: no compiler for the first-boot module build — "
+            "expected the bundled toolchain at recomp/tools/ next to the "
+            "exe (or $OPENPETE_CC)\n");
+        return -1;
+    }
 
     if (!fs::exists(man / "manifest.toml") || !fs::exists(src / "psx_runtime.h")) {
         std::fprintf(stderr,
@@ -248,13 +304,13 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
                  ovls.size() + 1);
     {
         std::ostringstream c;
-        c << "'" << psxrecomp << "' '" << (inputs / "PSX.EXE").string() << "'"
-          << " --output-dir='" << gen.string() << "'"
-          << " --external-symbols='" << (man / "psyq.toml").string() << "'"
+        c << q << psxrecomp << q << " " << q << (inputs / "PSX.EXE").string() << q
+          << " --output-dir=" << q << gen.string() << q
+          << " --external-symbols=" << q << (man / "psyq.toml").string() << q
           << " --external-prefix=psyq_"
-          << " --extra-funcs='" << (man / "main_exe.funcs.txt").string() << "'"
-          << " --channel-sites='" << (man / "channel_sites.txt").string() << "'"
-          << " --skip-on-error > /dev/null";
+          << " --extra-funcs=" << q << (man / "main_exe.funcs.txt").string() << q
+          << " --channel-sites=" << q << (man / "channel_sites.txt").string() << q
+          << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / "PSX.EXE_dispatch.c",
                           "psx_dispatch_compiled", "psx_dispatch_main_exe"))
@@ -262,15 +318,15 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     }
     for (auto& o : ovls) {
         std::ostringstream c;
-        c << "'" << psxrecomp << "' '" << (inputs / (o.name + ".ovl")).string() << "'"
+        c << q << psxrecomp << q << " " << q << (inputs / (o.name + ".ovl")).string() << q
           << " --raw-bin --load-addr=0x8007AA38"
           << " --output-stem=" << o.name << ".bin"
-          << " --output-dir='" << gen.string() << "'"
-          << " --external-symbols='" << (man / "psyq.toml").string() << "'"
+          << " --output-dir=" << q << gen.string() << q
+          << " --external-symbols=" << q << (man / "psyq.toml").string() << q
           << " --external-prefix=psyq_"
           << " --func-prefix=func_" << o.name << "_"
-          << " --extra-funcs='" << (man / (o.name + ".funcs.txt")).string() << "'"
-          << " --skip-on-error > /dev/null";
+          << " --extra-funcs=" << q << (man / (o.name + ".funcs.txt")).string() << q
+          << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / (o.name + ".bin_dispatch.c"),
                           "psx_dispatch_compiled", "psx_dispatch_" + o.name))
@@ -285,11 +341,23 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     tus.push_back(src / "dispatch_chain.c");
     tus.push_back(src / "module_main.c");
 
+#ifdef _WIN32
     const std::string common =
-        " -c -O2 -fPIC -w -std=gnu99 -I'" + src.string() + "'";
+        " -c -O2 -w -std=gnu99 -I" + q + src.string() + q;
+#else
+    const std::string common =
+        " -c -O2 -fPIC -w -std=gnu99 -I" + q + src.string() + q;
+#endif
+#ifdef _WIN32
+    /* MSVCRT argv parsing unescapes \" — no single-quote idiom on cmd. */
+    const std::string stamps =
+        " -DOPENPETE_CODEGEN_STAMP=\\\"" + codegen_stamp + "\\\""
+        " -DOPENPETE_ROM_SHA256=\\\"" + rom_stamp + "\\\"";
+#else
     const std::string stamps =
         " -DOPENPETE_CODEGEN_STAMP='\"" + codegen_stamp + "\"'"
         " -DOPENPETE_ROM_SHA256='\"" + rom_stamp + "\"'";
+#endif
 
     unsigned jobs = std::thread::hardware_concurrency();
     if (jobs == 0) jobs = 4;
@@ -308,9 +376,9 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
             if (i >= tus.size() || failed.load()) return;
             const fs::path& tu = tus[i];
             std::string extra = (tu.filename() == "module_main.c") ? stamps : "";
-            std::string cmd = cc + common + extra +
-                " -o '" + (obj / (tu.filename().string() + ".o")).string() +
-                "' '" + tu.string() + "'";
+            std::string cmd = q + cc + q + common + extra +
+                " -o " + q + (obj / (tu.filename().string() + ".o")).string() +
+                q + " " + q + tu.string() + q;
             if (!run(cmd)) { failed.store(1); return; }
             size_t d = done.fetch_add(1) + 1;
             if (d % 20 == 0 || d == tus.size())
@@ -327,11 +395,32 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     /* 4. link ------------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] linking module...\n");
     {
+        /* Object list via a response file: 79 absolute paths overflow
+         * cmd.exe's 8191-char command limit. Paths are normalized to
+         * forward slashes — clang's GNU rsp tokenizer treats backslash
+         * as an escape character. */
+        const fs::path rsp = work / "link.rsp";
+        {
+            std::ofstream rf(rsp, std::ios::binary);
+            for (auto& tu : tus) {
+                std::string o = (obj / (tu.filename().string() + ".o")).string();
+                for (auto& ch : o) if (ch == '\\') ch = '/';
+                rf << '"' << o << '"' << "\n";
+            }
+#ifdef _WIN32
+            /* PE: imports resolve at link against the exe-export implib
+             * staged with the manifests; no preemption flags needed. */
+            std::string implib = (R / "tools" / "libopenpete-exe-exports.a").string();
+            for (auto& ch : implib) if (ch == '\\') ch = '/';
+            rf << '"' << implib << '"' << "\n";
+#endif
+        }
         std::ostringstream c;
-        c << cc << " -shared -o '" << out_module_path << "'";
-        for (auto& tu : tus)
-            c << " '" << (obj / (tu.filename().string() + ".o")).string() << "'";
+        c << q << cc << q << " -shared -o " << q << out_module_path << q
+          << " @" << q << rsp.string() << q;
+#ifndef _WIN32
         c << " -Wl,-Bsymbolic-functions -Wl,--unresolved-symbols=ignore-all";
+#endif
         if (!run(c.str())) return -1;
     }
 
@@ -339,5 +428,4 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
                out_module_path, codegen_stamp.c_str(), rom_stamp.c_str());
     std::fprintf(stderr, "[first-boot] done: %s\n", out_module_path);
     return 0;
-#endif
 }
