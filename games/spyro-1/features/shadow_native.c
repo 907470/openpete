@@ -310,6 +310,55 @@ static void assemble_matrix(CPUState* cpu, const int C[3][3], int idxA, int idxB
     }
 }
 
+/* Fill the depth-aware shadow decal's camera-reconstruction params — SHARED by
+ * the Spyro AND moby shadow feeders. The shader recovers each terrain pixel's
+ * world height from the WORLD-opaque depth pre-pass via V_j = (4096²·C⁻¹[j]·MAC)
+ * / 4096 — a TRUE numerical inverse because the Spyro camera matrix is NOT
+ * orthonormal (its Y row bakes a ~0.625 aspect scale; the transpose-inverse
+ * would under-weight every MAC2 term 2.56×, destroying the differential normal
+ * reconstruction). Both feeders call this so the params are valid whenever ANY
+ * shadow is drawn — in particular the moby shadows must have them even when Spyro
+ * is over water and casts no silhouette shadow of his own. `ground_up` is Spyro's
+ * plane (read unconditionally from D_SpyroShadow so the value never depends on
+ * feeder ORDER); the textured moby decal ignores it and takes its per-moby plane
+ * from the fan's own gl_FragCoord.z. Fills *p; the caller pushes it via
+ * openpete_native_set_shadow_decal_params. Display-only (never writes PSX RAM). */
+static void shadow_build_decal_params(CPUState* cpu, const int C[3][3],
+                                      double ofx, double ofy, double H,
+                                      openpete_shadow_decal_params* p) {
+    double a = C[0][0], b = C[0][1], c = C[0][2];
+    double d = C[1][0], e = C[1][1], f = C[1][2];
+    double g = C[2][0], hh = C[2][1], ii = C[2][2];
+    double det = a*(e*ii - f*hh) - b*(d*ii - f*g) + c*(d*hh - e*g);
+    if (det > -1e-6 && det < 1e-6) det = det < 0.0 ? -1e-6 : 1e-6;
+    double k = 4096.0 * 4096.0 / det;   /* 4096² · C⁻¹ via the adjugate */
+    double inv[3][3] = {
+        { (e*ii - f*hh) * k, (c*hh - b*ii) * k, (b*f - c*e) * k },
+        { (f*g  - d*ii) * k, (a*ii - c*g)  * k, (c*d - a*f) * k },
+        { (d*hh - e*g)  * k, (b*g  - a*hh) * k, (a*e - b*d) * k },
+    };
+    for (int i = 0; i < 3; i++) {
+        p->cam_col0[i] = (float)inv[0][i];
+        p->cam_col1[i] = (float)inv[1][i];
+        p->cam_col2[i] = (float)inv[2][i];
+    }
+    p->cam_pos_up = (float)(int32_t)cpu->read_word(G_CAMERA + 0x30);      /* game z field */
+    p->ofx = (float)ofx; p->ofy = (float)ofy; p->h = (float)H;
+    p->ground_up = (float)(int32_t)cpu->read_word(D_SPYROSHADOW + 0x18);  /* Spyro plane */
+    const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
+    p->wall_height = (wh && *wh) ? (float)atof(wh) : 400.0f;
+    /* |up normal| threshold below which a surface is a wall face (walkable
+     * slopes stay >~0.64; wall faces ~0). OPENPETE_SHADOW_STEEP_NY=0 = height-only. */
+    const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
+    p->steep_nup = (sn && *sn) ? (float)atof(sn) : 0.5f;
+    /* Raised-occluder-in-front (curb/platform) clause; 0 disables. */
+    const char* pe = getenv("OPENPETE_SHADOW_PLAT_EPS");
+    const char* ps = getenv("OPENPETE_SHADOW_PLAT_SLACK");
+    p->plat_eps = (pe && *pe) ? (float)atof(pe) : 150.0f;
+    p->plat_slack = (ps && *ps) ? (float)atof(ps) : 48.0f;
+    p->valid = 1;
+}
+
 /* native moby-shadow tris (4 FT3 fan tris per moby) */
 typedef struct { float sx[3], sy[3], sz[3]; int u[3], v[3]; uint32_t rgb;
                  int tpx, tpy, clx, cly, bpp; } moshtri;
@@ -325,6 +374,16 @@ static void shadow_moby_build(CPUState* cpu) {
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    /* Hand the depth-aware decal the camera-reconstruction params so the TEXTURED
+     * moby-shadow decal (shadow_decal_tex.frag) can reject wall/steep/raised
+     * terrain per pixel — the same fix Spyro's silhouette shadow got. Set here
+     * (not only in the Spyro feeder) so moby shadows are depth-aware even when
+     * Spyro is over water and casts no shadow of his own. Identical params to the
+     * Spyro feeder's (same camera; ground_up read from D_SpyroShadow), so feeder
+     * order is irrelevant. Display-only. */
+    { openpete_shadow_decal_params p;
+      shadow_build_decal_params(cpu, C, ofx, ofy, H, &p);
+      openpete_native_set_shadow_decal_params(&p); }
     /* Camera at FRACTIONAL /4 (not >>2): the moby BODY got the ÷4.0 delta fix but
      * its drop-shadow still floored cam+pos to /4 integers, so the shadow stepped
      * in 4-world-unit chunks under camera motion. Carry the low 2 bits. Sub-tick
@@ -574,63 +633,10 @@ static void shadow_spyro_build(CPUState* cpu) {
      * column 0; worldY = cam_pos_y - (Cᵀ·MAC)[0]/4096 (validated: recovers
      * SpyroShadow.Y to ~0.04%). */
     {
+        /* Camera reconstruction params (inverse matrix / ofx-ofy-h / ground
+         * plane / thresholds) — shared with the moby decal via the helper. */
         openpete_shadow_decal_params p;
-        /* The shader computes V_j = (pushed_colJ · MAC) / 4096 — i.e. it wants
-         * pushed_colJ[i] = 4096² · C⁻¹[j][i]. For an orthonormal-×4096 GTE
-         * matrix that reduces to the plain transpose (C[i][j]), BUT the Spyro
-         * camera matrix is NOT orthonormal: its Y row is scaled ~0.625 (the
-         * PSX aspect correction baked into GTE row 1 — measured row norms
-         * 4096/2560/4096). The transpose-inverse under-weights every MAC2 term
-         * 2.56×, which biased positions by ~25-200 units (previously read as
-         * GTE noise) and DESTROYED the differential normal reconstruction
-         * (flat floors read fronto-parallel, ny≈0.08). A true numerical
-         * inverse handles any baked scale exactly. */
-        {
-            double a = C[0][0], b = C[0][1], c = C[0][2];
-            double d = C[1][0], e = C[1][1], f = C[1][2];
-            double g = C[2][0], hh = C[2][1], ii = C[2][2];
-            double det = a*(e*ii - f*hh) - b*(d*ii - f*g) + c*(d*hh - e*g);
-            if (det > -1e-6 && det < 1e-6) det = det < 0.0 ? -1e-6 : 1e-6;
-            double k = 4096.0 * 4096.0 / det;   /* 4096² · C⁻¹ via the adjugate */
-            double inv[3][3] = {
-                { (e*ii - f*hh) * k, (c*hh - b*ii) * k, (b*f - c*e) * k },
-                { (f*g  - d*ii) * k, (a*ii - c*g)  * k, (c*d - a*f) * k },
-                { (d*hh - e*g)  * k, (b*g  - a*hh) * k, (a*e - b*d) * k },
-            };
-            for (int i = 0; i < 3; i++) {
-                p.cam_col0[i] = (float)inv[0][i];
-                p.cam_col1[i] = (float)inv[1][i];
-                p.cam_col2[i] = (float)inv[2][i];
-            }
-        }
-        p.cam_pos_up  = (float)camz;   /* vertical = the game z field (axis fix) */
-        p.ofx = (float)ofx; p.ofy = (float)ofy; p.h = (float)H;
-        p.ground_up   = (float)sposz;  /* shadow ground plane height */
-        const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
-        p.wall_height = (wh && *wh) ? (float)atof(wh) : 400.0f;
-        /* |up normal| threshold below which a surface counts as a wall face
-         * (walkable Spyro slopes stay above ~0.64; wall faces ~0).
-         * DEFAULT 0.5 (orientation clause ON) since the 2026-07-02 axis fix:
-         * the original blocker — "terrain feeder view-Z skewed off the camera
-         * model" — was DISPROVEN (the measuring harness read the HORIZONTAL
-         * V0/y axis as height; Spyro's vertical is the z field → V1; with the
-         * right axis, fed terrain floors reconstruct flat to the unit). The
-         * height test above was switched to the true vertical at the same
-         * time (camz − V1 vs sposz — it previously tested horizontal-Y
-         * proximity, which rejected walls incidentally and left the
-         * wall-base notch this clause retires). OPENPETE_SHADOW_STEEP_NY=0
-         * reverts to the height-only test. */
-        const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
-        p.steep_nup   = (sn && *sn) ? (float)atof(sn) : 0.5f;
-        /* Raised-occluder-in-front (curb/platform) clause: eps well under the
-         * measured dark-hollow platform (+368) and above grass-level bump
-         * noise; slack absorbs the fan-vs-ground depth mismatch on the
-         * receiving surface. 0 disables the clause. */
-        const char* pe = getenv("OPENPETE_SHADOW_PLAT_EPS");
-        const char* ps = getenv("OPENPETE_SHADOW_PLAT_SLACK");
-        p.plat_eps    = (pe && *pe) ? (float)atof(pe) : 150.0f;
-        p.plat_slack  = (ps && *ps) ? (float)atof(ps) : 48.0f;
-        p.valid = 1;
+        shadow_build_decal_params(cpu, C, ofx, ofy, H, &p);
         openpete_native_set_shadow_decal_params(&p);
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
          * (all three camera columns + swizzle inverse) CPU-side against the

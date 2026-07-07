@@ -153,6 +153,11 @@ typedef struct {
     float    u, v;      /* texture coords in TEXEL units (PSX integer indexing) */
     uint32_t rgba;      /* per-vertex color, byte order R,G,B,A                 */
     uint32_t tex;       /* reserved (packed tpage|clut|mode), see note above    */
+    float    sx, sy;    /* PSX screen coord (location 3) — the textured shadow
+                         * decal's depth-pre-pass lookup rides here, because its
+                         * u,v are the sprite texel (unlike the untextured Spyro
+                         * decal, which parks the screen coord in u,v). Ignored
+                         * by every pipeline whose shader omits location 3.     */
 } rhi_vertex;
 
 typedef struct rhi_buffer   rhi_buffer;

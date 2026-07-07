@@ -105,6 +105,32 @@ typedef struct {
     float simfrac;                 /* same-surface gate fraction (see shader) */
 } inpaint_pc;
 
+/* shadow_decal_tex.frag push constant (must match the GLSL block field-for-field)
+ * — the TEXTURED moby drop-shadow decal: the camera reconstruction params of the
+ * Spyro decal (shadow_decal_pc, minus its single ground_up — the moby plane is
+ * per-pixel from gl_FragCoord.z) plus the per-draw PSX material (all moby shadows
+ * share one shadow-sprite tpage, so one material serves the whole batch). The PSX
+ * screen coord rides vertex location 3 (sx,sy). 25 floats + 5 ints = 120 B, under
+ * the 128-byte guaranteed maxPushConstantsSize. */
+typedef struct {
+    float col0x, col0y, col0z;     /* camera rows 4096^2 * C^-1 (world reconstruct) */
+    float col1x, col1y, col1z;
+    float col2x, col2y, col2z;
+    float cam_pos_up;              /* camera world height (game z field) */
+    float ofx, ofy, h;
+    float wall_height;
+    float steep_nup;               /* |up normal| below which a surface is a wall */
+    float mode;                    /* 0 = draw all (band), 1 = height+steep discard */
+    float band;                    /* fallback view-Z band when mode 0 */
+    float plat_eps;                /* raised-occluder-in-front: min rise */
+    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
+    float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
+    float pvw, pvh;                /* pre-pass raster extent (texels) */
+    int32_t tpage_x, tpage_y;      /* PSX material (shadow sprite): texture page */
+    int32_t clut_x, clut_y;        /* CLUT origin (paletted) */
+    int32_t bpp;                   /* 4 / 8 / 16 */
+} shadow_decal_tex_pc;
+
 /* How many panels the window shows (1c.3a: VRAM + reference). */
 #define NR_PANELS 2
 
@@ -706,7 +732,8 @@ static struct {
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
-    rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows */
+    rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
+    rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
     rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
     rhi_pipeline *gouraud_hud_sub_pipe; /* HUD panel: UNTEXTURED subtractive gouraud, depth-test OFF (the ABR mode-2 shaded text box, B-F) */
@@ -1262,6 +1289,21 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .depth_bias = true, /* shadow decal: hardware coplanar tie-break (W2.5) */
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
+    /* DEPTH-AWARE moby-shadow decal (the same fix Spyro's silhouette shadow got,
+     * textured): shadow_decal_tex.frag samples the shared WORLD-opaque pre-pass
+     * depth (opaque_depth, set 0) AND the shadow-sprite VRAM (u_vram, set 1),
+     * rejecting per pixel the wall / steep-face / raised-in-front terrain a flat
+     * fan can't separate with a plain depth test. depth_test OFF: the shader OWNS
+     * occlusion, so the flat fan never Z-fights the slanted/bumpy ground it drapes.
+     * Preferred over scene_tex_sub_desc whenever the depth pre-pass is available;
+     * NULL (unsupported device) falls back to it. */
+    rhi_pipeline_desc scene_tex_sub_decal_desc = {
+        .vert_spv = "shadow_decal_tex.vert.spv",
+        .frag_spv = "shadow_decal_tex.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .uses_vram = true, .uses_vram2 = true, /* set 0 = opaque_depth, set 1 = VRAM */
+        .push_const_size = sizeof(shadow_decal_tex_pc),
+    };
     /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
      * drawn LAST, ignoring the depth buffer so they sit on top of all world/actor
      * geometry regardless of their world-space view-Z (the PSX draws HUD in a
@@ -1414,6 +1456,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
+    rhi_pipeline *scene_tex_sub_decal_pipe = rhi_create_pipeline(dev, &scene_tex_sub_decal_desc); /* optional: NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
     rhi_pipeline *gouraud_hud_blend_pipe = rhi_create_pipeline(dev, &gouraud_hud_blend_desc);
     rhi_pipeline *gouraud_hud_sub_pipe = rhi_create_pipeline(dev, &gouraud_hud_sub_desc);
@@ -1493,6 +1536,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
         if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
         if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
+        if (scene_tex_sub_decal_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_decal_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
@@ -1539,6 +1583,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
+    s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL → plain sub pipe */
     s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
     s_nr.gouraud_hud_blend_pipe = gouraud_hud_blend_pipe;
     s_nr.gouraud_hud_sub_pipe = gouraud_hud_sub_pipe;
@@ -2027,6 +2072,17 @@ static float shadow_decal_band(void)
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BAND"); b = (e && *e) ? (float)atof(e) : 256.0f; }
     return b;
+}
+
+/* Draw moby drop-shadows through the DEPTH-AWARE textured decal (default ON)?
+ * OPENPETE_MOBY_SHADOW_DECAL=0 reverts to the plain depth-tested subtract pipe +
+ * hardware bias — the pre-fix behaviour — for A/B of the decal against the old
+ * flat-fan-clips-slopes path. Display-only. */
+static int moby_shadow_decal_enabled(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_SHADOW_DECAL"); v = !(e && *e && *e == '0'); }
+    return v;
 }
 
 /* Moby occlusion culling on? (OPENPETE_MOBY_OCCLUSION=0 disables; default ON.)
@@ -3330,6 +3386,10 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = st->v[k].z;
             o->u = st->v[k].u; o->v = st->v[k].v;
             o->rgba = st->v[k].rgba; o->tex = 0;
+            /* PSX screen coord for the textured shadow decal (location 3); the
+             * scene_to_clip INPUT is the PSX screen coord. Harmless for the
+             * other textured pipes (their shaders omit location 3). */
+            o->sx = st->v[k].sx; o->sy = st->v[k].sy;
         }
     }
     n = tx_start + txtri * 3;
@@ -3542,28 +3602,80 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
         if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
-            rhi_bind_pipeline(s_nr.dev, g->tex);
-            if (gi == 1) {
-                float c, s, cl;
-                shadow_hw_bias(&c, &s, &cl);
-                rhi_set_depth_bias(s_nr.dev, c, cl, s);
+            /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
+             * shared WORLD-opaque depth pre-pass is available this present — the
+             * same fix Spyro's silhouette shadow got (shadow_decal_tex.frag owns
+             * per-pixel wall/steep/platform occlusion; depth-test OFF, so the flat
+             * fan never Z-fights the slanted/bumpy ground it drapes). All moby
+             * shadows share one shadow-sprite material (g_MobyShadows uv0/uv1), so
+             * the whole subtract range draws in one call. Fallback (device without
+             * depth sampling / pipe unavailable): the plain depth-tested subtract
+             * pipe + hardware bias below. */
+            int moby_decal = (gi == 1 && s_od_ready && s_nr.opaque_depth &&
+                              s_nr.scene_tex_sub_decal_pipe && moby_shadow_decal_enabled());
+            if (moby_decal) {
+                int base = (txg_first[1] - tx_start) / 3;
+                const scene_tri_t *m0 = &scene[s_txscene[base]];   /* uniform material */
+                shadow_decal_tex_pc pc;
+                pc.col0x = s_shadow_decal.cam_col0[0];
+                pc.col0y = s_shadow_decal.cam_col0[1];
+                pc.col0z = s_shadow_decal.cam_col0[2];
+                pc.col1x = s_shadow_decal.cam_col1[0];
+                pc.col1y = s_shadow_decal.cam_col1[1];
+                pc.col1z = s_shadow_decal.cam_col1[2];
+                pc.col2x = s_shadow_decal.cam_col2[0];
+                pc.col2y = s_shadow_decal.cam_col2[1];
+                pc.col2z = s_shadow_decal.cam_col2[2];
+                pc.cam_pos_up = s_shadow_decal.cam_pos_up;
+                pc.ofx = s_shadow_decal.ofx; pc.ofy = s_shadow_decal.ofy;
+                pc.h = s_shadow_decal.h;
+                pc.wall_height = s_shadow_decal.wall_height;
+                pc.steep_nup = s_shadow_decal.steep_nup;
+                /* height+steep test when the feeder supplied valid camera params,
+                 * else draw-all (band). Env override shares the Spyro decal knob. */
+                float mode = s_shadow_decal.valid ? 1.0f : 0.0f;
+                const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
+                if (mv && *mv) mode = (float)atof(mv);
+                pc.mode = mode;
+                pc.band = shadow_decal_band();
+                pc.plat_eps = s_shadow_decal.plat_eps;
+                pc.plat_slack = s_shadow_decal.plat_slack;
+                pc.uax = s_od_uax; pc.ubx = s_od_ubx;
+                pc.vay = s_od_vay; pc.vby = s_od_vby;
+                pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
+                pc.tpage_x = m0->tpage_x; pc.tpage_y = m0->tpage_y;
+                pc.clut_x = m0->clut_x;   pc.clut_y = m0->clut_y;
+                pc.bpp = m0->bpp;
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_sub_decal_pipe);
+                rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
+                rhi_bind_vram2(s_nr.dev, s_nr.vram_tex);                /* set 1 */
+                rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
+            } else {
+                rhi_bind_pipeline(s_nr.dev, g->tex);
+                if (gi == 1) {
+                    float c, s, cl;
+                    shadow_hw_bias(&c, &s, &cl);
+                    rhi_set_depth_bias(s_nr.dev, c, cl, s);
+                }
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                /* HD replacement per group family: opaque -> depth-tested cutout
+                 * (WORLD's stencil-MARK variant gets the MARK twin so W2.6-c
+                 * hole-fill coverage stays intact); alpha/additive -> the
+                 * ztest/no-zwrite HD twins. SUBTRACTIVE (gi==1) stays SD — its
+                 * draws depend on the caller's dynamic depth-bias state, which
+                 * an HD rebind would invalidate. */
+                rhi_pipeline *hd =
+                    (g->blend == 0) ? (g->tex == s_nr.scene_tex_mark_pipe
+                                           ? s_nr.hd_cutout_mark_pipe
+                                           : s_nr.hd_cutout_pipe)
+                  : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
+                  : (g->blend == 2) ? s_nr.hd_scene_add_pipe
+                  : NULL;
+                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd);
             }
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            /* HD replacement per group family: opaque -> depth-tested cutout
-             * (WORLD's stencil-MARK variant gets the MARK twin so W2.6-c
-             * hole-fill coverage stays intact); alpha/additive -> the
-             * ztest/no-zwrite HD twins. SUBTRACTIVE (gi==1) stays SD — its
-             * draws depend on the caller's dynamic depth-bias state, which
-             * an HD rebind would invalidate. */
-            rhi_pipeline *hd =
-                (g->blend == 0) ? (g->tex == s_nr.scene_tex_mark_pipe
-                                       ? s_nr.hd_cutout_mark_pipe
-                                       : s_nr.hd_cutout_pipe)
-              : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
-              : (g->blend == 2) ? s_nr.hd_scene_add_pipe
-              : NULL;
-            draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd);
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
          * group: depth-tested at TRUE LP depth, gated on stencil==0 so it can
@@ -4581,6 +4693,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
     if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
     if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+    if (s_nr.scene_tex_sub_decal_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_decal_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     if (s_nr.scene_tex_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);

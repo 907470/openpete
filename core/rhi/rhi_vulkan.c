@@ -2506,20 +2506,23 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .binding = 0, .stride = sizeof(rhi_vertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
-    /* The vertex STRUCT keeps all fields (stable buffer layout), but the
-     * pipeline only declares the attributes the current shaders consume.
-     * `tex` (location 3, offset in rhi_vertex) returns in 1b.2 when the
-     * PSX texture shader reads it — declaring it now just warns
-     * "attribute not consumed". */
-    VkVertexInputAttributeDescription attrs[3] = {
+    /* The vertex STRUCT keeps all fields (stable buffer layout), but a pipeline
+     * only needs to declare the attributes its shaders consume — an attribute
+     * declared here yet not read by a shader merely warns "not consumed", so one
+     * superset attribute list serves every pipeline. Location 3 (sx,sy, the PSX
+     * screen coord) is read only by the textured shadow decal (shadow_decal_tex);
+     * every other shader ignores it. (`tex` at offset in rhi_vertex remains
+     * reserved and undeclared until a mixed-material path needs it.) */
+    VkVertexInputAttributeDescription attrs[4] = {
         { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
         { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
         { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
+        { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, sx) },
     };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
-        .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attrs,
+        .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = attrs,
     };
     VkPipelineInputAssemblyStateCreateInfo ia = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
