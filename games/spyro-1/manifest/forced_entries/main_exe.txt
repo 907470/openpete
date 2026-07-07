@@ -1,0 +1,15 @@
+# Hand-curated forced entries for the main EXE recompile (formerly
+# hardcoded --forced-entry flags in regen-recomp.sh; single source of
+# truth for regen, manifest emission, and the first-boot pipeline).
+#
+# 0x80032AB0 — fast-path entry only reached from the titlescreen overlay;
+#              the multi-entry pass picks it up too, kept belt-and-braces.
+# The rest — runtime stub-miss targets observed on level_10 and at Stone
+#            Hill entry; re-validated against bk2/stone-hill-entry.bk2.
+0x80032AB0
+0x8004F8C8
+0x80050060
+0x800506EC
+0x80038620
+0x8005A7B0
+0x8005A848

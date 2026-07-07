@@ -1,0 +1,5 @@
+# Hand-curated forced entries for the titlescreen overlay (formerly
+# hardcoded --forced-entry flags in regen-recomp.sh): main-EXE→overlay
+# direct JAL targets not covered by the external-JALs round-trip.
+0x8007ABAC
+0x8007CEE4

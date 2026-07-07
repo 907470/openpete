@@ -162,8 +162,10 @@ process_overlay() {
     # psxrecomp accepts a single --extra-funcs= file.
     local first_funcs="$OUT/$name/extra_funcs.first.txt"
     local fnptr_filtered="$OUT/$name/fn_pointers.txt"
+    local curated="games/spyro-1/manifest/forced_entries/$name.txt"
     : > "$first_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
+    [[ -f "$curated" ]] && grep '^0x' "$curated" >> "$first_funcs"
     if [[ -s "$FNPTR_FILE" ]]; then
         python3 tools/filter_overlay_fn_pointers.py \
             "$FNPTR_FILE" "$ovl_path" "$fnptr_filtered" \
@@ -184,6 +186,7 @@ process_overlay() {
     local second_funcs="$OUT/$name/extra_funcs.second.txt"
     : > "$second_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$second_funcs"
+    [[ -f "$curated" ]] && grep '^0x' "$curated" >> "$second_funcs"
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
     [[ -f "$fnptr_filtered" ]] && cat "$fnptr_filtered" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
@@ -198,6 +201,10 @@ process_overlay() {
     # `call_by_address(cpu, jal+8); /* jal cont: split */`; without an
     # entry at jal+8 the cont stub-misses at runtime (e.g. level_55's
     # 0x8007E024 fall-through after the GTE helper jal).
+    # Invalidate the previous run's combined list: it is only rewritten
+    # when THIS run's third pass fires, and a stale one poisons the
+    # converged-manifest emission (level_43 lesson, D2.1).
+    rm -f "$OUT/$name/extra_funcs.combined.txt"
     local cont_funcs="$OUT/$name/extra_funcs.third.txt"
     python3 tools/extract_jal_cont_targets.py \
         "$OUT/$name/$name.bin_full.c" "$cont_funcs"
@@ -252,7 +259,9 @@ for ovl_path in "$WAD_DIR"/*.ovl; do
     case "$base" in
         titlescreen_code.ovl)
             name=titlescreen; magic=48
-            extra=(--forced-entry=0x8007ABAC --forced-entry=0x8007CEE4)
+            # Hand-curated forced entries live in
+            # manifest/forced_entries/titlescreen.txt (folded into the
+            # extra-funcs lists inside process_overlay).
             ;;
         credits.ovl)
             name=credits; magic=47
@@ -298,6 +307,9 @@ main_exe_extra="$OUT/main_exe_extra_funcs.txt"
 : > "$main_exe_extra"
 main_exe_targets=$(asm_targets_for main_exe)
 [[ -n "$main_exe_targets" ]] && cat "$main_exe_targets" >> "$main_exe_extra"
+# Hand-curated forced entries (formerly --forced-entry literals here) —
+# single source of truth shared with the converged-manifest emission.
+grep '^0x' games/spyro-1/manifest/forced_entries/main_exe.txt >> "$main_exe_extra"
 for f in "$OUT"/*/external_jals.txt; do
     [[ -f "$f" ]] && cat "$f" >> "$main_exe_extra"
 done
@@ -328,13 +340,6 @@ done
 common_psx_args=(
     --external-symbols="$PSYQ_MANIFEST"
     --external-prefix=psyq_
-    --forced-entry=0x80032AB0
-    --forced-entry=0x8004F8C8
-    --forced-entry=0x80050060
-    --forced-entry=0x800506EC
-    --forced-entry=0x80038620
-    --forced-entry=0x8005A7B0
-    --forced-entry=0x8005A848
     --skip-on-error
     --channel-sites="$CHANNEL_SITES"
     ${PCTRACK_FLAG:+$PCTRACK_FLAG}
@@ -401,5 +406,10 @@ python3 tools/gen_channel_signatures.py \
     --manifest manifest/render_channels.toml \
     --exe games/spyro-1/spyro-1/build/PSX.EXE \
     --out "$OUT/channel_signatures.txt"
+
+# Snapshot the converged per-binary inputs as committed metadata for the
+# single-pass first-boot pipeline (distribution D2.1).
+echo "[regen] Emitting converged recomp manifest"
+bash scripts/emit-recomp-manifest.sh
 
 echo "[regen] Done — rebuild the project to pick up the new C output."
