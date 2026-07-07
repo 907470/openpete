@@ -17,6 +17,7 @@
 // (recomp/tools/llvm-mingw) and links against the staged exe-export
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_log.h"
+#include "sha256.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -53,6 +54,7 @@ namespace {
 struct Overlay {
     std::string name;
     int magic = 0;
+    std::string sha256;   /* of the reference binary (manifest) */
 };
 
 std::string exe_dir() {
@@ -136,7 +138,8 @@ bool rename_token(const fs::path& p, const std::string& from, const std::string&
     return out.good();
 }
 
-bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out) {
+bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
+                    std::string* main_exe_sha) {
     std::ifstream f(toml);
     if (!f) return false;
     std::string line;
@@ -148,14 +151,37 @@ bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out) {
     };
     while (std::getline(f, line)) {
         if (line == "[[overlay]]") { flush(); in_overlay = true; continue; }
-        if (!in_overlay) continue;
+        if (!in_overlay) {
+            if (main_exe_sha && line.rfind("sha256 = \"", 0) == 0)
+                *main_exe_sha = line.substr(10, line.size() - 11);
+            continue;
+        }
         if (line.rfind("name = \"", 0) == 0)
             cur.name = line.substr(8, line.size() - 9);
         else if (line.rfind("magic = ", 0) == 0)
             cur.magic = std::atoi(line.c_str() + 8);
+        else if (line.rfind("sha256 = \"", 0) == 0)
+            cur.sha256 = line.substr(10, line.size() - 11);
     }
     flush();
     return !out.empty();
+}
+
+std::string sha256_file_hex(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return "";
+    openpete_sha256_ctx c;
+    openpete_sha256_init(&c);
+    char buf[65536];
+    while (f.read(buf, sizeof buf) || f.gcount() > 0) {
+        openpete_sha256_update(&c, buf, (size_t)f.gcount());
+        if (!f) break;
+    }
+    uint8_t d[32];
+    char hex[65];
+    openpete_sha256_final(&c, d);
+    openpete_sha256_hex(d, hex);
+    return hex;
 }
 
 /* spyro_overlay_table.c is derivable from the registry — the boot build
@@ -270,7 +296,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     }
 
     std::vector<Overlay> ovls;
-    if (!parse_manifest(man / "manifest.toml", ovls)) {
+    std::string main_exe_sha;
+    if (!parse_manifest(man / "manifest.toml", ovls, &main_exe_sha)) {
         std::fprintf(stderr, "openpete: cannot parse %s\n",
                      (man / "manifest.toml").string().c_str());
         return -1;
@@ -290,6 +317,36 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");
     if (spyro1_extract_recomp_inputs(disc_path, inputs.string().c_str()) != 0)
         return -1;
+
+    /* Per-binary identity: the manifests were converged against the
+     * retail binaries whose sha256 they record. A mismatched binary is
+     * a code-modified romhack — the forced-entry lists may under-cover
+     * it (stub-miss risk); run anyway, loudly (default-and-warn; the
+     * discovery tier is plan D5). */
+    {
+        int modified = 0;
+        if (!main_exe_sha.empty() &&
+            sha256_file_hex(inputs / "PSX.EXE") != main_exe_sha) {
+            std::fprintf(stderr, "[first-boot] NOTE: PSX.EXE differs from "
+                                 "the retail binary\n");
+            modified++;
+        }
+        for (auto& o : ovls) {
+            if (!o.sha256.empty() &&
+                sha256_file_hex(inputs / (o.name + ".ovl")) != o.sha256) {
+                std::fprintf(stderr, "[first-boot] NOTE: %s differs from "
+                                     "the retail binary\n", o.name.c_str());
+                modified++;
+            }
+        }
+        if (modified) {
+            std::fprintf(stderr,
+                "[first-boot] WARNING: %d of %zu game binaries are modified "
+                "(romhack?). Recompiling with retail metadata — best effort; "
+                "report stub-miss warnings if the game misbehaves.\n",
+                modified, ovls.size() + 1);
+        }
+    }
 
     /* identity stamps (v1: FNV-1a over the carved inputs / the tool) */
     uint64_t rom_h = 0xcbf29ce484222325ull;
