@@ -56,7 +56,18 @@ linux)
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build/PSXRecomp "$STAGE/recomp/tools/"
-    # No module, no library — first boot builds them. System cc for v1.
+    if [[ -n "$TOOLCHAIN" ]]; then
+        # Bundle a Linux clang tree. find_cc (recomp_build.cpp) prefers
+        # recomp/tools/clang/bin/clang over the system cc. A real
+        # self-contained clang tarball trims like the Windows one
+        # (plan D3.1); this stages whatever tree is pointed at.
+        echo "[package] bundling clang from $TOOLCHAIN"
+        mkdir -p "$STAGE/recomp/tools/clang"
+        cp -a "$TOOLCHAIN"/. "$STAGE/recomp/tools/clang/"
+    else
+        echo "[package] NOTE: no --toolchain — Linux archive uses the" \
+             "system cc (README-dist documents this)." >&2
+    fi
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ;;
 windows)

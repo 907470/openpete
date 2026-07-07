@@ -249,16 +249,52 @@ std::string find_cc(const fs::path& base) {
 #endif
 }
 
+/* First line of `<cc> --version` — the compiler's self-identity, folded
+ * into the codegen stamp so swapping the host compiler (or bumping the
+ * bundled one) invalidates cached modules instead of silently reusing a
+ * dir built by a different optimizer. Empty string if the probe fails
+ * (degrades to psxrecomp-only keying, the prior behavior). */
+std::string cc_identity(const std::string& cc) {
+    if (cc.empty()) return "";
+    std::string cmd = "\"" + cc + "\" --version 2>&1";
+#ifdef _WIN32
+    FILE* p = _popen(cmd.c_str(), "r");
+#else
+    FILE* p = popen(cmd.c_str(), "r");
+#endif
+    if (!p) return "";
+    char line[512] = {0};
+    if (!std::fgets(line, sizeof line, p)) line[0] = 0;
+#ifdef _WIN32
+    _pclose(p);
+#else
+    pclose(p);
+#endif
+    /* strip trailing newline */
+    for (char* c = line; *c; ++c) if (*c == '\n' || *c == '\r') { *c = 0; break; }
+    return line;
+}
+
+/* The codegen identity for cache keying: hash of (PSXRecomp binary +
+ * compiler identity) at a fixed opt level. Library entries key module
+ * dirs by this, so an engine/toolchain update rebuilds under a fresh
+ * dir. Shared by the dir-keying entry point and the in-build descriptor
+ * stamp so they never disagree. */
+std::string compute_codegen_stamp(const fs::path& base) {
+    const std::string psxrecomp = find_psxrecomp(base);
+    if (psxrecomp.empty()) return "";
+    uint64_t h = fnv1a_file(psxrecomp);
+    const std::string id = cc_identity(find_cc(base));
+    for (char c : id) { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+    return "fnv1a-" + hex64(h) + "-O2";
+}
+
 }  // namespace
 
-/* The codegen identity for cache keying: hash of the PSXRecomp binary +
- * the opt level. Library entries key module dirs by this stamp so an
- * engine/toolchain update rebuilds under a fresh dir. */
 extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
-    const std::string psxrecomp = find_psxrecomp(exe_dir());
-    if (psxrecomp.empty()) return -1;
-    std::snprintf(out, cap, "fnv1a-%s-O2",
-                  hex64(fnv1a_file(psxrecomp)).c_str());
+    const std::string stamp = compute_codegen_stamp(exe_dir());
+    if (stamp.empty()) return -1;
+    std::snprintf(out, cap, "%s", stamp.c_str());
     return 0;
 }
 
@@ -371,8 +407,9 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     rom_h = fnv1a_file(inputs / "PSX.EXE", rom_h);
     for (auto& o : ovls) rom_h = fnv1a_file(inputs / (o.name + ".ovl"), rom_h);
     const std::string rom_stamp     = "fnv1a:" + hex64(rom_h);
-    const std::string codegen_stamp =
-        "fnv1a-" + hex64(fnv1a_file(psxrecomp)) + "-O2";
+    /* Same stamp the library used to KEY this module's dir — must match
+     * compute_codegen_stamp exactly (psxrecomp + compiler identity). */
+    const std::string codegen_stamp = compute_codegen_stamp(base);
 
     /* 2. recompile -------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] recompiling MIPS -> C (%zu binaries)...\n",

@@ -150,9 +150,21 @@ static void frame_end(const char* tag) {
 void spyro1_splash_set_enabled(int enabled) { s_ui_enabled = enabled; }
 int  spyro1_splash_ui_enabled(void) { return s_ui_enabled; }
 
+static SDL_Gamepad* s_pad;
+
+static void open_first_gamepad(void) {
+    if (s_pad) return;
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&n);
+    if (ids) {
+        if (n > 0) s_pad = SDL_OpenGamepad(ids[0]);
+        SDL_free(ids);
+    }
+}
+
 int spyro1_splash_open(void) {
     if (s_win) return 0;
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         OPL_WARN_F("splash", "SDL video init failed: %s", SDL_GetError());
         return -1;
     }
@@ -160,10 +172,37 @@ int spyro1_splash_open(void) {
     if (!s_win) return -1;
     s_ren = SDL_CreateRenderer(s_win, NULL);
     if (!s_ren) { SDL_DestroyWindow(s_win); s_win = NULL; return -1; }
+    open_first_gamepad();
     return 0;
 }
 
+/* Async file-dialog result (the SDL callback runs on the SDL thread
+ * during event pumping). */
+static int  s_dialog_pending;
+static int  s_dialog_got;
+static void SDLCALL on_file_chosen(void* userdata, const char* const* files,
+                                   int filter) {
+    (void)userdata; (void)filter;
+    s_dialog_pending = 0;
+    if (files && files[0]) {
+        snprintf(s_drop_path, sizeof s_drop_path, "%s", files[0]);
+        s_dialog_got = 1;
+    }
+}
+
+static void open_file_dialog(void) {
+    if (s_dialog_pending) return;
+    static const SDL_DialogFileFilter filters[] = {
+        { "PSX disc image (.cue, .bin)", "cue;bin" },
+        { "All files", "*" },
+    };
+    s_dialog_pending = 1;
+    s_dialog_got = 0;
+    SDL_ShowOpenFileDialog(on_file_chosen, NULL, s_win, filters, 2, NULL, false);
+}
+
 void spyro1_splash_close(void) {
+    if (s_pad) { SDL_CloseGamepad(s_pad); s_pad = NULL; }
     if (s_ren) { SDL_DestroyRenderer(s_ren); s_ren = NULL; }
     if (s_win) { SDL_DestroyWindow(s_win); s_win = NULL; }
 }
@@ -215,13 +254,17 @@ const char* spyro1_splash_wait_for_disc(void) {
     if (!s_win) return NULL;
     for (;;) {
         frame_begin();
-        draw_text_centered(170, 2, "DRAG YOUR SPYRO THE DRAGON", 255, 255, 255);
-        draw_text_centered(196, 2, "DISC IMAGE (.CUE / .BIN) HERE", 255, 255, 255);
-        draw_text_centered(260, 1,
+        draw_text_centered(160, 2, "DRAG YOUR SPYRO THE DRAGON", 255, 255, 255);
+        draw_text_centered(186, 2, "DISC IMAGE (.CUE / .BIN) HERE", 255, 255, 255);
+        draw_text_centered(232, 1, "OR PRESS SPACE / (A) TO BROWSE",
+                           220, 210, 240);
+        draw_text_centered(268, 1,
             "YOUR OWN DISC IS REQUIRED. NOTHING IS DOWNLOADED.",
             150, 130, 190);
-        draw_text_centered(292, 1, "ESC TO QUIT", 110, 95, 150);
+        draw_text_centered(296, 1, "ESC / (B) TO QUIT", 110, 95, 150);
         frame_end("drop");
+
+        if (s_dialog_got) return s_drop_path;
 
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 100)) {
@@ -234,9 +277,21 @@ const char* spyro1_splash_wait_for_disc(void) {
                     return NULL;
                 case SDL_EVENT_KEY_DOWN:
                     if (e.key.key == SDLK_ESCAPE) return NULL;
+                    if (e.key.key == SDLK_SPACE || e.key.key == SDLK_RETURN)
+                        open_file_dialog();
+                    break;
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH)
+                        open_file_dialog();
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST)
+                        return NULL;
+                    break;
+                case SDL_EVENT_GAMEPAD_ADDED:
+                    open_first_gamepad();
                     break;
                 default: break;
             }
+            if (s_dialog_got) return s_drop_path;
         }
     }
 }
@@ -259,8 +314,9 @@ int spyro1_splash_select(const char* const* labels, int count) {
                       i == sel ? 214 : 130,
                       i == sel ? 120 : 190);
         }
-        draw_text_centered(320, 1, "UP/DOWN SELECT - ENTER PLAY - ESC QUIT",
-                           110, 95, 150);
+        draw_text_centered(320, 1,
+            "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT",
+            110, 95, 150);
         frame_end("selector");
 
         SDL_Event e;
@@ -273,6 +329,26 @@ int spyro1_splash_select(const char* const* labels, int count) {
                     if (e.key.key == SDLK_DOWN && sel < count - 1) sel++;
                     if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER)
                         return sel;
+                    break;
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP && sel > 0)
+                        sel--;
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN
+                        && sel < count - 1) sel++;
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) return sel;
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) return -1;
+                    break;
+                case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+                    /* Left-stick Y, debounced by re-centering. */
+                    if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
+                        static int armed = 1;
+                        if (e.gaxis.value < -20000 && armed) { if (sel > 0) sel--; armed = 0; }
+                        else if (e.gaxis.value > 20000 && armed) { if (sel < count - 1) sel++; armed = 0; }
+                        else if (e.gaxis.value > -8000 && e.gaxis.value < 8000) armed = 1;
+                    }
+                    break;
+                case SDL_EVENT_GAMEPAD_ADDED:
+                    open_first_gamepad();
                     break;
                 case SDL_EVENT_DROP_FILE:
                     snprintf(s_drop_path, sizeof s_drop_path, "%s",

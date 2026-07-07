@@ -31,8 +31,10 @@ game-derived that is currently **tracked**, with a verdict each.
    substitute for `games/spyro-1/spyro-1/build/*` inputs only at REGEN
    time, which is dev-only — but confirm CMake doesn't hard-require the
    submodule path at configure).
-3. Re-read `README.md` — the disc-location default references a local
-   path (`~/...`); generalize before public.
+3. ~~Re-read `README.md` — the disc-location default references a local
+   path (`~/...`); generalize before public.~~ **DONE
+   2026-07-07** — `README.md` and `scripts/setup.sh` now use a
+   repo-relative default (`<repo>/../roms/...`) keyed off `OPENPETE_DISC`.
 4. License check: `--record` linking libx264 makes GPL builds — the
    packaged dist presets don't include libav on Windows; Linux dist
    currently links system libav (LGPL dylibs, fine) with x264 optional.

@@ -12,7 +12,8 @@
 set -uo pipefail
 
 OPENPETE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DISC_BIN_DEFAULT="<spyro>/roms/SCUS-94228/SCUS-94228.bin"
+# Dev default, relative to the repo (override with OPENPETE_DISC).
+DISC_BIN_DEFAULT="$OPENPETE_ROOT/../roms/SCUS-94228/SCUS-94228.bin"
 EXPECTED_SHA256="95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f"
 
 DISC_BIN="${OPENPETE_DISC:-$DISC_BIN_DEFAULT}"

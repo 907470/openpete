@@ -207,9 +207,14 @@ Replacement applies in the native (`--renderer vk`, default) display path;
 
 Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair. The .bin's
 SHA256 must be `95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f`.
-`scripts/setup.sh` validates this. The default expected location is
-`<spyro>/roms/SCUS-94228/SCUS-94228.bin`; override with the
-`OPENPETE_DISC` environment variable.
+`scripts/setup.sh` validates this. Point the `OPENPETE_DISC` environment
+variable at your `.bin` (or pass `--disc` on the command line); the dev
+default is `<repo>/../roms/SCUS-94228/SCUS-94228.bin`.
+
+End-user distribution builds don't use this path at all — they ingest a
+disc into a local library on first run (see
+`notes/plans/openpete-distribution-local-recomp.md` and the generated
+`README.md` in a packaged archive).
 
 ## License
 

@@ -1,0 +1,93 @@
+# Distribution artifact CI (plan openpete-distribution-local-recomp, D4).
+#
+# Builds the shared-linkage presets and runs the distribution gates:
+#   - verify-recomp-manifest  (single-pass ≡ multi-pass, all binaries)
+#   - check_carve_equivalence (disc-carved bytes == decomp build)
+#   - check_dist_first_boot   (package → clean-dir → ingest → self-build
+#                              → full 20k hardware oracle)
+#
+# GATED BY GAME DATA: the openpete build regenerates ROM-derived C from
+# the private decomp submodule's build outputs, and the oracle needs the
+# committed golden + a disc image. None of that is public, so this job
+# runs only where those inputs exist:
+#   - a self-hosted runner labeled `openpete-disc` with the disc at
+#     $OPENPETE_DISC and the decomp build artifacts present, OR
+#   - manual dispatch on such a runner.
+# On a runner without them each gate SKIPs (exit 64) rather than fails,
+# so enabling this file is safe before the secret/runner is wired.
+
+name: dist
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'core/**'
+      - 'games/**'
+      - 'third_party/psxrecomp/**'
+      - 'scripts/**'
+      - 'CMakePresets.json'
+      - '.github/workflows/dist.yml'
+
+jobs:
+  dist-first-boot:
+    # Self-hosted runner that has the disc + decomp inputs. Swap the
+    # label or gate on a repo variable when wiring real infra.
+    runs-on: [self-hosted, openpete-disc]
+    env:
+      OPENPETE_DISC: ${{ vars.OPENPETE_DISC_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Toolchain deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenal-dev ninja-build \
+            gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix clang
+
+      - name: Apply third-party patches
+        run: ./tools/apply_third_party_patches.sh
+
+      - name: Build PSXRecomp (linux + mingw)
+        run: |
+          cmake -S third_party/psxrecomp/recompiler \
+                -B third_party/psxrecomp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build third_party/psxrecomp/build -j
+          cmake -S third_party/psxrecomp/recompiler \
+                -B third_party/psxrecomp/build-mingw -G Ninja \
+                -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/mingw-w64.cmake" \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build third_party/psxrecomp/build-mingw -j
+
+      - name: Regenerate ROM-derived C (needs decomp build outputs)
+        run: bash scripts/regen-recomp.sh
+
+      - name: Build shared presets
+        run: |
+          cmake --preset linux-release-shared
+          cmake --build build/linux-release-shared -j
+          cmake --preset windows-mingw-shared
+          cmake --build build/windows-mingw-shared -j
+
+      - name: Gate — single-pass ≡ multi-pass
+        run: bash scripts/verify-recomp-manifest.sh
+
+      - name: Gate — carve equivalence
+        run: bash scripts/check_carve_equivalence.sh
+
+      - name: Gate — packaged first boot + full oracle
+        run: bash scripts/check_dist_first_boot.sh
+
+      - name: Package artifacts
+        run: |
+          bash scripts/package-dist.sh linux
+          bash scripts/package-dist.sh windows \
+            ${{ vars.OPENPETE_WIN_TOOLCHAIN && format('--toolchain {0}', vars.OPENPETE_WIN_TOOLCHAIN) || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openpete-dist
+          path: dist/*.tar.xz
+          if-no-files-found: warn
