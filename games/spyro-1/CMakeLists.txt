@@ -345,6 +345,14 @@ else()
         target_link_options(openpete-spyro1 PRIVATE ${_module_def})
         set_property(TARGET openpete-spyro1 APPEND PROPERTY
             LINK_DEPENDS ${_module_def})
+        # GNU LTO does not treat .def exports as liveness roots: with IPO
+        # on, the otherwise-unreferenced ABI surface (psyq_* thunks,
+        # dispatch, GTE entry points) is dead-code-eliminated and ld
+        # silently emits the exports as absolute-0 — the module's first
+        # PSYQ import then jumps to image_base+0xC0000000 (DEP crash).
+        # Force IPO off for the exe regardless of cache/preset state.
+        set_target_properties(openpete-spyro1 PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION OFF)
         if(NOT CMAKE_DLLTOOL)
             set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
         endif()
