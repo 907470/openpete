@@ -32,3 +32,6 @@ dist/
 
 # Stray disc-library from running an exe at the repo root (dist runtime dir).
 /library/
+
+# Throwaway clean launcher dir for demoing the splash.
+/launcher-demo/
