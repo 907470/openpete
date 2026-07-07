@@ -88,6 +88,46 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
  * (lowest allocated entry, bump-down); a moby within [base, base+64*0x58)
  * keys slot-relative so the double-buffered halves share one identity. */
 uint32_t spyro_interp_moby_key(uint32_t m) {
+    /* Level-exit gem fly-out identity (user report 2026-07-07). At a level exit
+     * the game animates the collected gems flying to the chest; the shaded pass
+     * stages a moby COPY per active gem into the double-buffered polybuf, in
+     * source-index order. When a gem finishes and DEACTIVATES the copies COMPACT
+     * (every later copy shifts a slot), so no copy-address / slot key is stable —
+     * the copies mispair across ticks and the gems jiggle under --render-fps.
+     *
+     * The game itself keeps a STABLE source array: g_LevelTransGems[i]
+     * (TransGem[64] @ g_SonyImage+0x2800, live ptr @ 0x8007571C; loaders.h). Each
+     * gem's slot i is a permanent identity for the whole animation, and draw.c
+     * copies g_LevelTransGems[i].rot (+0x0A) VERBATIM into the copy's m_Rotation
+     * (+0x44). rot.x/rot.y are random-per-gem constants set once at spawn
+     * (update.c) — an EXACT per-gem fingerprint (rot.z spins; included for extra
+     * bits, matched live). So recover i by matching the copy's 3 rotation bytes
+     * to the live source and key by i: prev/curr then pair as the same gem across
+     * ticks AND the buffer swap, with no threshold. Gated to cls 0x53 (GEM_1)
+     * while g_LevelTransHudActive (0x800756B0). OPENPETE_GEM_FLYOUT_KEY=0 reverts. */
+    {
+        static int s_fly = -1;
+        if (s_fly < 0) { const char* e = getenv("OPENPETE_GEM_FLYOUT_KEY"); s_fly = (e && *e) ? (*e != '0') : 1; }
+        const uint8_t* mh0 = s_fly ? (const uint8_t*)openpete_psx_to_host_ptr(m) : NULL;
+        uint16_t cls0 = 0; if (mh0) memcpy(&cls0, mh0 + 0x36, 2);
+        if (mh0 && (cls0 & 0xFFFu) == 0x53u) {
+            uint32_t hud_active = 0;
+            { const void* p = openpete_psx_to_host_ptr(0x800756B0u); if (p) memcpy(&hud_active, p, 4); }
+            uint32_t arr = 0;
+            { const void* p = openpete_psx_to_host_ptr(0x8007571Cu); if (p) memcpy(&arr, p, 4); }
+            if (hud_active && arr >= 0x80000000u) {
+                uint8_t cr0 = mh0[0x44], cr1 = mh0[0x45], cr2 = mh0[0x46];
+                for (uint32_t i = 0; i < 64u; i++) {
+                    const uint8_t* g = (const uint8_t*)openpete_psx_to_host_ptr(arr + i * 0x10u);
+                    if (!g) break;
+                    if (g[0x08] == 0) continue;                       /* inactive slot */
+                    if (g[0x0A] == cr0 && g[0x0B] == cr1 && g[0x0C] == cr2)
+                        return 0xA0000000u | (i & 0x3Fu);             /* stable per-gem key */
+                }
+                /* no active source match (transient staging) → fall through */
+            }
+        }
+    }
     const void* hp = openpete_psx_to_host_ptr(G_HUDMOBYS);
     uint32_t base = 0;
     if (hp) memcpy(&base, hp, 4);
