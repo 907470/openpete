@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
      * through the recomp-module descriptor. Static builds register the
      * linked-in module; shared-linkage builds dlopen spyro1-recomp and
      * resolve the same descriptor. Must precede any dispatch. */
-    if (spyro1_recomp_attach(opts.recomp_module_path) != 0) return 1;
+    if (spyro1_recomp_attach(opts.recomp_module_path, opts.disc_path) != 0) return 1;
 
     /* fps-unlock Phase 2: register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called

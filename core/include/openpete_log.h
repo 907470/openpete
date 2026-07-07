@@ -17,6 +17,9 @@
 extern "C" {
 #endif
 
+/* NOTE: dispatch_chain.c (recomp-module source kit) hardcodes OPL_INFO's
+ * value (2) via a local prototype to stay header-self-contained — keep
+ * these values stable or update it. */
 typedef enum {
     OPL_TRACE = 0,
     OPL_DEBUG = 1,

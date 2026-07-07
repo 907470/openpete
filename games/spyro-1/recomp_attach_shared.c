@@ -100,7 +100,11 @@ static void default_module_path(char* buf, size_t n) {
 #endif
 }
 
-int spyro1_recomp_attach(const char* module_path_override) {
+extern int spyro1_recomp_build_module(const char* disc_path,
+                                      const char* out_module_path);
+
+int spyro1_recomp_attach(const char* module_path_override,
+                         const char* disc_path) {
     char pathbuf[4096];
     const char* path = module_path_override;
     if (!path) {
@@ -108,6 +112,15 @@ int spyro1_recomp_attach(const char* module_path_override) {
         path = pathbuf;
     }
     g_module = mod_open(path);
+    if (!g_module && !module_path_override && disc_path) {
+        /* First boot: no module next to the exe — build one from the
+         * disc (extract -> recomp -> compile -> link; D2.4). */
+        fprintf(stderr,
+                "openpete: no recomp module at %s — building it from the "
+                "disc (first boot)\n", path);
+        if (spyro1_recomp_build_module(disc_path, path) == 0)
+            g_module = mod_open(path);
+    }
     if (!g_module) {
         fprintf(stderr,
                 "openpete: failed to load recomp module '%s'\n"

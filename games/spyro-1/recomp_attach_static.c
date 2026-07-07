@@ -9,7 +9,9 @@
 
 extern const openpete_recomp_module spyro1_recomp_module; /* module_main.c */
 
-int spyro1_recomp_attach(const char* module_path_override) {
+int spyro1_recomp_attach(const char* module_path_override,
+                         const char* disc_path) {
     (void)module_path_override; /* meaningful only for shared linkage */
+    (void)disc_path;
     return openpete_recomp_register(&spyro1_recomp_module);
 }

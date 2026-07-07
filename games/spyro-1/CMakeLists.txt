@@ -174,6 +174,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
         COMMENT "Generating recomp-module export surface (.def + keep-alive)")
     set(SPYRO_RECOMP_ATTACH_SOURCES
         recomp_attach_shared.c
+        recomp_build.cpp
         ${_module_keepalive})
 else()
     set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
@@ -337,6 +338,38 @@ else()
     endif()
 endif()
 target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
+
+# Shared-linkage builds stage the first-boot inputs next to the exe:
+# the converged manifests, the 5-file module source kit, and (when
+# built) PSXRecomp. See recomp_build.cpp (distribution D2.4).
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+    set(_rdir $<TARGET_FILE_DIR:openpete-spyro1>/recomp)
+    add_custom_command(TARGET openpete-spyro1 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/recomp/SCUS-94228
+            ${_rdir}/manifest
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
+            ${SPYRO_GENERATED}/channel_sites.txt
+            ${_rdir}/manifest
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/src
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/dispatch_chain.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/module_main.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/spyro_overlay_table.h
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
+            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${_rdir}/src
+        VERBATIM)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
+        add_custom_command(TARGET openpete-spyro1 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp
+                ${_rdir}/tools
+            VERBATIM)
+    endif()
+endif()
 
 # App icon decoded from the PSX save-file header's CLUT+icon data
 # (see spyro-1/include/save_file.h:39). The same generator emits a

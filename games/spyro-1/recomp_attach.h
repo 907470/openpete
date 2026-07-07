@@ -13,8 +13,11 @@ extern "C" {
 
 /* Attach + register the recomp module. `module_path_override` is the
  * --recomp-module value or NULL for the default (shared linkage: the
- * platform library name next to the exe). Returns 0 on success. */
-int spyro1_recomp_attach(const char* module_path_override);
+ * platform library name next to the exe). `disc_path` feeds the
+ * first-boot module build when no module exists yet (shared linkage
+ * only; ignored by static builds). Returns 0 on success. */
+int spyro1_recomp_attach(const char* module_path_override,
+                         const char* disc_path);
 
 #ifdef __cplusplus
 }

@@ -12,11 +12,17 @@
 // scripts/regen-recomp.sh from build/wad/*.ovl).
 
 #include "psx_runtime.h"
-#include "openpete_log.h"
 #include "spyro_overlay_table.h"
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* Local declaration instead of openpete_log.h: this TU is part of the
+ * recomp-module source kit shipped for the first-boot compile, which
+ * must stay self-contained (openpete_log.h drags in openpete.h). The
+ * level value matches OPL_INFO in openpete_log.h (ABI-checked there). */
+void openpete_logf(int level, const char* subsystem, const char* fmt, ...);
+#define DISPATCH_LOG_INFO 2
 
 extern int psx_dispatch_main_exe(CPUState* cpu, uint32_t addr);
 
@@ -35,8 +41,8 @@ void spyro_set_active_overlay_by_magic(uint32_t magic) {
     const spyro_overlay_entry_t* e = spyro_overlay_find(magic);
     if (!e) return;          /* unknown id — leave current active alone */
     if (e == s_active) return;
-    OPL_INFO_F("dispatch", "active overlay: %s -> %s",
-               s_active ? s_active->name : "none", e->name);
+    openpete_logf(DISPATCH_LOG_INFO, "dispatch", "active overlay: %s -> %s",
+                  s_active ? s_active->name : "none", e->name);
     s_active = e;
 }
 
