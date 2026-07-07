@@ -85,13 +85,66 @@ std::string exe_dir() {
     return ".";
 }
 
-bool run(const std::string& cmd) {
 #ifdef _WIN32
+/* Spawn `cmd.exe /C <cmd>` and wait, with NO console window. The shared
+ * exe is a GUI-subsystem app (-mwindows) with no console of its own, so a
+ * plain std::system()/_popen() child pops its own fresh console window —
+ * and first boot spawns hundreds (38× PSXRecomp + ~80 compiler/link
+ * invocations), each flashing a window. CREATE_NO_WINDOW allocates the
+ * child's console hidden; grandchildren it spawns inherit that hidden
+ * console, so the whole build runs silently. When `capture` is non-null,
+ * the child's stdout+stderr are collected through a pipe (the _popen
+ * replacement). Returns the child exit code, or -1 on spawn failure. */
+int win_run_cmd(const std::string& cmd, std::string* capture) {
+    HANDLE rd = NULL, wr = NULL;
+    if (capture) {
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof sa;
+        sa.bInheritHandle = TRUE;
+        if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
+        /* The read end stays with us — keep it out of the child. */
+        SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    }
     /* cmd.exe /C strips the outermost quotes when the command contains
      * more than one quoted token — the classic system() trap. Wrapping
      * the whole command in one extra pair of quotes defeats it. */
-    const std::string wrapped = "\"" + cmd + "\"";
-    int rc = std::system(wrapped.c_str());
+    std::string full = "cmd.exe /C \"" + cmd + "\"";
+    std::vector<char> buf(full.begin(), full.end());
+    buf.push_back('\0');
+
+    STARTUPINFOA si{};
+    si.cb = sizeof si;
+    if (capture) {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = wr;
+        si.hStdError  = wr;
+    }
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessA(NULL, buf.data(), NULL, NULL,
+                             capture ? TRUE : FALSE, CREATE_NO_WINDOW,
+                             NULL, NULL, &si, &pi);
+    if (wr) CloseHandle(wr);   /* the child owns the write end now */
+    if (!ok) { if (rd) CloseHandle(rd); return -1; }
+    if (capture) {
+        char b[4096];
+        DWORD n = 0;
+        while (ReadFile(rd, b, sizeof b, &n, NULL) && n > 0)
+            capture->append(b, n);
+        CloseHandle(rd);
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+}
+#endif
+
+bool run(const std::string& cmd) {
+#ifdef _WIN32
+    int rc = win_run_cmd(cmd, NULL);
 #else
     int rc = std::system(cmd.c_str());
 #endif
@@ -256,21 +309,21 @@ std::string find_cc(const fs::path& base) {
  * (degrades to psxrecomp-only keying, the prior behavior). */
 std::string run_capture(const std::string& cmd) {
 #ifdef _WIN32
-    FILE* p = _popen(cmd.c_str(), "r");
+    /* CreateProcess with CREATE_NO_WINDOW instead of _popen — otherwise
+     * the compiler-identity probe flashes a console window too. */
+    std::string out;
+    win_run_cmd(cmd, &out);
+    return out;
 #else
     FILE* p = popen(cmd.c_str(), "r");
-#endif
     if (!p) return "";
     std::string out;
     char buf[4096];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
-#ifdef _WIN32
-    _pclose(p);
-#else
     pclose(p);
-#endif
     return out;
+#endif
 }
 
 std::string cc_identity(const std::string& cc) {
