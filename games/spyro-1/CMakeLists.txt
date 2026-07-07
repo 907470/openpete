@@ -217,6 +217,7 @@ add_executable(openpete-spyro1
     # def win against the stub's strong def (paired with
     # --allow-multiple-definition).
     psyq_thunks.cpp
+    recomp_extract.cpp
     write_trace.cpp
 
     # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any

@@ -219,6 +219,10 @@ typedef struct {
     /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
     const char* disc_path;
     const char* exe_path;          /* Direct PSX EXE bytes (overrides disc) */
+    const char* extract_recomp_inputs_dir; /* Extract PSX.EXE + overlay
+                                       blobs from --disc into this dir and
+                                       exit (first-boot pipeline stage /
+                                       carve-equivalence gate). */
     const char* recomp_module_path; /* Shared-linkage builds: override the
                                        recomp-module path (default: platform
                                        library name next to the exe). Ignored

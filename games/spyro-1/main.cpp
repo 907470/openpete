@@ -8,6 +8,9 @@
 #include "openpete.h"
 #include "game_extras.h"
 #include "recomp_attach.h"
+
+extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
+                                            const char* out_dir);
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"
 
@@ -33,6 +36,16 @@ int main(int argc, char** argv) {
 
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* Distribution D2: standalone extraction stage — carve PSX.EXE +
+     * overlay blobs from the disc and exit (also the first stage of the
+     * first-boot pipeline). Runs before module attach: extraction must
+     * work when no module exists yet. */
+    if (opts.extract_recomp_inputs_dir) {
+        return spyro1_extract_recomp_inputs(opts.disc_path,
+                                            opts.extract_recomp_inputs_dir)
+                   ? 1 : 0;
+    }
 
     /* Distribution D0/D1: the runtime reaches recompiled code only
      * through the recomp-module descriptor. Static builds register the
