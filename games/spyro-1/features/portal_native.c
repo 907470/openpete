@@ -1087,6 +1087,32 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     qsort(faces, nf, sizeof faces[0], dome_face_cmp);
     for (int i = 0; i < nf; i++)
         emit_clipped_gouraud(faces[i].a, faces[i].b, faces[i].c, x0, y0, x1, y1, depth, use_plane, pa, pb, pc);
+    {   /* OPENPETE_PORTAL_DOME_DBG=1: per-call walk census (throttled) */
+        static int dd = -1; static int lines;
+        if (dd < 0) { const char* e = getenv("OPENPETE_PORTAL_DOME_DBG"); dd = (e && *e && *e != '0'); }
+        static unsigned dfrom = 0;
+        if (dd && !dfrom) { const char* e2 = getenv("OPENPETE_PORTAL_DOME_DBG_FROM"); dfrom = e2 ? (unsigned)atoi(e2) : 0; }
+        if (dd && lines < 40 && openpete_frame >= dfrom) {
+            lines++;
+            float fx0 = 1e9f, fx1 = -1e9f, fy0 = 1e9f, fy1 = -1e9f;
+            int inrect = 0;
+            for (int i2 = 0; i2 < nf; i2++) {
+                const dome_face* f2 = &faces[i2];
+                float bx0 = f2->a.x, bx1 = f2->a.x, by0 = f2->a.y, by1 = f2->a.y;
+                if (f2->b.x < bx0) bx0 = f2->b.x; if (f2->b.x > bx1) bx1 = f2->b.x;
+                if (f2->c.x < bx0) bx0 = f2->c.x; if (f2->c.x > bx1) bx1 = f2->c.x;
+                if (f2->b.y < by0) by0 = f2->b.y; if (f2->b.y > by1) by1 = f2->b.y;
+                if (f2->c.y < by0) by0 = f2->c.y; if (f2->c.y > by1) by1 = f2->c.y;
+                if (bx0 < fx0) fx0 = bx0; if (bx1 > fx1) fx1 = bx1;
+                if (by0 < fy0) fy0 = by0; if (by1 > fy1) fy1 = by1;
+                if (bx1 >= x0 && bx0 <= x1 && by1 >= y0 && by0 <= y1) inrect++;
+            }
+            fprintf(stderr, "[portal-domedbg f=%u] sb=%08X sectors=%u faces=%d (inrect=%d, span x[%.0f,%.0f] y[%.0f,%.0f]) "
+                            "rect x[%d,%d] y[%d,%d] plane=%d vz=%.0f\n",
+                    openpete_frame, skybox, cnt, nf, inrect, fx0, fx1, fy0, fy1,
+                    x0, x1, y0, y1, use_plane, vz);
+        }
+    }
     return 1;
 }
 
@@ -1256,22 +1282,23 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * (W2.6-b): in-group painter order at equal depth already lets the dome
          * (drawn last) win per pixel, incl. the f1910 bg z-fight case. */
         int is_skybox_a0 = (a0 >= 0x80010000u && a0 < 0x80200000u);
-        /* The portal preview is a far BACKGROUND seen through the arch window: it
-         * must be occluded by the arch stone but must NEVER occlude actors/Spyro
-         * (who can be at/behind the portal plane while walking through). Stamp it
-         * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
-         * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
-         * the actors. */
-        feed_portal_quad(cpu, a0, 0, PORTAL_RGB_RESOLVE, 0, fog, fog_t);
         /* --no-lod always-dome: the .s renders far portals as a FLAT colour and
          * only projects the geometric destination-sky dome when close (the
          * distance crossfade). Under --no-lod render the dome at ANY distance:
          * skybox from the owning portal (p+0x00), the shared dome rotation
          * derived natively (derive_dome_matrix — RenderPortals computes it on
          * its own stack, unreachable at leaf time), fed through the same
-         * GTE-ctrl path the sub-tick replay uses. The flat quad above stays as
-         * the dome's backstop, exactly like the close-range FEA0 backstop. */
+         * GTE-ctrl path the sub-tick replay uses. The flat quad stays as the
+         * dome's backstop, exactly like the close-range FEA0 backstop — but
+         * with the CLOSE-BASE colour [m_Skybox+0x10], NOT the leaf's far fog
+         * colour: the dome covers only the sky ABOVE its horizon, and a
+         * distant portal's opening can sit entirely BELOW it (beast-makers
+         * f2021: dome faces end at y=43, opening at y[53,70]) — with the far
+         * fog backstop (night ≈ black) the opening looked empty. The .s's own
+         * close look fills below-horizon with [skybox+0x10]. */
         int forced_dome = 0; uint32_t forced_sb = 0; int forced_M[3][3];
+        uint32_t forced_fp = 0;
+        uint32_t flat_rgb_override = PORTAL_RGB_RESOLVE;
         /* Close-backstop test (exact): the close FEA0 flat carries a0 =
          * m_Skybox+0x10 of some portal; far/medium flats carry a stack/global
          * colour ptr (which can land inside the loose is_skybox_a0 RANGE —
@@ -1285,14 +1312,31 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 if (sb2 && (sb2 == a0 || sb2 + 0x10 == a0)) { a0_is_close_backstop = 1; break; }
             }
         }
-        if (nolod_portal_dome_on() && kind == PORTAL_FLAT && !a0_is_close_backstop) {
+        int nolod_force = (nolod_portal_dome_on() && kind == PORTAL_FLAT && !a0_is_close_backstop);
+        if (nolod_force) {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
             uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
             uint32_t sb = fp ? cpu->read_word(fp + 0x00) : 0;
-            { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
-              if (fd) fprintf(stderr, "[nolod-dome f=%u] a0=%08X fp=%08X sb=%08X\n", openpete_frame, a0, fp, sb); }
             if (sb >= 0x80010000u && sb < 0x80200000u) {
+                forced_fp = fp;
+                forced_sb = sb;   /* provisional; cleared if the dome feed fails below */
+                uint32_t cb = portal_flat_raw_rgb(cpu, sb + 0x10);
+                if (cb) flat_rgb_override = cb;
+            }
+        }
+        /* The portal preview is a far BACKGROUND seen through the arch window: it
+         * must be occluded by the arch stone but must NEVER occlude actors/Spyro
+         * (who can be at/behind the portal plane while walking through). Stamp it
+         * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
+         * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
+         * the actors. */
+        feed_portal_quad(cpu, a0, forced_fp, flat_rgb_override, 0, fog, fog_t);
+        if (forced_sb) {
+            uint32_t sb = forced_sb; forced_sb = 0;
+            { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
+              if (fd) fprintf(stderr, "[nolod-dome f=%u] a0=%08X fp=%08X sb=%08X\n", openpete_frame, a0, forced_fp, sb); }
+            {
                 derive_dome_matrix(cpu, forced_M);
                 uint32_t save_gte[5];
                 for (int i = 0; i < 5; i++) save_gte[i] = cpu->gte_ctrl[i];
@@ -1322,7 +1366,11 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 portal_cap_t* c = &s_pcap[s_pcap_n++];
                 c->portal        = fp;
                 c->flat_a0       = a0;
-                c->flat_rgb      = portal_flat_raw_rgb(cpu, a0);   /* raw, pre-fog */
+                /* raw, pre-fog; the forced --no-lod dome overrides the far fog
+                 * colour with the destination close-base (below-horizon fill) */
+                c->flat_rgb      = (flat_rgb_override != PORTAL_RGB_RESOLVE)
+                                       ? flat_rgb_override
+                                       : portal_flat_raw_rgb(cpu, a0);
                 c->is_dome       = (is_dome && is_skybox_a0) || forced_dome;
                 c->skybox        = (is_dome && is_skybox_a0) ? a0 : forced_sb;
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
@@ -1360,7 +1408,13 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * RAM (D_CLIPRECT is bracketed save/restore render scratch). */
 static void feed_revealed_portals(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
-    if (F <= 1.0f) return;
+    int nolod = nolod_portal_dome_on();
+    /* Widescreen reveals off-4:3 portals; --no-lod ALSO reveals
+     * distance-culled ones at any aspect — the no-lod terrain renders the
+     * arch at any range, but the .s RenderPortals distance-culls the portal
+     * itself, leaving a visible arch with an empty opening
+     * (beast-makers-distant-portal.bk2 f2022). */
+    if (F <= 1.0f && !nolod) return;
     float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     int revealed = 0;
@@ -1393,7 +1447,10 @@ static void feed_revealed_portals(CPUState* cpu) {
          *   - everything else (straddling either boundary, un-fed) gets the
          *     reveal. A leaf-fed portal was already skipped above, so the .s
          *     keeps authority wherever it actually drew. */
-        if (oxlo >= 8.0f && oxhi <= 504.0f) continue;     /* deep on-4:3 — canonical */
+        /* Deep on-4:3 = "the .s renders it" holds only at STOCK LOD — under
+         * --no-lod the .s still distance-culls centred portals whose arch the
+         * no-lod terrain shows, so the fed check alone decides there. */
+        if (!nolod && oxlo >= 8.0f && oxhi <= 504.0f) continue;  /* deep on-4:3 — canonical */
         if (oxhi < xlo || oxlo > xhi) continue;           /* fully outside the widened view */
         uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
         uint32_t rgba = rgb | 0xFF000000u;

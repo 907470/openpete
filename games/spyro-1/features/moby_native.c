@@ -3454,6 +3454,27 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         }
         int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
         double pvzmin=1e30, pvzmax=-1e30;  /* projected view-Z extent (rotation-aware half) */
+        /* .s OT bias, SHADED path: the walk subtracts the SIGNED m_Rotation>>24
+         * byte from the moby's OT index (0x80022D9C: t9 -= s4>>24; OT slots are
+         * 128 world units) — the authored "draw over what shares my depth" pull.
+         * The portal-name text glyphs sit ON the arch face; without the pull
+         * their end letters clip into the stone the .s paints them over
+         * (beast-makers-wild-flight-text f3310, "W"/"T"). Mirror it as a
+         * world-unit pull on the fed per-vertex depth (never through the near
+         * plane). Billboards handle their bias via near_ot above. */
+        static int s_otbias_on = -1;   /* OPENPETE_SHADED_OTBIAS=0 disables (A/B) */
+        if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
+        double ot_pull = (billboard || !s_otbias_on) ? 0.0 : 128.0 * (double)((int32_t)rot >> 24);
+        {
+            static int s_obd = -1;
+            if (s_obd < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS_DBG"); s_obd = (e && *e && *e != '0'); }
+            static int obl = 0;
+            if (s_obd && ot_pull != 0.0 && obl < 24) {
+                obl++;
+                fprintf(stderr, "[shaded-otbias f=%u] moby=%08x cls=%03x bias=%d pull=%.0f\n",
+                        openpete_frame, m, cls, (int32_t)rot >> 24, ot_pull);
+            }
+        }
         for (int i=0;i<count && n<cap;i++) {
             uint32_t p=vbase+(uint32_t)i*3u;
             uint32_t w=cpu->read_byte(p)|(cpu->read_byte(p+1)<<8)|(cpu->read_byte(p+2)<<16);
@@ -3467,7 +3488,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
-            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)(vzz*vz_scale); out[n].sat=sat;
+            double fvz = vzz*vz_scale - ot_pull;
+            if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
         }
