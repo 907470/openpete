@@ -17,7 +17,8 @@ extern "C" {
  * first-boot module build when no module exists yet (shared linkage
  * only; ignored by static builds). Returns 0 on success. */
 int spyro1_recomp_attach(const char* module_path_override,
-                         const char* disc_path);
+                         const char* disc_path,
+                         int allow_build);
 
 #ifdef __cplusplus
 }

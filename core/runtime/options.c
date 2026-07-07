@@ -321,6 +321,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --frame-limit N            exit after N rendered frames\n"
         "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
         "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
+        "  --ingest PATH              copy a disc image (.cue/.bin) into the library\n"
+        "                             next to the exe and boot it; later runs need no\n"
+        "                             --disc at all (the original file can be deleted)\n"
         "  --recomp-module PATH       shared-linkage builds: load the recomp module\n"
         "                             from PATH instead of the default next to the exe\n"
         "  --extract-recomp-inputs DIR extract PSX.EXE + overlay blobs from --disc\n"
@@ -615,6 +618,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--recomp-module") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->recomp_module_path = v; i++;
+        } else if (strcmp(a, "--ingest") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->ingest_path = v; i++;
         } else if (strcmp(a, "--extract-recomp-inputs") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->extract_recomp_inputs_dir = v; i++;
@@ -779,11 +785,10 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     bool is_segv_test = opts->test_recomp_segv;
     bool is_call_test = opts->test_recomp_call_addr != 0;
 
-    if (!is_segv_test && !opts->disc_path && !opts->exe_path) {
-        fprintf(stderr, "openpete: --disc PATH or --exe-path PATH is "
-                        "required (no PSX EXE source given)\n");
-        return OPENPETE_EXIT_SETUP_ERROR;
-    }
+    /* The EXE-source requirement is deferred to
+     * openpete_options_require_exe_source(): the game may resolve a
+     * disc AFTER parse via the content-addressed library (--ingest, or
+     * a no-argument boot of an installed entry). */
 
     if (!is_segv_test && !is_call_test && opts->run_recomp_addr == 0) {
         if (opts->run_recomp_hint_addr != 0) {
@@ -815,4 +820,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     }
 
     return OPENPETE_EXIT_OK;
+}
+
+int openpete_options_require_exe_source(const openpete_options_t* opts) {
+    /* Called by game main AFTER library resolution (--ingest / installed
+     * library entries can supply the disc post-parse). --test-segv never
+     * touches the EXE. */
+    if (opts->test_recomp_segv) return OPENPETE_EXIT_OK;
+    if (opts->disc_path || opts->exe_path) return OPENPETE_EXIT_OK;
+    fprintf(stderr,
+            "openpete: no game found — pass --disc PATH (or --exe-path), or "
+            "install a disc into the library with --ingest PATH\n");
+    return OPENPETE_EXIT_SETUP_ERROR;
 }

@@ -104,7 +104,8 @@ extern int spyro1_recomp_build_module(const char* disc_path,
                                       const char* out_module_path);
 
 int spyro1_recomp_attach(const char* module_path_override,
-                         const char* disc_path) {
+                         const char* disc_path,
+                         int allow_build) {
     char pathbuf[4096];
     const char* path = module_path_override;
     if (!path) {
@@ -112,7 +113,7 @@ int spyro1_recomp_attach(const char* module_path_override,
         path = pathbuf;
     }
     g_module = mod_open(path);
-    if (!g_module && !module_path_override && disc_path) {
+    if (!g_module && allow_build && disc_path) {
         /* First boot: no module next to the exe — build one from the
          * disc (extract -> recomp -> compile -> link; D2.4). */
         fprintf(stderr,

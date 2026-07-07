@@ -11,6 +11,9 @@
 
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
+extern "C" int spyro1_library_resolve(openpete_options_t* opts,
+                                      char* module_path_out,
+                                      size_t module_path_cap);
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"
 
@@ -47,11 +50,33 @@ int main(int argc, char** argv) {
                    ? 1 : 0;
     }
 
+    /* Distribution D2.5: resolve disc + module through the
+     * content-addressed library (--ingest copies an image in; no disc
+     * at all boots the most recent library entry). Explicit --disc
+     * bypasses the library entirely (dev/CI path). */
+    static char library_module_path[4096];
+    if (spyro1_library_resolve(&opts, library_module_path,
+                               sizeof library_module_path) != 0)
+        return 1;
+
+    {
+        int src_rc = openpete_options_require_exe_source(&opts);
+        if (src_rc != OPENPETE_EXIT_OK) return src_rc;
+    }
+
     /* Distribution D0/D1: the runtime reaches recompiled code only
      * through the recomp-module descriptor. Static builds register the
      * linked-in module; shared-linkage builds dlopen spyro1-recomp and
      * resolve the same descriptor. Must precede any dispatch. */
-    if (spyro1_recomp_attach(opts.recomp_module_path, opts.disc_path) != 0) return 1;
+    const char* module_override = opts.recomp_module_path;
+    if (!module_override && library_module_path[0])
+        module_override = library_module_path;
+    /* Auto-building into the module location is fine for the default
+     * path and for library entries; an explicit --recomp-module points
+     * at a module the user asserts exists. */
+    int allow_build = (opts.recomp_module_path == NULL);
+    if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
+        return 1;
 
     /* fps-unlock Phase 2: register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called

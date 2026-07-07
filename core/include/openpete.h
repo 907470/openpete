@@ -219,6 +219,9 @@ typedef struct {
     /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
     const char* disc_path;
     const char* exe_path;          /* Direct PSX EXE bytes (overrides disc) */
+    const char* ingest_path;       /* --ingest: copy this disc image into
+                                       the content-addressed library next
+                                       to the exe, then boot it. */
     const char* extract_recomp_inputs_dir; /* Extract PSX.EXE + overlay
                                        blobs from --disc into this dir and
                                        exit (first-boot pipeline stage /
@@ -449,6 +452,10 @@ void openpete_options_init(openpete_options_t* opts);
 /* Parse argv into opts. Unknown flags return OPENPETE_EXIT_SETUP_ERROR;
  * caller should propagate the exit code. argv[0] is treated as program name. */
 int  openpete_options_parse(openpete_options_t* opts, int argc, char** argv);
+
+/* Validate that an EXE source exists — call AFTER any library/ingest
+ * resolution (see disc-library, distribution D2.5). */
+int openpete_options_require_exe_source(const openpete_options_t* opts);
 
 /* Run the main loop. Returns one of OPENPETE_EXIT_*. */
 int  openpete_run(const openpete_options_t* opts);

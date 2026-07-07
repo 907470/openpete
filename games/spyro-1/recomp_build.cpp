@@ -165,6 +165,17 @@ std::string find_psxrecomp(const fs::path& base) {
 
 }  // namespace
 
+/* The codegen identity for cache keying: hash of the PSXRecomp binary +
+ * the opt level. Library entries key module dirs by this stamp so an
+ * engine/toolchain update rebuilds under a fresh dir. */
+extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
+    const std::string psxrecomp = find_psxrecomp(exe_dir());
+    if (psxrecomp.empty()) return -1;
+    std::snprintf(out, cap, "fnv1a-%s-O2",
+                  hex64(fnv1a_file(psxrecomp)).c_str());
+    return 0;
+}
+
 extern "C" int spyro1_recomp_build_module(const char* disc_path,
                                           const char* out_module_path) {
 #ifdef _WIN32
@@ -183,7 +194,10 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     const fs::path R    = base / "recomp";
     const fs::path man  = R / "manifest";
     const fs::path src  = R / "src";
-    const fs::path work = R / "work";
+    /* Work beside the output module: obj/ is deliberately kept (the
+     * modding framework's link-time override chains re-link from these
+     * objects); inputs/gen are scratch. */
+    const fs::path work = fs::path(out_module_path).parent_path() / "build";
     const std::string cc = getenv("OPENPETE_CC") ? getenv("OPENPETE_CC") : "cc";
 
     if (!fs::exists(man / "manifest.toml") || !fs::exists(src / "psx_runtime.h")) {
@@ -209,6 +223,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     OPL_INFO_F("recomp-build", "first-boot module build: %zu overlays, cc=%s",
                ovls.size(), cc.c_str());
     std::error_code ec;
+    fs::create_directories(fs::path(out_module_path).parent_path(), ec);
     fs::remove_all(work, ec);
     const fs::path inputs = work / "inputs", gen = work / "gen", obj = work / "obj";
     fs::create_directories(inputs);
@@ -226,7 +241,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     for (auto& o : ovls) rom_h = fnv1a_file(inputs / (o.name + ".ovl"), rom_h);
     const std::string rom_stamp     = "fnv1a:" + hex64(rom_h);
     const std::string codegen_stamp =
-        "fnv1a:" + hex64(fnv1a_file(psxrecomp)) + ":O2";
+        "fnv1a-" + hex64(fnv1a_file(psxrecomp)) + "-O2";
 
     /* 2. recompile -------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] recompiling MIPS -> C (%zu binaries)...\n",
