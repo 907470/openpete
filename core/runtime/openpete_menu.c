@@ -168,11 +168,11 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
 int openpete_menu_toggle(void) {
     s_open = !s_open;
     if (s_open) {
-        /* Re-sync SHOW FPS from the live overlay state: it's the one row that a
-         * hotkey could have changed while the menu was closed (though F11 is now
-         * retired in favour of this row, --show-fps + any future path still are
-         * authoritative). */
+        /* Re-sync the rows a hotkey can change while the menu is closed, so the
+         * menu never shows a stale value: SHOW FPS (--show-fps / any future
+         * path) and LOD (the "L" toggle flips openpete_no_lod directly). */
         s_showfps_idx = openpete_native_fps_overlay_enabled();
+        s_lod_idx     = openpete_no_lod ? 1 : 0;
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");

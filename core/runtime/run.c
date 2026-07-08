@@ -1318,6 +1318,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool g_step_one = false;
     bool prev_pause_key = false;
     bool prev_i_key = false;
+    bool prev_l_key = false;
     bool prev_alt_enter = false;
 
     /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
@@ -1589,6 +1590,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            g_openpete_interp_enabled ? "ON" : "OFF");
             }
             prev_i_key = i_k;
+
+            /* L: live toggle sector LOD original <-> extended (the O-menu LOD
+             * row / --lod flag). Mirrors I. Goes through openpete_no_lod_set so
+             * openpete_fog_scale follows the mode — a raw openpete_no_lod poke
+             * would leave the terrain fog latched. The setter logs the new
+             * state. Native-renderer display policy; inert under PsyCross. The
+             * menu re-syncs its LOD row from openpete_no_lod when next opened. */
+            bool l_k = kbd_pre && kbd_pre[SDL_SCANCODE_L];
+            if (l_k && !prev_l_key) {
+                openpete_no_lod_set(!openpete_no_lod, -1.0f);
+            }
+            prev_l_key = l_k;
 
             /* Alt+Enter (either Alt) or a window double-click toggles the
              * native window between windowed and borderless fullscreen. Moved
