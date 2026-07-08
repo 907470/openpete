@@ -36,7 +36,12 @@ static const int   s_ssaa_vals[]   = { 1, 2, 4, 8, 16 };
 static const char* s_ssaa_labels[] = { "1X", "2X", "4X", "8X", "16X" };
 #define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
 
-/* FPS ladder, built from the monitor refresh at init. */
+/* FPS ladder, built from the monitor refresh at init. The final entry is an
+ * UNLIMITED sentinel: a render-fps so high the wall-clock pacer never sleeps on
+ * the render deadline, so presenting is GPU-bound (uncapped). It's a normal
+ * render-fps value to the pacer — the sim still ticks at its fixed ~29.97 Hz;
+ * only presentation is uncapped (subject to vsync). Displayed as "UNLIMITED". */
+#define FPS_UNLIMITED 1000000
 static int s_fps_vals[16];
 static int s_fps_count = 0;
 
@@ -78,6 +83,8 @@ static void build_fps_list(int refresh) {
         s_fps_vals[n++] = m;
     if (refresh > 60 && n < cap && s_fps_vals[n - 1] != refresh)
         s_fps_vals[n++] = refresh;
+    if (n < cap)
+        s_fps_vals[n++] = FPS_UNLIMITED;   /* uncapped presenting, after refresh */
     s_fps_count = n;
 }
 
@@ -87,6 +94,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_ASPECT: return s_aspect[s_aspect_idx].label;
     case ROW_FPS: {
         int v = (s_fps_idx < s_fps_count) ? s_fps_vals[s_fps_idx] : 0;
+        if (v >= FPS_UNLIMITED) return "UNLIMITED";
         /* tiny itoa (no snprintf dependency needed, but it's available) */
         snprintf(buf, (size_t)buflen, "%d", v);
         return buf;
