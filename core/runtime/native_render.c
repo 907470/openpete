@@ -4164,7 +4164,6 @@ static void draw_menu_overlay(void) {
     const int   cursor = openpete_menu_cursor();
     const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
     const float ay = 2.0f;
-    const float bt = 0.006f;   /* border thickness (overlay units → equal px in x and y) */
 
     static rhi_vertex buf[MENU_MAX_VERTS];
     int n = 0;
@@ -4187,14 +4186,10 @@ static void draw_menu_overlay(void) {
     }
     const int sel_n = n - sel0;
 
-    /* Border — opaque gold, four thin edges (RGB 224,224,128). */
-    const int bord0 = n;
-    const uint32_t gold = 0xFF80E0E0u;
-    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y0 + bt, gold);
-    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y1 - bt, L.panel_x1, L.panel_y1, gold);
-    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x0 + bt, L.panel_y1, gold);
-    n = menu_push_quad(buf, n, ax, ay, L.panel_x1 - bt, L.panel_y0, L.panel_x1, L.panel_y1, gold);
-    const int bord_n = n - bord0;
+    /* The gold border is no longer a flat quad here — it's built game-side in
+     * text_moby_native_menu (emit_menu_border) as a lit frame that shares the
+     * glyph rows' rotating light, and arrives through the depth-isolated glyph
+     * pass below. */
 
     if (n <= 0) return;
     rhi_update_buffer(s_nr.menu_vb, buf, (size_t)n * sizeof(rhi_vertex));
@@ -4210,14 +4205,10 @@ static void draw_menu_overlay(void) {
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
         rhi_draw(s_nr.dev, (uint32_t)sel_n, (uint32_t)sel0);
     }
-    if (bord_n > 0 && s_nr.gouraud_hud_pipe) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
-        rhi_draw(s_nr.dev, (uint32_t)bord_n, (uint32_t)bord0);
-    }
 
-    /* Menu glyph text (row labels/values/title), pushed game-side. These are real
-     * 3D glyph mobys (the selected row's carry a per-glyph yaw), so draw them
+    /* Menu glyph text (row labels/values/title) + the lit gold frame, both pushed
+     * game-side (text_moby_native_menu). These are real 3D glyph mobys (the
+     * selected row's carry a per-glyph yaw) and a lit border strip, so draw them
      * depth-TESTED through the opaque gouraud pipe after a local depth clear — the
      * glyphs z-sort among their own faces yet sit on top of the panel (same
      * isolation trick as draw_overlay_glyphs_3d / the HUD3D pass). */

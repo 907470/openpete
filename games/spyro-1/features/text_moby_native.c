@@ -370,6 +370,79 @@ void text_moby_native_fps_overlay(CPUState* cpu) {
 
 static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 
+/* ---- lit gold border ---------------------------------------------------- */
+/* The frame around the panel is drawn here (not as flat quads in native_render)
+ * so it receives the EXACT same lighting as the glyph rows: the current s_light
+ * (SpecularUpdate's rotating ellipse), signed N·L, TXT_LIGHT_ADD. The frame is a
+ * closed quad strip (outer = panel rect, inner = inset toward the panel centre by
+ * MENU_BORDER_BT); each perimeter vertex carries an outward RADIAL normal in the
+ * overlay XY plane (z=0, same convention as the glyph normals), so a specular
+ * glint sweeps around the frame in lock-step with the text shimmer. Colour is
+ * per-vertex and interpolates along the perimeter → a smooth travelling
+ * highlight, not a per-edge on/off. Mid-gold BASE (R==G, low B — same rationale
+ * as the text tint) so the signed light swings it dark↔bright-gold either side. */
+#define MENU_BORDER_R   190
+#define MENU_BORDER_G   190
+#define MENU_BORDER_B    80
+#define MENU_BORDER_BT   0.006f   /* frame thickness, overlay units (== the old flat border) */
+#define MENU_BORDER_SAMP 12       /* perimeter samples per edge (smooth glint) */
+
+static uint32_t border_lit(float nx, float ny) {
+    float t = nx * s_light[0] + ny * s_light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
+    if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f;
+    int add = (int)(TXT_LIGHT_ADD * t);
+    int R = MENU_BORDER_R + add; if (R < 0) R = 0; else if (R > 255) R = 255;
+    int G = MENU_BORDER_G + add; if (G < 0) G = 0; else if (G > 255) G = 255;
+    int B = MENU_BORDER_B + add; if (B < 0) B = 0; else if (B > 255) B = 255;
+    return (uint32_t)R | ((uint32_t)G << 8) | ((uint32_t)B << 16) | 0xFF000000u;
+}
+
+/* Emit the lit frame into `out` (uses the current s_light — call after the menu
+ * builder has set it). Returns verts written. Four straight edge strips: the
+ * outer edge lies on the panel rect, the inner edge is a PERPENDICULAR inset by
+ * bt (so each strip is a clean parallel-sided rectangle — no inward bulge). Each
+ * strip is subdivided along its length; every column's colour comes from the
+ * outward RADIAL normal at its outer point, so the glint travels smoothly along
+ * the edge. Adjacent strips meet at a shared corner whose radial normal is
+ * identical from either side, so the overlap is seamless. */
+static int emit_menu_border(const openpete_menu_layout_t* L,
+                            openpete_hud_vert* out, int cap) {
+    const float x0 = L->panel_x0, y0 = L->panel_y0, x1 = L->panel_x1, y1 = L->panel_y1;
+    const float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
+    const float bt = MENU_BORDER_BT, z = TXT_DEPTH_MID;
+    const int   S  = MENU_BORDER_SAMP;
+    /* {outerA, outerB, innerA, innerB} per strip; inner = outer inset by bt. */
+    const float strip[4][8] = {
+        { x0,y0,   x1,y0,    x0,y0+bt, x1,y0+bt },   /* top    */
+        { x1,y0,   x1,y1,    x1-bt,y0, x1-bt,y1 },   /* right  */
+        { x1,y1,   x0,y1,    x1,y1-bt, x0,y1-bt },   /* bottom */
+        { x0,y1,   x0,y0,    x0+bt,y1, x0+bt,y0 },   /* left   */
+    };
+    int n = 0;
+    for (int e = 0; e < 4; e++) {
+        const float* s = strip[e];
+        float pox = 0, poy = 0, pix = 0, piy = 0; uint32_t pcol = 0;
+        for (int c = 0; c <= S; c++) {
+            const float f   = (float)c / (float)S;
+            const float oxf = s[0] + (s[2] - s[0]) * f, oyf = s[1] + (s[3] - s[1]) * f;
+            const float ixf = s[4] + (s[6] - s[4]) * f, iyf = s[5] + (s[7] - s[5]) * f;
+            float dx = oxf - cx, dy = oyf - cy;               /* outward radial (lighting only) */
+            float dl = sqrtf(dx * dx + dy * dy); if (dl < 1e-6f) dl = 1.0f;
+            const uint32_t col = border_lit(dx / dl, dy / dl);
+            if (c > 0 && n + 6 <= cap) {
+                out[n++] = (openpete_hud_vert){ pox, poy, z, pcol };
+                out[n++] = (openpete_hud_vert){ oxf, oyf, z, col  };
+                out[n++] = (openpete_hud_vert){ ixf, iyf, z, col  };
+                out[n++] = (openpete_hud_vert){ pox, poy, z, pcol };
+                out[n++] = (openpete_hud_vert){ ixf, iyf, z, col  };
+                out[n++] = (openpete_hud_vert){ pix, piy, z, pcol };
+            }
+            pox = oxf; poy = oyf; pix = ixf; piy = iyf; pcol = col;
+        }
+    }
+    return n;
+}
+
 /* Build the settings-menu glyph text (title + each row's label/value) from the
  * same gold glyph mobys, with the selected row's per-glyph yaw wobble, and push
  * it to the native renderer (draw_menu_overlay draws it over the panel). Reads
@@ -424,5 +497,7 @@ void text_moby_native_menu(CPUState* cpu) {
         n += emit_string(value, L.value_x, oy, L.row_cap_h, MENU_TXT_TINT, wob,
                          s_menu_buf + n, MENU_TXT_MAX - n);
     }
+    /* Gold frame — same rotating light as the rows above (s_light still set). */
+    n += emit_menu_border(&L, s_menu_buf + n, MENU_TXT_MAX - n);
     openpete_native_set_menu_glyphs(s_menu_buf, n);
 }
