@@ -1885,7 +1885,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * writes, so an unconditional commit is harmless there. */
                 openpete_native_scene_commit_fade();
                 if (lag_re && openpete_native_render_enabled() && !openpete_unlock_fps &&
-                    g_openpete_interp_enabled && s_render_fps > 0 &&
+                    g_openpete_interp_enabled && openpete_interp_enabled() &&
                     !(g_paused && !g_step_one)) {
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
                      * 2D-UI sprites/lines) from THIS canonical render's scene before
@@ -1957,7 +1957,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          *
          * Conditions:
          *  - Not headless / unlock mode (no display target).
-         *  - render-fps > 0 and exceeds sim cadence.
+         *  - openpete_interp_enabled(): the render rate genuinely exceeds the
+         *    sim rate. This is the SAME gate that arms capture (render_hz >
+         *    VBL 59.94, kept in sync at startup + on every live render-fps
+         *    change), NOT the weaker s_render_fps > 0. At/below sim parity —
+         *    e.g. render-fps 30 vs the ~29.97 Hz sim — sub-tick interpolation
+         *    is degenerate: the near-1:1 ratio duplicates/freezes frames
+         *    (mobys "stick") while capture is off and the ring is stale. So
+         *    30 fps presents canonical frames only, exactly like 'I'-toggle
+         *    off (g_openpete_interp_enabled == 0).
          *  - No REAL frame presented this iter (did_present_this_iter).
          *    NOT !sim_due (sim_due fires every PSX VBL ~60 Hz but Spyro
          *    draws every other VBL, so ~30 sim-due iters/sec draw
@@ -1979,7 +1987,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const bool native_intermediate =
             !headless_block && !openpete_unlock_fps &&
             g_openpete_interp_enabled &&
-            s_render_fps > 0 &&
+            openpete_interp_enabled() &&
             !did_present_this_iter &&
             openpete_native_render_enabled() &&
             native_re != NULL &&
