@@ -4120,9 +4120,12 @@ static void draw_menu_overlay(void) {
     static rhi_vertex buf[MENU_MAX_VERTS];
     int n = 0;
 
-    /* Panel — subtractive dark RGB(64,64,64) (the sub pipe ignores alpha). */
+    /* Panel — subtractive gray RGB(112,112,112), the exact colour Spyro's own
+     * dialog/message box uses (func_8001860C setRGB0 0x70,0x70,0x70 under ABR
+     * mode 2 B-F; verified live as the Magic Crafters balloonist box: a cat=5
+     * HUD_PANEL bl=3 tri, rgba=FF707070). The sub pipe ignores alpha. */
     const int sub0 = n;
-    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1, 0xFF404040u);
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1, 0xFF707070u);
     const int sub_n = n - sub0;
 
     /* Selection — alpha gold bar on the cursor row (RGB 224,224,128, A 80). */
