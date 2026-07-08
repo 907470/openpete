@@ -1410,6 +1410,14 @@ void rhi_notify_resize(rhi_device *dev)
     if (dev) dev->needs_recreate = true;
 }
 
+void rhi_set_vsync(rhi_device *dev, int vsync)
+{
+    if (!dev) return;
+    if (dev->vsync_pref == vsync) return;            /* no change */
+    dev->vsync_pref = vsync;                          /* choose_present_mode reads it on recreate */
+    if (!dev->headless) dev->needs_recreate = true;  /* rebuild swapchain next begin_frame */
+}
+
 uint32_t rhi_max_image_dimension(const rhi_device *dev)
 {
     if (!dev) return 0;

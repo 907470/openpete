@@ -66,6 +66,27 @@ int  openpete_native_fps_overlay_enabled(void);
  * reads it to know which digit glyphs (0-9) to build. */
 int  openpete_native_fps_value(void);
 
+/* Live presentation setters (the in-game settings menu drives these). All
+ * display-only: they mutate renderer/GPU state only, never gameplay-readable RAM,
+ * and take effect on the next native present. Harmless (no visible effect) when
+ * the native renderer isn't the active present path. See
+ * notes/plans/openpete-ingame-settings-menu.md. */
+
+/* Target display aspect (W/H, e.g. 16.0f/9.0f). <= 0 → plain 4:3. Forces a
+ * layout recompute so the fitted panel rect updates next present; the window
+ * keeps its size and letterboxes/pillarboxes the new aspect (vk-only Hor+). */
+void openpete_native_set_aspect(float w_over_h);
+
+/* SSAA supersampling factor (1 = off, 2/4/8/16). Clamped to [1,32]; ensure_ss_rtt
+ * caps it to the GPU max image dimension and reallocs the supersampled scene
+ * render target on the next present (a one-time wait-idle, like a window resize). */
+void openpete_native_set_ssaa(int factor);
+
+/* VSync on/off (1 = FIFO / vsync ON, 0 = immediate|mailbox / vsync OFF). Forwards
+ * to the RHI, which flags the swapchain for recreation and rebuilds it (with the
+ * new present mode) on the next frame. No-op until the native device is up. */
+void openpete_native_set_vsync(int on);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth
@@ -82,6 +103,13 @@ typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
  * (e.g. before the glyph models have loaded). Currently the FPS counter; reusable
  * for other text overlays. Display-only; never touches gameplay state. */
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
+
+/* Hand the native renderer the in-game settings menu's glyph geometry (the row
+ * labels/values/title, built game-side by text_moby_native from the same 3D gold
+ * glyph mobys, with the selected row's per-glyph yaw baked in). Same overlay
+ * space as set_overlay_glyphs; drawn by draw_menu_overlay on the live vk present
+ * over the menu panel. nverts==0 clears it. Display-only. */
+void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts);
 
 /* Path-isolation mode (--render-paths). When on, a frame with no native scene
  * geometry presents the scene background instead of re-displaying the PSX VRAM

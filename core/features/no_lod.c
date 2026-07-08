@@ -46,3 +46,11 @@ int no_lod_apply_options(const openpete_options_t* opts) {
                "detail selection; producers run canonical)");
     return 0;
 }
+
+void openpete_no_lod_set(int on, float fog_scale) {
+    openpete_no_lod = on ? 1 : 0;
+    openpete_fog_scale = (fog_scale > 0.0f) ? fog_scale
+                         : (openpete_no_lod ? 4.0f : 1.0f);
+    OPL_INFO_F("no-lod", "live toggle -> %s (fog x%.2f)",
+               openpete_no_lod ? "EXTENDED" : "ORIGINAL", openpete_fog_scale);
+}

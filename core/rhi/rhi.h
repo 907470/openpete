@@ -43,6 +43,14 @@ typedef struct rhi_device rhi_device;
  * Returns NULL on failure (a diagnostic is logged to stderr). */
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync);
 
+/* Change the swapchain present mode (vsync) at runtime. `vsync` has the same
+ * meaning as rhi_create's argument: 1 = FIFO (vsync ON), 0 = a vsync-OFF mode
+ * (immediate/mailbox), -1 = unset (defer to env, else FIFO). Flags the swapchain
+ * for recreation; the next rhi_begin_frame rebuilds it with the new present mode
+ * (choose_present_mode). No-op on a headless device (no swapchain) or when the
+ * preference is unchanged. Display-only. */
+void rhi_set_vsync(rhi_device *dev, int vsync);
+
 /* Create a SURFACELESS device: no window, no swapchain, no present. Renders into
  * the offscreen + render-target images only; retrieve pixels with
  * rhi_read_render_target / rhi_read_offscreen. width/height set the offscreen

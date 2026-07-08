@@ -460,6 +460,13 @@ int openpete_options_require_exe_source(const openpete_options_t* opts);
 /* Run the main loop. Returns one of OPENPETE_EXIT_*. */
 int  openpete_run(const openpete_options_t* opts);
 
+/* Live-set the render-fps target (present pacing) at runtime — e.g. from the
+ * in-game settings menu. 0 = match sim (~30 Hz). The host loop recomputes the
+ * pacer period and re-anchors its deadlines on the next iteration (no catch-up
+ * burst). Pure pacing; never perturbs gameplay-readable state. See
+ * notes/plans/openpete-ingame-settings-menu.md. */
+void openpete_set_render_fps(int fps);
+
 #ifdef __cplusplus
 }
 #endif

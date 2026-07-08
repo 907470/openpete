@@ -38,6 +38,14 @@ extern float openpete_fog_scale;
  * Returns 0 on success. Called from core/runtime/run.c. */
 int no_lod_apply_options(const openpete_options_t* opts);
 
+/* Live toggle (in-game settings menu): set the draw-distance display policy at
+ * runtime. `on` != 0 = extended (full detail). `fog_scale` > 0 overrides the fog
+ * multiplier; <= 0 uses the mode default (4.0 extended / 1.0 original), matching
+ * no_lod_apply_options. The native feeders read openpete_no_lod / openpete_fog_scale
+ * per frame, so it takes effect on the next frame. Native-renderer display policy
+ * only (no gameplay effect). */
+void openpete_no_lod_set(int on, float fog_scale);
+
 #ifdef __cplusplus
 }
 #endif

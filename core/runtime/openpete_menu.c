@@ -1,0 +1,223 @@
+// core/runtime/openpete_menu.c — in-game settings menu state + logic.
+// See openpete_menu.h and notes/plans/openpete-ingame-settings-menu.md.
+//
+// PURE PRESENTATION: every row maps to a native-renderer / host-pacer setter
+// (openpete_native_set_aspect/ssaa/vsync, openpete_set_render_fps,
+// openpete_no_lod_set). It never writes gameplay-readable state. The draw half
+// (panel/border/glyphs) lands in a later step; this file is state + apply.
+
+#include "openpete_menu.h"
+#include "openpete.h"                /* openpete_options_t, openpete_set_render_fps */
+#include "openpete_native_render.h"  /* set_aspect / set_ssaa / set_vsync */
+#include "openpete_log.h"
+#include "features/no_lod.h"         /* openpete_no_lod_set */
+
+#include <stddef.h>
+#include <stdio.h>
+
+/* --- rows ---------------------------------------------------------------- */
+enum { ROW_ASPECT, ROW_FPS, ROW_VSYNC, ROW_SSAA, ROW_DRAWDIST, ROW_COUNT };
+
+static const char* const ROW_LABEL[ROW_COUNT] = {
+    "ASPECT", "FPS", "VSYNC", "SSAA", "DRAW DIST",
+};
+
+/* Aspect presets (label + width/height). */
+static const struct { const char* label; float wh; } s_aspect[] = {
+    { "4:3",   4.0f  / 3.0f  },
+    { "16:10", 16.0f / 10.0f },
+    { "16:9",  16.0f / 9.0f  },
+    { "21:9",  21.0f / 9.0f  },
+    { "32:9",  32.0f / 9.0f  },
+};
+#define N_ASPECT ((int)(sizeof(s_aspect) / sizeof(s_aspect[0])))
+
+static const int   s_ssaa_vals[]   = { 1, 2, 4, 8, 16 };
+static const char* s_ssaa_labels[] = { "1X", "2X", "4X", "8X", "16X" };
+#define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
+
+/* FPS ladder, built from the monitor refresh at init. */
+static int s_fps_vals[16];
+static int s_fps_count = 0;
+
+/* --- live selection ------------------------------------------------------ */
+static int s_open       = 0;
+static int s_cursor     = 0;
+static int s_aspect_idx = 0;   /* 4:3      */
+static int s_fps_idx    = 0;   /* first ladder entry (30) */
+static int s_vsync_idx  = 1;   /* ON       */
+static int s_ssaa_idx   = 0;   /* 1X       */
+static int s_drawd_idx  = 0;   /* ORIGINAL */
+static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
+
+/* --- helpers ------------------------------------------------------------- */
+static int wrap_idx(int i, int n) {
+    if (n <= 0) return 0;
+    i %= n;
+    if (i < 0) i += n;
+    return i;
+}
+
+/* Index of the value in `vals` nearest to `want` (for seeding from opts). */
+static int nearest_idx(const int* vals, int n, int want) {
+    int best = 0, bestd = -1;
+    for (int i = 0; i < n; i++) {
+        int d = vals[i] - want; if (d < 0) d = -d;
+        if (bestd < 0 || d < bestd) { bestd = d; best = i; }
+    }
+    return best;
+}
+
+static void build_fps_list(int refresh) {
+    const int cap = (int)(sizeof(s_fps_vals) / sizeof(s_fps_vals[0]));
+    if (refresh < 60) refresh = 60;   /* sane floor / unknown */
+    int n = 0;
+    s_fps_vals[n++] = 30;
+    s_fps_vals[n++] = 60;
+    for (int m = 120; m < refresh && n < cap; m += 60)
+        s_fps_vals[n++] = m;
+    if (refresh > 60 && n < cap && s_fps_vals[n - 1] != refresh)
+        s_fps_vals[n++] = refresh;
+    s_fps_count = n;
+}
+
+/* Current value string for a row (for the log + later the draw). */
+static const char* value_str(int row, char* buf, int buflen) {
+    switch (row) {
+    case ROW_ASPECT: return s_aspect[s_aspect_idx].label;
+    case ROW_FPS: {
+        int v = (s_fps_idx < s_fps_count) ? s_fps_vals[s_fps_idx] : 0;
+        /* tiny itoa (no snprintf dependency needed, but it's available) */
+        snprintf(buf, (size_t)buflen, "%d", v);
+        return buf;
+    }
+    case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
+    case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
+    case ROW_DRAWDIST: return s_drawd_idx ? "EXTENDED" : "ORIGINAL";
+    default:           return "?";
+    }
+}
+
+static void log_state(const char* what) {
+    char vb[16];
+    OPL_INFO_F("menu", "%s: [%s] = %s", what,
+               ROW_LABEL[s_cursor], value_str(s_cursor, vb, sizeof vb));
+}
+
+/* Apply the focused row's current value via its setter. */
+static void apply_row(int row) {
+    switch (row) {
+    case ROW_ASPECT:   openpete_native_set_aspect(s_aspect[s_aspect_idx].wh); break;
+    case ROW_FPS:      openpete_set_render_fps(s_fps_vals[s_fps_idx]);         break;
+    case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
+    case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
+    case ROW_DRAWDIST: openpete_no_lod_set(s_drawd_idx, -1.0f);               break;
+    default: break;
+    }
+}
+
+/* --- public -------------------------------------------------------------- */
+void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
+    build_fps_list(refresh_hz);
+
+    if (!opts) return;
+
+    /* Aspect: nearest preset to the launch --aspect (unset → 4:3). */
+    if (opts->aspect_w_over_h > 0.0f) {
+        int best = 0; float bestd = -1.0f;
+        for (int i = 0; i < N_ASPECT; i++) {
+            float d = s_aspect[i].wh - opts->aspect_w_over_h;
+            if (d < 0.0f) d = -d;
+            if (bestd < 0.0f || d < bestd) { bestd = d; best = i; }
+        }
+        s_aspect_idx = best;
+    } else {
+        s_aspect_idx = 0;   /* 4:3 */
+    }
+
+    /* FPS: exact/nearest in the ladder (--render-fps 0 → the 30 entry). */
+    s_fps_idx = nearest_idx(s_fps_vals, s_fps_count,
+                            opts->render_fps > 0 ? opts->render_fps : 30);
+
+    /* VSync: -1 (unset) defaults to ON (FIFO); 0/1 as given. */
+    s_vsync_idx = (opts->vsync == 0) ? 0 : 1;
+
+    /* SSAA: nearest supported factor. */
+    s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
+
+    /* Draw distance. */
+    s_drawd_idx = opts->no_lod ? 1 : 0;
+
+    s_cursor = 0;
+}
+
+int openpete_menu_toggle(void) {
+    s_open = !s_open;
+    if (s_open) log_state("opened");
+    else        OPL_INFO_F("menu", "%s", "closed");
+    return s_open;
+}
+
+int openpete_menu_is_open(void) { return s_open; }
+
+int openpete_menu_cursor(void) { return s_cursor; }
+
+void openpete_menu_get_layout(openpete_menu_layout_t* out) {
+    if (!out) return;
+    /* Full-height, flush-left sidebar. Overlay space: x = window-height
+     * fractions (0 = left window edge), y = [0,1] = the FULL window height
+     * (window-relative, not the letterboxed game viewport). */
+    out->panel_x0 = 0.0f;  out->panel_x1 = 0.62f;
+    out->panel_y0 = 0.0f;  out->panel_y1 = 1.0f;
+    out->row_count = ROW_COUNT;
+    /* Title near the top, then rows spread down the full height. */
+    out->title_y     = 0.09f;
+    out->title_cap_h = 0.052f;
+    out->row_cap_h   = 0.040f;
+    out->row_h       = 0.105f;
+    const float first = 0.26f, spacing = 0.135f;
+    for (int i = 0; i < ROW_COUNT && i < 8; i++)
+        out->row_y[i] = first + spacing * (float)i;
+    out->label_x = 0.04f;    /* label column */
+    out->value_x = 0.37f;    /* value column */
+}
+
+const char* openpete_menu_title(void) { return "OPTIONS"; }
+
+const char* openpete_menu_row_label(int row) {
+    return (row >= 0 && row < ROW_COUNT) ? ROW_LABEL[row] : "";
+}
+
+const char* openpete_menu_row_value(int row, char* buf, int buflen) {
+    if (row < 0 || row >= ROW_COUNT) return "";
+    return value_str(row, buf, buflen);
+}
+
+unsigned openpete_menu_wobble_phase(void) { return s_tick; }
+
+void openpete_menu_nav(int dy) {
+    if (!s_open) return;
+    s_cursor = wrap_idx(s_cursor + (dy > 0 ? 1 : -1), ROW_COUNT);
+    log_state("cursor");
+}
+
+void openpete_menu_adjust(int dx) {
+    if (!s_open) return;
+    const int step = (dx > 0 ? 1 : -1);
+    switch (s_cursor) {
+    case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
+    case ROW_FPS:      s_fps_idx    = wrap_idx(s_fps_idx    + step, s_fps_count); break;
+    case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
+    case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
+    case ROW_DRAWDIST: s_drawd_idx  = wrap_idx(s_drawd_idx  + step, 2);           break;
+    default: break;
+    }
+    apply_row(s_cursor);
+    log_state("set");
+}
+
+void openpete_menu_tick(void) { s_tick++; }
+
+void openpete_menu_draw(void) {
+    /* Panel + gold border + 3D glyph rows land in the draw step. */
+}

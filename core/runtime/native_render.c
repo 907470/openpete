@@ -21,6 +21,7 @@
  */
 
 #include "openpete_native_render.h"
+#include "openpete_menu.h"
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
@@ -159,6 +160,8 @@ typedef struct {
 #define OCCL_GW 64
 #define OCCL_GH 48
 #define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
+#define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
+#define MENU_GLYPH_MAX 16384 /* in-game menu 3D glyph text verts (labels/values/title) */
 /* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
  * RGBA target covering the top-left OVL_REGION_W × OVL_REGION_H of the frame (in
  * win_h-fraction units, matching the glyph layout's win_h-relative coords), then
@@ -812,6 +815,8 @@ static struct {
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
+    rhi_buffer   *menu_vb;            /* in-game settings menu panel/border/selection quads (NDC) */
+    rhi_buffer   *menu_glyph_vb;      /* in-game settings menu 3D glyph text (NDC, depth-tested) */
 
     /* FPS-overlay 4× supersample: the glyphs render into ovl_ss (RGBA,
      * OVL_SS_FACTOR× the overlay region), then ovl_resolve_pipe box-downsamples +
@@ -1601,6 +1606,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.overlay_vb   = overlay_vb;
+    /* Optional menu overlay buffer (init has already passed the fatal guard —
+     * a NULL here just disables the menu draw, it doesn't fail the renderer). */
+    s_nr.menu_vb      = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_MAX_VERTS);
+    s_nr.menu_glyph_vb= rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_GLYPH_MAX);
     s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL → 1× fallback */
     s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL → 1× fallback */
     s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
@@ -3898,6 +3907,29 @@ int  openpete_native_toggle_fps_overlay(void) { s_fps_overlay = !s_fps_overlay; 
 int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
 int  openpete_native_fps_value(void) { return s_fps_value; }
 
+/* Live presentation setters (in-game settings menu). Display-only: they touch
+ * only s_nr (renderer state), consumed by the next native present; never
+ * gameplay RAM. See notes/plans/openpete-ingame-settings-menu.md. */
+void openpete_native_set_aspect(float w_over_h) {
+    s_nr.aspect_wh = (w_over_h > 0.0f) ? w_over_h : 0.0f;
+    /* update_layout()'s change-cache keys on window/ref/disp sizes, NOT aspect,
+     * so force it to recompute the fitted panel rect on the next present. */
+    s_nr.layout_win_w = -1;
+    OPL_INFO_F("native", "aspect -> %.4f (%s)", s_nr.aspect_wh,
+               s_nr.aspect_wh > 0.0f ? "Hor+ widen" : "4:3");
+}
+
+void openpete_native_set_ssaa(int factor) {
+    if (factor < 1) factor = 1; else if (factor > 32) factor = 32;
+    s_nr.ssaa = factor;   /* ensure_ss_rtt() reallocs the scene RT on the next present */
+    OPL_INFO_F("native", "ssaa -> %dx (effective factor capped to GPU max next present)", factor);
+}
+
+void openpete_native_set_vsync(int on) {
+    if (s_nr.dev) rhi_set_vsync(s_nr.dev, on ? 1 : 0);   /* swapchain rebuilds next frame */
+    OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
+}
+
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
  * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
  * triangle list each frame; draw_fps_overlay draws it on the live present, or
@@ -3911,6 +3943,17 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
     if (nverts > OVL_MAX_VERTS) nverts = OVL_MAX_VERTS;
     if (nverts > 0 && verts) memcpy(s_overlay_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
     s_overlay_glyph_n = nverts;
+}
+
+/* In-game menu glyph geometry (labels/values/title), pushed each frame by the
+ * game-side builder. Drawn by draw_menu_overlay over the panel. */
+static openpete_hud_vert s_menu_glyph_verts[MENU_GLYPH_MAX];
+static int               s_menu_glyph_n = 0;
+void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts) {
+    if (nverts < 0) nverts = 0;
+    if (nverts > MENU_GLYPH_MAX) nverts = MENU_GLYPH_MAX;
+    if (nverts > 0 && verts) memcpy(s_menu_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
+    s_menu_glyph_n = nverts;
 }
 
 /* Draw the overlay built from Spyro's own 3D HUD text mobys, fed each frame by
@@ -4036,6 +4079,116 @@ static void draw_fps_overlay(void) {
         rhi_draw(s_nr.dev, 6, 0);
     } else {
         draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f);
+    }
+}
+
+/* --- in-game settings menu overlay -----------------------------------------
+ * Drawn on the live vk present's resolved 1× offscreen, same overlay space and
+ * gating as the FPS overlay. Reproduces the PSX pause-menu frame: a subtractive
+ * dark panel (matching the game's ABR-2 box), an opaque gold border, and an
+ * alpha row highlight on the cursor. Glyph text lands in a later step. One
+ * upload to menu_vb, drawn as blend-mode spans (single upload → all spans read
+ * consistent data from the per-frame ring slot). */
+
+/* Push an overlay-space rect (x in window-height units, y in [0,1], origin
+ * top-left) as 2 tris mapped into the offscreen's NDC (same as the FPS overlay's
+ * 1× path: ax=2·win_h/win_w, ay=2). Colour byte order is R,G,B,A. */
+static int menu_push_quad(rhi_vertex* buf, int n, float ax, float ay,
+                          float x0, float y0, float x1, float y1, uint32_t rgba) {
+    if (n + 6 > MENU_MAX_VERTS) return n;
+    const float nx0 = x0 * ax - 1.0f, nx1 = x1 * ax - 1.0f;
+    const float ny0 = 1.0f - y0 * ay, ny1 = 1.0f - y1 * ay;
+    const rhi_vertex tl = { nx0, ny0, 0.0f, 0,0, rgba, 0, 0,0 };
+    const rhi_vertex tr = { nx1, ny0, 0.0f, 0,0, rgba, 0, 0,0 };
+    const rhi_vertex bl = { nx0, ny1, 0.0f, 0,0, rgba, 0, 0,0 };
+    const rhi_vertex br = { nx1, ny1, 0.0f, 0,0, rgba, 0, 0,0 };
+    buf[n++] = tl; buf[n++] = tr; buf[n++] = bl;
+    buf[n++] = tr; buf[n++] = br; buf[n++] = bl;
+    return n;
+}
+
+static void draw_menu_overlay(void) {
+    if (!openpete_menu_is_open() || !s_nr.menu_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0)
+        return;
+    openpete_menu_layout_t L;
+    openpete_menu_get_layout(&L);
+    const int   cursor = openpete_menu_cursor();
+    const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
+    const float ay = 2.0f;
+    const float bt = 0.006f;   /* border thickness (overlay units → equal px in x and y) */
+
+    static rhi_vertex buf[MENU_MAX_VERTS];
+    int n = 0;
+
+    /* Panel — subtractive dark RGB(64,64,64) (the sub pipe ignores alpha). */
+    const int sub0 = n;
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1, 0xFF404040u);
+    const int sub_n = n - sub0;
+
+    /* Selection — alpha gold bar on the cursor row (RGB 224,224,128, A 80). */
+    const int sel0 = n;
+    if (cursor >= 0 && cursor < L.row_count) {
+        const float cy = L.row_y[cursor];
+        n = menu_push_quad(buf, n, ax, ay,
+                           L.panel_x0 + 0.012f, cy - L.row_h * 0.5f,
+                           L.panel_x1 - 0.012f, cy + L.row_h * 0.5f, 0x5080E0E0u);
+    }
+    const int sel_n = n - sel0;
+
+    /* Border — opaque gold, four thin edges (RGB 224,224,128). */
+    const int bord0 = n;
+    const uint32_t gold = 0xFF80E0E0u;
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y0 + bt, gold);
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y1 - bt, L.panel_x1, L.panel_y1, gold);
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x0 + bt, L.panel_y1, gold);
+    n = menu_push_quad(buf, n, ax, ay, L.panel_x1 - bt, L.panel_y0, L.panel_x1, L.panel_y1, gold);
+    const int bord_n = n - bord0;
+
+    if (n <= 0) return;
+    rhi_update_buffer(s_nr.menu_vb, buf, (size_t)n * sizeof(rhi_vertex));
+    rhi_reset_scissor(s_nr.dev);
+
+    if (sub_n > 0 && s_nr.gouraud_hud_sub_pipe) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
+        rhi_draw(s_nr.dev, (uint32_t)sub_n, (uint32_t)sub0);
+    }
+    if (sel_n > 0 && s_nr.gouraud_hud_blend_pipe) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
+        rhi_draw(s_nr.dev, (uint32_t)sel_n, (uint32_t)sel0);
+    }
+    if (bord_n > 0 && s_nr.gouraud_hud_pipe) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
+        rhi_draw(s_nr.dev, (uint32_t)bord_n, (uint32_t)bord0);
+    }
+
+    /* Menu glyph text (row labels/values/title), pushed game-side. These are real
+     * 3D glyph mobys (the selected row's carry a per-glyph yaw), so draw them
+     * depth-TESTED through the opaque gouraud pipe after a local depth clear — the
+     * glyphs z-sort among their own faces yet sit on top of the panel (same
+     * isolation trick as draw_overlay_glyphs_3d / the HUD3D pass). */
+    if (s_menu_glyph_n >= 3 && s_nr.menu_glyph_vb && s_nr.gouraud_pipe) {
+        static rhi_vertex gbuf[MENU_GLYPH_MAX];
+        int gn = 0;
+        for (int i = 0; i < s_menu_glyph_n && gn < MENU_GLYPH_MAX; i++) {
+            const openpete_hud_vert *v = &s_menu_glyph_verts[i];
+            gbuf[gn].x = v->x * ax - 1.0f;
+            gbuf[gn].y = 1.0f - v->y * ay;
+            gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
+            gbuf[gn].rgba = v->rgba; gbuf[gn].tex = 0; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
+            gn++;
+        }
+        gn -= gn % 3;
+        if (gn > 0) {
+            rhi_update_buffer(s_nr.menu_glyph_vb, gbuf, (size_t)gn * sizeof(rhi_vertex));
+            rhi_reset_scissor(s_nr.dev);
+            rhi_clear_depth(s_nr.dev);
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_glyph_vb);
+            rhi_draw(s_nr.dev, (uint32_t)gn, 0);
+        }
     }
 }
 
@@ -4165,6 +4318,7 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_draw(s_nr.dev, 6, 0);
         }
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
+        if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
         rhi_end_offscreen(s_nr.dev);
         /* The freeze snapshot lives in the fall-through path below, which this SSAA
          * branch skips — so capture it here too, from the box-resolved 1× offscreen
@@ -4212,6 +4366,7 @@ static bool compose_variant(int variant, bool have_ref)
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
+    if (variant == NRV_VK && s_overlay_live) draw_menu_overlay();
 
     rhi_end_offscreen(s_nr.dev);
 
@@ -4677,6 +4832,8 @@ void openpete_native_render_shutdown(void)
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     if (s_nr.overlay_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
+    if (s_nr.menu_vb)      rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
+    if (s_nr.menu_glyph_vb) rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);

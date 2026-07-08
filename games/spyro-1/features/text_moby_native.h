@@ -51,4 +51,9 @@ int text_moby_native_emit(const char* str,
  * unless the native renderer is active. */
 void text_moby_native_fps_overlay(struct CPUState* cpu);
 
+/* Per-frame settings-menu text consumer: when the in-game menu (O) is open and
+ * the font is cached, builds the title + each row's label/value (selected row
+ * wobbling) and hands it to openpete_native_set_menu_glyphs. No-op otherwise. */
+void text_moby_native_menu(struct CPUState* cpu);
+
 #endif /* OPENPETE_TEXT_MOBY_NATIVE_H */

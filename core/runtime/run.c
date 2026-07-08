@@ -21,6 +21,7 @@
 #include "bk2_record.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "openpete_menu.h"
 #include "feature_registry.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
@@ -180,6 +181,10 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
      * window-close path above quits too. */
     if (ev->type == SDL_EVENT_KEY_DOWN &&
         ev->key.scancode == SDL_SCANCODE_ESCAPE) {
+        /* While the settings menu is open, Escape closes it instead of quitting.
+         * (The filter runs during the main-thread event pump, same thread as the
+         * host loop, so reading the menu-open flag here is race-free.) */
+        if (openpete_menu_is_open()) { openpete_menu_toggle(); return false; }
         g_shutdown_requested = 1;
         return false;
     }
@@ -684,6 +689,22 @@ static void ftl_record_present(openpete_frame_time_log_t* log,
                                    deadline_ns, deadline_ns - now_ns);
 }
 
+/* Live render-fps pacer state (in-game settings menu). openpete_set_render_fps
+ * updates s_render_fps and flags a re-anchor; the host loop recomputes the
+ * period (it needs the loop's tick_scale) and resets the deadlines to avoid a
+ * catch-up burst. Display-only: pacing, never gameplay. Initialised from
+ * opts->render_fps just before the loop. */
+static int       s_render_fps       = 0;
+static op_time_t s_render_period_ns = 0;
+static int       s_render_fps_dirty = 0;
+
+void openpete_set_render_fps(int fps) {
+    if (fps < 0) fps = 0;
+    if (fps == s_render_fps) return;
+    s_render_fps = fps;
+    s_render_fps_dirty = 1;   /* the host loop recomputes the period + re-anchors */
+}
+
 static int run_recomp_fiber(const openpete_options_t* opts) {
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
@@ -1118,6 +1139,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const op_time_t render_period_ns = (opts->render_fps > 0)
         ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)opts->render_fps) / tick_scale)
         : sim_period_ns;   /* sim_period_ns is already tick-scaled */
+    /* Seed the live pacer state (openpete_set_render_fps mutates it; the loop
+     * reads s_render_fps / s_render_period_ns instead of the consts above). */
+    s_render_fps       = opts->render_fps;
+    s_render_period_ns = render_period_ns;
+    s_render_fps_dirty = 0;
     const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
@@ -1295,6 +1321,25 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_fps_key = false;
     bool prev_alt_enter = false;
 
+    /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
+     * a latch so we clear the pad override exactly once when the menu closes. */
+    bool prev_o_key   = false;
+    bool prev_menu_up = false, prev_menu_dn = false;
+    bool prev_menu_lf = false, prev_menu_rt = false;
+    bool prev_menu_open = false;
+
+    /* Seed the in-game settings menu from the launch flags, and build its FPS
+     * ladder from the monitor refresh (primary display; 60 if unknown/headless).
+     * Applies nothing — it only makes the menu reflect what the game launched
+     * with. */
+    {
+        int refresh_hz = 60;
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (dm && dm->refresh_rate > 0.0f)
+            refresh_hz = (int)(dm->refresh_rate + 0.5f);
+        openpete_menu_init(opts, refresh_hz);
+    }
+
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
          * --render-fps>0. The authoritative `unlock_fps` write
@@ -1325,8 +1370,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * render cadence, and sim_due fires when the sim deadline has
          * elapsed — or unconditionally under unlock_now so fast-forward
          * actually fast-forwards. */
+        /* Live render-fps change (openpete_set_render_fps, e.g. the in-game
+         * menu): recompute the period with THIS loop's tick_scale and re-anchor
+         * the deadlines to now so a lower→higher switch doesn't fire a burst of
+         * catch-up presents. Also keep interp capture in sync (enabled only when
+         * the render rate exceeds the sim rate), matching the startup gate. */
+        if (s_render_fps_dirty) {
+            s_render_fps_dirty = 0;
+            s_render_period_ns = (s_render_fps > 0)
+                ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)s_render_fps) / tick_scale)
+                : sim_period_ns;
+            op_time_t anchor = op_now();
+            next_sim_ns    = anchor;
+            next_render_ns = anchor;
+            const op_time_t sim_hz_x1000  = (OP_NS_PER_SEC * 1000) / sim_period_ns;
+            const op_time_t rend_hz_x1000 = (s_render_period_ns > 0)
+                ? (OP_NS_PER_SEC * 1000) / s_render_period_ns : 0;
+            openpete_interp_set_enabled(s_render_fps > 0 && rend_hz_x1000 > sim_hz_x1000 ? 1 : 0);
+            OPL_INFO_F("pacer", "render-fps -> %d (%.4f ms/present)",
+                       s_render_fps, (double)s_render_period_ns / 1e6);
+        }
         op_time_t iter_now_ns = op_now();
-        bool   sim_due = (opts->render_fps == 0) || unlock_now ||
+        bool   sim_due = (s_render_fps == 0) || unlock_now ||
                          (iter_now_ns >= next_sim_ns);
 
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
@@ -1368,6 +1433,25 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             g_PsyX_Pad_OverrideActive = ovr_active;
         }
 
+        /* Settings menu open: neutralise the game pad so the arrow keys drive
+         * the menu (not Spyro). Reuses the bk2 override channel (all buttons
+         * released, sticks centred). On the frame the menu closes, clear it —
+         * unless a bk2 movie is driving the override, in which case bk2 re-stamps
+         * on the next sim-due iter. The sim keeps running (input just goes
+         * nowhere), so aspect/ssaa/draw-distance changes preview live. */
+        if (openpete_menu_is_open()) {
+            g_PsyX_Pad_InputOverride  = 0xFFFF;
+            g_PsyX_Pad_OverrideActive = 1;
+            g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+            g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
+        } else if (prev_menu_open && !bk2_active) {
+            g_PsyX_Pad_InputOverride  = 0xFFFF;
+            g_PsyX_Pad_OverrideActive = 0;
+            g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+            g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
+        }
+        prev_menu_open = openpete_menu_is_open();
+
         /* Drain SDL events + refresh pad state before the game runs. PsyCross's
          * libpad reads keyboard via SDL_GetKeyboardState (pumped here) and
          * writes the bitfield into the buffer registered by PadInitDirect, so
@@ -1380,6 +1464,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
         const bool* kbd_pre = openpete_keyboard_state();
 
+        /* O: toggle the in-game settings menu. While open it captures the arrow
+         * keys (Up/Down move the cursor, Left/Right change the value) and the
+         * game pad is neutralised below, so the other hotkeys and gameplay input
+         * stay inert. Esc-closes is handled in the SDL event filter. */
+        {
+            bool o_k = kbd_pre && kbd_pre[SDL_SCANCODE_O];
+            if (o_k && !prev_o_key) openpete_menu_toggle();
+            prev_o_key = o_k;
+
+            if (openpete_menu_is_open()) {
+                bool up_k = kbd_pre && kbd_pre[SDL_SCANCODE_UP];
+                bool dn_k = kbd_pre && kbd_pre[SDL_SCANCODE_DOWN];
+                bool lf_k = kbd_pre && kbd_pre[SDL_SCANCODE_LEFT];
+                bool rt_k = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHT];
+                if (up_k && !prev_menu_up) openpete_menu_nav(-1);
+                if (dn_k && !prev_menu_dn) openpete_menu_nav(+1);
+                if (lf_k && !prev_menu_lf) openpete_menu_adjust(-1);
+                if (rt_k && !prev_menu_rt) openpete_menu_adjust(+1);
+                prev_menu_up = up_k; prev_menu_dn = dn_k;
+                prev_menu_lf = lf_k; prev_menu_rt = rt_k;
+            } else {
+                prev_menu_up = prev_menu_dn = prev_menu_lf = prev_menu_rt = false;
+            }
+        }
+
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
          * yielded right now, so g_game.cpu and g_ram are quiescent — we can
@@ -1389,8 +1498,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * buffer (which lives in restored g_ram) is immediately followed by
          * a fresh write of current input — otherwise the game fiber reads
          * stale buttons from the saved RAM and feels like input has stopped
-         * registering until the next iter. */
-        {
+         * registering until the next iter.
+         *
+         * Skipped while the settings menu is open (it owns the keyboard): the
+         * prev_* edge state freezes at its pre-menu value, so no held key
+         * misfires when the menu closes. */
+        if (!openpete_menu_is_open()) {
             bool save_k  = kbd_pre && kbd_pre[SDL_SCANCODE_1];
             bool load_k  = kbd_pre && kbd_pre[SDL_SCANCODE_2];
             bool cycle_k = kbd_pre && kbd_pre[SDL_SCANCODE_3];
@@ -1772,7 +1885,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * writes, so an unconditional commit is harmless there. */
                 openpete_native_scene_commit_fade();
                 if (lag_re && openpete_native_render_enabled() && !openpete_unlock_fps &&
-                    g_openpete_interp_enabled && opts->render_fps > 0 &&
+                    g_openpete_interp_enabled && s_render_fps > 0 &&
                     !(g_paused && !g_step_one)) {
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
                      * 2D-UI sprites/lines) from THIS canonical render's scene before
@@ -1866,7 +1979,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const bool native_intermediate =
             !headless_block && !openpete_unlock_fps &&
             g_openpete_interp_enabled &&
-            opts->render_fps > 0 &&
+            s_render_fps > 0 &&
             !did_present_this_iter &&
             openpete_native_render_enabled() &&
             native_re != NULL &&
@@ -2128,7 +2241,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             op_time_t anchor = op_now();
             next_sim_ns    = anchor;
             next_render_ns = anchor;
-        } else if (opts->render_fps == 0) {
+        } else if (s_render_fps == 0) {
             /* Legacy "match sim cadence" pacer. One present per VBL
              * cadence, advanced only when the game fiber actually
              * yielded with a frame bump (ticked_this_iter). dispatch.c
@@ -2156,10 +2269,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     next_sim_ns += skip * sim_period_ns;
                 }
             }
-            next_render_ns += render_period_ns;
+            next_render_ns += s_render_period_ns;
             if (now2 - next_render_ns > slip_threshold_ns) {
-                op_time_t skip = (now2 - next_render_ns) / render_period_ns;
-                next_render_ns += skip * render_period_ns;
+                op_time_t skip = (now2 - next_render_ns) / s_render_period_ns;
+                next_render_ns += skip * s_render_period_ns;
             }
             op_time_t next = (next_sim_ns < next_render_ns)
                              ? next_sim_ns : next_render_ns;

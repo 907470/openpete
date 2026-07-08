@@ -473,6 +473,10 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * presentation: reads model geometry from RAM, never writes gameplay state. */
     text_moby_native_fps_overlay(cpu);
 
+    /* Build the in-game settings-menu text (title + rows) from the same 3D gold
+     * glyph mobys when the menu (O) is open. Pure presentation. */
+    text_moby_native_menu(cpu);
+
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp
      * g_DemoMode = DEMO_MODE_NONE so the user controls Spyro instead of

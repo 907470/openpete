@@ -33,6 +33,7 @@ add_library(openpete_core STATIC
     runtime/boot.c
     runtime/dispatch.c
     runtime/openpete_ui_moby.c
+    runtime/openpete_menu.c
     runtime/feature_registry.c
 
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
