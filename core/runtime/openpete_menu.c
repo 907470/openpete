@@ -169,20 +169,32 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * (window-relative, not the letterboxed game viewport). */
     out->panel_x0 = 0.0f;  out->panel_x1 = 0.62f;
     out->panel_y0 = 0.0f;  out->panel_y1 = 1.0f;
+    const int N = (ROW_COUNT < 8) ? ROW_COUNT : 8;
     out->row_count = ROW_COUNT;
-    /* Title near the top, then rows spread down the full height. */
-    out->title_y     = 0.09f;
-    out->title_cap_h = 0.052f;
-    out->row_cap_h   = 0.040f;
-    out->row_h       = 0.105f;
-    const float first = 0.26f, spacing = 0.135f;
-    for (int i = 0; i < ROW_COUNT && i < 8; i++)
+    /* Styled after the game's pause menu: a compact block (title + rows) with
+     * tight line spacing, TOP-ALIGNED in the panel (a small margin from the top).
+     * The title is a bold header, noticeably larger than the rows. Row font is
+     * capped so the widest row ("DRAW DIST" / "EXTENDED") still fits the narrow
+     * sidebar. */
+    const float title_cap = 0.080f, row_cap = 0.044f;   /* header > rows */
+    const float spacing   = 0.072f;   /* row-to-row (pause menu ≈ 0.069) */
+    const float top_pad   = 0.055f;   /* panel top → title top */
+    const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
+    out->title_cap_h = title_cap;
+    out->title_y     = out->panel_y0 + top_pad + title_cap * 0.5f;
+    out->row_cap_h   = row_cap;
+    out->row_h       = spacing;        /* (selection bar removed; kept ≈ line pitch) */
+    const float first = out->panel_y0 + top_pad + title_cap + title_gap + row_cap * 0.5f;
+    for (int i = 0; i < N; i++)
         out->row_y[i] = first + spacing * (float)i;
-    out->label_x = 0.04f;    /* label column */
-    out->value_x = 0.37f;    /* value column */
+    /* Split point (labels right-align to label_x, values left-align at value_x).
+     * Kept left of centre — reduces the left padding and gives the widest row's
+     * value ("EXTENDED") room before the right border. */
+    out->label_x = 0.300f;   /* label RIGHT-edge column */
+    out->value_x = 0.335f;   /* value LEFT column        */
 }
 
-const char* openpete_menu_title(void) { return "OPTIONS"; }
+const char* openpete_menu_title(void) { return "SETTINGS"; }
 
 const char* openpete_menu_row_label(int row) {
     return (row >= 0 && row < ROW_COUNT) ? ROW_LABEL[row] : "";

@@ -384,7 +384,7 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 #define MENU_BORDER_R   190
 #define MENU_BORDER_G   190
 #define MENU_BORDER_B    80
-#define MENU_BORDER_BT   0.006f   /* frame thickness, overlay units (== the old flat border) */
+#define MENU_BORDER_BT   0.0035f  /* frame thickness, overlay units */
 #define MENU_BORDER_SAMP 12       /* perimeter samples per edge (smooth glint) */
 
 static uint32_t border_lit(float nx, float ny) {
@@ -443,6 +443,33 @@ static int emit_menu_border(const openpete_menu_layout_t* L,
     return n;
 }
 
+/* Advance width of `str` at `cap_h`, in overlay units — mirrors emit_string's
+ * cursor accumulation exactly (per-glyph width + TXT_GAP, TXT_SPACE for spaces,
+ * the two-dot colon). Used to right-align labels and centre the title so the
+ * menu reads like the game's own pause menu (right-aligned labels, left-aligned
+ * values, meeting at a central split). */
+static float measure_string(const char* str, float cap_h) {
+    if (!s_cache_ready || !str) return 0.0f;
+    const float scale = cap_h / TXT_MODEL_H;
+    float cursor = 0.0f;
+    for (int i = 0; str[i]; i++) {
+        char c = str[i];
+        if (c == ' ') { cursor += TXT_SPACE; continue; }
+        if (c == ':') {
+            int slot = s_class_to_idx[327];
+            if (slot < 0 || !s_glyph[slot].valid) { cursor += TXT_SPACE; continue; }
+            cursor += (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin)
+                      * scale * TXT_COLON_SCALE + TXT_GAP;
+            continue;
+        }
+        int cls  = glyph_class(c);
+        int slot = (cls >= 0 && cls < 512) ? s_class_to_idx[cls] : -1;
+        if (slot < 0 || !s_glyph[slot].valid) { cursor += TXT_SPACE; continue; }
+        cursor += (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin) * scale + TXT_GAP;
+    }
+    return cursor;
+}
+
 /* Build the settings-menu glyph text (title + each row's label/value) from the
  * same gold glyph mobys, with the selected row's per-glyph yaw wobble, and push
  * it to the native renderer (draw_menu_overlay draws it over the panel). Reads
@@ -482,17 +509,25 @@ void text_moby_native_menu(CPUState* cpu) {
         s_light_signed = 1;   /* metal contrast: shadowed faces darken below base */
     }
 
+    /* Pause-menu alignment: title centred; labels RIGHT-aligned to L.label_x;
+     * values LEFT-aligned at L.value_x (the two columns meet at a central split). */
+    const float pcx = 0.5f * (L.panel_x0 + L.panel_x1);   /* panel centre x */
     int n = 0;
-    n += emit_string(openpete_menu_title(), L.label_x,
-                     L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
-                     MENU_TITLE_TINT, -1, s_menu_buf + n, MENU_TXT_MAX - n);
+    {
+        const char* title = openpete_menu_title();
+        const float tw = measure_string(title, L.title_cap_h);
+        n += emit_string(title, pcx - 0.5f * tw,
+                         L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
+                         MENU_TITLE_TINT, -1, s_menu_buf + n, MENU_TXT_MAX - n);
+    }
     for (int r = 0; r < L.row_count; r++) {
         const int wob = (r == cursor) ? phase : -1;   /* only the selected row wobbles */
         char vb[16];
         const char* label = openpete_menu_row_label(r);
         const char* value = openpete_menu_row_value(r, vb, sizeof vb);
         const float oy = L.row_y[r] - L.row_cap_h * 0.5f;
-        n += emit_string(label, L.label_x, oy, L.row_cap_h, MENU_TXT_TINT, wob,
+        const float lw = measure_string(label, L.row_cap_h);
+        n += emit_string(label, L.label_x - lw, oy, L.row_cap_h, MENU_TXT_TINT, wob,
                          s_menu_buf + n, MENU_TXT_MAX - n);
         n += emit_string(value, L.value_x, oy, L.row_cap_h, MENU_TXT_TINT, wob,
                          s_menu_buf + n, MENU_TXT_MAX - n);

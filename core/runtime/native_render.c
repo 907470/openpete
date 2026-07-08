@@ -170,6 +170,10 @@ typedef struct {
 #define OVL_SS_FACTOR  4
 #define OVL_REGION_W   0.30f
 #define OVL_REGION_H   0.05f
+/* Settings-menu glyph supersample factor. The menu region is the whole (tall)
+ * panel, so this is smaller than OVL_SS_FACTOR to keep the target memory sane at
+ * high resolutions (2× = 4 samples/px, a clear anti-alias). */
+#define MENU_SS_FACTOR 2
 /* The INTERNAL stored tri (W0.7b): the feeder-facing openpete_scene_tri plus
  * the routing state that travels through the add_tri arguments. Private to
  * this TU — feeders can't write routing fields (no such field exists on their
@@ -869,6 +873,15 @@ static struct {
     rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
     int           ovl_quad_win_w, ovl_quad_win_h;
 
+    /* Settings-menu glyph/border supersample: same idea as ovl_ss but sized to the
+     * menu PANEL rect (much larger). The glyph+border layer renders into menu_ss at
+     * MENU_SS_FACTOR×, then reuses ovl_resolve_pipe to box-downsample + alpha-blend
+     * it onto the offscreen via menu_quad — so the 3D menu text is anti-aliased. */
+    rhi_texture  *menu_ss;
+    int           menu_ss_w, menu_ss_h;
+    rhi_buffer   *menu_quad_vb;       /* composite quad at the panel rect */
+    int           menu_quad_win_w, menu_quad_win_h;
+
     /* Depth-aware decal infrastructure: the WORLD-opaque depth PRE-PASS.
      * Rendered ONCE per present in the FULL-EXTENT PSX mapping at
      * max(ref, window) resolution; every consumer pass (native_rtt / SSAA /
@@ -1530,6 +1543,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    rhi_buffer   *menu_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
     /* Optional W2.6-c hole-fill pipes (graceful fallback: any NULL → WORLD uses
@@ -1655,6 +1669,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.menu_glyph_vb= rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_GLYPH_MAX);
     s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL → 1× fallback */
     s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL → 1× fallback */
+    s_nr.menu_quad_vb = menu_quad_vb;           /* may be NULL → 1× fallback */
     s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
@@ -4156,12 +4171,95 @@ static int menu_push_quad(rhi_vertex* buf, int n, float ax, float ay,
     return n;
 }
 
+/* Build + draw the menu glyph/border layer (s_menu_glyph_verts) into the current
+ * render pass, mapped overlay→NDC by (ax,ay): x → x*ax-1, y → 1-y*ay, with a
+ * local depth clear so the 3D glyph faces z-sort among themselves on top of
+ * whatever is already there. The panel is flush at overlay origin (0,0), so the
+ * SAME map serves both the 1× offscreen (ax=2·win_h/win_w, ay=2) and the menu_ss
+ * supersample prepass (ax=2/panel_w, ay=2/panel_h → the panel fills the target). */
+static void draw_menu_glyphs_3d(float ax, float ay) {
+    if (s_menu_glyph_n < 3 || !s_nr.menu_glyph_vb || !s_nr.gouraud_pipe) return;
+    static rhi_vertex gbuf[MENU_GLYPH_MAX];
+    int gn = 0;
+    for (int i = 0; i < s_menu_glyph_n && gn < MENU_GLYPH_MAX; i++) {
+        const openpete_hud_vert *v = &s_menu_glyph_verts[i];
+        gbuf[gn].x = v->x * ax - 1.0f;
+        gbuf[gn].y = 1.0f - v->y * ay;
+        gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
+        gbuf[gn].rgba = v->rgba; gbuf[gn].tex = 0; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
+        gn++;
+    }
+    gn -= gn % 3;
+    if (gn <= 0) return;
+    rhi_update_buffer(s_nr.menu_glyph_vb, gbuf, (size_t)gn * sizeof(rhi_vertex));
+    rhi_reset_scissor(s_nr.dev);
+    rhi_clear_depth(s_nr.dev);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_glyph_vb);
+    rhi_draw(s_nr.dev, (uint32_t)gn, 0);
+}
+
+/* True when the menu-glyph supersample path is usable (all resources up). */
+static bool menu_ss_ready(void) {
+    return s_nr.ovl_resolve_pipe && s_nr.menu_quad_vb && s_nr.menu_ss;
+}
+
+/* (Re)create menu_ss at MENU_SS_FACTOR× the PANEL rect + rebuild the composite
+ * quad on resize. Lazy: only allocates once the menu is actually open (the target
+ * is large), then keeps it. Creates GPU resources / waits idle — call OUTSIDE a
+ * frame (alongside ensure_ovl_ss). No-op if the SS pipe/quad failed at init. */
+static void ensure_menu_ss(void) {
+    if (!s_nr.ovl_resolve_pipe || !s_nr.menu_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    if (!openpete_menu_is_open()) return;   /* don't allocate the big target until needed */
+    openpete_menu_layout_t L; openpete_menu_get_layout(&L);
+    const float pw = L.panel_x1 - L.panel_x0, ph = L.panel_y1 - L.panel_y0;
+    int rw = (int)(pw * (float)s_nr.win_h + 0.5f);
+    int rh = (int)(ph * (float)s_nr.win_h + 0.5f);
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
+    int want_w = rw * MENU_SS_FACTOR, want_h = rh * MENU_SS_FACTOR;
+    uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
+    if ((uint32_t)want_w > maxdim) want_w = (int)maxdim;
+    if ((uint32_t)want_h > maxdim) want_h = (int)maxdim;
+    if (!s_nr.menu_ss || s_nr.menu_ss_w != want_w || s_nr.menu_ss_h != want_h) {
+        rhi_wait_idle(s_nr.dev);
+        if (s_nr.menu_ss) { rhi_destroy_texture(s_nr.dev, s_nr.menu_ss); s_nr.menu_ss = NULL; }
+        s_nr.menu_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+        s_nr.menu_ss_w = want_w; s_nr.menu_ss_h = want_h;
+        if (s_nr.menu_ss)
+            OPL_INFO_F("native", "settings-menu SS target %dx%d (%d×)", want_w, want_h, MENU_SS_FACTOR);
+    }
+    /* Composite quad — the panel rect (flush top-left) in offscreen NDC; UV 0..1
+     * over the whole SS target (v0 top, top-down). Same construction as ovl_quad. */
+    if (s_nr.menu_quad_win_w != s_nr.win_w || s_nr.menu_quad_win_h != s_nr.win_h) {
+        float rw_ndc = pw * (float)s_nr.win_h / (float)s_nr.win_w * 2.0f;
+        float rh_ndc = ph * 2.0f;
+        rhi_vertex q[6];
+        build_panel(q, -1.0f + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
+                    rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f);
+        rhi_wait_idle(s_nr.dev);
+        rhi_update_buffer(s_nr.menu_quad_vb, q, sizeof(q));
+        s_nr.menu_quad_win_w = s_nr.win_w; s_nr.menu_quad_win_h = s_nr.win_h;
+    }
+}
+
+/* Pre-pass: render the menu glyph/border layer at MENU_SS_FACTOR× into menu_ss
+ * (cleared transparent). Its own render pass, so call it BEFORE the offscreen
+ * pass opens. No-op unless the menu is open and the SS path is ready. */
+static void prepare_menu_ss(void) {
+    if (!menu_ss_ready() || !openpete_menu_is_open() || s_menu_glyph_n < 3) return;
+    openpete_menu_layout_t L; openpete_menu_get_layout(&L);
+    const float pw = L.panel_x1 - L.panel_x0, ph = L.panel_y1 - L.panel_y0;
+    rhi_begin_render_target(s_nr.dev, s_nr.menu_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
+    draw_menu_glyphs_3d(2.0f / pw, 2.0f / ph);
+    rhi_end_render_target(s_nr.dev, s_nr.menu_ss);
+}
+
 static void draw_menu_overlay(void) {
     if (!openpete_menu_is_open() || !s_nr.menu_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0)
         return;
     openpete_menu_layout_t L;
     openpete_menu_get_layout(&L);
-    const int   cursor = openpete_menu_cursor();
     const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
     const float ay = 2.0f;
 
@@ -4176,20 +4274,10 @@ static void draw_menu_overlay(void) {
     n = menu_push_quad(buf, n, ax, ay, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1, 0xFF707070u);
     const int sub_n = n - sub0;
 
-    /* Selection — alpha gold bar on the cursor row (RGB 224,224,128, A 80). */
-    const int sel0 = n;
-    if (cursor >= 0 && cursor < L.row_count) {
-        const float cy = L.row_y[cursor];
-        n = menu_push_quad(buf, n, ax, ay,
-                           L.panel_x0 + 0.012f, cy - L.row_h * 0.5f,
-                           L.panel_x1 - 0.012f, cy + L.row_h * 0.5f, 0x5080E0E0u);
-    }
-    const int sel_n = n - sel0;
-
-    /* The gold border is no longer a flat quad here — it's built game-side in
-     * text_moby_native_menu (emit_menu_border) as a lit frame that shares the
-     * glyph rows' rotating light, and arrives through the depth-isolated glyph
-     * pass below. */
+    /* No selection bar: the selected row is marked by its per-glyph yaw wobble
+     * (like the game's pause menu), so there is no highlight quad. The gold
+     * border is built game-side (text_moby_native_menu / emit_menu_border) as a
+     * lit frame and arrives through the depth-isolated glyph pass below. */
 
     if (n <= 0) return;
     rhi_update_buffer(s_nr.menu_vb, buf, (size_t)n * sizeof(rhi_vertex));
@@ -4200,38 +4288,23 @@ static void draw_menu_overlay(void) {
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
         rhi_draw(s_nr.dev, (uint32_t)sub_n, (uint32_t)sub0);
     }
-    if (sel_n > 0 && s_nr.gouraud_hud_blend_pipe) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
-        rhi_draw(s_nr.dev, (uint32_t)sel_n, (uint32_t)sel0);
-    }
 
     /* Menu glyph text (row labels/values/title) + the lit gold frame, both pushed
-     * game-side (text_moby_native_menu). These are real 3D glyph mobys (the
-     * selected row's carry a per-glyph yaw) and a lit border strip, so draw them
-     * depth-TESTED through the opaque gouraud pipe after a local depth clear — the
-     * glyphs z-sort among their own faces yet sit on top of the panel (same
-     * isolation trick as draw_overlay_glyphs_3d / the HUD3D pass). */
-    if (s_menu_glyph_n >= 3 && s_nr.menu_glyph_vb && s_nr.gouraud_pipe) {
-        static rhi_vertex gbuf[MENU_GLYPH_MAX];
-        int gn = 0;
-        for (int i = 0; i < s_menu_glyph_n && gn < MENU_GLYPH_MAX; i++) {
-            const openpete_hud_vert *v = &s_menu_glyph_verts[i];
-            gbuf[gn].x = v->x * ax - 1.0f;
-            gbuf[gn].y = 1.0f - v->y * ay;
-            gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
-            gbuf[gn].rgba = v->rgba; gbuf[gn].tex = 0; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
-            gn++;
-        }
-        gn -= gn % 3;
-        if (gn > 0) {
-            rhi_update_buffer(s_nr.menu_glyph_vb, gbuf, (size_t)gn * sizeof(rhi_vertex));
-            rhi_reset_scissor(s_nr.dev);
-            rhi_clear_depth(s_nr.dev);
-            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_glyph_vb);
-            rhi_draw(s_nr.dev, (uint32_t)gn, 0);
-        }
+     * game-side (text_moby_native_menu). SS path: composite the supersampled layer
+     * that prepare_menu_ss built — box-downsample + straight-alpha blend over the
+     * panel via the FPS overlay's resolve pipe (anti-aliased 3D text). 1× fallback:
+     * draw the glyphs directly (depth-isolated), the original crisp-but-aliased
+     * path. Either way the glyphs sit on top of the panel. */
+    if (menu_ss_ready() && s_menu_glyph_n >= 3) {
+        int factor = MENU_SS_FACTOR;
+        rhi_reset_scissor(s_nr.dev);
+        rhi_bind_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
+        rhi_bind_vram(s_nr.dev, s_nr.menu_ss);
+        rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_quad_vb);
+        rhi_draw(s_nr.dev, 6, 0);
+    } else {
+        draw_menu_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f);
     }
 }
 
@@ -4597,6 +4670,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
     ensure_ovl_ss();           /* FPS-overlay supersample target + composite quad */
+    ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
 
     /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
@@ -4629,6 +4703,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * pass, so it must precede compose_variant's offscreen pass. compose's
      * draw_fps_overlay then composites the downsampled result. */
     prepare_fps_overlay_ss();
+    prepare_menu_ss();         /* menu glyphs at MENU_SS_FACTOR× → menu_ss (own pass) */
     bool did_diff = compose_variant(variant, have_ref);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
@@ -4870,6 +4945,8 @@ void openpete_native_render_shutdown(void)
     if (s_nr.gouraud_sub_fade_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_fade_pipe);
     if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);
     if (s_nr.ovl_quad_vb)  rhi_destroy_buffer(s_nr.dev, s_nr.ovl_quad_vb);
+    if (s_nr.menu_ss)      rhi_destroy_texture(s_nr.dev, s_nr.menu_ss);
+    if (s_nr.menu_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.menu_quad_vb);
     if (s_nr.ovl_resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
