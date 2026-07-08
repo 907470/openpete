@@ -1325,6 +1325,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_o_key   = false;
     bool prev_menu_up = false, prev_menu_dn = false;
     bool prev_menu_lf = false, prev_menu_rt = false;
+    bool prev_menu_close = false;   /* controller Start/Circle → close menu */
     bool prev_menu_open = false;
 
     /* Seed the in-game settings menu from the launch flags, and build its FPS
@@ -1477,14 +1478,41 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 bool dn_k = kbd_pre && kbd_pre[SDL_SCANCODE_DOWN];
                 bool lf_k = kbd_pre && kbd_pre[SDL_SCANCODE_LEFT];
                 bool rt_k = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHT];
-                if (up_k && !prev_menu_up) openpete_menu_nav(-1);
-                if (dn_k && !prev_menu_dn) openpete_menu_nav(+1);
-                if (lf_k && !prev_menu_lf) openpete_menu_adjust(-1);
-                if (rt_k && !prev_menu_rt) openpete_menu_adjust(+1);
+                /* Controller (P1): digital d-pad AND the left analog stick drive
+                 * the same nav; X (cross) also acts as Right. Read raw from SDL —
+                 * the game's pad view is held neutral while the menu is open, so
+                 * this is independent of it. OR-ing into the keyboard bools means
+                 * one shared edge-trigger (prev_menu_*): holding a direction (key
+                 * or stick) steps once until released, matching the keyboard feel. */
+                bool close_k = false;   /* Start / Circle held (closes on release; open stays on O) */
+                PsyX_RawPad rp;
+                if (PsyX_Pad_GetRawP1(&rp)) {
+                    const int DZ = 16000;   /* ~half-throw left-stick deadzone */
+                    if (rp.dpad_up    || rp.lstick_y < -DZ)             up_k = true;
+                    if (rp.dpad_down  || rp.lstick_y >  DZ)             dn_k = true;
+                    if (rp.dpad_left  || rp.lstick_x < -DZ)             lf_k = true;
+                    if (rp.dpad_right || rp.lstick_x >  DZ || rp.cross) rt_k = true;
+                    close_k = rp.start || rp.circle;
+                }
+                if (!close_k && prev_menu_close) {
+                    /* Close on the RELEASE edge of Start/Circle. The game pad is held
+                     * neutral only while the menu is open, so closing on the press
+                     * would let the still-held button bleed into the game next frame
+                     * (Start → the game's pause menu); by release it's already up.
+                     * Temporary binding — a fuller open/close scheme lands later. */
+                    openpete_menu_toggle();   /* closes it */
+                } else {
+                    if (up_k && !prev_menu_up) openpete_menu_nav(-1);
+                    if (dn_k && !prev_menu_dn) openpete_menu_nav(+1);
+                    if (lf_k && !prev_menu_lf) openpete_menu_adjust(-1);
+                    if (rt_k && !prev_menu_rt) openpete_menu_adjust(+1);
+                }
                 prev_menu_up = up_k; prev_menu_dn = dn_k;
                 prev_menu_lf = lf_k; prev_menu_rt = rt_k;
+                prev_menu_close = close_k;
             } else {
                 prev_menu_up = prev_menu_dn = prev_menu_lf = prev_menu_rt = false;
+                prev_menu_close = false;
             }
         }
 
