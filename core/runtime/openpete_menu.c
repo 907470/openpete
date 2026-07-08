@@ -160,7 +160,7 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
 
     /* Draw distance. */
-    s_drawd_idx = opts->no_lod ? 1 : 0;
+    s_drawd_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
     s_cursor = 0;
 }

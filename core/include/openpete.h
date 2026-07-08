@@ -63,6 +63,19 @@ typedef enum {
     OPENPETE_VERTEX_PRECISION_INTEGER,       /* PSX integer-grid snap (polygon wobble) */
 } openpete_vertex_precision_t;
 
+/* Sector level-of-detail policy (`--lod original|extended`). ORIGINAL is the
+ * authentic PSX behaviour: distance-based LOD swaps + the stock fog curve.
+ * EXTENDED collapses the sector LOD band so every visible sector draws from
+ * its high-poly mesh at full quality, out to the cull distance and beyond
+ * (the classic "see detail far away" look), and defaults --fog-scale to 4x.
+ * Native renderer only — the feeders derive detail from gamestate, never
+ * perturbing gameplay-readable RAM (in PsyCross reference mode EXTENDED warns
+ * and is ignored). See notes/plans/openpete-disable-lods.md. */
+typedef enum {
+    OPENPETE_LOD_ORIGINAL = 0,  /* default: authentic PSX LOD band + fog curve */
+    OPENPETE_LOD_EXTENDED,      /* full detail at any distance (was --no-lod) */
+} openpete_lod_mode_t;
+
 /* All command-line options live here. Per-game main.cpp may override
  * `display_name` before passing to `openpete_run`. */
 typedef struct {
@@ -135,22 +148,21 @@ typedef struct {
      * 512-wide pixel coords — Phase 2 re-anchors per-element. */
     float aspect_w_over_h;
 
-    /* --no-lod: collapse the sector LOD band so every visible sector is
-     * drawn from its high-poly mesh. Implemented by overriding the
-     * Environment's m_LodDistance to match m_CullingDistance for the
-     * duration of func_800258F0; cells past cull stay invisible — this is
-     * an LOD-band collapse, not a cull-distance push. m_LodDistance is
-     * renderer-only (verified: only writer is initialization.c, only
-     * reader is r_environment.s), so the override does not perturb
-     * gameplay state. See notes/plans/openpete-disable-lods.md. */
-    bool no_lod;
+    /* --lod original|extended: sector level-of-detail policy (see
+     * openpete_lod_mode_t above). ORIGINAL keeps the authentic PSX LOD band;
+     * EXTENDED collapses it so every visible sector is drawn from its
+     * high-poly mesh out to the cull distance and beyond. The native feeders
+     * derive detail from gamestate and do not perturb gameplay-readable RAM.
+     * `--no-lod` is a deprecated alias for `--lod extended`.
+     * See notes/plans/openpete-disable-lods.md. */
+    openpete_lod_mode_t lod;
 
     /* Fog-distance multiplier (`--fog-scale N`). Scales every channel of the
      * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
      * near-tile select, fog-saturation LP handoff): N = 1 is the authentic
      * PSX curve (saturation at the LOD distance), N = 4 saturates 4x farther
-     * — the classic --no-lod "see detail far away" look. 0 = auto: 1 without
-     * --no-lod, 4 with it. */
+     * — the classic "see detail far away" look. 0 = auto: 1 under --lod
+     * original, 4 under --lod extended. */
     float fog_scale;
 
     /* Vertex screen-coordinate precision (`--vertex-precision subpixel|integer`).

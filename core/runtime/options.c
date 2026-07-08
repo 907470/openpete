@@ -285,10 +285,12 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
         "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
         "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
-        "  --no-lod                   draw all visible sectors at high-poly (collapses sector LOD band; cull distance unchanged)\n"
+        "  --lod MODE                 sector level-of-detail: original (default = authentic PSX LOD band) |\n"
+        "                             extended (draw every visible sector at high-poly, out to the cull\n"
+        "                             distance and beyond). Native renderer only. (--no-lod = extended.)\n"
         "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, 4 = fog\n"
-        "                             saturates 4x farther (the classic --no-lod far-detail look).\n"
-        "                             Default: 1, or 4 when --no-lod is set. Range [0.25,16].\n"
+        "                             saturates 4x farther (the classic far-detail look).\n"
+        "                             Default: 1, or 4 under --lod extended. Range [0.25,16].\n"
         "  --vertex-precision MODE    native vk vertex screen-coordinate precision: subpixel (default =\n"
         "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
         "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
@@ -400,6 +402,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
+    opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -541,8 +544,19 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
+        } else if (strcmp(a, "--lod") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "original") == 0) {
+                opts->lod = OPENPETE_LOD_ORIGINAL;
+            } else if (strcmp(v, "extended") == 0) {
+                opts->lod = OPENPETE_LOD_EXTENDED;
+            } else {
+                fprintf(stderr, "openpete: --lod expects original|extended, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--no-lod") == 0) {
-            opts->no_lod = true;
+            opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
         } else if (strcmp(a, "--fog-scale") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fog_scale = (float)atof(v); i++;

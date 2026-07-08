@@ -31,12 +31,13 @@ int no_lod_apply_options(const openpete_options_t* opts) {
     /* Resolve the fog-distance multiplier before the no-lod early-out:
      * explicit --fog-scale wins; otherwise --no-lod defaults to the
      * classic stretched curve (4x) and stock to the authentic PSX one. */
+    int extended = opts && opts->lod == OPENPETE_LOD_EXTENDED;
     if (opts) {
         s_cli_fog_scale = opts->fog_scale;
         openpete_fog_scale = (opts->fog_scale > 0.0f) ? opts->fog_scale
-                             : (opts->no_lod ? 4.0f : 1.0f);
+                             : (extended ? 4.0f : 1.0f);
     }
-    if (!opts || !opts->no_lod) return 0;
+    if (!extended) return 0;
 
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         OPL_WARN_F("no-lod", "%s",
