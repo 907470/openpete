@@ -59,6 +59,13 @@ extern unsigned openpete_frame;
 #define ENV_LODDIST     0x24u
 #define ENV_CULLDIST    0x28u
 
+/* g_EnvironmentAnimations (environment.h) sits 0x48 bytes BEFORE g_Environment
+ * (0x80078560; the generated env-anim func_8002A6FC indexes it as t9+0x10..).
+ * Each list is {count, ptr-to-descriptor-pointer-array}. */
+#define G_ENVANIM           (G_ENVIRONMENT - 0x48u)
+#define ENVANIM_LPPOLY_CNT  0x10u   /* m_LowPolyAnimationCount / +4 ptr */
+#define ENVANIM_HPPOLY_CNT  0x20u   /* m_HighPolyAnimationCount / +4 ptr */
+
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
     uint8_t  code;          /* GPU prim code byte (word[1]>>24) */
@@ -940,6 +947,43 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     return C;
 }
 
+/* Geometry (vertex) env-anim liveness — the artisans lowering-wall fix.
+ * func_8002A6FC's poly-anim handlers (blocks 8002AA18 LP / 8002ABB8 HP) advance
+ * a keyframe per descriptor and stamp it into sector+0x18/+0x1A; the .s Phase-1
+ * walk then GTE-INTPL blends the descriptor's keyframe vertex banks and rewrites
+ * the sector's packed vertex words IN PLACE (block_80025C08..80025D10) every
+ * canonical tick while the animation runs. The cache signature only covers
+ * header words +0x04..+0x14, so cached verts froze at whatever pose the sector
+ * was first decoded in (user repro: moving-terrain.bk2, the Sunny Flight wall).
+ * Mirror the game's own registry instead of hashing vertex RAM: any sector named
+ * by an LP/HP poly-anim descriptor (u16 sector index at desc+4) gets its cached
+ * verts re-decoded once per present. A handful of descriptors per level, ≤256
+ * words per sector — negligible next to the walk itself. Colours already read
+ * live; texmats are covered by tsc_tile_gens/tsc_refresh_anim above. */
+static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
+    if (!sectorPtr) return;
+    for (int list = 0; list < 2; list++) {
+        uint32_t off  = list ? ENVANIM_HPPOLY_CNT : ENVANIM_LPPOLY_CNT;
+        uint32_t cnt  = rd(cpu, G_ENVANIM + off);
+        uint32_t base = rd(cpu, G_ENVANIM + off + 4);
+        if (!base || cnt == 0 || cnt > 1024) continue;
+        for (uint32_t k = 0; k < cnt; k++) {
+            uint32_t desc = rd(cpu, base + k * 4);
+            if (!desc) continue;
+            uint32_t idx = cpu->read_half(desc + 4);
+            if (idx >= sectorCnt) continue;
+            uint32_t s = rd(cpu, sectorPtr + idx * 4);
+            if (!s) continue;
+            uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
+            tscache_t* C = &s_tsc[h];
+            if (C->s != s) { C = &s_tsc[h ^ 1u]; if (C->s != s) continue; }
+            if (C->lpV) tsc_decode_verts(cpu, C->s + 0x1C, C->nLpV, C->lpV);
+            if (C->hpV) tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
+                                         C->nHpV, C->hpV);
+        }
+    }
+}
+
 /* Re-decode cached texmats whose tile content changed (env texture anim).
  * Epoch-gated: free when no tile changed since this sector's last refresh. */
 static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
@@ -1333,6 +1377,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     static lvert sv[256];
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
