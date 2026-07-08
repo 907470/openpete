@@ -16,10 +16,10 @@
 #include <stdio.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_ASPECT, ROW_FPS, ROW_VSYNC, ROW_SSAA, ROW_DRAWDIST, ROW_COUNT };
+enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_DRAWDIST, ROW_COUNT };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "ASPECT", "FPS", "VSYNC", "SSAA", "DRAW DIST",
+    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "DRAW DIST",
 };
 
 /* Aspect presets (label + width/height). */
@@ -50,6 +50,7 @@ static int s_open       = 0;
 static int s_cursor     = 0;
 static int s_aspect_idx = 0;   /* 4:3      */
 static int s_fps_idx    = 0;   /* first ladder entry (30) */
+static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
 static int s_drawd_idx  = 0;   /* ORIGINAL */
@@ -99,6 +100,7 @@ static const char* value_str(int row, char* buf, int buflen) {
         snprintf(buf, (size_t)buflen, "%d", v);
         return buf;
     }
+    case ROW_SHOWFPS:  return s_showfps_idx ? "ON" : "OFF";
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
     case ROW_DRAWDIST: return s_drawd_idx ? "EXTENDED" : "ORIGINAL";
@@ -117,6 +119,7 @@ static void apply_row(int row) {
     switch (row) {
     case ROW_ASPECT:   openpete_native_set_aspect(s_aspect[s_aspect_idx].wh); break;
     case ROW_FPS:      openpete_set_render_fps(s_fps_vals[s_fps_idx]);         break;
+    case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
     case ROW_DRAWDIST: openpete_no_lod_set(s_drawd_idx, -1.0f);               break;
@@ -150,6 +153,9 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* VSync: -1 (unset) defaults to ON (FIFO); 0/1 as given. */
     s_vsync_idx = (opts->vsync == 0) ? 0 : 1;
 
+    /* Show-FPS: mirrors --show-fps (the live overlay default is on). */
+    s_showfps_idx = opts->fps_overlay ? 1 : 0;
+
     /* SSAA: nearest supported factor. */
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
 
@@ -161,8 +167,16 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
 
 int openpete_menu_toggle(void) {
     s_open = !s_open;
-    if (s_open) log_state("opened");
-    else        OPL_INFO_F("menu", "%s", "closed");
+    if (s_open) {
+        /* Re-sync SHOW FPS from the live overlay state: it's the one row that a
+         * hotkey could have changed while the menu was closed (though F11 is now
+         * retired in favour of this row, --show-fps + any future path still are
+         * authoritative). */
+        s_showfps_idx = openpete_native_fps_overlay_enabled();
+        log_state("opened");
+    } else {
+        OPL_INFO_F("menu", "%s", "closed");
+    }
     return s_open;
 }
 
@@ -227,6 +241,7 @@ void openpete_menu_adjust(int dx) {
     switch (s_cursor) {
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
     case ROW_FPS:      s_fps_idx    = wrap_idx(s_fps_idx    + step, s_fps_count); break;
+    case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
     case ROW_DRAWDIST: s_drawd_idx  = wrap_idx(s_drawd_idx  + step, 2);           break;

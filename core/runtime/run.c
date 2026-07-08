@@ -927,7 +927,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
     (void)openpete_native_render_init(opts, win_w, win_h);
-    openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (F11 toggles live) */
+    openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (O-menu SHOW FPS row toggles live) */
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
@@ -1318,7 +1318,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool g_step_one = false;
     bool prev_pause_key = false;
     bool prev_i_key = false;
-    bool prev_fps_key = false;
     bool prev_alt_enter = false;
 
     /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
@@ -1562,14 +1561,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                            g_openpete_interp_enabled ? "ON" : "OFF");
             }
             prev_i_key = i_k;
-
-            /* F11: live-toggle the native vk FPS overlay. */
-            bool fps_k = kbd_pre && kbd_pre[SDL_SCANCODE_F11];
-            if (fps_k && !prev_fps_key) {
-                int on = openpete_native_toggle_fps_overlay();
-                OPL_INFO_F("render", "fps-overlay -> %s", on ? "ON" : "OFF");
-            }
-            prev_fps_key = fps_k;
 
             /* Alt+Enter (either Alt) or a window double-click toggles the
              * native window between windowed and borderless fullscreen. Moved

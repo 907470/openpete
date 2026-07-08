@@ -291,7 +291,8 @@ typedef struct {
     int ssaa;
 
     /* FPS overlay on the native vk window (default on; --show-fps 0 to start
-     * off, F11 to toggle live). Display-only; ignored under --headless / psycross. */
+     * off, SHOW FPS row in the O settings menu toggles live). Display-only;
+     * ignored under --headless / psycross. */
     bool fps_overlay;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present

@@ -872,6 +872,7 @@ static struct {
     rhi_pipeline *ovl_resolve_pipe;   /* overlay_resolve.frag, box + straight alpha, RHI_BLEND_ALPHA */
     rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
     int           ovl_quad_win_w, ovl_quad_win_h;
+    float         ovl_quad_ox;        /* overlay-x offset (win_h units) the quad was built at; shifts the counter right of the open settings menu */
 
     /* Settings-menu glyph/border supersample: same idea as ovl_ss but sized to the
      * menu PANEL rect (much larger). The glyph+border layer renders into menu_ss at
@@ -3950,7 +3951,8 @@ static bool draw_native_scene(bool full_extent)
  * (the gold extruded glyph models), built game-side by text_moby_native and
  * pushed via openpete_native_set_overlay_glyphs. Pure display: drawn only on the
  * LIVE vk present (not screenshots, ab, or diff, so the comparison images stay
- * clean). Toggle at runtime (F11) or start off with --show-fps 0. */
+ * clean). Toggle at runtime via the SHOW FPS row in the settings menu (O), or
+ * start off with --show-fps 0. */
 static int s_fps_overlay  = 1;   /* enabled (default on) */
 static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
 static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
@@ -3961,7 +3963,6 @@ static int s_fps_in_record_pref = -1;  /* --record-fps-overlay: -1 unset, 0/1 ex
 void openpete_native_set_fps_in_record(int pref) { s_fps_in_record_pref = pref; }
 
 void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
-int  openpete_native_toggle_fps_overlay(void) { s_fps_overlay = !s_fps_overlay; return s_fps_overlay; }
 int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
 int  openpete_native_fps_value(void) { return s_fps_value; }
 
@@ -4027,7 +4028,7 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
  * depth-tested through the opaque gouraud pipe after a local depth clear, so the
  * glyphs z-sort among their own faces yet sit on top of the whole frame — the
  * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
-static bool draw_overlay_glyphs_3d(float ax, float ay) {
+static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
     if (s_overlay_glyph_n < 3 || !s_nr.gouraud_pipe || !s_nr.overlay_vb) return false;
     static rhi_vertex buf[OVL_MAX_VERTS];
     int n = 0;
@@ -4036,8 +4037,10 @@ static bool draw_overlay_glyphs_3d(float ax, float ay) {
         /* Glyph coords are win_h-relative; ax/ay map them into the target's NDC.
          * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/OVL_REGION_W,
          * ay=2/OVL_REGION_H — both keep glyphs square (ax/ay carry the same
-         * win_h scale through the target's pixel dims). */
-        buf[n].x = v->x * ax - 1.0f;
+         * win_h scale through the target's pixel dims). ox shifts the origin in
+         * overlay-x (win_h units) — the 1× fallback path uses it to sit right of
+         * the open menu; the SS prepass passes 0 (the composite quad moves). */
+        buf[n].x = (v->x + ox) * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].tex = 0;
@@ -4079,6 +4082,19 @@ static bool ovl_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.ovl_quad_vb && s_nr.ovl_ss;
 }
 
+/* Overlay-x position (win_h units) for the FPS counter's region: flush top-left
+ * normally, but aligned to the settings-menu panel's right edge while it's open
+ * so the two don't overlap. The offset is exactly panel_x1 (no extra gap): the
+ * region's left edge then sits on the panel edge just as it sits on the window's
+ * left edge when closed, so the FPS text's own left bearing reproduces the SAME
+ * visual gap in both cases. Only the on-screen placement moves — the glyphs (and
+ * the SS target they render into) are unchanged. */
+static float fps_overlay_ox(void) {
+    if (!openpete_menu_is_open()) return 0.0f;
+    openpete_menu_layout_t L; openpete_menu_get_layout(&L);
+    return L.panel_x1;
+}
+
 /* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
  * composite quad on a window resize. Creates GPU resources / waits idle — call
  * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
@@ -4101,20 +4117,28 @@ static void ensure_ovl_ss(void) {
         if (s_nr.ovl_ss)
             OPL_INFO_F("native", "FPS overlay SS target %dx%d (%d×)", want_w, want_h, OVL_SS_FACTOR);
     }
-    /* Composite quad — the overlay's screen rect (top-left) in offscreen NDC.
-     * Rect width is win_h-relative (glyph x uses win_h), so its NDC width scales
-     * by win_h/win_w; UV 0..1 maps the whole SS target (v0 top, top-down). */
-    if (s_nr.ovl_quad_win_w != s_nr.win_w || s_nr.ovl_quad_win_h != s_nr.win_h) {
-        float rw_ndc = OVL_REGION_W * (float)s_nr.win_h / (float)s_nr.win_w * 2.0f;
+    /* Composite quad — the overlay's screen rect in offscreen NDC. Left edge sits
+     * at overlay-x = want_ox (0 = flush top-left; shifted right of the panel while
+     * the menu is open, see fps_overlay_ox). Rect width is win_h-relative (glyph x
+     * uses win_h), so its NDC width scales by win_h/win_w; UV 0..1 maps the whole
+     * SS target (v0 top, top-down). Rebuilt on resize OR when the offset changes
+     * (menu open/close) — never per-frame, so the wait_idle stays rare. */
+    float want_ox = fps_overlay_ox();
+    if (s_nr.ovl_quad_win_w != s_nr.win_w || s_nr.ovl_quad_win_h != s_nr.win_h ||
+        s_nr.ovl_quad_ox != want_ox) {
+        float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
+        float rw_ndc = OVL_REGION_W * ax;
         float rh_ndc = OVL_REGION_H * 2.0f;
+        float nx_left = want_ox * ax - 1.0f;
         rhi_vertex q[6];
-        build_panel(q, -1.0f + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
+        build_panel(q, nx_left + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
                     rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f);
-        /* Single (non-ring) VB rewritten only on window resize: an in-flight
-         * frame may still read it — fully sync first (same as panels_vb). */
+        /* Single (non-ring) VB rewritten only on resize / offset change: an
+         * in-flight frame may still read it — fully sync first (like panels_vb). */
         rhi_wait_idle(s_nr.dev);
         rhi_update_buffer(s_nr.ovl_quad_vb, q, sizeof(q));
         s_nr.ovl_quad_win_w = s_nr.win_w; s_nr.ovl_quad_win_h = s_nr.win_h;
+        s_nr.ovl_quad_ox = want_ox;
     }
 }
 
@@ -4124,7 +4148,7 @@ static void ensure_ovl_ss(void) {
 static void prepare_fps_overlay_ss(void) {
     if (!ovl_ss_ready() || !fps_overlay_should_draw()) return;
     rhi_begin_render_target(s_nr.dev, s_nr.ovl_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
-    draw_overlay_glyphs_3d(2.0f / OVL_REGION_W, 2.0f / OVL_REGION_H);
+    draw_overlay_glyphs_3d(2.0f / OVL_REGION_W, 2.0f / OVL_REGION_H, 0.0f);
     rhi_end_render_target(s_nr.dev, s_nr.ovl_ss);
 }
 
@@ -4142,7 +4166,8 @@ static void draw_fps_overlay(void) {
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.ovl_quad_vb);
         rhi_draw(s_nr.dev, 6, 0);
     } else {
-        draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f);
+        draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
+                               fps_overlay_ox());
     }
 }
 

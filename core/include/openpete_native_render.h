@@ -48,10 +48,9 @@ bool openpete_native_render_enabled(void);
 void openpete_native_toggle_fullscreen(void);
 
 /* FPS overlay (vk live window). Default on; drawn only on the live vk present
- * (never ab/diff/screenshots). set() forces a state; toggle() flips and returns
- * the new state (for the F11 hotkey). Display-only. */
+ * (never ab/diff/screenshots). set() forces a state; the SHOW FPS row in the
+ * settings menu (O) and --show-fps drive it. Display-only. */
 void openpete_native_set_fps_overlay(int on);
-int  openpete_native_toggle_fps_overlay(void);
 
 /* --record-fps-overlay: whether the FPS overlay is drawn INTO --record video.
  * -1 = unset (defer to the OPENPETE_FPS_IN_RECORD env, else off), 0/1 explicit.

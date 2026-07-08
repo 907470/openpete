@@ -280,7 +280,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             max image size / VRAM. Display-only.\n"
         "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
         "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
-        "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted; F11 toggles live)\n"
+        "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
         "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
         "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
         "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
@@ -389,7 +389,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
-    opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / F11 */
+    opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / O-menu SHOW FPS row */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
