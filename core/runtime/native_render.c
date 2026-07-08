@@ -320,6 +320,33 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         memset(s_scene_band_vz, 0, sizeof s_scene_band_vz);
     }
 }
+/* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
+ * set, openpete_native_scene_add_tri_grouped rounds each 3D-world vertex's PSX
+ * screen coordinate (sx,sy — still in 512x240 display space at that point) to
+ * the integer pixel grid, reproducing the original GTE's int16 SXY snap: the
+ * classic PS1 polygon wobble. 0 = smooth sub-pixel (default). Depth (z) and UVs
+ * are left alone, so the true Z-buffer + perspective-correct texturing survive.
+ * A file-static (not an s_nr field) so the feed chokepoint above s_nr can read
+ * it; seeded from opts->vertex_precision, mutated live by the setter below. */
+static int s_vertex_snap = 0;
+
+/* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
+ * snap. The 3D-world-projected layers wobbled on hardware (the GTE stored screen
+ * X/Y as int16); the flat 2D UI layers — HUD text/icons, the dim HUD panel, and
+ * the over-everything OVERLAY — were placed at integer screen coords by the game
+ * and must stay put (snapping them would only add sub-pixel churn, never wobble).
+ * HUD3D (the spinning 3D icon mobys) IS a real GTE projection, so it wobbles too. */
+static int category_snaps_vertices(int category) {
+    switch (category) {
+    case OPENPETE_SCENE_HUD:
+    case OPENPETE_SCENE_OVERLAY:
+    case OPENPETE_SCENE_HUD_PANEL:
+        return 0;
+    default:
+        return 1;
+    }
+}
+
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
@@ -350,6 +377,19 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
+        /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
+         * the PSX integer pixel grid — the polygon wobble. Round X/Y only; depth
+         * and UVs are untouched (Z-buffer + perspective texturing preserved). The
+         * grid is display-resolution-independent because sx/sy are pre-normalize
+         * (scene_to_clip upscales afterward), so SSAA / widescreen keep the exact
+         * 512x240 jitter the original GTE produced. */
+        if (s_vertex_snap && category_snaps_vertices(category)) {
+            openpete_scene_vert *sv = s_scene[s_scene_n].v;
+            for (int k = 0; k < 3; k++) {
+                sv[k].sx = floorf(sv[k].sx + 0.5f);
+                sv[k].sy = floorf(sv[k].sy + 0.5f);
+            }
+        }
         s_scene_n++;
     } else {
         s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
@@ -1067,6 +1107,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
     s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
+    /* Vertex-precision snap (--vertex-precision integer): re-introduce the PSX
+     * integer-grid vertex snap in add_tri_grouped. Default smooth (subpixel). */
+    s_vertex_snap = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER) ? 1 : 0;
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
@@ -3928,6 +3971,12 @@ void openpete_native_set_ssaa(int factor) {
 void openpete_native_set_vsync(int on) {
     if (s_nr.dev) rhi_set_vsync(s_nr.dev, on ? 1 : 0);   /* swapchain rebuilds next frame */
     OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
+}
+
+void openpete_native_set_vertex_precision(int integer_snap) {
+    s_vertex_snap = integer_snap ? 1 : 0;   /* consumed by the next add_tri_grouped feed */
+    OPL_INFO_F("native", "vertex-precision -> %s",
+               s_vertex_snap ? "integer (PSX wobble)" : "subpixel (smooth)");
 }
 
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see

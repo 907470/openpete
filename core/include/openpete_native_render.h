@@ -87,6 +87,12 @@ void openpete_native_set_ssaa(int factor);
  * new present mode) on the next frame. No-op until the native device is up. */
 void openpete_native_set_vsync(int on);
 
+/* Vertex screen-coordinate precision (0 = smooth sub-pixel, 1 = PSX integer-grid
+ * snap = the original polygon wobble). Rounds only 3D-world display geometry in
+ * the next scene feed (2D HUD/overlay stays smooth; depth + UVs untouched).
+ * Display-only: touches only renderer state, never gameplay RAM. */
+void openpete_native_set_vertex_precision(int integer_snap);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth

@@ -49,6 +49,20 @@ typedef enum {
     OPENPETE_RENDERER_DIFF,          /* native live; screenshot = colour diff */
 } openpete_renderer_t;
 
+/* Vertex screen-coordinate precision (`--vertex-precision`). The native renderer
+ * projects world geometry to sub-pixel FLOAT screen coordinates for smooth motion
+ * (the PGXP-equivalent default). INTEGER snaps each 3D-world vertex to the PSX
+ * 512x240 integer pixel grid before rasterization, reproducing the original
+ * hardware's characteristic polygon "wobble"/jitter (the GTE stored screen X/Y as
+ * int16). Display-only: it rounds only the emitted display geometry — never
+ * gameplay-readable RAM — and only the 3D-world layers (2D HUD/overlay stays
+ * smooth). Depth and UVs are untouched, so the true Z-buffer and perspective-
+ * correct texturing are kept. See notes/plans/openpete-ps1-retro-look.md. */
+typedef enum {
+    OPENPETE_VERTEX_PRECISION_SUBPIXEL = 0,  /* default: sub-pixel float, smooth motion */
+    OPENPETE_VERTEX_PRECISION_INTEGER,       /* PSX integer-grid snap (polygon wobble) */
+} openpete_vertex_precision_t;
+
 /* All command-line options live here. Per-game main.cpp may override
  * `display_name` before passing to `openpete_run`. */
 typedef struct {
@@ -138,6 +152,12 @@ typedef struct {
      * — the classic --no-lod "see detail far away" look. 0 = auto: 1 without
      * --no-lod, 4 with it. */
     float fog_scale;
+
+    /* Vertex screen-coordinate precision (`--vertex-precision subpixel|integer`).
+     * SUBPIXEL (default) keeps the native renderer's smooth sub-pixel projection;
+     * INTEGER snaps 3D-world vertices to the PSX 512x240 pixel grid to reproduce
+     * the original polygon wobble. Display-only (see openpete_vertex_precision_t). */
+    openpete_vertex_precision_t vertex_precision;
 
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the

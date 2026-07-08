@@ -289,6 +289,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, 4 = fog\n"
         "                             saturates 4x farther (the classic --no-lod far-detail look).\n"
         "                             Default: 1, or 4 when --no-lod is set. Range [0.25,16].\n"
+        "  --vertex-precision MODE    native vk vertex screen-coordinate precision: subpixel (default =\n"
+        "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
+        "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
+        "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
         "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
@@ -395,6 +399,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_audio_encoder = "aac";
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
+    opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -525,6 +530,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
                 if (opts->fov_deg > 140.0f) opts->fov_deg = 140.0f;
             }
+        } else if (strcmp(a, "--vertex-precision") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "subpixel") == 0) {
+                opts->vertex_precision = OPENPETE_VERTEX_PRECISION_SUBPIXEL;
+            } else if (strcmp(v, "integer") == 0) {
+                opts->vertex_precision = OPENPETE_VERTEX_PRECISION_INTEGER;
+            } else {
+                fprintf(stderr, "openpete: --vertex-precision expects subpixel|integer, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--no-lod") == 0) {
             opts->no_lod = true;
         } else if (strcmp(a, "--fog-scale") == 0) {
