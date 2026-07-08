@@ -16,10 +16,10 @@
 #include <stdio.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_DRAWDIST, ROW_COUNT };
+enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD, ROW_COUNT };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "DRAW DIST",
+    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD",
 };
 
 /* Aspect presets (label + width/height). */
@@ -53,7 +53,7 @@ static int s_fps_idx    = 0;   /* first ladder entry (30) */
 static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
-static int s_drawd_idx  = 0;   /* ORIGINAL */
+static int s_lod_idx    = 0;   /* ORIGINAL */
 static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
 
 /* --- helpers ------------------------------------------------------------- */
@@ -103,7 +103,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_SHOWFPS:  return s_showfps_idx ? "ON" : "OFF";
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
-    case ROW_DRAWDIST: return s_drawd_idx ? "EXTENDED" : "ORIGINAL";
+    case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     default:           return "?";
     }
 }
@@ -122,7 +122,7 @@ static void apply_row(int row) {
     case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
-    case ROW_DRAWDIST: openpete_no_lod_set(s_drawd_idx, -1.0f);               break;
+    case ROW_LOD:      openpete_no_lod_set(s_lod_idx, -1.0f);                 break;
     default: break;
     }
 }
@@ -159,8 +159,8 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* SSAA: nearest supported factor. */
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
 
-    /* Draw distance. */
-    s_drawd_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
+    /* LOD (draw distance / detail policy). */
+    s_lod_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
     s_cursor = 0;
 }
@@ -196,8 +196,8 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
     /* Styled after the game's pause menu: a compact block (title + rows) with
      * tight line spacing, TOP-ALIGNED in the panel (a small margin from the top).
      * The title is a bold header, noticeably larger than the rows. Row font is
-     * capped so the widest row ("DRAW DIST" / "EXTENDED") still fits the narrow
-     * sidebar. */
+     * capped so the widest row ("SHOW FPS" label / "EXTENDED" value) still fits
+     * the narrow sidebar. */
     const float title_cap = 0.080f, row_cap = 0.044f;   /* header > rows */
     const float spacing   = 0.072f;   /* row-to-row (pause menu ≈ 0.069) */
     const float top_pad   = 0.055f;   /* panel top → title top */
@@ -244,7 +244,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
-    case ROW_DRAWDIST: s_drawd_idx  = wrap_idx(s_drawd_idx  + step, 2);           break;
+    case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     default: break;
     }
     apply_row(s_cursor);
