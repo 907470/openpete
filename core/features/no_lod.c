@@ -21,12 +21,18 @@
 int openpete_no_lod = 0;
 float openpete_fog_scale = 1.0f;
 
+/* Explicit --fog-scale from the CLI: a live toggle (settings menu) passes
+ * fog_scale < 0 meaning "the mode default" — but a user-chosen curve must
+ * survive toggling draw distance, so remember it and let it keep winning. */
+static float s_cli_fog_scale = -1.0f;
+
 int no_lod_apply_options(const openpete_options_t* opts) {
     openpete_no_lod = 0;
     /* Resolve the fog-distance multiplier before the no-lod early-out:
      * explicit --fog-scale wins; otherwise --no-lod defaults to the
      * classic stretched curve (4x) and stock to the authentic PSX one. */
     if (opts) {
+        s_cli_fog_scale = opts->fog_scale;
         openpete_fog_scale = (opts->fog_scale > 0.0f) ? opts->fog_scale
                              : (opts->no_lod ? 4.0f : 1.0f);
     }
@@ -50,6 +56,7 @@ int no_lod_apply_options(const openpete_options_t* opts) {
 void openpete_no_lod_set(int on, float fog_scale) {
     openpete_no_lod = on ? 1 : 0;
     openpete_fog_scale = (fog_scale > 0.0f) ? fog_scale
+                         : (s_cli_fog_scale > 0.0f) ? s_cli_fog_scale
                          : (openpete_no_lod ? 4.0f : 1.0f);
     OPL_INFO_F("no-lod", "live toggle -> %s (fog x%.2f)",
                openpete_no_lod ? "EXTENDED" : "ORIGINAL", openpete_fog_scale);

@@ -1270,8 +1270,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_tier_faithful < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_LOD_FAITHFUL");
         s_tier_faithful = (e && *e) ? (*e != '0') : 0;
-        if (openpete_no_lod) s_tier_faithful = 0;
     }
+    /* no-lod override applied per walk (not baked into the latch): the
+     * draw-distance toggle can flip openpete_no_lod mid-level. */
+    int tier_faithful = s_tier_faithful && !openpete_no_lod;
     if (s_fogscale < 0.0) {  /* viewZ = m3 (m3 already in SZ3 scale); env-tunable */
         const char* e = getenv("OPENPETE_TERRAIN_FOGSCALE");
         s_fogscale = (e && *e) ? atof(e) : 1.0;
@@ -1283,16 +1285,27 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * that the under-fogged lerp partially compensated. Ship both. */
         const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
         s_fogdpcs = (e && *e) ? (*e != '0') : 1;
-        /* The whole fog model rides ONE user knob, --fog-scale (fog-distance
-         * multiplier k; openpete_fog_scale, resolved at boot: explicit wins,
-         * else 4 under --no-lod / 1 stock). Internally SZ = s_fogscale·m3
-         * with s_fogscale = 4/k: k=1 → the exact PSX curve (SZ = 4·m3);
-         * k=4 → saturation 4x farther — the classic no-lod far-detail look,
-         * which is also numerically the old lerp curve (fogscale 1), so
-         * no-lod keeps its appearance while gaining the exact math, the
-         * palette ladder and the saturation handoff along the stretched
-         * curve. OPENPETE_TERRAIN_FOGSCALE still force-overrides (debug). */
-        if (s_fogdpcs && !getenv("OPENPETE_TERRAIN_FOGSCALE"))
+    }
+    /* The whole fog model rides ONE user knob, --fog-scale (fog-distance
+     * multiplier k; openpete_fog_scale: explicit --fog-scale wins, else 4
+     * under --no-lod / 1 stock). Internally SZ = s_fogscale·m3 with
+     * s_fogscale = 4/k: k=1 → the exact PSX curve (SZ = 4·m3); k=4 →
+     * saturation 4x farther — the classic no-lod far-detail look, which is
+     * also numerically the old lerp curve (fogscale 1), so no-lod keeps its
+     * appearance while gaining the exact math, the palette ladder and the
+     * saturation handoff along the stretched curve.
+     * Re-resolved EVERY walk, not latched at boot: the settings-menu
+     * draw-distance toggle (openpete_no_lod_set) flips openpete_fog_scale
+     * live, and the LP/HP fog-saturation handoff below rides s_fogscale —
+     * the boot-latched value froze the handoff at the boot mode's distance,
+     * so toggling no-lod ON mid-level kept substituting the untextured LP
+     * tier at stock fog range until the camera walked each sector out of
+     * the fully-fogged band (user report 2026-07-08: distant LP "snapping"
+     * to HP on approach). OPENPETE_TERRAIN_FOGSCALE force-overrides (debug). */
+    {
+        static int s_fs_env = -1;
+        if (s_fs_env < 0) s_fs_env = getenv("OPENPETE_TERRAIN_FOGSCALE") ? 1 : 0;
+        if (s_fogdpcs && !s_fs_env)
             s_fogscale = 4.0 / (double)openpete_fog_scale;
     }
     if (s_clutfog < 0) {
@@ -1428,7 +1441,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int lodThr = fogRefBase >> 2;
         int drawHP = !(flags & 0x4000) && nHpF > 0;
         int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
-        if (s_tier_faithful) {
+        if (tier_faithful) {
             /* The .s sector binning (func @0x80025940): HP ends at the LOD
              * distance; LP substitutes beyond it. A straddling sector lands in
              * BOTH lists (LP rides behind HP via the ×1.03 tier pull, exactly
