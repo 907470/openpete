@@ -360,6 +360,7 @@ static void build_captured_colors(void) {
 static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
 static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF (experiment) */
+static int s_gapfill_en = -1;       /* OPENPETE_TERRAIN_GAPFILL (near-LP-gap fill, default on) */
 static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog (W2.6-c) */
 static int s_clutfog = -1;          /* OPENPETE_TERRAIN_CLUTFOG: .s per-face CLUT-row fog ladder (default ON) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
@@ -776,6 +777,7 @@ typedef struct {
     uint8_t  i0, i1, i2, i3, quad, flip;
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
+    uint8_t  gapfill;                              /* LP only: HP-coverage-gap filler (see tsc_classify_gapfill) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
     uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
@@ -819,6 +821,7 @@ typedef struct {
     uint32_t s, sig[5];
     uint32_t animEpoch;                      /* s_tgen_epoch at last texmat refresh */
     int nLpV, nLpF, nHpV, nHpF, flags;
+    int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) — the .s LP/HP binning inputs */
     uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
@@ -884,6 +887,108 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
     }
 }
 
+/* ---- LP HP-coverage-gap classifier (the near-LP-gap fix) --------------------
+ * The game bins terrain HP-near / LP-far, so an lpFarOnly LP face with no
+ * corner past the fog line is dropped (the .s never draws a near HP-sector's
+ * LP).  Where the sector's HP mesh is SPARSE — authored without polys over
+ * part of the LP footprint (unreachable at gameplay cameras) — that drop
+ * leaves a bare hole to the cyclorama at detached/free cameras.
+ *
+ * Which LP faces may back-fill near is decidable from GEOMETRY, offline-
+ * validated on artisans (2026-07-09): sample each LP face against the same sector's HP mesh.
+ * LP faces over intentional openings (portal arches, windows) are ~fully
+ * REDUNDANT with the HP surface around the opening (cov = 1.00 — the LP arch
+ * hugs the HP walls), while true coverage-gap faces are LP-EXCLUSIVE
+ * (cov 0.0–0.8, median 150+ units from any HP poly).  The distribution is
+ * strongly bimodal: 24 of 833 artisans LP faces classify as gap-fillers.
+ * Misclassification is benign in both directions: a false gap-filler draws
+ * at true LP depth behind the HP that covers it (the WORLD LP tier pull),
+ * a missed one keeps the status-quo hole.
+ *
+ * Same-sector pooling only (neighbour HP changed no verdict in the offline
+ * sweep).  Computed once per sector decode; vertex-anim sectors keep their
+ * decode-pose verdict (a moving wall's classification drift is cosmetic). */
+static double gp_dot(const double a[3], const double b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+static double gp_pt_tri_d2(const double p[3], const tsvert_t* A, const tsvert_t* B, const tsvert_t* C) {
+    double a[3] = { (double)A->x, (double)A->y, (double)A->z };
+    double ab[3] = { B->x - a[0], B->y - a[1], B->z - a[2] };
+    double ac[3] = { C->x - a[0], C->y - a[1], C->z - a[2] };
+    double ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+    double d1 = gp_dot(ab, ap), d2 = gp_dot(ac, ap);
+    double q[3];
+    if (d1 <= 0.0 && d2 <= 0.0) { q[0]=a[0]; q[1]=a[1]; q[2]=a[2]; goto out; }
+    {
+        double bp[3] = { p[0]-B->x, p[1]-B->y, p[2]-B->z };
+        double d3 = gp_dot(ab, bp), d4 = gp_dot(ac, bp);
+        if (d3 >= 0.0 && d4 <= d3) { q[0]=B->x; q[1]=B->y; q[2]=B->z; goto out; }
+        double vc = d1*d4 - d3*d2;
+        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+            double t = d1 / (d1 - d3);
+            q[0]=a[0]+ab[0]*t; q[1]=a[1]+ab[1]*t; q[2]=a[2]+ab[2]*t; goto out;
+        }
+        double cp[3] = { p[0]-C->x, p[1]-C->y, p[2]-C->z };
+        double d5 = gp_dot(ab, cp), d6 = gp_dot(ac, cp);
+        if (d6 >= 0.0 && d5 <= d6) { q[0]=C->x; q[1]=C->y; q[2]=C->z; goto out; }
+        double vb = d5*d2 - d1*d6;
+        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+            double t = d2 / (d2 - d6);
+            q[0]=a[0]+ac[0]*t; q[1]=a[1]+ac[1]*t; q[2]=a[2]+ac[2]*t; goto out;
+        }
+        double va = d3*d6 - d5*d4;
+        if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+            double t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+            q[0]=B->x+(C->x-B->x)*t; q[1]=B->y+(C->y-B->y)*t; q[2]=B->z+(C->z-B->z)*t; goto out;
+        }
+        /* interior: distance along the plane normal */
+        double n[3] = { ab[1]*ac[2]-ab[2]*ac[1], ab[2]*ac[0]-ab[0]*ac[2], ab[0]*ac[1]-ab[1]*ac[0] };
+        double nl = gp_dot(n, n);
+        if (nl <= 0.0) { q[0]=a[0]; q[1]=a[1]; q[2]=a[2]; goto out; }
+        double t = gp_dot(ap, n) / nl;
+        q[0] = p[0] - n[0]*t; q[1] = p[1] - n[1]*t; q[2] = p[2] - n[2]*t;
+    }
+out:;
+    double dx = p[0]-q[0], dy = p[1]-q[1], dz = p[2]-q[2];
+    return dx*dx + dy*dy + dz*dz;
+}
+static void tsc_classify_gapfill(tscache_t* C) {
+    const double TOL2 = 96.0 * 96.0;       /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
+    const double COV_MIN = 0.9;            /* gap-filler iff >10% of samples are unbacked */
+    if (!C->lpF || !C->lpV) return;
+    if (!C->hpF || !C->hpV || C->nHpF <= 0) return;   /* no HP: LP draws anyway */
+    for (int f = 0; f < C->nLpF; f++) {
+        tsface_t* F = &C->lpF[f];
+        F->gapfill = 0;
+        if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV) continue;
+        int hit = 0, total = 0;
+        for (int half = 0; half < (F->quad ? 2 : 1); half++) {
+            /* same split as the offline sweep: (i0,i1,i2) + (i0,i2,i3) */
+            const tsvert_t* a = &C->lpV[F->i0];
+            const tsvert_t* b = &C->lpV[half ? F->i2 : F->i1];
+            const tsvert_t* c = &C->lpV[half ? F->i3 : F->i2];
+            for (int u = 0; u <= 4; u++)
+                for (int v = 0; v + u <= 4; v++) {
+                    int w = 4 - u - v;
+                    double p[3] = { (a->x*u + b->x*v + c->x*w) / 4.0,
+                                    (a->y*u + b->y*v + c->y*w) / 4.0,
+                                    (a->z*u + b->z*v + c->z*w) / 4.0 };
+                    total++;
+                    for (int hf = 0; hf < C->nHpF; hf++) {
+                        const tsface_t* H = &C->hpF[hf];
+                        if (H->i0 >= C->nHpV || H->i1 >= C->nHpV ||
+                            H->i2 >= C->nHpV || H->i3 >= C->nHpV) continue;
+                        if (gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i1], &C->hpV[H->i2]) <= TOL2)
+                            { hit++; break; }
+                        if (H->quad &&
+                            gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i2], &C->hpV[H->i3]) <= TOL2)
+                            { hit++; break; }
+                    }
+                }
+        }
+        F->gapfill = (total > 0 && (double)hit < COV_MIN * (double)total);
+        C->nGapfill += F->gapfill;
+    }
+}
+
 static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                                 uint32_t lqTable, uint32_t hqTable,
                                 int texTblMode, int hiDetail) {
@@ -933,6 +1038,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
+        tsc_classify_gapfill(C);
     } else s_tsc_hit++;
     return C;
 }
@@ -1317,6 +1423,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * test below uses it), so under a stretched curve the handoff fires
          * only at the stretched saturation distance. */
         s_lod_handoff = (e && *e) ? (*e != '0') : 1;
+        e = getenv("OPENPETE_TERRAIN_GAPFILL");   /* =0 disables the near-LP-gap fill (A/B) */
+        s_gapfill_en = (e && *e) ? (*e != '0') : 1;
     }
     /* Effective handoff for THIS walk. Under --no-lod the near/far LOD handoff
      * must NOT run: it keys off the RAW-RAM lodDist (no-lod saturates only the
@@ -1414,6 +1522,58 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int nLpV = SC->nLpV, nLpF = SC->nLpF;
         int nHpV = SC->nHpV, nHpF = SC->nHpF;
 
+        /* OPENPETE_TERRAIN_MESHDUMP="12,45,..." (or "all"): one-shot dump of a
+         * sector's full LP+HP meshes — world verts, face indices, raw face
+         * words — for offline geometry analysis (near-LP-gap classifier). */
+        {
+            static const char* s_mdump = (const char*)-1;
+            static int s_mdframe;
+            if (s_mdump == (const char*)-1) {
+                s_mdump = getenv("OPENPETE_TERRAIN_MESHDUMP");
+                const char* e = getenv("OPENPETE_TERRAIN_MESHDUMP_FRAME");
+                s_mdframe = (e && *e) ? atoi(e) : 0;
+                if (s_mdump) fprintf(stderr, "[md-init] env=%s frame=%d\n", s_mdump, s_mdframe);
+            }
+            if (s_mdump && *s_mdump && openpete_frame >= (unsigned)s_mdframe) {
+                static uint8_t done[1024];
+                int want = (strcmp(s_mdump, "all") == 0);
+                if (!want) {
+                    char buf[16]; snprintf(buf, sizeof buf, ",%u,", i);
+                    char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_mdump);
+                    want = (strstr(pad, buf) != NULL);
+                }
+                if (want && i < 1024 && !done[i]) {
+                    done[i] = 1;
+                    fprintf(stderr, "[md-sec] s=%u flags=%04X origin=%d,%d,%d centre=%d,%d,%d rad=%d "
+                            "nLpV=%d nLpF=%d nHpV=%d nHpF=%d\n", i, flags,
+                            originX, originY, originZ, SC->centreX, SC->centreY, SC->centreZ,
+                            SC->radius, nLpV, nLpF, nHpV, nHpF);
+                    for (int k = 0; k < nLpV; k++)
+                        fprintf(stderr, "[md-v] s=%u t=lp k=%d p=%d,%d,%d\n", i, k,
+                                originX + SC->lpV[k].x, originY + SC->lpV[k].y, originZ + SC->lpV[k].z);
+                    for (int k = 0; k < nHpV; k++)
+                        fprintf(stderr, "[md-v] s=%u t=hp k=%d p=%d,%d,%d\n", i, k,
+                                originX + SC->hpV[k].x, originY + SC->hpV[k].y, originZ + SC->hpV[k].z);
+                    for (int f2 = 0; f2 < nLpF; f2++) {
+                        const tsface_t* F2 = &SC->lpF[f2];
+                        fprintf(stderr, "[md-f] s=%u t=lp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X\n",
+                                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
+                                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u),
+                                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u + 4u));
+                    }
+                    for (int f2 = 0; f2 < nHpF; f2++) {
+                        const tsface_t* F2 = &SC->hpF[f2];
+                        fprintf(stderr, "[md-f] s=%u t=hp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X w2=%08X w3=%08X\n",
+                                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
+                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u),
+                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 4u),
+                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 8u),
+                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 12u));
+                    }
+                }
+            }
+        }
+
         /* Tier selection, distance-INDEPENDENT (no pop-in). HP is drawn wherever
          * a sector HAS HP geometry (the fine layer, all distances). LP is drawn
          * ONLY where there is no HP (the 0x4000 backdrop hills) OR where the
@@ -1466,10 +1626,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * --fog-scale (k = 4/s_fogscale; ×1 at stock, bit-identical). */
         int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
         /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
-         * the LOD distance (far-only; gated per face below). */
-        int lpFarOnly = 0;
-        if (lod_handoff && drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
-            drawLP = 1; lpFarOnly = 1;
+         * the LOD distance (far-only; gated per face below).
+         * lpGapOnly: when the handoff is OFF (--no-lod draws HP at all
+         * distances), an HP sector's classified coverage-gap LP faces still
+         * ride along — ONLY those — so the sparse-HP holes stay filled (the
+         * near-LP-gap fix; per-face gate below). */
+        int lpFarOnly = 0, lpGapOnly = 0;
+        if (drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
+            if (lod_handoff) { drawLP = 1; lpFarOnly = 1; }
+            else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
         }
         /* LP HOLE-FILL backing (W2.6-c): an HP sector that does NOT already
          * draw its LP re-emits it as WORLD_FILL — stencil-gated in core to the
@@ -1688,13 +1853,47 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
                 fputc('\n', stderr);
             }
+            if (passLP && lpGapOnly && !F->gapfill) { continue; } /* --no-lod: gap fillers only */
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 const int ci[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc; q2++)
                     if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
                 if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
-                if (passLP && lpFarOnly && beyond == 0) { continue; } /* LP far-only */
+                if (passLP && lpFarOnly && beyond == 0) {
+                    /* LP far-only — EXCEPT classified HP-coverage-gap fillers
+                     * (tsc_classify_gapfill), which draw at all distances so a
+                     * sparse near HP mesh doesn't open a hole to the cyclorama
+                     * (the near-LP-gap fix; at the fog line the game itself
+                     * draws these faces the moment one corner crosses, so this
+                     * only stabilizes that verdict inward).
+                     * OPENPETE_TERRAIN_LPKEEP=1 keeps ALL such faces (probe);
+                     * LPKEEPDBG=<frame> logs each kept face — sector/face id,
+                     * world verts, screen bbox — to identify hole culprits. */
+                    static int s_lpkeep = -2, s_lpkeepdbg;
+                    if (s_lpkeep == -2) {
+                        const char* e = getenv("OPENPETE_TERRAIN_LPKEEP");
+                        s_lpkeep = (e && *e && *e != '0');
+                        e = getenv("OPENPETE_TERRAIN_LPKEEPDBG");   /* = frame to log at */
+                        s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
+                    }
+                    if (!s_lpkeep && !(s_gapfill_en && F->gapfill)) continue;
+                    if (s_lpkeepdbg && openpete_frame >= (unsigned)s_lpkeepdbg
+                        && openpete_frame < (unsigned)s_lpkeepdbg + 4u) {
+                        float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+                        const int ci2[4] = { i0, i1, i2, i3 };
+                        fprintf(stderr, "[lpkeep] s=%u f=%d q=%d gf=%d", i, f, quad, F->gapfill);
+                        for (int q2 = 0; q2 < nc; q2++) {
+                            const tsvert_t* V = &cverts[ci2[q2]];
+                            const lvert* P = &sv[ci2[q2]];
+                            if (P->sx < bx0) bx0 = P->sx; if (P->sx > bx1) bx1 = P->sx;
+                            if (P->sy < by0) by0 = P->sy; if (P->sy > by1) by1 = P->sy;
+                            fprintf(stderr, " v%d=%d,%d,%d", q2,
+                                    originX + V->x, originY + V->y, originZ + V->z);
+                        }
+                        fprintf(stderr, " bbox=%.0f,%.0f..%.0f,%.0f\n", bx0, by0, bx1, by1);
+                    }
+                }
             }
             /* HOLE-FILL per-face far gate (W2.6-c): only FULLY-FOGGED faces
              * (every corner at/past the exact fog saturation, ir0 = fogRef−4·m3
