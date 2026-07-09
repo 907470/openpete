@@ -123,6 +123,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Freecam-corpus gate for the terrain near-LP gapfill classifier —
+    # replays recorded problematic freecam spots (holes that must stay
+    # filled, walls/arches the fill must not touch) and asserts metric
+    # expectations with the feature on vs off. Slow (boots ~7 headless
+    # sessions); `ctest -L gapfill` or the script directly.
+    add_test(NAME gapfill_corpus
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_gapfill_corpus.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(gapfill_corpus PROPERTIES
+        LABELS "slow;gapfill"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Hor+ presentation symmetry — boots the headless demo at 4:3, 16:9
     # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
     # central 4:3 region. Asserts that widening the GTE projection does

@@ -1,0 +1,107 @@
+# Freecam-spot regression corpus for the terrain near-LP gapfill classifier
+# (games/spyro-1/features/terrain_native.c tsc_classify_gapfill).
+#
+# Each case boots headless (software Vulkan — deterministic), jumps the
+# freecam to a recorded pose, screenshots at `frame`, and asserts metric
+# expectations — never golden images, so unrelated renderer changes don't
+# break it.  Check kinds:
+#   ab-identical  gapfill ON vs OFF must differ by <= max_px (in bbox if set)
+#                 -> encodes "the classifier must NOT paint here" (punch-through spots)
+#   ab-active     ON vs OFF must differ by >= min_px (in bbox if set)
+#                 -> guards against the feature silently dying
+#   bg-max        with gapfill ON, pixels matching the background colour
+#                 (sampled at `probe`, default [2,2]) inside bbox <= max_px
+#                 -> encodes "the hole here must stay filled"
+#
+# To add a spot: fly there windowed (F key freecam), read the pose off the
+# `freecam: pos=(...) yaw=... pitch=...` log line, add a case, run
+# scripts/check_gapfill_corpus.sh once to read the measured values, then
+# set thresholds with margin.  Chronicle of the classifier + all these
+# spots: the gap investigation notes
+
+# --- The original artisans repro: sparse-HP hole at a detached pose. ---
+# Yaw 283 = historic hole (the yaw-284 bisection pair); the wedge between
+# the LP band and the HP shore must stay filled.
+[[case]]
+name  = "artisans-yaw283-hole-filled"
+level = "artisans"
+pose  = "90094,104721,11484,283,227"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 20000
+  [[case.check]]
+  kind   = "bg-max"
+  bbox   = [330, 200, 620, 340]
+  max_px = 200
+
+# Yaw 284: the other side of the historic 1-unit pop — same hole region
+# must be filled (fill verdict is pose-stable).
+[[case]]
+name  = "artisans-yaw284-stable"
+level = "artisans"
+pose  = "90094,104721,11484,284,227"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "bg-max"
+  bbox   = [330, 200, 620, 340]
+  max_px = 200
+
+# Portal-arch opening: the stencil-fill dead-end's regression case.  The
+# classifier must not touch this pose at all (arch LP is HP-redundant).
+[[case]]
+name  = "artisans-arch-untouched"
+level = "artisans"
+pose  = "78657,80237,7024,-885,-47"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
+
+# From-above water pose: the originally-reported gap (green cyclorama
+# bands across the water).  Fill must stay active here.
+[[case]]
+name  = "artisans-water-bands-filled"
+level = "artisans"
+pose  = "90094,104721,11484,260,227"
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 30000
+
+# sunny_flight cave wall: LP "shortcut skin" punch-through (found in testing
+# 2026-07-09; sectors 8:12/8:13, unbacked dmed ~105 walls).  The classifier
+# must not paint anywhere near this wall.
+[[case]]
+name  = "sunny-wall-no-punchthrough"
+level = "sunny_flight"
+pose  = "118328,132884,12580,953,32"
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-identical"
+  bbox   = [250, 120, 420, 280]
+  max_px = 0
+
+# gnorc_cove water plane (z=1088 LP grid over sparse HP): the fills that
+# shrink the user-reported water wedge must stay active.  (The residual
+# small notch is a DIFFERENT, pre-existing fog-boundary class — see the
+# investigation doc.)
+[[case]]
+name  = "gnorc-water-fills-active"
+level = "gnorc_cove"
+pose  = "36863,117108,30800,1448,343"
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 8000
+
+# Canonical-camera guard: the attract demo at the three historic gate
+# ticks must be pixel-identical with the classifier on vs off.
+[[case]]
+name  = "attract-demo-ticks-untouched"
+level = ""
+ticks = [2694, 4888, 9775]
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0

@@ -951,15 +951,42 @@ out:;
     return dx*dx + dy*dy + dz*dz;
 }
 static void tsc_classify_gapfill(tscache_t* C) {
-    const double TOL2 = 96.0 * 96.0;       /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
-    const double COV_MIN = 0.9;            /* gap-filler iff >10% of samples are unbacked */
+    /* Thresholds are env-tunable without a rebuild (corpus-harness sweeps /
+     * future per-level tuning): OPENPETE_TERRAIN_GAPFILL_TUNE="tol,cov,dgap,nz"
+     * (any suffix omittable; defaults 96,0.9,192,0.8). */
+    static double s_tol = -1.0, s_cov, s_dgap, s_nz;
+    if (s_tol < 0.0) {
+        s_tol = 96.0; s_cov = 0.9; s_dgap = 192.0; s_nz = 0.8;
+        const char* e = getenv("OPENPETE_TERRAIN_GAPFILL_TUNE");
+        if (e && *e) sscanf(e, "%lf,%lf,%lf,%lf", &s_tol, &s_cov, &s_dgap, &s_nz);
+    }
+    const double TOL2 = s_tol * s_tol;     /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
+    const double COV_MIN = s_cov;          /* gap-filler iff >10% of samples are unbacked... */
+    const double GAP_D2  = s_dgap * s_dgap; /* ...AND the unbacked region is FAR from all HP
+                                            * (median ≥ 2×TOL) OR the face is a HORIZONTAL
+                                            * floor (|n_z| > 0.8).  The distance test separates
+                                            * true coverage voids (artisans holes: unbacked
+                                            * dmed 218–512) from LP "shortcut skins" hugging
+                                            * recessed HP detail (sunny_flight cave walls:
+                                            * dmed 102–172), which punch through in front of
+                                            * the wall — the ×1.03 depth pull only protects
+                                            * LP≈HP surfaces (found in testing 2026-07-09,
+                                            * sunny_flight freecam).  The horizontal exemption
+                                            * re-admits the mid-distance FLOOR strips the two
+                                            * bands share (artisans z=192 water-floor plain
+                                            * edges, gnorc_cove z=1088 water plane: dmed
+                                            * 116–181) — every observed punch-through skin is
+                                            * a WALL, every observed mid-distance hole filler
+                                            * is a floor. */
+    const double NZ_MIN  = s_nz;
     if (!C->lpF || !C->lpV) return;
     if (!C->hpF || !C->hpV || C->nHpF <= 0) return;   /* no HP: LP draws anyway */
     for (int f = 0; f < C->nLpF; f++) {
         tsface_t* F = &C->lpF[f];
         F->gapfill = 0;
         if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV) continue;
-        int hit = 0, total = 0;
+        int hit = 0, total = 0, nunb = 0;
+        double unb[30];                    /* per-unbacked-sample min dist² (≤ 2 tris × 15) */
         for (int half = 0; half < (F->quad ? 2 : 1); half++) {
             /* same split as the offline sweep: (i0,i1,i2) + (i0,i2,i3) */
             const tsvert_t* a = &C->lpV[F->i0];
@@ -972,19 +999,46 @@ static void tsc_classify_gapfill(tscache_t* C) {
                                     (a->y*u + b->y*v + c->y*w) / 4.0,
                                     (a->z*u + b->z*v + c->z*w) / 4.0 };
                     total++;
+                    double best = 1e30;
                     for (int hf = 0; hf < C->nHpF; hf++) {
                         const tsface_t* H = &C->hpF[hf];
                         if (H->i0 >= C->nHpV || H->i1 >= C->nHpV ||
                             H->i2 >= C->nHpV || H->i3 >= C->nHpV) continue;
-                        if (gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i1], &C->hpV[H->i2]) <= TOL2)
-                            { hit++; break; }
-                        if (H->quad &&
-                            gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i2], &C->hpV[H->i3]) <= TOL2)
-                            { hit++; break; }
+                        double d = gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i1], &C->hpV[H->i2]);
+                        if (d < best) best = d;
+                        if (H->quad) {
+                            d = gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i2], &C->hpV[H->i3]);
+                            if (d < best) best = d;
+                        }
+                        if (best <= TOL2) break;
                     }
+                    if (best <= TOL2) hit++;
+                    else if (nunb < 30) unb[nunb++] = best;
                 }
         }
-        F->gapfill = (total > 0 && (double)hit < COV_MIN * (double)total);
+        if (total > 0 && (double)hit < COV_MIN * (double)total && nunb > 0) {
+            /* median of the unbacked distances (insertion sort, ≤30) */
+            for (int a2 = 1; a2 < nunb; a2++) {
+                double v2 = unb[a2]; int b2 = a2 - 1;
+                while (b2 >= 0 && unb[b2] > v2) { unb[b2 + 1] = unb[b2]; b2--; }
+                unb[b2 + 1] = v2;
+            }
+            int far_gap = (unb[nunb / 2] >= GAP_D2);
+            int horiz = 0;
+            {   /* |n_z| of the first triangle (z = the height axis) */
+                const tsvert_t* a = &C->lpV[F->i0];
+                const tsvert_t* b = &C->lpV[F->i1];
+                const tsvert_t* c = &C->lpV[F->i2];
+                double e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z };
+                double e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
+                double nx = e1[1]*e2[2] - e1[2]*e2[1];
+                double ny = e1[2]*e2[0] - e1[0]*e2[2];
+                double nz = e1[0]*e2[1] - e1[1]*e2[0];
+                double nl = nx*nx + ny*ny + nz*nz;
+                horiz = (nl > 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
+            }
+            F->gapfill = (far_gap || horiz);
+        }
         C->nGapfill += F->gapfill;
     }
 }
@@ -1882,13 +1936,24 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                      * LPKEEPDBG=<frame> logs each kept face — sector/face id,
                      * world verts, screen bbox — to identify hole culprits. */
                     static int s_lpkeep = -2, s_lpkeepdbg;
+                    static const char* s_gfexcl;
                     if (s_lpkeep == -2) {
                         const char* e = getenv("OPENPETE_TERRAIN_LPKEEP");
                         s_lpkeep = (e && *e && *e != '0');
                         e = getenv("OPENPETE_TERRAIN_LPKEEPDBG");   /* = frame to log at */
                         s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
+                        s_gfexcl = getenv("OPENPETE_TERRAIN_GAPFILL_EXCL"); /* "s:f,s:f" bisect probe */
                     }
-                    if (!s_lpkeep && !(s_gapfill_en && F->gapfill)) continue;
+                    int gfKeep = s_gapfill_en && F->gapfill;
+                    if (gfKeep && s_gfexcl && *s_gfexcl) {
+                        char key[24]; snprintf(key, sizeof key, ",%u:%d,", i, f);
+                        char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_gfexcl);
+                        if (strstr(pad, key)) {
+                            gfKeep = 0;
+                            static int n; if (n < 8) { n++; fprintf(stderr, "[gf-excl] s=%u f=%d\n", i, f); }
+                        }
+                    }
+                    if (!s_lpkeep && !gfKeep) continue;
                     if (s_lpkeepdbg && openpete_frame >= (unsigned)s_lpkeepdbg
                         && openpete_frame < (unsigned)s_lpkeepdbg + 4u) {
                         float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
