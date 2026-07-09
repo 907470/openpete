@@ -31,6 +31,7 @@
 
 #include "features/freecam_native.h"
 #include "openpete_freecam.h"
+#include "openpete_log.h"
 #include "psx_runtime.h"        /* CPUState + its read/write callbacks */
 
 #include <math.h>
@@ -167,6 +168,21 @@ static void freecam_drive(CPUState* cpu) {
     cpu->write_word(CAM_POS_X, (uint32_t)px);
     cpu->write_word(CAM_POS_Y, (uint32_t)py);
     cpu->write_word(CAM_POS_Z, (uint32_t)pz);
+
+    /* Log the live camera while engaged, but only when it changed since the
+     * last log (no console spam while parked). */
+    {
+        int32_t cyaw = (int16_t)yaw, cpitch = (int16_t)pitch;
+        static int      s_have = 0;
+        static int32_t  l_x, l_y, l_z, l_yaw, l_pitch;
+        if (!s_have || px != l_x || py != l_y || pz != l_z ||
+            cyaw != l_yaw || cpitch != l_pitch) {
+            s_have = 1;
+            l_x = px; l_y = py; l_z = pz; l_yaw = cyaw; l_pitch = cpitch;
+            OPL_INFO_F("freecam", "pos=(%d, %d, %d) yaw=%d pitch=%d",
+                       px, py, pz, (int)cyaw, (int)cpitch);
+        }
+    }
 
     /* Keep the drawn terrain sector under the (now free) camera. */
     freecam_sync_render_region(cpu);
