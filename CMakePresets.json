@@ -91,7 +91,8 @@
       "cacheVariables": {
         "OPENPETE_RECOMP_LINKAGE": "shared",
         "OPENPETE_ROM_FREE_ICON": "ON",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "OPENPETE_ENABLE_RECORD": "OFF"
       }
     },
     {
@@ -101,7 +102,8 @@
       "binaryDir": "${sourceDir}/build/windows-mingw-shared",
       "cacheVariables": {
         "OPENPETE_RECOMP_LINKAGE": "shared",
-        "OPENPETE_ROM_FREE_ICON": "ON"
+        "OPENPETE_ROM_FREE_ICON": "ON",
+        "OPENPETE_ENABLE_RECORD": "OFF"
       }
     }
   ],

@@ -77,6 +77,8 @@ windows)
     cp "$B/openpete-spyro1.exe" "$STAGE/"
     cp "$B/OpenAL32.dll" "$STAGE/" 2>/dev/null \
         || cp third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll "$STAGE/"
+    # OpenAL Soft is LGPL: its license text must ride with the DLL (NOTICE.md).
+    cp third_party/OpenAL-mingw/COPYING "$STAGE/OpenAL-COPYING.txt"
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build-mingw/PSXRecomp.exe "$STAGE/recomp/tools/"

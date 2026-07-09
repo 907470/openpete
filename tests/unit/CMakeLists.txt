@@ -84,8 +84,11 @@ add_test(NAME psx_region_test COMMAND psx_region_test)
 # Native only: host pkg-config resolves host libav, which would poison a
 # cross compile (and there's no target libav to link). Mirrors the guard in
 # core/CMakeLists.txt.
+# Gated on OPENPETE_ENABLE_RECORD too: distribution presets set it OFF, and a
+# dist build must not link the GPL libav* anywhere in the tree — not even in a
+# (never-shipped) test binary.
 find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND AND NOT CMAKE_CROSSCOMPILING)
+if(OPENPETE_ENABLE_RECORD AND PkgConfig_FOUND AND NOT CMAKE_CROSSCOMPILING)
     pkg_check_modules(BENCH_LIBAV QUIET IMPORTED_TARGET
         libavformat libavcodec libavutil libswscale)
     if(BENCH_LIBAV_FOUND)
