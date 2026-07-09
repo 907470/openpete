@@ -11,14 +11,15 @@
 
 typedef struct CPUState CPUState;
 
-/* Per-tick: when the free camera is active, integrate the latched keyboard
- * intent (core state) into g_Camera's position + Euler angles. No-op when
- * inactive. Call from game_on_frame_pre (before the tick builds the view
- * matrix from these fields). */
-void freecam_native_drive(CPUState* cpu);
-
-/* Per function-entry: returns 1 iff `addr` should be short-circuited to a
- * no-op this frame — i.e. the free camera is active and `addr` is the game's
- * camera-follow or player-update function. Call from
+/* Per function-entry hook. Returns 1 (⇒ the recompiled body should
+ * short-circuit to a no-op) when the free camera is active and `addr` is the
+ * game's player-update or camera-follow function. For the camera-follow case
+ * it FIRST drives the camera from the latched input + resyncs the render
+ * region (running on the game fiber, in place of the follow logic). Call from
  * psx_override_dispatch_game. */
-int freecam_native_should_freeze(uint32_t addr);
+int freecam_native_should_freeze(CPUState* cpu, uint32_t addr);
+
+/* Optional: engage the free camera once the game is Playing when
+ * OPENPETE_FREECAM=1 is set (scripted / headless use). No-op otherwise. Call
+ * once per frame from game_on_frame_pre. */
+void freecam_native_maybe_autoengage(CPUState* cpu);

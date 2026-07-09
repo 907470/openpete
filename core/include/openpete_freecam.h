@@ -21,16 +21,26 @@
  * live game-side (freecam_native.c), keyed by this index. */
 #define OPENPETE_FREECAM_SPEED_STEPS 5
 
-/* Per-axis movement/look intent, each component in {-1, 0, +1}, level-held
- * (set from the live keyboard every host iteration, consumed once per game
- * tick). Positive senses are the intuitive ones; the game-side drive maps
- * them onto the camera's angle convention. */
+/* Per-axis movement/look intent, each component a signed magnitude in
+ * [-1, +1], level-held (set from the live keyboard + pad every host
+ * iteration, consumed once per game tick). Keyboard drives full ±1; an
+ * analog stick drives proportionally, so the two sum (then clamp). Positive
+ * senses are the intuitive ones; the game-side drive maps them onto the
+ * camera's angle convention.
+ *
+ *   axis         keyboard          controller
+ *   move_fwd     W / S             left stick Y
+ *   move_strafe  D / A             left stick X
+ *   move_up      Space / LShift    R1 / L1
+ *   look_yaw     → / ←             right stick X
+ *   look_pitch   ↑ / ↓             right stick Y
+ */
 typedef struct openpete_freecam_axes {
-    int move_fwd;     /* +1 forward (W),  -1 back (S)            */
-    int move_strafe;  /* +1 right (D),    -1 left (A)            */
-    int move_up;      /* +1 up (Space),   -1 down (Left Shift)   */
-    int look_yaw;     /* +1 turn right (→), -1 turn left (←)     */
-    int look_pitch;   /* +1 look up (↑),    -1 look down (↓)     */
+    float move_fwd;     /* + forward,   - back   */
+    float move_strafe;  /* + right,     - left   */
+    float move_up;      /* + up,        - down   */
+    float look_yaw;     /* + turn right, - turn left */
+    float look_pitch;   /* + look up,    - look down */
 } openpete_freecam_axes;
 
 /* True while the free camera is engaged. */

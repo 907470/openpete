@@ -5,6 +5,7 @@
 #include "openpete_freecam.h"
 #include "openpete_log.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static bool                  s_active      = false;

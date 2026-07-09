@@ -35,6 +35,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>   /* getenv (scripted auto-engage) */
 
 #ifndef M_PI
 #  define M_PI    3.14159265358979323846
@@ -71,14 +72,53 @@
 static const int s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
-int freecam_native_should_freeze(uint32_t addr) {
-    if (!openpete_freecam_active()) return 0;
-    return addr == ADDR_CAMERA_FOLLOW_SPYRO || addr == ADDR_UPDATE_SPYRO;
+/* MCP_RaycastFloorHeightPrecise (recompiled). a0 = ptr to a Vector3D world
+ * position; returns non-zero (v0) on a floor hit. */
+extern void func_8004DF24(CPUState* cpu);
+
+/* Region-resync globals (practice ROM symbol map). */
+#define ADDR_LEVEL_LOAD_STATE       0x80075864u  /* < 0 while a level is live  */
+#define ADDR_RAYCAST_REGION_INDEX   0x80075844u  /* _cameraRaycastRegionIndex  */
+#define ADDR_RENDER_REGION_INDEX    0x80076E24u  /* _cameraRenderRegionIndex (g_Camera+0x54) */
+#define ADDR_WORLD_REGION_COUNT     0x800785B4u  /* _worldRegionCount          */
+#define ADDR_CAMERA_UNK_POS_VEC_X   0x80076EBCu  /* _cameraUnknownPositionVectorX */
+
+/* Port of the practice ROM's FreeCamSyncRenderRegion: pick the terrain sector
+ * to draw from the floor under the camera, so geometry keeps rendering as the
+ * camera leaves Spyro's frozen sector. Without it the drawn set stays keyed to
+ * Spyro's position.
+ *
+ * Calls a recompiled function out-of-band. This is safe here: game_on_frame_pre
+ * runs at the VSync(0) yield boundary, so the game fiber's caller-saved GPRs
+ * (a0-a3, v0-v1, ra, t0-t9) are already dead across the yield, and the raycast
+ * honours the MIPS ABI for callee-saved regs (s0-s7, sp, gp, fp), so no
+ * save/restore is needed. Only runs while freecam is engaged, so it can never
+ * touch the canonical path. */
+static void freecam_sync_render_region(CPUState* cpu) {
+    /* Only when a level is loaded (load state is negative once live). */
+    if ((int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) >= 0) return;
+
+    cpu->a0 = CAM_POS_X;                 /* &g_Camera.m_Position */
+    func_8004DF24(cpu);
+    if (cpu->v0 != 0) {
+        int32_t hit_region = (int32_t)cpu->read_word(ADDR_RAYCAST_REGION_INDEX);
+        cpu->write_word(ADDR_RENDER_REGION_INDEX, (uint32_t)hit_region);
+    }
+    /* Out-of-range guard: draw nothing (-1) if the region index exceeds the
+     * world's sector count. */
+    int32_t world_count   = (int32_t)cpu->read_word(ADDR_WORLD_REGION_COUNT);
+    int32_t render_region = (int32_t)cpu->read_word(ADDR_RENDER_REGION_INDEX);
+    if (world_count <= render_region)
+        cpu->write_word(ADDR_RENDER_REGION_INDEX, 0xFFFFFFFFu);  /* -1 */
+    cpu->write_word(ADDR_CAMERA_UNK_POS_VEC_X, 0u);
 }
 
-void freecam_native_drive(CPUState* cpu) {
-    if (!openpete_freecam_active()) return;
-
+/* Drive the camera from input + resync the render region. Runs IN PLACE OF
+ * CameraFollowSpyro (see freecam_native_should_freeze), i.e. on the game fiber
+ * at the exact frame point the follow logic normally runs — so the out-of-band
+ * raycast in freecam_sync_render_region is safe (yields land on the game fiber,
+ * not deadlock the host loop) and the GTE/world state it reads is correct. */
+static void freecam_drive(CPUState* cpu) {
     openpete_freecam_axes ax;
     openpete_freecam_get_axes(&ax);
 
@@ -91,8 +131,8 @@ void freecam_native_drive(CPUState* cpu) {
      * ("positive pitch = look down"). --- */
     int32_t yaw   = (int16_t)cpu->read_half(CAM_YAW);
     int32_t pitch = (int16_t)cpu->read_half(CAM_PITCH);
-    yaw   -= ax.look_yaw   * turn;
-    pitch -= ax.look_pitch * turn;
+    yaw   -= (int32_t)lround((double)ax.look_yaw   * turn);
+    pitch -= (int32_t)lround((double)ax.look_pitch * turn);
     if (pitch >  PITCH_LIMIT) pitch =  PITCH_LIMIT;
     if (pitch < -PITCH_LIMIT) pitch = -PITCH_LIMIT;
     cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)yaw);
@@ -128,9 +168,39 @@ void freecam_native_drive(CPUState* cpu) {
     cpu->write_word(CAM_POS_Y, (uint32_t)py);
     cpu->write_word(CAM_POS_Z, (uint32_t)pz);
 
-    /* TODO: port FreeCamSyncRenderRegion — raycast the floor under the camera
-     * (MCP_RaycastFloorHeightPrecise @ 0x8004DF24) and set the render-region
-     * index (g_Camera+0x54 / 0x80076E24) so distant sectors keep drawing.
-     * Needs an out-of-band recompiled-function call (save/restore caller-saved
-     * GPRs); deferred until the basic fly-cam is validated in the window. */
+    /* Keep the drawn terrain sector under the (now free) camera. */
+    freecam_sync_render_region(cpu);
+}
+
+/* Optional scripted / headless engage. OPENPETE_FREECAM=1 engages the free
+ * camera once, as soon as the game reaches the Playing state — deliberately
+ * NOT from boot: engaging during a level load or demo transition would freeze
+ * UpdateSpyro while the level is still setting up and leave it un-rendered.
+ * Interactive use (F / stick-click) is independent of this. */
+void freecam_native_maybe_autoengage(CPUState* cpu) {
+    static int s_done = 0;
+    if (s_done) return;
+    const char* e = getenv("OPENPETE_FREECAM");
+    if (!e || !*e || *e == '0' || openpete_freecam_active()) { s_done = 1; return; }
+    /* Gate on "a level is live" (load state negative) — unambiguous, unlike
+     * g_Gamestate whose Playing==0 aliases the zero-initialised boot value. */
+    if ((int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) < 0) {
+        s_done = 1;
+        openpete_freecam_toggle();
+    }
+}
+
+int freecam_native_should_freeze(CPUState* cpu, uint32_t addr) {
+    if (!openpete_freecam_active()) return 0;
+
+    /* Spyro's own update: suppress it entirely so the scene holds still. */
+    if (addr == ADDR_UPDATE_SPYRO) return 1;
+
+    /* The camera follow: replace it with our drive (same fiber, same frame
+     * point), then suppress the original so it can't overwrite the camera. */
+    if (addr == ADDR_CAMERA_FOLLOW_SPYRO) {
+        freecam_drive(cpu);
+        return 1;
+    }
+    return 0;
 }

@@ -1322,11 +1322,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_l_key = false;
     bool prev_alt_enter = false;
 
-    /* Debug free camera (F). Edge state for the toggle and the [ / ] speed
-     * steps; the WASD/arrow/Space/Shift movement is level-held (latched each
-     * iteration while engaged). */
+    /* Debug free camera (F / left-stick click). Edge state for the toggles and
+     * the [ / ] / L2 / R2 speed steps; the WASD/arrow/Space/Shift + analog
+     * stick movement is level-held (latched each iteration while engaged). */
     bool prev_f_key = false;
+    bool prev_freecam_pad_toggle = false;
     bool prev_freecam_lb = false, prev_freecam_rb = false;
+    bool prev_freecam_l2 = false, prev_freecam_r2 = false;
 
     /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
      * a latch so we clear the pad override exactly once when the menu closes. */
@@ -1610,41 +1612,73 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             prev_l_key = l_k;
 
-            /* F: toggle the debug free camera. While engaged, WASD move,
-             * arrow keys look, Space / Left-Shift raise / lower, and [ / ]
-             * step the speed. We own only the toggle + input latch here; the
-             * camera write and the CameraFollowSpyro / UpdateSpyro freeze are
-             * game-side (games/spyro-1/features/freecam_native.c). Latched as
-             * level-held axes so movement continues while a key is held,
-             * consumed once per game tick in game_on_frame_pre. */
+            /* Debug free camera. Toggle with F or a left-stick click. While
+             * engaged: WASD / left stick move, arrows / right stick look,
+             * Space+LShift / R1+L1 raise+lower, [ ] / L2 R2 step the speed. We
+             * own only the toggle + input latch here; the camera write and the
+             * CameraFollowSpyro / UpdateSpyro freeze are game-side
+             * (games/spyro-1/features/freecam_native.c). Latched as level-held
+             * axes so movement continues while held, consumed once per game
+             * tick in game_on_frame_pre. Keyboard and pad sum (then clamp), so
+             * either or both drive it. */
+            PsyX_RawPad fc_pad;
+            bool fc_have_pad = PsyX_Pad_GetRawP1(&fc_pad);
+
             bool f_k = kbd_pre && kbd_pre[SDL_SCANCODE_F];
+            bool pad_tog = fc_have_pad && fc_pad.l3;
             if (f_k && !prev_f_key) openpete_freecam_toggle();
+            if (pad_tog && !prev_freecam_pad_toggle) openpete_freecam_toggle();
             prev_f_key = f_k;
+            prev_freecam_pad_toggle = pad_tog;
 
             if (openpete_freecam_active()) {
-                openpete_freecam_axes ax = {0};
+                /* Normalise a signed SDL stick axis to [-1, 1] past a small
+                 * deadzone. */
+                #define FC_STICK_DZ  8000.0f
+                #define FC_NORM(v)   ( (v) >  FC_STICK_DZ || (v) < -FC_STICK_DZ \
+                                        ? (float)(v) / 32767.0f : 0.0f )
+                float k_fwd = 0, k_str = 0, k_up = 0, k_yaw = 0, k_pit = 0;
                 if (kbd_pre) {
-                    ax.move_fwd    = (int)kbd_pre[SDL_SCANCODE_W]
-                                   - (int)kbd_pre[SDL_SCANCODE_S];
-                    ax.move_strafe = (int)kbd_pre[SDL_SCANCODE_D]
-                                   - (int)kbd_pre[SDL_SCANCODE_A];
-                    ax.move_up     = (int)kbd_pre[SDL_SCANCODE_SPACE]
-                                   - (int)kbd_pre[SDL_SCANCODE_LSHIFT];
-                    ax.look_yaw    = (int)kbd_pre[SDL_SCANCODE_RIGHT]
-                                   - (int)kbd_pre[SDL_SCANCODE_LEFT];
-                    ax.look_pitch  = (int)kbd_pre[SDL_SCANCODE_UP]
-                                   - (int)kbd_pre[SDL_SCANCODE_DOWN];
+                    k_fwd = (float)((int)kbd_pre[SDL_SCANCODE_W]     - (int)kbd_pre[SDL_SCANCODE_S]);
+                    k_str = (float)((int)kbd_pre[SDL_SCANCODE_D]     - (int)kbd_pre[SDL_SCANCODE_A]);
+                    k_up  = (float)((int)kbd_pre[SDL_SCANCODE_SPACE] - (int)kbd_pre[SDL_SCANCODE_LSHIFT]);
+                    k_yaw = (float)((int)kbd_pre[SDL_SCANCODE_RIGHT] - (int)kbd_pre[SDL_SCANCODE_LEFT]);
+                    k_pit = (float)((int)kbd_pre[SDL_SCANCODE_UP]    - (int)kbd_pre[SDL_SCANCODE_DOWN]);
                 }
+                float p_fwd = 0, p_str = 0, p_up = 0, p_yaw = 0, p_pit = 0;
+                if (fc_have_pad) {
+                    p_fwd = -FC_NORM(fc_pad.lstick_y);   /* stick up = forward */
+                    p_str =  FC_NORM(fc_pad.lstick_x);
+                    p_yaw =  FC_NORM(fc_pad.rstick_x);   /* stick right = turn right */
+                    p_pit = -FC_NORM(fc_pad.rstick_y);   /* stick up = look up */
+                    p_up  = (float)(fc_pad.r1 - fc_pad.l1);
+                }
+                openpete_freecam_axes ax;
+                #define FC_CLAMP(x)  ( (x) > 1.0f ? 1.0f : ((x) < -1.0f ? -1.0f : (x)) )
+                ax.move_fwd    = FC_CLAMP(k_fwd + p_fwd);
+                ax.move_strafe = FC_CLAMP(k_str + p_str);
+                ax.move_up     = FC_CLAMP(k_up  + p_up);
+                ax.look_yaw    = FC_CLAMP(k_yaw + p_yaw);
+                ax.look_pitch  = FC_CLAMP(k_pit + p_pit);
+                #undef FC_CLAMP
+                #undef FC_NORM
+                #undef FC_STICK_DZ
                 openpete_freecam_set_axes(&ax);
 
+                /* Speed step: [ / ] keys or L2 / R2 (edge-triggered). */
                 bool lb = kbd_pre && kbd_pre[SDL_SCANCODE_LEFTBRACKET];
                 bool rb = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHTBRACKET];
-                if (lb && !prev_freecam_lb) openpete_freecam_adjust_speed(-1);
-                if (rb && !prev_freecam_rb) openpete_freecam_adjust_speed(+1);
-                prev_freecam_lb = lb;
-                prev_freecam_rb = rb;
+                bool l2 = fc_have_pad && fc_pad.l2;
+                bool r2 = fc_have_pad && fc_pad.r2;
+                if ((lb && !prev_freecam_lb) || (l2 && !prev_freecam_l2))
+                    openpete_freecam_adjust_speed(-1);
+                if ((rb && !prev_freecam_rb) || (r2 && !prev_freecam_r2))
+                    openpete_freecam_adjust_speed(+1);
+                prev_freecam_lb = lb; prev_freecam_rb = rb;
+                prev_freecam_l2 = l2; prev_freecam_r2 = r2;
             } else {
                 prev_freecam_lb = prev_freecam_rb = false;
+                prev_freecam_l2 = prev_freecam_r2 = false;
             }
 
             /* Alt+Enter (either Alt) or a window double-click toggles the
