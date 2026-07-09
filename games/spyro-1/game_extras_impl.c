@@ -15,6 +15,7 @@
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
 #include "features/text_moby_native.h"
+#include "features/freecam_native.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -468,6 +469,13 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
                                           0x80077FECu + 12u * 0x58u);
     }
 
+    /* Debug free camera (F key). When engaged, write g_Camera's position +
+     * Euler angles from the latched keyboard intent, BEFORE the tick rebuilds
+     * the view matrix from them. The paired freeze of CameraFollowSpyro /
+     * UpdateSpyro lives in psx_override_dispatch_game below. No-op when the
+     * free camera is off, so the oracle path is untouched. */
+    freecam_native_drive(cpu);
+
     /* Build the FPS overlay from Spyro's own 3D HUD text mobys (digits 260-269,
      * letters 426-451, punctuation) when the native renderer is showing it. Pure
      * presentation: reads model geometry from RAM, never writes gameplay state. */
@@ -757,6 +765,14 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+    /* Debug free camera (F): short-circuit CameraFollowSpyro / UpdateSpyro to
+     * no-ops while engaged, so nothing overwrites the camera we drive in
+     * game_on_frame_pre and Spyro holds still. Inactive → returns 0 (the hot
+     * path is one bool test), so the normal build is unaffected. */
+    if (freecam_native_should_freeze(addr)) {
+        return 1;
+    }
+
     if (spyro_native_dispatch(cpu, addr)) {
         return 1;
     }

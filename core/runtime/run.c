@@ -22,6 +22,7 @@
 #include "openpete_record.h"
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
+#include "openpete_freecam.h"
 #include "feature_registry.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
@@ -1321,6 +1322,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_l_key = false;
     bool prev_alt_enter = false;
 
+    /* Debug free camera (F). Edge state for the toggle and the [ / ] speed
+     * steps; the WASD/arrow/Space/Shift movement is level-held (latched each
+     * iteration while engaged). */
+    bool prev_f_key = false;
+    bool prev_freecam_lb = false, prev_freecam_rb = false;
+
     /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
      * a latch so we clear the pad override exactly once when the menu closes. */
     bool prev_o_key   = false;
@@ -1602,6 +1609,43 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 openpete_no_lod_set(!openpete_no_lod, -1.0f);
             }
             prev_l_key = l_k;
+
+            /* F: toggle the debug free camera. While engaged, WASD move,
+             * arrow keys look, Space / Left-Shift raise / lower, and [ / ]
+             * step the speed. We own only the toggle + input latch here; the
+             * camera write and the CameraFollowSpyro / UpdateSpyro freeze are
+             * game-side (games/spyro-1/features/freecam_native.c). Latched as
+             * level-held axes so movement continues while a key is held,
+             * consumed once per game tick in game_on_frame_pre. */
+            bool f_k = kbd_pre && kbd_pre[SDL_SCANCODE_F];
+            if (f_k && !prev_f_key) openpete_freecam_toggle();
+            prev_f_key = f_k;
+
+            if (openpete_freecam_active()) {
+                openpete_freecam_axes ax = {0};
+                if (kbd_pre) {
+                    ax.move_fwd    = (int)kbd_pre[SDL_SCANCODE_W]
+                                   - (int)kbd_pre[SDL_SCANCODE_S];
+                    ax.move_strafe = (int)kbd_pre[SDL_SCANCODE_D]
+                                   - (int)kbd_pre[SDL_SCANCODE_A];
+                    ax.move_up     = (int)kbd_pre[SDL_SCANCODE_SPACE]
+                                   - (int)kbd_pre[SDL_SCANCODE_LSHIFT];
+                    ax.look_yaw    = (int)kbd_pre[SDL_SCANCODE_RIGHT]
+                                   - (int)kbd_pre[SDL_SCANCODE_LEFT];
+                    ax.look_pitch  = (int)kbd_pre[SDL_SCANCODE_UP]
+                                   - (int)kbd_pre[SDL_SCANCODE_DOWN];
+                }
+                openpete_freecam_set_axes(&ax);
+
+                bool lb = kbd_pre && kbd_pre[SDL_SCANCODE_LEFTBRACKET];
+                bool rb = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHTBRACKET];
+                if (lb && !prev_freecam_lb) openpete_freecam_adjust_speed(-1);
+                if (rb && !prev_freecam_rb) openpete_freecam_adjust_speed(+1);
+                prev_freecam_lb = lb;
+                prev_freecam_rb = rb;
+            } else {
+                prev_freecam_lb = prev_freecam_rb = false;
+            }
 
             /* Alt+Enter (either Alt) or a window double-click toggles the
              * native window between windowed and borderless fullscreen. Moved

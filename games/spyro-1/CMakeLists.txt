@@ -210,6 +210,7 @@ add_executable(openpete-spyro1
     features/portal_native.c
     features/text_moby_native.c
     features/transition_native.c
+    features/freecam_native.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # via the AST rewriter (tools/rewrite_tu.py). Each native TU is

@@ -1,0 +1,53 @@
+#pragma once
+/* openpete_freecam.h — host-side state for the debug free camera (F key).
+ *
+ * This is the GENERIC half: it owns the on/off toggle, the per-axis input
+ * intent latched from the keyboard each host iteration, and the discrete
+ * speed step. It carries NO Spyro addresses or camera-struct knowledge, so
+ * it lives in core alongside the other host input handling (run.c). The
+ * game-specific half — reading g_Camera, applying the motion, and freezing
+ * the game's camera-follow / player-update functions while active — lives in
+ * games/<game>/features/freecam_native.c and reads this state each tick.
+ *
+ * Ported from C0mposer's Spyro-1-Practice-Rom (src/freecam.c): freeze the
+ * follow logic, then drive the camera position/angle directly. Debug tool —
+ * OFF by default (zero effect, oracle-clean); ON is an intentional,
+ * opt-in gameplay-state divergence for inspecting a level.
+ */
+
+#include <stdbool.h>
+
+/* Discrete speed steps (slowest → fastest). The per-step move/turn magnitudes
+ * live game-side (freecam_native.c), keyed by this index. */
+#define OPENPETE_FREECAM_SPEED_STEPS 5
+
+/* Per-axis movement/look intent, each component in {-1, 0, +1}, level-held
+ * (set from the live keyboard every host iteration, consumed once per game
+ * tick). Positive senses are the intuitive ones; the game-side drive maps
+ * them onto the camera's angle convention. */
+typedef struct openpete_freecam_axes {
+    int move_fwd;     /* +1 forward (W),  -1 back (S)            */
+    int move_strafe;  /* +1 right (D),    -1 left (A)            */
+    int move_up;      /* +1 up (Space),   -1 down (Left Shift)   */
+    int look_yaw;     /* +1 turn right (→), -1 turn left (←)     */
+    int look_pitch;   /* +1 look up (↑),    -1 look down (↓)     */
+} openpete_freecam_axes;
+
+/* True while the free camera is engaged. */
+bool openpete_freecam_active(void);
+
+/* Toggle engaged/disengaged (the F-key edge). Clears the latched axes so a
+ * key held across the toggle doesn't carry stale intent into the new state. */
+void openpete_freecam_toggle(void);
+
+/* Latch this iteration's input intent (run.c → module). */
+void openpete_freecam_set_axes(const openpete_freecam_axes* ax);
+
+/* Read the latched input intent (module → game drive). */
+void openpete_freecam_get_axes(openpete_freecam_axes* out);
+
+/* Current speed step, clamped to [0, OPENPETE_FREECAM_SPEED_STEPS). */
+int openpete_freecam_speed_index(void);
+
+/* Step the speed up (dir > 0) or down (dir < 0), clamped. */
+void openpete_freecam_adjust_speed(int dir);
