@@ -1043,6 +1043,66 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     return C;
 }
 
+/* OPENPETE_TERRAIN_MESHDUMP="12,45,..." (or "all"): one-shot dump of sector
+ * LP+HP meshes — world verts, face indices, raw face words, per-face gapfill
+ * verdicts — for offline geometry analysis (near-LP-gap classifier). Walks
+ * the WHOLE sector table (not just the vislist) once openpete_frame reaches
+ * OPENPETE_TERRAIN_MESHDUMP_FRAME; dump at the analysis frame — the sector
+ * table at first walk (~level load) is NOT the steady-state table. */
+static void md_dump_sector(CPUState* cpu, uint32_t i, const tscache_t* SC) {
+    fprintf(stderr, "[md-sec] s=%u flags=%04X origin=%d,%d,%d centre=%d,%d,%d rad=%d "
+            "nLpV=%d nLpF=%d nHpV=%d nHpF=%d nGap=%d\n", i, SC->flags,
+            SC->originX, SC->originY, SC->originZ, SC->centreX, SC->centreY, SC->centreZ,
+            SC->radius, SC->nLpV, SC->nLpF, SC->nHpV, SC->nHpF, SC->nGapfill);
+    for (int k = 0; k < SC->nLpV; k++)
+        fprintf(stderr, "[md-v] s=%u t=lp k=%d p=%d,%d,%d\n", i, k,
+                SC->originX + SC->lpV[k].x, SC->originY + SC->lpV[k].y, SC->originZ + SC->lpV[k].z);
+    for (int k = 0; k < SC->nHpV; k++)
+        fprintf(stderr, "[md-v] s=%u t=hp k=%d p=%d,%d,%d\n", i, k,
+                SC->originX + SC->hpV[k].x, SC->originY + SC->hpV[k].y, SC->originZ + SC->hpV[k].z);
+    for (int f2 = 0; f2 < SC->nLpF; f2++) {
+        const tsface_t* F2 = &SC->lpF[f2];
+        fprintf(stderr, "[md-f] s=%u t=lp f=%d i=%d,%d,%d,%d q=%d gf=%d w0=%08X w1=%08X\n",
+                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad, F2->gapfill,
+                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u),
+                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u + 4u));
+    }
+    for (int f2 = 0; f2 < SC->nHpF; f2++) {
+        const tsface_t* F2 = &SC->hpF[f2];
+        fprintf(stderr, "[md-f] s=%u t=hp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X w2=%08X w3=%08X\n",
+                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
+                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u),
+                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 4u),
+                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 8u),
+                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 12u));
+    }
+}
+static void md_dump_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
+                        uint32_t lqTable, uint32_t hqTable, int texTblMode) {
+    static const char* s_mdump = (const char*)-1;
+    static int s_mdframe, s_mddone;
+    if (s_mdump == (const char*)-1) {
+        s_mdump = getenv("OPENPETE_TERRAIN_MESHDUMP");
+        const char* e = getenv("OPENPETE_TERRAIN_MESHDUMP_FRAME");
+        s_mdframe = (e && *e) ? atoi(e) : 0;
+        if (s_mdump) fprintf(stderr, "[md-init] env=%s frame=%d\n", s_mdump, s_mdframe);
+    }
+    if (!s_mdump || !*s_mdump || s_mddone) return;
+    if (openpete_frame < (unsigned)s_mdframe) return;
+    s_mddone = 1;
+    int all = (strcmp(s_mdump, "all") == 0);
+    for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
+        if (!all) {
+            char buf[16]; snprintf(buf, sizeof buf, ",%u,", i);
+            char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_mdump);
+            if (!strstr(pad, buf)) continue;
+        }
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        md_dump_sector(cpu, i, tsc_get(cpu, s, lqTable, hqTable, texTblMode, 0));
+    }
+}
+
 /* Geometry (vertex) env-anim liveness — the artisans lowering-wall fix.
  * func_8002A6FC's poly-anim handlers (blocks 8002AA18 LP / 8002ABB8 HP) advance
  * a keyframe per descriptor and stamp it into sector+0x18/+0x1A; the .s Phase-1
@@ -1500,6 +1560,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
+    md_dump_all(cpu, sectorPtr, sectorCnt, lqTable, hqTable, texTblMode);  /* offline-analysis dump (env-gated) */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
@@ -1521,58 +1582,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
 
         int nLpV = SC->nLpV, nLpF = SC->nLpF;
         int nHpV = SC->nHpV, nHpF = SC->nHpF;
-
-        /* OPENPETE_TERRAIN_MESHDUMP="12,45,..." (or "all"): one-shot dump of a
-         * sector's full LP+HP meshes — world verts, face indices, raw face
-         * words — for offline geometry analysis (near-LP-gap classifier). */
-        {
-            static const char* s_mdump = (const char*)-1;
-            static int s_mdframe;
-            if (s_mdump == (const char*)-1) {
-                s_mdump = getenv("OPENPETE_TERRAIN_MESHDUMP");
-                const char* e = getenv("OPENPETE_TERRAIN_MESHDUMP_FRAME");
-                s_mdframe = (e && *e) ? atoi(e) : 0;
-                if (s_mdump) fprintf(stderr, "[md-init] env=%s frame=%d\n", s_mdump, s_mdframe);
-            }
-            if (s_mdump && *s_mdump && openpete_frame >= (unsigned)s_mdframe) {
-                static uint8_t done[1024];
-                int want = (strcmp(s_mdump, "all") == 0);
-                if (!want) {
-                    char buf[16]; snprintf(buf, sizeof buf, ",%u,", i);
-                    char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_mdump);
-                    want = (strstr(pad, buf) != NULL);
-                }
-                if (want && i < 1024 && !done[i]) {
-                    done[i] = 1;
-                    fprintf(stderr, "[md-sec] s=%u flags=%04X origin=%d,%d,%d centre=%d,%d,%d rad=%d "
-                            "nLpV=%d nLpF=%d nHpV=%d nHpF=%d\n", i, flags,
-                            originX, originY, originZ, SC->centreX, SC->centreY, SC->centreZ,
-                            SC->radius, nLpV, nLpF, nHpV, nHpF);
-                    for (int k = 0; k < nLpV; k++)
-                        fprintf(stderr, "[md-v] s=%u t=lp k=%d p=%d,%d,%d\n", i, k,
-                                originX + SC->lpV[k].x, originY + SC->lpV[k].y, originZ + SC->lpV[k].z);
-                    for (int k = 0; k < nHpV; k++)
-                        fprintf(stderr, "[md-v] s=%u t=hp k=%d p=%d,%d,%d\n", i, k,
-                                originX + SC->hpV[k].x, originY + SC->hpV[k].y, originZ + SC->hpV[k].z);
-                    for (int f2 = 0; f2 < nLpF; f2++) {
-                        const tsface_t* F2 = &SC->lpF[f2];
-                        fprintf(stderr, "[md-f] s=%u t=lp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X\n",
-                                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
-                                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u),
-                                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u + 4u));
-                    }
-                    for (int f2 = 0; f2 < nHpF; f2++) {
-                        const tsface_t* F2 = &SC->hpF[f2];
-                        fprintf(stderr, "[md-f] s=%u t=hp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X w2=%08X w3=%08X\n",
-                                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
-                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u),
-                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 4u),
-                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 8u),
-                                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 12u));
-                    }
-                }
-            }
-        }
 
         /* Tier selection, distance-INDEPENDENT (no pop-in). HP is drawn wherever
          * a sector HAS HP geometry (the fine layer, all distances). LP is drawn
