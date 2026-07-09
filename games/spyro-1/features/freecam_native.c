@@ -188,21 +188,63 @@ static void freecam_drive(CPUState* cpu) {
     freecam_sync_render_region(cpu);
 }
 
-/* Optional scripted / headless engage. OPENPETE_FREECAM=1 engages the free
- * camera once, as soon as the game reaches the Playing state — deliberately
- * NOT from boot: engaging during a level load or demo transition would freeze
+/* Pull up to `max` signed integers out of arbitrary text, skipping any
+ * non-numeric runs. Lenient on purpose so a whole freecam log line can be
+ * pasted verbatim — "pos=(84992, 45582, 9948) yaw=1024 pitch=160" yields all
+ * five. Returns the count parsed. */
+static int freecam_parse_ints(const char* s, int32_t* out, int max) {
+    int n = 0;
+    while (*s && n < max) {
+        int is_num = (*s >= '0' && *s <= '9') ||
+                     ((*s == '-' || *s == '+') && s[1] >= '0' && s[1] <= '9');
+        if (!is_num) { s++; continue; }
+        char* end;
+        long v = strtol(s, &end, 10);
+        out[n++] = (int32_t)v;
+        s = end;
+    }
+    return n;
+}
+
+/* Apply an OPENPETE_FREECAM_POSE string ("x,y,z[,yaw,pitch]", or any text with
+ * ≥3 integers in it) to g_Camera. Position is required; yaw/pitch optional. */
+static void freecam_apply_pose(CPUState* cpu, const char* s) {
+    int32_t v[5] = {0, 0, 0, 0, 0};
+    int n = freecam_parse_ints(s, v, 5);
+    if (n < 3) {
+        OPL_WARN_F("freecam",
+                   "OPENPETE_FREECAM_POSE needs at least x,y,z (got %d numbers)", n);
+        return;
+    }
+    cpu->write_word(CAM_POS_X, (uint32_t)v[0]);
+    cpu->write_word(CAM_POS_Y, (uint32_t)v[1]);
+    cpu->write_word(CAM_POS_Z, (uint32_t)v[2]);
+    if (n >= 4) cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)v[3]);
+    if (n >= 5) cpu->write_half(CAM_PITCH, (uint16_t)(int16_t)v[4]);
+    OPL_INFO_F("freecam", "pose set to (%d, %d, %d) yaw=%d pitch=%d",
+               v[0], v[1], v[2], v[3], v[4]);
+}
+
+/* Optional scripted / headless engage. Set OPENPETE_FREECAM=1 to engage the
+ * free camera, or OPENPETE_FREECAM_POSE="x,y,z,yaw,pitch" to engage AND jump to
+ * a specific pose (for reproducing a test view — the coords come straight from
+ * the per-tick freecam log). Fires once the level is live — deliberately NOT
+ * from boot: engaging during a level load / demo transition would freeze
  * UpdateSpyro while the level is still setting up and leave it un-rendered.
  * Interactive use (F / stick-click) is independent of this. */
 void freecam_native_maybe_autoengage(CPUState* cpu) {
     static int s_done = 0;
     if (s_done) return;
-    const char* e = getenv("OPENPETE_FREECAM");
-    if (!e || !*e || *e == '0' || openpete_freecam_active()) { s_done = 1; return; }
+    const char* pose = getenv("OPENPETE_FREECAM_POSE");
+    const char* eng  = getenv("OPENPETE_FREECAM");
+    int want = (pose && *pose) || (eng && *eng && *eng != '0');
+    if (!want || openpete_freecam_active()) { s_done = 1; return; }
     /* Gate on "a level is live" (load state negative) — unambiguous, unlike
      * g_Gamestate whose Playing==0 aliases the zero-initialised boot value. */
     if ((int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) < 0) {
         s_done = 1;
         openpete_freecam_toggle();
+        if (pose && *pose) freecam_apply_pose(cpu, pose);
     }
 }
 
