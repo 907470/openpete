@@ -105,3 +105,30 @@ mode  = "full"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# haunted_towers "LP bridge" pose: the flat plane spanning the island gap
+# is the GAME's own far-LP verdict (PsyCross og renders it identically —
+# faithful, not a native bug).  Guard: the gapfill classifier must stay
+# entirely uninvolved at this pose.
+[[case]]
+name  = "haunted-bridge-gapfill-neutral"
+level = "haunted_towers"
+pose  = "106236,143423,35847,-1180,227"
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
+
+# artisans waterfall-notch slivers (pale gaps left of the castle): a WATER
+# feeder coverage bug (og covers the notches with waterfall geometry) —
+# survives gapfill/LPKEEP/holefill/handoff toggles, open investigation.
+# Guard: the gapfill classifier must stay uninvolved in the sliver region.
+[[case]]
+name  = "artisans-waterfall-notch-gapfill-neutral"
+level = "artisans"
+pose  = "30400,127062,11872,-922,66"
+mode  = "full"
+  [[case.check]]
+  kind   = "ab-identical"
+  bbox   = [150, 140, 320, 230]
+  max_px = 0
