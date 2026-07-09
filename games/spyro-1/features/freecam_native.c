@@ -73,52 +73,40 @@
 static const int s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
-/* MCP_RaycastFloorHeightPrecise (recompiled). a0 = ptr to a Vector3D world
- * position; returns non-zero (v0) on a floor hit. */
-extern void func_8004DF24(CPUState* cpu);
+#define ADDR_LEVEL_LOAD_STATE     0x80075864u  /* g_LoadStage: < 0 while a level is live */
+#define ADDR_OCCLUSION_GROUP      0x80076E24u  /* g_Camera.m_OcclusionGroup (+0x54) */
+#define ADDR_CAMERA_UNK_POS_VEC_X 0x80076EBCu  /* _cameraUnknownPositionVectorX */
 
-/* Region-resync globals (practice ROM symbol map). */
-#define ADDR_LEVEL_LOAD_STATE       0x80075864u  /* < 0 while a level is live  */
-#define ADDR_RAYCAST_REGION_INDEX   0x80075844u  /* _cameraRaycastRegionIndex  */
-#define ADDR_RENDER_REGION_INDEX    0x80076E24u  /* _cameraRenderRegionIndex (g_Camera+0x54) */
-#define ADDR_WORLD_REGION_COUNT     0x800785B4u  /* _worldRegionCount          */
-#define ADDR_CAMERA_UNK_POS_VEC_X   0x80076EBCu  /* _cameraUnknownPositionVectorX */
-
-/* Port of the practice ROM's FreeCamSyncRenderRegion: pick the terrain sector
- * to draw from the floor under the camera, so geometry keeps rendering as the
- * camera leaves Spyro's frozen sector. Without it the drawn set stays keyed to
- * Spyro's position.
+/* Draw every resident sector instead of following the camera's region.
  *
- * Calls a recompiled function out-of-band. This is safe here: game_on_frame_pre
- * runs at the VSync(0) yield boundary, so the game fiber's caller-saved GPRs
- * (a0-a3, v0-v1, ra, t0-t9) are already dead across the yield, and the raycast
- * honours the MIPS ABI for callee-saved regs (s0-s7, sp, gp, fp), so no
- * save/restore is needed. Only runs while freecam is engaged, so it can never
- * touch the canonical path. */
-static void freecam_sync_render_region(CPUState* cpu) {
-    /* Only when a level is loaded (load state is negative once live). */
+ * Spyro's "regions" are baked occlusion groups (a per-region PVS). Normally the
+ * world renderer (func_800258F0, via func_8002B9CC) only frustum-tests the
+ * sectors in the CURRENT group's sublist — so flying into a new area shows
+ * nothing there until the camera's group switches (the pop-in). But the whole
+ * level is already resident in RAM, and func_800258F0 has a "no group" arm:
+ * pass m_OcclusionGroup = -1 and it frustum-tests EVERY sector. That's a real
+ * game path (the title screen uses func_800258F0(-1)), and the native terrain
+ * feed already handles the -1 "walk-all" case, so this needs no renderer
+ * change. Result: everything in the frustum draws regardless of camera region —
+ * no pop-in — while off-screen sectors are still frustum-culled.
+ *
+ * C0mposer's raycast-to-follow existed only for the PS1 fill-rate limit we
+ * don't have; -1 supersedes it. We can safely own m_OcclusionGroup because the
+ * game's own writer (the floor raycast) lives inside CameraFollowSpyro, which
+ * we suppress. Runs only while engaged, so the canonical path is untouched. */
+static void freecam_force_draw_all_sectors(CPUState* cpu) {
+    /* Only meaningful once a level is live. */
     if ((int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) >= 0) return;
-
-    cpu->a0 = CAM_POS_X;                 /* &g_Camera.m_Position */
-    func_8004DF24(cpu);
-    if (cpu->v0 != 0) {
-        int32_t hit_region = (int32_t)cpu->read_word(ADDR_RAYCAST_REGION_INDEX);
-        cpu->write_word(ADDR_RENDER_REGION_INDEX, (uint32_t)hit_region);
-    }
-    /* Out-of-range guard: draw nothing (-1) if the region index exceeds the
-     * world's sector count. */
-    int32_t world_count   = (int32_t)cpu->read_word(ADDR_WORLD_REGION_COUNT);
-    int32_t render_region = (int32_t)cpu->read_word(ADDR_RENDER_REGION_INDEX);
-    if (world_count <= render_region)
-        cpu->write_word(ADDR_RENDER_REGION_INDEX, 0xFFFFFFFFu);  /* -1 */
+    cpu->write_word(ADDR_OCCLUSION_GROUP, 0xFFFFFFFFu);  /* m_OcclusionGroup = -1 */
     cpu->write_word(ADDR_CAMERA_UNK_POS_VEC_X, 0u);
 }
 
-/* Drive the camera from input + resync the render region. Runs IN PLACE OF
- * CameraFollowSpyro (see freecam_native_should_freeze), i.e. on the game fiber
- * at the exact frame point the follow logic normally runs — so the out-of-band
- * raycast in freecam_sync_render_region is safe (yields land on the game fiber,
- * not deadlock the host loop) and the GTE/world state it reads is correct. */
+/* Drive the camera from input + force all-sector drawing. Runs IN PLACE OF
+ * CameraFollowSpyro (see freecam_native_should_freeze), i.e. at the exact frame
+ * point the follow logic normally runs, so the camera we write is what the
+ * downstream matrix setup and world renderer (func_8002B9CC/func_800258F0)
+ * consume that same frame — and suppressing CameraFollowSpyro is also what lets
+ * us own m_OcclusionGroup (the game's raycast that sets it lives there). */
 static void freecam_drive(CPUState* cpu) {
     openpete_freecam_axes ax;
     openpete_freecam_get_axes(&ax);
@@ -184,8 +172,8 @@ static void freecam_drive(CPUState* cpu) {
         }
     }
 
-    /* Keep the drawn terrain sector under the (now free) camera. */
-    freecam_sync_render_region(cpu);
+    /* Draw all sectors in view, not just the camera's region (no pop-in). */
+    freecam_force_draw_all_sectors(cpu);
 }
 
 /* Pull up to `max` signed integers out of arbitrary text, skipping any
