@@ -1090,6 +1090,8 @@ static void md_dump_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
     if (!s_mdump || !*s_mdump || s_mddone) return;
     if (openpete_frame < (unsigned)s_mdframe) return;
     s_mddone = 1;
+    fprintf(stderr, "[md-fire] frame=%u sectorPtr=%08X sectorCnt=%u\n",
+            openpete_frame, sectorPtr, sectorCnt);
     int all = (strcmp(s_mdump, "all") == 0);
     for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
         if (!all) {
