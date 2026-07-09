@@ -439,15 +439,6 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).
  * Reset to 0 by openpete_native_scene_begin. */
 void openpete_native_scene_set_bg(uint32_t rgba);
-/* Far-band seam-inpaint band (terrain feeder, once per (re)extract): the PSX-
- * screen bbox {x0,y0}-{x1,y1} of the fogged far band this frame (x1<=x0 = no
- * band → inpaint off), plus the full-world view-Z window [vz_lo, vz_hi) a
- * WORLD-opaque pre-pass neighbour must sit in to count as far-band terrain.
- * Drives the image-space seam-inpaint pass (the distant-water dash fill) drawn
- * right after the WORLD group. Reset by openpete_native_scene_begin /
- * begin_frame; snapshotted with the scene history. */
-void openpete_native_scene_set_far_band(float x0, float y0, float x1, float y1,
-                                        float vz_lo, float vz_hi);
 /* Capture the gamestate draw-env clear colour (the framebuffer background the
  * canonical render auto-clears to) from the PutDrawEnv path. `isbg` is the PSX
  * DRAWENV auto-clear flag (0 = no clear → defer to the scene-fed bg); r/g/b are
