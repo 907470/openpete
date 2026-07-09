@@ -23,6 +23,7 @@ extern "C" {
 #include "openpete_log.h"
 #include "openpete_ticker.h"
 #include "openpete_psx.h"
+#include "openpete_memcard.h"
 }
 
 #include <cstdio>
@@ -1598,31 +1599,15 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
 
 /* --- libmcrd ------------------------------------------------------------- */
 
-/* PsyCross's libmcrd is broken for our needs: MemCardAccept does
- * fopen("0.MCD","rb") and unconditionally fread()s the result, segfaulting
- * when no card file exists. It also indexes memoryCards[chan] with the raw
- * PSX channel encoding (port B = 0x10), which is out-of-bounds.
- *
- * We override the title-screen-critical thunks with a self-contained "no
- * card present" stub. Spyro's titlescreen state machine then routes
- * through TS_SubState_NoMemoryCard → TS_SubState_WarningNoSave → loading,
- * letting Start advance past the title without touching the disk. File
- * I/O thunks (Read/Write/Create/Format) are not exercised on this path,
- * so we leave them pointing at PsyCross. */
-
-namespace {
-struct McStubState {
-    int cmds;    /* last issued McFunc* (or -1 if none) */
-    int rslt;    /* last result (McErr*, or -1 if none) */
-    int status;  /* MemCardSync return: 1=Finished, 0=Active, -1=NothingRegistered */
-};
-McStubState g_mc = { -1, -1, -1 };
-}
+/* PsyCross's libmcrd is broken for our needs (MemCardAccept fopen()s
+ * "0.MCD" and fread()s an unopened FILE*; it indexes memoryCards[chan]
+ * with the raw port encoding 0x10, out-of-bounds). We ignore it entirely
+ * and marshal into openpete's host card module (core/host/memcard.c),
+ * which owns two real 128 KiB .mcr images persisted under the per-user
+ * state dir. See notes/plans/openpete-memcard-host-backed.md. */
 
 void psyq_MemCardInit(CPUState* cpu) {
-    g_mc.cmds = -1;
-    g_mc.rslt = -1;
-    g_mc.status = -1;
+    openpete_memcard_init();
 
     /* Real PSYQ MemCardInit (0x8006626C) clears two state words then
      * jumps into func_80067E70, which OpenEvent-registers a chain of
@@ -1644,65 +1629,65 @@ void psyq_MemCardInit(CPUState* cpu) {
 
 void psyq_MemCardStart(CPUState* cpu) {
     (void)cpu;
-    /* No-op: comms are always "ready" since there's no real card. */
+    openpete_memcard_start();
 }
 
 void psyq_MemCardStop(CPUState* cpu) {
     (void)cpu;
-    g_mc.cmds = -1;
-    g_mc.rslt = -1;
-    g_mc.status = -1;
+    openpete_memcard_stop();
 }
 
+/* Exist/Accept surface only v0 here; the libmcrd result code reaches the
+ * game through the async latch that MemCardSync reads (the module sets it). */
 void psyq_MemCardExist(CPUState* cpu) {
-    g_mc.cmds = McFuncExist;
-    g_mc.rslt = McErrCardNotExist;
-    g_mc.status = 1;  /* op completed */
-    cpu->v0 = 0u;     /* no card */
+    cpu->v0 = (uint32_t)openpete_memcard_exist((int)cpu->a0, nullptr, nullptr);
 }
 
 void psyq_MemCardAccept(CPUState* cpu) {
-    g_mc.cmds = McFuncAccept;
-    g_mc.rslt = McErrCardNotExist;
-    g_mc.status = 1;
-    cpu->v0 = 0u;
+    cpu->v0 = (uint32_t)openpete_memcard_accept((int)cpu->a0, nullptr, nullptr);
 }
 
+/* MemCardReadFile(chan, name, adrs, ofs, bytes): a0=chan, a1=name, a2=RAM
+ * dest, a3=file offset, [sp+0x10]=bytes. */
 void psyq_MemCardReadFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardReadFile((int)cpu->a0,
-                                        (char*)PTR(cpu->a1),
-                                        (unsigned int*)PTR(cpu->a2),
-                                        (int)cpu->a3,
-                                        (int)cpu->read_word(cpu->sp + 0x10));
+    cpu->v0 = (uint32_t)openpete_memcard_read((int)cpu->a0,
+                                              (const char*)PTR(cpu->a1),
+                                              PTR(cpu->a2),
+                                              (int)cpu->a3,
+                                              (int)cpu->read_word(cpu->sp + 0x10));
 }
 
 void psyq_MemCardWriteFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardWriteFile((int)cpu->a0,
-                                         (char*)PTR(cpu->a1),
-                                         (unsigned int*)PTR(cpu->a2),
-                                         (int)cpu->a3,
-                                         (int)cpu->read_word(cpu->sp + 0x10));
+    cpu->v0 = (uint32_t)openpete_memcard_write((int)cpu->a0,
+                                               (const char*)PTR(cpu->a1),
+                                               PTR(cpu->a2),
+                                               (int)cpu->a3,
+                                               (int)cpu->read_word(cpu->sp + 0x10));
 }
 
 void psyq_MemCardCreateFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardCreateFile((int)cpu->a0,
-                                          (char*)PTR(cpu->a1),
-                                          (int)cpu->a2);
+    cpu->v0 = (uint32_t)openpete_memcard_create((int)cpu->a0,
+                                                (const char*)PTR(cpu->a1),
+                                                (int)cpu->a2);
 }
 
 void psyq_MemCardFormat(CPUState* cpu) {
-    cpu->v0 = (uint32_t)MemCardFormat((int)cpu->a0);
+    cpu->v0 = (uint32_t)openpete_memcard_format((int)cpu->a0);
 }
 
 void psyq_MemCardSync(CPUState* cpu) {
-    /* mode 0 = Sync (block until done), 1 = Async (poll). Our ops always
-     * complete instantly, so both return 1 (McSyncRet_Finished) once any
-     * op has been issued. Before the first op, return -1 (NothingRegistered). */
-    int* cmds_out = (int*)PTR(cpu->a1);
-    int* rslt_out = (int*)PTR(cpu->a2);
-    if (cmds_out && g_mc.cmds != -1) *cmds_out = g_mc.cmds;
-    if (rslt_out && g_mc.rslt != -1) *rslt_out = g_mc.rslt;
-    cpu->v0 = (uint32_t)g_mc.status;
+    /* mode 0 = Sync, 1 = Async; host I/O completes instantly so both report
+     * Finished once an op has run, NothingRegistered (-1) before. Pre-read
+     * the guest out-slots so a field the module leaves unset round-trips
+     * unchanged (matches the original stub's "only overwrite when set"). */
+    int* cmds_out = cpu->a1 ? (int*)PTR(cpu->a1) : nullptr;
+    int* rslt_out = cpu->a2 ? (int*)PTR(cpu->a2) : nullptr;
+    int c = cmds_out ? *cmds_out : 0;
+    int r = rslt_out ? *rslt_out : 0;
+    int st = openpete_memcard_sync((int)cpu->a0, &c, &r);
+    if (cmds_out) *cmds_out = c;
+    if (rslt_out) *rslt_out = r;
+    cpu->v0 = (uint32_t)st;
 }
 
 /* --- libapi -------------------------------------------------------------- */

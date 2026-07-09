@@ -30,6 +30,7 @@
 #include "openpete_fnv1a64.h"
 #include "openpete_psxtrace.h"
 #include "music_override.h"
+#include "openpete_memcard.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -1049,6 +1050,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     PsyX_XA_ForceGain(opts->mute ? 0.0f : -1.0f);
     music_override_init();  /* logs the assets/music/ search path */
     music_override_set_forced_gain(opts->mute ? 0.0f : -1.0f);
+
+    /* Host-backed memory card: apply CLI/env config before the game's
+     * MemCardInit thunk fires (during the game's Initialize()). */
+    openpete_memcard_set_dir_override(opts->card_dir);
+    openpete_memcard_set_paths(opts->card1_path, opts->card2_path);
+    openpete_memcard_set_presence(0, opts->card_a_present);
+    openpete_memcard_set_presence(1, opts->card_b_present);
+    openpete_memcard_set_unformatted(opts->card_unformatted);
 
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */

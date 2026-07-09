@@ -297,6 +297,12 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
+        "  --card1 PATH               use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)\n"
+        "  --card2 PATH               use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)\n"
+        "  --card-dir PATH            directory holding the memory-card .mcr images (default: env OPENPETE_CARD_DIR,\n"
+        "                             else the per-user state dir openpete/cards). Two formatted cards inserted by default.\n"
+        "  --no-card                  present no memory card in either port (saving disabled)\n"
+        "  --card-unformatted         provision a blank unformatted card so the in-game format screen runs\n"
         "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
         "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
@@ -401,6 +407,12 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_audio_encoder = "aac";
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
+    opts->card_dir            = NULL;  /* NULL = default appdir; env OPENPETE_CARD_DIR */
+    opts->card1_path          = NULL;
+    opts->card2_path          = NULL;
+    opts->card_a_present      = 1;     /* both cards inserted by default */
+    opts->card_b_present      = 1;
+    opts->card_unformatted    = 0;     /* pre-formatted empty card by default */
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
@@ -736,6 +748,20 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--texpack-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->texpack_dir = v; i++;
+        } else if (strcmp(a, "--card-dir") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->card_dir = v; i++;
+        } else if (strcmp(a, "--card1") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->card1_path = v; i++;
+        } else if (strcmp(a, "--card2") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->card2_path = v; i++;
+        } else if (strcmp(a, "--no-card") == 0) {
+            opts->card_a_present = 0;
+            opts->card_b_present = 0;
+        } else if (strcmp(a, "--card-unformatted") == 0) {
+            opts->card_unformatted = 1;
         } else if (strcmp(a, "--unlock-frames") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->unlock_frames_spec = v;

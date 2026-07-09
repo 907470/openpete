@@ -91,6 +91,10 @@ add_library(openpete_core STATIC
     host/texture_pack.c
     host/wav_loader.c
 
+    # Host-backed PSX memory card (save/load).
+    # See notes/plans/openpete-memcard-host-backed.md.
+    host/memcard.c
+
     runtime/crash.c
     runtime/exe_loader.cpp
 

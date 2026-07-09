@@ -466,6 +466,18 @@ typedef struct {
      * display-only, never perturbs gameplay state. */
     const char* texpack_dir;
 
+    /* Host-backed memory card (save/load). The game reaches the card only
+     * through the PSYQ MemCard* wrappers, which openpete backs with real
+     * 128 KiB .mcr images under $XDG_STATE_HOME/openpete/cards (or
+     * %LOCALAPPDATA%\openpete\cards). Pure host-side save I/O — never
+     * touches gameplay-readable state. See openpete_memcard.h. */
+    const char* card_dir;      /* --card-dir PATH: dir holding cardN.mcr (NULL = default appdir; env OPENPETE_CARD_DIR) */
+    const char* card1_path;    /* --card1 PATH: explicit port-A image (NULL = <card_dir>/card1.mcr) */
+    const char* card2_path;    /* --card2 PATH: explicit port-B image (NULL = <card_dir>/card2.mcr) */
+    int         card_a_present;/* card in port A (default 1) */
+    int         card_b_present;/* card in port B (default 1) */
+    int         card_unformatted; /* --card-unformatted: provision a blank card so the in-game format UI runs (default 0 = pre-formatted) */
+
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title
      * screen in TSM_Demo + TSD_Level mode, which loads whatever
