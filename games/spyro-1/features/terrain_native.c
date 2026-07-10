@@ -778,6 +778,7 @@ typedef struct {
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
     uint8_t  gapfill;                              /* LP only: HP-coverage-gap filler (see tsc_classify_gapfill) */
+    uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
     uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
@@ -1184,6 +1185,20 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
         tsface_t* F = &C->lpF[f];
         F->gapfill = 0;
         if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV) continue;
+        {   /* stamp the up-facing-floor bit for EVERY LP face (the near-floor
+             * fill backstop reads it; same winding convention as the rules
+             * below: floors have n_z < 0). */
+            const tsvert_t* a = &C->lpV[F->i0];
+            const tsvert_t* b = &C->lpV[F->i1];
+            const tsvert_t* c = &C->lpV[F->i2];
+            double e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z };
+            double e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
+            double nz = e1[0]*e2[1] - e1[1]*e2[0];
+            double nx = e1[1]*e2[2] - e1[2]*e2[1];
+            double ny = e1[2]*e2[0] - e1[0]*e2[2];
+            double nl = nx*nx + ny*ny + nz*nz;
+            F->floorf = (nl > 0.0 && nz < 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
+        }
         int hit = 0, total = 0, nunb = 0;
         double unb[30];                    /* per-unbacked-sample min dist² (≤ 2 tris × 15) */
         double unbp[30][3];                /* their sector-local positions (near-noHP test) */
@@ -2001,6 +2016,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * ride along — ONLY those — so the sparse-HP holes stay filled (the
          * near-LP-gap fix; per-face gate below). */
         int lpFarOnly = 0, lpGapOnly = 0;
+        int drawLPfull = drawLP;   /* LP tier fully drawn (pre-substitution arms) */
         if (drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
             if (lod_handoff) { drawLP = 1; lpFarOnly = 1; }
             else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
@@ -2053,6 +2069,31 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int fillLP = s_holefill && !(flags & 0x2000) && nLpF > 0
                      && ((double)lodThr < cbin + SC->radius + 0x100)
                      && !(openpete_no_lod && drawHP);
+        /* NEAR-FLOOR fill backstop (cliff_town crest strip, found in testing
+         * 2026-07-09): a fully-near HP sector's dropped LP FLOOR faces can
+         * cover sightlines NOTHING else covers — ground strips past the HP
+         * mesh edge whose cov reads 1.0 because the samples hug the HP cliff
+         * face within TOL (a fundamentally NON-LOCAL class: no point-geometry
+         * rule can see it; the PSX hides it because everything beyond the
+         * crest is fog-saturated, native's extended draw distance exposes
+         * it).  Feed those floors through the stencil-gated fill pass at
+         * true LP depth — the stencil makes over-inclusion safe for every
+         * covered pixel (overdraw impossible); floors-only keeps the near
+         * arch/aperture walls out (the failure that gated the fill to far
+         * sectors in the first place).
+         * DEFAULT OFF (OPENPETE_TERRAIN_FILLNEAR=1 opts in): the backstop
+         * cannot distinguish an interior hole (cliff_town strip: SHOULD be
+         * terrain) from a coarse-LP silhouette overhang (haunted_towers
+         * island rims, sunny_flight horizon: 1-2px terrain slivers painted
+         * on SKY — the fringe class the fully-fogged gate exists to block).
+         * Both are stencil-0 pixels beside drawn terrain; the separator is
+         * screen-space morphology (interior vs boundary), which the fill
+         * pass cannot see.  Opt in to fill crest strips at the cost of rim
+         * slivers. */
+        static int s_fillnear = -1;
+        if (s_fillnear < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILLNEAR"); s_fillnear = (e && *e) ? (*e != '0') : 0; }
+        int fillNearLP = s_fillnear && s_holefill && !fillLP && drawHP && !drawLPfull
+                         && !(flags & 0x2000) && nLpF > 0;
 
         s_walk_sectors++;
 
@@ -2067,7 +2108,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
         if (pass == 0 && !drawLP) continue;
         if (pass == 1 && !drawHP) continue;
-        if (passFill && !fillLP) continue;
+        if (passFill && !fillLP && !fillNearLP) continue;
 
         uint32_t faces; int nv, nf, faceStride;
         const tsvert_t* cverts; const tsface_t* cfaces;
@@ -2234,14 +2275,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
                 fputc('\n', stderr);
             }
-            if (passLP && lpGapOnly && (!F->gapfill || gp_gf_excluded(i, f))) { continue; } /* --no-lod: gap fillers only */
+            if (passLP && !passFill && lpGapOnly && (!F->gapfill || gp_gf_excluded(i, f))) { continue; } /* --no-lod: gap fillers only */
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 const int ci[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc; q2++)
                     if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
                 if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
-                if (passLP && lpFarOnly && beyond == 0) {
+                if (passLP && !passFill && lpFarOnly && beyond == 0) {
                     /* LP far-only — EXCEPT classified HP-coverage-gap fillers
                      * (tsc_classify_gapfill), which draw at all distances so a
                      * sparse near HP mesh doesn't open a hole to the cyclorama
@@ -2285,7 +2326,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
              * float raster is a hair tighter than the PSX integer edge — gate
              * tick 4888, peace-keepers cliffs). */
-            if (passFill) {
+            if (passFill && fillNearLP) {
+                /* Near-floor backstop: floors only (walls/aperture arches
+                 * stay out); stencil-gated to pixels nothing else covered. */
+                if (!F->floorf) continue;
+            } else if (passFill) {
                 /* Slack 1024 (face admitted when every corner is ≥75% fogged):
                  * a strict ir0≤0 dropped the LP of sectors STRADDLING the LOD
                  * boundary, leaving their far rows' raster gaps unfilled (the

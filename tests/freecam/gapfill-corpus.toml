@@ -252,3 +252,45 @@ mode  = "terrain"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# cliff_town crest-strip floor gap (found in testing): fully-near HP sectors'
+# dropped LP floors cover sightlines NOTHING else covers (ground strips
+# past the HP mesh edge; cov reads 1.0 because samples hug the HP cliff
+# within TOL -- a non-local class no point rule can see).  v9: near-floor
+# fill backstop -- such sectors' LP FLOORS feed the stencil-gated
+# WORLD_FILL pass (paints only uncovered pixels; walls/arches stay out).
+# Fills fully under extended LOD (no fog -> true stencil-0); under
+# original LOD the hole pixels are covered by fully-fogged far-LP WORLD
+# geometry, so the patch renders fogged (PSX-faithful) -- documented
+# residual.  DEFAULT OFF: the backstop cannot separate interior holes
+# from coarse-LP silhouette overhangs (haunted island rims / sunny
+# horizon: 1-2px terrain slivers on sky), so it is opt-in
+# (OPENPETE_TERRAIN_FILLNEAR=1).  Guard: the mechanism must keep
+# filling the strip under extended when enabled.
+[[case]]
+name   = "clifftown-crest-strip-filled-extended"
+level  = "cliff_town"
+pose   = "57191,104992,33420,1726,698"
+lod    = "extended"
+mode   = "terrain"
+ab_env = "OPENPETE_TERRAIN_FILLNEAR"
+  [[case.check]]
+  kind   = "ab-active"
+  bbox   = [209, 156, 503, 284]
+  min_px = 8000
+  [[case.check]]
+  kind   = "bg-max"
+  bbox   = [220, 165, 490, 275]
+  max_px = 200
+
+# Near-floor backstop blast-radius bound at the attract-demo gameplay
+# cameras: FILLNEAR on/off may differ only by small seam fills (tick 2694:
+# 154 px = the castle dome's truncated tip completed + a grass-on-grass
+# sliver; ticks 4888/9775 = 0, portal masks untouched).
+[[case]]
+name   = "attract-demo-fillnear-bounded"
+ticks  = [2694, 4888, 9775]
+ab_env = "OPENPETE_TERRAIN_FILLNEAR"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 300
