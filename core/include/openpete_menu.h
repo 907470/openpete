@@ -1,10 +1,12 @@
 // core/include/openpete_menu.h — in-game settings menu (toggled by `O`).
 //
 // A native-renderer overlay that live-changes presentation settings: aspect
-// ratio, target FPS, vsync, SSAA, draw distance. Styled after Spyro 1's pause
-// menu (gold border, semi-transparent panel, 3D gold-glyph text, wobbling
-// selected item — the draw half lands in a later step). Display-only: every
-// value maps to a native-renderer / host-pacer setter, never gameplay state.
+// ratio, target FPS, vsync, SSAA, draw distance, plus a row for the debug
+// free camera. Styled after Spyro 1's pause menu (gold border,
+// semi-transparent panel, 3D gold-glyph text, wobbling selected item — the
+// draw half lands in a later step). Display-only: every value maps to a
+// native-renderer / host-pacer setter, never gameplay state — except FREECAM,
+// which fronts the same intentionally-divergent debug toggle as the F key.
 // See notes/plans/openpete-ingame-settings-menu.md.
 //
 // The host loop (core/runtime/run.c) owns input: it toggles on `O`, feeds arrow

@@ -1529,6 +1529,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 prev_menu_up = up_k; prev_menu_dn = dn_k;
                 prev_menu_lf = lf_k; prev_menu_rt = rt_k;
                 prev_menu_close = close_k;
+
+                /* Freecam axes are level-held and consumed every game tick,
+                 * but the latch below is skipped while the menu owns the
+                 * keyboard — hold neutral here so a movement key held at
+                 * menu-open doesn't keep flying the camera behind the panel. */
+                if (openpete_freecam_active()) {
+                    openpete_freecam_axes ax = {0};
+                    openpete_freecam_set_axes(&ax);
+                }
             } else {
                 prev_menu_up = prev_menu_dn = prev_menu_lf = prev_menu_rt = false;
                 prev_menu_close = false;

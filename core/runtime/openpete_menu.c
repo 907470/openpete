@@ -3,23 +3,28 @@
 //
 // PURE PRESENTATION: every row maps to a native-renderer / host-pacer setter
 // (openpete_native_set_aspect/ssaa/vsync, openpete_set_render_fps,
-// openpete_no_lod_set). It never writes gameplay-readable state. The draw half
+// openpete_no_lod_set). It never writes gameplay-readable state. The one
+// deliberate exception is FREECAM: the debug free camera (the F key) is an
+// opt-in gameplay-state divergence by design (openpete_freecam.h); the row is
+// just a second front-end for the same toggle. The draw half
 // (panel/border/glyphs) lands in a later step; this file is state + apply.
 
 #include "openpete_menu.h"
 #include "openpete.h"                /* openpete_options_t, openpete_set_render_fps */
 #include "openpete_native_render.h"  /* set_aspect / set_ssaa / set_vsync */
 #include "openpete_log.h"
+#include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "features/no_lod.h"         /* openpete_no_lod_set */
 
 #include <stddef.h>
 #include <stdio.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD, ROW_COUNT };
+enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
+       ROW_FREECAM, ROW_COUNT };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD",
+    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
@@ -54,6 +59,7 @@ static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
 static int s_lod_idx    = 0;   /* ORIGINAL */
+static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open */
 static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
 
 /* --- helpers ------------------------------------------------------------- */
@@ -104,6 +110,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
+    case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
     default:           return "?";
     }
 }
@@ -123,6 +130,13 @@ static void apply_row(int row) {
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
     case ROW_LOD:      openpete_no_lod_set(s_lod_idx, -1.0f);                 break;
+    case ROW_FREECAM:
+        /* The freecam API is a toggle (shared with the F key), not a setter:
+         * flip only when the row disagrees with the live state. The toggle
+         * clears the latched axes, so no stale intent carries over. */
+        if ((s_freecam_idx != 0) != (openpete_freecam_active() ? 1 : 0))
+            openpete_freecam_toggle();
+        break;
     default: break;
     }
 }
@@ -170,9 +184,11 @@ int openpete_menu_toggle(void) {
     if (s_open) {
         /* Re-sync the rows a hotkey can change while the menu is closed, so the
          * menu never shows a stale value: SHOW FPS (--show-fps / any future
-         * path) and LOD (the "L" toggle flips openpete_no_lod directly). */
+         * path), LOD (the "L" toggle flips openpete_no_lod directly), and
+         * FREECAM (the "F" key / left-stick click). */
         s_showfps_idx = openpete_native_fps_overlay_enabled();
         s_lod_idx     = openpete_no_lod ? 1 : 0;
+        s_freecam_idx = openpete_freecam_active() ? 1 : 0;
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
@@ -245,6 +261,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
+    case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
     default: break;
     }
     apply_row(s_cursor);
