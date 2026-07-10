@@ -21,10 +21,16 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
-       ROW_FOG, ROW_FREECAM, ROW_COUNT };
+       ROW_FREECAM, ROW_COUNT,
+       /* FOG is parked past ROW_COUNT: hidden from display + navigation for
+        * now, but all its plumbing stays live and compiled — s_fog_idx, the
+        * case labels below, openpete_fog_set/enabled and the LOD→fog
+        * autopilot coupling in no_lod.c (LOD switches still move the fog
+        * scale). Move it back before ROW_FREECAM to re-show the row. */
+       ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FOG", "FREECAM",
+    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
