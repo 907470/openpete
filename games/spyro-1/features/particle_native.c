@@ -574,6 +574,20 @@ static void particle_build(CPUState* cpu) {
 
 static void particle_compare(CPUState* cpu) {
     particle_build(cpu);
+    /* OPENPETE_PARTICLE_PRIMDUMP=1 (with VERIFY): print every captured .s prim
+     * with position/colour — locates content og draws that the native pool walk
+     * doesn't produce (e.g. the burning-enemy smoke question: are the big black
+     * blobs .s PARTICLE prims at all?). */
+    if (getenv("OPENPETE_PARTICLE_PRIMDUMP")) {
+        for (int p = 0; p < s_prim_n; p++) {
+            prim_t* pr = &s_prim[p];
+            fprintf(stderr, "[part-prim f=%u] code=%02X nv=%d ctr=(%.0f,%.0f) rgb0=%06X stp=%d tpage=%04X\n",
+                    openpete_frame, pr->code, pr->nv,
+                    pr->nv ? (pr->x[0]+pr->x[1]+pr->x[2]+pr->x[3])/(pr->nv==3?3.0:4.0) : -1.0,
+                    pr->nv ? (pr->y[0]+pr->y[1]+pr->y[2]+pr->y[3])/(pr->nv==3?3.0:4.0) : -1.0,
+                    pr->rgb[0] & 0xFFFFFF, pr->stp, pr->tpage & 0xFFFF);
+        }
+    }
     int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
     int natft4 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel != 0) natft4++;  /* sel 0 = non-FT4 */
     int n = natft4 < ft4 ? natft4 : ft4;
