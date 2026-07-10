@@ -200,10 +200,12 @@ mode  = "terrain"
 
 # peace_keepers missing water quad (found in testing, extended-only visible): a
 # 512x512 LP water quad over an authored ONE-CELL hole in the same
-# sector's HP mesh measured cov = 27/30 = 0.900 exactly -- rejected on the
-# knife's edge by the old 0.9 gate, so under extended LOD (HP + gapfill-LP
-# only) the missing HP cell showed cyclorama.  cov gate raised to 0.97,
-# the authored bimodality boundary (openings hug at >=0.97, gaps <=0.83).
+# sector's HP mesh measures cov = 27/30 = 0.900 exactly -- knife-edge
+# rejected by the 0.9 gate, so under extended LOD (HP + gapfill-LP only)
+# the missing HP cell showed cyclorama.  Mid-band [0.9,0.97) faces are
+# admitted by the VOID test (an unbacked sample >TOL from ALL other
+# geometry with nothing behind it along the winding normal) -- NOT by the
+# v5 orientation rules, which the tree-tops case below proved unsafe here.
 # The quad must draw (ab-active) and the hole cell must not show sky.
 [[case]]
 name  = "peacekeepers-water-quad-filled"
@@ -219,3 +221,17 @@ mode  = "terrain"
   kind   = "bg-max"
   bbox   = [250, 145, 380, 212]
   max_px = 100
+
+# tree_tops mid-band poke-through guard (a v6 regression found in testing): three
+# tree_tops LP faces sit in the [0.9,0.97) cov band (s47 branch-floor
+# sliver + s155/s180 wall slivers).  Admitting them (as the plain cov-gate
+# widening did) makes the s47 sliver POKE THROUGH the trunk HP at the
+# default camera -- every unbacked sample touches other geometry (d_any=0)
+# or has the trunk 31 units behind it, so the void test must reject all
+# three.  Default camera, gapfill on/off must be pixel-identical.
+[[case]]
+name  = "treetops-midband-no-pokethrough"
+level = "tree_tops"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
