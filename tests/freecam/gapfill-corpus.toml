@@ -149,3 +149,24 @@ ab_env = "OPENPETE_TERRAIN_HOLEFILL"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# artisans outer-wall gap (found in testing, --lod extended only): the level-
+# boundary cliff LP (sectors 94/103) sits between HP territory and the
+# LP-only outer region; v3's wall rule dropped it (unbacked dmed 117-178)
+# leaving a cyclorama channel at the sector boundary.  v4 re-admits wall
+# faces whose unbacked span continues into LP-authoritative territory
+# (near-noHP rule, <=1200 to a no-HP/force-LP sector's LP).  The channel
+# must stay filled and the classifier must stay ACTIVE here.
+[[case]]
+name  = "artisans-outer-wall-extended-filled"
+level = "artisans"
+pose  = "30400,127062,11872,-922,66"
+lod   = "extended"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 3000
+  [[case.check]]
+  kind   = "bg-max"
+  bbox   = [285, 180, 340, 300]
+  max_px = 300
