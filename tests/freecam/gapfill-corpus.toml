@@ -325,3 +325,18 @@ mode  = "terrain"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# jacques LP wall poke (found in testing): a fully LP-exclusive wall tri
+# (s16 f#5, cov=0.00, dmed=308) poked out of the wall base, admitted by
+# the bare far_gap arm -- dmed alone cannot distinguish a deep VOID from
+# deeply DIFFERENT alternate LP geometry.  v12: far_gap admissions also
+# require the two-sided void test (true artisans holes all carry void
+# samples; the outer-wall cliffs stay admitted via near-noHP).
+[[case]]
+name  = "jacques-no-wall-poke"
+level = "jacques"
+pose  = "86273,68249,29528,2609,289"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0

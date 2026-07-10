@@ -1300,7 +1300,7 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
             }
             int in_band = ((double)hit >= COV_MIN * (double)total);
             int voidok = 0;
-            if (s_all_n > 0 && (in_band || floorH)) {
+            if (s_all_n > 0 && (in_band || floorH || far_gap)) {
                 /* TWO-SIDED world-void test: some unbacked sample farther
                  * than TOL from ALL other geometry (both tiers, every
                  * sector, self-excluded) with BOTH normal directions clear
@@ -1355,7 +1355,14 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                  * exemption's mid-distance floor strips must also pass the
                  * void test, or a coarse LP floor tri slicing through an HP
                  * mound gets admitted and pokes through the grass. */
-                F->gapfill = (far_gap || (floorH && voidok) || near_nohp);
+                /* far_gap TOO is void-gated (v12): an LP-exclusive WALL tri
+                 * with dmed 308 poked out of a jacques wall base — dmed≥192
+                 * alone can't distinguish "deep void" from "deeply different
+                 * alternate geometry"; the true artisans holes all carry void
+                 * samples (offline audit: 6 kept / 16 flipped across 8
+                 * levels; the artisans outer-wall cliffs stay admitted via
+                 * near_nohp). */
+                F->gapfill = (((far_gap || floorH) && voidok) || near_nohp);
             } else {
                 /* MID-BAND [COV_MIN, covhi) — the bimodality dead zone; the
                  * v5 orientation rules are not trustworthy here.  Void test
