@@ -26,6 +26,16 @@ float openpete_fog_scale = 1.0f;
  * survive toggling draw distance, so remember it and let it keep winning. */
 static float s_cli_fog_scale = -1.0f;
 
+/* Fog scale at/above this is "effectively off": saturation ~100x farther
+ * than any level's fog band. The extended-LOD mode default and the menu's
+ * FOG OFF both use it; openpete_fog_enabled() reads it back. */
+#define FOG_OFF_SCALE 100.0f
+
+/* Set once the user sets fog directly (the menu FOG row). From then on the
+ * LOD toggle stops moving the fog scale to the mode default — an explicit
+ * fog choice survives draw-distance changes, like an explicit --fog-scale. */
+static int s_fog_touched = 0;
+
 int no_lod_apply_options(const openpete_options_t* opts) {
     openpete_no_lod = 0;
     /* Resolve the fog-distance multiplier before the no-lod early-out:
@@ -37,7 +47,7 @@ int no_lod_apply_options(const openpete_options_t* opts) {
     if (opts) {
         s_cli_fog_scale = opts->fog_scale;
         openpete_fog_scale = (opts->fog_scale > 0.0f) ? opts->fog_scale
-                             : (extended ? 100.0f : 1.0f);
+                             : (extended ? FOG_OFF_SCALE : 1.0f);
     }
     if (!extended) return 0;
 
@@ -58,9 +68,30 @@ int no_lod_apply_options(const openpete_options_t* opts) {
 
 void openpete_no_lod_set(int on, float fog_scale) {
     openpete_no_lod = on ? 1 : 0;
-    openpete_fog_scale = (fog_scale > 0.0f) ? fog_scale
-                         : (s_cli_fog_scale > 0.0f) ? s_cli_fog_scale
-                         : (openpete_no_lod ? 100.0f : 1.0f);
+    /* Fog follows the LOD mode (ORIGINAL → authentic curve, EXTENDED →
+     * effectively off) ONLY while fog is still on autopilot: an explicit
+     * --fog-scale or a manual FOG toggle (s_fog_touched) keeps winning. */
+    if (fog_scale > 0.0f)
+        openpete_fog_scale = fog_scale;
+    else if (!s_fog_touched)
+        openpete_fog_scale = (s_cli_fog_scale > 0.0f) ? s_cli_fog_scale
+                             : (openpete_no_lod ? FOG_OFF_SCALE : 1.0f);
     OPL_INFO_F("no-lod", "live toggle -> %s (fog x%.2f)",
                openpete_no_lod ? "EXTENDED" : "ORIGINAL", openpete_fog_scale);
+}
+
+int openpete_fog_enabled(void) {
+    return openpete_fog_scale < FOG_OFF_SCALE;
+}
+
+void openpete_fog_set(int on) {
+    s_fog_touched = 1;
+    /* ON restores the user's own curve when they chose one (an explicit
+     * --fog-scale below the off-sentinel), else the authentic PSX curve. */
+    openpete_fog_scale =
+        on ? ((s_cli_fog_scale > 0.0f && s_cli_fog_scale < FOG_OFF_SCALE)
+                  ? s_cli_fog_scale : 1.0f)
+           : FOG_OFF_SCALE;
+    OPL_INFO_F("no-lod", "fog -> %s (x%.2f)",
+               on ? "ON" : "OFF", openpete_fog_scale);
 }

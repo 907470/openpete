@@ -26,8 +26,8 @@ extern "C" {
 extern int openpete_no_lod;
 
 /* --fog-scale: terrain fog-distance multiplier, resolved at boot in
- * no_lod_apply_options (explicit --fog-scale wins; else 4.0 under
- * --no-lod, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
+ * no_lod_apply_options (explicit --fog-scale wins; else 100.0 = effectively
+ * off under extended LOD, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
  * every channel of the fog model together (DPCS vertex curve, CLUT-row
  * palette ladder, near-tile select, fog-saturation LP handoff — see
  * games/spyro-1/features/terrain_native.c). Always > 0 after boot. */
@@ -40,11 +40,22 @@ int no_lod_apply_options(const openpete_options_t* opts);
 
 /* Live toggle (in-game settings menu): set the draw-distance display policy at
  * runtime. `on` != 0 = extended (full detail). `fog_scale` > 0 overrides the fog
- * multiplier; <= 0 uses the mode default (4.0 extended / 1.0 original), matching
- * no_lod_apply_options. The native feeders read openpete_no_lod / openpete_fog_scale
- * per frame, so it takes effect on the next frame. Native-renderer display policy
- * only (no gameplay effect). */
+ * multiplier; <= 0 uses the mode default (100.0 extended / 1.0 original, matching
+ * no_lod_apply_options) — but only while fog is on autopilot: an explicit
+ * --fog-scale or a prior openpete_fog_set keeps winning. The native feeders read
+ * openpete_no_lod / openpete_fog_scale per frame, so it takes effect on the next
+ * frame. Native-renderer display policy only (no gameplay effect). */
 void openpete_no_lod_set(int on, float fog_scale);
+
+/* 1 while fog is effective (scale below the ~100x "effectively off"
+ * sentinel). The menu's FOG row reads its display state from this. */
+int openpete_fog_enabled(void);
+
+/* Live fog toggle (in-game settings menu FOG row): on = the user's explicit
+ * --fog-scale if one was given (and is itself below the off-sentinel), else
+ * the authentic PSX curve (1.0); off = effectively no fog (100.0). Marks fog
+ * as user-set, so later LOD toggles leave the fog scale alone. */
+void openpete_fog_set(int on);
 
 #ifdef __cplusplus
 }
