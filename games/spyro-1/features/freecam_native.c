@@ -153,6 +153,26 @@ static void freecam_drive(CPUState* cpu) {
     py += (int32_t)lround(mvy);
     pz += (int32_t)lround(mvz);
 
+    /* OPENPETE_FREECAM_DRIFT="dx,dy,dz": scripted per-tick camera drift
+     * (world units), applied on top of input. Deterministic boundary-crossing
+     * repro for cull/handoff work (Phase 8.11) — headless runs can sweep the
+     * camera across an admission edge without a human at the stick. */
+    {
+        static int32_t s_drift[3]; static int s_have_drift = -1;
+        if (s_have_drift < 0) {
+            const char* e = getenv("OPENPETE_FREECAM_DRIFT");
+            s_have_drift = 0;
+            if (e && *e) {
+                char* end;
+                s_drift[0] = (int32_t)strtol(e, &end, 10);
+                if (*end) s_drift[1] = (int32_t)strtol(end + 1, &end, 10);
+                if (*end) s_drift[2] = (int32_t)strtol(end + 1, &end, 10);
+                s_have_drift = 1;
+            }
+        }
+        if (s_have_drift) { px += s_drift[0]; py += s_drift[1]; pz += s_drift[2]; }
+    }
+
     cpu->write_word(CAM_POS_X, (uint32_t)px);
     cpu->write_word(CAM_POS_Y, (uint32_t)py);
     cpu->write_word(CAM_POS_Z, (uint32_t)pz);

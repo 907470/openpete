@@ -659,6 +659,17 @@ static int tier_dbg_on(void) {
  * change is measured by the same instrument before and after. */
 static long s_us_proj, s_us_walk, s_us_calls;
 
+/* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for ONE moby — the
+ * canonical extract logs queue membership, the reveal builder logs every
+ * skip/admit verdict with the gate values. Built for the boundary-crossing
+ * handoff hunt (Phase 8.11); env-gated, inert otherwise. */
+static uint32_t moby_trace_target(void) {
+    static uint32_t t = 0xFFFFFFFFu;
+    if (t == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_MOBY_TRACE");
+                            t = e ? (uint32_t)strtoul(e, NULL, 0) : 0u; }
+    return t;
+}
+
 /* Project EVERY live record's vertices into s_proj[] (native float decode +
  * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
 static int s_max_blend;   /* max keyframe-blend factor (rec.w0 IR0) across this frame's records */
@@ -706,6 +717,10 @@ static int project_all_records_inner(CPUState* cpu) {
                 cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
             s_recs[nrec].zsf4_raw = zsf4_raw;
             fade_snap_put2(s_recs[nrec].moby, zsf4, zsf4_raw);
+            if (s_recs[nrec].moby == moby_trace_target())
+                fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
+                        openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
+                        s_cur_mat ? s_cur_mat : "?");
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
                 else if (zsf4 > 0) s_tier_fog++;
@@ -916,16 +931,19 @@ static void append_revealed_regular(CPUState* cpu) {
     int revealed = 0;
     uint32_t m = cpu->read_word(G_LEVELMOBYS);
     int guard = 0;
+    uint32_t trc_m = moby_trace_target();
+    #define TRC(fmt, ...) do { if (m == trc_m) fprintf(stderr, \
+        "[moby-trace f=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
     while (m >= 0x80000000u && guard++ < 4096) {
         uint8_t stt = cpu->read_byte(m + 0x48);
         if (stt == 0xFF) break;                        /* array sentinel */
-        if (stt >= 0x80) { m += 0x58; continue; }      /* dead/inactive */
+        if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
          * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
-        if (dup) { m += 0x58; continue; }
+        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
          * 4:3 — the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
@@ -933,9 +951,18 @@ static void append_revealed_regular(CPUState* cpu) {
          * SPEC copy (the cliff-town armored gnorc's shield rendered teal).
          * The live +0x1600 queue is CLOBBERED at REG-render time (the scratch
          * is reused mid-frame; the spec cull rebuilds it later), so test the
-         * snapshot taken at the last SPEC pass — 1 tick stale at worst. */
-        for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { dup = 1; break; }
-        if (dup) { m += 0x58; continue; }
+         * snapshot taken at the last SPEC pass — 1 tick stale at worst. The
+         * VERDICT is deferred below to the admit_canon gate: on the tick a
+         * spec-queued moby crosses OUT of canonical draw range, the stale
+         * snapshot still lists it while this tick's spec queue (canonical
+         * cull ⊆ canonical range) provably does not — trusting the snapshot
+         * there fed the moby from NEITHER pass for exactly one frame (the
+         * user-reported boundary-crossing flicker, Phase 8.11; drift-harness
+         * trace: IN-QUEUE @f, skip=SPEC-dedup @f+1, REVEALED @f+2). While
+         * the moby is still canonically in range (admit_canon) the snapshot
+         * stays trusted — the z-fight protection is unchanged there. */
+        int in_spec_snap = 0;
+        for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { in_spec_snap = 1; break; }
         moby_fields f;
         int bok = build_moby_record_fields(cpu, m, &f);
         if (rdbg) {
@@ -946,12 +973,12 @@ static void append_revealed_regular(CPUState* cpu) {
                         openpete_frame, m, (unsigned)cpu->read_half(m + 0x36), stt,
                         (unsigned)cpu->read_byte(m + 0x50), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
-        if (!bok) { m += 0x58; continue; }  /* shaded/invalid */
+        if (!bok) { TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
         double rr = (double)((int)cpu->read_byte(f.header + 7) << 4);
-        if (rz + rr <= 0.0) { m += 0x58; continue; }                        /* behind camera (.s: MAC3 + r <= 0) */
+        if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
         /* Distance admission = the .s cull's EXACT 3-axis box test (F158
          * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
          * narrower and dropped far-off-axis mobys the .s draws — the
@@ -998,9 +1025,13 @@ static void append_revealed_regular(CPUState* cpu) {
          * (@8001F2E8: reject MAC3 >= t4) — mirror both or far-axis mobys the
          * .s rejects get over-admitted */
         int admit_canon = REVEAL_BOX(t4c) && rz < (double)t4c;
-        if (!REVEAL_BOX(t4e) || rz >= (double)t4e) { m += 0x58; continue; } /* out of draw range (canonical or nl ceiling) */
+        TRC("b51=%02X rad=%02X d=(%d,%d,%d) t4c=%d t4e=%d rz=%.0f admit_canon=%d prev=%d",
+            (unsigned)cpu->read_byte(m + 0x51), rad_byte, d0, d1, d2, t4c, t4e, rz,
+            admit_canon, reveal_prev_has(m));
+        if (in_spec_snap && admit_canon) { TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
+        if (!REVEAL_BOX(t4e) || rz >= (double)t4e) { TRC("skip=out-of-range"); m += 0x58; continue; } /* out of draw range (canonical or nl ceiling) */
         #undef REVEAL_BOX
-        if (rz <= 0.0) { m += 0x58; continue; }                              /* camera-plane straddler: no stable projection */
+        if (rz <= 0.0) { TRC("skip=camera-plane"); m += 0x58; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
         /* Radius margin: the .s cone admits by CENTRE ± radius bias
          * (4(|x| - 25r/32) < 3(z + 19r/32)), so a wide prop whose centroid
@@ -1013,8 +1044,8 @@ static void append_revealed_regular(CPUState* cpu) {
          * there and not in the queue was cull-rejected for a non-box reason —
          * leave it); central + beyond-canonical is the no-lod clause's NEW
          * coverage. */
-        if (central && admit_canon) { m += 0x58; continue; }
-        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { m += 0x58; continue; }  /* outside widened view (+radius) */
+        if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
+        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
@@ -1031,7 +1062,8 @@ static void append_revealed_regular(CPUState* cpu) {
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                       rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
-        if (got <= 0) { m += 0x58; continue; }
+        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
+        TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
@@ -1051,6 +1083,7 @@ static void append_revealed_regular(CPUState* cpu) {
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
     }
+    #undef TRC
     /* publish this call's reveal set as the next call's hysteresis set */
     s_rev_prev_n = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
     memcpy(s_rev_prev, revlist, (size_t)s_rev_prev_n * sizeof(uint32_t));
