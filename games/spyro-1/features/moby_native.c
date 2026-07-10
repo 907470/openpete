@@ -2758,6 +2758,13 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
 
     render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
 
+    /* Verify aid: the pass's polybuf window — pairs with the full-OT dump
+     * (OPENPETE_OT_DUMP_FRAMES prim addresses) to attribute un-fed prims to
+     * their producer by allocation range. */
+    if (verify && openpete_frame >= moby_verify_frame() && openpete_frame < moby_verify_frame() + 4)
+        fprintf(stderr, "[moby-window %s f=%u] polybuf [%08X,%08X) %u bytes\n",
+                mat ? mat : "?", openpete_frame, start, end, end - start);
+
     capture_gte(cpu, start, end);
     int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
     if (tier_dbg_on() && !(mat && mat[0]=='S' && mat[1]=='P')) {   /* ~1/sec, REG+SPEC records pooled */
