@@ -80,7 +80,40 @@ typedef struct openpete_mod_api {
 
     /* printf-style logging, tagged "mod:<id>". level = OP_MOD_LOG_*. */
     void (*log)(openpete_mod_t* self, int level, const char* fmt, ...);
+
+    /* Translate a guest vaddr (kuseg/kseg0/kseg1 RAM) to a host pointer
+     * into the 2MB guest-RAM mirror, or NULL if out of range. Guest RAM
+     * is little-endian and so is every supported host, so typed reads/
+     * writes through the pointer see what the game sees. Global
+     * addresses: OP_GADDR_* in openpete_sdk_symbols.h (from
+     * manifest/globals.toml). Reminder: values INSIDE guest structs that
+     * are pointers hold guest vaddrs — re-translate before chasing.
+     * Sim-thread use only (inside overrides / mod entry). */
+    void* (*guest)(uint32_t vaddr);
 } openpete_mod_api_t;
+
+/* Convenience typed guest accessors. */
+static inline uint32_t op_read_u32(const openpete_mod_api_t* api, uint32_t va) {
+    void* p = api->guest(va);
+    return p ? *(uint32_t*)p : 0u;
+}
+static inline void op_write_u32(const openpete_mod_api_t* api, uint32_t va,
+                                uint32_t v) {
+    void* p = api->guest(va);
+    if (p) *(uint32_t*)p = v;
+}
+static inline int32_t op_read_s32(const openpete_mod_api_t* api, uint32_t va) {
+    return (int32_t)op_read_u32(api, va);
+}
+static inline uint8_t op_read_u8(const openpete_mod_api_t* api, uint32_t va) {
+    void* p = api->guest(va);
+    return p ? *(uint8_t*)p : 0u;
+}
+static inline void op_write_u8(const openpete_mod_api_t* api, uint32_t va,
+                               uint8_t v) {
+    void* p = api->guest(va);
+    if (p) *(uint8_t*)p = v;
+}
 
 #ifdef __cplusplus
 }

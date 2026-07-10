@@ -42,6 +42,8 @@
 
 #include <SDL3/SDL.h> /* SDL_GetBasePath — default mods/ + sdk/ location */
 
+#include "openpete_psx.h" /* openpete_psx_get_ram — api->guest() */
+
 #include "../../third_party/tomlc99/toml.h"
 
 /* mod_chain.c internals shared within core/mods. */
@@ -125,6 +127,15 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
                   self ? self->log_tag : "mod:?", "%s", msg);
 }
 
+static void* api_guest(uint32_t vaddr) {
+    uint32_t seg = vaddr >> 24;
+    if (seg != 0x00u && seg != 0x80u && seg != 0xA0u) return NULL;
+    uint32_t off = vaddr & 0x00FFFFFFu;
+    if (off >= 2u * 1024u * 1024u) return NULL;
+    uint8_t* ram = openpete_psx_get_ram();
+    return ram ? ram + off : NULL;
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     .override_addr = api_override_addr,
@@ -132,6 +143,7 @@ static const openpete_mod_api_t s_api = {
     .base          = openpete_mods_base,
     .resolve       = api_resolve,
     .log           = api_log,
+    .guest         = api_guest,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -185,6 +197,19 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
     snprintf(mod->log_tag, sizeof mod->log_tag, "mod:%s", mod->id);
     free(id.u.s);
     free(ver.u.s);
+    /* Symbol-tier declaration: "named" (default) or "raw". Raw-tier
+     * addresses (func_XXXXXXXX / bare vaddrs) are unstable across
+     * decomp/recomp progress and pinned to this binary/region — warn so
+     * breakage is a known trade, not a mystery (plan: two-tier symbol
+     * stability). */
+    toml_datum_t tier = toml_string_in(t, "tier");
+    if (tier.ok) {
+        if (strcmp(tier.u.s, "raw") == 0)
+            OPL_WARN_F("mods", "%s declares raw-tier symbols: unstable "
+                       "across engine/decomp updates and region-pinned",
+                       mod->id);
+        free(tier.u.s);
+    }
     rc = 0;
 out:
     toml_free(root);

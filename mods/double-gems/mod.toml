@@ -1,0 +1,16 @@
+# double-gems — PoC ladder rung 3 (notes/plans/openpete-modding-framework.md)
+#
+# Typed guest-RAM write producing REAL gameplay divergence: every gem
+# pickup counts double. Implemented as the sanctioned event-detection
+# idiom — post-hook + state-diff around base() on CollectItem, then
+# write the doubled total back through api->guest.
+#
+# Expected-divergence rung: with this mod enabled the PSX oracle MUST
+# fail at the g_GemTotal region (that failure is the proof the mod
+# works; scripts/check_mods.sh asserts it).
+
+[mod]
+id      = "double-gems"
+name    = "Double Gems"
+version = "0.1.0"
+api     = 1

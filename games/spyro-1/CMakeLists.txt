@@ -346,8 +346,10 @@ add_custom_command(
             ${_mod_sdk_gen}/sdk_symbols_table.c
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
             --symbols ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            --globals ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
             --out-dir ${_mod_sdk_gen}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
     COMMENT "Generating mod SDK symbol table (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)

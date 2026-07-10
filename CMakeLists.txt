@@ -123,6 +123,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Modding-framework PoC-ladder gate (modtest v0): chain-order matrix,
+    # observer-neutrality vs the PSX oracle, raw-tier warning, and the
+    # double-gems expected-divergence assertion. Slow (four headless
+    # sessions); `ctest -L mods` or scripts/check_mods.sh directly.
+    # See notes/plans/openpete-modding-framework.md.
+    add_test(NAME mod_poc_ladder
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mods.sh)
+    set_tests_properties(mod_poc_ladder PROPERTIES
+        LABELS "slow;mods"
+        TIMEOUT 900
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Freecam-corpus gate for the terrain near-LP gapfill classifier —
     # replays recorded problematic freecam spots (holes that must stay
     # filled, walls/arches the fill must not touch) and asserts metric

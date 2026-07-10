@@ -1,0 +1,9 @@
+# Enabled mods, one id per line. The ORDER IS THE PRIORITY: mods later
+# in this list run first on shared overrides; base() descends toward
+# earlier mods, then the recompiled original. Missing file = every mod
+# in this directory, lexicographic order.
+#
+# The in-tree gallery ships with only the sim-neutral observer enabled;
+# the divergent rungs (double-gems) and test pairs are exercised by
+# scripts/check_mods.sh with per-case lists.
+hello-anchor
