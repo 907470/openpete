@@ -3128,15 +3128,122 @@ static int moby_interp_pair_stale(op_time_t prev_ns, op_time_t curr_ns) {
     return (curr_ns - prev_ns) > MOBY_TICK_PERIOD_NS + MOBY_TICK_PERIOD_NS / 2;
 }
 
+/* ---- host-side idle animation: gem wobble (Phase 1 prototype) -------------
+ * OPENPETE_MOBY_IDLE=1: mobys outside the canonical update gates freeze in
+ * RAM (the game's own power-saving), so the reveal/extended paths draw them
+ * as statues. Recompute what the frozen moby's own idle math WOULD produce,
+ * host-side, and substitute it at this euler chokepoint — zero PSX RAM
+ * writes; m_WasDrawn keeps its single writer (the .s cull).
+ *
+ * Scope: the collectable wobble (gems cls 83..87, life statue cls 14). The
+ * level updater's collectable case skips its whole state machine IFF
+ *   m_WasDrawn==0 && OctDistance(moby,g_Spyro)>=0x2001
+ *   && m_Substate==1 && props->m_SpawnState==0        (level_10 .s 8007F9B8)
+ * and otherwise, while m_Substate<3, writes
+ *   rot.x(+0x44) = ((s16)cos[ticks*2]>>7) + props->m_RotY(+0x11)
+ *   rot.y(+0x45) = ((s16)sin[ticks*2]>>7) + props->m_RotZ(+0x12)
+ *   props->m_RotationTicks(+0x13) += 2*g_DeltaTime      (800802F4..80080360;
+ * cls 14 uses >>9, +0x46 untouched). LUT == D_SIN_TABLE (cos at +0x80) — the
+ * same table sincos_interp blends. Life orb (cls 15) is an ACCUMULATED
+ * heading (z+=8,y-=6/tick) — excluded: a wake would snap the whole offset.
+ * Design + phases: notes/plans/openpete-moby-idle-animation.md */
+static int moby_idle_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_IDLE"); s = (e && *e && *e != '0') ? 1 : 0; }
+    return s;
+}
+
+/* Freeze-verdict mirror — a pure function of gamestate the .s itself reads,
+ * never of host render state (the reveal-hysteresis strobe lesson).
+ * OctDistance (math.s) is XY-only octagonal: max + min*3/8. */
+static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
+    if (cpu->read_byte(m + 0x51) != 0) return 0;      /* drawn last frame -> handler runs */
+    int32_t dx = (int32_t)cpu->read_word(G_SPYRO + 0x0) - (int32_t)cpu->read_word(m + 0x0C);
+    int32_t dy = (int32_t)cpu->read_word(G_SPYRO + 0x4) - (int32_t)cpu->read_word(m + 0x10);
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    int32_t oct = (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3);
+    if (oct < 0x2001) return 0;                       /* near Spyro -> handler runs */
+    if (cpu->read_byte(m + 0x49) != 1) return 0;      /* not resting -> handler runs */
+    if (cpu->read_byte(props + 0x0E) != 0) return 0;  /* still settling -> handler runs */
+    return 1;
+}
+
+/* Host wobble phase per frozen gem: seeded from the frozen RAM phase byte (so
+ * the outward crossing is continuous), advanced +1 byte-angle per VBL (the
+ * canonical +2 per 29.97 Hz tick). Entry lifetime == one frozen stretch: any
+ * not-frozen verdict drops it, so a re-freeze re-seeds from RAM. cls+base
+ * mismatch re-seeds too (self-heals slot reuse across level loads). */
+typedef struct { uint32_t moby; uint16_t cls; uint8_t base_ticks; uint32_t t0_frame; } gem_idle_ent;
+#define GEM_IDLE_SLOTS 1024                /* > max gems per level (~400), power of 2 */
+static gem_idle_ent s_gem_idle[GEM_IDLE_SLOTS];
+static long s_idle_active, s_idle_seeded;  /* census counters (OPENPETE_MOBY_TIER_DBG) */
+
+static gem_idle_ent* gem_idle_slot(uint32_t m) {
+    uint32_t h = (m >> 3) & (GEM_IDLE_SLOTS - 1u);
+    for (uint32_t i = 0; i < 16u; i++) {
+        gem_idle_ent* e = &s_gem_idle[(h + i) & (GEM_IDLE_SLOTS - 1u)];
+        if (e->moby == m || e->moby == 0) return e;
+    }
+    return &s_gem_idle[h];                 /* probe cap: two gems share the home slot
+                                            * and keep re-seeding = they render frozen
+                                            * (feature no-op), never wrongly posed */
+}
+
+static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t props) {
+    uint8_t ticks = cpu->read_byte(props + 0x13);      /* m_RotationTicks, frozen */
+    gem_idle_ent* e = gem_idle_slot(m);
+    if (e->moby != m || e->cls != (uint16_t)cls || e->base_ticks != ticks) {
+        e->moby = m; e->cls = (uint16_t)cls; e->base_ticks = ticks; e->t0_frame = openpete_frame;
+        s_idle_seeded++;
+    }
+    return fmod((double)e->base_ticks + (double)(openpete_frame - e->t0_frame), 256.0);
+}
+
 static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
     int sy, cy, sx, cx, sz, cz;
+    int composed = 0;
+    /* Idle-anim override: a FROZEN collectable renders the pose its own math
+     * would produce had it kept ticking. Billboards excluded (the tally/HUD
+     * gems carry a different props layout than MobyCollectableProps). */
+    if (moby_idle_on() && !(cpu->read_byte(moby + 0x50) & 0x80)) {
+        uint32_t cls = cpu->read_half(moby + 0x36);
+        if (cls == 14u || (cls >= 83u && cls <= 87u)) {
+            uint32_t props = cpu->read_word(moby + 0x00);
+            if (props >= 0x80000000u) {
+                if (gem_idle_frozen(cpu, moby, props)) {
+                    double ph = gem_idle_phase(cpu, moby, cls, props);
+                    int si, ci; sincos_interp(cpu, ph, &si, &ci);
+                    /* float mirror of ((s16)lut>>shift): /128 gems, /512 statue */
+                    double div = (cls == 14u) ? 512.0 : 128.0;
+                    double fZ = (double)cpu->read_byte(props + 0x11) + (double)ci / div;
+                    double fX = (double)cpu->read_byte(props + 0x12) + (double)si / div;
+                    double fY = (double)cpu->read_byte(moby + 0x46);   /* untouched by the handler */
+                    sincos_interp(cpu, fY, &sy, &cy);
+                    sincos_interp(cpu, fX, &sx, &cx);
+                    sincos_interp(cpu, fZ, &sz, &cz);
+                    composed = 1; s_idle_active++;
+                    if (moby_trace_target() == moby)
+                        fprintf(stderr, "[moby-idle f=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
+                                openpete_frame, moby, ph,
+                                (unsigned)cpu->read_byte(props + 0x13), fZ, fX, fY);
+                } else {
+                    gem_idle_ent* e = gem_idle_slot(moby);
+                    if (e->moby == moby) e->moby = 0;   /* drop: re-freeze re-seeds from RAM */
+                    if (moby_trace_target() == moby)
+                        fprintf(stderr, "[moby-idle f=%u] %08X live (canonical pose)\n",
+                                openpete_frame, moby);
+                }
+            }
+        }
+    }
     /* When rotation interp is active and this moby has a paired prev/curr snapshot,
      * render its rotation at float precision (Z=+0x44, X=+0x45, Y=+0x46 euler bytes);
      * else fall back to the canonical byte-exact table lookup (spawn with no prev,
      * or interp off). The high byte (+0x47) is the OT-bias overlay flag, not a
      * rotation axis — untouched either way. */
     const openpete_interp_obj_t* o =
-        s_rot_now ? openpete_interp_objs_find(spyro_interp_moby_key(moby)) : NULL;
+        (!composed && s_rot_now) ? openpete_interp_objs_find(spyro_interp_moby_key(moby)) : NULL;
     /* Occupant guard: a g_LevelMobys slot reused by a DIFFERENT-class moby
      * within one tick would euler-lerp across two objects (the gem-vs-chest
      * class, HUD-pool side fixed by the class-folded key; level slots key by
@@ -3155,7 +3262,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
         sincos_interp(cpu, fY, &sy, &cy);
         sincos_interp(cpu, fX, &sx, &cx);
         sincos_interp(cpu, fZ, &sz, &cz);
-    } else {
+    } else if (!composed) {
         uint32_t rot = cpu->read_word(moby + 0x44u);
         uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
         sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy); cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
@@ -3626,6 +3733,19 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             R->vzspread = (vzmax>vzmin) ? (vzmax-vzmin) : 0;
             R->pvzspread = (pvzmax>pvzmin) ? (float)(pvzmax-pvzmin) : 0.0f;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
+        }
+    }
+    /* Idle-anim census (~1/s, under OPENPETE_MOBY_TIER_DBG): overridden-gem
+     * composes + fresh seeds since the last print. active counts euler composes
+     * (canonical + per-present re-extract), so it scales with render fps —
+     * nonzero = the override runs. */
+    if (moby_idle_on() && tier_dbg_on() && (s_idle_active || s_idle_seeded)) {
+        static unsigned next_idle;
+        if (openpete_frame >= next_idle) {
+            next_idle = openpete_frame + 60u;
+            fprintf(stderr, "[moby-idle f=%u] active=%ld seeded=%ld\n",
+                    openpete_frame, s_idle_active, s_idle_seeded);
+            s_idle_active = 0; s_idle_seeded = 0;
         }
     }
     return n;
