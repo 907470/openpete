@@ -7,6 +7,7 @@
 #include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "game_extras.h"
+#include "openpete_mods.h"
 #include "recomp_attach.h"
 
 #ifdef _WIN32
@@ -47,6 +48,12 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
 extern "C" void spyro_state_regions_register(void);
+/* Mod SDK name→vaddr table, generated from manifest/symbols.toml by
+ * tools/gen_mod_sdk.py into the build dir (sdk_symbols_table.c). */
+extern "C" {
+extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
+extern const size_t                openpete_sdk_symbol_count;
+}
 #include "splash.h"
 extern "C" {
 extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
@@ -79,6 +86,12 @@ int main(int argc, char** argv) {
 
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* Mod framework: hand the loader this game's symbol table so mods
+     * override by name ("CameraUpdate") instead of raw vaddr. The loader
+     * itself runs from openpete_run() after all setup. */
+    openpete_mods_set_symbol_table(openpete_sdk_symbols,
+                                   openpete_sdk_symbol_count);
 
     /* Distribution D2: standalone extraction stage — carve PSX.EXE +
      * overlay blobs from the disc and exit (also the first stage of the

@@ -335,6 +335,32 @@ target_sources(openpete-spyro1 PRIVATE
     # Sub-tick re-feed orchestrator (native-renderer high-FPS spine, step 2).
     spyro_native_reextract.c)
 
+# --- Mod SDK v0 (notes/plans/openpete-modding-framework.md P1) ---
+# Generate the name→vaddr symbol surface from manifest/symbols.toml:
+# a #define header for mods + a sorted resolve table compiled into the
+# exe. Staged with the API headers into <exe>/sdk/ so the mod loader can
+# compile mods/<id>/src/*.c against it at load time.
+set(_mod_sdk_gen ${CMAKE_CURRENT_BINARY_DIR}/mod_sdk_gen)
+add_custom_command(
+    OUTPUT  ${_mod_sdk_gen}/openpete_sdk_symbols.h
+            ${_mod_sdk_gen}/sdk_symbols_table.c
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
+            --symbols ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            --out-dir ${_mod_sdk_gen}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
+    COMMENT "Generating mod SDK symbol table (gen_mod_sdk.py)")
+target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
+add_custom_command(TARGET openpete-spyro1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${_mod_sdk_gen}/openpete_sdk_symbols.h
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
+    COMMENT "Staging mod SDK headers into <exe>/sdk/")
+
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "static")
     target_link_libraries(openpete-spyro1 PRIVATE spyro1_recomp_module)
 else()

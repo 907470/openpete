@@ -37,6 +37,14 @@ add_library(openpete_core STATIC
     runtime/freecam.c
     runtime/feature_registry.c
 
+    # Modding framework P1: per-address override chains riding the
+    # psx_override_dispatch prologue chokepoint + compile-on-load mod
+    # loader (mod.toml manifests via vendored tomlc99, POSIX dlopen).
+    # See notes/plans/openpete-modding-framework.md.
+    mods/mod_chain.c
+    mods/mod_loader.c
+    ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
+
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
     # module (no SDL); used by ticker + dual-pacer. See
     # notes/plans/openpete-frame-pacing.md.

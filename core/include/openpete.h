@@ -467,6 +467,13 @@ typedef struct {
      * display-only, never perturbs gameplay state. */
     const char* texpack_dir;
 
+    /* --mods-dir PATH: mods root (each subdir with a mod.toml is a mod;
+     * enabled.txt fixes the order = priority). NULL = unset (defer to
+     * env OPENPETE_MODS_DIR, else <exe>/mods). A missing directory means
+     * zero mods and a byte-identical modless run. See
+     * notes/plans/openpete-modding-framework.md. */
+    const char* mods_dir;
+
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
      * 128 KiB .mcr images under $XDG_STATE_HOME/openpete/cards (or

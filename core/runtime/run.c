@@ -24,6 +24,7 @@
 #include "openpete_menu.h"
 #include "openpete_freecam.h"
 #include "feature_registry.h"
+#include "openpete_mods.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
 #include "openpete_state.h"
@@ -764,6 +765,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * below into core/features/widescreen.c where it gets called via
      * this single line. */
     feature_registry_apply_options(opts);
+
+    /* Modding framework: discover/build/load mods (P1 vertical slice,
+     * notes/plans/openpete-modding-framework.md). No mods directory ⇒
+     * zero work and a byte-identical modless run (inertness gate); a
+     * broken mod is disabled with a log, never a failed launch. */
+    openpete_mods_init(opts);
 
     int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
     int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;

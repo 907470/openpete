@@ -1,0 +1,11 @@
+# hello-anchor — PoC ladder rung 1 (notes/plans/openpete-modding-framework.md)
+#
+# Named-tier override + base(): log-only, so it must be sim-neutral even
+# when ENABLED (the observer-neutrality inertness gate — the oracle run
+# with this mod loaded must stay byte-exact vs real hardware).
+
+[mod]
+id      = "hello-anchor"
+name    = "Hello Anchor"
+version = "0.1.0"
+api     = 1

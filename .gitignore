@@ -35,3 +35,6 @@ dist/
 
 # Throwaway clean launcher dir for demoing the splash.
 /launcher-demo/
+
+# Mod build artifacts (compiled on load by the mod loader)
+mods/*/.build/

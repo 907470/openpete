@@ -19,6 +19,7 @@ they supply. See the trademark note at the bottom.
 | PsyCross                          | MIT                                | <https://github.com/OpenDriver2/PsyCross> · `third_party/PsyCross/` |
 | SDL (SDL **3**)                   | Zlib                               | <https://github.com/libsdl-org/SDL> · `third_party/SDL/` |
 | miniz                             | MIT                                | <https://github.com/richgel999/miniz> · `third_party/miniz/` |
+| tomlc99                           | MIT                                | <https://github.com/cktan/tomlc99> · `third_party/tomlc99/` |
 | stb_image_write                   | public domain / MIT (dual)         | <https://github.com/nothings/stb> · `third_party/stb/` |
 | libco                             | ISC                                | <https://github.com/higan-emu/libco> · `third_party/libco/` |
 | xxHash                            | BSD-2-Clause                       | <https://github.com/Cyan4973/xxHash> · `third_party/xxhash/` |

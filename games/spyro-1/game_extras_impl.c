@@ -10,6 +10,7 @@
 
 #include "game_extras.h"
 #include "feature_registry.h"
+#include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
@@ -768,6 +769,15 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
      * nothing overwrites the camera and Spyro holds still. Inactive → returns
      * 0 (the hot path is one bool test), so the normal build is unaffected. */
     if (freecam_native_should_freeze(cpu, addr)) {
+        return 1;
+    }
+
+    /* Mod override chains (notes/plans/openpete-modding-framework.md).
+     * One global-flag branch when no mods are loaded (inertness gate).
+     * Runs before the native-decomp/feature arms: a mod that replaces a
+     * function replaces it, full stop; freecam (a user debug tool) still
+     * wins above so freezing behaves identically with mods loaded. */
+    if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) {
         return 1;
     }
 

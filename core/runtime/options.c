@@ -387,6 +387,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
+        "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
+        "                             enabled.txt fixes order (= priority). Default: env OPENPETE_MODS_DIR,\n"
+        "                             else <exe>/mods. No directory = no mods, byte-identical vanilla.\n"
         "  --card1 PATH               use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)\n"
         "  --card2 PATH               use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)\n"
         "  --card-dir PATH            directory holding the memory-card .mcr images (default: env OPENPETE_CARD_DIR,\n"
@@ -497,6 +500,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_audio_encoder = "aac";
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
+    opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
     opts->card_dir            = NULL;  /* NULL = default appdir; env OPENPETE_CARD_DIR */
     opts->card1_path          = NULL;
     opts->card2_path          = NULL;
@@ -843,6 +847,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--texpack-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->texpack_dir = v; i++;
+        } else if (strcmp(a, "--mods-dir") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->mods_dir = v; i++;
         } else if (strcmp(a, "--card-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->card_dir = v; i++;
