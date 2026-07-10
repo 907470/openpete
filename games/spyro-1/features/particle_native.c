@@ -722,6 +722,23 @@ static void particle_feed_native(CPUState* cpu) {
         }
     }
     if (s_fq_n <= 0) return;
+    /* OPENPETE_PARTICLE_MATDBG=<frame>: one line per emitted quad — sel/blend/
+     * rgb/texture — to attribute a missing-or-wrong-blend particle (e.g. the
+     * dragon-fragment smoke puffs) to its material decode. */
+    { static long s_mdbg = -2;
+      if (s_mdbg < -1) { const char* e = getenv("OPENPETE_PARTICLE_MATDBG");
+                         s_mdbg = (e && *e) ? atol(e) : -1; }
+      if (s_mdbg >= 0 && openpete_frame >= (unsigned)s_mdbg && openpete_frame < (unsigned)s_mdbg + 3) {
+          for (int i = 0; i < s_fq_n; i++) {
+              fquad* q = &s_fq[i];
+              fprintf(stderr, "[part-mat f=%u] sel=%d blend=%d tex=%d rgb=%06X "
+                      "tp=(%d,%d) clut=(%d,%d) bpp=%d ctr=(%.0f,%.0f) cz=%.0f\n",
+                      openpete_frame, q->sel, q->blend, q->textured, q->rgb,
+                      q->tpx, q->tpy, q->clx, q->cly, q->bpp,
+                      (q->sx[0]+q->sx[1]+q->sx[2]+q->sx[3])/4.0,
+                      (q->sy[0]+q->sy[1]+q->sy[2]+q->sy[3])/4.0, q->cz);
+          }
+      } }
     for (int i = 0; i < s_fq_n; i++) {
         fquad* q = &s_fq[i];
         float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(q->cz));

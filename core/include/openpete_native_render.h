@@ -282,6 +282,17 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * gouraud G4/G3). EXCLUDED from the occlusion depth pre-pass: rasterized
  * unstencilled there, a bulging LP would be a phantom occluder. */
 #define OPENPETE_SCENE_WORLD_FILL 11
+
+/* SHADOW: the drop-shadow decals (Spyro silhouette + moby shadows, blend==3).
+ * Split from plain blend-3 so the SUBTRACT draw group's DECAL special-casing
+ * (one shared shadow-sprite material for the whole textured range +
+ * shadow_decal_tex.frag's ground-height/wall discard) applies ONLY to real
+ * shadows. Genuinely subtractive world content — the dragon-fragment SMOKE
+ * PUFFS (particle sel-2 billboards, gray ramp, ABR 2) — stays category WORLD
+ * and draws through the plain subtractive pipes in the same slot; routing it
+ * through the decal path discarded every sky-borne puff (height test) and
+ * sampled the wrong texture (the range-uniform shadow sprite material). */
+#define OPENPETE_SCENE_SHADOW 12
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but

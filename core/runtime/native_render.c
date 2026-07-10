@@ -3134,7 +3134,7 @@ static bool draw_native_scene(bool full_extent)
      * 11 = SKY (cyclorama dome — WORLD-like, drawn FIRST with the PLAIN pipe so
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
      * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[13], ut_count[13];
+    int ut_first[14], ut_count[14];
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
@@ -3146,6 +3146,11 @@ static bool draw_native_scene(bool full_extent)
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
+            /* SUBTRACT group = the drop-shadow DECALS only (SHADOW category).
+             * Plain subtractive world content (blend 3, any other category —
+             * e.g. hypothetical untextured smoke) goes to slot 13 below and
+             * draws through the plain subtract pipe, not the decal. */
+            if (gb == 3 && scene[t].category != OPENPETE_SCENE_SHADOW) continue;
             /* The SUBTRACT group (gb==3 = the depth-aware Spyro shadow decal)
              * carries its PSX screen coord in u,v so shadow_decal.frag gets the
              * exact per-pixel screen position via a NOPERSPECTIVE varying (no
@@ -3294,6 +3299,26 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[12] = n - ut_first[12];
+    /* SUBTRACT-WORLD untextured (slot 13): blend-3 content that is NOT a
+     * shadow decal (category != SHADOW; HUD layers excluded — the menu panel
+     * has its own blend-3 path). Drawn in the SUBTRACT slot with the plain
+     * z-test subtract pipe (neutral bias), never the shadow decal. */
+    ut_first[13] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].blend != 3 || n + 3 > SCENE_VB_VERTS) continue;
+        int c13 = scene[t].category;
+        if (c13 == OPENPETE_SCENE_SHADOW || c13 == OPENPETE_SCENE_HUD ||
+            c13 == OPENPETE_SCENE_HUD3D || c13 == OPENPETE_SCENE_HUD_PANEL) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3;
+    }
+    ut_count[13] = n - ut_first[13];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -3345,8 +3370,8 @@ static bool draw_native_scene(bool full_extent)
      * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
      * backdrops want painter's order) and only coalesce already-adjacent runs. */
     int tx_start = n;
-    int txg_first[8], txg_count[8], txtri = 0;
-    for (int b = 0; b < 8; b++) {
+    int txg_first[9], txg_count[9], txtri = 0;
+    for (int b = 0; b < 9; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
@@ -3356,12 +3381,24 @@ static bool draw_native_scene(bool full_extent)
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
+            else if (b == 8) {
+                /* SUBTRACT-WORLD (textured): blend-3 that is NOT a shadow
+                 * decal — the dragon-fragment smoke puffs (particle sel-2,
+                 * ABR 2) and any ABR-2 terrain/moby faces. Drawn in the
+                 * SUBTRACT slot with the plain z-test subtract pipe; the
+                 * decal path (bucket 1) is shadows only. */
+                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                belongs = bl == 3 && cat != OPENPETE_SCENE_SHADOW &&
+                          cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
+                          cat != OPENPETE_SCENE_PORTAL_GUARD;
+            }
             else {
                 int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
                 belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
                           cat != OPENPETE_SCENE_PORTAL_GUARD &&
                           bl == groups[b].blend &&
-                          !(groups[b].blend == 0 && groups[b].gcat >= 0 && cat != groups[b].gcat);
+                          !(groups[b].blend == 0 && groups[b].gcat >= 0 && cat != groups[b].gcat) &&
+                          !(groups[b].blend == 3 && cat != OPENPETE_SCENE_SHADOW);
             }
             if (belongs) s_txscene[txtri++] = t;
         }
@@ -3684,6 +3721,32 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
+        }
+        /* SUBTRACT-WORLD — genuinely subtractive content (blend 3, category
+         * != SHADOW): the dragon-fragment smoke puffs, ABR-2 terrain/moby
+         * faces. Drawn right after the shadow-decal group through the PLAIN
+         * z-test subtract pipes with a NEUTRAL bias — routing these through
+         * the decal path made the sky-borne smoke vanish (ground-height
+         * discard) and sampled the wrong texture (the decal draw's
+         * range-uniform shadow-sprite material). */
+        if (gi == 1) {
+            if (ut_count[13] > 0 && s_nr.gouraud_sub_ztest_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
+                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[13], (uint32_t)ut_first[13]);
+            }
+            if (txg_count[8] > 0 && s_nr.vram_tex && s_nr.scene_tex_sub_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
+                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                /* SD only (like the shadow group): the sub pipes ride the
+                 * caller's dynamic depth-bias state, which an HD rebind
+                 * would invalidate. */
+                draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
+                              s_nr.scene_tex_sub_pipe, NULL);
+            }
         }
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
          * PLAYER group — the native realization of the PSX sky bucket, which
