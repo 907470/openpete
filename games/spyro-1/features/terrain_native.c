@@ -1038,7 +1038,14 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
      * 96,0.9,192,0.8,1200). */
     static double s_tol = -1.0, s_cov, s_dgap, s_nz, s_nohp;
     if (s_tol < 0.0) {
-        s_tol = 96.0; s_cov = 0.9; s_dgap = 192.0; s_nz = 0.8; s_nohp = 1200.0;
+        /* cov 0.97 (was 0.9): peace_keepers' authored one-cell HP hole under
+         * a 512x512 LP water quad measures cov = 27/30 = 0.900 EXACTLY and
+         * was rejected on the knife's edge, leaving a cyclorama hole under
+         * extended LOD (found in testing 2026-07-09).  The all-level bimodality
+         * sweep puts intentional-opening LP at cov >= 0.97 and true gaps at
+         * <= 0.83 — 0.97 is the authored boundary; the per-face rules below
+         * still gate everything the wider cov admits. */
+        s_tol = 96.0; s_cov = 0.97; s_dgap = 192.0; s_nz = 0.8; s_nohp = 1200.0;
         const char* e = getenv("OPENPETE_TERRAIN_GAPFILL_TUNE");
         if (e && *e) sscanf(e, "%lf,%lf,%lf,%lf,%lf", &s_tol, &s_cov, &s_dgap, &s_nz, &s_nohp);
     }

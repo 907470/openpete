@@ -197,3 +197,25 @@ mode  = "terrain"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# peace_keepers missing water quad (found in testing, extended-only visible): a
+# 512x512 LP water quad over an authored ONE-CELL hole in the same
+# sector's HP mesh measured cov = 27/30 = 0.900 exactly -- rejected on the
+# knife's edge by the old 0.9 gate, so under extended LOD (HP + gapfill-LP
+# only) the missing HP cell showed cyclorama.  cov gate raised to 0.97,
+# the authored bimodality boundary (openings hug at >=0.97, gaps <=0.83).
+# The quad must draw (ab-active) and the hole cell must not show sky.
+[[case]]
+name  = "peacekeepers-water-quad-filled"
+level = "peace_keepers"
+pose  = "167657,116990,62434,323,438"
+lod   = "extended"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-active"
+  bbox   = [244, 141, 384, 216]
+  min_px = 4000
+  [[case.check]]
+  kind   = "bg-max"
+  bbox   = [250, 145, 380, 212]
+  max_px = 100
