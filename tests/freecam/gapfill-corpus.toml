@@ -170,3 +170,30 @@ mode  = "terrain"
   kind   = "bg-max"
   bbox   = [285, 180, 340, 300]
   max_px = 300
+
+# magic_crafters ceiling skin (found in testing): the coarse LP room lids
+# (z=1770 flat quads, signed n_z=+1.00, unbacked dmed 103-128 -- the exact
+# sunny-skin band) were admitted by v4's UNSIGNED horizontal rule AND the
+# near-noHP rule, painting a flat slab across the ornate HP ceiling.  v5:
+# the horizontal exemption is floor-only (game winding: up-facing floors
+# have n_z < 0; all 197 needed horizontal fillers in artisans/gnorc are
+# n_z <= -0.85) and near-noHP requires wall-like orientation.  Interior
+# room -- NO fill may ever appear in this view.
+[[case]]
+name  = "magic-ceiling-no-skin"
+level = "magic_crafters"
+pose  = "63187,89684,26826,4146,-159"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
+
+[[case]]
+name  = "magic-ceiling-no-skin-extended"
+level = "magic_crafters"
+pose  = "63187,89684,26826,4146,-159"
+lod   = "extended"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0

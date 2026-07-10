@@ -1046,8 +1046,8 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
     const double TOL2 = s_tol * s_tol;     /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
     const double COV_MIN = s_cov;          /* gap-filler iff >10% of samples are unbacked... */
     const double GAP_D2  = s_dgap * s_dgap; /* ...AND the unbacked region is FAR from all HP
-                                            * (median ≥ 2×TOL) OR the face is a HORIZONTAL
-                                            * floor (|n_z| > 0.8).  The distance test separates
+                                            * (median ≥ 2×TOL) OR the face is an UP-FACING
+                                            * floor (n_z < 0, |n_z| > 0.8).  The distance test separates
                                             * true coverage voids (artisans holes: unbacked
                                             * dmed 218–512) from LP "shortcut skins" hugging
                                             * recessed HP detail (sunny_flight cave walls:
@@ -1118,8 +1118,15 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                 unbp[b2 + 1][0] = p2[0]; unbp[b2 + 1][1] = p2[1]; unbp[b2 + 1][2] = p2[2];
             }
             int far_gap = (unb[nunb / 2] >= GAP_D2);
-            int horiz = 0;
-            {   /* |n_z| of the first triangle (z = the height axis) */
+            int floorH = 0, wallH = 0;
+            {   /* SIGNED n_z of the first triangle (z = the height axis; the
+                 * game's face winding gives UP-facing floors n_z < 0).  Only
+                 * FLOORS earn the horizontal exemption — a DOWN-facing flat
+                 * face in the sunny-skin dmed band is a coarse LP *ceiling*
+                 * skin drawn below the recessed HP ceiling (magic_crafters
+                 * z=1770 room lids, n_z=+1.00, dmed 103–128: found in testing
+                 * 2026-07-09); every needed horizontal filler across
+                 * artisans/gnorc (197 faces) is n_z ≤ −0.85. */
                 const tsvert_t* a = &C->lpV[F->i0];
                 const tsvert_t* b = &C->lpV[F->i1];
                 const tsvert_t* c = &C->lpV[F->i2];
@@ -1129,10 +1136,11 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                 double ny = e1[2]*e2[0] - e1[0]*e2[2];
                 double nz = e1[0]*e2[1] - e1[1]*e2[0];
                 double nl = nx*nx + ny*ny + nz*nz;
-                horiz = (nl > 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
+                floorH = (nl > 0.0 && nz < 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
+                wallH  = (nl > 0.0 && nz*nz < NZ_MIN*NZ_MIN*nl);
             }
             int near_nohp = 0;
-            if (!far_gap && !horiz && s_nohp_n > 0) {
+            if (!far_gap && wallH && s_nohp_n > 0) {
                 /* Wall re-admission: the unbacked span continues into
                  * LP-AUTHORITATIVE territory (min sample distance to a no-HP /
                  * force-LP sector's LP ≤ s_nohp) — a level-boundary cliff whose
@@ -1146,7 +1154,7 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                     if (gp_pool_d2(pw) <= lim2) near_nohp = 1;
                 }
             }
-            F->gapfill = (far_gap || horiz || near_nohp);
+            F->gapfill = (far_gap || floorH || near_nohp);
         }
         C->nGapfill += F->gapfill;
     }
