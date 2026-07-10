@@ -154,6 +154,94 @@ static int expand_options_file(int argc, char** argv, int* out_argc, char*** out
     return rc;
 }
 
+/* Env file next to the executable ("openpete.env", or ".env" if that
+ * doesn't exist): KEY=VALUE lines applied to the process environment
+ * before anything reads getenv. Same location convention as
+ * openpete.opts; the split of duties is opts = CLI flags, env = the
+ * OPENPETE_* debug/feature toggles that would otherwise need shell
+ * plumbing (WSLENV forwarding when launching the Windows exe from WSL).
+ *
+ * Precedence: the REAL environment wins — a variable already set is
+ * never overridden by the file, so per-launch shell overrides keep
+ * working on top of a persistent file. Syntax: one KEY=VALUE per line;
+ * blank lines and #-comments ignored; an optional leading "export " is
+ * tolerated; one pair of surrounding quotes on the value is stripped.
+ * Every applied/kept var is logged so a forgotten file can't silently
+ * change behavior. */
+static void portable_setenv(const char* k, const char* v) {
+#ifdef _WIN32
+    _putenv_s(k, v);          /* CRT env — same getenv the features read */
+#else
+    setenv(k, v, 0);
+#endif
+}
+
+static void apply_env_line(char* line, const char* path, int lineno,
+                           int* applied, int* kept) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0' || *p == '#' || *p == '\n' || *p == '\r') return;
+    if (strncmp(p, "export ", 7) == 0) p += 7;
+
+    char* eq = strchr(p, '=');
+    if (!eq || eq == p) {
+        fprintf(stderr, "openpete: %s:%d ignored (expected KEY=VALUE)\n", path, lineno);
+        return;
+    }
+    char* ke = eq;                                   /* trim key's trailing ws */
+    while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
+    *ke = '\0';
+
+    char* v = eq + 1;                                /* trim value both ends */
+    while (*v == ' ' || *v == '\t') v++;
+    char* ve = v + strlen(v);
+    while (ve > v && (ve[-1] == '\n' || ve[-1] == '\r' || ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+    *ve = '\0';
+    if (ve - v >= 2 && (v[0] == '"' || v[0] == '\'') && ve[-1] == v[0]) {
+        ve[-1] = '\0'; v++;                          /* strip one quote pair */
+    }
+
+    if (getenv(p)) {
+        fprintf(stderr, "openpete: env file %s=... kept from environment\n", p);
+        (*kept)++;
+    } else {
+        portable_setenv(p, v);
+        fprintf(stderr, "openpete: env file %s=%s\n", p, v);
+        (*applied)++;
+    }
+}
+
+static void load_env_file(void) {
+    const char* base = SDL_GetBasePath(); /* SDL3: owned by SDL, do not free */
+    if (!base) return;
+
+    static const char* const names[] = { "openpete.env", ".env" };
+    FILE* f = NULL;
+    char* path = NULL;
+    size_t blen = strlen(base);
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]) && !f; i++) {
+        size_t nlen = strlen(names[i]);
+        free(path);
+        path = (char*)malloc(blen + nlen + 1);
+        if (!path) return;
+        memcpy(path, base, blen);
+        memcpy(path + blen, names[i], nlen + 1);
+        f = fopen(path, "r");
+    }
+    if (!f) { free(path); return; }
+
+    char line[1024];
+    int lineno = 0, applied = 0, kept = 0;
+    while (fgets(line, sizeof(line), f)) {
+        lineno++;
+        apply_env_line(line, path, lineno, &applied, &kept);
+    }
+    fclose(f);
+    fprintf(stderr, "openpete: env file %s -> %d var(s) applied, %d kept from environment\n",
+            path, applied, kept);
+    free(path);
+}
+
 /* --bk2-record args sidecar helpers -----------------------------------
  *
  * When --bk2-record captures a session, we drop a "<bk2>.args" sidecar
@@ -268,6 +356,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "Usage: %s [options]\n"
         "  An 'openpete.opts' file next to the executable supplies default flags\n"
         "  (whitespace/newline-separated, '#' comments). Explicit CLI flags override it.\n"
+        "  An 'openpete.env' (or '.env') file next to the executable supplies KEY=VALUE\n"
+        "  environment variables ('#' comments); already-set variables win over the file.\n"
         "  --disc PATH                disc image (BIN/CUE)\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
@@ -418,6 +508,11 @@ void openpete_options_init(openpete_options_t* opts) {
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+    /* Env file (openpete.env / .env next to the exe) first, before ANY
+     * getenv consumer — features lazy-cache getenv on first read, so the
+     * file must be in the environment before parsing/boot proceeds. */
+    load_env_file();
+
     /* Snapshot the command line as typed, before the sidecar / options-file
      * splices below rewrite argv. --bk2-record captures this (and not the
      * spliced-in openpete.opts defaults) into its .args sidecar. */
