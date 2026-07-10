@@ -1261,7 +1261,34 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                     nrm[0] = nx*inv; nrm[1] = ny*inv; nrm[2] = nz*inv;
                 }
             }
-            if ((double)hit < COV_MIN * (double)total) {
+            int in_band = ((double)hit >= COV_MIN * (double)total);
+            int voidok = 0;
+            if (s_all_n > 0 && (in_band || floorH)) {
+                /* TWO-SIDED world-void test: some unbacked sample farther
+                 * than TOL from ALL other geometry (both tiers, every
+                 * sector, self-excluded) with BOTH normal directions clear
+                 * within 256 — a needed fill is the world's last surface
+                 * there and floats in genuinely OPEN space (peace_keepers
+                 * s58 f#3: void sample at d_any=128, both rays clear).
+                 * One-sided (behind-only) was not enough: a skin slicing
+                 * INTO a solid has under-surface samples that are
+                 * geometrically empty but visually inside the hill — the
+                 * front ray (visible side, −n) hits the surface above
+                 * (artisans s12 f#21 grass poke, found in testing 2026-07-09).
+                 * tree_tops s47/s155/s180: samples touch other geometry
+                 * (d_any=0) or have the trunk 31 behind → rejected. */
+                double neg[3] = { -nrm[0], -nrm[1], -nrm[2] };
+                for (int k = 0; k < nunb && !voidok; k++) {
+                    double pw[3] = { unbp[k][0] + C->originX,
+                                     unbp[k][1] + C->originY,
+                                     unbp[k][2] + C->originZ };
+                    if (gp_all_d2_excl(pw, C->s, f, TOL2) > TOL2 &&
+                        !gp_all_ray_hit(pw, nrm, 256.0, C->s, f) &&
+                        !gp_all_ray_hit(pw, neg, 256.0, C->s, f))
+                        voidok = 1;
+                }
+            }
+            if (!in_band) {
                 int near_nohp = 0;
                 if (!far_gap && wallH && s_nohp_n > 0) {
                     /* Wall re-admission: the unbacked span continues into
@@ -1277,29 +1304,16 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                         if (gp_pool_d2(pw) <= lim2) near_nohp = 1;
                     }
                 }
-                F->gapfill = (far_gap || floorH || near_nohp);
-            } else if (s_all_n > 0) {
-                /* MID-BAND [COV_MIN, covhi) — the bimodality dead zone.  The
-                 * v5 orientation rules are NOT trustworthy here (tree_tops'
-                 * branch-floor sliver pokes through the trunk); admit only on
-                 * the physical criterion: some unbacked sample sits over a
-                 * TRUE WORLD VOID — farther than TOL from ALL other geometry
-                 * (both tiers, every sector) AND with nothing within 256
-                 * BEHIND it along the winding normal (a skin has the recessed
-                 * surface it shortcuts behind it; a real gap is the world's
-                 * last surface, dropping it exposes cyclorama).
-                 * peace_keepers s58 f#3: void sample at d_any=128, no behind
-                 * hit → admitted.  tree_tops s47/s155/s180: every unbacked
-                 * sample touches other geometry (d_any=0) or has the trunk 31
-                 * behind → rejected. */
-                for (int k = 0; k < nunb && !F->gapfill; k++) {
-                    double pw[3] = { unbp[k][0] + C->originX,
-                                     unbp[k][1] + C->originY,
-                                     unbp[k][2] + C->originZ };
-                    if (gp_all_d2_excl(pw, C->s, f, TOL2) > TOL2 &&
-                        !gp_all_ray_hit(pw, nrm, 256.0, C->s, f))
-                        F->gapfill = 1;
-                }
+                /* floorH alone is NOT sufficient (v8): the horizontal
+                 * exemption's mid-distance floor strips must also pass the
+                 * void test, or a coarse LP floor tri slicing through an HP
+                 * mound gets admitted and pokes through the grass. */
+                F->gapfill = (far_gap || (floorH && voidok) || near_nohp);
+            } else {
+                /* MID-BAND [COV_MIN, covhi) — the bimodality dead zone; the
+                 * v5 orientation rules are not trustworthy here.  Void test
+                 * only. */
+                F->gapfill = voidok;
             }
         }
         C->nGapfill += F->gapfill;

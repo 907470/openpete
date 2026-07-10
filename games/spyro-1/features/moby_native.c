@@ -912,6 +912,7 @@ static void append_revealed_regular(CPUState* cpu) {
                                  s_rdbg = e ? (unsigned)strtoul(e, NULL, 0) : 0xFFFFFFFEu; }
     int rdbg = (openpete_frame >= s_rdbg && openpete_frame <= s_rdbg + 1u);
     static uint32_t revlist[MAX_RECORDS];   /* this call's reveals (hysteresis publish) */
+    static float revsx[MAX_RECORDS], revsy[MAX_RECORDS]; static int revnv[MAX_RECORDS];
     int revealed = 0;
     uint32_t m = cpu->read_word(G_LEVELMOBYS);
     int guard = 0;
@@ -967,14 +968,28 @@ static void append_revealed_regular(CPUState* cpu) {
          * 0x7F when nonzero (bit7 + sentinel preserved) — mirror that on
          * the effective threshold. */
         uint8_t rad_byte = cpu->read_byte(m + 0x50);
-        int hyst = ((cpu->read_byte(m + 0x51) & 1u) || reveal_prev_has(m)) ? 0x200 : 0;
+        /* Hysteresis, split per consumer. The .s cull widens by 0x200 keyed
+         * ONLY on the moby's live m_WasDrawn bit, so the canonical mirror
+         * (t4c / admit_canon) must use exactly that — mixing in reveal_prev
+         * made "what the .s would admit" depend on what the HOST drew: a
+         * boundary moby inside the band (t4, t4+0x200) with m_WasDrawn clear
+         * was revealed (hyst 0), which set reveal_prev, which widened t4c,
+         * which flipped admit_canon true, which ceded it to a .s queue that
+         * never admits it — one dark frame, reveal_prev cleared, repeat.
+         * Period-2 strobe at exactly the --lod original cull distance (the
+         * artisans tower flag, 2026-07-09). reveal_prev stands in for the
+         * byte only on the reveal's OWN threshold t4e (host-revealed mobys
+         * never get m_WasDrawn set; t4e is where the .s's pop-damping needs
+         * a mirror — the widescreen edge / --no-lod ceiling). */
+        int hyst_canon = (cpu->read_byte(m + 0x51) & 1u) ? 0x200 : 0;
+        int hyst = (hyst_canon || reveal_prev_has(m)) ? 0x200 : 0;
         int32_t cx = (int32_t)cpu->read_word(G_CAMERA + 0x28),
                 cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C),
                 cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
         int32_t d0 = ((int32_t)cpu->read_word(m + 0x0C) - cx) >> 2,
                 d1 = ((int32_t)cpu->read_word(m + 0x10) - cy) >> 2,
                 d2 = ((int32_t)cpu->read_word(m + 0x14) - cz) >> 2;
-        int32_t t4c = ((int32_t)rad_byte << 8) + hyst;               /* canonical threshold */
+        int32_t t4c = ((int32_t)rad_byte << 8) + hyst_canon;         /* canonical threshold (.s mirror) */
         uint32_t eff = rad_byte;
         if (nl && (eff & 0x7Fu)) eff = (eff & 0x80u) | 0x7Fu;        /* --no-lod saturation parity */
         int32_t t4e = ((int32_t)eff << 8) + hyst;                    /* effective threshold */
@@ -1025,6 +1040,14 @@ static void append_revealed_regular(CPUState* cpu) {
         s_recs[s_nrecs].zsf4_raw = rzsf4_raw;
         fade_snap_put2(m, rzsf4, rzsf4_raw);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
+        /* census diag: projected screen centroid + vert count of this reveal */
+        if (revealed < MAX_RECORDS) {
+            float cxm = 0.f, cym = 0.f;
+            for (int j = 0; j < got; j++) { cxm += s_proj[off + j].sx; cym += s_proj[off + j].sy; }
+            revsx[revealed] = got ? cxm / (float)got : -1.f;
+            revsy[revealed] = got ? cym / (float)got : -1.f;
+            revnv[revealed] = got;
+        }
         s_proj_n += got; s_nrecs++; revealed++;
         m += 0x58;
     }
@@ -1040,7 +1063,14 @@ static void append_revealed_regular(CPUState* cpu) {
         static int prev = 0;
         if (cen && lines < 600 && (revealed > 0 || prev > 0)) {
             lines++;
-            fprintf(stderr, "[reveal-census] f=%u revealed=%d\n", openpete_frame, revealed);
+            fprintf(stderr, "[reveal-census] f=%u nl=%d@%p F=%.3f revealed=%d",
+                    openpete_frame, openpete_no_lod, (void*)&openpete_no_lod,
+                    (double)F, revealed);
+            for (int i = 0; i < revealed && i < 8; i++)
+                fprintf(stderr, " %08X/%04X@(%.0f,%.0f)v%d", revlist[i],
+                        (unsigned)cpu->read_half(revlist[i] + 0x36),
+                        (double)revsx[i], (double)revsy[i], revnv[i]);
+            fprintf(stderr, "\n");
         }
         prev = revealed;
     }
