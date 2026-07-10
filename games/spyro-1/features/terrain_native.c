@@ -1735,8 +1735,20 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * and the old coverage quantifier's "PSX horizon sits ~1.75px above
          * native's" top-edge deficit is recovered the same way (the sky never
          * marks, so growing above the drawn edge is allowed). */
+        /* Under EXTENDED LOD (--lod extended / openpete_no_lod), skip the fill
+         * for HP-bearing sectors: their HP never drops (no fog-band tier swap
+         * to bridge), so any stencil-0 pixel there is genuine void/sky — and
+         * the fill's fully-fogged per-face gate rides the RAW-RAM lodThr, so
+         * beyond the real fog band it painted each sector's ENTIRE fogged LP
+         * silhouette; where the coarse LP overhangs the HP edge that landed on
+         * sky as fog-coloured "LP terrain" fringes popping in with distance
+         * (found in testing 2026-07-09, haunted_towers top-down pose pair, yaw
+         * -1046 pitch 992: z=61079 clean vs z=63909 fringed). LP-only /
+         * force-LP sectors keep the fill in every mode — the far-water raster
+         * slivers it exists for are pass-0 LP, not a tier handoff. */
         int fillLP = s_holefill && !(flags & 0x2000) && nLpF > 0
-                     && ((double)lodThr < cbin + SC->radius + 0x100);
+                     && ((double)lodThr < cbin + SC->radius + 0x100)
+                     && !(openpete_no_lod && drawHP);
 
         s_walk_sectors++;
 

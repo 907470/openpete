@@ -30,7 +30,9 @@ LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
 
 def run_game(binary, disc, case, gapfill, outdir, tag):
     env = dict(os.environ)
-    env["OPENPETE_TERRAIN_GAPFILL"] = "1" if gapfill else "0"
+    # ab_env: which feature toggle the on/off pair flips (default: the gapfill
+    # classifier; e.g. "OPENPETE_TERRAIN_HOLEFILL" for fill-neutrality cases).
+    env[case.get("ab_env", "OPENPETE_TERRAIN_GAPFILL")] = "1" if gapfill else "0"
     if os.path.exists(LVP_ICD):          # deterministic software raster
         env["VK_ICD_FILENAMES"] = LVP_ICD
         env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
@@ -40,6 +42,8 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
             "--renderer", "vk"]
     if case.get("level"):
         args += ["--skip-to-level", case["level"]]
+    if case.get("lod"):
+        args += ["--lod", case["lod"]]
     if case.get("mode", "full") == "terrain":
         args += ["--render-paths", "terrain"]
     out = os.path.join(outdir, tag + "-{n}.png")

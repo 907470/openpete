@@ -132,3 +132,20 @@ mode  = "full"
   kind   = "ab-identical"
   bbox   = [150, 140, 320, 230]
   max_px = 0
+
+# haunted_towers top-down pose pair (found in testing): under EXTENDED LOD the
+# stencil holefill used to paint each far sector's fully-fogged LP
+# silhouette wholesale (raw-lodThr distance gate), popping fog-coloured LP
+# fringes around the island edges once the camera crossed the fog band.
+# Fixed by skipping the fill for HP-bearing sectors under no-lod. Guard:
+# holefill on/off must be pixel-identical at the fringing pose.
+[[case]]
+name   = "haunted-topdown-no-fill-fringes"
+level  = "haunted_towers"
+pose   = "100234,109750,63909,-1046,992"
+lod    = "extended"
+mode   = "full"
+ab_env = "OPENPETE_TERRAIN_HOLEFILL"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
