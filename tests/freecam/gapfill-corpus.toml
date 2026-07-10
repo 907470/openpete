@@ -367,8 +367,9 @@ ab_env = "OPENPETE_TERRAIN_CULL"
 # per-pixel Z amputated it while the PSX's coarse OT bucketing painted it
 # over the wall.  bk2 replay (not a freecam pose): the movie walks into
 # the rescue; frame 2621 is mid-wing-spread.  ON vs OFF must differ by
-# the clipped wing region (calibrated 2171 px, ALL inside the bbox --
-# the full-frame ON/OFF diff equals the bbox diff).
+# the clipped wing region (calibrated 2171 px at the live frame, 2210 px
+# after screenshots became reference-aligned 2026-07-10 -- ALL inside the
+# bbox; the full-frame ON/OFF diff equals the bbox diff).
 [[case]]
 name   = "townsquare-delvin-wing-front"
 level  = "town_square"

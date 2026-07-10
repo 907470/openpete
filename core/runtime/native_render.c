@@ -200,7 +200,14 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
  * reference); vk-only has no reference, so depth 0 (live frame, runs ahead).
  * OPENPETE_NATIVE_SCENE_DELAY=<n> overrides with an explicit integer depth. */
 #define SCENE_HIST 4   /* ring of completed-frame snapshots; supports delay depth 0..3 */
-#define AB_DIFF_SCENE_DELAY 2   /* ab/diff default: native lagged 2 frames to match PsyCross */
+/* Reference-aligned depth: PsyCross's present FBO lags the freshly-fed native
+ * scene by exactly ONE frame (PSX build-vs-draw split). Measured 2026-07-10 by
+ * a delay sweep against a fast-changing scene (delvin-rescue f2500 shatter
+ * fragments + smoke, big-diff px vs -og): depth 0 → 87.7k, 1 → 49.5k (min),
+ * 2 → 78.7k, 3 → 96.7k. The old value 2 overshot by one — and the vk-only
+ * screenshot path (depth 0) undershot by one, which is how the skew was
+ * found in testing (og showed the smoke one frame on from the native fragments). */
+#define AB_DIFF_SCENE_DELAY 1   /* ab/diff default: native lagged 1 frame to match PsyCross */
 static scene_tri_t s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
 static int                s_scene_hist_n[SCENE_HIST];
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
@@ -213,16 +220,26 @@ static int                s_scene_hist_count = 0;  /* completed frames recorded 
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
 static int                s_scene_ref_compare = 1; /* set by init: 1 = ab/diff (lagged reference), 0 = vk-only */
 
+/* 1 while openpete_native_render_screenshot_all composes: the -vk/-ab/-diff
+ * screenshot variants sit beside the -og PsyCross capture, so they use the
+ * reference-aligned depth even when the LIVE mode is vk-only (whose on-screen
+ * present keeps running ahead at depth 0). */
+static int s_scene_shot_compose = 0;
+
 static int scene_delay_depth(void) {
     if (s_scene_delay < -1) {
         const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
-        /* Explicit env wins (integer depth); otherwise default to the measured
-         * ab/diff lag so native and the lagged reference are the same frame.
-         * vk-only has no reference → depth 0 (live frame). */
+        /* Explicit env = a forced depth (wins in every mode, incl. the
+         * screenshot compose — that's how the alignment sweep is run);
+         * unset = -1 (resolve per mode below). */
         if (e && *e) { int d = atoi(e); s_scene_delay = (d < 0) ? 0 : (d >= SCENE_HIST ? SCENE_HIST - 1 : d); }
-        else         s_scene_delay = s_scene_ref_compare ? AB_DIFF_SCENE_DELAY : 0;
+        else         s_scene_delay = -1;
     }
-    return s_scene_delay;
+    if (s_scene_delay >= 0) return s_scene_delay;
+    /* Mode default: reference-compare modes and the screenshot compose align
+     * with the lagged PsyCross reference; the live vk-only present has no
+     * reference → depth 0 (live frame, runs ahead). */
+    return (s_scene_ref_compare || s_scene_shot_compose) ? AB_DIFF_SCENE_DELAY : 0;
 }
 
 /* No ambient scene category/carry: add_tri takes both EXPLICITLY per call, so a
@@ -4649,7 +4666,21 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
+static int native_render_screenshot_all_impl(const char *base);
+
+/* Wrapper: the screenshot compose uses the reference-aligned scene depth (see
+ * s_scene_shot_compose) so -vk/-ab/-diff show the SAME game frame as the -og
+ * PsyCross capture beside them. Flag set/cleared here so the impl's early
+ * returns can't leak it into the live present path. */
 int openpete_native_render_screenshot_all(const char *base)
+{
+    s_scene_shot_compose = 1;
+    int r = native_render_screenshot_all_impl(base);
+    s_scene_shot_compose = 0;
+    return r;
+}
+
+static int native_render_screenshot_all_impl(const char *base)
 {
     if (!s_nr.enabled || !base) return 1;
 
