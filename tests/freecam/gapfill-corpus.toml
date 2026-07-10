@@ -235,3 +235,20 @@ level = "tree_tops"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# artisans grass poke-through (found in testing): LP floor tri s12 f#21 slices
+# through the HP grass mound by the stone platform -- admitted by the bare
+# floor rule (cov<0.9, nz=-0.99), its "void" samples are UNDER the grass
+# surface (inside the hill: geometrically empty, visually solid).  v8:
+# floor-rule admissions also require the void test, and the void test is
+# TWO-SIDED (both normal directions clear within 256) -- the front ray
+# from an under-grass sample hits the surface above.  Gapfill on/off must
+# be pixel-identical at this pose.
+[[case]]
+name  = "artisans-grass-no-pokethrough"
+level = "artisans"
+pose  = "86800,69542,10184,243,447"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
