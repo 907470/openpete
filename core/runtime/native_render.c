@@ -207,6 +207,7 @@ static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
 static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
+static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
@@ -247,7 +248,18 @@ static uint32_t s_scene_freeze = 0;
  * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
 static int s_scene_hud_under = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; }
+/* Actors-in-front draw order for the current frame. 0 (default) = the ACTOR
+ * group depth-tests against the world normally. 1 = the ACTOR group draws
+ * depth-ISOLATED after the world+player (mid-pass depth clear, same trick as
+ * HUD3D): actors still Z-sort among their own faces but are never occluded by
+ * terrain. Set by the moby feeder ONLY during the dragon-rescue cutscene
+ * (GS_Dragon with the cutscene state machine active), where the .s draws just
+ * the rescue actors and the PSX's coarse OT bucketing painted them over the
+ * terrain they interpenetrate (the spread wing inside a wall) — true per-pixel
+ * Z would amputate them. Reset per frame. */
+static int s_scene_actor_front = 0;
+
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -288,10 +300,11 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
             s_scene_hist_hud_under[slot] = s_scene_hud_under;
+            s_scene_hist_actor_front[slot] = s_scene_actor_front;
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
-        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_frame = frame;
+        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
     }
 }
 /* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
@@ -439,6 +452,8 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
+
+void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = front ? 1 : 0; }
 
 /* --- 2D-overlay carry across sub-tick re-extracts -------------------------
  * The fade overlay (func_800190D4) and the cutscene letterbox bars
@@ -622,7 +637,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
  * during warmup before enough history has accumulated. */
 static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
                                                    uint32_t* out_fade, uint32_t* out_freeze,
-                                                   int* out_hud_under) {
+                                                   int* out_hud_under, int* out_actor_front) {
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
@@ -630,11 +645,13 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
         *out_fade = s_scene_hist_fade[slot];
         if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
         if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
+        if (out_actor_front) *out_actor_front = s_scene_hist_actor_front[slot];
         return s_scene_hist[slot];
     }
     *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
     if (out_freeze) *out_freeze = s_scene_freeze;
     if (out_hud_under) *out_hud_under = s_scene_hud_under;
+    if (out_actor_front) *out_actor_front = s_scene_actor_front;
     return s_scene;
 }
 
@@ -2095,7 +2112,7 @@ static void ensure_opaque_depth(void)
     static int s_failed = 0;
     if (s_failed) return;               /* device can't sample depth — fallback pipe */
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
-    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     if (scene_n <= 0) return;
     /* The pre-pass serves two consumers: the shadow decal and the moby
      * occlusion grid. Allocate when either wants it. */
@@ -2132,7 +2149,7 @@ static void native_depth_prepass(void)
     s_od_ready = 0;
     if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
-    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_);
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
@@ -2997,8 +3014,8 @@ static void portal_mask_bias(float* c, float* s, float* cl)
 
 static bool draw_native_scene(bool full_extent)
 {
-    int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0;
-    const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under);
+    int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
 
     /* Load-window census (OPENPETE_LOAD_CENSUS=1): what THIS present actually
      * composes — tri counts per category/blend + the fade/freeze covers. One
@@ -3498,6 +3515,10 @@ static bool draw_native_scene(bool full_extent)
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
         const struct scene_group *g = &groups[gi];
+        /* Dragon-rescue cutscene (actor_front): the ACTOR buckets are skipped
+         * at their normal slot and re-drawn depth-isolated after the PLAYER
+         * group (the gi==3 block below). */
+        const int actor_front_skip = (gi == 2 && actor_front);
         /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
          * depth bias for these draws (both sub pipes are .depth_bias). This is
          * the W2.5 replacement for the moby-shadow ×0.96 multiplicative view-Z
@@ -3510,7 +3531,7 @@ static bool draw_native_scene(bool full_extent)
          * that has the same state static (every non-decal pipeline here), so
          * the bias must be set AFTER each depth_bias pipeline bind, before its
          * draws — never rely on a value set earlier in the pass. */
-        if (g->utex && ut_count[gi] > 0) {
+        if (g->utex && ut_count[gi] > 0 && !actor_front_skip) {
             if (gi == 1) {
                 /* Untextured SUBTRACT = the Spyro silhouette shadow. Preferred
                  * path: the DEPTH-AWARE decal (shadow_decal.frag samples the
@@ -3561,7 +3582,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
-        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
+        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex && !actor_front_skip) {
             /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
              * shared WORLD-opaque depth pre-pass is available this present — the
              * same fix Spyro's silhouette shadow got (shadow_decal_tex.frag owns
@@ -3727,6 +3748,33 @@ static bool draw_native_scene(bool full_extent)
          * In every other state the flat HUD draws OVER the player (after the loop). */
         if (gi == 2 && hud_under)
             draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
+        /* Dragon-rescue cutscene (actor_front): draw the ACTOR buckets here —
+         * after world/portal/player, before the ALPHA/ADDITIVE groups — behind
+         * a mid-pass depth CLEAR (the HUD3D trick). The cutscene actors (the
+         * rescue dragon / cutscene Spyro / crystal fragments — the .s cutscene
+         * draw list holds ONLY these) Z-sort among their own faces but are
+         * never occluded by terrain: the PSX's coarse OT bucketing painted
+         * them over walls they interpenetrate (the spread-wing close-ups),
+         * which true per-pixel Z would amputate. The transparent groups draw
+         * AFTER, testing the actors' fresh depth, so rescue sparkles still
+         * sort against the dragon; their terrain-depth occlusion is lost for
+         * these frames — invisible in practice, since the cutscene draw list
+         * has no level mobys (no torch glows etc. behind walls). */
+        if (gi == 3 && actor_front) {
+            rhi_clear_depth(s_nr.dev);
+            if (s_nr.gouraud_pipe && ut_count[2] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[2], (uint32_t)ut_first[2]);
+            }
+            if (txg_count[2] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                draw_tex_runs(txg_first[2], txg_count[2], tx_start, scene,
+                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe);
+            }
+        }
     }
 
     /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player
@@ -4210,7 +4258,7 @@ enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
 static bool compose_variant(int variant, bool have_ref)
 {
     int sn; uint32_t sbg, sfade, sfreeze;
-    const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL);
+    const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL, NULL);
     uint32_t bg = sbg; if (bg == 0) bg = bg_from_ref_corner();  /* gamestate primary (== PSX clear); corner fallback */
     bool want_scene = (sn > 0) || (s_isolation && bg != 0);
 
@@ -4648,7 +4696,7 @@ int openpete_native_render_screenshot_all(const char *base)
     /* Background = the gamestate draw-env clear (matching the live native render);
      * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
     int scene_n; uint32_t scene_bg, scene_fade;
-    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL);
+    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
     uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;

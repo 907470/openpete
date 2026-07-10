@@ -42,6 +42,11 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
             "--renderer", "vk"]
     if case.get("level"):
         args += ["--skip-to-level", case["level"]]
+    if case.get("bk2"):
+        # Scripted-input replay (repo-root-relative .bk2 path) for spots that
+        # need gameplay to happen (e.g. a cutscene) rather than a freecam pose.
+        # Pair with `level` to mirror the .bk2.args the movie was recorded with.
+        args += ["--bk2", case["bk2"]]
     if case.get("lod"):
         args += ["--lod", case["lod"]]
     if case.get("mode", "full") == "terrain":

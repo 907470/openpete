@@ -485,6 +485,15 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade);
  * on top regardless. Auto-clears each frame (reset by begin_frame); the feeder sets
  * it from g_Gamestate every frame. Determinism-safe (display-only). */
 void openpete_native_scene_set_hud_under_player(int under);
+/* Actors-in-front draw order for this frame (dragon-rescue cutscene). Pass 1 to
+ * draw the ACTOR group depth-ISOLATED after the world+player (mid-pass depth
+ * clear, the HUD3D trick): actors still Z-sort among their own faces but are
+ * never occluded by terrain. The PSX's coarse OT bucketing painted the rescue
+ * actors over walls they interpenetrate (the rescued dragon's spread wing inside
+ * a wall) — true per-pixel Z would amputate them. Default (0) = normal depth
+ * order. Auto-clears each frame; the feeder sets it from the game's own
+ * dragon-cutscene state. Determinism-safe (display-only). */
+void openpete_native_scene_set_actor_front(int front);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */

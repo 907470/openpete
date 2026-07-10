@@ -359,3 +359,24 @@ ab_env = "OPENPETE_TERRAIN_CULL"
   kind   = "ab-active"
   min_px = 4000
   bbox   = [230, 45, 340, 285]
+
+# Dragon-rescue cutscene (found in testing, 2026-07-10): the cutscene actors
+# draw in FRONT of terrain (depth-isolated ACTOR pass, the HUD3D trick;
+# moby_native actor_front <- GS_Dragon + g_DragonCutscene.m_State 1..6).
+# Delvin's spread wing interpenetrates the town_square tower wall; true
+# per-pixel Z amputated it while the PSX's coarse OT bucketing painted it
+# over the wall.  bk2 replay (not a freecam pose): the movie walks into
+# the rescue; frame 2621 is mid-wing-spread.  ON vs OFF must differ by
+# the clipped wing region (calibrated 2171 px, ALL inside the bbox --
+# the full-frame ON/OFF diff equals the bbox diff).
+[[case]]
+name   = "townsquare-delvin-wing-front"
+level  = "town_square"
+bk2    = "games/spyro-1/bk2/town-square-delvin-rescue.bk2"
+frame  = 2621
+mode   = "full"
+ab_env = "OPENPETE_ACTOR_FRONT"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 1000
+  bbox   = [120, 150, 300, 260]

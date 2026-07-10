@@ -4036,6 +4036,27 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
         nyonly, nx, nz, s_nshrecs);
 }
 
+/* Dragon-rescue cutscene: actors draw in FRONT of terrain (depth-isolated
+ * ACTOR pass in native_render.c). The .s gate is the game's own: GS_Dragon
+ * (g_Gamestate@0x800757D8 == 8) selects func_8001CFDC, whose top-level branch
+ * switches on g_DragonCutscene.m_State (@0x80077058, the struct is
+ * @0x80077030): state 0 draws the NORMAL full moby queue (front pass must stay
+ * off), states 1..6 draw ONLY the cutscene actors (rescued dragon / cutscene
+ * Spyro+dragon / crystal fragments — draw.c:1806-2010), which the PSX's coarse
+ * OT bucketing painted over terrain they interpenetrate (Delvin's spread wing
+ * inside the town_square tower). State 7 is EXCLUDED: past tick 16 it re-queues
+ * the full level moby set (func_800521C0) while fading back to gameplay —
+ * front-passing every level moby there would be wrong. Called at both feed
+ * sites (canonical + sub-tick re-extract), after begin_frame's reset.
+ * OPENPETE_ACTOR_FRONT=0 disables (A/B kill-switch; the corpus guard flips it). */
+static void moby_native_set_actor_front(CPUState* cpu) {
+    static int s_en = -1;
+    if (s_en < 0) { const char* e = getenv("OPENPETE_ACTOR_FRONT"); s_en = (e && *e) ? (*e != '0') : 1; }
+    uint32_t st = cpu->read_word(0x80077058u);
+    openpete_native_scene_set_actor_front(
+        s_en && cpu->read_word(0x800757D8u) == 8u && st >= 1u && st <= 6u);
+}
+
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = moby_verify_enabled();
@@ -4064,6 +4085,7 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
          * (g_Gamestate@0x800757D8.) Set after push (begin_frame, which resets the
          * flag, has run); the moby renderer runs every 3D frame. */
         openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
+        moby_native_set_actor_front(cpu);
     }
 
     if (verify) {
@@ -4752,6 +4774,7 @@ void moby_native_reextract(CPUState* cpu) {
         push_scene_moby();
     }
     openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
+    moby_native_set_actor_front(cpu);
 
     /* Occlusion census: per-present culled count for the phase counters + an
      * OPENPETE_MOBY_OCCL_DBG once-per-second summary line. */
