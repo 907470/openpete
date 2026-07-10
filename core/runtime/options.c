@@ -288,9 +288,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --lod MODE                 sector level-of-detail: original (default = authentic PSX LOD band) |\n"
         "                             extended (draw every visible sector at high-poly, out to the cull\n"
         "                             distance and beyond). Native renderer only. (--no-lod = extended.)\n"
-        "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, 4 = fog\n"
-        "                             saturates 4x farther (the classic far-detail look).\n"
-        "                             Default: 1, or 4 under --lod extended. Range [0.25,16].\n"
+        "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, N = fog\n"
+        "                             saturates N x farther (100 ~= fog off, the far-detail look).\n"
+        "                             Default: 1, or 100 under --lod extended. Range [0.25,128].\n"
         "  --vertex-precision MODE    native vk vertex screen-coordinate precision: subpixel (default =\n"
         "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
         "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
@@ -572,11 +572,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--fog-scale") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fog_scale = (float)atof(v); i++;
-            if (opts->fog_scale < 0.25f || opts->fog_scale > 16.0f) {
-                fprintf(stderr, "openpete: --fog-scale clamped to [0.25,16]; got %.2f\n",
+            if (opts->fog_scale < 0.25f || opts->fog_scale > 128.0f) {
+                fprintf(stderr, "openpete: --fog-scale clamped to [0.25,128]; got %.2f\n",
                         opts->fog_scale);
                 if (opts->fog_scale < 0.25f) opts->fog_scale = 0.25f;
-                if (opts->fog_scale > 16.0f) opts->fog_scale = 16.0f;
+                if (opts->fog_scale > 128.0f) opts->fog_scale = 128.0f;
             }
         } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
                    strcmp(a, "--screenshot-on-tick") == 0) {

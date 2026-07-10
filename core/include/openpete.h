@@ -67,7 +67,8 @@ typedef enum {
  * authentic PSX behaviour: distance-based LOD swaps + the stock fog curve.
  * EXTENDED collapses the sector LOD band so every visible sector draws from
  * its high-poly mesh at full quality, out to the cull distance and beyond
- * (the classic "see detail far away" look), and defaults --fog-scale to 4x.
+ * (the classic "see detail far away" look), and defaults --fog-scale to 100x
+ * (fog effectively off, so the extended far detail is actually visible).
  * Native renderer only — the feeders derive detail from gamestate, never
  * perturbing gameplay-readable RAM (in PsyCross reference mode EXTENDED warns
  * and is ignored). See notes/plans/openpete-disable-lods.md. */
@@ -160,9 +161,9 @@ typedef struct {
     /* Fog-distance multiplier (`--fog-scale N`). Scales every channel of the
      * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
      * near-tile select, fog-saturation LP handoff): N = 1 is the authentic
-     * PSX curve (saturation at the LOD distance), N = 4 saturates 4x farther
-     * — the classic "see detail far away" look. 0 = auto: 1 under --lod
-     * original, 4 under --lod extended. */
+     * PSX curve (saturation at the LOD distance), larger N saturates N x
+     * farther — the classic "see detail far away" look; ~100 pushes fog off
+     * entirely. 0 = auto: 1 under --lod original, 100 under --lod extended. */
     float fog_scale;
 
     /* Vertex screen-coordinate precision (`--vertex-precision subpixel|integer`).

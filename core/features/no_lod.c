@@ -29,13 +29,15 @@ static float s_cli_fog_scale = -1.0f;
 int no_lod_apply_options(const openpete_options_t* opts) {
     openpete_no_lod = 0;
     /* Resolve the fog-distance multiplier before the no-lod early-out:
-     * explicit --fog-scale wins; otherwise --no-lod defaults to the
-     * classic stretched curve (4x) and stock to the authentic PSX one. */
+     * explicit --fog-scale wins; otherwise --no-lod defaults to fog
+     * effectively off (100x) — extended LOD draws the far detail, so the
+     * default reveals it rather than fogging it away — and stock to the
+     * authentic PSX curve. */
     int extended = opts && opts->lod == OPENPETE_LOD_EXTENDED;
     if (opts) {
         s_cli_fog_scale = opts->fog_scale;
         openpete_fog_scale = (opts->fog_scale > 0.0f) ? opts->fog_scale
-                             : (extended ? 4.0f : 1.0f);
+                             : (extended ? 100.0f : 1.0f);
     }
     if (!extended) return 0;
 
@@ -58,7 +60,7 @@ void openpete_no_lod_set(int on, float fog_scale) {
     openpete_no_lod = on ? 1 : 0;
     openpete_fog_scale = (fog_scale > 0.0f) ? fog_scale
                          : (s_cli_fog_scale > 0.0f) ? s_cli_fog_scale
-                         : (openpete_no_lod ? 4.0f : 1.0f);
+                         : (openpete_no_lod ? 100.0f : 1.0f);
     OPL_INFO_F("no-lod", "live toggle -> %s (fog x%.2f)",
                openpete_no_lod ? "EXTENDED" : "ORIGINAL", openpete_fog_scale);
 }
