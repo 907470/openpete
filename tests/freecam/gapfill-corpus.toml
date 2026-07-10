@@ -310,3 +310,18 @@ mode  = "terrain"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# blowhard: the LP tier is an authored ALTERNATE, not a coarse mirror --
+# it has a portal ARCH where the HP world has the exit vortex, so
+# LP-exclusive structures classify as gap fillers and materialize as
+# green arches on the plateau.  The classifier's redundancy premise
+# doesn't hold; gapfill is disabled level-wide (g_LevelId 34 in the
+# OPENPETE_TERRAIN_GAPFILL_SKIP list, default "34").
+[[case]]
+name  = "blowhard-level-disabled"
+level = "blowhard"
+pose  = "89820,73764,23253,2337,166"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0

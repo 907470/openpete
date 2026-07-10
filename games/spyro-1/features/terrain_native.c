@@ -1134,6 +1134,27 @@ static int gp_gf_excluded(uint32_t i, int f) {
     return strstr(pad, key) != NULL;
 }
 
+/* Per-LEVEL gapfill kill list: levels whose LP tier is NOT a coarse mirror
+ * of the HP world but an authored ALTERNATE (blowhard/34: the LP has a
+ * portal ARCH where the HP world has the exit vortex — LP-exclusive
+ * structures classify as "gap fillers" and materialize as green arches on
+ * the plateau, found in testing 2026-07-09).  The redundancy premise the whole
+ * classifier rests on doesn't hold there; disable the feature wholesale.
+ * OPENPETE_TERRAIN_GAPFILL_SKIP="34,..." overrides (comma list of
+ * g_LevelId values; empty string = skip nothing). */
+static int gp_level_skipped(CPUState* cpu) {
+    static const char* s_skip = (const char*)-1;
+    if (s_skip == (const char*)-1) {
+        s_skip = getenv("OPENPETE_TERRAIN_GAPFILL_SKIP");
+        if (!s_skip) s_skip = "34";
+    }
+    if (!*s_skip) return 0;
+    int lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    char key[16]; snprintf(key, sizeof key, ",%d,", lvl);
+    char pad[128]; snprintf(pad, sizeof pad, ",%s,", s_skip);
+    return strstr(pad, key) != NULL;
+}
+
 static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                                  uint32_t sectorPtr, uint32_t sectorCnt) {
     /* Thresholds are env-tunable without a rebuild (corpus-harness sweeps /
@@ -1199,6 +1220,7 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
             double nl = nx*nx + ny*ny + nz*nz;
             F->floorf = (nl > 0.0 && nz < 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
         }
+        if (gp_level_skipped(cpu)) continue;   /* alternate-LP level: no verdicts */
         int hit = 0, total = 0, nunb = 0;
         double unb[30];                    /* per-unbacked-sample min dist² (≤ 2 tris × 15) */
         double unbp[30][3];                /* their sector-local positions (near-noHP test) */
@@ -2103,7 +2125,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         static int s_fillnear = -1;
         if (s_fillnear < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILLNEAR"); s_fillnear = (e && *e) ? (*e != '0') : 0; }
         int fillNearLP = s_fillnear && s_holefill && !fillLP && drawHP && !drawLPfull
-                         && !(flags & 0x2000) && nLpF > 0;
+                         && !(flags & 0x2000) && nLpF > 0
+                         && !gp_level_skipped(cpu);   /* alternate-LP levels: no backstop either */
 
         s_walk_sectors++;
 
