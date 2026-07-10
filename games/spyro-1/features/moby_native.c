@@ -548,7 +548,17 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  float env_az;
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
-                 int zsf4_raw; } rec_meta;
+                 int zsf4_raw;
+                 uint8_t spec_solo; } rec_meta;
+                 /* spec_solo (trailing, set after the positional literal) =
+                 * reveal-built record whose moby is in NO .s queue this tick
+                 * (beyond canonical range under --lod extended, or off-4:3).
+                 * The record is the moby's SOLE feeder, so the walk must apply
+                 * the SPEC per-face treatment (env reflection / diffuse
+                 * highlight) that the .s SPEC pass would have drawn — the
+                 * s_cur_mat=='SP' pass gate alone left revealed metal capes
+                 * rendering their dark baked base texture (user-reported
+                 * cliff_town caped gnorc, 2026-07-09). */
                  /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
                  * may carry a render-time FACEBLOCK PATCH list (see
                  * moby_faces_for_record) — 0 = no patch lookup.
@@ -1070,6 +1080,7 @@ static void append_revealed_regular(CPUState* cpu) {
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
         s_recs[s_nrecs].zsf4_raw = rzsf4_raw;
+        s_recs[s_nrecs].spec_solo = 1;   /* sole feeder: walk applies the SPEC face treatment */
         fade_snap_put2(m, rzsf4, rzsf4_raw);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
         /* census diag: projected screen centroid + vert count of this reveal */
@@ -1807,7 +1818,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
              * reflect. (The earlier gate env-mapped EVERY textured face of a
              * metal moby -> sombrero went shiny-green with the wrong texture.) */
             proj_xy hlq[4];   /* hl decal copies (vz-nudged); see below */
-            if (s_cur_mat[0]=='S' && F->hl) {
+            if ((s_cur_mat[0]=='S' || R->spec_solo) && F->hl) {
               /* The .s draws these SPECIAL faces (env reflection / diffuse
                * highlight) COPLANAR over the moby's base faces and wins by OT
                * paint order within the moby. The native scene is depth-tested
