@@ -340,3 +340,22 @@ mode  = "terrain"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 0
+
+# magic_crafters waterfall room (found in testing, 2026-07-09): the outside
+# waterfall sheet and the room's inner wall are back-to-back surfaces a
+# few world units apart -- under emit-all the sheet's BACK-face is
+# genuinely nearer and wins the true-Z depth test, punching a blue
+# column through the room (PSX hides it via the .s NCLIP cull, which
+# native now mirrors exactly: two-half quad acceptance, w3&4
+# draw-anyway, straddle bypass).  CULL on-vs-off must differ by the
+# column (feature active) inside its bbox and nowhere else.
+[[case]]
+name   = "magiccrafters-waterfall-room-culled"
+level  = "magic_crafters"
+pose   = "69519,93695,26535,619,26"
+mode   = "terrain"
+ab_env = "OPENPETE_TERRAIN_CULL"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 4000
+  bbox   = [230, 45, 340, 285]

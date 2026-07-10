@@ -303,12 +303,21 @@ static int s_sectordump = -1;
 static int s_sd_active = 0;
 static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
 static void terrain_dbg_init(void) {
-    /* Backface cull is OFF by default: a native Z-buffer hides occluded
-     * backfaces, so emit-all gives full coverage. The .s NCLIP-culls for GPU
-     * perf; replicating it dropped ~half the faces (front faces too, on the
-     * sign/flip convention) → gaps. Re-enable for debug / once the NCLIP sign+
-     * flip is nailed as a perf optimization. */
-    if (s_cull < 0) { const char* e = getenv("OPENPETE_TERRAIN_CULL"); s_cull = (e && *e && *e != '0'); }
+    /* NCLIP back-face cull, default ON for the HP tier (bit0). A Z-buffer
+     * hides *occluded* back-faces but not back-faces that sit NEARER than the
+     * front geometry: back-to-back wall pairs (a room interior vs the
+     * cliff/waterfall outside it) interpenetrate within a few world units, so
+     * emit-all let the far surface's back-face win depth and punch through
+     * (magic_crafters waterfall room, 2026-07-09). The .s NCLIP verdict — the
+     * exact two-half quad rule, see the emit-site comment — is the canonical
+     * visibility rule; the old "dropped ~half the faces" failure was the
+     * single-triple mirror missing the second-half acceptance.
+     * OPENPETE_TERRAIN_CULL is a bitmask: bit0 = HP cull (default), bit1 = LP
+     * cull (EXPERIMENTAL — mixed winding in visible LP sets made both signs
+     * regress at default cameras; needs the LP walk's own two-NCLIP rule read
+     * from the .s before enabling), bit2 = invert LP sign (probe). "0"
+     * disables everything. */
+    if (s_cull < 0) { const char* e = getenv("OPENPETE_TERRAIN_CULL"); s_cull = (e && *e) ? atoi(e) : 1; }
     if (s_flat < 0) { const char* e = getenv("OPENPETE_TERRAIN_FLAT"); s_flat = (e && *e && *e != '0'); }
 }
 
@@ -2282,11 +2291,49 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
             }
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
-             * word3 & 0x2). front = nclip > 0. */
-            double nclip = (sv[i1].sx - sv[i0].sx) * (sv[i2].sy - sv[i0].sy)
-                         - (sv[i2].sx - sv[i0].sx) * (sv[i1].sy - sv[i0].sy);
+             * word3 & 0x2). front = nclip > 0. The GTE saturates SX/SY to
+             * [-1024, 1023] BEFORE NCLIP — a far-offscreen corner (glancing
+             * screen-edge face) must be clamped the same way or the cross
+             * product flips sign vs the game's verdict (ice_cavern left-edge
+             * waterfall chunk / artisans corner grass, the HP-cull probe's
+             * only residuals). */
+            /* (Integer-truncating the corners first, mirroring MAC0>>16, was
+             * probed and made the residuals WORSE — the game's UNR divide ≠
+             * float division, so sub-pixel rounding chases noise. Keep floats;
+             * only the saturation window is mirrored.) */
+            #define GTE_SAT(v) ((v) < -1024.0f ? -1024.0 : ((v) > 1023.0f ? 1023.0 : (double)(v)))
+            /* NCLIP facing, mirroring the .s HP walk exactly (block_80026C30..
+             * 80026CD0; tri variant block_8002720C..80027220):
+             *  - HALF 1: the walk RTPT-loads SXY = corners (i0, i1, i3) for a
+             *    quad (the GT4 slot order TL,TR,BL — NOT (i0,i1,i2)) and
+             *    (i0, i1, i2) for a tri. Accept when the flip-adjusted MAC0
+             *    (word3 & 0x2 negates) is >= 0.
+             *  - HALF 2 (quads only, when half 1 flunks): SXY0 is re-loaded
+             *    with corner i2 → NCLIP over (i2, i1, i3). word3 & 0x4 jumps
+             *    straight to the emit path (a draw-anyway/two-sided bit);
+             *    otherwise FLIP selects the accepted sign — set → accept
+             *    n2 >= 0 (block_80026CC0), clear → accept n2 <= 0
+             *    (block_80026CA8; the triple's orientation is inverted vs
+             *    half 1, hence the opposite base sign).
+             * The face draws when either half accepts: a twisted quad near
+             * edge-on is visible through one half only (the ice_cavern
+             * waterfall sheet s101/f15), while a genuine back-to-back wall
+             * pair (the magic_crafters room/waterfall) fails both. */
+            double nx0 = GTE_SAT(sv[i0].sx), ny0 = GTE_SAT(sv[i0].sy);
+            double nx1 = GTE_SAT(sv[i1].sx), ny1 = GTE_SAT(sv[i1].sy);
+            int h1 = quad ? i3 : i2;
+            double nxA = GTE_SAT(sv[h1].sx), nyA = GTE_SAT(sv[h1].sy);
+            double nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
             if (flip) nclip = -nclip;
-            int front = (nclip > 0.0);
+            int front = (nclip >= 0.0);
+            int front2 = 0;
+            if (quad) {
+                double nx2 = GTE_SAT(sv[i2].sx), ny2 = GTE_SAT(sv[i2].sy);
+                double nx3 = GTE_SAT(sv[i3].sx), ny3 = GTE_SAT(sv[i3].sy);
+                double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
+                int dside = (faceStride == 16) && (F->w3 & 0x4) != 0;
+                front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
+            }
             /* Far-band identity dump: full per-face record for the offline
              * whole-face join vs captured prims. Backfaces included (fr=0 —
              * the .s NCLIP-culls them but native emit-all draws them; the
@@ -2507,9 +2554,58 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 s_dbg_spike++;   /* near/HQ cells subdivided */
                 continue;
             }
-            /* NCLIP back-face cull (off by default — the Z-buffer hides back-faces;
-             * OPENPETE_TERRAIN_CULL=1 enables). front = nclip > 0, computed above. */
-            if (s_cull && !front) { s_dbg_nclip++; continue; }
+            /* NCLIP back-face cull, mirroring the .s walk. A Z-buffer hides
+             * *occluded* back-faces, but NOT back-faces that sit nearer than
+             * the front geometry: back-to-back wall pairs (a room interior
+             * and the cliff/waterfall outside it) interpenetrate within a few
+             * world units, so emit-all let the far side's back-face win depth
+             * and punch through (magic_crafters waterfall room). The game
+             * never draws those faces at all — NCLIP culls them — so cull is
+             * the canonical visibility rule, not a perf knob.
+             * Two carve-outs where the .s verdict can't be mirrored:
+             *  - straddling faces (a corner behind the camera): projected
+             *    corners are mirrored, the cross-product sign is garbage —
+             *    waive (Z-buffer owns those; same waiver as the near/HQ gate).
+             *  - fill passes: native-only hole cover with no .s counterpart,
+             *    stencil-gated to pixels nothing else drew — stay emit-all.
+             * LP quads are culled per-tri below (the .s LP loop NCLIPs
+             * tri(i0,i1,i2) then tri(i3,i1,i2) — a saddle quad can be half
+             * front-facing); everything else uses the whole-face verdict. */
+            /* OPENPETE_TERRAIN_CULL is a bitmask while the per-tier NCLIP
+             * convention is being validated: bit0 = cull HP faces, bit1 =
+             * cull LP faces, bit2 = invert the LP front sign. */
+            int cullable = ((faceStride == 16) ? (s_cull & 1) : (s_cull & 2))
+                           && !straddle && !passFill;
+            int cfront = ((faceStride == 8 && (s_cull & 4)) ? (nclip < 0.0) : front)
+                         || front2;
+            {   /* OPENPETE_TERRAIN_CULLDBG="frame,x0,y0,x1,y1" (PSX screen rect):
+                 * log every back-verdict face whose bbox intersects the rect. */
+                static int s_cdbg = -2; static long s_cd[5];
+                if (s_cdbg == -2) {
+                    const char* e = getenv("OPENPETE_TERRAIN_CULLDBG");
+                    s_cdbg = (e && sscanf(e, "%ld,%ld,%ld,%ld,%ld",
+                              &s_cd[0], &s_cd[1], &s_cd[2], &s_cd[3], &s_cd[4]) == 5);
+                }
+                if (s_cdbg > 0 && !cfront && openpete_frame >= (unsigned)s_cd[0]
+                    && openpete_frame < (unsigned)s_cd[0] + 2u) {
+                    float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+                    const int ci[4] = { i0, i1, i2, i3 };
+                    int nc = quad ? 4 : 3;
+                    for (int q2 = 0; q2 < nc; q2++) {
+                        const lvert* V = &sv[ci[q2]];
+                        if (V->sx < bx0) bx0 = V->sx; if (V->sx > bx1) bx1 = V->sx;
+                        if (V->sy < by0) by0 = V->sy; if (V->sy > by1) by1 = V->sy;
+                    }
+                    if (bx1 >= s_cd[1] && bx0 <= s_cd[3] && by1 >= s_cd[2] && by0 <= s_cd[4]) {
+                        fprintf(stderr, "[culldbg] s=%u f=%d hp=%d q=%d flip=%d abe=%d w3=%08X "
+                                "nclip=%.2f straddle=%d pass=%d bbox=%.0f,%.0f,%.0f,%.0f m3=%.0f,%.0f,%.0f,%.0f\n",
+                                i, f, faceStride == 16, quad, flip, F->abe, F->w3,
+                                nclip, straddle, pass, bx0, by0, bx1, by1,
+                                sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3);
+                    }
+                }
+            }
+            if (cullable && !cfront) { s_dbg_nclip++; continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
@@ -2546,7 +2642,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * diagonal i1-i2 and NO i2/i3 slot swap. (HP's GT4 swaps i2/i3 below;
                  * applying that swap to LP's scanline-ordered corners bowties the quad
                  * → overlapping tris + gouraud-colour bleed = the missing distant-
-                 * terrain polys + brown artifacts.) Untextured, so corner UVs unused. */
+                 * terrain polys + brown artifacts.) Untextured, so corner UVs unused.
+                 * Face visibility (either NCLIP half) was decided above; the GPU
+                 * draws the whole G4, so both halves emit together. */
                 emit_tri(sv, i0, i1, i2, k0, k1, k2, mat);
                 emit_tri(sv, i1, i2, i3, k1, k2, k3, mat);
             } else if (quad) {
