@@ -3156,6 +3156,17 @@ static bool draw_native_scene(bool full_extent)
              * exact per-pixel screen position via a NOPERSPECTIVE varying (no
              * mode-specific affine — identical full-extent and panel). */
             int is_shadow = (gb == 3);
+            /* OPENPETE_PLY_VBDBG=1: print PLAYER-group verts in the upper band
+             * (stamp forensics — sy<205 excludes Spyro's body). */
+            { static int s_pd = -1;
+              if (s_pd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_pd = (e && *e && *e != '0'); }
+              if (s_pd && gi == 3 && scene[t].v[0].sy < 205.0f) {
+                  static int s_pc = 0;
+                  if (s_pc++ < 40)
+                      fprintf(stderr, "[ply-vb] t=%d sxy=(%.0f,%.0f) z=(%.4f,%.4f,%.4f)\n",
+                              t, scene[t].v[0].sx, scene[t].v[0].sy,
+                              scene[t].v[0].z, scene[t].v[1].z, scene[t].v[2].z);
+              } }
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -3723,13 +3734,26 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
         /* SUBTRACT-WORLD — genuinely subtractive content (blend 3, category
-         * != SHADOW): the dragon-fragment smoke puffs, ABR-2 terrain/moby
-         * faces. Drawn right after the shadow-decal group through the PLAIN
-         * z-test subtract pipes with a NEUTRAL bias — routing these through
-         * the decal path made the sky-borne smoke vanish (ground-height
-         * discard) and sampled the wrong texture (the decal draw's
-         * range-uniform shadow-sprite material). */
-        if (gi == 1) {
+         * != SHADOW): the smoke puffs (fragment shatter, flame-kill), ABR-2
+         * terrain/moby faces. Drawn LAST of the world-space stack (after the
+         * ALPHA/ADDITIVE groups, gi==5) through the PLAIN z-test subtract
+         * pipes at NEUTRAL bias:
+         *  - NOT the decal path (bucket 1): the ground-height discard ate the
+         *    sky-borne puffs and the range-uniform shadow-sprite material
+         *    sampled the wrong texture;
+         *  - NOT at gi==1 (the first attempt): smoke writes no depth, so the
+         *    ACTOR/PLAYER opaques drawn at gi==2/3 PAINTED OVER the already-
+         *    subtracted pixels — the burn smoke vanished exactly where og
+         *    shows it (on the flamed enemy). The .s renders particles at the
+         *    END of the frame; og's smoke darkens the flame glow too, so
+         *    after the ADD group is the faithful slot. */
+        if (gi == 5) {
+            { static int s_swd = -1;
+              if (s_swd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_swd = (e && *e && *e != '0'); }
+              if (s_swd) fprintf(stderr, "[subworld] ut13=%d txg8=%d utpipe=%d txpipe=%d vram=%d\n",
+                                 ut_count[13], txg_count[8],
+                                 s_nr.gouraud_sub_ztest_pipe != NULL,
+                                 s_nr.scene_tex_sub_pipe != NULL, s_nr.vram_tex != NULL); }
             if (ut_count[13] > 0 && s_nr.gouraud_sub_ztest_pipe) {
                 rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
                 rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);

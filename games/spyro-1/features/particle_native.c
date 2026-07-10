@@ -751,10 +751,19 @@ static void particle_feed_native(CPUState* cpu) {
                       q->tpx, q->tpy, q->clx, q->cly, q->bpp,
                       (q->sx[0]+q->sx[1]+q->sx[2]+q->sx[3])/4.0,
                       (q->sy[0]+q->sy[1]+q->sy[2]+q->sy[3])/4.0, q->cz);
+              if (q->blend == 3)
+                  fprintf(stderr, "   corners (%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) uv (%d,%d)(%d,%d)(%d,%d)(%d,%d)\n",
+                          q->sx[0],q->sy[0],q->sx[1],q->sy[1],q->sx[2],q->sy[2],q->sx[3],q->sy[3],
+                          q->u[0],q->v[0],q->u[1],q->v[1],q->u[2],q->v[2],q->u[3],q->v[3]);
           }
       } }
     for (int i = 0; i < s_fq_n; i++) {
         fquad* q = &s_fq[i];
+        /* (A depth pull for the subtractive smoke was tried here and
+         * FALSIFIED 2026-07-10: the burst point is the occluder's NEAREST
+         * surface from the camera, so true depth never blocked the puffs —
+         * the eater was the SUBTRACT-WORLD draw ORDER, fixed renderer-side
+         * by drawing that bucket after the ADD group.) */
         float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(q->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st;
