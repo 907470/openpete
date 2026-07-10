@@ -3153,10 +3153,40 @@ static int moby_idle_on(void) {
     return s;
 }
 
+/* Update-list membership mirror (func_80051FEC, moby_lists.s:35-96): drawn-
+ * grace auto-include, m_UpdateDistance sentinels (0 = never, sign bit after
+ * <<10 = always), else a strict 3-axis bbox |d| < ud*1024 around g_Spyro plus
+ * a horizontal squared-distance test on (dx>>3, dy>>3). A moby outside the
+ * list gets NO update at all — its whole state machine (including the gem
+ * settle + wobble) is frozen in RAM. */
+static int gem_in_update_list(CPUState* cpu, uint32_t m) {
+    if (cpu->read_byte(m + 0x51) != 0) return 1;      /* m_WasDrawn grace auto-include */
+    int32_t ud = (int8_t)cpu->read_byte(m + 0x52);    /* SIGNED (0xFF = -1 = always) */
+    if (ud == 0) return 0;                            /* never update */
+    int32_t thr = ud << 10;
+    if (thr < 0) return 1;                            /* ud >= 0x80: always update */
+    int32_t dx = (int32_t)cpu->read_word(m + 0x0C) - (int32_t)cpu->read_word(G_SPYRO + 0x0);
+    if (dx + thr <= 0 || dx - thr >= 0) return 0;
+    int32_t dy = (int32_t)cpu->read_word(m + 0x10) - (int32_t)cpu->read_word(G_SPYRO + 0x4);
+    if (dy + thr <= 0 || dy - thr >= 0) return 0;
+    int32_t dz = (int32_t)cpu->read_word(m + 0x14) - (int32_t)cpu->read_word(G_SPYRO + 0x8);
+    if (dz + thr <= 0 || dz - thr >= 0) return 0;
+    int32_t hx = dx >> 3, hy = dy >> 3, ht = thr >> 3;
+    return (ht * ht - hx * hx - hy * hy) > 0;
+}
+
 /* Freeze-verdict mirror — a pure function of gamestate the .s itself reads,
- * never of host render state (the reveal-hysteresis strobe lesson).
- * OctDistance (math.s) is XY-only octagonal: max + min*3/8. */
+ * never of host render state (the reveal-hysteresis strobe lesson). The
+ * canonical wobble advances only when the gem is ON the update list AND the
+ * collectable case's inner skip gate doesn't fire (level_10 .s 8007F9B8:
+ * skip iff !drawn && OctDistance>=0x2001 && resting && settled — OctDistance
+ * (math.s) is XY-only octagonal: max + min*3/8). Beast-makers lesson
+ * (2026-07-09): far gems can rest UNSETTLED (m_Substate 0 — never updated
+ * since level load), so "outside the update list" alone must count as frozen
+ * — the old substate==1-only mirror left those as statues. */
 static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
+    if (cpu->read_byte(m + 0x49) >= 3) return 0;      /* non-resting states: leave canonical */
+    if (!gem_in_update_list(cpu, m)) return 1;        /* no update at all -> frozen */
     if (cpu->read_byte(m + 0x51) != 0) return 0;      /* drawn last frame -> handler runs */
     int32_t dx = (int32_t)cpu->read_word(G_SPYRO + 0x0) - (int32_t)cpu->read_word(m + 0x0C);
     int32_t dy = (int32_t)cpu->read_word(G_SPYRO + 0x4) - (int32_t)cpu->read_word(m + 0x10);
@@ -3164,8 +3194,8 @@ static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
     if (dy < 0) dy = -dy;
     int32_t oct = (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3);
     if (oct < 0x2001) return 0;                       /* near Spyro -> handler runs */
-    if (cpu->read_byte(m + 0x49) != 1) return 0;      /* not resting -> handler runs */
-    if (cpu->read_byte(props + 0x0E) != 0) return 0;  /* still settling -> handler runs */
+    if (cpu->read_byte(m + 0x49) != 1) return 0;      /* updating + not settled -> settle logic runs */
+    if (cpu->read_byte(props + 0x0E) != 0) return 0;  /* updating + still spawning -> logic runs */
     return 1;
 }
 
@@ -3178,6 +3208,7 @@ typedef struct { uint32_t moby; uint16_t cls; uint8_t base_ticks; uint32_t t0_fr
 #define GEM_IDLE_SLOTS 1024                /* > max gems per level (~400), power of 2 */
 static gem_idle_ent s_gem_idle[GEM_IDLE_SLOTS];
 static long s_idle_active, s_idle_seeded;  /* census counters (OPENPETE_MOBY_TIER_DBG) */
+static long s_idle_live;                   /* collectables whose gate said "canonical animates" */
 
 static gem_idle_ent* gem_idle_slot(uint32_t m) {
     uint32_t h = (m >> 3) & (GEM_IDLE_SLOTS - 1u);
@@ -3190,13 +3221,14 @@ static gem_idle_ent* gem_idle_slot(uint32_t m) {
                                             * (feature no-op), never wrongly posed */
 }
 
-static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t props) {
+static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t props, uint8_t* t0_out) {
     uint8_t ticks = cpu->read_byte(props + 0x13);      /* m_RotationTicks, frozen */
     gem_idle_ent* e = gem_idle_slot(m);
     if (e->moby != m || e->cls != (uint16_t)cls || e->base_ticks != ticks) {
         e->moby = m; e->cls = (uint16_t)cls; e->base_ticks = ticks; e->t0_frame = openpete_frame;
         s_idle_seeded++;
     }
+    *t0_out = e->base_ticks;
     return fmod((double)e->base_ticks + (double)(openpete_frame - e->t0_frame), 256.0);
 }
 
@@ -3212,12 +3244,22 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
             uint32_t props = cpu->read_word(moby + 0x00);
             if (props >= 0x80000000u) {
                 if (gem_idle_frozen(cpu, moby, props)) {
-                    double ph = gem_idle_phase(cpu, moby, cls, props);
-                    int si, ci; sincos_interp(cpu, ph, &si, &ci);
-                    /* float mirror of ((s16)lut>>shift): /128 gems, /512 statue */
+                    uint8_t t0 = 0;
+                    double ph = gem_idle_phase(cpu, moby, cls, props, &t0);
+                    int si, ci, s0, c0;
+                    sincos_interp(cpu, ph, &si, &ci);
+                    sincos_interp(cpu, (double)t0, &s0, &c0);
+                    /* float mirror of ((s16)lut>>shift): /128 gems, /512 statue.
+                     * Wobble as a DELTA around the frozen RAM pose: at ph==t0
+                     * this IS the RAM euler (seamless seed), and for a SETTLED
+                     * gem it equals the canonical formula (RAM +0x44 =
+                     * cos[t0]>>7 + m_RotY). An UNSETTLED far gem (substate 0 —
+                     * never updated since load, base m_RotY/RotZ never written)
+                     * wobbles around its placed pose instead of snapping to
+                     * uninitialized props bytes (beast-makers, 2026-07-09). */
                     double div = (cls == 14u) ? 512.0 : 128.0;
-                    double fZ = (double)cpu->read_byte(props + 0x11) + (double)ci / div;
-                    double fX = (double)cpu->read_byte(props + 0x12) + (double)si / div;
+                    double fZ = (double)cpu->read_byte(moby + 0x44) + ((double)ci - (double)c0) / div;
+                    double fX = (double)cpu->read_byte(moby + 0x45) + ((double)si - (double)s0) / div;
                     double fY = (double)cpu->read_byte(moby + 0x46);   /* untouched by the handler */
                     sincos_interp(cpu, fY, &sy, &cy);
                     sincos_interp(cpu, fX, &sx, &cx);
@@ -3230,9 +3272,18 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                 } else {
                     gem_idle_ent* e = gem_idle_slot(moby);
                     if (e->moby == moby) e->moby = 0;   /* drop: re-freeze re-seeds from RAM */
-                    if (moby_trace_target() == moby)
-                        fprintf(stderr, "[moby-idle f=%u] %08X live (canonical pose)\n",
-                                openpete_frame, moby);
+                    if (moby_trace_target() == moby) {
+                        int32_t dx = (int32_t)cpu->read_word(G_SPYRO + 0x0) - (int32_t)cpu->read_word(moby + 0x0C);
+                        int32_t dy = (int32_t)cpu->read_word(G_SPYRO + 0x4) - (int32_t)cpu->read_word(moby + 0x10);
+                        if (dx < 0) dx = -dx;
+                        if (dy < 0) dy = -dy;
+                        fprintf(stderr, "[moby-idle f=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
+                                openpete_frame, moby, cpu->read_byte(moby + 0x51),
+                                (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3),
+                                cpu->read_byte(moby + 0x49), cpu->read_byte(props + 0x0E),
+                                (unsigned)cpu->read_byte(props + 0x13));
+                    }
+                    s_idle_live++;
                 }
             }
         }
@@ -3522,6 +3573,20 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             }
         }
         uint32_t cls = cpu->read_half(m + 0x36);
+        /* OPENPETE_GEM_DUMP=<frame>: one-shot collectable inventory (addr, cls,
+         * pos, settle substate, WasDrawn) around that frame — locates gem
+         * clusters + their settle state for idle-anim repros (this instrument
+         * found the beast-makers unsettled-gem statues). */
+        {
+            static int gd = -2;
+            if (gd == -2) { const char* e = getenv("OPENPETE_GEM_DUMP"); gd = e ? atoi(e) : -1; }
+            if (gd >= 0 && openpete_frame > (unsigned)gd && openpete_frame < (unsigned)gd + 3u
+                && (cls == 14u || (cls >= 83u && cls <= 87u)))
+                fprintf(stderr, "[gem-dump f=%u] %08X cls=%u pos=(%d,%d,%d) b50=%02X sub=%u wd=%u\n",
+                        openpete_frame, m, cls,
+                        (int32_t)cpu->read_word(m+0x0C), (int32_t)cpu->read_word(m+0x10), (int32_t)cpu->read_word(m+0x14),
+                        cpu->read_byte(m+0x50), cpu->read_byte(m+0x49), cpu->read_byte(m+0x51));
+        }
         uint32_t mraw  = cpu->read_word(G_MODELS + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
         uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
         uint32_t vraw  = cpu->read_word(model + 0x4u);
@@ -3739,13 +3804,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
      * composes + fresh seeds since the last print. active counts euler composes
      * (canonical + per-present re-extract), so it scales with render fps —
      * nonzero = the override runs. */
-    if (moby_idle_on() && tier_dbg_on() && (s_idle_active || s_idle_seeded)) {
+    if (moby_idle_on() && tier_dbg_on() && (s_idle_active || s_idle_seeded || s_idle_live)) {
         static unsigned next_idle;
         if (openpete_frame >= next_idle) {
             next_idle = openpete_frame + 60u;
-            fprintf(stderr, "[moby-idle f=%u] active=%ld seeded=%ld\n",
-                    openpete_frame, s_idle_active, s_idle_seeded);
-            s_idle_active = 0; s_idle_seeded = 0;
+            fprintf(stderr, "[moby-idle f=%u] active=%ld seeded=%ld live=%ld\n",
+                    openpete_frame, s_idle_active, s_idle_seeded, s_idle_live);
+            s_idle_active = 0; s_idle_seeded = 0; s_idle_live = 0;
         }
     }
     return n;
