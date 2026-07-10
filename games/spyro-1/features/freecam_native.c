@@ -122,6 +122,18 @@ static void freecam_drive(CPUState* cpu) {
     int32_t pitch = (int16_t)cpu->read_half(CAM_PITCH);
     yaw   -= (int32_t)lround((double)ax.look_yaw   * turn);
     pitch -= (int32_t)lround((double)ax.look_pitch * turn);
+    /* OPENPETE_FREECAM_SPIN=<yaw-units-per-tick>: scripted continuous yaw
+     * sweep (4096 = full turn), on top of input — lets one run profile every
+     * view direction (perf-vs-direction hunts, e.g. gnorc_cove 2026-07-10). */
+    {
+        static int s_have_spin = -1; static int s_spin;
+        if (s_have_spin < 0) {
+            const char* e = getenv("OPENPETE_FREECAM_SPIN");
+            s_spin = e ? atoi(e) : 0;
+            s_have_spin = 1;
+        }
+        yaw += s_spin;
+    }
     if (pitch >  PITCH_LIMIT) pitch =  PITCH_LIMIT;
     if (pitch < -PITCH_LIMIT) pitch = -PITCH_LIMIT;
     cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)yaw);
