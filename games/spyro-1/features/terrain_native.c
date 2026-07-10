@@ -1305,7 +1305,17 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
             }
             if (!in_band) {
                 int near_nohp = 0;
-                if (!far_gap && wallH && s_nohp_n > 0) {
+                /* The pool must be SUBSTANTIAL (≥32 tris) for "near noHP LP"
+                 * to mean "LP-authoritative territory": levels with real
+                 * boundary terrain have 178–310 pool tris (artisans 269,
+                 * peace_keepers 310, cliff_town 178), while degenerate no-HP
+                 * SLIVER sectors give 1–7 (haunted_towers 2, magic_crafters
+                 * 2, tree_tops 1, gnorc 7) and made the proximity test
+                 * meaningless — haunted's tunnel-interior LP walls (dmed
+                 * 112–144, all four two-sided-void-rejected) were admitted
+                 * off a 2-tri sliver and drew as dark slabs across the
+                 * corridor (found in testing 2026-07-09). */
+                if (!far_gap && wallH && s_nohp_n >= 32) {
                     /* Wall re-admission: the unbacked span continues into
                      * LP-AUTHORITATIVE territory (min sample distance to a no-HP /
                      * force-LP sector's LP ≤ s_nohp) — a level-boundary cliff whose

@@ -294,3 +294,19 @@ ab_env = "OPENPETE_TERRAIN_FILLNEAR"
   [[case.check]]
   kind   = "ab-identical"
   max_px = 300
+
+# haunted_towers tunnel-interior LP wall slabs (found in testing): four LP
+# walls (s143/s139/s82/s89, dmed 112-144, all two-sided-void-rejected)
+# were admitted by the near-noHP wall rule keying off a DEGENERATE 2-tri
+# no-HP sliver sector, drawing dark slabs across the corridor.  v10: the
+# rule requires a substantial pool (>=32 tris; real boundary levels have
+# 178-310, degenerate slivers 1-7).  Interior corridor -- no fill may
+# ever appear at this pose.
+[[case]]
+name  = "haunted-tunnel-no-wall-slab"
+level = "haunted_towers"
+pose  = "120133,79584,30936,3928,52"
+mode  = "terrain"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 0
