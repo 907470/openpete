@@ -936,18 +936,22 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
     emit_split_by_outline(a, n, depth, use_plane, pa, pb, pc);
 }
 
-/* A collected dome face awaiting depth-sorted emission. The dome is drawn at the
- * single portal-plane depth so the arch occludes it, but the medium leaf's matrix
- * compresses the dome's Y (~0.6x) and folds it onto itself in screen space; with
- * every face at the same depth the fold has no z-order, so the back rim overdraws
- * the front into a jagged mess. The PSX sorts the faces in its OT; we mirror that by
- * sorting far→near and emitting in that order — with LESS_OR_EQUAL the last (nearest)
- * face wins per pixel, so the near rim correctly paints over the far rim. */
+/* A collected dome face awaiting ordered emission. The dome is drawn at the
+ * single portal-plane depth so the arch occludes it; with every face at the
+ * same depth the paint ORDER decides each pixel. The whole dome lands in ONE
+ * OT bucket on the PSX (a single leaf depth — see the portal-dump OTdepth),
+ * and AddPrim PREPENDS to the bucket chain: the GPU walks the chain in
+ * reverse-insertion order, so the FIRST face the .s walk emits paints LAST
+ * (on top). Authored list order — not view-Z — is the paint order. A far→near
+ * view-Z sort here (the earlier fix for the medium leaf's Y-fold) broke the
+ * beast_makers destination sky: its swamp-trunk faces sit early in the face
+ * list so the .s paints them OVER the cloud band, but they project FARTHER
+ * than the clouds, so the Z-sort buried them (truncated trunks + floating
+ * shards, found in testing 2026-07-10). Mirroring the authored order also renders
+ * the fold correctly by construction — the PSX itself draws the fold with
+ * this exact order. With LESS_OR_EQUAL the last emit wins per pixel, so we
+ * emit the collected array BACKWARDS (.s-last first, .s-first on top). */
 typedef struct { pgv a, b, c; double key; } dome_face;
-static int dome_face_cmp(const void* x, const void* y) {
-    double kx = ((const dome_face*)x)->key, ky = ((const dome_face*)y)->key;
-    return (kx < ky) ? 1 : (kx > ky) ? -1 : 0;   /* DESCENDING view-Z: far first */
-}
 
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
                             int canonical, uint32_t fog_rgb, double fog_t) {
@@ -1083,8 +1087,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
             df->key = (pz[i0] + pz[i1] + pz[i2]) / 3.0;   /* face view-Z for the far→near sort */
         }
     }
-    /* depth-sort the whole dome far→near, then emit (LESS_OR_EQUAL → last wins). */
-    qsort(faces, nf, sizeof faces[0], dome_face_cmp);
+    /* Emit in walk order (see the dome_face comment). */
     for (int i = 0; i < nf; i++)
         emit_clipped_gouraud(faces[i].a, faces[i].b, faces[i].c, x0, y0, x1, y1, depth, use_plane, pa, pb, pc);
     {   /* OPENPETE_PORTAL_DOME_DBG=1: per-call walk census (throttled) */

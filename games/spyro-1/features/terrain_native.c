@@ -288,7 +288,7 @@ static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conforman
 #define MAX_TTRIS 65536
 static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 
-static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike, s_dbg_gpusz;  /* diagnostics */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 
 /* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
@@ -492,7 +492,7 @@ typedef struct { double m1, m2, m3; uint32_t rgb; float u, v; } cvert;
 /* Near plane (camera-space m3, world/16 view-Z). Vertices closer than this are
  * clipped so float H/m3 never blows up and behind-camera (m3<=0) verts don't
  * project to a wild position. Env-tunable. */
-static double s_nearz = -1.0;
+static double s_nearz = -1.0, s_nearz_base = 1.0;
 /* near/HQ subdivide pass enable (Route 2; OPENPETE_TERRAIN_NEARHQ, default ON). */
 static int s_nearhq = -1;
 
@@ -830,6 +830,7 @@ static void tsc_tile_gens(CPUState* cpu, uint32_t lqTable, uint32_t texCnt) {
 typedef struct {
     uint32_t s, sig[5];
     uint32_t animEpoch;                      /* s_tgen_epoch at last texmat refresh */
+    uint32_t lastUse;                        /* s_tsc_stamp at last hit — LRU eviction key */
     int nLpV, nLpF, nHpV, nHpF, flags;
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     int originX, originY, originZ;
@@ -840,6 +841,7 @@ typedef struct {
 } tscache_t;
 #define TSC_SLOTS 512
 static tscache_t s_tsc[TSC_SLOTS];
+static uint32_t s_tsc_stamp;                 /* bumped once per terrain_build call */
 static long s_tsc_hit, s_tsc_miss;
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
@@ -1390,17 +1392,34 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
                       rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
     uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-    tscache_t* C = &s_tsc[h];
-    if (!(C->s == s && C->sig[0]==g[0] && C->sig[1]==g[1] && C->sig[2]==g[2]
-          && C->sig[3]==g[3] && C->sig[4]==g[4])) {
-        tscache_t* C2 = &s_tsc[h ^ 1u];
-        if (C2->s == s && C2->sig[0]==g[0] && C2->sig[1]==g[1] && C2->sig[2]==g[2]
-            && C2->sig[3]==g[3] && C2->sig[4]==g[4]) { s_tsc_hit++; return C2; }
+    /* 8-slot probe window + LRU eviction. The old 2-way (h, h^1) alternating
+     * eviction thrashed: gnorc_cove freecam at the level's long axis pulls
+     * ~170 sectors into one present, and any 3+ visible sectors sharing a slot
+     * pair evicted each other EVERY present — each miss is a full re-decode +
+     * gapfill classification (ms-scale for big sectors: s148 alone burned
+     * ~5ms/present; 17-19 misses/present at the hot heading = the
+     * direction-dependent perf cliff, 2026-07-10). The window makes thrash
+     * need 9+ hot sectors in one 8-window; LRU (stamped per terrain_build
+     * call) evicts a stale sector, never this present's working set. */
+    tscache_t* C = NULL;
+    for (uint32_t k = 0; k < 8u; k++) {
+        tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
+        if (W->s == s && W->sig[0]==g[0] && W->sig[1]==g[1] && W->sig[2]==g[2]
+            && W->sig[3]==g[3] && W->sig[4]==g[4]) {
+            s_tsc_hit++; W->lastUse = s_tsc_stamp; return W;
+        }
+    }
+    {
         s_tsc_miss++;
-        if (C->s) { if (!C2->s) C = C2; else if (s_tsc_miss & 1) C = C2; }
+        for (uint32_t k = 0; k < 8u; k++) {          /* empty slot first, else LRU */
+            tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
+            if (!W->s) { C = W; break; }
+            if (!C || W->lastUse < C->lastUse) C = W;
+        }
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
+        C->lastUse = s_tsc_stamp;
         C->flags = (int)(g[0] & 0xE000);
         {   /* Bounding sphere (header w0/w1) — the .s LP/HP binning inputs. w0 is
              * not in the signature (it never changes independently of w1..w4). */
@@ -1434,7 +1453,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
         tsc_classify_gapfill(cpu, C, sectorPtr, sectorCnt);
-    } else s_tsc_hit++;
+    }
     return C;
 }
 
@@ -1528,8 +1547,12 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
             uint32_t s = rd(cpu, sectorPtr + idx * 4);
             if (!s) continue;
             uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-            tscache_t* C = &s_tsc[h];
-            if (C->s != s) { C = &s_tsc[h ^ 1u]; if (C->s != s) continue; }
+            tscache_t* C = NULL;
+            for (uint32_t w = 0; w < 8u; w++) {   /* same probe window as tsc_get */
+                tscache_t* W = &s_tsc[(h + w) & (TSC_SLOTS - 1)];
+                if (W->s == s) { C = W; break; }
+            }
+            if (!C) continue;
             if (C->lpV) tsc_decode_verts(cpu, C->s + 0x1C, C->nLpV, C->lpV);
             if (C->hpV) tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
                                          C->nHpV, C->hpV);
@@ -1797,7 +1820,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_abr_scan(cpu);
     tsc_census();
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
-    s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
+    s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_gpusz = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
     if (s_sectordump < 0) { const char* e = getenv("OPENPETE_TERRAIN_SECTORDUMP"); s_sectordump = (e && *e && *e != '0'); }
     s_sd_n = 0;
@@ -1923,7 +1946,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
-        s_nearz = (e && *e) ? atof(e) : 1.0;
+        s_nearz_base = (e && *e) ? atof(e) : 1.0;
+        s_nearz = s_nearz_base;
     }
     { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
     /* Far-band identity instrument (fog decode arc): one-shot full dump of
@@ -1987,8 +2011,30 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
     int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup);
+    s_tsc_stamp++;   /* LRU epoch: everything touched this walk outlives strangers */
+    /* OPENPETE_TERRAIN_TIMERS=1: per-SECTOR walk-cost census (~1/s). Attributes
+     * the terrain feeder's µs to individual sectors (accounted at the top of
+     * the NEXT iteration so every exit path of the huge loop body is covered)
+     * and names the top offenders — built for the gnorc_cove freecam
+     * direction-dependent perf hunt (2026-07-10). Inert unless the env is set. */
+    static int tt_on = -1;
+    if (tt_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIMERS"); tt_on = (e && *e && *e != '0'); }
+    static uint32_t tt_us[1024], tt_tris[1024];      /* window-accumulated per sector */
+    static uint64_t tt_win_us, tt_report_t;
+    static uint32_t tt_presents, tt_nvis_sum, tt_nvis_max, tt_pres_max_us;
+    uint64_t tt_prev = 0; uint32_t tt_prev_i = 0; int tt_prev_valid = 0, tt_prev_tris = 0;
+    uint64_t tt_present_us = 0;
     for (int vi = 0; vi < nvis; vi++) {
         uint32_t i = visidx[vi];
+        if (tt_on) {
+            uint64_t tnow = openpete_phase_now_us();
+            if (tt_prev_valid && tt_prev_i < 1024u) {
+                uint32_t d = (uint32_t)(tnow - tt_prev);
+                tt_us[tt_prev_i] += d; tt_present_us += d;
+                tt_tris[tt_prev_i] += (uint32_t)(s_tri_n - tt_prev_tris);
+            }
+            tt_prev = tnow; tt_prev_i = i; tt_prev_tris = s_tri_n; tt_prev_valid = 1;
+        }
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         if (!s) continue;
         /* Tier-1 sector decode cache: static level data unpacked once. */
@@ -2319,18 +2365,41 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * edge-on is visible through one half only (the ice_cavern
              * waterfall sheet s101/f15), while a genuine back-to-back wall
              * pair (the magic_crafters room/waterfall) fails both. */
-            double nx0 = GTE_SAT(sv[i0].sx), ny0 = GTE_SAT(sv[i0].sy);
-            double nx1 = GTE_SAT(sv[i1].sx), ny1 = GTE_SAT(sv[i1].sy);
             int h1 = quad ? i3 : i2;
-            double nxA = GTE_SAT(sv[h1].sx), nyA = GTE_SAT(sv[h1].sy);
-            double nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
+            int strad_pre = (sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 ||
+                             sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0);
+            double nclip, nclip2 = 0.0;
+            if (!strad_pre) {
+                double nx0 = GTE_SAT(sv[i0].sx), ny0 = GTE_SAT(sv[i0].sy);
+                double nx1 = GTE_SAT(sv[i1].sx), ny1 = GTE_SAT(sv[i1].sy);
+                double nxA = GTE_SAT(sv[h1].sx), nyA = GTE_SAT(sv[h1].sy);
+                nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
+                if (quad) {
+                    double nx2 = GTE_SAT(sv[i2].sx), ny2 = GTE_SAT(sv[i2].sy);
+                    double nx3 = GTE_SAT(sv[i3].sx), ny3 = GTE_SAT(sv[i3].sy);
+                    nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
+                }
+            } else {
+                /* STRADDLING face (a corner behind the camera): the projected
+                 * corners are mirrored so the 2D cross is garbage. Use the
+                 * CAMERA-SPACE determinant instead — for all-positive-z faces
+                 * sign(det[P0,P1,P2]) == sign(projected 2D cross) (the signed
+                 * screen area is det * H^2 / (2 z0 z1 z2)), and det stays
+                 * meaningful when corners cross the plane. This replaces the
+                 * old unconditional waiver, which let a pool's underwater
+                 * walls (straddling backfaces nearer than the floor) bury the
+                 * grass the .s pipeline shows (mc freecam ground clipping). */
+                #define DET3(A,B,C) \
+                    (sv[A].m1 * (sv[B].m2 * sv[C].m3 - sv[B].m3 * sv[C].m2) \
+                   - sv[A].m2 * (sv[B].m1 * sv[C].m3 - sv[B].m3 * sv[C].m1) \
+                   + sv[A].m3 * (sv[B].m1 * sv[C].m2 - sv[B].m2 * sv[C].m1))
+                nclip = DET3(i0, i1, h1);
+                if (quad) nclip2 = DET3(i2, i1, i3);
+            }
             if (flip) nclip = -nclip;
             int front = (nclip >= 0.0);
             int front2 = 0;
             if (quad) {
-                double nx2 = GTE_SAT(sv[i2].sx), ny2 = GTE_SAT(sv[i2].sy);
-                double nx3 = GTE_SAT(sv[i3].sx), ny3 = GTE_SAT(sv[i3].sy);
-                double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
                 int dside = (faceStride == 16) && (F->w3 & 0x4) != 0;
                 front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
             }
@@ -2508,6 +2577,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * owns occlusion, so a waived back-face is harmless. */
             int straddle = (sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 ||
                             sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0);
+            {   /* GTE-bound near plane for near-band faces (see the comment at
+                 * the falsified-alternates block below): corner z < 320 =>
+                 * clip this face at z=80 (H/2, the GTE divide bound) in every
+                 * emit path; hardware can't rasterize closer. */
+                double gzmin = sv[i0].m3;
+                if (sv[i1].m3 < gzmin) gzmin = sv[i1].m3;
+                if (sv[i2].m3 < gzmin) gzmin = sv[i2].m3;
+                if (quad && sv[i3].m3 < gzmin) gzmin = sv[i3].m3;
+                s_nearz = (gzmin < 320.0 && s_nearz_base < 80.0) ? 80.0 : s_nearz_base;
+            }
             int near = (faceStride == 16 && s_nearhq && hqTable && (front || straddle) && quad &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
@@ -2562,20 +2641,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * and punch through (magic_crafters waterfall room). The game
              * never draws those faces at all — NCLIP culls them — so cull is
              * the canonical visibility rule, not a perf knob.
-             * Two carve-outs where the .s verdict can't be mirrored:
-             *  - straddling faces (a corner behind the camera): projected
-             *    corners are mirrored, the cross-product sign is garbage —
-             *    waive (Z-buffer owns those; same waiver as the near/HQ gate).
-             *  - fill passes: native-only hole cover with no .s counterpart,
-             *    stencil-gated to pixels nothing else drew — stay emit-all.
-             * LP quads are culled per-tri below (the .s LP loop NCLIPs
-             * tri(i0,i1,i2) then tri(i3,i1,i2) — a saddle quad can be half
-             * front-facing); everything else uses the whole-face verdict. */
+             * One carve-out: fill passes (native-only hole cover with no .s
+             * counterpart, stencil-gated to pixels nothing else drew) stay
+             * emit-all. Straddling faces use the camera-space determinant
+             * verdict computed above (same flip/two-half semantics).
+             * Whole-face verdict (either NCLIP half accepts → the .s emits the
+             * whole GT4/G4 prim). */
             /* OPENPETE_TERRAIN_CULL is a bitmask while the per-tier NCLIP
              * convention is being validated: bit0 = cull HP faces, bit1 =
              * cull LP faces, bit2 = invert the LP front sign. */
             int cullable = ((faceStride == 16) ? (s_cull & 1) : (s_cull & 2))
-                           && !straddle && !passFill;
+                           && !passFill;
             int cfront = ((faceStride == 8 && (s_cull & 4)) ? (nclip < 0.0) : front)
                          || front2;
             {   /* OPENPETE_TERRAIN_CULLDBG="frame,x0,y0,x1,y1" (PSX screen rect):
@@ -2606,6 +2682,25 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
             }
             if (cullable && !cfront) { s_dbg_nclip++; continue; }
+            /* GTE-bound near plane for faces entering the .s near band: any
+             * face with a corner z < 320 is deferred to the near/DrawPrim
+             * queue (block_80026D14..D98) and the drain's re-projection can't
+             * rasterize below the GTE divide bound (SZ <= H/2 = 80 overflows)
+             * — hardware simply loses the sub-80 portion. Native's z=1 plane
+             * instead projected those portions across the WHOLE screen
+             * (magic_crafters freecam "ground clipping": a z=7-corner water
+             * tri painted the lower screen as a giant flat plane). Clip such
+             * faces at z=80 — geometry the console can show survives, the
+             * explosive part goes. Faces with no near corner keep the normal
+             * plane. NOTE og (PsyCross) is NOT ground truth at these extreme
+             * freecam poses: it draws the near-band DrawPrim pieces without
+             * the mask-bit protection ordering, so its output (grass over the
+             * whole pool nook) is its own artifact.
+             * FALSIFIED alternates recorded: GPU 1023x511 prim-size reject
+             * (killed close grass quads the .s renders subdivided);
+             * fully-near face/tri DROPS (buried surfaces the .s shows;
+             * revealed pool interiors); global near plane at 160 (clipped
+             * roof quads visible down to z~100). */
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
@@ -2684,6 +2779,41 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             r->ox = originX; r->oy = originY; r->oz = originZ;
             r->m3min = sd_m3min; r->m3max = sd_m3max;
             r->bx0 = sd_bx0; r->by0 = sd_by0; r->bx1 = sd_bx1; r->by1 = sd_by1;
+        }
+    }
+    if (tt_on) {   /* close the walk-cost census: last sector + window report */
+        uint64_t tnow = openpete_phase_now_us();
+        if (tt_prev_valid && tt_prev_i < 1024u) {
+            uint32_t d = (uint32_t)(tnow - tt_prev);
+            tt_us[tt_prev_i] += d; tt_present_us += d;
+            tt_tris[tt_prev_i] += (uint32_t)(s_tri_n - tt_prev_tris);
+        }
+        tt_presents++; tt_nvis_sum += (uint32_t)nvis;
+        if ((uint32_t)nvis > tt_nvis_max) tt_nvis_max = (uint32_t)nvis;
+        tt_win_us += tt_present_us;
+        if ((uint32_t)tt_present_us > tt_pres_max_us) tt_pres_max_us = (uint32_t)tt_present_us;
+        if (tt_report_t == 0) tt_report_t = tnow;
+        if (tnow - tt_report_t >= 1000000u && tt_presents > 0) {
+            char line[512]; int off = 0;
+            off += snprintf(line + off, sizeof(line) - (size_t)off,
+                            "[terrain-tt f=%u] presents=%u nvis avg=%u max=%u walk avg=%uus max=%uus tsc hit=%ld miss=%ld | top",
+                            openpete_frame, tt_presents, tt_nvis_sum / tt_presents, tt_nvis_max,
+                            (uint32_t)(tt_win_us / tt_presents), tt_pres_max_us,
+                            s_tsc_hit, s_tsc_miss);
+            s_tsc_hit = 0; s_tsc_miss = 0;
+            for (int k = 0; k < 6; k++) {           /* top-6 sectors by window µs */
+                uint32_t best = 0, bi = 0;
+                for (uint32_t j = 0; j < 1024u; j++)
+                    if (tt_us[j] > best) { best = tt_us[j]; bi = j; }
+                if (!best) break;
+                off += snprintf(line + off, sizeof(line) - (size_t)off,
+                                " s%u=%uus/%utri", bi, best / tt_presents, tt_tris[bi] / tt_presents);
+                tt_us[bi] = 0;
+            }
+            fprintf(stderr, "%s  (per-present avgs over window)\n", line);
+            memset(tt_us, 0, sizeof(tt_us)); memset(tt_tris, 0, sizeof(tt_tris));
+            tt_win_us = 0; tt_presents = 0; tt_nvis_sum = 0; tt_nvis_max = 0;
+            tt_pres_max_us = 0; tt_report_t = tnow;
         }
     }
 
@@ -3161,8 +3291,8 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
-        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d gpuSizeRejected=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
+        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_dbg_gpusz, s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
     fprintf(stderr, "[terrain-defer] queue(oracle): +0x2000{hdr=%d cell=%d} +0x1E00{hdr=%d cell=%d} total=%d  |  classifier: near=%d (×4 subquads → %d bpp8 prims)  agreeWithQueue=%d classifierOnly=%d queueOnly=%d\n",
         s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e, s_defer_n,
         s_dbg_spike, s_dbg_spike * 4, s_near_q_agree, s_near_c_only, s_defer_n - s_near_q_agree);

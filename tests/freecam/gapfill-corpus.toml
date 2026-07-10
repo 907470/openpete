@@ -291,9 +291,15 @@ ab_env = "OPENPETE_TERRAIN_FILLNEAR"
 name   = "attract-demo-fillnear-bounded"
 ticks  = [2694, 4888, 9775]
 ab_env = "OPENPETE_TERRAIN_FILLNEAR"
+  # bbox excludes the bottom near-band strip (y >= 400): the straddle
+  # det-cull + GTE-bound near plane (2026-07-10) reshaped the under-camera
+  # ground there, and the opt-in backstop now legitimately covers the
+  # stencil-uncovered strip (~2.9k px at tick 2694).  The guard's job is
+  # bounding runaway fill in the SCENE BODY.
   [[case.check]]
   kind   = "ab-identical"
   max_px = 300
+  bbox   = [0, 0, 639, 399]
 
 # haunted_towers tunnel-interior LP wall slabs (found in testing): four LP
 # walls (s143/s139/s82/s89, dmed 112-144, all two-sided-void-rejected)
