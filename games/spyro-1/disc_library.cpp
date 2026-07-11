@@ -50,6 +50,7 @@ extern "C" int spyro1_splash_open(void);
 extern "C" int spyro1_splash_select(const char* const* labels, int count);
 extern "C" const char* spyro1_splash_dropped_path(void);
 extern "C" int spyro1_splash_ui_enabled(void);
+extern "C" int spyro1_splash_run_task(int (*fn)(void*), void* userdata);
 
 namespace {
 
@@ -235,7 +236,19 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
         }
         char sha[65];
         std::fprintf(stderr, "[library] copying disc into your library...\n");
-        if (!stream_hash_copy(bin, tmp / "disc.bin", sha)) {
+        /* Splash worker task: the multi-hundred-MB copy must not run on
+         * the UI thread (a window drag would freeze it — see
+         * spyro1_splash_run_task). */
+        struct CopyTask {
+            const fs::path* src; fs::path dst; char* sha; bool ok;
+            static int run(void* p) {
+                CopyTask* t = static_cast<CopyTask*>(p);
+                t->ok = stream_hash_copy(*t->src, t->dst, t->sha);
+                return t->ok ? 0 : -1;
+            }
+        } ct{&bin, tmp / "disc.bin", sha, false};
+        spyro1_splash_run_task(&CopyTask::run, &ct);
+        if (!ct.ok) {
             std::fprintf(stderr, "openpete: --ingest copy failed\n");
             fs::remove_all(tmp, ec);
             return -1;

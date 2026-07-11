@@ -22,6 +22,7 @@
 #include "recomp_attach.h"
 #include "openpete_recomp_module.h"
 #include "openpete_log.h"
+#include "splash.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -103,6 +104,15 @@ static void default_module_path(char* buf, size_t n) {
 extern int spyro1_recomp_build_module(const char* disc_path,
                                       const char* out_module_path);
 
+/* First-boot build as a splash worker task: the extract → recomp →
+ * compile → link pipeline must not run on the UI thread (a window drag
+ * would freeze it — see spyro1_splash_run_task). */
+struct build_task { const char* disc; const char* out; };
+static int build_task_fn(void* p) {
+    struct build_task* t = (struct build_task*)p;
+    return spyro1_recomp_build_module(t->disc, t->out);
+}
+
 int spyro1_recomp_attach(const char* module_path_override,
                          const char* disc_path,
                          int allow_build) {
@@ -119,7 +129,8 @@ int spyro1_recomp_attach(const char* module_path_override,
         fprintf(stderr,
                 "openpete: no recomp module at %s — building it from the "
                 "disc (first boot)\n", path);
-        if (spyro1_recomp_build_module(disc_path, path) == 0)
+        struct build_task bt = { disc_path, path };
+        if (spyro1_splash_run_task(build_task_fn, &bt) == 0)
             g_module = mod_open(path);
     }
     if (!g_module) {

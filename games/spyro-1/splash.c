@@ -246,32 +246,17 @@ int spyro1_splash_active(void) { return s_win != NULL; }
 
 /* ---- progress (called from disc_library + recomp_build) --------------- */
 
-void spyro1_splash_progress(const char* stage, int done, int total) {
-    /* Lazy-open: the splash appears only when there is a real wait to
-     * show (ingest copy / first-boot build) — cached warm boots never
-     * flash a window. */
-    if (!s_win) {
-        if (!s_ui_enabled) return;
-        if (spyro1_splash_open() != 0) return;
-    }
-    snprintf(s_stage, sizeof s_stage, "%s", stage);
-    s_done = done;
-    s_total = total;
-
-    /* Keep the window responsive; the pipeline runs on this thread. */
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) { /* swallow; no cancel mid-build in v1 */ }
-
+static void progress_render(const char* stage, int done, int total) {
     frame_begin();
     draw_text_centered(160 + YOFF, 2, "FIRST-TIME SETUP", 220, 210, 240);
     char line[160];
-    snprintf(line, sizeof line, "%s", s_stage);
+    snprintf(line, sizeof line, "%s", stage);
     draw_text_centered(196 + YOFF, 2, line, 255, 255, 255);
     SDL_FRect outline = {80, 240 + YOFF, SPLASH_W - 160, 22};
     SDL_SetRenderDrawColor(s_ren, 90, 70, 140, 255);
     SDL_RenderRect(s_ren, &outline);
-    if (s_total > 0) {
-        float frac = (float)s_done / (float)s_total;
+    if (total > 0) {
+        float frac = (float)done / (float)total;
         if (frac > 1.0f) frac = 1.0f;
         SDL_FRect fill = {82, 242 + YOFF, (SPLASH_W - 164) * frac, 18};
         SDL_SetRenderDrawColor(s_ren, 240, 138, 30, 255);
@@ -281,6 +266,132 @@ void spyro1_splash_progress(const char* stage, int done, int total) {
         "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.",
         150, 130, 190);
     frame_end("progress");
+}
+
+/* Worker-task plumbing (spyro1_splash_run_task below): the blocking
+ * pipeline stages run on an SDL thread so a Windows title-bar drag —
+ * which traps the pumping thread in the OS modal move loop — can no
+ * longer stall the compile. s_stage/s_done/s_total double as the
+ * worker→UI mailbox, guarded by s_task_lock while a task is active. */
+static SDL_Mutex*   s_task_lock;
+static int          s_task_active;
+static int          s_task_done;
+static int          s_have_progress;  /* worker reported at least once */
+static SDL_ThreadID s_ui_tid;
+
+void spyro1_splash_progress(const char* stage, int done, int total) {
+    if (!s_ui_enabled) return;
+    if (s_task_active && s_task_lock
+        && SDL_GetCurrentThreadID() != s_ui_tid) {
+        /* Worker context: store only — every SDL video call must stay
+         * on the UI thread; the runner loop renders the update. */
+        SDL_LockMutex(s_task_lock);
+        snprintf(s_stage, sizeof s_stage, "%s", stage);
+        s_done = done;
+        s_total = total;
+        s_have_progress = 1;
+        SDL_UnlockMutex(s_task_lock);
+        return;
+    }
+
+    /* UI-thread path (no worker task): render directly, as before.
+     * Lazy-open: the splash appears only when there is a real wait to
+     * show — cached warm boots never flash a window. */
+    if (!s_win && spyro1_splash_open() != 0) return;
+    snprintf(s_stage, sizeof s_stage, "%s", stage);
+    s_done = done;
+    s_total = total;
+
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) { /* swallow; no cancel mid-build in v1 */ }
+    progress_render(s_stage, s_done, s_total);
+}
+
+/* ---- worker-task runner ------------------------------------------------ */
+
+typedef struct { spyro1_task_fn fn; void* ud; int rc; } task_ctx_t;
+
+static int SDLCALL task_main(void* p) {
+    task_ctx_t* t = (task_ctx_t*)p;
+    t->rc = t->fn(t->ud);
+    SDL_LockMutex(s_task_lock);
+    s_task_done = 1;
+    SDL_UnlockMutex(s_task_lock);
+    return 0;
+}
+
+static bool SDLCALL task_event_watch(void* ud, SDL_Event* e) {
+    (void)ud;
+    /* Keep the progress frame alive from INSIDE the Windows modal
+     * move/size loop: our pump is blocked there, but WM_MOVE/WM_PAINT
+     * still reach the WindowProc, which pushes these events (and runs
+     * event watches) synchronously on the UI thread. */
+    if (e->type != SDL_EVENT_WINDOW_EXPOSED &&
+        e->type != SDL_EVENT_WINDOW_MOVED)
+        return true;
+    if (!s_task_active || !s_win || !s_ren) return true;
+    if (SDL_GetCurrentThreadID() != s_ui_tid) return true;
+    char stage[sizeof s_stage];
+    int d, t, have;
+    SDL_LockMutex(s_task_lock);
+    have = s_have_progress;
+    snprintf(stage, sizeof stage, "%s", s_stage);
+    d = s_done;
+    t = s_total;
+    SDL_UnlockMutex(s_task_lock);
+    if (have) progress_render(stage, d, t);
+    return true;
+}
+
+int spyro1_splash_run_task(spyro1_task_fn fn, void* ud) {
+    if (!s_ui_enabled) return fn(ud);   /* headless/console: unchanged */
+    if (!s_task_lock) s_task_lock = SDL_CreateMutex();
+    if (!s_task_lock) return fn(ud);
+    s_ui_tid = SDL_GetCurrentThreadID();
+    task_ctx_t ctx = { fn, ud, -1 };
+    s_task_done = 0;
+    s_have_progress = 0;
+    s_task_active = 1;
+    SDL_Thread* th = SDL_CreateThread(task_main, "openpete-task", &ctx);
+    if (!th) {
+        s_task_active = 0;
+        return fn(ud);                  /* fail-soft: old inline behaviour */
+    }
+    int watch_added = 0;
+    int open_failed = 0;
+    for (;;) {
+        int done, have, d, t;
+        char stage[sizeof s_stage];
+        SDL_LockMutex(s_task_lock);
+        done = s_task_done;
+        have = s_have_progress;
+        snprintf(stage, sizeof stage, "%s", s_stage);
+        d = s_done;
+        t = s_total;
+        SDL_UnlockMutex(s_task_lock);
+
+        /* Lazy-open on the UI thread, only once the worker has something
+         * to show — warm boots with nothing to build still never flash a
+         * window (the task finishes before any progress arrives). */
+        if (have && !s_win && !open_failed && spyro1_splash_open() != 0)
+            open_failed = 1;            /* no display: task runs on, blind */
+
+        if (s_win) {
+            if (!watch_added) {
+                SDL_AddEventWatch(task_event_watch, NULL);
+                watch_added = 1;
+            }
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) { /* swallow; no cancel mid-build in v1 */ }
+            if (have) progress_render(stage, d, t);
+        }
+        if (done) break;
+        SDL_Delay(16);
+    }
+    if (watch_added) SDL_RemoveEventWatch(task_event_watch, NULL);
+    SDL_WaitThread(th, NULL);
+    s_task_active = 0;
+    return ctx.rc;
 }
 
 /* ---- drop mode --------------------------------------------------------- */

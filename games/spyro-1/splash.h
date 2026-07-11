@@ -37,8 +37,20 @@ int spyro1_splash_select(const char* const* labels, int count);
 const char* spyro1_splash_dropped_path(void);
 
 /* PROGRESS: render stage + bar and pump events. Safe to call when the
- * splash isn't open (no-op). Wired as spyro1_progress_cb by main. */
+ * splash isn't open (no-op). Wired as spyro1_progress_cb by main.
+ * Thread-aware: called from inside a spyro1_splash_run_task worker it
+ * only stores the update (the runner loop renders on the UI thread). */
 void spyro1_splash_progress(const char* stage, int done, int total);
+
+/* Run a blocking pipeline stage (ingest copy, first-boot module build)
+ * on a worker thread while the UI thread keeps pumping + rendering the
+ * splash — a Windows title-bar drag traps the pumping thread in the OS
+ * modal move loop, and must not stall the compile. Blocks until fn
+ * returns; returns fn's return value. Falls back to calling fn directly
+ * when the splash UI is disabled (headless/console) or thread creation
+ * fails. Not reentrant: don't call from inside a task. */
+typedef int (*spyro1_task_fn)(void* userdata);
+int spyro1_splash_run_task(spyro1_task_fn fn, void* userdata);
 
 #ifdef __cplusplus
 }
