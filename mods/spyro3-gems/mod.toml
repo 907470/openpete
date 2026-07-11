@@ -1,0 +1,28 @@
+# spyro3-gems — replace Spyro 1's gems with Spyro 3's: models, collect
+# burst colours, and the pitch-cycling collect chime.
+#
+# Pure mod-framework stress test: no core/engine changes. Assets are
+# NOT shipped — run tools/extract_s3_gems.py + tools/convert_to_s1.py
+# against your own Year of the Dragon disc to generate
+# assets/s3/gems_s1pack.bin (gitignored), same legal posture as the M12
+# S3 player blob.
+#
+# raw tier: pokes fixed PSX vaddrs (model park, SPU thunks, sound table)
+# pinned to the SCUS-94228 binary.
+
+[mod]
+id      = "spyro3-gems"
+name    = "Spyro 3 Gems"
+version = "0.1.0"
+api     = 1
+tier    = "raw"
+
+# Gameplay-divergent by design (RNG stream shifts once the gem sound's
+# pitch variance is zeroed), so the oracle must not be asserted PASS.
+# Without the generated asset pack the mod is a pure observer
+# (calibration mode) and only the log line below is expected.
+[test]
+frames        = 2500
+expect_oracle = "skip"
+args          = ["--skip-to-level", "artisans"]
+expect_log    = ["override registered at 0x800133E0"]
