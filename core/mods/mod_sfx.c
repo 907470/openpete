@@ -106,6 +106,24 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
     return 0;
 }
 
+uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
+                                 uint32_t len) {
+    /* The ONE free-SPU-tail allocator. Mods that place samples
+     * themselves (e.g. SoundDefinition repoints) MUST allocate here —
+     * a private tail pointer collides with the overlay's lazy staging
+     * (spyro3-gems' chime overwrote spyro3-chests' basket sample: the
+     * user heard the collect chime on chest breaks). Addresses die
+     * with the level bank (openpete_mods_sfx_bank_reset) — re-stage
+     * per level. */
+    if (!body || !len || len > (1u << 20) || !s_upload) return 0;
+    uint32_t addr = s_upload(body, len);
+    if (addr)
+        OPL_INFO_F("mods", "sfx: %s staged %u bytes at SPU %#x",
+                   openpete_mods_id_of(self) ? openpete_mods_id_of(self) : "?",
+                   len, addr);
+    return addr;
+}
+
 int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev)) {
     if (!name || !fn || strlen(name) >= SFX_NAME_MAX) return -1;

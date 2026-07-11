@@ -403,6 +403,16 @@ typedef struct openpete_mod_api {
      * oracle are untouched. */
     int (*texture_register)(openpete_mod_t* self, uint16_t id,
                             const void* rgba, int w, int h);
+
+    /* sfx_stage: copy raw SPU-ADPCM into the free SPU tail through the
+     * ENGINE'S shared allocator and return the SPU byte address (0 on
+     * failure). Mods that place samples themselves (e.g. repointing a
+     * SoundDefinition) MUST allocate here — a private tail pointer
+     * collides with the overlay service's lazy staging (sfx_replace).
+     * Addresses are valid for the CURRENT level bank only (the level
+     * bank blast frees the tail) — re-stage per level. */
+    uint32_t (*sfx_stage)(openpete_mod_t* self, const void* body,
+                          uint32_t len);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

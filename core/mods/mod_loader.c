@@ -792,6 +792,7 @@ static const openpete_mod_api_t s_api = {
     .sfx_replace   = openpete_mods_sfx_replace,
     .sfx_hook      = openpete_mods_sfx_hook,
     .texture_register = openpete_mods_texture_register,
+    .sfx_stage     = openpete_mods_sfx_stage,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

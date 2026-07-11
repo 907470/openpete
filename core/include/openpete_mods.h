@@ -348,6 +348,8 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
                               uint16_t pitch);
 int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev));
+uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
+                                 uint32_t len);
 
 /* Mod-owned RGBA8 textures (mod_texture.c): registered under a
  * mod-chosen 16-bit id; model faces select them with the PSX-reserved

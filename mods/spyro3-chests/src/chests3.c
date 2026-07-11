@@ -280,12 +280,11 @@ static void dump_sound_table(void)
 
 static void park_and_patch(CPUState* cpu)
 {
-    uint32_t bounce_va = (PARK_LINK + s_pack.payload_size + 15u) & ~15u;
     void* park_host = A->guest(PARK_LINK);
     int i, patched = 0, fresh_level = 0;
 
     if (!park_host) { A->log(SELF, OP_MOD_LOG_ERROR, "park unmapped"); return; }
-    if (bounce_va + 16u + s_pack.tex_w * 16u > PARK_LIMIT) {
+    if (PARK_LINK + s_pack.payload_size > PARK_LIMIT) {
         A->log(SELF, OP_MOD_LOG_ERROR, "park overflow"); return;
     }
 
@@ -352,59 +351,42 @@ static void on_patch_models(CPUState* cpu)
     if (s_have_pack) park_and_patch(cpu);
 }
 
-/* break-SFX: upload the S3 ADPCM bodies into the free SPU tail (after
- * the level bank) and REPOINT the stock SoundDefinitions the chest
- * models reference (m_Sounds[0] = per-level def index). Guest-side by
- * design — this mod is sim-divergent anyway (collision), and the def
- * index differs per level so a static host overlay can't name it. */
-static void upload_sfx(CPUState* cpu, uint32_t bounce_va)
+/* break-SFX: stage the S3 ADPCM bodies in the free SPU tail through
+ * the ENGINE'S shared allocator (api->sfx_stage) and REPOINT the stock
+ * SoundDefinitions the chest models reference (m_Sounds[0] = per-level
+ * def index). A private tail pointer is FORBIDDEN: it collides with the
+ * sfx_replace overlay's lazy staging (spyro3-gems' chime overwrote the
+ * basket sample — chest breaks played the collect chime). Guest def
+ * writes are by design — this mod is sim-divergent (collision). */
+static void upload_sfx(void)
 {
     uint32_t defs_va = op_read_u32(A, 0x800761D0u);  /* g_Spu defs */
-    uint32_t vram = op_read_u32(A, 0x80076C04u);     /* level SPU size */
-    uint32_t tail;
-    uint8_t* bounce = (uint8_t*)A->guest(bounce_va);
-    uint32_t saved_a0 = cpu->a0, saved_a1 = cpu->a1;
     int i;
     static const uint16_t chest_cls[2] = {194, 195};
     const uint32_t vag_off[2] = {s_pack.basket_vag_off, s_pack.vase_vag_off};
     const uint32_t vag_size[2] = {s_pack.basket_vag_size, s_pack.vase_vag_size};
 
-    if (!defs_va || !bounce || vram < 0x80000u || vram > 0x100000u) return;
-    tail = (0x1010u + vram - 0x80000u + 15u) & ~15u;
-
+    if (!defs_va) return;
     for (i = 0; i < 2; i++) {
-        uint32_t ours = 0, def_idx, len = vag_size[i];
+        uint32_t ours = 0, def_idx, addr, len = vag_size[i];
         int slot;
         for (slot = 0; slot < N_SLOTS; slot++)
             if (k_s1_classes[slot] == chest_cls[i])
                 ours = s_pack.model_vaddr[slot];
-        if (!ours || !len || len > 0x4000u) continue;
+        if (!ours || !len) continue;
         def_idx = op_read_u8(A, ours + 4u);          /* copied stock byte */
         if (def_idx == 0xFF) continue;
-        if (tail + len > 0x7F000u) break;            /* SPU 512K ceiling */
-        /* chunked through the small tex bounce — the park has no room
-         * for a whole VAG above the payload (0x80010000 = EXE base) */
-        {
-            uint32_t done = 0;
-            while (done < len) {
-                uint32_t chunk = len - done;
-                if (chunk > 2048u) chunk = 2048u;
-                memcpy(bounce, s_file + vag_off[i] + done, chunk);
-                cpu->a0 = tail + done;
-                A->call_addr(cpu, OP_FNADDR_SpuSetTransferStartAddr);
-                cpu->a0 = bounce_va;
-                cpu->a1 = chunk;
-                A->call_addr(cpu, OP_FNADDR_SpuWrite);
-                done += chunk;
-            }
+        addr = A->sfx_stage(SELF, s_file + vag_off[i], len);
+        if (!addr) {
+            A->log(SELF, OP_MOD_LOG_WARN, "sfx stage failed (%s)",
+                   i == 0 ? "basket" : "vase");
+            continue;
         }
-        op_write_u32(A, defs_va + def_idx * 0x14u, tail);
+        op_write_u32(A, defs_va + def_idx * 0x14u, addr);
         A->log(SELF, OP_MOD_LOG_INFO,
                "sfx: def %02x repointed to SPU %05x (%u bytes, %s)",
-               def_idx, tail, len, i == 0 ? "basket" : "vase");
-        tail = (tail + len + 15u) & ~15u;
+               def_idx, addr, len, i == 0 ? "basket" : "vase");
     }
-    cpu->a0 = saved_a0; cpu->a1 = saved_a1;
 }
 
 /* CameraUpdate post-hook: the render loop is alive here — safe spot for
@@ -413,9 +395,8 @@ static void on_camera_update(CPUState* cpu)
 {
     A->base(cpu);
     if (s_need_tex) {
-        uint32_t bounce_va = (PARK_LINK + s_pack.payload_size + 15u) & ~15u;
         s_need_tex = 0;
-        upload_sfx(cpu, bounce_va);
+        upload_sfx();
         dump_sound_table();
     }
 }
