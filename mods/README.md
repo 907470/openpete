@@ -73,7 +73,7 @@ down the chain. Read/write guest RAM via `api->guest` + the typed
 structs in `openpete_game_structs.h` (layout-pinned at compile time).
 Draw HUD text/rects and replay actors through the native renderer
 (never guest prims). Services: savestate trigger + participation,
-`play_sound`, `binding_down`, `bk2_status`, `guest_alloc`, content
+`sfx_play`/`sfx_replace`/`sfx_hook`, `binding_down`, `bk2_status`, `guest_alloc`, content
 registries (`register_moby_type`, `register_level_slot`,
 `enter_level`), and instruction sites (`site_handler`). Present hooks
 are render-pure — sim work belongs in tick hooks; the loader enforces

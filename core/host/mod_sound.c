@@ -1,4 +1,4 @@
-/* mod_sound — one-shot mod sound effects (op_play_sound, the modding
+/* mod_sound — one-shot mod sound effects (sfx_play, the modding
  * framework's engine-services contract).
  *
  * HOST-SIDE ADDITIVE audio: OpenAL static buffers played through a small
@@ -40,7 +40,7 @@ static int snd_init(void) {
     alGetError();
     alGenSources(SND_SOURCES, s_sources);
     if (alGetError() != AL_NO_ERROR) {
-        OPL_WARN_F("mods", "op_play_sound: no OpenAL context — mod "
+        OPL_WARN_F("mods", "sfx_play: no OpenAL context — mod "
                    "sounds disabled this session");
         s_inited = -1;
         return s_inited;
@@ -55,7 +55,7 @@ static ALuint snd_buffer_for(const char* path) {
     for (int i = 0; i < s_cache_count; i++)
         if (strcmp(s_cache[i].path, path) == 0) return s_cache[i].buf;
     if (s_cache_count >= SND_CACHE_MAX) {
-        OPL_WARN_F("mods", "op_play_sound: sound cache full (%d)",
+        OPL_WARN_F("mods", "sfx_play: sound cache full (%d)",
                    SND_CACHE_MAX);
         return 0;
     }
@@ -71,7 +71,7 @@ static ALuint snd_buffer_for(const char* path) {
                  pcm.sample_rate);
     op_wav_free(&pcm);
     if (alGetError() != AL_NO_ERROR) {
-        OPL_WARN_F("mods", "op_play_sound: AL buffer upload failed for %s",
+        OPL_WARN_F("mods", "sfx_play: AL buffer upload failed for %s",
                    path);
         if (buf) alDeleteBuffers(1, &buf);
         return 0;

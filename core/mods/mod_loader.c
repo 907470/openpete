@@ -659,7 +659,7 @@ static void api_bk2_status(openpete_mod_t* self, int* active, int* frame,
 
 /* One-shot sound: host-side additive — no purity gate (sim-neutral by
  * construction; presentation, not render output). */
-static int api_play_sound(openpete_mod_t* self, const char* name,
+static int api_sfx_play(openpete_mod_t* self, const char* name,
                           float gain) {
     if (!self || !name || strstr(name, "..")) return -1;
     char path[MOD_PATH_MAX + 96];
@@ -762,7 +762,7 @@ static const openpete_mod_api_t s_api = {
     .register_level_slot = api_register_level_slot,
     .level_slot_id       = api_level_slot_id,
     .enter_level         = api_enter_level,
-    .play_sound          = api_play_sound,
+    .sfx_play            = api_sfx_play,
     .binding_down        = api_binding_down,
     .guest_alloc         = api_guest_alloc,
     .bk2_status          = api_bk2_status,

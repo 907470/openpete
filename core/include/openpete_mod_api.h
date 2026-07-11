@@ -316,13 +316,19 @@ typedef struct openpete_mod_api {
     int (*level_slot_id)(openpete_mod_t* self, const char* name);
     int (*enter_level)(openpete_mod_t* self, CPUState* cpu, int level_id);
 
-    /* ── One-shot sound (engine services) ────────────────────────────
-     * Play `assets/sounds/<name>.wav` from this mod's directory as a
-     * HOST-side additive one-shot (OpenAL; never the SPU — sim-neutral
-     * by construction, legal from tick and present hooks). gain 0..4,
-     * 1.0 = as-authored; WAVs are cached after the first play.
-     * 0 ok / -1 failed (missing file, no audio — logged, never fatal). */
-    int (*play_sound)(openpete_mod_t* self, const char* name, float gain);
+    /* ── SFX: one-shot (engine services) ─────────────────────────────
+     * The sfx_* family covers all mod audio; the `name` domain differs
+     * per verb — sfx_play resolves in THIS MOD's assets/sounds/;
+     * sfx_replace/sfx_hook (below) resolve in the GAME's registered
+     * sound names.
+     *
+     * sfx_play: play `assets/sounds/<name>.wav` from this mod's
+     * directory as a HOST-side additive one-shot (OpenAL; never the
+     * SPU — sim-neutral by construction, legal from tick and present
+     * hooks). gain 0..4, 1.0 = as-authored; WAVs are cached after the
+     * first play. 0 ok / -1 failed (missing file, no audio — logged,
+     * never fatal). */
+    int (*sfx_play)(openpete_mod_t* self, const char* name, float gain);
 
     /* ── Declared input bindings (engine services) ───────────────────
      * Resolve a [[binding]] declared in this mod's mod.toml
@@ -363,8 +369,9 @@ typedef struct openpete_mod_api {
      * voice attributes at key-on, so an SFX mod is sim-neutral by
      * construction (the sim never reads SPU state back).
      *
-     * Names are game-registered (Spyro 1: the SoundTable slot names —
-     * "gem_pickup", "spyro_charge", ...). Unknown name => -1.
+     * Names are GAME-registered (Spyro 1: the SoundTable slot names —
+     * "gem_pickup", "spyro_charge", ...) — unlike sfx_play's mod-local
+     * WAV names. Unknown name => -1.
      *
      * sfx_replace: substitute the sample behind a named sound. body =
      * raw SPU-ADPCM frames (no VAG header, final block end-flag 0x01),
