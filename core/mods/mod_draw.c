@@ -104,6 +104,18 @@ static present_hook_t s_phooks[PRESENT_HOOKS_MAX];
 static int            s_phook_count = 0;
 static int            s_any_draw = 0; /* fast bail for modless runs */
 
+void openpete_mods_draw_remove_owner(const char* owner_id) {
+    if (!owner_id) return;
+    int w = 0;
+    for (int i = 0; i < s_phook_count; i++) {
+        if (s_phooks[i].owner_id &&
+            strcmp(s_phooks[i].owner_id, owner_id) == 0)
+            continue;
+        s_phooks[w++] = s_phooks[i];
+    }
+    s_phook_count = w;
+}
+
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on) {
     if (!owner_id) return;
     for (int i = 0; i < s_phook_count; i++)

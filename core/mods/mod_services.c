@@ -53,6 +53,36 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out) {
     if (out) *out = s_bk2_status;
 }
 
+/* Hot reload: run the owner's SAVE hook into a caller buffer (returns
+ * bytes or -1), replace registrations, then feed the blob to the NEW
+ * load hook — the mod's state crosses the reload. */
+int openpete_mods_state_capture(const char* owner, void* buf, int cap) {
+    for (int i = 0; i < s_hook_count; i++)
+        if (s_hooks[i].id && strcmp(s_hooks[i].id, owner) == 0 &&
+            s_hooks[i].save)
+            return s_hooks[i].save(buf, cap);
+    return -1;
+}
+
+void openpete_mods_state_restore(const char* owner, const void* buf,
+                                 int len) {
+    for (int i = 0; i < s_hook_count; i++)
+        if (s_hooks[i].id && strcmp(s_hooks[i].id, owner) == 0 &&
+            s_hooks[i].load) {
+            s_hooks[i].load(buf, len);
+            return;
+        }
+}
+
+void openpete_mods_state_remove(const char* owner) {
+    int w = 0;
+    for (int i = 0; i < s_hook_count; i++) {
+        if (s_hooks[i].id && strcmp(s_hooks[i].id, owner) == 0) continue;
+        s_hooks[w++] = s_hooks[i];
+    }
+    s_hook_count = w;
+}
+
 int openpete_mods_savestate_request(int op, unsigned slot,
                                     const char* owner) {
     if (op != 1 && op != 2) return -1;

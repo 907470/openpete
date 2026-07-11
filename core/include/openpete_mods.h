@@ -98,6 +98,11 @@ int openpete_mod_sound_play(const char* path, float gain);
  * tier). openpete_mods_tick_boundary is the apply point, called at the
  * canonical present commit with the running canonical-tick counter;
  * OPENPETE_MODS_TOGGLE="tick:id:0|1[,...]" schedules for CI/dev. */
+/* Loaded-mod enumeration (the mod menu's data source). */
+int         openpete_mods_count(void);
+const char* openpete_mods_id(int i);
+int         openpete_mods_is_enabled(const char* id);
+
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 void openpete_mods_tick_boundary(unsigned canonical_tick);
 void openpete_mods_site_set_enabled(const char* mod_id, int on);

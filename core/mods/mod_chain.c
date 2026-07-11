@@ -129,6 +129,23 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
         s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
 }
 
+/* Hot reload: REMOVE every link owned by owner_id (compacting — the
+ * mod re-registers fresh at re-entry). Tick-boundary only. */
+void openpete_mods_chain_remove_owner(const char* owner_id) {
+    if (!owner_id) return;
+    for (int i = 0; i < s_chain_count; i++) {
+        mod_chain_t* c = &s_chains[i];
+        int w = 0;
+        for (int j = 0; j < c->count; j++) {
+            if (c->links[j].owner_id &&
+                strcmp(c->links[j].owner_id, owner_id) == 0)
+                continue;
+            c->links[w++] = c->links[j];
+        }
+        c->count = w;
+    }
+}
+
 /* Live toggle: flip every link owned by owner_id. Chain STRUCTURE is
  * untouched (order, base() nesting) — a re-enabled mod is exactly where
  * it was. Call only at a tick boundary (the loader's apply point). */

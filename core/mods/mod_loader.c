@@ -123,6 +123,8 @@ struct openpete_mod {
                         * tag. Advisory, like tier. */
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
+    char  build_key[65]; /* content-hash build key (hot-reload watch) */
+    int   enabled;       /* live-toggle state (loaded mods start on) */
     void* dl;
 };
 
@@ -349,6 +351,118 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
+static char s_sdk_dir[MOD_PATH_MAX];
+
+/* defined later in this file */
+static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
+static void exports_remove_owner(const char* id);
+
+/* Hot reload (P4, dev mode): drop a mod's cross-mod exports; importers
+ * hold raw pointers into the OLD object, which stays resident (never
+ * dlclose mid-session), so stale imports keep working against stale
+ * code until their owners also reload — logged so nobody is surprised. */
+
+static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
+                     char* so_path, size_t so_path_len);
+typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
+static const openpete_mod_api_t s_api;
+
+/* Reload one mod in place at a tick boundary: capture its state (the
+ * savestate-participation pair), sweep every registration it owns,
+ * re-parse + rebuild + dlopen a FRESH object (unique .hotN name — the
+ * old object stays resident by design), re-run entry, restore state. */
+static void mod_hot_reload(struct openpete_mod* mod) {
+    OPL_INFO_F("mods", "hot reload: %s (sources changed)", mod->id);
+    static unsigned char blob[64 * 1024];
+    int blen = openpete_mods_state_capture(mod->id, blob, sizeof blob);
+
+    openpete_mods_chain_remove_owner(mod->id);
+    openpete_mods_draw_remove_owner(mod->id);
+    openpete_mods_site_detach_all(mod->id);
+    openpete_mods_registry_remove_owner(mod->id);
+    openpete_mods_state_remove(mod->id);
+    exports_remove_owner(mod->id);
+
+    mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
+    char dir_copy[MOD_PATH_MAX];
+    snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
+    if (parse_manifest(dir_copy, mod) != 0) {
+        OPL_ERROR_F("mods", "%s: reload manifest parse failed — mod is "
+                    "now INERT until the next successful reload", mod->id);
+        return;
+    }
+    char so_path[MOD_PATH_MAX];
+    if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
+        OPL_ERROR_F("mods", "%s: reload compile failed — mod is now "
+                    "INERT until the next successful reload", mod->id);
+        return;
+    }
+    static unsigned s_hot_n = 0;
+    char hot_path[MOD_PATH_MAX + 32];
+    snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
+             mod->dir, mod->id, ++s_hot_n);
+    {   /* copy: a fresh inode guarantees dlopen loads a fresh object */
+        FILE* in = fopen(so_path, "rb");
+        FILE* outf = in ? fopen(hot_path, "wb") : NULL;
+        if (!in || !outf) {
+            if (in) fclose(in);
+            if (outf) fclose(outf);
+            OPL_ERROR_F("mods", "%s: reload stage copy failed", mod->id);
+            return;
+        }
+        unsigned char cbuf[8192];
+        size_t got;
+        while ((got = fread(cbuf, 1, sizeof cbuf, in)) > 0)
+            fwrite(cbuf, 1, got, outf);
+        fclose(in);
+        fclose(outf);
+    }
+    void* dl = mod_dlopen(hot_path);
+    if (!dl) {
+        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s", mod->id,
+                    mod_dlerror());
+        return;
+    }
+    mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
+    if (!entry || entry(&s_api, mod) != 0) {
+        OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
+                    mod->id);
+        return;
+    }
+    mod->dl = dl; /* old object deliberately stays resident */
+    if (blen >= 0)
+        openpete_mods_state_restore(mod->id, blob, blen);
+    OPL_INFO_F("mods", "hot reload: %s live (state %s)", mod->id,
+               blen >= 0 ? "carried" : "fresh");
+}
+
+/* Watch: every 64 canonical ticks, recompute each loaded mod's content
+ * build key; a change (source OR SDK) reloads it. OPENPETE_MOD_HOT_RELOAD=1
+ * only — this is dev-mode machinery. */
+static void hot_reload_poll(void) {
+    static int s_hot = -1;
+    if (s_hot < 0) {
+        const char* e = getenv("OPENPETE_MOD_HOT_RELOAD");
+        s_hot = (e && *e && *e != '0') ? 1 : 0;
+        if (s_hot) OPL_INFO_F("mods", "hot reload armed (dev mode)");
+    }
+    if (!s_hot) return;
+    static unsigned s_cnt = 0;
+    if (++s_cnt % 64u) return;
+    for (int i = 0; i < s_mod_count; i++) {
+        struct openpete_mod* mod = &s_mods[i];
+        if (!mod->dl) continue;
+        char prev_key[65];
+        memcpy(prev_key, mod->build_key, sizeof prev_key);
+        char so_path[MOD_PATH_MAX];
+        /* build_mod recomputes the key; unchanged = cache hit (no-op). */
+        if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0)
+            continue;
+        if (strcmp(prev_key, mod->build_key) != 0)
+            mod_hot_reload(mod);
+    }
+}
+
 /* ── Live modset toggle (P2) ─────────────────────────────────────────
  * enable/disable apply at the NEXT TICK BOUNDARY (the canonical present
  * commit), never mid-tick: requests queue here and the apply flips
@@ -376,6 +490,16 @@ static int          s_toggle_n = 0;
 typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
 static toggle_sched_t s_toggle_sched[16];
 static int            s_toggle_sched_n = 0;
+
+int         openpete_mods_count(void) { return s_mod_count; }
+const char* openpete_mods_id(int i) {
+    return (i >= 0 && i < s_mod_count) ? s_mods[i].id : NULL;
+}
+int openpete_mods_is_enabled(const char* id) {
+    for (int i = 0; i < s_mod_count; i++)
+        if (strcmp(s_mods[i].id, id) == 0) return s_mods[i].enabled;
+    return 0;
+}
 
 int openpete_mods_set_mod_enabled(const char* id, int on) {
     if (!id || !id[0]) return -1;
@@ -421,6 +545,8 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
             (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
                                                 s_toggle_sched[i].on);
     }
+    hot_reload_poll();
+
     for (int q = 0; q < s_toggle_n; q++) {
         const char* id = s_toggle_q[q].id;
         int on = s_toggle_q[q].on;
@@ -435,6 +561,7 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_site_set_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
+        mod->enabled = on;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
     }
@@ -548,6 +675,25 @@ typedef struct {
 
 static mod_export_t s_exports[MOD_EXPORTS_MAX];
 static int          s_export_count = 0;
+
+static void exports_remove_owner(const char* id) {
+    char prefix[MOD_ID_MAX + 2];
+    snprintf(prefix, sizeof prefix, "%s:", id);
+    int w = 0, removed = 0;
+    for (int i = 0; i < s_export_count; i++) {
+        if (strncmp(s_exports[i].name, prefix, strlen(prefix)) == 0) {
+            removed++;
+            continue;
+        }
+        s_exports[w++] = s_exports[i];
+    }
+    s_export_count = w;
+    if (removed)
+        OPL_WARN_F("mods", "%s: %d export(s) dropped on reload — other "
+                   "mods' existing imports now reference the OLD object",
+                   id, removed);
+}
+
 
 static int api_export_sym(openpete_mod_t* self, const char* name, void* ptr) {
     if (!self || !name || !ptr) return -1;
@@ -788,7 +934,7 @@ static void sort_srcs(char srcs[][MOD_PATH_MAX], int n) {
  * (api version + SDK header bytes + sorted source bytes) differs from
  * the stamped one — mtime churn (git checkout, cp) never forces a
  * rebuild, and real changes always do. Returns 0 with so_path filled. */
-static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
+static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len) {
     char src_dir[MOD_PATH_MAX];
     snprintf(src_dir, sizeof src_dir, "%s/src", mod->dir);
@@ -836,6 +982,7 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
     char    key[65];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, key);
+    snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
 
     char build_dir[MOD_PATH_MAX];
     snprintf(build_dir, sizeof build_dir, "%s/.build", mod->dir);
@@ -1195,6 +1342,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         const char* base = SDL_GetBasePath();
         snprintf(sdk_dir, sizeof sdk_dir, "%ssdk", base ? base : "./");
     }
+    snprintf(s_sdk_dir, sizeof s_sdk_dir, "%s", sdk_dir);
 
     /* Phase A: parse all enabled manifests (no loading yet). */
     struct openpete_mod pending[MODS_MAX];
@@ -1299,6 +1447,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         struct openpete_mod* mod = &s_mods[s_mod_count];
         *mod = pending[i];
         if (load_mod(mod, sdk_dir) != 0) continue;
+        mod->enabled = 1;
         load_ok[i] = 1;
         s_mod_count++;
         loaded++;

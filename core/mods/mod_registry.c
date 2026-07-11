@@ -195,6 +195,23 @@ uint32_t openpete_mods_moby_spawn(CPUState* cpu, const char* mod_id,
     return s_ops->spawn(cpu, t->class_id, t->donor_class);
 }
 
+/* Hot reload: REMOVE a mod's registry rows (it re-registers fresh). */
+void openpete_mods_registry_remove_owner(const char* mod_id) {
+    if (!mod_id) return;
+    int w = 0;
+    for (int i = 0; i < s_type_count; i++) {
+        if (strcmp(s_types[i].mod_id, mod_id) == 0) continue;
+        s_types[w++] = s_types[i];
+    }
+    s_type_count = w;
+    w = 0;
+    for (int i = 0; i < s_level_count; i++) {
+        if (strcmp(s_levels[i].mod_id, mod_id) == 0) continue;
+        s_levels[w++] = s_levels[i];
+    }
+    s_level_count = w;
+}
+
 /* Live toggle: gate a mod's registry rows (moby types + level slots).
  * A disabled moby type stops claiming and dispatching (live instances
  * freeze harmlessly — the game's default arm never ran for them); a

@@ -14,6 +14,7 @@
 #include "openpete_native_render.h"  /* set_aspect / set_ssaa / set_vsync */
 #include "openpete_log.h"
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
+#include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
 #include "features/no_lod.h"         /* openpete_no_lod_set */
 
 #include <stddef.h>
@@ -21,7 +22,7 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
-       ROW_FREECAM, ROW_COUNT,
+       ROW_FREECAM, ROW_MODSEL, ROW_MODEN, ROW_COUNT,
        /* FOG is parked past ROW_COUNT: hidden from display + navigation for
         * now, but all its plumbing stays live and compiled — s_fog_idx, the
         * case labels below, openpete_fog_set/enabled and the LOD→fog
@@ -31,6 +32,7 @@ enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
+    "MOD", "MOD ENABLED",
 };
 
 /* Aspect presets (label + width/height). */
@@ -102,6 +104,12 @@ static void build_fps_list(int refresh) {
     s_fps_count = n;
 }
 
+/* Mod menu rows (modding P4): MOD cycles the loaded-mod selection;
+ * MOD ENABLED shows + live-toggles the selected mod (applied at the
+ * next tick boundary by the loader). Data comes straight from the
+ * loader enumeration — zero mods shows NONE and the rows no-op. */
+static int s_modsel_idx = 0;
+
 /* Current value string for a row (for the log + later the draw). */
 static const char* value_str(int row, char* buf, int buflen) {
     switch (row) {
@@ -119,6 +127,15 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
     case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
+    case ROW_MODSEL: {
+        const char* id = openpete_mods_id(s_modsel_idx);
+        return id ? id : "NONE";
+    }
+    case ROW_MODEN: {
+        const char* id = openpete_mods_id(s_modsel_idx);
+        if (!id) return "-";
+        return openpete_mods_is_enabled(id) ? "ON" : "OFF";
+    }
     default:           return "?";
     }
 }
@@ -284,6 +301,21 @@ void openpete_menu_adjust(int dx) {
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
+    case ROW_MODSEL:
+        if (openpete_mods_count() > 0)
+            s_modsel_idx = wrap_idx(s_modsel_idx + step,
+                                    openpete_mods_count());
+        break;
+    case ROW_MODEN: {
+        /* Queue the flip of the SELECTED mod; the loader applies it at
+         * the next tick boundary and records the state the value_str
+         * reads back — no local shadow index to go stale. */
+        const char* id = openpete_mods_id(s_modsel_idx);
+        if (id)
+            (void)openpete_mods_set_mod_enabled(
+                id, !openpete_mods_is_enabled(id));
+        break;
+    }
     default: break;
     }
     apply_row(s_cursor);

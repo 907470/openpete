@@ -611,6 +611,46 @@ else
     bad "resumed session did not complete"
 fi
 
+# ── 18. dev hot reload: edit a mod's source mid-run, new code goes live ──
+# A purpose-built mod logs "v1 alive"; its source is edited to v2 while
+# the game runs with OPENPETE_MOD_HOT_RELOAD=1. The watcher (content
+# build key, every 64 canonical ticks) rebuilds, dlopens a fresh object,
+# re-runs entry — "v2 alive" must appear in the SAME session.
+say "hot reload: mid-run source edit goes live in-session"
+mkdir -p "$WORK/hotsrc/hot-greeter/src"
+printf '[mod]\nid = "hot-greeter"\nversion = "0.0.1"\napi = 1\n' \
+    > "$WORK/hotsrc/hot-greeter/mod.toml"
+cat > "$WORK/hotsrc/hot-greeter/src/greet.c" <<'CEOF'
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* g_api; static openpete_mod_t* g_self;
+static int g_greeted;
+static void on_update(CPUState* cpu) {
+    g_api->base(cpu);
+    if (!g_greeted) { g_greeted = 1;
+        g_api->log(g_self, OP_MOD_LOG_INFO, "hot-greeter: v1 alive"); }
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    g_api = api; g_self = self;
+    return api->override_name(self, "GamestateUpdate", on_update);
+}
+CEOF
+mkdir -p "$WORK/hot"
+ln -sfn "$WORK/hotsrc/hot-greeter" "$WORK/hot/hot-greeter"
+echo hot-greeter > "$WORK/hot/enabled.txt"
+OPENPETE_MOD_HOT_RELOAD=1 run_game "$WORK/hot" 9000 > "$WORK/hot.log" 2>&1 &
+hotpid=$!
+sleep 6
+sed -i 's/v1 alive/v2 alive/' "$WORK/hotsrc/hot-greeter/src/greet.c"
+wait "$hotpid"
+if grep -q "hot-greeter: v1 alive" "$WORK/hot.log" &&
+   grep -q "hot reload: hot-greeter live" "$WORK/hot.log" &&
+   grep -q "hot-greeter: v2 alive" "$WORK/hot.log"; then
+    ok "v1 ran, reload fired, v2 ran — same session"
+else
+    bad "hot reload sequence incomplete (see $WORK/hot.log)"
+    grep -E "hot" "$WORK/hot.log" | head -5
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"
