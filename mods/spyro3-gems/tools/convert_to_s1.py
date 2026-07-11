@@ -181,20 +181,26 @@ def build_model(anim_json, substate, scale):
 def main():
     anims = [json.loads((S3 / f"gem_anim{n}.json").read_text()) for n in range(5)]
 
-    # Per-model scale: fit each denomination to the STOCK gem envelope
-    # (S3G_DUMP_VERTS ground truth, true coords: VY spans [-128, 0], VX
-    # [-86, 96], VZ [-84, 84]) as large as it can go, UNIFORM per model
-    # so its S3 shape survives. The first cut used one global scale to
-    # keep S3 relative sizes, capped at the int8 format ceiling (±127) —
-    # but blue/pink/green are genuinely anisotropic in S3 (wide axis
-    # 1.17–1.42× the narrow one), so their wide axis sailed past the
-    # stock envelope (blue hit 118 vs stock 84: visibly oversized
-    # in-world, and outside the stock m_RenderRadius cull the spec
-    # requires fitting). Gems rest at identity orientation and the
-    # collect wobble sweeps the full horizontal radius, so the symmetric
-    # tight bound (84) is the safe horizontal limit for both axes.
+    # Scale rule: S3 relative sizes, clamped to the stock envelope.
+    # One GLOBAL scale anchors the set — the tallest S3 gem (red) maps
+    # to the stock height (S3G_DUMP_VERTS ground truth, true coords: VY
+    # spans [-128, 0], horizontal ±84) — so denominations keep their S3
+    # size hierarchy (gold is authentically the small, compact one).
+    # Then each model CLAMPS to the envelope, uniform per model so its
+    # shape survives: blue/pink/green are genuinely anisotropic in S3
+    # (wide axis 1.17–1.42× the narrow one) and at the global scale
+    # their wide axis overshoots stock (blue hit 118 vs 84 — visibly
+    # oversized in-world, and outside the stock m_RenderRadius cull the
+    # spec requires fitting). Two rejected cuts: capping the global
+    # scale at the int8 format ceiling (±127) let the wide gems through;
+    # maximizing every model inside the envelope inflated gold to stock
+    # size. Gems rest at identity orientation and the collect wobble
+    # sweeps the full horizontal radius, so the symmetric tight bound
+    # (84) is the safe horizontal limit for both axes.
     STOCK_TALL = 128.0
     STOCK_HORIZ = 84.0
+    global_scale = STOCK_TALL / max(z / 2.0 for a in anims
+                                    for _, _, z in a["frame0"]["verts"])
 
     force = os.environ.get("S3G_FORCE_STATE")
     payload = bytearray()
@@ -205,9 +211,9 @@ def main():
         tall = max(z / 2.0 for _, _, z in a["frame0"]["verts"])
         horiz = max(max(abs(x), abs(y))
                     for x, y, _ in a["frame0"]["verts"])
-        scale = min(STOCK_TALL / tall, STOCK_HORIZ / horiz)
+        scale = min(global_scale, STOCK_TALL / tall, STOCK_HORIZ / horiz)
         print(f"state {n}: tall {tall:.1f} horiz {horiz:.1f} "
-              f"-> scale {scale:.3f}")
+              f"-> scale {scale:.3f}{' (clamped)' if scale < global_scale else ''}")
         body, ov, oc, of = build_model(a, sub, scale)
         while len(payload) % 16:
             payload.append(0)
