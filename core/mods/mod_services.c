@@ -41,6 +41,18 @@ static int          s_hook_count = 0;
 static int      s_pending_op = 0; /* 0 none, 1 save, 2 load */
 static unsigned s_pending_slot = 0;
 
+/* bk2 status mirror: run.c publishes per sim frame while a movie is
+ * loaded; zero-initialized = "no movie" for movie-less sessions. */
+static openpete_mods_bk2_status_t s_bk2_status;
+
+void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st) {
+    if (st) s_bk2_status = *st;
+}
+
+void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out) {
+    if (out) *out = s_bk2_status;
+}
+
 int openpete_mods_savestate_request(int op, unsigned slot,
                                     const char* owner) {
     if (op != 1 && op != 2) return -1;

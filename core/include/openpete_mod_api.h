@@ -305,6 +305,33 @@ typedef struct openpete_mod_api {
                                int donor_level_id);
     int (*level_slot_id)(openpete_mod_t* self, const char* name);
     int (*enter_level)(openpete_mod_t* self, CPUState* cpu, int level_id);
+
+    /* ── One-shot sound (engine services) ────────────────────────────
+     * Play `assets/sounds/<name>.wav` from this mod's directory as a
+     * HOST-side additive one-shot (OpenAL; never the SPU — sim-neutral
+     * by construction, legal from tick and present hooks). gain 0..4,
+     * 1.0 = as-authored; WAVs are cached after the first play.
+     * 0 ok / -1 failed (missing file, no audio — logged, never fatal). */
+    int (*play_sound)(openpete_mod_t* self, const char* name, float gain);
+
+    /* ── Declared input bindings (engine services) ───────────────────
+     * Resolve a [[binding]] declared in this mod's mod.toml
+     * ({name, key, purpose}) to the live host key state. Declaring
+     * bindings (instead of raw host_key_down) surfaces conflicts across
+     * the enabled set at load time and lets a future mod menu rebind
+     * without touching the mod. Same tick-context divergence caveats as
+     * host_key_down. Undeclared name = error log + 0. */
+    int (*binding_down)(openpete_mod_t* self, const char* name);
+
+    /* ── bk2 input-movie status (engine services, read-only v1) ──────
+     * active: a movie is loaded this session; frame: current movie
+     * frame (<0 before the offset); frame_count: movie length;
+     * overriding: this tick's input actually came from the movie.
+     * All zeros when no movie. Record/replay CONTROL stays engine-
+     * owned (mid-session anchoring is TAS infra). out fields are
+     * int-sized; pass a struct of 4 ints. */
+    void (*bk2_status)(openpete_mod_t* self, int* active, int* frame,
+                       int* frame_count, int* overriding);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

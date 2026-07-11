@@ -64,6 +64,32 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr);
 /* 1 while at least one override chain is registered. Hot-path gate. */
 extern int openpete_mods_active;
 
+/* bk2 input-movie status (read-only v1 of the bk2 access service):
+ * run.c publishes once per sim frame while a movie is loaded; mods
+ * query via api->bk2_status to synchronize with replays. Record/replay
+ * CONTROL stays engine-owned (mid-session anchoring is TAS infra). */
+typedef struct {
+    int active;      /* a movie is loaded this session               */
+    int frame;       /* current movie frame (<0 before the offset)   */
+    int frame_count; /* total frames in the movie                    */
+    int overriding;  /* this tick's input actually came from it      */
+} openpete_mods_bk2_status_t;
+void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st);
+void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
+
+/* One-shot mod sound (core/host/mod_sound.c): host-side additive OpenAL
+ * playback of a PCM WAV at `path`, gain-clamped [0,4]. Sim-neutral by
+ * construction; legal from tick and present hooks. 0 ok / -1 failed
+ * (logged; never fatal). */
+int openpete_mod_sound_play(const char* path, float gain);
+
+/* Per-mod time instrument (mod_chain.c): SELF-time accumulation per
+ * owner (tick hooks fed by the chain runner, present hooks by
+ * mod_draw.c) + the periodic report that names any mod exceeding the
+ * sim-tick budget. ticks_elapsed = sim ticks in the window. */
+void openpete_mods_time_add(const char* owner, int64_t ns, int is_present);
+void openpete_mods_time_report(unsigned ticks_elapsed);
+
 /* Crash attribution: non-NULL = an override chain frame is live on this
  * thread; returns the innermost mod id (addr_out = the overridden
  * vaddr). Consumed by core/runtime/crash.c so a crash report names the

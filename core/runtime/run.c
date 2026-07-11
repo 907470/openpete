@@ -1445,6 +1445,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 exit_reason = "bk2-end";
                 break;
             }
+            {
+                /* Mods' read-only bk2 status (api->bk2_status) — also
+                 * published pre-offset / past-end (overriding = 0). */
+                openpete_mods_bk2_status_t st = {
+                    1, bk2_frame, (int)bk2.frame_count, ovr_active };
+                openpete_mods_bk2_publish(&st);
+            }
             /* Log every input transition so the user can audit the
              * playback timeline. Mirrors the press/release format used
              * on the record path. */

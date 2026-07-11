@@ -203,6 +203,17 @@ static int emit_buf(const cmd_buf_t* b, int n) {
 }
 
 void openpete_mods_present_flush(CPUState* cpu, int canonical) {
+    /* Per-mod time report window: every 512 sim ticks (~17 s at 29.97),
+     * counted at the canonical commit. ABOVE the draw gates — tick-hook
+     * timing must report in headless runs too. */
+    if (canonical && openpete_mods_active) {
+        static unsigned s_report_ticks = 0;
+        if (++s_report_ticks >= 512) {
+            openpete_mods_time_report(s_report_ticks);
+            s_report_ticks = 0;
+        }
+    }
+
     if (!s_any_draw) return;
     if (!openpete_native_render_enabled()) return;
 
@@ -240,10 +251,14 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
             ctx.alpha = (float)a;
 
         openpete_mods_in_present = 1;
-        for (int i = 0; i < s_phook_count; i++)
+        for (int i = 0; i < s_phook_count; i++) {
+            const op_time_t t0 = op_now();
             s_phooks[i].fn(&ctx);
+            openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1);
+        }
         openpete_mods_in_present = 0;
     }
+
 
     /* Actor draws append into the CURRENT frame's native scene — both
      * run.c present legs call this flush AFTER the scene (re)build and

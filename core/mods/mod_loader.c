@@ -87,6 +87,13 @@ void openpete_mods_base(CPUState* cpu);
 
 #define MODS_MAX          32
 #define MOD_ID_MAX        64
+#define MOD_BINDINGS_MAX  8
+
+typedef struct {
+    char name[24];    /* binding_down() key within the mod's namespace */
+    char key[24];     /* host key name (host_key_down vocabulary) */
+    char purpose[64]; /* human text for conflict messages / mod menu */
+} mod_binding_t;
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
 #define MOD_DEPS_MAX      8
@@ -110,6 +117,8 @@ struct openpete_mod {
                         * never diverges gameplay state (observers/HUD/
                         * presentation) — excluded from the save modset
                         * tag. Advisory, like tier. */
+    mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
+    int   n_bindings;
     void* dl;
 };
 
@@ -388,6 +397,40 @@ static int api_enter_level(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_level_enter(cpu, level_id);
 }
 
+/* Declared-binding resolve: name → this mod's [[binding]] key →
+ * host_key_down. Same tick-context caveats as host_key_down itself. */
+static int api_binding_down(openpete_mod_t* self, const char* name) {
+    if (!self || !name) return 0;
+    for (int i = 0; i < self->n_bindings; i++)
+        if (strcmp(self->bindings[i].name, name) == 0)
+            return api_host_key_down(self->bindings[i].key);
+    OPL_ERROR_F(self->log_tag, "binding \"%s\" not declared in mod.toml",
+                name);
+    return 0;
+}
+
+/* bk2 status: read-only mirror published by run.c per sim frame. */
+static void api_bk2_status(openpete_mod_t* self, int* active, int* frame,
+                           int* frame_count, int* overriding) {
+    (void)self;
+    openpete_mods_bk2_status_t st;
+    openpete_mods_bk2_query(&st);
+    if (active)      *active      = st.active;
+    if (frame)       *frame       = st.frame;
+    if (frame_count) *frame_count = st.frame_count;
+    if (overriding)  *overriding  = st.overriding;
+}
+
+/* One-shot sound: host-side additive — no purity gate (sim-neutral by
+ * construction; presentation, not render output). */
+static int api_play_sound(openpete_mod_t* self, const char* name,
+                          float gain) {
+    if (!self || !name || strstr(name, "..")) return -1;
+    char path[MOD_PATH_MAX + 96];
+    snprintf(path, sizeof path, "%s/assets/sounds/%s.wav", self->dir, name);
+    return openpete_mod_sound_play(path, gain);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -460,6 +503,9 @@ static const openpete_mod_api_t s_api = {
     .register_level_slot = api_register_level_slot,
     .level_slot_id       = api_level_slot_id,
     .enter_level         = api_enter_level,
+    .play_sound          = api_play_sound,
+    .binding_down        = api_binding_down,
+    .bk2_status          = api_bk2_status,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -564,6 +610,35 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             if (!d.ok) continue;
             snprintf(mod->below[mod->n_below++], MOD_ID_MAX, "%s", d.u.s);
             free(d.u.s);
+        }
+    }
+    /* Declared input bindings ([[binding]] name/key/purpose): the
+     * registry that makes host-key use visible — conflicts across the
+     * enabled set are detected after loading (advisory warn; reads are
+     * non-exclusive), and a future mod menu rebinds by editing the
+     * registry, not the mod. */
+    toml_array_t* binds = toml_array_in(root, "binding");
+    if (binds) {
+        int n = toml_array_nelem(binds);
+        for (int i = 0; i < n && mod->n_bindings < MOD_BINDINGS_MAX; i++) {
+            toml_table_t* b = toml_table_at(binds, i);
+            if (!b) continue;
+            toml_datum_t bn = toml_string_in(b, "name");
+            toml_datum_t bk = toml_string_in(b, "key");
+            toml_datum_t bp = toml_string_in(b, "purpose");
+            if (bn.ok && bk.ok) {
+                mod_binding_t* mb = &mod->bindings[mod->n_bindings++];
+                snprintf(mb->name, sizeof mb->name, "%s", bn.u.s);
+                snprintf(mb->key, sizeof mb->key, "%s", bk.u.s);
+                snprintf(mb->purpose, sizeof mb->purpose, "%s",
+                         bp.ok ? bp.u.s : "");
+            } else {
+                OPL_ERROR_F("mods", "%s: [[binding]] needs name and key",
+                            path);
+            }
+            if (bn.ok) free(bn.u.s);
+            if (bk.ok) free(bk.u.s);
+            if (bp.ok) free(bp.u.s);
         }
     }
     rc = 0;
@@ -952,6 +1027,23 @@ int openpete_mods_init(const openpete_options_t* opts) {
         s_mod_count++;
         loaded++;
     }
+
+    /* Declared-bindings conflict scan: two enabled mods claiming the
+     * same host key is legal (reads are non-exclusive) but surprising —
+     * name both, with purposes, so the user can re-order or rebind. */
+    for (int i = 0; i < s_mod_count; i++)
+        for (int bi = 0; bi < s_mods[i].n_bindings; bi++)
+            for (int j = i + 1; j < s_mod_count; j++)
+                for (int bj = 0; bj < s_mods[j].n_bindings; bj++)
+                    if (strcmp(s_mods[i].bindings[bi].key,
+                               s_mods[j].bindings[bj].key) == 0)
+                        OPL_WARN_F("mods", "key \"%s\" bound by both %s "
+                                   "(%s) and %s (%s)",
+                                   s_mods[i].bindings[bi].key,
+                                   s_mods[i].id,
+                                   s_mods[i].bindings[bi].purpose,
+                                   s_mods[j].id,
+                                   s_mods[j].bindings[bj].purpose);
 
     if (loaded > 0)
         OPL_INFO_F("mods", "%d mod%s active (dir: %s)", loaded,

@@ -27,7 +27,9 @@
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
+#include "openpete_time.h" /* per-mod time instrument */
 
+#include <stdlib.h> /* getenv — timer dump toggle */
 #include <string.h>
 
 /* Recompiler runtime: dispatch-by-address (psx_runtime.h). */
@@ -58,6 +60,8 @@ static int         s_chain_count = 0;
 typedef struct {
     mod_chain_t* chain;
     int          link;
+    op_time_t    child_ns; /* time spent in base() descent — subtracted
+                            * so the instrument reports SELF time */
 } mod_frame_t;
 
 static _Thread_local mod_frame_t s_frames[MOD_FRAME_STACK_MAX];
@@ -76,8 +80,15 @@ static mod_chain_t* chain_find(uint32_t addr) {
 }
 
 /* Run link `idx` of `chain`, or the recompiled original when the chain
- * is exhausted. base() is "run_link(current+1)". */
+ * is exhausted. base() is "run_link(current+1)".
+ *
+ * Per-mod time instrument: every invocation measures its span; a LINK's
+ * SELF time (span minus its base() descent) is charged to its owner,
+ * and the full span is credited to the parent frame's child_ns — so a
+ * post-hook that wraps an expensive original is billed only for its own
+ * code, never for the game's. */
 static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
+    const op_time_t t0 = op_now();
     if (idx < chain->count) {
         if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
             OPL_ERROR_F("mods", "override frame stack overflow at 0x%08X "
@@ -87,8 +98,14 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
             mod_frame_t* f = &s_frames[s_frame_depth++];
             f->chain = chain;
             f->link  = idx;
+            f->child_ns = 0;
             chain->links[idx].fn(cpu);
+            const op_time_t span = op_now() - t0;
             s_frame_depth--;
+            openpete_mods_time_add(chain->links[idx].owner_id,
+                                   span - f->child_ns, 0);
+            if (s_frame_depth > 0)
+                s_frames[s_frame_depth - 1].child_ns += span;
             return;
         }
     }
@@ -103,6 +120,71 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
      * another dispatch arm (freecam freeze, native decomp) swallowed the
      * call before our arm saw it. */
     s_bypass_armed = 0;
+    if (s_frame_depth > 0)
+        s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
+}
+
+/* ── Per-mod time instrument ────────────────────────────────────────────
+ * Accumulates SELF time per owner across tick hooks (chain links, fed by
+ * run_link above) and present hooks (mod_draw.c). Reported + reset every
+ * ~17 s of sim by the present flush: always WARNS when a mod's average
+ * tick cost exceeds the budget (names the slow mod — the sim-thread
+ * contract made socially enforceable); full dump under
+ * OPENPETE_MOD_TIMERS=1. */
+
+#define MOD_TIME_SLOTS    24
+#define MOD_TICK_BUDGET_MS 4.0
+
+typedef struct {
+    const char* owner;
+    op_time_t   tick_ns, present_ns;
+    uint32_t    tick_calls, present_calls;
+} mod_time_slot_t;
+
+static mod_time_slot_t s_times[MOD_TIME_SLOTS];
+static int             s_time_count = 0;
+
+void openpete_mods_time_add(const char* owner, op_time_t ns, int is_present) {
+    if (!owner || ns < 0) return;
+    mod_time_slot_t* t = NULL;
+    for (int i = 0; i < s_time_count; i++)
+        if (s_times[i].owner == owner ||
+            strcmp(s_times[i].owner, owner) == 0) { t = &s_times[i]; break; }
+    if (!t) {
+        if (s_time_count >= MOD_TIME_SLOTS) return;
+        t = &s_times[s_time_count++];
+        t->owner = owner;
+        t->tick_ns = t->present_ns = 0;
+        t->tick_calls = t->present_calls = 0;
+    }
+    if (is_present) { t->present_ns += ns; t->present_calls++; }
+    else            { t->tick_ns    += ns; t->tick_calls++;    }
+}
+
+void openpete_mods_time_report(unsigned ticks_elapsed) {
+    static int s_dump = -1;
+    if (s_dump < 0) {
+        const char* e = getenv("OPENPETE_MOD_TIMERS");
+        s_dump = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (!ticks_elapsed) ticks_elapsed = 1;
+    for (int i = 0; i < s_time_count; i++) {
+        mod_time_slot_t* t = &s_times[i];
+        double tick_ms = (double)t->tick_ns / OP_NS_PER_MS
+                       / (double)ticks_elapsed;
+        if (tick_ms > MOD_TICK_BUDGET_MS)
+            OPL_WARN_F("mods", "%s: %.2f ms/tick average over the last "
+                       "window (budget %.1f) — this mod is slowing the "
+                       "sim thread", t->owner, tick_ms, MOD_TICK_BUDGET_MS);
+        else if (s_dump && (t->tick_calls || t->present_calls))
+            OPL_INFO_F("mods", "timer %s: %.3f ms/tick (%u calls), "
+                       "%.3f ms total present (%u hooks)",
+                       t->owner, tick_ms, t->tick_calls,
+                       (double)t->present_ns / OP_NS_PER_MS,
+                       t->present_calls);
+        t->tick_ns = t->present_ns = 0;
+        t->tick_calls = t->present_calls = 0;
+    }
 }
 
 int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {

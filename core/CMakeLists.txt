@@ -99,6 +99,7 @@ add_library(openpete_core STATIC
     # Music WAV override: play user PCM WAVs from assets/music/ in place
     # of XA music. See notes/plans/openpete-music-wav-override.md.
     host/music_override.c
+    host/mod_sound.c
     host/sha256.c
     host/texture_pack.c
     host/wav_loader.c
