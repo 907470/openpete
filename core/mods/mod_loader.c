@@ -140,6 +140,25 @@ static void* api_guest(uint32_t vaddr) {
     return ram ? ram + off : NULL;
 }
 
+/* MIPS kseg0 base — architectural, not a game address (the purity check
+ * permits #define'd constants). */
+#define OP_KSEG0_BASE 0x80000000u
+
+static uint32_t api_guest_addr(const void* host) {
+    if (!host) return 0;
+    uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) return 0;
+    const uint8_t* p = (const uint8_t*)host;
+    if (p < ram || p >= ram + 2u * 1024u * 1024u) return 0;
+    return OP_KSEG0_BASE | (uint32_t)(p - ram);
+}
+
+void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
+
+static void api_call_addr(CPUState* cpu, uint32_t addr) {
+    call_by_address(cpu, addr);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -192,6 +211,8 @@ static const openpete_mod_api_t s_api = {
     .guest         = api_guest,
     .export_sym    = api_export_sym,
     .import_sym    = api_import_sym,
+    .guest_addr    = api_guest_addr,
+    .call_addr     = api_call_addr,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -310,7 +331,8 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
 
     /* SDK headers count as inputs: an SDK regen rebuilds every mod. */
     static const char* const sdk_inputs[] = {
-        "openpete_mod_api.h", "openpete_sdk_symbols.h", "psx_runtime.h",
+        "openpete_mod_api.h", "openpete_sdk_symbols.h",
+        "openpete_sdk_wrappers.h", "psx_runtime.h",
     };
     for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {
         char p[MOD_PATH_MAX];

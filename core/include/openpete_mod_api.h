@@ -102,6 +102,21 @@ typedef struct openpete_mod_api {
      * duplicate/overflow. */
     int   (*export_sym)(openpete_mod_t* self, const char* name, void* ptr);
     void* (*import_sym)(openpete_mod_t* self, const char* qualified);
+
+    /* Inverse of guest(): host pointer into the guest-RAM mirror → kseg0
+     * vaddr, or 0 if the pointer is not inside guest RAM. Used by the
+     * generated marshalling wrappers to pass host-visible structs back
+     * to guest code. */
+    uint32_t (*guest_addr)(const void* host);
+
+    /* Invoke a guest function by vaddr through the dispatch layer (the
+     * callee's own override chain runs — calls see the same modded world
+     * as the game). Argument/return marshalling is the caller's job:
+     * write cpu->a0..a3 first, read cpu->v0 after. Prefer the generated
+     * op_call_<Name>() wrappers (openpete_sdk_wrappers.h), which also
+     * save/restore the arg registers. Only valid on the sim thread with
+     * a live cpu (i.e. inside an override). */
+    void (*call_addr)(CPUState* cpu, uint32_t addr);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

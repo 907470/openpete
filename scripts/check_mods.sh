@@ -184,6 +184,28 @@ else
     bad "oracle did not FAIL with double-gems enabled ($rc_line)"
 fi
 
+# ── 6. natural-gems: prototype-driven marshalling wrappers ──────────────
+say "natural-gems: natural-signature override + base + call wrappers"
+fixture "$WORK/natural" natural-gems
+out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
+        --mods-dir "$WORK/natural" 2>&1)"
+if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
+    ok "natural call: Sin(1024) == 4096 (marshal + reg save/restore)"
+else
+    bad "natural Sin call wrong/missing"
+    printf '%s\n' "$out" | grep "natural call" | head -1
+fi
+if printf '%s\n' "$out" | grep -q "natural gem double"; then
+    ok "natural override fired (typed Moby* arg, natural base())"
+else
+    bad "natural override never fired"
+fi
+if printf '%s\n' "$out" | grep -qE "verdict: FAIL"; then
+    ok "oracle FAILED (expected divergence via natural wrappers)"
+else
+    bad "oracle did not FAIL with natural-gems enabled"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

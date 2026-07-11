@@ -1,0 +1,17 @@
+# natural-gems — the natural-signature counterpart of double-gems
+# (marshalling-wrapper proof, notes/plans/openpete-modding-framework.md
+# P1 "prototype-driven marshalling wrappers").
+#
+# Same behavior as double-gems (every gem pickup counts double — real
+# gameplay divergence, oracle must FAIL), but written against the
+# generated natural-signature surface: OP_OVERRIDE_IMPL_CollectItem
+# gives a typed Moby* parameter, op_base_CollectItem falls through with
+# natural args, and op_call_Sin demonstrates a natural CALL into an
+# unrelated pure game function (register save/restore proven by the
+# oracle staying gem-only-divergent).
+
+[mod]
+id      = "natural-gems"
+name    = "Natural Gems"
+version = "0.1.0"
+api     = 1

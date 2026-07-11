@@ -344,14 +344,17 @@ set(_mod_sdk_gen ${CMAKE_CURRENT_BINARY_DIR}/mod_sdk_gen)
 add_custom_command(
     OUTPUT  ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/sdk_symbols_table.c
+            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
             --symbols ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
             --globals ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            --protos ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
             --out-dir ${_mod_sdk_gen}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
-    COMMENT "Generating mod SDK symbol table (gen_mod_sdk.py)")
+    COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
 add_custom_command(TARGET openpete-spyro1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -360,6 +363,7 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
+            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMENT "Staging mod SDK headers into <exe>/sdk/")
 
