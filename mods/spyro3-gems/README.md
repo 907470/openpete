@@ -52,8 +52,10 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 - Burst-particle words are S3 hues rescaled to stock magnitude with all
   channels multiples of 8 — the particle updater fades by −8/tick per
   channel and only dies at exactly zero (`assets/s3/burst_canonical.md`).
-- The chime is the *sparkle-arrival* sample (`SoundTable[0x1A]` in S3),
-  the one the rising-pitch code actually plays.
+- The chime is bank def 1 (`SoundTable[1]` — S3's header names the slot
+  `gemCollect`), canonical rate 11025 Hz, identified by ear from a
+  full-bank WAV dump. The asm-traced candidates were red herrings:
+  `SoundTable[0x1A]` is the menu blip, `gemChime[0]` the gem-bounce.
 
 ## Known deltas vs real Spyro 3
 

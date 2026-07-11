@@ -62,9 +62,11 @@ Format facts (spyro-3 decomp + SpyroEdit, disc-verified 2026-07-11):
     section chain; m_Addr values are pre-fixup offsets into the vramSpu
     payload (+0x1010 applied at load, src/loaders.c func_8002C9F4).
     Located here by signature scan with strict validation.
-  - gemChime = SoundTable byte 0 (spyro-3 include/spu.h).  Byte 0x1A
-    ("changeVolume") is the id actually played on gem-sparkle arrival
-    with the rising pitch (see pitch_ladder.md, generated alongside).
+  - gemChime = SoundTable byte 0 (spyro-3 include/spu.h) = the
+    gem-BOUNCE sound.  The actual collect gling is def 1 (SoundTable
+    byte 1, the slot spu.h names gemCollect), 11025 Hz — identified by
+    ear from a full-bank dump; the asm-traced byte 0x1A ("changeVolume",
+    sparkle-arrival handler) is the menu blip, a red herring.
 
 Outputs (all in --out, which is gitignored — NEVER commit extracted data):
     gem_model.bin        raw model blob
@@ -509,6 +511,19 @@ def extract_gem_chime(lvl: bytes, hdr: LevelWadHeader, out_dir: Path):
         extra["arrival_sample_bytes"] = len(abody)
         print(f"arrival sample differs: wrote gem_chime_arrival.vag_body.bin "
               f"({len(abody)} bytes, {abad} suspicious headers)")
+
+    # The ACTUAL collect gling — bank def 12, canonical rate 11025 Hz
+    # (SPU pitch 0x400). Identified by ear from a full-bank WAV dump
+    # (2026-07-11): the asm-traced candidates were red herrings —
+    # SoundTable[0x1A] is the menu blip and gemChime[0] the gem-bounce.
+    COLLECT_DEF = 1
+    collect = def_at(COLLECT_DEF)
+    cbody, cbound, cbad = carve(collect)
+    (out_dir / "gem_collect.vag_body.bin").write_bytes(cbody)
+    extra["collect_def"] = collect
+    extra["collect_sample_bytes"] = len(cbody)
+    print(f"collect gling (def {COLLECT_DEF}): wrote gem_collect.vag_body.bin "
+          f"({len(cbody)} bytes, {cbad} suspicious headers)")
 
     # First-frame header sanity report
     frames_ok = []

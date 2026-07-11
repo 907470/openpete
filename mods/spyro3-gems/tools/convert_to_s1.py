@@ -208,7 +208,16 @@ def main():
         print(f"state {n}: verts={a['numVerts']} faces={len(a['frame0']['faces'])} "
               f"model @{base:08x} size={len(body)}")
 
-    vag = (S3 / "gem_chime_arrival.vag_body.bin").read_bytes()
+    # The collect gling is bank def 12 (user-identified by ear at 11025Hz
+    # from a full-bank dump; the SoundTable[0x1A] "arrival" sample from
+    # the asm trace turned out to be the menu blip, and gemChime[0] the
+    # gem-bounce). extract_s3_gems.py --collect-def carves it.
+    vag_path = S3 / "gem_collect.vag_body.bin"
+    if not vag_path.exists():
+        vag_path = S3 / "gem_chime_arrival.vag_body.bin"
+        print("WARNING: gem_collect.vag_body.bin missing — falling back to"
+              " the arrival sample (rerun extract_s3_gems.py)")
+    vag = vag_path.read_bytes()
     while len(payload) % 16:
         payload.append(0)
     vag_vaddr = PARK_BASE + len(payload)
