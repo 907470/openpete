@@ -115,6 +115,38 @@ static const openpete_moby_ops_t s_spyro1_moby_ops = {
     .walk_class       = ops_walk_class,
 };
 
+/* SoundDefinition repoint op (core sfx_def_replace service): resolve
+ * (model class, m_Sounds slot) through the LIVE per-level tables —
+ * g_Models row -> model m_Sounds[slot] = def index -> g_Spu def entry
+ * (stride 0x14, sample SPU address at +0) — and rewrite the address.
+ * Nonzero = class/def not present in this level (not an error). */
+#define ADDR_G_SPU_DEFS   0x800761D0u
+#define SOUNDDEF_STRIDE   0x14u
+
+static int ops_sfx_def_repoint(CPUState* cpu, uint16_t model_class,
+                               uint8_t sound_slot, uint32_t spu_addr) {
+    if (model_class >= MODEL_COUNT || sound_slot >= 16) return -1;
+    uint32_t defs = cpu->read_word(ADDR_G_SPU_DEFS);
+    uint32_t model = cpu->read_word(ADDR_G_MODELS +
+                                    4u * (uint32_t)model_class);
+    if (!defs || !model) return -1;
+    uint32_t idx = cpu->read_byte((model | 0x80000000u) + 4u + sound_slot);
+    if (idx == 0xFFu) return -1;
+    cpu->write_word(defs + idx * SOUNDDEF_STRIDE, spu_addr);
+    return 0;
+}
+
 void spyro1_moby_ops_register(void) {
     openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
+    openpete_mods_sfx_set_def_repoint(ops_sfx_def_repoint);
+    /* Low park window for guest_alloc_low: kernel area below the EXE
+     * image (0x80010000). Bounds are EMPIRICAL, not the whole kernel
+     * region: a payload at 0x80008000 fed the game's twinkle-particle
+     * reader garbage (gem model rows point into the park; that reader
+     * expects stock layout) and the wild OT-link writes poisoned RAM —
+     * 2026-07-11 hang. 0xB000.. hosted the chest pack for a full
+     * session without incident; models whose ROWS gameplay readers
+     * chase should still prefer the high arena unless the format
+     * forces low addresses (21-bit anim vertex offsets). */
+    openpete_mods_arena_low_init(0x8000B000u, 0x5000u);
 }

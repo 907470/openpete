@@ -47,6 +47,25 @@ static const openpete_moby_ops_t* s_ops = NULL;
 static int s_hooked = 0;
 static int s_level  = -1;
 
+/* ── Level-ready event (api->on_level) ───────────────────────────────
+ * Fires each hook once per level, on the first master-update tick with
+ * gameplay live (level_id > 0): the model table is installed, the CD
+ * stream is idle, and — because the anchor is the master update, not a
+ * camera function — the event is immune to freecam freezes (the trap
+ * that killed two generations of spyro3's per-level SFX re-staging).
+ * Tick context: guest reads/writes and call_addr are legal inside. */
+#define LEVEL_HOOKS_MAX 32
+
+typedef struct {
+    char mod_id[MOBY_OWNER_MAX];
+    openpete_mod_level_fn fn;
+    int  fired_level; /* last level this hook fired for (0 = never) */
+    int  disabled;
+} level_hook_t;
+
+static level_hook_t s_level_hooks[LEVEL_HOOKS_MAX];
+static int          s_level_hook_count = 0;
+
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
     s_ops = ops;
 }
@@ -91,6 +110,14 @@ static void registry_tick(CPUState* cpu) {
         s_level = lvl;
     }
     if (lvl <= 0) return;
+
+    for (int i = 0; i < s_level_hook_count; i++) {
+        level_hook_t* h = &s_level_hooks[i];
+        if (h->disabled || h->fired_level == lvl) continue;
+        h->fired_level = lvl;
+        h->fn(cpu, lvl);
+    }
+    openpete_mods_sfx_defs_apply(cpu, lvl);
 
     for (int i = 0; i < s_type_count; i++) {
         moby_type_t* t = &s_types[i];
@@ -139,6 +166,32 @@ static void level_slots_tick(CPUState* cpu) {
             OPL_INFO_F("mods", "level slot %s:%s live (id=%d, donor %d)",
                        s->mod_id, s->name, s->slot_id, s->donor_level_id);
     }
+}
+
+/* Arm the per-tick driver from OUTSIDE this file (mod_sfx's def rows
+ * apply from the level-ready point but register through mod_sfx.c —
+ * without this, def rows on a mod with no other registry use would
+ * never see a tick). */
+int openpete_mods_registry_ensure_driver(const char* log_tag) {
+    return ensure_hooked(log_tag);
+}
+
+int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
+                           const char* log_tag) {
+    if (!mod_id || !fn) return -1;
+    if (s_level_hook_count >= LEVEL_HOOKS_MAX) {
+        OPL_ERROR_F(log_tag, "on_level: hook table full (%d)",
+                    LEVEL_HOOKS_MAX);
+        return -1;
+    }
+    if (ensure_hooked(log_tag) != 0) return -1;
+    level_hook_t* h = &s_level_hooks[s_level_hook_count++];
+    snprintf(h->mod_id, sizeof h->mod_id, "%s", mod_id);
+    h->fn = fn;
+    h->fired_level = 0; /* fires on the next live tick — including for a
+                         * level already in progress (hot reload) */
+    OPL_INFO_F(log_tag, "level-ready hook registered");
+    return 0;
 }
 
 int openpete_mods_moby_register(const char* mod_id, const char* name,
@@ -210,6 +263,12 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
         s_levels[w++] = s_levels[i];
     }
     s_level_count = w;
+    w = 0;
+    for (int i = 0; i < s_level_hook_count; i++) {
+        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0) continue;
+        s_level_hooks[w++] = s_level_hooks[i];
+    }
+    s_level_hook_count = w;
 }
 
 /* Live toggle: gate a mod's registry rows (moby types + level slots).
@@ -224,6 +283,9 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     for (int i = 0; i < s_level_count; i++)
         if (strcmp(s_levels[i].mod_id, mod_id) == 0)
             s_levels[i].disabled = !on;
+    for (int i = 0; i < s_level_hook_count; i++)
+        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0)
+            s_level_hooks[i].disabled = !on;
 }
 
 int openpete_mods_level_register(const char* mod_id, const char* name,

@@ -67,6 +67,9 @@ typedef struct openpete_sfx_event {
     uint32_t ms_since_prev;  /* host ms since the previous play */
 } openpete_sfx_event_t;
 
+/* A level-ready callback (see on_level below). */
+typedef void (*openpete_mod_level_fn)(CPUState* cpu, int level_id);
+
 /* Savestate participation (see register_savestate_hooks): serialize the
  * mod's own non-canonical state alongside the engine snapshot. save
  * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
@@ -438,6 +441,52 @@ typedef struct openpete_mod_api {
                             double def);
     int     (*config_str)(openpete_mod_t* self, const char* key,
                           const char* def, char* buf, int cap);
+
+    /* ── Level-ready event ───────────────────────────────────────────
+     * fn(cpu, level_id) fires ONCE PER LEVEL, on the first master-
+     * update tick with gameplay live: the model table is installed,
+     * the level's CD stream is idle, and guest reads/writes/call_addr
+     * are all legal inside (tick context). Registered mid-level (hot
+     * reload), it fires for the level in progress on the next tick.
+     *
+     * This is THE place for per-level work — reading per-level tables,
+     * repointing data, re-staging uploads. Do not hand-roll level
+     * detection from install hooks (they run mid-CD-load, several
+     * times) or camera hooks (frozen under the debug freecam; a level
+     * loaded under an active pose never ticks them). Registration is
+     * entry-time/tick-context. Returns 0, or -1 (table full / no game
+     * ops). */
+    int (*on_level)(openpete_mod_t* self, openpete_mod_level_fn fn);
+
+    /* ── SFX: SoundDefinition replacement ────────────────────────────
+     * For sounds sfx_replace can NOT name: plays that reference a
+     * PER-LEVEL SoundDefinition index straight from a model's
+     * m_Sounds[] (Spyro's chest breaks). Register the (model class,
+     * m_Sounds slot, ADPCM body) once at entry; the ENGINE re-stages
+     * the body into the SPU tail and repoints the live def every
+     * level (level-ready driven — no polling, no camera hooks). body
+     * is raw SPU-ADPCM frames (no VAG header), copied by the engine.
+     * A class absent from a level is skipped silently for that level.
+     * Rewrites guest def words: registering makes the mod
+     * sim-divergent by design. Returns 0, or -1 (bad args / table
+     * full / game op missing). */
+    int (*sfx_def_replace)(openpete_mod_t* self, uint16_t model_class,
+                           uint8_t sound_slot, const void* adpcm_body,
+                           uint32_t len);
+
+    /* ── Low guest park (guest_alloc_low) ────────────────────────────
+     * Like guest_alloc, but from the LOW free window below the game's
+     * EXE image (canonical RAM: savestate-carried, visible to every
+     * access path). For payloads whose format addresses memory through
+     * narrow fields — Spyro's animated-model frames hold 21-bit
+     * absolute vertex-stream addresses, so parked Models MUST live in
+     * the low 2MB (the guest_alloc arena is >2MB and unreachable).
+     * Session-lifetime bump, no free; align 0 = 16. Returns the guest
+     * vaddr (0 = exhausted/unregistered), host view via *host_view.
+     * The window is small (tens of KB) — park compact payloads, not
+     * scratch. TICK context only. */
+    uint32_t (*guest_alloc_low)(openpete_mod_t* self, uint32_t size,
+                                uint32_t align, void** host_view);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

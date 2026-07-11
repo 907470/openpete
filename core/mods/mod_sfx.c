@@ -124,6 +124,113 @@ uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
     return addr;
 }
 
+/* ── SoundDefinition replacement (sfx_def_replace) ────────────────────
+ * For sounds the name overlay can NOT cover: some plays reference a
+ * PER-LEVEL SoundDefinition index straight from a model's m_Sounds[]
+ * (Spyro's chest breaks) — no stable name exists. The mod registers
+ * (model_class, sound_slot, adpcm) ONCE at entry; every level-ready
+ * tick the engine stages the body into the fresh SPU bank's tail and
+ * asks the game's def-repoint op to resolve the live index and rewrite
+ * the def. Guest def words change ⇒ registering makes a mod
+ * sim-divergent by design (unlike sfx_replace).
+ *
+ * This retires two generations of mod-side lifecycle code: an install-
+ * hook one-shot (missed reloads), then a camera poll (dead under
+ * freecam — CameraUpdate is frozen there). The level-ready driver in
+ * mod_registry.c is anchored on the master update and has neither
+ * failure mode. */
+
+#define SFX_DEFS_MAX 16
+
+typedef struct {
+    uint16_t model_class;
+    uint8_t  sound_slot;
+    void*    body;
+    uint32_t len;
+    char     owner[24];
+    int      applied_level; /* last level attempted (one try per level) */
+} sfx_def_t;
+
+static sfx_def_t s_defs[SFX_DEFS_MAX];
+static int       s_def_count;
+static openpete_mods_sfx_def_repoint_fn s_def_repoint;
+
+void openpete_mods_sfx_set_def_repoint(openpete_mods_sfx_def_repoint_fn fn) {
+    s_def_repoint = fn;
+}
+
+int openpete_mods_sfx_def_replace(openpete_mod_t* self,
+                                  uint16_t model_class, uint8_t sound_slot,
+                                  const void* body, uint32_t len) {
+    if (!body || !len || len > (1u << 20)) return -1;
+    if (!s_def_repoint) {
+        OPL_ERROR_F("mods", "sfx_def_replace: no game def-repoint op "
+                    "registered");
+        return -1;
+    }
+    /* rows apply from the registry's level-ready tick — arm its driver */
+    if (openpete_mods_registry_ensure_driver("mods") != 0) return -1;
+    const char* owner = openpete_mods_id_of(self);
+
+    sfx_def_t* d = NULL;
+    for (int i = 0; i < s_def_count; i++)
+        if (s_defs[i].model_class == model_class &&
+            s_defs[i].sound_slot == sound_slot &&
+            strcmp(s_defs[i].owner, owner ? owner : "?") == 0) {
+            d = &s_defs[i];
+            break;
+        }
+    if (!d) {
+        if (s_def_count >= SFX_DEFS_MAX) return -1;
+        d = &s_defs[s_def_count];
+        d->model_class = model_class;
+        d->sound_slot = sound_slot;
+        snprintf(d->owner, sizeof d->owner, "%s", owner ? owner : "?");
+        s_def_count++;
+    }
+    void* copy = malloc(len);
+    if (!copy) return -1;
+    memcpy(copy, body, len);
+    free(d->body);
+    d->body = copy;
+    d->len = len;
+    d->applied_level = 0; /* (re)apply at the next level-ready tick —
+                           * including the level already in progress */
+    OPL_INFO_F("mods", "sfx: def for class %u slot %u replaced by %s "
+               "(%u bytes)", model_class, sound_slot, d->owner, len);
+    return 0;
+}
+
+/* Driven from the registry's level-ready point (master-update tick,
+ * gameplay live). One attempt per row per level: a class absent from
+ * the level resolves to "nothing to repoint" — not an error, no retry
+ * churn. */
+void openpete_mods_sfx_defs_apply(CPUState* cpu, int level_id) {
+    if (!s_def_count || !s_def_repoint || !s_upload || level_id <= 0)
+        return;
+    for (int i = 0; i < s_def_count; i++) {
+        sfx_def_t* d = &s_defs[i];
+        if (d->applied_level == level_id) continue;
+        d->applied_level = level_id;
+        if (!openpete_mods_is_enabled(d->owner)) continue;
+        uint32_t addr = s_upload(d->body, d->len);
+        if (!addr) {
+            OPL_WARN_F("mods", "sfx: def stage failed (class %u slot %u, "
+                       "%s) — stock plays this level", d->model_class,
+                       d->sound_slot, d->owner);
+            continue;
+        }
+        if (s_def_repoint(cpu, d->model_class, d->sound_slot, addr) != 0) {
+            OPL_DEBUG_F("mods", "sfx: def class %u not present in level "
+                        "%d (%s)", d->model_class, level_id, d->owner);
+            continue;
+        }
+        OPL_INFO_F("mods", "sfx: def class %u slot %u -> SPU %#x "
+                   "(level %d, %u bytes, %s)", d->model_class,
+                   d->sound_slot, addr, level_id, d->len, d->owner);
+    }
+}
+
 int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev)) {
     if (!name || !fn || strlen(name) >= SFX_NAME_MAX) return -1;

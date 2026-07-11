@@ -109,6 +109,15 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
                                    void** host_view, const char* owner);
 
+/* Low park window (mod_arena.c): canonical-RAM bump allocator below the
+ * game's EXE image, for payloads with narrow address fields (21-bit
+ * Spyro anim vertex offsets). The GAME registers the window at boot;
+ * allocation fails loudly before that. */
+void     openpete_mods_arena_low_init(uint32_t base, uint32_t size);
+uint32_t openpete_mods_guest_alloc_low(uint32_t size, uint32_t align,
+                                       void** host_view,
+                                       const char* owner);
+
 /* One-shot mod sound (core/host/mod_sound.c): host-side additive OpenAL
  * playback of a PCM WAV at `path`, gain-clamped [0,4]. Sim-neutral by
  * construction; legal from tick and present hooks. 0 ok / -1 failed
@@ -307,6 +316,13 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
 int openpete_mods_level_slot_id(const char* mod_id, const char* name);
 int openpete_mods_level_enter(CPUState* cpu, int level_id);
 
+/* Level-ready event (mod_registry.c): hooks fire once per level on the
+ * first master-update tick with gameplay live; also drives
+ * openpete_mods_sfx_defs_apply. Loader-facing registration. */
+int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
+                           const char* log_tag);
+int openpete_mods_registry_ensure_driver(const char* log_tag);
+
 /* Loader-facing (wired into the mod api). */
 int openpete_mods_moby_register(const char* mod_id, const char* name,
                                 int donor_class,
@@ -350,6 +366,22 @@ int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev));
 uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
                                  uint32_t len);
+
+/* SoundDefinition replacement (mod_sfx.c): the game registers a
+ * def-repoint op (resolve (model class, m_Sounds slot) to the live
+ * per-level def and rewrite its sample address; return 0 ok, nonzero =
+ * class not present). Rows apply once per level from the registry's
+ * level-ready point. */
+typedef int (*openpete_mods_sfx_def_repoint_fn)(CPUState* cpu,
+                                                uint16_t model_class,
+                                                uint8_t sound_slot,
+                                                uint32_t spu_addr);
+void openpete_mods_sfx_set_def_repoint(openpete_mods_sfx_def_repoint_fn fn);
+int  openpete_mods_sfx_def_replace(openpete_mod_t* self,
+                                   uint16_t model_class,
+                                   uint8_t sound_slot,
+                                   const void* body, uint32_t len);
+void openpete_mods_sfx_defs_apply(CPUState* cpu, int level_id);
 
 /* Per-mod user configuration (mod_config.c): mods/<id>/config.toml,
  * parsed by the loader right before the mod's entry runs (boot and hot

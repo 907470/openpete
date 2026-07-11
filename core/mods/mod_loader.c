@@ -358,6 +358,28 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
+static int api_on_level(openpete_mod_t* self, openpete_mod_level_fn fn) {
+    if (!self || !fn) return -1;
+    if (purity_violation("on_level")) return -1;
+    return openpete_mods_on_level(self->id, fn, self->log_tag);
+}
+
+static int api_sfx_def_replace(openpete_mod_t* self, uint16_t model_class,
+                               uint8_t sound_slot, const void* body,
+                               uint32_t len) {
+    if (!self) return -1;
+    if (purity_violation("sfx_def_replace")) return -1;
+    return openpete_mods_sfx_def_replace(self, model_class, sound_slot,
+                                         body, len);
+}
+
+static uint32_t api_guest_alloc_low(openpete_mod_t* self, uint32_t size,
+                                    uint32_t align, void** host_view) {
+    if (!self) return 0;
+    if (purity_violation("guest_alloc_low")) return 0;
+    return openpete_mods_guest_alloc_low(size, align, host_view, self->id);
+}
+
 static char s_sdk_dir[MOD_PATH_MAX];
 
 /* defined later in this file */
@@ -807,6 +829,9 @@ static const openpete_mod_api_t s_api = {
     .config_int    = openpete_mods_config_int,
     .config_float  = openpete_mods_config_float,
     .config_str    = openpete_mods_config_str,
+    .on_level        = api_on_level,
+    .sfx_def_replace = api_sfx_def_replace,
+    .guest_alloc_low = api_guest_alloc_low,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
