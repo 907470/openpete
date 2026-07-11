@@ -295,6 +295,16 @@ static void api_suppress_player_draw(void) {
     openpete_mods_suppress_player_draw();
 }
 
+/* Instruction-site hook tier (rung 14). Handlers run mid-sim (tick
+ * semantics); attaching is entry-time only — present hooks are render-
+ * pure and may not mutate the dispatch surface. */
+static int api_site_handler(openpete_mod_t* self, const char* name,
+                            void (*fn)(CPUState* cpu, uint32_t site_addr)) {
+    if (!self || !name || !fn) return -1;
+    if (purity_violation("site_handler")) return -1;
+    return openpete_mods_site_attach(self->id, name, fn, self->log_tag);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -360,6 +370,7 @@ static const openpete_mod_api_t s_api = {
     .capture_actor_pose = api_capture_actor_pose,
     .draw_actor         = api_draw_actor,
     .suppress_player_draw = api_suppress_player_draw,
+    .site_handler       = api_site_handler,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

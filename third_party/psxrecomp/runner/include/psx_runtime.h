@@ -157,6 +157,14 @@ void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t va
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
+/* Mod site-hook tier (openpete modding framework, PoC rung 14). The code
+ * generator's guarded ModReplace/ModAppend emission reads the active flag
+ * and calls the dispatcher; both are defined engine-side in
+ * core/mods/mod_sites.c. Identity when active[idx] == 0 — the guarded
+ * else-arm is the verbatim instruction translation. */
+extern uint8_t openpete_modsite_active[];
+void openpete_modsite_call(CPUState* cpu, int idx);
+
 /* Particle / sparkle canonical-SX cull hooks (defined in
  * games/spyro-1/features/render_decouple.c). Set native_part_pass from the
  * canonical SX side channel / return the canonical SX, replacing inline

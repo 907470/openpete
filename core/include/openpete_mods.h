@@ -122,6 +122,45 @@ int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
  * guest/call/override entry points refuse during it (render-purity). */
 extern int openpete_mods_in_present;
 
+/* ── Instruction-site hook tier (core/mods/mod_sites.c, rung 14) ───────
+ *
+ * Sites are declared in mod.toml [[site]] blocks and BAKED at recomp-
+ * regen time: tools/gen_mod_sites.py collects enabled mods' sites into
+ * generated/mod_sites.txt (folded into --channel-sites) and emits
+ * generated/mod_sites_registry.c mapping (mod_id, name) → the baked
+ * index the guarded emission reads. The generated C tests
+ * openpete_modsite_active[idx] and calls openpete_modsite_call() — both
+ * defined in mod_sites.c, declared for the generated code in
+ * psx_runtime.h. Identity while inactive; behaviorally inert by
+ * construction (oracle-provable), byte-identical to stock when the site
+ * set is empty (regen-without-sites). */
+
+/* Hard cap on baked sites — the generated C indexes a fixed-size flag
+ * array; tools/gen_mod_sites.py enforces the same bound at collection. */
+#define OPENPETE_MODSITE_MAX 256
+
+typedef struct {
+    const char* mod_id; /* owning mod */
+    const char* name;   /* site name within the mod's namespace */
+    uint32_t    addr;   /* anchored guest instruction vaddr (diagnostics) */
+    int         idx;    /* baked index into openpete_modsite_active[] */
+} openpete_modsite_desc_t;
+
+/* Registered by the game's main() from the generated registry (same
+ * pattern as the SDK symbol table). Count 0 = no sites baked. */
+void openpete_mods_set_site_registry(const openpete_modsite_desc_t* table,
+                                     int count);
+
+/* Loader-facing attach (wired into the mod api's site_handler). Returns
+ * 0 = handler live, -1 = (mod_id, name) not baked into this binary (the
+ * loader logs the regen recipe; the site stays inert). */
+int openpete_mods_site_attach(const char* mod_id, const char* name,
+                              void (*fn)(CPUState* cpu, uint32_t site_addr),
+                              const char* log_tag);
+
+/* Detach every handler owned by mod_id (unload/reload path). */
+void openpete_mods_site_detach_all(const char* mod_id);
+
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 
 /* Queue a mod-requested savestate op (1=save, 2=load) for execution at

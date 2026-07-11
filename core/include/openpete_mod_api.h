@@ -239,6 +239,27 @@ typedef struct openpete_mod_api {
      * triangles — a missing/failed stand-in never leaves an invisible
      * player. Display-only — gameplay state is untouched. */
     void (*suppress_player_draw)(void);
+
+    /* ── Instruction-site hook tier (PoC rung 14 — the escape hatch) ──
+     * Attach a handler to a [[site]] this mod declared in its mod.toml.
+     * A site anchors ONE guest instruction (by vaddr): kind "replace"
+     * runs the handler INSTEAD of that instruction; kind "append" runs
+     * it after. The handler gets the raw cpu context plus the site's
+     * guest address (shared handlers dispatch on it) and reads/writes
+     * cpu registers directly — raw-tier semantics at instruction
+     * granularity.
+     *
+     * Sites are BAKED at recomp-regen time: tools/gen_mod_sites.py
+     * collects enabled mods' [[site]] blocks and the code generator
+     * emits a guarded substitution (identity while no handler is
+     * registered). Returns 0 = attached (site live), -1 = this site is
+     * not baked into the running binary — the loader logs the
+     * regen-and-rebuild recipe (scripts/regen-mod-sites.sh); the mod
+     * still loads, the site just stays inert. TICK-context rules apply
+     * to the handler (it runs mid-sim); registration is entry-time
+     * only (refused inside present hooks). */
+    int (*site_handler)(openpete_mod_t* self, const char* name,
+                        void (*fn)(CPUState* cpu, uint32_t site_addr));
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

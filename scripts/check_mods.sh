@@ -14,7 +14,8 @@
 #   - decomp promotion: legacy raw alias resolves + warns (churn test)
 # plus the tools/modtest.py run over every [test]-block rung.
 #
-# Usage: scripts/check_mods.sh   (repo root; ~8 min — ctest mod_poc_ladder)
+# Usage: scripts/check_mods.sh   (repo root; ~10 min — ctest mod_poc_ladder;
+#        section 13 rebakes/rebuilds the main EXE around the fade-skip rung)
 # Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to runs + oracle.
 
 set -u
@@ -402,6 +403,8 @@ else
 fi
 
 # ── 12. [test]-block rungs through the real modtest runner ──────────────
+# (fade-skip is NOT in this sweep: its [test] needs its sites BAKED into
+#  the binary — section 13 orchestrates bake → test → restore around it.)
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
@@ -411,6 +414,59 @@ if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"
+fi
+
+# ── 13. fade-skip: the instruction-site hook tier (rung 14) ─────────────
+# Bake the mod's [[site]] set into the recompiled C (scoped main-EXE
+# regen, ~9 s), rebuild (~10 s), prove the three inertness tiers, then
+# restore stock and assert BYTE-IDENTITY of the regenerated C:
+#   a) baked + mod loaded  → modtest: all 6 slti loop-bound sites FIRE
+#   b) baked + mod ABSENT  → oracle smoke PASS (guarded identity arm)
+#   c) restored (set empty)→ generated C byte-identical to pre-bake
+# Needs the regen toolchain (PSXRecomp + PSX.EXE); skip cleanly if absent.
+say "fade-skip: site-hook tier — bake, fire, guarded-inert, restore"
+if [[ -x third_party/psxrecomp/build/PSXRecomp &&
+      -f games/spyro-1/spyro-1/build/PSX.EXE ]]; then
+    GEN=games/spyro-1/generated
+    stock_full=$(sha256sum "$GEN/PSX.EXE_full.c" | cut -d' ' -f1)
+    fixture "$WORK/fadeskip" fade-skip
+    mkdir -p "$WORK/empty-mods"; : > "$WORK/empty-mods/enabled.txt"
+    if OPENPETE_MODS_DIR="$WORK/fadeskip" bash scripts/regen-mod-sites.sh \
+            >"$WORK/bake.log" 2>&1 \
+       && cmake --build --preset linux-release >>"$WORK/bake.log" 2>&1; then
+        ok "bake: 6 sites regenerated + rebuilt"
+        # (a) baked + loaded: the mod's own [test] block, live sites
+        if python3 tools/modtest.py mods/fade-skip; then
+            ok "baked+loaded: all six loop-bound sites fired"
+        else
+            bad "fade-skip modtest failed with sites baked"
+        fi
+        # (b) baked + absent: guarded arm must be sim-inert vs hardware
+        out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh \
+                -- --mods-dir "$WORK/empty-mods" 2>&1)"
+        if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
+            ok "baked+absent: oracle PASS (guarded identity arm)"
+        else
+            bad "oracle failed on the baked-but-inactive binary"
+        fi
+    else
+        bad "site bake (regen-mod-sites.sh + rebuild) failed — see $WORK/bake.log"
+    fi
+    # (c) restore: empty site set must regenerate byte-identical stock C
+    if OPENPETE_MODS_DIR="$WORK/empty-mods" bash scripts/regen-mod-sites.sh \
+            >"$WORK/restore.log" 2>&1 \
+       && cmake --build --preset linux-release >>"$WORK/restore.log" 2>&1; then
+        restored_full=$(sha256sum "$GEN/PSX.EXE_full.c" | cut -d' ' -f1)
+        if [[ "$restored_full" == "$stock_full" ]]; then
+            ok "restore: generated C byte-identical to pre-bake stock"
+        else
+            bad "restore left generated C differing from stock (inertness gate)"
+        fi
+    else
+        bad "site restore failed — see $WORK/restore.log; run scripts/regen-mod-sites.sh manually"
+    fi
+else
+    ok "SKIP (regen toolchain not present — PSXRecomp / PSX.EXE missing)"
 fi
 
 echo

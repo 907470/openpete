@@ -167,6 +167,19 @@ static bool parse_channel_sites(const std::string& path,
                                                 : split_csv(ops);
             }
             site.symbol   = a3;
+        } else if (kind == "mod_replace" || kind == "mod_append") {
+            // Mod site-hook tier (openpete modding framework, PoC rung 14):
+            // a2 = baked site index into openpete_modsite_active[] (decimal),
+            // a3 = `<modid>:<name>` label (comment only). Guarded emission —
+            // see ChannelSite::ModReplace in code_generator.h.
+            site.kind = (kind == "mod_replace") ? PSXRecomp::ChannelSite::ModReplace
+                                                : PSXRecomp::ChannelSite::ModAppend;
+            site.imm    = (int32_t)std::strtol(a2.c_str(), nullptr, 0);
+            site.symbol = a3;
+            if (site.imm < 0) {
+                err = fmt::format("{}:{}: mod site index must be >= 0", path, lineno);
+                return false;
+            }
         } else {
             err = fmt::format("{}:{}: unknown channel-site kind '{}'",
                               path, lineno, kind);
@@ -224,6 +237,20 @@ static void verify_channel_anchors(
             }
         }
         // AppendCall / ReplaceCall: opcode-agnostic; in-range is sufficient.
+        else if (site.kind == PSXRecomp::ChannelSite::ModReplace
+              || site.kind == PSXRecomp::ChannelSite::ModAppend) {
+            // Mod sites must NOT anchor on control flow: the guarded if/else
+            // wraps a statement, and branches/jumps are emitted by the block
+            // translator, not translate_instruction. Reject j/jal, branches
+            // (incl. REGIMM), and jr/jalr so a bad mod.toml site fails HERE
+            // (loudly, substitution dropped) instead of corrupting codegen.
+            uint32_t funct = instr & 0x3Fu;
+            bool is_cf = (op == 0x02u || op == 0x03u)                 // j/jal
+                      || (op >= 0x04u && op <= 0x07u)                 // beq..bgtz
+                      || (op == 0x01u)                                // REGIMM
+                      || (op == 0x00u && (funct == 0x08u || funct == 0x09u)); // jr/jalr
+            if (is_cf) { ok = false; why = "mod site anchors a control-flow instruction (unsupported)"; }
+        }
         if (!ok) {
             ++mismatched;
             fmt::print(stderr,

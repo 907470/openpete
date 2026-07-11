@@ -1,0 +1,72 @@
+# fade-skip — PoC ladder rung 14: the instruction-site hook tier
+# (notes/plans/openpete-modding-framework.md, "escape hatch").
+#
+# Skips the blocking boot splash fades: Initialize (0x800127C0) fades the
+# Sony/SCEA and Universal logos in and out through four inline do/while
+# loops (8 blit+VSync iterations each) and holds each logo for 210 VSyncs.
+# None of that has a function-boundary expression — the loops are inline
+# in a 1.3 KB boot routine that mods legally cannot reimplement — so this
+# is exactly the mid-function patch class the site tier exists for (the
+# practice ROM does it by patching a `j` over each loop).
+#
+# Each [[site]] anchors ONE `slti` loop-bound test; the handler replaces
+# it with "bound reached" (v0 = 0), so every loop exits after a single
+# iteration and each 210-frame hold ends immediately. ~450 boot frames
+# skipped.
+#
+# Sites are BAKED at regen time: enable this mod, then run
+#   scripts/regen-mod-sites.sh --build
+# Disabled, the regen emits byte-identical stock output; baked but not
+# loaded, the guarded emission is behaviorally inert (oracle-proven —
+# scripts/check_mods.sh asserts both).
+
+[mod]
+id      = "fade-skip"
+name    = "Splash Fade Skip"
+version = "0.1.0"
+api     = 1
+tier    = "raw"   # instruction-granular: raw addresses, region-pinned
+
+# Sony/SCEA logo: fade-in loop, 210-frame hold, fade-out loop.
+[[site]]
+name = "sony-fade-in-bound"
+addr = 0x800128EC   # slti v0, s1, 8 — fade-in iteration bound
+kind = "replace"
+
+[[site]]
+name = "sony-hold-bound"
+addr = 0x800129D4   # slti v0, v0, 210 — hold duration test
+kind = "replace"
+
+[[site]]
+name = "sony-fade-out-bound"
+addr = 0x80012A70   # slti v0, s0, 8 — fade-out iteration bound
+kind = "replace"
+
+# Universal Interactive logo: same three shapes.
+[[site]]
+name = "univ-fade-in-bound"
+addr = 0x80012B08   # slti v0, s2, 8
+kind = "replace"
+
+[[site]]
+name = "univ-hold-bound"
+addr = 0x80012B54   # slti v0, v0, 210
+kind = "replace"
+
+[[site]]
+name = "univ-fade-out-bound"
+addr = 0x80012BD8   # slti v0, s0, 8
+kind = "replace"
+
+[test]
+# Boot from power-on; the splash sequence stock lasts ~450+ frames, so a
+# 1500-frame window covers skip + title handoff with margin. Gameplay
+# timeline shifts by design (boot is ~450 frames shorter) — oracle skip.
+# NOTE: this test only passes with the sites BAKED (regen-mod-sites.sh);
+# scripts/check_mods.sh orchestrates bake → test → restore, and excludes
+# this mod from the stock-binary modtest sweep.
+frames        = 1500
+expect_oracle = "skip"
+# (single line — modtest's parser is line-based)
+expect_log    = ["fade-skip: 6/6 sites live", "fade-skip: skipped loop @ 0x800128EC", "fade-skip: skipped loop @ 0x800129D4", "fade-skip: skipped loop @ 0x80012A70", "fade-skip: skipped loop @ 0x80012B08", "fade-skip: skipped loop @ 0x80012B54", "fade-skip: skipped loop @ 0x80012BD8"]

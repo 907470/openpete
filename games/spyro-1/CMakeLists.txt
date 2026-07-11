@@ -358,6 +358,20 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
     COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
+
+# Instruction-site registry (rung 14): generated/mod_sites_registry.c maps
+# (mod_id, site name) → the baked guarded index. scripts/regen-mod-sites.sh
+# (or a full regen) rewrites it; seed an EMPTY registry at configure time so
+# checkouts whose generated/ predates the site tier still build.
+if(NOT EXISTS ${SPYRO_GENERATED}/mod_sites_registry.c)
+    file(WRITE ${SPYRO_GENERATED}/mod_sites_registry.c
+"/* AUTO-GENERATED seed (empty) — tools/gen_mod_sites.py rewrites this. */
+#include \"openpete_mods.h\"
+const openpete_modsite_desc_t openpete_modsite_registry[] = { {0, 0, 0u, 0} };
+const int openpete_modsite_registry_count = 0;
+")
+endif()
+target_sources(openpete-spyro1 PRIVATE ${SPYRO_GENERATED}/mod_sites_registry.c)
 add_custom_command(TARGET openpete-spyro1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
