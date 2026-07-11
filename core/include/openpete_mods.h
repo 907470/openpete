@@ -91,6 +91,18 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
  * (logged; never fatal). */
 int openpete_mod_sound_play(const char* path, float gain);
 
+/* Live modset toggle (P2): queue an enable/disable; it applies at the
+ * NEXT tick boundary by flipping owner-keyed disabled flags across all
+ * registration surfaces (nothing is torn down — re-enable restores the
+ * mod exactly where it was). Asset overlays are boot-scoped ("restart"
+ * tier). openpete_mods_tick_boundary is the apply point, called at the
+ * canonical present commit with the running canonical-tick counter;
+ * OPENPETE_MODS_TOGGLE="tick:id:0|1[,...]" schedules for CI/dev. */
+int  openpete_mods_set_mod_enabled(const char* id, int on);
+void openpete_mods_tick_boundary(unsigned canonical_tick);
+void openpete_mods_site_set_enabled(const char* mod_id, int on);
+void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
+
 /* Per-mod time instrument (mod_chain.c): SELF-time accumulation per
  * owner (tick hooks fed by the chain runner, present hooks by
  * mod_draw.c) + the periodic report that names any mod exceeding the

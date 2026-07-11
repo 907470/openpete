@@ -44,6 +44,8 @@ int openpete_mods_active = 0;
 typedef struct {
     openpete_mod_override_fn fn;
     const char*              owner_id; /* for diagnostics/attribution */
+    int                      disabled; /* live toggle: skipped, not removed
+                                        * — re-enable restores in place */
 } mod_link_t;
 
 typedef struct {
@@ -88,6 +90,9 @@ static mod_chain_t* chain_find(uint32_t addr) {
  * post-hook that wraps an expensive original is billed only for its own
  * code, never for the game's. */
 static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
+    /* Live toggle: disabled links are transparent — base() descends
+     * straight past them. */
+    while (idx < chain->count && chain->links[idx].disabled) idx++;
     const op_time_t t0 = op_now();
     if (idx < chain->count) {
         if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
@@ -122,6 +127,18 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
     s_bypass_armed = 0;
     if (s_frame_depth > 0)
         s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
+}
+
+/* Live toggle: flip every link owned by owner_id. Chain STRUCTURE is
+ * untouched (order, base() nesting) — a re-enabled mod is exactly where
+ * it was. Call only at a tick boundary (the loader's apply point). */
+void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
+    if (!owner_id) return;
+    for (int i = 0; i < s_chain_count; i++)
+        for (int j = 0; j < s_chains[i].count; j++)
+            if (s_chains[i].links[j].owner_id &&
+                strcmp(s_chains[i].links[j].owner_id, owner_id) == 0)
+                s_chains[i].links[j].disabled = !on;
 }
 
 /* ── Per-mod time instrument ────────────────────────────────────────────
@@ -176,7 +193,8 @@ void openpete_mods_time_report(unsigned ticks_elapsed) {
             OPL_WARN_F("mods", "%s: %.2f ms/tick average over the last "
                        "window (budget %.1f) — this mod is slowing the "
                        "sim thread", t->owner, tick_ms, MOD_TICK_BUDGET_MS);
-        else if (s_dump && (t->tick_calls || t->present_calls))
+        else if (s_dump) /* dump 0-call windows too: a live-toggled-off
+                          * mod's silence is exactly the signal */
             OPL_INFO_F("mods", "timer %s: %.3f ms/tick (%u calls), "
                        "%.3f ms total present (%u hooks)",
                        t->owner, tick_ms, t->tick_calls,

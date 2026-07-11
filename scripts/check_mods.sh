@@ -548,6 +548,39 @@ else
     bad "zip/build caches missed on the second boot"
 fi
 
+# ── 16. live modset toggle: tick-boundary disable/enable ────────────────
+# hello-anchor's CameraUpdate hook is scheduled off at canonical tick
+# 2200 and back on at 3300 (OPENPETE_MODS_TOGGLE); the per-mod timer
+# windows prove the hook actually stopped (a 0-call window) and came
+# back (a >0-call window strictly after the ENABLED line).
+say "live toggle: disable/enable at tick boundaries (timer-window proof)"
+fixture "$WORK/toggle" hello-anchor
+out="$(OPENPETE_MOD_TIMERS=1 \
+       OPENPETE_MODS_TOGGLE='2200:hello-anchor:0,3300:hello-anchor:1' \
+       run_game "$WORK/toggle" 8600)"
+if printf '%s\n' "$out" | grep -q "live toggle: hello-anchor DISABLED (tick 2200)" &&
+   printf '%s\n' "$out" | grep -q "live toggle: hello-anchor ENABLED (tick 3300)"; then
+    ok "toggles applied at the scheduled tick boundaries"
+else
+    bad "toggle schedule did not apply"
+fi
+if printf '%s\n' "$out" | \
+   awk '/live toggle: hello-anchor DISABLED/{d=1}
+        d && /timer hello-anchor: .*\(0 calls\)/{found=1}
+        END{exit !found}'; then
+    ok "hook silent while disabled (0-call timer window)"
+else
+    bad "no 0-call window after disable"
+fi
+if printf '%s\n' "$out" | \
+   awk '/live toggle: hello-anchor ENABLED/{e=1}
+        e && /timer hello-anchor: .*\([1-9][0-9]* calls\)/{found=1}
+        END{exit !found}'; then
+    ok "hook live again after re-enable (>0-call timer window)"
+else
+    bad "no active window after re-enable"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

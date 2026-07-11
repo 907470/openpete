@@ -84,6 +84,15 @@ int openpete_mods_site_attach(const char* mod_id, const char* name,
     return -1;
 }
 
+/* Live toggle: gate owned sites on/off (handlers stay attached — the
+ * guarded emission's identity arm covers the off state). */
+void openpete_mods_site_set_enabled(const char* mod_id, int on) {
+    if (!mod_id) return;
+    for (int i = 0; i < OPENPETE_MODSITE_MAX; i++)
+        if (s_owner[i] && strcmp(s_owner[i], mod_id) == 0)
+            openpete_modsite_active[i] = (on && s_fns[i]) ? 1 : 0;
+}
+
 void openpete_mods_site_detach_all(const char* mod_id) {
     if (!mod_id) return;
     for (int i = 0; i < OPENPETE_MODSITE_MAX; i++) {

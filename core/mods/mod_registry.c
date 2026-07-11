@@ -36,6 +36,8 @@ typedef struct {
     int                     donor_class;
     openpete_moby_update_fn update_fn;
     int                     class_id; /* 0 = not live in this level */
+    int                     disabled; /* live toggle: no claims, no
+                                       * dispatch; instances freeze */
 } moby_type_t;
 
 static moby_type_t s_types[MOBY_TYPES_MAX];
@@ -92,6 +94,7 @@ static void registry_tick(CPUState* cpu) {
 
     for (int i = 0; i < s_type_count; i++) {
         moby_type_t* t = &s_types[i];
+        if (t->disabled) continue;
         if (!t->class_id) {
             t->class_id = s_ops->alloc_seed_class(cpu, t->donor_class);
             if (t->class_id)
@@ -113,7 +116,8 @@ typedef struct {
     char mod_id[MOBY_OWNER_MAX];
     char name[MOBY_NAME_MAX];
     int  donor_level_id;
-    int  slot_id; /* 0 = not claimed yet */
+    int  slot_id;  /* 0 = not claimed yet */
+    int  disabled; /* live toggle */
 } level_slot_t;
 
 static level_slot_t s_levels[LEVEL_SLOTS_MAX];
@@ -129,7 +133,7 @@ static void level_slots_tick(CPUState* cpu) {
     if (!s_level_ops) return;
     for (int i = 0; i < s_level_count; i++) {
         level_slot_t* s = &s_levels[i];
-        if (s->slot_id) continue;
+        if (s->disabled || s->slot_id) continue;
         s->slot_id = s_level_ops->claim_slot(cpu, s->donor_level_id);
         if (s->slot_id)
             OPL_INFO_F("mods", "level slot %s:%s live (id=%d, donor %d)",
@@ -187,8 +191,22 @@ int openpete_mods_moby_type_id(const char* mod_id, const char* name) {
 uint32_t openpete_mods_moby_spawn(CPUState* cpu, const char* mod_id,
                                   const char* name) {
     const moby_type_t* t = type_find(mod_id, name);
-    if (!t || !t->class_id || !s_ops || !cpu) return 0;
+    if (!t || t->disabled || !t->class_id || !s_ops || !cpu) return 0;
     return s_ops->spawn(cpu, t->class_id, t->donor_class);
+}
+
+/* Live toggle: gate a mod's registry rows (moby types + level slots).
+ * A disabled moby type stops claiming and dispatching (live instances
+ * freeze harmlessly — the game's default arm never ran for them); a
+ * disabled level slot stops claiming and refuses spawn/enter. */
+void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
+    if (!mod_id) return;
+    for (int i = 0; i < s_type_count; i++)
+        if (strcmp(s_types[i].mod_id, mod_id) == 0)
+            s_types[i].disabled = !on;
+    for (int i = 0; i < s_level_count; i++)
+        if (strcmp(s_levels[i].mod_id, mod_id) == 0)
+            s_levels[i].disabled = !on;
 }
 
 int openpete_mods_level_register(const char* mod_id, const char* name,

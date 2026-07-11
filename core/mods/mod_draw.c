@@ -95,11 +95,22 @@ void openpete_mods_draw_set_actor_fns(openpete_mods_actor_capture_fn cap,
 typedef struct {
     openpete_mod_present_fn fn;
     const char*             owner_id;
+    int                     disabled; /* live toggle */
 } present_hook_t;
+
+void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 
 static present_hook_t s_phooks[PRESENT_HOOKS_MAX];
 static int            s_phook_count = 0;
 static int            s_any_draw = 0; /* fast bail for modless runs */
+
+void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on) {
+    if (!owner_id) return;
+    for (int i = 0; i < s_phook_count; i++)
+        if (s_phooks[i].owner_id &&
+            strcmp(s_phooks[i].owner_id, owner_id) == 0)
+            s_phooks[i].disabled = !on;
+}
 
 int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                         const char* owner_id) {
@@ -207,7 +218,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * counted at the canonical commit. ABOVE the draw gates — tick-hook
      * timing must report in headless runs too. */
     if (canonical && openpete_mods_active) {
+        static unsigned s_canonical_ticks = 0;
         static unsigned s_report_ticks = 0;
+        openpete_mods_tick_boundary(++s_canonical_ticks);
         if (++s_report_ticks >= 512) {
             openpete_mods_time_report(s_report_ticks);
             s_report_ticks = 0;
@@ -252,6 +265,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
 
         openpete_mods_in_present = 1;
         for (int i = 0; i < s_phook_count; i++) {
+            if (s_phooks[i].disabled) continue;
             const op_time_t t0 = op_now();
             s_phooks[i].fn(&ctx);
             openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1);

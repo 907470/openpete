@@ -349,6 +349,98 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
+/* ── Live modset toggle (P2) ─────────────────────────────────────────
+ * enable/disable apply at the NEXT TICK BOUNDARY (the canonical present
+ * commit), never mid-tick: requests queue here and the apply flips
+ * owner-keyed disabled flags across every registration surface — chain
+ * links (skipped transparently, base() nesting preserved), present
+ * hooks, baked instruction sites (guarded identity arm), and registry
+ * rows. Nothing is torn down, so re-enable restores the mod exactly
+ * where it was. Asset overlays stay boot-scoped ("restart tier" in the
+ * plan's language — their consumers scan at init).
+ *
+ * The save modset tag deliberately does NOT rebuild on toggle: a
+ * divergent mod that already ran this session has already diverged it;
+ * the session tag is the loaded set, not the instantaneous one.
+ *
+ * Drivers: the future mod menu; and OPENPETE_MODS_TOGGLE=
+ * "tick:id:0|1[,...]" (a canonical-tick schedule) for CI/dev. */
+
+void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
+void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
+
+typedef struct { char id[MOD_ID_MAX]; int on; } toggle_req_t;
+static toggle_req_t s_toggle_q[16];
+static int          s_toggle_n = 0;
+
+typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
+static toggle_sched_t s_toggle_sched[16];
+static int            s_toggle_sched_n = 0;
+
+int openpete_mods_set_mod_enabled(const char* id, int on) {
+    if (!id || !id[0]) return -1;
+    if (s_toggle_n >= (int)(sizeof s_toggle_q / sizeof s_toggle_q[0]))
+        return -1;
+    snprintf(s_toggle_q[s_toggle_n].id, MOD_ID_MAX, "%s", id);
+    s_toggle_q[s_toggle_n].on = on ? 1 : 0;
+    s_toggle_n++;
+    return 0;
+}
+
+static void toggle_parse_env(void) {
+    const char* e = getenv("OPENPETE_MODS_TOGGLE");
+    if (!e || !*e) return;
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s", e);
+    char* save = NULL;
+    for (char* tok = strtok_r(buf, ",", &save); tok;
+         tok = strtok_r(NULL, ",", &save)) {
+        unsigned tick;
+        char id[MOD_ID_MAX];
+        int on;
+        if (sscanf(tok, "%u:%63[^:]:%d", &tick, id, &on) == 3 &&
+            s_toggle_sched_n < (int)(sizeof s_toggle_sched /
+                                     sizeof s_toggle_sched[0])) {
+            toggle_sched_t* t = &s_toggle_sched[s_toggle_sched_n++];
+            t->tick = tick;
+            snprintf(t->id, MOD_ID_MAX, "%s", id);
+            t->on = on ? 1 : 0;
+        } else {
+            OPL_ERROR_F("mods", "OPENPETE_MODS_TOGGLE: bad token \"%s\" "
+                        "(want tick:id:0|1)", tok);
+        }
+    }
+    if (s_toggle_sched_n)
+        OPL_INFO_F("mods", "toggle schedule armed (%d entr%s)",
+                   s_toggle_sched_n, s_toggle_sched_n == 1 ? "y" : "ies");
+}
+
+void openpete_mods_tick_boundary(unsigned canonical_tick) {
+    for (int i = 0; i < s_toggle_sched_n; i++) {
+        if (s_toggle_sched[i].tick == canonical_tick)
+            (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
+                                                s_toggle_sched[i].on);
+    }
+    for (int q = 0; q < s_toggle_n; q++) {
+        const char* id = s_toggle_q[q].id;
+        int on = s_toggle_q[q].on;
+        struct openpete_mod* mod = NULL;
+        for (int i = 0; i < s_mod_count; i++)
+            if (strcmp(s_mods[i].id, id) == 0) { mod = &s_mods[i]; break; }
+        if (!mod) {
+            OPL_ERROR_F("mods", "live toggle: no loaded mod \"%s\"", id);
+            continue;
+        }
+        openpete_mods_chain_set_owner_enabled(id, on);
+        openpete_mods_draw_set_owner_enabled(id, on);
+        openpete_mods_site_set_enabled(id, on);
+        openpete_mods_registry_set_owner_enabled(id, on);
+        OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
+                   id, on ? "ENABLED" : "DISABLED", canonical_tick);
+    }
+    s_toggle_n = 0;
+}
+
 /* Save modset tag (per-modset save safety): the canonical identity of
  * the running gameplay-relevant modset — "id@ver+id@ver", ids sorted,
  * sim_neutral mods excluded. Empty string = vanilla. Consumed by the
@@ -1232,6 +1324,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
     if (loaded > 0)
         OPL_INFO_F("mods", "%d mod%s active (dir: %s)", loaded,
                    loaded == 1 ? "" : "s", mods_dir);
+    toggle_parse_env();
     return loaded;
 }
 
