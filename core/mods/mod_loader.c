@@ -20,9 +20,10 @@
 // never brick a launch. Zero mods loaded leaves the engine byte-
 // identical to a modless build (openpete_mods_active == 0).
 //
-// Platform: POSIX for the vertical slice. Windows needs LoadLibrary +
-// the bundled-toolchain story from openpete-distribution-local-recomp;
-// stubbed until then.
+// Platform: POSIX compiles mods on load; Windows loads PREBUILT DLLs
+// (mods/<id>/.build/<id>.dll, e.g. mingw cross-builds) until the
+// bundled-toolchain story from openpete-distribution-local-recomp
+// brings compile-on-load there too.
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
@@ -33,12 +34,44 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-
-#include <dirent.h>
-#include <dlfcn.h>
+#include <dirent.h> /* MinGW provides it too */
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#ifdef _WIN32
+/* Windows: mods LOAD from prebuilt DLLs (mods/<id>/.build/<id>.dll —
+ * cross-compiled with mingw or built on a dev box); compile-on-load
+ * arrives with the bundled toolchain (openpete-distribution-local-
+ * recomp). Everything else (manifest, deps, chains, services) is
+ * identical to POSIX. */
+#include <windows.h>
+#include <direct.h>
+#define MOD_DL_EXT ".dll"
+#define mod_mkdir(p) _mkdir(p)
+static void* mod_dlopen(const char* path) {
+    return (void*)LoadLibraryA(path);
+}
+static void* mod_dlsym(void* h, const char* name) {
+    union { FARPROC fp; void* p; } u;
+    u.fp = GetProcAddress((HMODULE)h, name);
+    return u.p;
+}
+static const char* mod_dlerror(void) {
+    static char buf[64];
+    snprintf(buf, sizeof buf, "LoadLibrary/GetProcAddress error %lu",
+             (unsigned long)GetLastError());
+    return buf;
+}
+#else
+#include <dlfcn.h>
+#define MOD_DL_EXT ".so"
+#define mod_mkdir(p) mkdir((p), 0755)
+static void* mod_dlopen(const char* path) {
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+}
+static void* mod_dlsym(void* h, const char* name) { return dlsym(h, name); }
+static const char* mod_dlerror(void) { return dlerror(); }
+#endif
 
 #include <SDL3/SDL.h> /* SDL_GetBasePath — default mods/ + sdk/ location */
 
@@ -232,7 +265,7 @@ static const char* api_data_dir(openpete_mod_t* self) {
     if (!self->data_dir[0]) {
         snprintf(self->data_dir, sizeof self->data_dir, "%s/data",
                  self->dir);
-        mkdir(self->data_dir, 0755); /* EEXIST fine */
+        mod_mkdir(self->data_dir); /* EEXIST fine */
     }
     return self->data_dir;
 }
@@ -475,15 +508,30 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
 
     char build_dir[MOD_PATH_MAX];
     snprintf(build_dir, sizeof build_dir, "%s/.build", mod->dir);
-    mkdir(build_dir, 0755); /* EEXIST is fine */
+    mod_mkdir(build_dir); /* EEXIST is fine */
 
-    snprintf(so_path, so_path_len, "%s/%s.so", build_dir, mod->id);
+    snprintf(so_path, so_path_len, "%s/%s" MOD_DL_EXT, build_dir, mod->id);
     time_t so_m = file_mtime(so_path);
     if (so_m != (time_t)-1 && so_m >= newest_input) {
         OPL_DEBUG_F("mods", "%s: cached %s up to date", mod->id, so_path);
         return 0;
     }
 
+#ifdef _WIN32
+    /* No on-box compiler yet: a prebuilt DLL is required. A stale one
+     * (older than the sources) still loads, loudly. */
+    if (so_m != (time_t)-1) {
+        OPL_WARN_F("mods", "%s: %s is OLDER than the mod sources — "
+                   "loading it anyway (rebuild the DLL to update)",
+                   mod->id, so_path);
+        return 0;
+    }
+    OPL_ERROR_F("mods", "%s: no prebuilt %s — Windows loads prebuilt mod "
+                "DLLs (compile-on-load arrives with the bundled "
+                "toolchain); build one with e.g. x86_64-w64-mingw32-gcc "
+                "-shared -O2 -I<sdk> — disabled", mod->id, so_path);
+    return -1;
+#else
     const char* cc = getenv("OPENPETE_MOD_CC");
     if (!cc || !cc[0]) cc = getenv("CC");
     if (!cc || !cc[0]) cc = "cc";
@@ -509,6 +557,7 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
         return -1;
     }
     return 0;
+#endif /* !_WIN32 */
 }
 
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
@@ -534,14 +583,14 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
     char so_path[MOD_PATH_MAX];
     if (build_mod(mod, sdk_dir, so_path, sizeof so_path) != 0) return -1;
 
-    mod->dl = dlopen(so_path, RTLD_NOW | RTLD_LOCAL);
+    mod->dl = mod_dlopen(so_path);
     if (!mod->dl) {
         OPL_ERROR_F("mods", "%s: dlopen failed: %s — disabled", mod->id,
-                    dlerror());
+                    mod_dlerror());
         return -1;
     }
     mod_entry_fn entry =
-        (mod_entry_fn)dlsym(mod->dl, "openpete_mod_entry");
+        (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
     if (!entry) {
         OPL_ERROR_F("mods", "%s: no openpete_mod_entry symbol — disabled",
                     mod->id);
@@ -801,19 +850,3 @@ int openpete_mods_init(const openpete_options_t* opts) {
     return loaded;
 }
 
-#else /* _WIN32 */
-
-void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
-                                    size_t count) {
-    (void)table;
-    (void)count;
-}
-
-int openpete_mods_init(const openpete_options_t* opts) {
-    (void)opts;
-    /* Windows mod loading arrives with the bundled-toolchain work in
-     * openpete-distribution-local-recomp (LoadLibrary + clang). */
-    return 0;
-}
-
-#endif /* _WIN32 */
