@@ -389,6 +389,47 @@ static void upload_sfx(void)
     }
 }
 
+/* S3C_FORCE_FLAME=1 probe: flame the first metal-chest-class moby every
+ * tick and log its heat/rotation/position — decides where the stock
+ * "red hot + shake" comes from without needing scripted input. */
+static void force_flame_probe(void)
+{
+    uint32_t m = op_read_u32(A, OP_GADDR_g_LevelMobys);
+    static int tick;
+    int found = 0;
+    if (!m) return;
+    ++tick;
+    for (m |= 0x80000000u; ; m += 0x58u) {
+        int16_t cls = (int16_t)(op_read_u32(A, m + 0x34u) >> 16);
+        int8_t state = (int8_t)op_read_u8(A, m + 0x48u);
+        if (state == -1) break;
+        if (cls != 195 || state < 0) continue;
+        found++;
+        {
+            uint32_t dmg = op_read_u32(A, m + 0x18u);
+            /* park Spyro beside the chest — distant mobys are dormant
+             * (first probe round: flags set, handler never reacted) */
+            op_write_u32(A, OP_GADDR_g_Spyro + 0xCu,
+                         op_read_u32(A, m + 0xCu) + 900u);
+            op_write_u32(A, OP_GADDR_g_Spyro + 0x10u, op_read_u32(A, m + 0x10u));
+            op_write_u32(A, OP_GADDR_g_Spyro + 0x14u, op_read_u32(A, m + 0x14u));
+            op_write_u32(A, m + 0x18u, dmg | 0x10000u);
+            if ((tick & 7) == 0 &&
+                (int)op_read_u32(A, m + 0xCu) < 120000)   /* the on-camera room */
+                A->log(SELF, OP_MOD_LOG_INFO,
+                       "flameprobe: moby=%08x dmg=%08x mscol=%08x rot=%02x %02x %02x "
+                       "pos=%d,%d,%d state=%d",
+                       m, dmg, op_read_u32(A, m + 0x4Cu),
+                       op_read_u8(A, m + 0x44u), op_read_u8(A, m + 0x45u),
+                       op_read_u8(A, m + 0x46u),
+                       (int)op_read_u32(A, m + 0xCu),
+                       (int)op_read_u32(A, m + 0x10u),
+                       (int)op_read_u32(A, m + 0x14u),
+                       (int)(int8_t)op_read_u8(A, m + 0x48u));
+        }
+    }
+}
+
 /* CameraUpdate post-hook: the render loop is alive here — safe spot for
  * the VRAM + SPU uploads (and a fully-loaded SoundTable dump). */
 static void on_camera_update(CPUState* cpu)
@@ -399,6 +440,14 @@ static void on_camera_update(CPUState* cpu)
         upload_sfx();
         dump_sound_table();
     }
+}
+
+/* probe rides CameraUpdateMatrices: freecam FREEZES CameraUpdate
+ * (0x80037BD4) — a hook there never runs under an autopose. */
+static void on_camera_matrices(CPUState* cpu)
+{
+    A->base(cpu);
+    force_flame_probe();
 }
 
 /* ── entry ───────────────────────────────────────────────────────────── */
@@ -490,6 +539,10 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
         A->log(SELF, OP_MOD_LOG_ERROR, "camera hook registration failed");
         return 1;
     }
+    if (getenv("S3C_FORCE_FLAME") &&
+        api->override_addr(self, OP_FNADDR_CameraUpdateMatrices,
+                           on_camera_matrices))
+        A->log(SELF, OP_MOD_LOG_WARN, "flame probe hook failed");
     /* break SFX go in via SoundDefinition repoint (upload_sfx) — the
      * host sfx_replace overlay can't target them: the chest plays its
      * model's per-level def index directly, which no stable SoundTable

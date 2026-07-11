@@ -549,7 +549,11 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
                  int zsf4_raw;
-                 uint8_t spec_solo; } rec_meta;
+                 uint8_t spec_solo;
+                 uint8_t heat;     /* m_SpecularMetalColor byte2 (moby+0x4E),
+                                    * snapshotted at capture: the flame-heat
+                                    * level (ApplyFlameHeat*) — consumed by the
+                                    * mod-texture face red-shift */ } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3).
@@ -580,6 +584,22 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  * native walk intentionally dropped — adopt_prim_colors must not
                  * copy them back (the --no-lod distant-chest saturation). */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
+
+/* Flame-heat scalar from a moby's m_SpecularMetalColor word. TWO writer
+ * encodings exist (moby_helpers.c): ApplyFlameHeat bumps byte2 0..96
+ * directly; ApplyFlameHeatExternal (metal chests) packs the whole word
+ * (0xa00000 + (scaled+24)<<12 + (24-scaled)<<6 + (24-scaled), scaled =
+ * heat>>2, 0..20 — cold silver 0xa18618 decodes to 0, max heat 0xa2c104
+ * to 20; probe-verified on live chests). byte2 > 96 identifies the
+ * packed form. Returns ~0..96. */
+static int moby_heat_scalar(uint32_t ms) {
+    int b2 = (int)((ms >> 16) & 0xFFu);
+    if (b2 <= 96) return b2;
+    int scaled = (int)((ms >> 12) & 0x3Fu) - 24;
+    if (scaled < 0) scaled = 0;
+    if (scaled > 20) scaled = 20;
+    return scaled * 4;
+}
 
 /* Per-moby ZSF4 (colour-fade) snapshot, keyed by Moby*. Filled from the live .s
  * cull records during the canonical pass; the high-FPS sub-tick re-extract builds
@@ -726,6 +746,7 @@ static int project_all_records_inner(CPUState* cpu) {
                        (float)(int32_t)cpu->read_word(rec + 0x10)),
                 cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
             s_recs[nrec].zsf4_raw = zsf4_raw;
+            s_recs[nrec].heat = (uint8_t)moby_heat_scalar(cpu->read_word(s_recs[nrec].moby + 0x4Cu));
             fade_snap_put2(s_recs[nrec].moby, zsf4, zsf4_raw);
             if (s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
@@ -1080,6 +1101,7 @@ static void append_revealed_regular(CPUState* cpu) {
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
         s_recs[s_nrecs].zsf4_raw = rzsf4_raw;
+        s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_recs[s_nrecs].spec_solo = 1;   /* sole feeder: walk applies the SPEC face treatment */
         fade_snap_put2(m, rzsf4, rzsf4_raw);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
@@ -1803,6 +1825,23 @@ static int build_walk_tris_inner(CPUState* cpu) {
             /* Tiledef material from the cache (locals: the spec env path below
              * overwrites UV/tpage for reflective faces). */
             int tpx=F->tpx, tpy=F->tpy, clx=F->clx, cly=F->cly, bpp=F->bpp, abr=F->abr;
+            /* MOD-TEXTURE faces on a heated moby: mirror the .s flame-heat
+             * red-shift (.L80021FE0) on the modulating colours. The stock
+             * metal chest's own face flavors get it via the env/highlight
+             * branches below, which a replacement model's mod-textured
+             * faces never enter — a flamed spyro3-chests vase stayed cold.
+             * heat is the per-record moby snapshot (m_SpecularMetalColor
+             * byte2); 0 for never-heated mobys -> no-op. */
+            if (bpp == 32 && R->heat) {
+                int heat = (int)R->heat;
+                uint32_t* cc[4] = {&c0, &c1, &c2, &c3};
+                for (int q = 0; q < 4; q++) {
+                    uint32_t c = *cc[q];
+                    int r=(int)(c&0xFF)+heat, g=(int)((c>>8)&0xFF)-heat, b=(int)((c>>16)&0xFF)-heat;
+                    if (r>255) r=255; if (g<0) g=0; if (b<0) b=0;
+                    *cc[q] = (uint32_t)(r | (g<<8) | (b<<16)) | (c & 0xFF000000u);
+                }
+            }
             /* Fog-band CLUT-row fog (the texel half of the LOD crossfade,
              * .s @8001FE04-FE08: s2 = (IR0>>9) << 22 is added to every textured
              * prim's UV word — word bits 22-30 ARE the CLUT y, so the row is
@@ -4646,6 +4685,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             fap, hdrp, (float)balpha };
         s_recs[s_nrecs].zsf4_raw = fade_snap_get_raw(mobys[i], zsf4);
+        s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
