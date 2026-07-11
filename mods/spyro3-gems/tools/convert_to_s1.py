@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert extracted Spyro 3 gem geometry into Spyro 1 baked-gouraud
+"""Convert extracted Spyro 3 gem geometry into Spyro 1 SHADED-METAL
 SimpleModels and pack them (plus the chime ADPCM body) into
 assets/s3/gems_s1pack.bin for the spyro3-gems mod.
 
@@ -7,25 +7,25 @@ Input:  assets/s3/gem_anim<N>.json (N=0..4, from extract_s3_gems.py)
         assets/s3/gem_chime_arrival.vag_body.bin (the rising-pitch chime)
 Output: assets/s3/gems_s1pack.bin
 
-S3 source semantics (extract_s3_gems.py report):
-  - frame0.verts are sign-corrected ints with z UNhalved: true z = z/2
-    (SpyroEdit non-animated path halves z relative to x/y).
-  - colour table is a single grey; every face is colouredByMoby and the
-    per-corner 7-bit fields are SHADING RAMP values (0..127), tinted at
-    runtime from S3's palette D_80066998: 4 words per gem colour
-    {dark1, bright1, dark2, bright2}, format 0x00BBGGRR.
-  We bake the tint: a 16-step dark1->bright1 gradient table per model,
-  corner colour index = ramp >> 3.
+S3 source semantics (see assets/s3/shading_canonical.md — the original
+"per-corner ramp" reading was a mis-parse):
+  - frame0.verts are sign-corrected ints with z UNhalved: true z = z/2.
+  - Every gem face is FLAT + shiny: w1 packs a signed 8-bit×3 face
+    normal (n = (-IR3,-IR1,-IR2) in vert space) plus a palette-pair bit.
+    S3's per-frame specular formula is bit-identical to Spyro 1's METAL
+    sub-mode, so faces convert to S1 metal flat faces (w0 bits 0+1 set,
+    w1 = packed normal) and the stock gem mobys' m_SpecularMetalColor
+    supplies the five per-class tints via D_8006E44C rows 1..5.
+  - Orientation: stock S1 gems put the tall axis on model -Y with the
+    slim tip (the wobble pivot) at the origin — see AXIS_MAP below.
 
 S1 target format (docs/injection-spec.md, confirmed by calibration run):
   model:  +0 s8 nverts | +1 u8 nfaces | +2 s8 nearBias(0x36) | +3 0xFF
-          +4 m_Verts (== model+0x10 -> BAKED colour mode)
-          +8 m_Colors | +0xC m_Faces
+          +4 m_Verts (== model+0x10, stock-gem layout)
+          +8 m_Colors (vestigial 1-word table) | +0xC m_Faces
           +0x10 verts: 3 bytes each, order (Z,X,Y), stored value = coord/2
-          colour table: u32 0x00BBGGRR, max 128 words
-          faces: 8B: w0 = i0<<23|i1<<16|i2<<9|i3<<2 (flag bits 0,1 = 0)
-                     w1 = c0<<23|c1<<16|c2<<9|c3<<2
-          quad perimeter A,B,C,D -> i = A,B,D,C ; tri -> i2==i3, c3=c2
+          faces: 8B: w0 = i0<<23|i1<<16|i2<<9|i3<<2 | 3 (flat+metal)
+                     w1 = Nz<<24|Nx<<16|Ny<<8 ; tri iff i2==i3
 Pack header (matches pack_header_t in src/gems3.c):
   u32 magic 'S3G1' | u32 payload_size | u32 model_vaddr[5]
   u32 vag_vaddr | u32 vag_size | u32 pitch_base | u32 burst_rgb[5]
@@ -34,16 +34,19 @@ import json, struct, os
 from pathlib import Path
 
 PARK_BASE = 0x80008000
-TARGET_EXTENT = 128         # stock gems: extent [-128, 96] (mod boot log)
 NEAR_BIAS = 0x36            # stock gem header byte +2 (mod boot log)
-GRAD_STEPS = 16
-PITCH_BASE = 0x400          # S3 chime centre pitch (unkC==unkE==0x400)
-SWAP_TRI = os.environ.get("S3G_SWAP_TRI", "1") == "1"
-SWAP_QUAD = os.environ.get("S3G_SWAP_QUAD", "0") == "1"
-INVERT_RAMP = os.environ.get("S3G_INVERT_RAMP", "1") == "1"
+PITCH_BASE = 0x400          # S3 chime pitch: 0x400 + 0x40*n (canonical)
 
 HERE = Path(__file__).resolve().parent
 S3 = HERE.parent / "assets" / "s3"
+
+# Collect-burst words (0x00BBGGRR): S3 hues rescaled to stock magnitude.
+# The S1 particle updater decrements each channel by 8/tick and kills the
+# particle only when ALL channels are exactly 0 — so channels must be
+# multiples of 8 and ≤0x80 for stock 16-tick life/size (see
+# assets/s3/burst_canonical.md; overbright/odd channels wrap → immortal,
+# ever-growing particles).
+BURST = [0x100080, 0x108000, 0x800040, 0x006080, 0x580080]
 
 # S3 gem palette D_80066998 (0x00BBGGRR), colour index = substate+1,
 # words {dark1, bright1, dark2, bright2} — from spyro-3 game.data.s.
@@ -56,19 +59,59 @@ PALETTE = [
 ]
 
 
-def lerp_bgr(dark, bright, t):
-    out = 0
-    for shift in (0, 8, 16):
-        d, b = (dark >> shift) & 0xFF, (bright >> shift) & 0xFF
-        out |= (d + round((b - d) * t)) << shift
-    return out
+# Axis map: S3 JSON-space (x, y, z_true) -> S1 model-space (VX, VY, VZ).
+# Stock S1 gems (S3G_DUMP_VERTS ground truth): tall axis = model Y, body
+# entirely on -Y, slim tip AT THE ORIGIN (the wobble pivot), rest pose is
+# identity. S3 gems: tall axis = +z_true, tip at 0, crown at max. Hence
+# (VX,VY,VZ) = (sx, -sz_true, sy) — det +1 (a pure Rx(-90°)), so face
+# windings are preserved. Applied to BOTH vertices and face normals.
+# Do NOT centre the tall axis: the tip must stay at 0.
+AXIS_MAP = [(0, +1), (2, -1), (1, +1)]
+
+
+def map_vec(v3):
+    return tuple(sign * v3[src] for src, sign in AXIS_MAP)
+
+
+def axis_map_parity():
+    """-1 if AXIS_MAP mirrors the model (odd permutation × sign flips)."""
+    perm = [src for src, _ in AXIS_MAP]
+    swaps = sum(1 for a in range(3) for b in range(a + 1, 3)
+                if perm[a] > perm[b])
+    flips = sum(1 for _, sign in AXIS_MAP if sign < 0)
+    return -1 if (swaps + flips) % 2 else 1
+
+
+FLIP_N = os.environ.get("S3G_FLIP_N", "1") == "1"
+
+
+def face_normal(f):
+    """JSON-space face normal from raw w1: n = (-IR3, -IR1, -IR2)
+    (S3 mobydraw func_80033C5C; see assets/s3/shading_canonical.md).
+    S3G_FLIP_N=1 negates — A/B toggle for the outward-direction sign."""
+    w1 = int(f["raw"][1], 16)
+
+    def s8(b):
+        return b - 256 if b > 127 else b
+    ir1, ir2, ir3 = s8((w1 >> 15) & 0xFF), s8((w1 >> 7) & 0xFF), s8((w1 >> 23) & 0xFF)
+    n = (-ir3, -ir1, -ir2)
+    return tuple(-c for c in n) if FLIP_N else n
+
+
+def pack_metal_face(idx, n):
+    """8-byte S1 SHADED face: flat+metal flags, w1 = face normal
+    (b3=Nz, b2=Nx, b1=Ny — spec §A.5 flat-face layout)."""
+    def c8(v):
+        return max(-128, min(127, int(round(v)))) & 0xFF
+    w0 = (idx[0] << 23) | (idx[1] << 16) | (idx[2] << 9) | (idx[3] << 2) | 3
+    w1 = (c8(n[2]) << 24) | (c8(n[0]) << 16) | (c8(n[1]) << 8)
+    return struct.pack("<II", w0, w1)
 
 
 def build_model(anim_json, substate, scale):
     f0 = anim_json["frame0"]
-    verts = [(x, y, z / 2.0) for x, y, z in f0["verts"]]
-    zmid = (min(v[2] for v in verts) + max(v[2] for v in verts)) / 2.0
-    verts = [(x, y, z - zmid) for x, y, z in verts]
+    verts = [map_vec((x, y, z / 2.0)) for x, y, z in f0["verts"]]
+    mirrored = axis_map_parity() < 0
 
     if len(verts) > 127:
         raise SystemExit(f"too many verts ({len(verts)})")
@@ -81,42 +124,37 @@ def build_model(anim_json, substate, scale):
     while len(vstream) % 4:
         vstream.append(0)
 
-    dark, bright = PALETTE[substate]
-    colours = [lerp_bgr(dark, bright, i / (GRAD_STEPS - 1)) for i in range(GRAD_STEPS)]
-
-    def cidx(ramp):
-        i = min(GRAD_STEPS - 1, max(0, ramp >> 3))
-        return (GRAD_STEPS - 1 - i) if INVERT_RAMP else i
-
     fstream = bytearray()
     nfaces = 0
     for f in f0["faces"]:
         v = f["v"]
-        c = [cidx(r) for r in f["c"]]
-        c += [c[-1]] * (4 - len(c))
+        n = map_vec(face_normal(f))
+        if mirrored:
+            v = list(reversed(v))          # restore outward winding
         packs = []
         if f.get("tri") or len(v) == 3:
             # S1 lone tris are single-sided (NCLIP>0); S3 gem tris render
-            # screen-facing. Emit both windings so no facet ever drops out.
-            for order in ([0, 1, 2], [0, 2, 1]):
-                q, qc = [v[k] for k in order], [c[k] for k in order]
-                packs.append(([q[0], q[1], q[2], q[2]],
-                              [qc[0], qc[1], qc[2], qc[2]]))
+            # screen-facing. Emit both windings (reverse copy gets the
+            # negated normal) so no facet ever drops out.
+            packs.append(([v[0], v[1], v[2], v[2]], n))
+            packs.append(([v[0], v[2], v[1], v[1]],
+                          tuple(-c for c in n)))
         else:
             # S3 quads are stored in the same strip order S1 packs
             # (i0,i1,i2,i3 -> tris (0,1,2)+(1,3,2)); copy through.
-            order = [0, 1, 2, 3] if not SWAP_QUAD else [1, 0, 3, 2]
-            packs.append(([v[k] for k in order], [c[k] for k in order]))
-        for i, cc in packs:
-            if any(ix >= len(verts) for ix in i):
+            packs.append(([v[0], v[1], v[2], v[3]], n))
+        for idx, nn in packs:
+            if any(ix >= len(verts) for ix in idx):
                 raise SystemExit(f"vert index OOB in face {f}")
-            w0 = (i[0] << 23) | (i[1] << 16) | (i[2] << 9) | (i[3] << 2)
-            w1 = (cc[0] << 23) | (cc[1] << 16) | (cc[2] << 9) | (cc[3] << 2)
-            fstream += struct.pack("<II", w0, w1)
+            fstream += pack_metal_face(idx, nn)
             nfaces += 1
     if nfaces > 255:
         raise SystemExit(f"too many faces ({nfaces})")
 
+    # All faces are flat+metal: the gouraud colour table is vestigial but
+    # the baked-mode layout (m_Verts == model+0x10, ctab before faces) is
+    # kept identical to the stock gems.
+    colours = [PALETTE[substate][0]]
     ctab = b"".join(struct.pack("<I", w) for w in colours)
     body = bytearray()
     body += struct.pack("<bBbB", len(verts), nfaces, NEAR_BIAS, 0xFF)
@@ -131,16 +169,14 @@ def build_model(anim_json, substate, scale):
 def main():
     anims = [json.loads((S3 / f"gem_anim{n}.json").read_text()) for n in range(5)]
 
-    # one global scale so denominations keep their S3 relative sizes
-    gmax = 0.0
-    for a in anims:
-        f0 = a["frame0"]
-        zs = [z / 2.0 for _, _, z in f0["verts"]]
-        zmid = (min(zs) + max(zs)) / 2.0
-        for (x, y, z), zc in zip(f0["verts"], (z - zmid for z in zs)):
-            gmax = max(gmax, abs(x), abs(y), abs(zc))
-    scale = TARGET_EXTENT / gmax
-    print(f"global extent {gmax:.1f} -> scale {scale:.3f}")
+    # one global scale so denominations keep their S3 relative sizes.
+    # Constraints (stock convention): tall axis VY spans [-128, 0] (tip
+    # pinned at 0), horizontal VX/VZ must stay within ±127.
+    tall = max(z / 2.0 for a in anims for _, _, z in a["frame0"]["verts"])
+    horiz = max(max(abs(x), abs(y)) for a in anims
+                for x, y, _ in a["frame0"]["verts"])
+    scale = min(128.0 / tall, 127.0 / horiz)
+    print(f"tall {tall:.1f} horiz {horiz:.1f} -> scale {scale:.3f}")
 
     force = os.environ.get("S3G_FORCE_STATE")
     payload = bytearray()
@@ -156,7 +192,7 @@ def main():
         body[4:16] = struct.pack("<III", base + ov, base + oc, base + of)
         payload += body
         model_vaddr.append(base)
-        burst.append(0x2C000000 | PALETTE[n][1])
+        burst.append(0x2C000000 | BURST[n])
         print(f"state {n}: verts={a['numVerts']} faces={len(a['frame0']['faces'])} "
               f"model @{base:08x} size={len(body)}")
 

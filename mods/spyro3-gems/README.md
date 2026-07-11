@@ -42,12 +42,18 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 
 - S3 gem = moby class 1, a 5-state simple model (one state per
   denomination) in each level's model bank; frame-0 geometry is decoded
-  and rebuilt as S1 baked-colour SimpleModels (vertex s8×2 stream,
-  16-step dark→bright gradient from S3's own palette `D_80066998`,
-  ramp semantics inverted: ramp 0 = bright).
+  and rebuilt as S1 SHADED-METAL SimpleModels. S3's gem specular formula
+  is bit-identical to S1's metal sub-mode (`assets/s3/shading_canonical.md`),
+  so faces become S1 metal flat faces carrying S3's own face normals and
+  the stock mobys' `m_SpecularMetalColor` tints them per class for free.
+- Orientation follows the stock convention (tall axis on model −Y, slim
+  tip at the origin = the wobble pivot; `assets/s3/`... see AXIS_MAP).
 - S1 lone tris are single-sided; S3 gem tris are screen-facing, so each
-  tri is emitted in both windings (face counts stay well under the 255
-  cap).
+  tri is emitted in both windings with the reverse copy's normal negated
+  (face counts stay well under the 255 cap).
+- Burst-particle words are S3 hues rescaled to stock magnitude with all
+  channels multiples of 8 — the particle updater fades by −8/tick per
+  channel and only dies at exactly zero (`assets/s3/burst_canonical.md`).
 - The chime is the *sparkle-arrival* sample (`SoundTable[0x1A]` in S3),
   the one the rising-pitch code actually plays.
 
@@ -55,9 +61,9 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 
 - Gems don't spawn S3's flying digit-sparkles; S1's number mobys and
   yellow twinkle remain (S1 behavior, S3 look for model/burst/chime).
-- The exact S3 first-chime pitch is start-of-ladder `0x400` (centre);
-  S3's per-burst counter start is untraced (see
-  `assets/s3/pitch_ladder.md`).
+- Chime ladder is canonical: `0x400 + 0x40·n` (a missed delay-slot
+  `+0x1000` in the arrival handler; `assets/s3/pitch_canonical.md`),
+  capped at one octave with a ~0.5 s streak reset.
 - Sound variance is zeroed for the gem sound, so the gameplay `rand()`
   stream diverges from stock — this mod is intentionally
   gameplay-divergent (like double-gems).

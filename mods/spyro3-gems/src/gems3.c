@@ -55,11 +55,12 @@ typedef struct {
 #define FN_GEM_COLLECT    0x8003B854u   /* plays gemPickup; a0 = value */
 #define SOUNDDEF_STRIDE   0x14u
 
-/* S3 pitch ladder (assets/s3/pitch_ladder.md): the chime voice pitch is
- * n * centre/16 per consecutive chime, centre = 0x400 — i.e. linear
- * +6.25%-of-centre steps, starting at the centre pitch. */
-#define LADDER_MAX        32
-#define STREAK_RESET_TICKS 90u          /* ~3s at 30Hz game ticks */
+/* S3 pitch ladder (assets/s3/pitch_canonical.md): voice pitch =
+ * 0x400 + 0x40*n, n resetting to 0 per burst (~0.25s cadence). Cap at
+ * one octave and reset after ~0.5s so a normal gem trail re-anchors at
+ * the canonical 11kHz chime instead of parking high. */
+#define LADDER_MAX        16
+#define STREAK_RESET_TICKS 15u          /* ~0.5s at 29.97Hz game ticks */
 
 static const openpete_mod_api_t* A;
 static openpete_mod_t* SELF;
@@ -105,7 +106,38 @@ static void dump_stock_gem(int cls_off)
            83 + cls_off, entry, m[0], m[1], m[2], m[3], nverts, nfaces,
            verts, ctab, faces, minc, maxc,
            (verts & 0x7FFFFFFFu) == ((entry & 0x7FFFFFFFu) + 0x10u));
+
+    /* S3G_DUMP_VERTS=1: full per-vertex dump (decoded per spec §A.2:
+     * stream order Z,X,Y, value = coord/2) + first face windings. */
+    if (getenv("S3G_DUMP_VERTS") && v && nverts > 0) {
+        int i;
+        int mn[3] = { 255, 255, 255 }, mx[3] = { -255, -255, -255 };
+        for (i = 0; i < nverts; i++) {
+            int vz = v[i * 3 + 0] * 2;
+            int vx = v[i * 3 + 1] * 2;
+            int vy = v[i * 3 + 2] * 2;
+            if (vx < mn[0]) mn[0] = vx; if (vx > mx[0]) mx[0] = vx;
+            if (vy < mn[1]) mn[1] = vy; if (vy > mx[1]) mx[1] = vy;
+            if (vz < mn[2]) mn[2] = vz; if (vz > mx[2]) mx[2] = vz;
+            A->log(SELF, OP_MOD_LOG_INFO,
+                   "  gem %d v%02d: VX=%4d VY=%4d VZ=%4d", 83 + cls_off, i, vx, vy, vz);
+        }
+        A->log(SELF, OP_MOD_LOG_INFO,
+               "  gem %d axis extents: VX=[%d,%d] VY=[%d,%d] VZ=[%d,%d]",
+               83 + cls_off, mn[0], mx[0], mn[1], mx[1], mn[2], mx[2]);
+        for (i = 0; i < 4 && i < nfaces; i++) {
+            uint32_t w0 = op_read_u32(A, faces + (uint32_t)i * 8u);
+            uint32_t w1 = op_read_u32(A, faces + (uint32_t)i * 8u + 4u);
+            A->log(SELF, OP_MOD_LOG_INFO,
+                   "  gem %d f%d: w0=%08x i=(%u,%u,%u,%u) w1=%08x",
+                   83 + cls_off, i, w0,
+                   (w0 >> 23) & 0x7Fu, (w0 >> 16) & 0x7Fu,
+                   (w0 >> 9) & 0x7Fu, (w0 >> 2) & 0x7Fu, w1);
+        }
+    }
 }
+
+static int dump_live_gems(void);
 
 /* ── hook 2: models ──────────────────────────────────────────────────── */
 
@@ -186,6 +218,38 @@ static void on_sound_table(CPUState* cpu)
            dest, s_pack.vag_size, gem_id, def, op_read_u32(A, BURST_TABLE_VA));
 }
 
+/* S3G_DUMP_VERTS=1: one-shot live-gem pose dump once level mobys exist.
+ * Ground truth for the model→world axis map: m_Rotation bytes +0x44/45/46
+ * (euler Z/X/Y — slot names lie; compose order start·Ry·Rx·Rz) and the
+ * MobyCollectableProps base rot bytes the wobble recenters on.
+ * Finding (artisans, 2026-07-11): base rot ≈ (0,0,0) — the stock gem's
+ * rest pose is IDENTITY; the collect wobble cones ±45° around it. */
+static int dump_live_gems(void)
+{
+    uint32_t m = op_read_u32(A, OP_GADDR_g_LevelMobys);
+    int shown = 0, i;
+    if (m < 0x80000000u) return 0;
+    for (i = 0; i < 1000 && shown < 8; i++, m += 0x58u) {
+        uint32_t cls = op_read_u32(A, m + 0x34) >> 16;          /* m_Class @+0x36 */
+        uint32_t props;
+        if (cls < 83u || cls > 87u) continue;
+        props = op_read_u32(A, m + 0x00);
+        if (props < 0x80000000u) continue;
+        A->log(SELF, OP_MOD_LOG_INFO,
+               "live gem %08x cls=%u pos=(%d,%d,%d) rot[44,45,46]=(%u,%u,%u) "
+               "state=%u sub=%u props.rotXYZ=(%u,%u,%u) ticks=%u",
+               m, cls,
+               (int)op_read_u32(A, m + 0x0C), (int)op_read_u32(A, m + 0x10),
+               (int)op_read_u32(A, m + 0x14),
+               op_read_u8(A, m + 0x44), op_read_u8(A, m + 0x45), op_read_u8(A, m + 0x46),
+               op_read_u8(A, m + 0x48), op_read_u8(A, m + 0x49),
+               op_read_u8(A, props + 0x10), op_read_u8(A, props + 0x11),
+               op_read_u8(A, props + 0x12), op_read_u8(A, props + 0x13));
+        shown++;
+    }
+    return shown;
+}
+
 /* ── hook 4: pitch ladder per collect ────────────────────────────────── */
 
 static void on_gem_collect(CPUState* cpu)
@@ -206,6 +270,18 @@ static void on_gem_collect(CPUState* cpu)
         if (s_streak + 1 < LADDER_MAX) s_streak++;
     }
     A->base(cpu);
+}
+
+/* S3G_DUMP_VERTS only: piggyback CameraUpdate (every gameplay tick) to run
+ * the live-gem pose dump once — retrying every 64 ticks until level mobys
+ * are actually placed (SetNewSoundTable/PatchMobyModelPointers run before
+ * moby placement, so those hooks are too early). */
+static void on_camera_update_dump(CPUState* cpu)
+{
+    static unsigned n;
+    static int done;
+    A->base(cpu);
+    if (!done && (++n & 63u) == 0u) done = dump_live_gems() > 0;
 }
 
 /* ── entry ───────────────────────────────────────────────────────────── */
@@ -253,6 +329,11 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
         api->override_addr(self, OP_FNADDR_SetNewSoundTable, on_sound_table) ||
         api->override_addr(self, FN_GEM_COLLECT, on_gem_collect)) {
         A->log(SELF, OP_MOD_LOG_ERROR, "override registration failed");
+        return 1;
+    }
+    if (getenv("S3G_DUMP_VERTS") &&
+        api->override_addr(self, OP_FNADDR_CameraUpdate, on_camera_update_dump)) {
+        A->log(SELF, OP_MOD_LOG_ERROR, "S3G_DUMP_VERTS hook registration failed");
         return 1;
     }
     return 0;
