@@ -87,12 +87,26 @@ MAPPING = [
     (309, "frag307_s0"), (310, "frag307_s1"), (311, "frag308_s0"),
 ]
 
-# Winding: emit strip order (A,B,C,D). CH_FLIP=1 (default) swaps the
-# emitted triangle orientation (S3's convention was globally opposite to
-# S1's keep rule for the gems SHADED path; confirm for regular mobys
-# in-game and lock the constant).
+# Spyro-anchored absolute scales (see ModelBuilder.build comment).
+SIMPLE_K = 4.0      # exact cross-game: 1 S3 SIMPLE-model unit = 4 world
+VASE_K = 0.858      # interim: vase (ANIMATED) to ~700 world tall until
+                    # the S3 instance data pins the animated anchor
+SPYRO_ANCHOR = {
+    194: SIMPLE_K,                                  # basket
+    195: VASE_K,                                    # vase
+    # ALL fragments are SIMPLE models -> exact x4 regardless of parent
+    255: SIMPLE_K, 256: SIMPLE_K, 257: SIMPLE_K,
+    309: SIMPLE_K, 310: SIMPLE_K, 311: SIMPLE_K,
+}
+
+# Winding: PER-FACE outward orientation. S1's regular-moby emit keeps
+# the side whose strip winding passes the dual-NCLIP test; instead of
+# guessing a global parity for S3 source data, orient every face so its
+# visible side points AWAY from the model centroid (closed containers
+# make the centroid test reliable). CH_OUTWARD (+1/-1) is the one
+# renderer-fixed sign constant, locked by in-game A/B.
 import os
-CH_FLIP = int(os.environ.get("CH_FLIP", "1"))
+CH_OUTWARD = int(os.environ.get("CH_OUTWARD", "1"))
 
 
 def map_vec(x, y, z_true):
@@ -183,16 +197,22 @@ class ModelBuilder:
         """Emit the full Model blob linked at base_vaddr. Returns bytes."""
         src, stock = self.src, self.stock
         # --- geometry -----------------------------------------------------
+        # SPYRO-ANCHORED absolute scale (fixed, 2026-07-11): the
+        # stock-envelope fit read "too small vs Spyro". Empirical anchor:
+        # S1 Spyro (horn tips) ~= 480 world units (pixel-measured against
+        # the 512-unit stock wooden chest on the same floor plane), and
+        # S1 m_Scale=0 model units are 1:1 world — so the S3-authentic
+        # sizes go in UNCLAMPED: basket at the exact cross-game x4.0
+        # (660 world tall = 1.4x Spyro, as in S3); fragments inherit the
+        # parent factor (shards of a 660-unit basket). Vase factor is
+        # interim (~700 tall) until the S3 instance-scale data pins the
+        # animated-model anchor. 11-bit literal ranges still assert.
+        scale = SPYRO_ANCHOR[self.cls]
         vs1 = [map_vec(x, y, z) for (x, y, z) in src["verts"]]
-        anchored = self.cls in (194, 195)
-        scale, tr = (fit_anchored if anchored else fit_centered)(
-            vs1, stock["env"])
-        verts = [(int(round(x * scale + tr[0])),
-                  int(round(y * scale + tr[1])),
-                  int(round(z * scale + tr[2]))) for (x, y, z) in vs1]
-        if anchored:   # clamp sub-anchor slivers to the stock base plane
-            y1 = stock["env"][3]
-            verts = [(x, min(y, y1), z) for (x, y, z) in verts]
+        verts = [(int(round(x * scale)), int(round(y * scale)),
+                  int(round(z * scale))) for (x, y, z) in vs1]
+        if self.cls in (194, 195):   # clamp sub-anchor slivers to base
+            verts = [(x, min(y, 2), z) for (x, y, z) in verts]
         nverts = len(verts)
         self.scale = scale
         # --- colours ------------------------------------------------------
@@ -204,6 +224,7 @@ class ModelBuilder:
                (((c >> 8) & 0xFF) // 2) << 8 | ((c & 0xFF) // 2)
                for c in colours]           # LP/fog palette: half-bright
         # --- faces --------------------------------------------------------
+        mc = [sum(v[k] for v in verts) / float(nverts) for k in range(3)]
         frecs = []
         for f in src["faces"]:
             v = f["v"]
@@ -213,17 +234,38 @@ class ModelBuilder:
                 i = [v[0], v[1], v[2], v[2]]
                 cc = [c[0], c[1], c[2], c[2]]
             else:
-                i = [v[0], v[1], v[2], v[3]]
-                cc = [c[0], c[1], c[2], c[3]]
-            if CH_FLIP:
-                # swap B<->C (verts 1,2) in strip order = reverse both tris
+                # S3 quads decode in CYCLIC corner order (bl,tl,tr,br);
+                # S1 strip order (A,B,C,D; tris ABC+BDC share the B-C
+                # diagonal) needs the [0,3,1,2] remap or the two strip
+                # tris straddle DIFFERENT diagonals — the gems' "wedge
+                # holes": overlapped middles + half the quads failing
+                # the dual-NCLIP keep test.
+                i = [v[0], v[3], v[1], v[2]]
+                cc = [c[0], c[3], c[1], c[2]]
+            # orient the face so its S1-visible side points outward:
+            # n = (B-A)x(C-A) on the FITTED verts, out = centroid - mc
+            A_, B_, C_ = (verts[i[0]], verts[i[1]], verts[i[2]])
+            ab = [B_[k] - A_[k] for k in range(3)]
+            ac = [C_[k] - A_[k] for k in range(3)]
+            n = [ab[1] * ac[2] - ab[2] * ac[1],
+                 ab[2] * ac[0] - ab[0] * ac[2],
+                 ab[0] * ac[1] - ab[1] * ac[0]]
+            used = i[:3] if f["tri"] else i[:4]
+            fc = [sum(verts[k][a] for k in used) / float(len(used))
+                  for a in range(3)]
+            out = [fc[k] - mc[k] for k in range(3)]
+            dot = sum(n[k] * out[k] for k in range(3))
+            flip = (dot > 0) != (CH_OUTWARD > 0)
+            if flip:
+                # swap B<->C (strip slots 1,2): same diagonal, reversed
+                # winding on both strip triangles
                 if f["tri"]:
                     i = [i[0], i[2], i[1], i[1]]
                     cc = [cc[0], cc[2], cc[1], cc[1]]
                 else:
                     i = [i[0], i[2], i[1], i[3]]
                     cc = [cc[0], cc[2], cc[1], cc[3]]
-            rec = dict(i=i, c=cc, tex=None)
+            rec = dict(i=i, c=cc, tex=None, flip=flip)
             if tex:
                 uv = f["uv"]
                 px, py = tile_place[tile_key_of(uv)]
@@ -231,9 +273,20 @@ class ModelBuilder:
                 us = [px + (u - t["u0"]) for u in uv["u"]]
                 vv = [py + (v_ - t["v0"]) for v_ in uv["v"]]
                 if f["tri"]:
+                    # S3 tri pairing (SpyroRender ConvertFaces): verts
+                    # (w0>>24,>>16,>>8) <-> UVs (w2lo, w3lo, w4lo) = our
+                    # raw order as-is.
                     us = [us[0], us[1], us[2], us[2]]
                     vv = [vv[0], vv[1], vv[2], vv[2]]
-                if CH_FLIP:
+                else:
+                    # quad pairing: verts (w0>>8, w0, w0>>16, w0>>24) <->
+                    # UVs (w4lo, w4hi, w3lo, w2lo) = raw indices 2,3,1,0,
+                    # then the same cyclic->strip [0,3,1,2] remap as verts
+                    us = [us[2], us[3], us[1], us[0]]
+                    vv = [vv[2], vv[3], vv[1], vv[0]]
+                    us = [us[0], us[3], us[1], us[2]]
+                    vv = [vv[0], vv[3], vv[1], vv[2]]
+                if rec["flip"]:
                     us = [us[0], us[2], us[1], us[3]]
                     vv = [vv[0], vv[2], vv[1], vv[3]]
                 rec["tex"] = (us, vv)
