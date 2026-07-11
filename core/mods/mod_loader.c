@@ -42,7 +42,8 @@
 
 #include <SDL3/SDL.h> /* SDL_GetBasePath — default mods/ + sdk/ location */
 
-#include "openpete_psx.h" /* openpete_psx_get_ram — api->guest() */
+#include "openpete_psx.h"   /* openpete_psx_get_ram — api->guest() */
+#include "openpete_state.h" /* savestate slots — engine services */
 
 #include "../../third_party/tomlc99/toml.h"
 
@@ -62,6 +63,7 @@ struct openpete_mod {
     char  id[MOD_ID_MAX];
     char  version[32];
     char  dir[MOD_PATH_MAX];
+    char  data_dir[MOD_PATH_MAX + 8]; /* "<dir>/data", made on demand */
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     char  deps[MOD_DEPS_MAX][MOD_ID_MAX];
     int   n_deps;
@@ -202,6 +204,48 @@ static int api_register_present_hook(openpete_mod_t* self,
     return rc;
 }
 
+/* ---- engine services (P2 contract) ----------------------------------- */
+
+static int api_savestate_request(openpete_mod_t* self, int op,
+                                 unsigned slot) {
+    if (!self) return -1;
+    if (purity_violation("savestate_request")) return -1;
+    return openpete_mods_savestate_request(op, slot, self->id);
+}
+
+static int api_savestate_slot_present(unsigned slot) {
+    return openpete_state_slot_present(slot);
+}
+
+static int api_register_savestate_hooks(openpete_mod_t* self,
+                                        openpete_mod_state_save_fn save,
+                                        openpete_mod_state_load_fn load) {
+    if (!self) return -1;
+    int rc = openpete_mods_state_register(save, load, self->id);
+    if (rc == 0)
+        OPL_INFO_F(self->log_tag, "savestate participation registered");
+    return rc;
+}
+
+static const char* api_data_dir(openpete_mod_t* self) {
+    if (!self) return NULL;
+    if (!self->data_dir[0]) {
+        snprintf(self->data_dir, sizeof self->data_dir, "%s/data",
+                 self->dir);
+        mkdir(self->data_dir, 0755); /* EEXIST fine */
+    }
+    return self->data_dir;
+}
+
+static int api_host_key_down(const char* key_name) {
+    if (!key_name) return 0;
+    SDL_Scancode sc = SDL_GetScancodeFromName(key_name);
+    if (sc == SDL_SCANCODE_UNKNOWN) return 0;
+    int nkeys = 0;
+    const bool* state = SDL_GetKeyboardState(&nkeys);
+    return (state && (int)sc < nkeys) ? (state[sc] ? 1 : 0) : 0;
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -259,6 +303,11 @@ static const openpete_mod_api_t s_api = {
     .draw_text     = openpete_mods_draw_text,
     .draw_rect     = openpete_mods_draw_rect,
     .register_present_hook = api_register_present_hook,
+    .savestate_request        = api_savestate_request,
+    .savestate_slot_present   = api_savestate_slot_present,
+    .register_savestate_hooks = api_register_savestate_hooks,
+    .data_dir      = api_data_dir,
+    .host_key_down = api_host_key_down,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

@@ -234,7 +234,7 @@ fi
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch; then
+        mods/hud-stopwatch mods/state-rewind; then
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"

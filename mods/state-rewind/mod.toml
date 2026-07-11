@@ -1,0 +1,23 @@
+# state-rewind — engine-services proof (P2 contract):
+# savestate trigger API + per-mod savestate participation.
+#
+# At its 300th sim tick the mod queues an engine SAVE on slot 9; at tick
+# 600 it queues a LOAD. The engine rewinds guest RAM/CPU/VRAM — and the
+# mod's own tick counter travels in the state file's mods section, so
+# after the rewind the mod itself is back at tick 300 (without
+# participation it would keep counting host-side and desync). It then
+# verifies g_GemTotal matches the value recorded at save time.
+#
+# Expected-divergence rung: rewinding mid-run obviously diverges from
+# the golden — the oracle MUST fail.
+
+[mod]
+id      = "state-rewind"
+name    = "State Rewind"
+version = "0.1.0"
+api     = 1
+
+[test]
+frames        = 8000
+expect_oracle = "fail"
+expect_log    = ["queued savestate SAVE on slot 9", "mod state restored: ticks=300", "post-rewind gems match=yes"]

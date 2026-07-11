@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h> /* FILE — savestate mods-section hooks */
 
 #include "openpete.h" /* openpete_options_t */
 
@@ -100,6 +101,30 @@ int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
 /* 1 while a present hook is executing on this thread — the loader's
  * guest/call/override entry points refuse during it (render-purity). */
 extern int openpete_mods_in_present;
+
+/* ── Engine services (core/mods/mod_services.c) ────────────────────── */
+
+/* Queue a mod-requested savestate op (1=save, 2=load) for execution at
+ * the host loop's quiescent point. One pending op at a time. */
+int openpete_mods_savestate_request(int op, unsigned slot,
+                                    const char* owner);
+
+/* run.c: consume the pending op (0 = none; clears). Execute it exactly
+ * like the user hotkeys (game fiber yielded, before pad refresh). */
+int openpete_mods_pending_state_op(unsigned* out_slot);
+
+/* Loader-facing registration for per-mod savestate participation. */
+int openpete_mods_state_register(openpete_mod_state_save_fn save,
+                                 openpete_mod_state_load_fn load,
+                                 const char* owner);
+
+/* savestate.c: append/read the trailing "mods" section (per-mod blobs).
+ * Read buffers while the file is open and tolerates pre-mods files
+ * (EOF ⇒ nothing to restore); dispatch runs after the engine committed
+ * guest state so mod load_fns see the restored world. */
+int  openpete_mods_state_write_section(FILE* fp);
+int  openpete_mods_state_read_section(FILE* fp);
+void openpete_mods_state_dispatch(void);
 
 #ifdef __cplusplus
 }

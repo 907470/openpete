@@ -1595,6 +1595,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_load  = load_k;
             prev_cycle = cycle_k;
 
+            /* Mod-requested savestate ops (api->savestate_request)
+             * execute here — the same quiescent point as the hotkeys
+             * above, with the same post-load frame re-anchor. Runs
+             * headless too (mods can rewind in headless tests). */
+            unsigned mod_slot = 0;
+            int mod_op = openpete_mods_pending_state_op(&mod_slot);
+            if (mod_op == 1) {
+                (void)openpete_state_save(mod_slot, &g_game.cpu,
+                                          openpete_frame);
+            } else if (mod_op == 2) {
+                unsigned loaded_frame = openpete_frame;
+                if (openpete_state_load(mod_slot, &g_game.cpu,
+                                        &loaded_frame) == 0) {
+                    openpete_frame = loaded_frame;
+                }
+            }
+
             /* Frame-step hotkeys. F7 edge-triggered toggle; F8 sets
              * g_step_one whenever held while paused, so the natural
              * key-repeat behavior is "step every host iter while held"

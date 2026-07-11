@@ -40,6 +40,7 @@
 
 #include "openpete_state.h"
 #include "openpete_log.h"
+#include "openpete_mods.h"   /* per-mod state participation */
 #include "openpete_psx.h"
 #include "game_extras.h"
 
@@ -251,6 +252,9 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     if (rc == 0) rc = write_section(fp, path, "scratch", openpete_psx_get_scratch(),
                                     OPENPETE_PSX_SCRATCH_SIZE);
     if (rc == 0) rc = write_section(fp, path, "vram",    vram_snap, hdr.vram_bytes);
+    /* Trailing mods section: per-mod participation blobs (rewinds rewind
+     * the mods too). Optional on read — pre-mods files still load. */
+    if (rc == 0) rc = openpete_mods_state_write_section(fp);
 
     free(vram_snap);
     fclose(fp);
@@ -343,6 +347,7 @@ int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame) {
     if (rc == 0) rc = read_section(fp, path, "ram",     ram_buf,     OPENPETE_PSX_RAM_SIZE);
     if (rc == 0) rc = read_section(fp, path, "scratch", scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
     if (rc == 0) rc = read_section(fp, path, "vram",    vram_buf,    hdr.vram_bytes);
+    if (rc == 0) (void)openpete_mods_state_read_section(fp); /* buffers only */
     fclose(fp);
 
     if (rc != 0) {
@@ -362,6 +367,10 @@ int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame) {
     /* Per-game post-load resync — restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
     game_on_state_loaded(cpu);
+
+    /* Mod participation blobs — after commit so load_fns that peek at
+     * guest state see the restored world. */
+    openpete_mods_state_dispatch();
 
     if (out_frame) *out_frame = hdr.frame;
     OPL_INFO_F("savestate", "loaded slot %u from %s (frame=%u)",

@@ -57,6 +57,13 @@ typedef struct openpete_present_ctx {
 
 typedef void (*openpete_mod_present_fn)(const openpete_present_ctx_t* ctx);
 
+/* Savestate participation (see register_savestate_hooks): serialize the
+ * mod's own non-canonical state alongside the engine snapshot. save
+ * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
+ * receives the blob saved by the same mod id. */
+typedef int  (*openpete_mod_state_save_fn)(void* buf, int cap);
+typedef void (*openpete_mod_state_load_fn)(const void* buf, int len);
+
 enum {
     OP_MOD_LOG_DEBUG = 1,
     OP_MOD_LOG_INFO  = 2,
@@ -165,6 +172,35 @@ typedef struct openpete_mod_api {
      * never interpolates mod visuals). Never runs headless. */
     int (*register_present_hook)(openpete_mod_t* self,
                                  openpete_mod_present_fn fn);
+
+    /* ── Engine services (P2 contract) ──────────────────────────────
+     * Savestates are ENGINE-NATIVE (never a mod feature): mods get a
+     * trigger API + participation callbacks.
+     *
+     * savestate_request queues op (1=save, 2=load) on `slot` (shared
+     * with the user's hotkey slots, 0..9); it executes at the next safe
+     * boundary — the host loop, game fiber quiescent — NOT immediately.
+     * One pending op at a time (a second request before execution fails).
+     * Returns 0 = queued. On load the engine restores guest RAM/CPU/VRAM
+     * and re-anchors the frame counter; register_savestate_hooks lets
+     * this mod's own host-side state (tick counters, recording cursors)
+     * travel inside the state file so a load doesn't desync it. */
+    int (*savestate_request)(openpete_mod_t* self, int op, unsigned slot);
+    int (*savestate_slot_present)(unsigned slot);
+    int (*register_savestate_hooks)(openpete_mod_t* self,
+                                    openpete_mod_state_save_fn save,
+                                    openpete_mod_state_load_fn load);
+
+    /* Per-mod persistent data directory (mods/<id>/data, created on
+     * first call). Returns an engine-owned absolute path string. Mods
+     * are native code — plain stdio inside it is the intended use. */
+    const char* (*data_dir)(openpete_mod_t* self);
+
+    /* Host keyboard query by SDL key name ("F5", "K", "Space", ...).
+     * 1 = held. Reading host input in a TICK hook intentionally diverges
+     * gameplay (hotkey trainers — the practice-ROM pattern); reading it
+     * in a present hook for display-only purposes is fine. */
+    int (*host_key_down)(const char* key_name);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */
