@@ -516,6 +516,37 @@ else
     bad "tagged-card/vanilla warning missing (sim_neutral exclusion broken?)"
 fi
 
+# ── 15. zip mods: folder or zip, identical (P1 build+load) ──────────────
+# hello-anchor zipped, dropped as <id>.zip, loads end-to-end (unpack →
+# content-hash-cached compile → dlopen); a second boot reuses both
+# caches (no re-extract, no recompile).
+say "zip mods: <id>.zip unpack + content-hash caches"
+mkdir -p "$WORK/zipmods"
+python3 - "$WORK/zipmods/hello-anchor.zip" <<'PYEOF'
+import sys, zipfile, os
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as z:
+    z.write('mods/hello-anchor/mod.toml', 'mod.toml')
+    for root, dirs, files in os.walk('mods/hello-anchor/src'):
+        for f in files:
+            p = os.path.join(root, f)
+            z.write(p, os.path.relpath(p, 'mods/hello-anchor'))
+PYEOF
+echo hello-anchor > "$WORK/zipmods/enabled.txt"
+out="$(run_game "$WORK/zipmods" 100)"
+if printf '%s\n' "$out" | grep -q "unpacked 2 files from hello-anchor.zip" &&
+   printf '%s\n' "$out" | grep -q "loaded hello-anchor"; then
+    ok "zip mod unpacked + loaded"
+else
+    bad "zip mod failed to unpack/load"
+fi
+out="$(run_game "$WORK/zipmods" 100)"
+if ! printf '%s\n' "$out" | grep -qE "unpacked [0-9]+ file|: compiling " &&
+   printf '%s\n' "$out" | grep -q "loaded hello-anchor"; then
+    ok "second boot: both caches hit (no re-extract, no recompile)"
+else
+    bad "zip/build caches missed on the second boot"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

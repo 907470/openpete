@@ -10,9 +10,11 @@
 //
 // Mods compile against <exe>/sdk/ (openpete_mod_api.h, psx_runtime.h,
 // openpete_sdk_symbols.h — staged there by the build) into
-// mods/<id>/.build/<id>.so, rebuilt when sources or the SDK are newer
-// (mtime cache; content-hash keying arrives with the distribution
-// toolchain). The shared object is dlopen'd and its
+// mods/<id>/.build/<id>.so, rebuilt when the CONTENT-HASH build key
+// (api version + SDK headers + sources) differs from the stamped one —
+// mtime churn never forces a rebuild. Mods may also ship as
+// <id>.zip (unpacked to .unpacked/<id>/, content-stamped; "folder or
+// zip, identical"). The shared object is dlopen'd and its
 // openpete_mod_entry(api, self) is called to register overrides.
 //
 // Failure posture: a mod that fails to parse/build/load is disabled with
@@ -28,6 +30,8 @@
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
+#include "../host/sha256.h" /* content-hash build cache key */
+#include "miniz.h"         /* zip mods (folder or zip, identical) */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -647,8 +651,37 @@ out:
     return rc;
 }
 
-/* Compile src/*.c → .build/<id>.so if sources or the SDK are newer.
- * Returns 0 with so_path filled on success. */
+/* Hash a file's contents into `c`; returns 0 ok, -1 missing. */
+static int hash_file(openpete_sha256_ctx* c, const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t buf[4096];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0)
+        openpete_sha256_update(c, buf, got);
+    fclose(f);
+    return 0;
+}
+
+/* insertion-sort src paths so the build key is order-independent
+ * (readdir order is filesystem-dependent). */
+static void sort_srcs(char srcs[][MOD_PATH_MAX], int n) {
+    for (int i = 1; i < n; i++) {
+        char tmp[MOD_PATH_MAX];
+        memcpy(tmp, srcs[i], MOD_PATH_MAX);
+        int j = i - 1;
+        while (j >= 0 && strcmp(srcs[j], tmp) > 0) {
+            memcpy(srcs[j + 1], srcs[j], MOD_PATH_MAX);
+            j--;
+        }
+        memcpy(srcs[j + 1], tmp, MOD_PATH_MAX);
+    }
+}
+
+/* Compile src/*.c → .build/<id>.so when the CONTENT-HASH build key
+ * (api version + SDK header bytes + sorted source bytes) differs from
+ * the stamped one — mtime churn (git checkout, cp) never forces a
+ * rebuild, and real changes always do. Returns 0 with so_path filled. */
 static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len) {
     char src_dir[MOD_PATH_MAX];
@@ -656,7 +689,6 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
 
     char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
     int n_srcs = 0;
-    time_t newest_input = 0;
 
     DIR* d = opendir(src_dir);
     if (!d) {
@@ -668,8 +700,6 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
         size_t len = strlen(e->d_name);
         if (len < 3 || strcmp(e->d_name + len - 2, ".c") != 0) continue;
         snprintf(srcs[n_srcs], MOD_PATH_MAX, "%s/%s", src_dir, e->d_name);
-        time_t m = file_mtime(srcs[n_srcs]);
-        if (m > newest_input) newest_input = m;
         n_srcs++;
     }
     closedir(d);
@@ -677,8 +707,14 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
         OPL_ERROR_F("mods", "%s: no .c sources in src/", mod->id);
         return -1;
     }
+    sort_srcs(srcs, n_srcs);
 
-    /* SDK headers count as inputs: an SDK regen rebuilds every mod. */
+    /* Build key: api version + SDK headers + sources, all by CONTENT.
+     * An SDK regen or api bump rebuilds every mod. */
+    openpete_sha256_ctx hc;
+    openpete_sha256_init(&hc);
+    const unsigned api_ver = OPENPETE_MOD_API_VERSION;
+    openpete_sha256_update(&hc, &api_ver, sizeof api_ver);
     static const char* const sdk_inputs[] = {
         "openpete_mod_api.h", "openpete_sdk_symbols.h",
         "openpete_sdk_wrappers.h", "psx_runtime.h",
@@ -686,9 +722,14 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
     for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {
         char p[MOD_PATH_MAX];
         snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
-        time_t m = file_mtime(p);
-        if (m > newest_input) newest_input = m;
+        (void)hash_file(&hc, p); /* absent header = stable no-op */
     }
+    for (int i = 0; i < n_srcs; i++)
+        (void)hash_file(&hc, srcs[i]);
+    uint8_t digest[32];
+    char    key[65];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, key);
 
     char build_dir[MOD_PATH_MAX];
     snprintf(build_dir, sizeof build_dir, "%s/.build", mod->dir);
@@ -696,18 +737,35 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
 
     snprintf(so_path, so_path_len, "%s/%s" MOD_DL_EXT, build_dir, mod->id);
     time_t so_m = file_mtime(so_path);
-    if (so_m != (time_t)-1 && so_m >= newest_input) {
-        OPL_DEBUG_F("mods", "%s: cached %s up to date", mod->id, so_path);
+
+    char stamp_path[MOD_PATH_MAX + 16];
+    snprintf(stamp_path, sizeof stamp_path, "%s/%s.hash", build_dir, mod->id);
+    char stamped[65] = "";
+    {
+        FILE* f = fopen(stamp_path, "rb");
+        if (f) {
+            size_t got = fread(stamped, 1, sizeof stamped - 1, f);
+            stamped[got] = '\0';
+            if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+            fclose(f);
+        }
+    }
+    if (so_m != (time_t)-1 && strcmp(stamped, key) == 0) {
+        OPL_DEBUG_F("mods", "%s: cached %s up to date (key %.12s)",
+                    mod->id, so_path, key);
         return 0;
     }
 
 #ifdef _WIN32
-    /* No on-box compiler yet: a prebuilt DLL is required. A stale one
-     * (older than the sources) still loads, loudly. */
+    /* No on-box compiler yet: a prebuilt DLL is required. Verified-
+     * stale (a stamp exists and mismatches) loads loudly; an unstamped
+     * DLL (typical for cross-compiled staging) loads silently — there
+     * is nothing trustworthy to compare against. */
     if (so_m != (time_t)-1) {
-        OPL_WARN_F("mods", "%s: %s is OLDER than the mod sources — "
-                   "loading it anyway (rebuild the DLL to update)",
-                   mod->id, so_path);
+        if (stamped[0])
+            OPL_WARN_F("mods", "%s: %s was built from DIFFERENT sources/"
+                       "SDK than what is on disk — loading it anyway "
+                       "(rebuild the DLL to update)", mod->id, so_path);
         return 0;
     }
     OPL_ERROR_F("mods", "%s: no prebuilt %s — Windows loads prebuilt mod "
@@ -738,7 +796,13 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
         OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) — "
                     "disabled", mod->id, build_dir);
         remove(so_path);
+        remove(stamp_path);
         return -1;
+    }
+    /* Stamp the build key so an unchanged mod never recompiles. */
+    {
+        FILE* f = fopen(stamp_path, "wb");
+        if (f) { fprintf(f, "%s\n", key); fclose(f); }
     }
     return 0;
 #endif /* !_WIN32 */
@@ -866,6 +930,96 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     return 0;
 }
 
+/* Unpack <mods_dir>/<id>.zip to <mods_dir>/.unpacked/<id>/ ("folder or
+ * zip, identical" — P1 build+load). The zip's content hash is stamped
+ * next to the unpack dir, so an unchanged zip is never re-extracted;
+ * mod.toml must sit at the zip ROOT. Entry paths are sanitized (no
+ * absolute paths, no ".."). Returns 0 = unpacked/current. */
+static int mod_unpack_zip(const char* mods_dir, const char* id) {
+    char zip_path[MOD_PATH_MAX];
+    snprintf(zip_path, sizeof zip_path, "%s/%s.zip", mods_dir, id);
+
+    /* Content key. */
+    openpete_sha256_ctx hc;
+    openpete_sha256_init(&hc);
+    if (hash_file(&hc, zip_path) != 0) return -1;
+    uint8_t digest[32];
+    char key[65];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, key);
+
+    char root[MOD_PATH_MAX], dest[MOD_PATH_MAX], stamp[MOD_PATH_MAX + 8];
+    snprintf(root, sizeof root, "%s/.unpacked", mods_dir);
+    snprintf(dest, sizeof dest, "%s/.unpacked/%s", mods_dir, id);
+    snprintf(stamp, sizeof stamp, "%s.hash", dest);
+
+    char stamped[65] = "";
+    FILE* sf = fopen(stamp, "rb");
+    if (sf) {
+        size_t got = fread(stamped, 1, sizeof stamped - 1, sf);
+        stamped[got] = '\0';
+        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+        fclose(sf);
+    }
+    char probe[MOD_PATH_MAX + 12];
+    snprintf(probe, sizeof probe, "%s/mod.toml", dest);
+    if (strcmp(stamped, key) == 0 && file_mtime(probe) != (time_t)-1)
+        return 0; /* current */
+
+    mz_zip_archive zip;
+    memset(&zip, 0, sizeof zip);
+    if (!mz_zip_reader_init_file(&zip, zip_path, 0)) {
+        OPL_ERROR_F("mods", "%s.zip: not a readable zip — skipped", id);
+        return -1;
+    }
+    mod_mkdir(root);
+    mod_mkdir(dest);
+    int files = 0, ok = 1;
+    mz_uint n = mz_zip_reader_get_num_files(&zip);
+    for (mz_uint i = 0; i < n; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) { ok = 0; break; }
+        if (st.m_filename[0] == '/' || strstr(st.m_filename, "..")) {
+            OPL_ERROR_F("mods", "%s.zip: unsafe entry path \"%s\" — "
+                        "skipped archive", id, st.m_filename);
+            ok = 0;
+            break;
+        }
+        char out[MOD_PATH_MAX];
+        snprintf(out, sizeof out, "%s/%s", dest, st.m_filename);
+        if (mz_zip_reader_is_file_a_directory(&zip, i)) {
+            mod_mkdir(out);
+            continue;
+        }
+        /* Ensure intermediate dirs exist (zips may omit dir entries). */
+        for (char* p = out + strlen(dest) + 1; *p; p++) {
+            if (*p != '/') continue;
+            *p = '\0';
+            mod_mkdir(out);
+            *p = '/';
+        }
+        if (!mz_zip_reader_extract_to_file(&zip, i, out, 0)) {
+            OPL_ERROR_F("mods", "%s.zip: extract failed for \"%s\"", id,
+                        st.m_filename);
+            ok = 0;
+            break;
+        }
+        files++;
+    }
+    mz_zip_reader_end(&zip);
+    if (!ok) return -1;
+    if (file_mtime(probe) == (time_t)-1) {
+        OPL_ERROR_F("mods", "%s.zip: no mod.toml at the archive root — "
+                    "skipped", id);
+        return -1;
+    }
+    sf = fopen(stamp, "wb");
+    if (sf) { fprintf(sf, "%s\n", key); fclose(sf); }
+    OPL_INFO_F("mods", "%s: unpacked %d file%s from %s.zip", id, files,
+               files == 1 ? "" : "s", id);
+    return 0;
+}
+
 int openpete_mods_init(const openpete_options_t* opts) {
     char mods_dir[MOD_PATH_MAX];
     const char* src = opts && opts->mods_dir ? opts->mods_dir
@@ -881,12 +1035,23 @@ int openpete_mods_init(const openpete_options_t* opts) {
     DIR* d = opendir(mods_dir);
     if (!d) return 0; /* no mods directory: inert */
 
-    /* Discover candidate ids (subdirs containing mod.toml). */
+    /* Discover candidate ids: subdirs containing mod.toml, plus
+     * <id>.zip archives (unpacked to .unpacked/<id>/, content-hash
+     * stamped so re-extraction only happens when the zip changes). A
+     * folder and a zip with the same id: the folder wins. */
     char* ids[MODS_MAX];
     int n_ids = 0;
     struct dirent* e;
     while ((e = readdir(d)) != NULL && n_ids < MODS_MAX) {
         if (e->d_name[0] == '.') continue;
+        size_t nl = strlen(e->d_name);
+        if (nl > 4 && strcmp(e->d_name + nl - 4, ".zip") == 0) {
+            char id[MOD_ID_MAX];
+            snprintf(id, sizeof id, "%.*s", (int)(nl - 4), e->d_name);
+            if (mod_unpack_zip(mods_dir, id) == 0)
+                ids[n_ids++] = strdup(id);
+            continue;
+        }
         char manifest[MOD_PATH_MAX];
         snprintf(manifest, sizeof manifest, "%s/%s/mod.toml", mods_dir,
                  e->d_name);
@@ -941,6 +1106,11 @@ int openpete_mods_init(const openpete_options_t* opts) {
         memset(mod, 0, sizeof(*mod));
         char dir[MOD_PATH_MAX];
         snprintf(dir, sizeof dir, "%s/%s", mods_dir, order[i]);
+        char probe[MOD_PATH_MAX + 12];
+        snprintf(probe, sizeof probe, "%s/mod.toml", dir);
+        if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
+            snprintf(dir, sizeof dir, "%s/.unpacked/%s", mods_dir,
+                     order[i]);
         if (parse_manifest(dir, mod) != 0) continue;
         n_pending++;
     }
