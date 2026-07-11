@@ -134,22 +134,42 @@ def fit_centered(verts_s1, env):
 
 
 def pack_vert(vx, vy, vz):
-    """One literal stream word; flag bit (VY LSB) = 0 (next is literal)."""
+    """One literal stream word, matching the renderer's decode EXACTLY
+    (moby_native.c vstream_next):
+        VZ = s11(bits 21..31)
+        VX = s11(bits 11..21)     <- OVERLAPS: bit 21 = VZ's LSB
+        VY = s12(bits 0..11) * 2  <- OVERLAPS: bit 11 = VX's LSB
+        flag = bit 0 (= VY field's LSB; 0 -> next vertex is a literal)
+    The two shared bits force coupling the game's own streams satisfy:
+        VZ & 1  == sign(VX)   (bit 21)
+        VX & 1  == sign(VYf)  (bit 11)
+    We satisfy them with ±1 nudges (1 model unit each, ±2 world on Y).
+    """
+    vyf = int(round(vy / 2.0)) & ~1          # 12-bit field; LSB=flag=0
+    vyf = max(-2048, min(2046, vyf))
+    sy = 1 if vyf < 0 else 0
+    if (vx & 1) != sy:                       # nudge VX LSB onto VY's sign
+        vx += -1 if (vx > 0 or vx <= -1023) else 1
+    sx = 1 if vx < 0 else 0
+    if (vz & 1) != sx:                       # nudge VZ LSB onto VX's sign
+        vz += -1 if (vz > 0 or vz <= -1023) else 1
     assert -1024 <= vx <= 1023 and -1024 <= vz <= 1023, (vx, vz)
-    vy_field = int(round(vy / 2.0))          # 12-bit field, value = field*2
-    assert -2048 <= vy_field <= 2047, vy
-    w = ((vz & 0x7FF) << 21) | ((vx & 0x7FF) << 10)
-    w |= (vy_field & 0xFFF) & ~1             # LSB clear = literal-next
-    # NOTE: VY decode is (w<<20)>>19 = s12(bits0..11)<<1 — the field IS
-    # bits 0..11 and bit0 doubles as the stream flag; clearing it costs
-    # 2 model units of Y precision on odd values.
+    w = ((vz & 0x7FF) << 21) | ((vx & 0x7FF) << 11) | (vyf & 0xFFF)
+    assert decode_vert(w) == (vx, vyf * 2, vz), (vx, vy, vz, decode_vert(w))
     return w
 
 
-def s1_vy_check(w):
-    vy = ((w << 20) & 0xFFFFFFFF)
-    vy = (vy - (1 << 32)) if (vy & 0x80000000) else vy
-    return vy >> 19
+def _s32(v):
+    v &= 0xFFFFFFFF
+    return v - (1 << 32) if v & 0x80000000 else v
+
+
+def decode_vert(w):
+    """Bit-exact mirror of the renderer's literal decode (self-check)."""
+    vz = _s32(w) >> 21
+    vx = _s32((w << 10) & 0xFFFFFFFF) >> 21
+    vy = _s32((w << 20) & 0xFFFFFFFF) >> 19
+    return (vx, vy, vz)
 
 
 class ModelBuilder:
