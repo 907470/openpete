@@ -246,6 +246,18 @@ static int api_host_key_down(const char* key_name) {
     return (state && (int)sc < nkeys) ? (state[sc] ? 1 : 0) : 0;
 }
 
+/* Actor render service (rung 16). Capture reads sim state — tick
+ * context only; draw is pure render output, legal in both contexts. */
+static int api_capture_actor_pose(int kind, void* buf, int cap) {
+    if (purity_violation("capture_actor_pose")) return -1;
+    return openpete_mods_capture_actor_pose(kind, buf, cap);
+}
+
+static int api_draw_actor(int kind, const void* pose, int len,
+                          uint32_t tint_rgba) {
+    return openpete_mods_draw_actor(kind, pose, len, tint_rgba);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -308,6 +320,8 @@ static const openpete_mod_api_t s_api = {
     .register_savestate_hooks = api_register_savestate_hooks,
     .data_dir      = api_data_dir,
     .host_key_down = api_host_key_down,
+    .capture_actor_pose = api_capture_actor_pose,
+    .draw_actor         = api_draw_actor,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

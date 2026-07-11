@@ -2062,7 +2062,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             /* Mod draw service: commit the finished tick's draw commands,
              * run present hooks, push the overlay (near-zero cost modless).
              * See core/mods/mod_draw.c. */
-            openpete_mods_present_flush(1);
+            openpete_mods_present_flush(&g_game.cpu, 1);
 
             /* The PTS arg tags this present for --record: the frame is queued
              * into the async readback ring inside (no GPU stall), so a vk
@@ -2170,7 +2170,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
             }
             /* Mod draw service: present hooks at sub-tick alpha (no commit). */
-            openpete_mods_present_flush(0);
+            openpete_mods_present_flush(&g_game.cpu, 0);
 
             /* Present the sub-tick frame, tagged with its own PTS so a --render-fps
              * N vk recording is genuinely ~N fps VFR (each present's frame is

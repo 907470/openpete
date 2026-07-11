@@ -201,6 +201,34 @@ typedef struct openpete_mod_api {
      * gameplay (hotkey trainers — the practice-ROM pattern); reading it
      * in a present hook for display-only purposes is fine. */
     int (*host_key_down)(const char* key_name);
+
+    /* ── Actor render service (native vk renderer) ──────────────────
+     * Draw a game actor at a RECORDED pose into this frame's 3D scene —
+     * depth-tested against the world, no game code runs for it, zero
+     * guest-RAM writes (the ghost-replay path; plan P2 draw service).
+     *
+     * capture_actor_pose(kind, buf, cap): snapshot the live pose of an
+     * actor into an opaque versioned blob — exactly the field set the
+     * native extractor reads, so a recorded blob replays completely by
+     * construction. kind 0 = the player (Spyro; blob layout published in
+     * spyro1_actor_pose.h so mods can evaluate position curves). Returns
+     * blob bytes written (<= cap) or -1 (unknown kind / no snapshot yet
+     * — the first snapshot lands once the game renders the actor).
+     * TICK context only (it reads sim state; refused in present hooks).
+     * Capture works headless; drawing needs the native display.
+     *
+     * draw_actor(kind, pose, len, tint_rgba): draw the actor at `pose`.
+     * tint_rgba = 0xAARRGGBB; RGB multiplies the model's vertex colours
+     * (0xFF = neutral), A < 0xFF renders PSX-average translucent (the
+     * classic ghost look), A == 0xFF opaque. Same two submission
+     * contexts as draw_text: tick context persists for that tick's
+     * presents; a present hook's command lives one present — evaluate
+     * your pose curve at ctx->alpha there for sub-tick smoothness.
+     * Returns 0 = queued, -1 = invalid/full. A queued pose whose model
+     * has been unloaded (level change) is skipped safely at render. */
+    int (*capture_actor_pose)(int kind, void* buf, int cap);
+    int (*draw_actor)(int kind, const void* pose, int len,
+                      uint32_t tint_rgba);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

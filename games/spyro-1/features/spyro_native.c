@@ -31,7 +31,9 @@
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_psx.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
+#include "openpete_mods.h"           /* openpete_mods_active (actor-pose snapshot) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
+#include "spyro1_actor_pose.h"       /* mod actor render service pose blob (rung 16) */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "render_paths.h"  /* --render-paths isolation */
 
@@ -278,6 +280,47 @@ static void spyro_anim_capture_seg(CPUState* cpu) {
 /* Orchestrator sets the sub-tick alpha + whether interpolation is active
  * (camera bracketed). Read by spyro_player_native_reextract. */
 void spyro_native_set_anim_interp(double alpha, int on) { s_anim_alpha = alpha; s_anim_on = on ? 1 : 0; }
+
+/* ---- mod actor render service (rung 16): pose source parameterization ----
+ * The extractor normally reads the LIVE pose (g_Spyro + the seg scratch the
+ * .s Phase A just built). For a ghost replay the same decode runs against a
+ * RECORDED pose: spyro1_actor_emit swaps the recorded seg block into the
+ * scratch (saved/restored around the call — render-transient, same trick as
+ * the sub-tick two-pass above) and arms this override so the derivation
+ * takes position / rotation / animation from the record instead of g_Spyro.
+ * The camera side stays LIVE — the ghost is projected through the current
+ * present's camera, which is the whole point. */
+static struct {
+    int      active;
+    double   pos[3];
+    uint32_t rot[3];
+    uint32_t anim_idx;
+} s_pose_ovr;
+
+/* Hook-consistent live-pose snapshot for capture_actor_pose: rolled at the
+ * canonical Spyro-render hook, AFTER the .s ran (scratch fresh, g_Spyro
+ * fields exactly the ones that render consumed) — a mid-tick read can never
+ * pair a new anim index with old stream cursors. Armed whenever mods are
+ * loaded; works headless (capture is sim-side; only DRAWING needs vk). */
+static spyro1_actor_pose_t s_pose_live;
+static int s_pose_live_valid = 0;
+
+static void spyro_pose_snapshot(CPUState* cpu) {
+    const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    if (!h) return;
+    s_pose_live.magic    = SPYRO1_ACTOR_POSE_MAGIC;
+    s_pose_live.version  = SPYRO1_ACTOR_POSE_VERSION;
+    s_pose_live.pos[0]   = (float)(int32_t)cpu->read_word(G_SPYRO + 0x00);
+    s_pose_live.pos[1]   = (float)(int32_t)cpu->read_word(G_SPYRO + 0x04);
+    s_pose_live.pos[2]   = (float)(int32_t)cpu->read_word(G_SPYRO + 0x08);
+    s_pose_live.rot[0]   = cpu->read_word(G_SPYRO + 0x0C);
+    s_pose_live.rot[1]   = cpu->read_word(G_SPYRO + 0x10);
+    s_pose_live.rot[2]   = cpu->read_word(G_SPYRO + 0x14);
+    s_pose_live.anim_idx = cpu->read_byte(G_SPYRO + 0x18);
+    s_pose_live.model    = cpu->read_word(G_MODELS);
+    memcpy(s_pose_live.seg, h, SEG_BLOCK);
+    s_pose_live_valid = 1;
+}
 
 /* Sub-tick ROTATION interpolation: per-segment float byte-angles (body=0, head=1,
  * tail=2; axis k=0 Z / 1 X / 2 Y) the orchestrator interpolates from g_Spyro's
@@ -546,16 +589,23 @@ static void spyro_derive_phaseA(CPUState* cpu) {
     double sfx=(double)sx, sfy=(double)sy, sfz=(double)sz;
     { double cf[3], sf[3];
       if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; }
-      if (openpete_native_interp_pos(G_SPYRO,  sf)) { sfx=sf[0]; sfy=sf[1]; sfz=sf[2]; } }
+      if (!s_pose_ovr.active &&
+          openpete_native_interp_pos(G_SPYRO,  sf)) { sfx=sf[0]; sfy=sf[1]; sfz=sf[2]; } }
+    /* Recorded-pose replay (mod actor render): position/rotation come from
+     * the record; the camera terms above stay live. Euler composition takes
+     * seg=-1 so the live player's sub-tick float angles never bleed in. */
+    if (s_pose_ovr.active) { sfx = s_pose_ovr.pos[0]; sfy = s_pose_ovr.pos[1]; sfz = s_pose_ovr.pos[2]; }
     double IR1=cfy-sfy, IR2=cfz-sfz, IR3=sfx-cfx;
     double TRb[3];
     for (int i = 0; i < 3; i++)
         TRb[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
-    int Mb[3][3]; spyro_compose_euler(cpu, PM, cpu->read_word(G_SPYRO+0xC), Mb, 0);
+    uint32_t rotB = s_pose_ovr.active ? s_pose_ovr.rot[0] : cpu->read_word(G_SPYRO+0xC);
+    int Mb[3][3]; spyro_compose_euler(cpu, PM, rotB, Mb, s_pose_ovr.active ? -1 : 0);
     memcpy(s_xf[0].M, Mb, sizeof Mb); memcpy(s_xf[0].TR, TRb, sizeof TRb); s_xf[0].present = 1;
-    uint32_t rotH = cpu->read_word(G_SPYRO+0x10), rotT = cpu->read_word(G_SPYRO+0x14);
-    if (rotH) spyro_compose_euler(cpu, Mb, rotH, s_xf[1].M, 1); else memcpy(s_xf[1].M, Mb, sizeof Mb);
-    if (rotT) spyro_compose_euler(cpu, Mb, rotT, s_xf[2].M, 2); else memcpy(s_xf[2].M, Mb, sizeof Mb);
+    uint32_t rotH = s_pose_ovr.active ? s_pose_ovr.rot[1] : cpu->read_word(G_SPYRO+0x10);
+    uint32_t rotT = s_pose_ovr.active ? s_pose_ovr.rot[2] : cpu->read_word(G_SPYRO+0x14);
+    if (rotH) spyro_compose_euler(cpu, Mb, rotH, s_xf[1].M, s_pose_ovr.active ? -1 : 1); else memcpy(s_xf[1].M, Mb, sizeof Mb);
+    if (rotT) spyro_compose_euler(cpu, Mb, rotT, s_xf[2].M, s_pose_ovr.active ? -1 : 2); else memcpy(s_xf[2].M, Mb, sizeof Mb);
     s_xf[1].present = s_xf[2].present = 1;
     /* seam joints: body kfA(/kfB) stream words [0x10] (head) / [0x14] (tail).
      * a0 = (2-byte cursor) - 0x18 (.s: cursor = a0+0x18); t2=*(a0+0x10), t3=*(a0+0x14)
@@ -655,6 +705,10 @@ static int spyro_project_all(CPUState* cpu) {
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
     int native = spyro_native_mat();
+    /* Recorded-pose replay always derives natively: the scratch's own M/TR
+     * (the OPENPETE_SPYRO_SCRATCH_MAT regression path) were built with the
+     * CAPTURE-time camera and would project the ghost through a stale view. */
+    if (s_pose_ovr.active) native = 1;
     if (native) spyro_derive_phaseA(cpu);            /* M+TR from gamestate (Phase A) */
     int M[3][3]; double TR[3]; int have_mat = 0;
     int nseg = 0;
@@ -1017,12 +1071,14 @@ static int build_spyro_walk(CPUState* cpu) {
     /* face stream + colour table from the body (seg0) animHdr — shared across
      * segments (the mesh topology is fixed; only vertex positions animate). */
     uint32_t model = cpu->read_word(G_MODELS) | 0x80000000u;
-    uint32_t animIdx = cpu->read_byte(G_SPYRO + 0x18);
+    uint32_t animIdx = s_pose_ovr.active ? s_pose_ovr.anim_idx
+                                         : cpu->read_byte(G_SPYRO + 0x18);
     uint32_t animHdr = cpu->read_word(model + 0x38 + animIdx * 4);
     if (animHdr < 0x80000000u) return 0;
     uint32_t faces     = cpu->read_word(animHdr + 0x14);
     uint32_t colorbase = cpu->read_word(animHdr + 0x18);          /* m_Colors */
-    if ((cpu->read_word(G_SPYRO + 0x28) >> 24) != 0)              /* colorFilter.interp */
+    if (!s_pose_ovr.active &&                                     /* live player only: */
+        (cpu->read_word(G_SPYRO + 0x28) >> 24) != 0)              /* colorFilter.interp */
         colorbase = G_SCRATCH + 0x1D00u;                         /* Fairy-Kiss pre-blend */
     if (faces < 0x80000000u || colorbase < 0x80000000u) return 0;
     uint32_t len = cpu->read_word(faces);
@@ -1272,6 +1328,148 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
 }
 static void spyro_feed_walk(CPUState* cpu) { spyro_feed_walk_ex(cpu, 1); }
 
+/* ---- mod actor render service (rung 16): capture + emit -------------------
+ * Registered with the core draw service by main.cpp
+ * (openpete_mods_draw_set_actor_fns). capture returns the hook-consistent
+ * live-pose snapshot; emit re-runs the whole native extraction against a
+ * RECORDED pose — decode, walk, project — through the CURRENT camera, and
+ * appends the result to this present's scene as a tinted (optionally
+ * PSX-average translucent) second player. No game code runs for the ghost;
+ * zero guest-RAM writes survive (the seg-scratch swap is restored). */
+
+int spyro1_actor_pose_capture(int kind, void* buf, int cap) {
+    if (kind != SPYRO1_ACTOR_KIND_PLAYER || !s_pose_live_valid) return -1;
+    if (!buf || cap < (int)sizeof(spyro1_actor_pose_t)) return -1;
+    memcpy(buf, &s_pose_live, sizeof(spyro1_actor_pose_t));
+    return (int)sizeof(spyro1_actor_pose_t);
+}
+
+/* One-shot skip/success diagnostics (draw-service style): the emit fails
+ * SILENTLY by design (a stale pose must never crash a present), so name
+ * the first instance of each outcome once. */
+static void actor_emit_diag(const char* what, unsigned a, unsigned b) {
+    static int said[6] = {0};
+    int slot = what[0] == 'e' ? 0 : what[0] == 's' ? 1 : what[0] == 'm' ? 2
+             : what[0] == 'w' ? 3 : what[0] == 'b' ? 4 : 5;
+    if (said[slot]) return;
+    said[slot] = 1;
+    OPL_INFO_F("native", "actor emit: first %s (%u, %u) f=%u", what, a, b,
+               openpete_frame);
+}
+
+int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
+                      uint32_t tint_rgba) {
+    if (kind != SPYRO1_ACTOR_KIND_PLAYER || !pose ||
+        len < (int)sizeof(spyro1_actor_pose_t)) return 0;
+    const spyro1_actor_pose_t* p = (const spyro1_actor_pose_t*)pose;
+    if (p->magic != SPYRO1_ACTOR_POSE_MAGIC ||
+        p->version != SPYRO1_ACTOR_POSE_VERSION) {
+        actor_emit_diag("bad-blob", p->magic, p->version);
+        return 0;
+    }
+    if (!openpete_native_render_enabled()) return 0;
+    /* Scene liveness: append ONLY to a live, recently built scene. During a
+     * load stall the renderer holds the last composed frame — begin_frame
+     * with a newer stamp would snapshot-and-wipe it (black flash). */
+    unsigned sf = openpete_native_scene_frame();
+    if (sf == 0xFFFFFFFFu || (unsigned)(openpete_frame - sf) > 6u) {
+        actor_emit_diag("scene-stale skip", sf, openpete_frame);
+        return 0;
+    }
+    /* Model validity: the pose's stream cursors point into the Spyro model
+     * loaded at capture; a level change reloads g_Models[0] and the pose's
+     * cursors dangle. Skip (don't decode garbage). */
+    if (p->model != cpu->read_word(G_MODELS)) {
+        actor_emit_diag("model-mismatch skip", p->model,
+                        cpu->read_word(G_MODELS));
+        return 0;
+    }
+
+    void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    if (!h) return 0;
+    uint8_t live_seg[SEG_BLOCK];
+    memcpy(live_seg, h, SEG_BLOCK);          /* render-transient swap:      */
+    memcpy(h, p->seg, SEG_BLOCK);            /* recorded stream state in... */
+    s_pose_ovr.active   = 1;
+    s_pose_ovr.pos[0]   = p->pos[0];
+    s_pose_ovr.pos[1]   = p->pos[1];
+    s_pose_ovr.pos[2]   = p->pos[2];
+    s_pose_ovr.rot[0]   = p->rot[0];
+    s_pose_ovr.rot[1]   = p->rot[1];
+    s_pose_ovr.rot[2]   = p->rot[2];
+    s_pose_ovr.anim_idx = p->anim_idx;
+
+    spyro_project_all(cpu);                  /* recorded pose, current camera */
+    build_spyro_walk(cpu);
+
+    int emitted = 0;
+    if (s_swtri_n > 0) {
+        unsigned tA = (tint_rgba >> 24) & 0xFFu, tR = (tint_rgba >> 16) & 0xFFu;
+        unsigned tG = (tint_rgba >> 8) & 0xFFu,  tB = tint_rgba & 0xFFu;
+        openpete_native_scene_begin_frame(sf);   /* same stamp: pure append */
+        for (int i = 0; i < s_swtri_n; i++) {
+            swtri* w = &s_swtri[i];
+            /* Behind-camera / off-screen reject: a ghost pose can sit fully
+             * outside the view (the live player never does, so the walk
+             * feed never needed this). Saturated projections pin to ±1024
+             * corners and NCLIP on pinned coords is arbitrary — the
+             * survivors are screen-crossing slivers. Skip any tri touching
+             * a saturated vert (the PSX GPU's own >1023 prim reject would
+             * have eaten these). */
+            int sat = 0;
+            for (int k = 0; k < 3; k++) {
+                int idx = w->v[k].idx;
+                if (idx < 0 || idx >= s_sproj_n || s_sproj[idx].sat) sat = 1;
+            }
+            if (sat) continue;
+            openpete_scene_tri st;
+            for (int k = 0; k < 3; k++) {
+                st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
+                st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(w->v[k].vz));
+                st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
+                uint32_t c = w->v[k].rgb;      /* PSX word: R low byte */
+                uint32_t r = (((c      ) & 0xFFu) * tR) / 255u;
+                uint32_t g = (((c >>  8) & 0xFFu) * tG) / 255u;
+                uint32_t b = (((c >> 16) & 0xFFu) * tB) / 255u;
+                st.v[k].rgba = r | (g << 8) | (b << 16) | 0xFF000000u;
+            }
+            st.textured = w->textured; st.tpage_x = w->tpage_x; st.tpage_y = w->tpage_y;
+            st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp;
+            /* tint alpha < 0xFF: the classic ghost — PSX-average (ABR 0)
+             * semi-transparency, exactly the pipe the game's own
+             * semi-transparent faces use. Opaque tint keeps model blends. */
+            st.blend = (tA < 0xFFu) ? 1 : w->blend;
+            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_PLAYER, 0);
+            emitted++;
+        }
+    }
+
+    s_pose_ovr.active = 0;
+    memcpy(h, live_seg, SEG_BLOCK);          /* ...and restored: zero net writes */
+    if (emitted) actor_emit_diag("emit", (unsigned)emitted, tint_rgba);
+    else         actor_emit_diag("walk-empty", (unsigned)s_sproj_n, 0);
+    /* OPENPETE_ACTORDBG=1: per-emit projection stats (tris, screen bbox,
+     * GTE offsets) — "is the ghost off-screen?" answered by numbers. */
+    { static int s_ad = -1;
+      if (s_ad < 0) { const char* e = getenv("OPENPETE_ACTORDBG"); s_ad = (e && *e && *e != '0'); }
+      if (s_ad) {
+          static unsigned s_last = 0;
+          if (openpete_frame - s_last >= 100u) {
+              s_last = openpete_frame;
+              float x0=1e9f,y0=1e9f,x1=-1e9f,y1=-1e9f;
+              for (int i = 0; i < s_sproj_n; i++) {
+                  if (s_sproj[i].sx<x0) x0=s_sproj[i].sx; if (s_sproj[i].sx>x1) x1=s_sproj[i].sx;
+                  if (s_sproj[i].sy<y0) y0=s_sproj[i].sy; if (s_sproj[i].sy>y1) y1=s_sproj[i].sy;
+              }
+              fprintf(stderr, "[actor-dbg f=%u] tris=%d verts=%d bbox=(%.0f,%.0f)-(%.0f,%.0f) "
+                      "ofx=%d ofy=%d H=%u pos=(%.0f,%.0f,%.0f) scene_f=%u\n",
+                      openpete_frame, emitted, s_sproj_n, x0, y0, x1, y1,
+                      (int32_t)cpu->gte_ctrl[24] >> 16, (int32_t)cpu->gte_ctrl[25] >> 16,
+                      cpu->gte_ctrl[26] & 0xFFFF, p->pos[0], p->pos[1], p->pos[2], sf);
+          } } }
+    return emitted;
+}
+
 /* ---- gating --------------------------------------------------------------- */
 static int spyro_verify_enabled(void) {
     static int v = -1;
@@ -1289,8 +1487,12 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     int verify = spyro_verify_enabled();
     int feed   = openpete_native_render_enabled();
     /* --render-paths also needs the bracket so the OT filter knows this path's
-     * polybuf range, even when not feeding/verifying. */
-    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch runs it */
+     * polybuf range, even when not feeding/verifying. Mods loaded also arms
+     * the bracket: the actor-pose snapshot below needs it (headless too —
+     * capture_actor_pose is sim-side; drawing is what needs vk). Modless
+     * stock runs keep the inert one-branch fall-through. */
+    if (!verify && !feed && !render_paths_active() && !openpete_mods_active)
+        return 0;  /* inert: normal dispatch runs it */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
@@ -1298,6 +1500,12 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
+
+    /* Actor-pose snapshot (mod actor render service): only when the render
+     * actually emitted Spyro — a suppressed render (cutscene) leaves the
+     * scratch stale, so the last drawn pose stays the capture answer. */
+    if (openpete_mods_active && endp > startp)
+        spyro_pose_snapshot(cpu);
 
     static int hookdbg = -1;
     if (hookdbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); hookdbg = (e && *e && *e != '0'); }

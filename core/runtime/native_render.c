@@ -325,6 +325,12 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
     }
 }
+
+/* The frame stamp of the scene currently accumulating in s_scene
+ * (0xFFFFFFFF = none yet). Late feeders (the mod actor-render service)
+ * use it to append ONLY to a live scene: calling begin_frame with a
+ * newer frame would snapshot-and-wipe a held scene during load stalls. */
+unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 /* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
  * set, openpete_native_scene_add_tri_grouped rounds each 3D-world vertex's PSX
  * screen coordinate (sx,sy — still in 512x240 display space at that point) to

@@ -437,6 +437,11 @@ void openpete_native_scene_begin(void);
  * `openpete_frame` (the per-yield frame counter). Order-independent and robust
  * to a feeder being absent on a given level. */
 void openpete_native_scene_begin_frame(unsigned frame);
+/* Frame stamp of the currently accumulating scene (0xFFFFFFFF = none).
+ * Late feeders (mod actor render) must check this and append only when
+ * the scene is live — begin_frame with a NEWER frame wipes a held scene
+ * (load stalls hold the last composed frame on purpose). */
+unsigned openpete_native_scene_frame(void);
 /* Append one screen-space triangle to the current native scene. `category`
  * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
  * call — there is NO ambient/global scene category (the old set_category /

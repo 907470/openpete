@@ -363,6 +363,7 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk

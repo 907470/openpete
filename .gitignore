@@ -38,3 +38,5 @@ dist/
 
 # Mod build artifacts (compiled on load by the mod loader)
 mods/*/.build/
+# Per-mod persistent data (the data-dir service; e.g. ghost-lite recordings)
+mods/*/data/

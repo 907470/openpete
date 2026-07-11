@@ -42,6 +42,8 @@
 #define DRAW_RECTS_MAX 128
 #define DRAW_STR_MAX   96
 #define PRESENT_HOOKS_MAX 16
+#define DRAW_ACTORS_MAX 8
+#define ACTOR_POSE_MAX  256 /* covers spyro1_actor_pose (244 B) with margin */
 
 typedef struct {
     float    x, y, cap_h;
@@ -55,10 +57,19 @@ typedef struct {
 } cmd_rect_t;
 
 typedef struct {
-    cmd_text_t texts[DRAW_TEXTS_MAX];
-    int        n_texts;
-    cmd_rect_t rects[DRAW_RECTS_MAX];
-    int        n_rects;
+    int      kind;
+    int      len;
+    uint32_t tint_rgba;
+    uint8_t  pose[ACTOR_POSE_MAX];
+} cmd_actor_t;
+
+typedef struct {
+    cmd_text_t  texts[DRAW_TEXTS_MAX];
+    int         n_texts;
+    cmd_rect_t  rects[DRAW_RECTS_MAX];
+    int         n_rects;
+    cmd_actor_t actors[DRAW_ACTORS_MAX];
+    int         n_actors;
 } cmd_buf_t;
 
 static cmd_buf_t s_tick_staging;   /* written by tick-context draws     */
@@ -70,6 +81,14 @@ int openpete_mods_in_present = 0;
 static openpete_mods_text_emit_fn s_text_fn = NULL;
 void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn) {
     s_text_fn = fn;
+}
+
+static openpete_mods_actor_capture_fn s_actor_capture_fn = NULL;
+static openpete_mods_actor_emit_fn    s_actor_emit_fn    = NULL;
+void openpete_mods_draw_set_actor_fns(openpete_mods_actor_capture_fn cap,
+                                      openpete_mods_actor_emit_fn emit) {
+    s_actor_capture_fn = cap;
+    s_actor_emit_fn    = emit;
 }
 
 typedef struct {
@@ -122,6 +141,27 @@ void openpete_mods_draw_rect(float x, float y, float w, float h,
     s_any_draw = 1;
 }
 
+/* Capture delegates to the game's snapshot (hook-consistent — never a
+ * mid-tick read). Tick context only: the pose is sim state, and present
+ * hooks are render-pure (the loader also purity-gates this entry). */
+int openpete_mods_capture_actor_pose(int kind, void* buf, int cap) {
+    if (!s_actor_capture_fn || !buf || cap <= 0) return -1;
+    return s_actor_capture_fn(kind, buf, cap);
+}
+
+int openpete_mods_draw_actor(int kind, const void* pose, int len,
+                             uint32_t tint_rgba) {
+    if (!s_actor_emit_fn || !pose || len <= 0 || len > ACTOR_POSE_MAX)
+        return -1;
+    cmd_buf_t* b = target_buf();
+    if (b->n_actors >= DRAW_ACTORS_MAX) return -1;
+    cmd_actor_t* a = &b->actors[b->n_actors++];
+    a->kind = kind; a->len = len; a->tint_rgba = tint_rgba;
+    memcpy(a->pose, pose, (size_t)len);
+    s_any_draw = 1;
+    return 0;
+}
+
 /* ---- per-present flush (called from run.c's two present legs) -------- */
 
 #define MOD_DRAW_VERTS_MAX 16384
@@ -156,7 +196,7 @@ static int emit_buf(const cmd_buf_t* b, int n) {
     return n;
 }
 
-void openpete_mods_present_flush(int canonical) {
+void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     if (!s_any_draw) return;
     if (!openpete_native_render_enabled()) return;
 
@@ -197,6 +237,20 @@ void openpete_mods_present_flush(int canonical) {
         for (int i = 0; i < s_phook_count; i++)
             s_phooks[i].fn(&ctx);
         openpete_mods_in_present = 0;
+    }
+
+    /* Actor draws append into the CURRENT frame's native scene — both
+     * run.c present legs call this flush AFTER the scene (re)build and
+     * before the render, so the tris land in this present's draw. The
+     * game-side emit guards scene liveness + model validity itself. */
+    if (s_actor_emit_fn && cpu) {
+        const cmd_buf_t* bufs[2] = { &s_tick_committed, &s_present };
+        for (int b = 0; b < 2; b++)
+            for (int i = 0; i < bufs[b]->n_actors; i++) {
+                const cmd_actor_t* a = &bufs[b]->actors[i];
+                s_actor_emit_fn(cpu, a->kind, a->pose, a->len,
+                                a->tint_rgba);
+            }
     }
 
     int n = 0;

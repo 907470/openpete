@@ -77,9 +77,11 @@ const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 /* Per-present flush, called from run.c's two present legs (canonical +
  * sub-tick) just before openpete_native_render_frame(). canonical=1
  * commits the tick-scoped command buffer (the sim tick that just ran);
- * both legs run present hooks and push the composed overlay vertices to
- * the native renderer. Near-zero cost when no mod ever drew. */
-void openpete_mods_present_flush(int canonical);
+ * both legs run present hooks, emit queued actor draws into the scene
+ * (cpu = the game CPU, for the game-side extractor's guest reads), and
+ * push the composed overlay vertices to the native renderer. Near-zero
+ * cost when no mod ever drew. */
+void openpete_mods_present_flush(CPUState* cpu, int canonical);
 
 /* Game-registered text rasterizer: lays out `str` at (x, y) with glyph
  * cap-height cap_h (overlay space) and tint rgb into out_verts (an
@@ -90,11 +92,28 @@ typedef int (*openpete_mods_text_emit_fn)(const char* str, float x, float y,
                                           void* out_verts, int cap);
 void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
 
+/* Game-registered actor pose capture + emit (the actor render service —
+ * rung 16). capture snapshots the live pose of actor `kind` into an
+ * opaque blob (returns bytes or -1); it reads the game's own
+ * hook-consistent snapshot, never mid-tick state, and works headless.
+ * emit draws the actor at a recorded pose into the CURRENT frame's
+ * native scene (returns triangles emitted, 0 = skipped safely). Spyro
+ * registers spyro1_actor_* wrappers (main.cpp). */
+typedef int (*openpete_mods_actor_capture_fn)(int kind, void* buf, int cap);
+typedef int (*openpete_mods_actor_emit_fn)(CPUState* cpu, int kind,
+                                           const void* pose, int len,
+                                           uint32_t tint_rgba);
+void openpete_mods_draw_set_actor_fns(openpete_mods_actor_capture_fn cap,
+                                      openpete_mods_actor_emit_fn emit);
+
 /* Loader-facing submission entry points (wired into the mod api). */
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str);
 void openpete_mods_draw_rect(float x, float y, float w, float h,
                              uint32_t rgba);
+int  openpete_mods_capture_actor_pose(int kind, void* buf, int cap);
+int  openpete_mods_draw_actor(int kind, const void* pose, int len,
+                              uint32_t tint_rgba);
 int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                          const char* owner_id);
 

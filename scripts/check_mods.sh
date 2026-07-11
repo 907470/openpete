@@ -343,11 +343,43 @@ else
     bad "extract_wad_entry.py --recolor-bg failed"
 fi
 
-# ── 10. [test]-block rungs through the real modtest runner ──────────────
+# ── 10. actor render service: ghost-lite record → replay (rung 16) ─────
+# Two runs against a COPIED mod (not a symlink) so the data-dir recording
+# is fixture-local: run 1 records poses through capture_actor_pose (the
+# hook-consistent snapshot works headless), run 2 loads them back (the
+# data-dir service round-trip). Draw-side proof is visual/windowed (the
+# present hook never runs headless); neutrality-while-capturing is the
+# mod's own [test] oracle gate in section 11.
+say "ghost-lite: pose recording (run 1) -> race-ghost load (run 2)"
+mkdir -p "$WORK/ghost"
+cp -r "$MODS_SRC/ghost-lite" "$WORK/ghost/ghost-lite"
+rm -rf "$WORK/ghost/ghost-lite/data" "$WORK/ghost/ghost-lite/.build"
+printf 'ghost-lite\n' > "$WORK/ghost/enabled.txt"
+out="$(run_game "$WORK/ghost" "$SMOKE_FRAMES")"
+if printf '%s\n' "$out" | grep -q "ghost-lite: recording" &&
+   printf '%s\n' "$out" | grep -q "ghost-lite: ghost armed"; then
+    ok "run 1: captured + armed (recording via CameraUpdate tick hook)"
+else
+    bad "run 1: recording/armed logs missing"
+fi
+POSE_FILE="$WORK/ghost/ghost-lite/data/ghost.s1pose"
+if [ -s "$POSE_FILE" ] && [ $(( $(stat -c%s "$POSE_FILE") % 244 )) -eq 0 ]; then
+    ok "run 1: pose file written ($(stat -c%s "$POSE_FILE") bytes, 244-byte records)"
+else
+    bad "run 1: pose file missing or not a whole number of 244-byte records"
+fi
+out="$(run_game "$WORK/ghost" "$SMOKE_FRAMES")"
+if printf '%s\n' "$out" | grep -qE "ghost-lite: loaded [0-9]+ recorded poses"; then
+    ok "run 2: prior recording loaded (data-dir service round-trip)"
+else
+    bad "run 2: prior recording not loaded"
+fi
+
+# ── 11. [test]-block rungs through the real modtest runner ──────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch mods/state-rewind \
+        mods/hud-stopwatch mods/state-rewind mods/ghost-lite \
         mods/hd-single-texture mods/music-swap; then
     ok "modtest runner: all [test] blocks green"
 else
