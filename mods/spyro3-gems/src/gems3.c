@@ -2,9 +2,11 @@
  * collect chime, injected into Spyro 1 entirely through the mod API.
  *
  * Mechanism (see docs/injection-spec.md for the byte-level evidence):
- *  1. entry:   copy the generated asset pack (5 baked-gouraud SimpleModels
- *              + the S3 chime ADPCM body) into a free guest-RAM park at
- *              0x80008000, and recolour the collect-burst particle words.
+ *  1. entry:   read the generated asset pack (5 metal SimpleModels + the
+ *              S3 chime ADPCM body) host-side; the models park lazily in
+ *              the engine's guest scratch arena (guest_alloc, relocated
+ *              from the pack's link base) or the legacy fixed park at
+ *              0x80008000 if the arena is unavailable.
  *  2. post-hook PatchMobyModelPointers (0x800133E0): after the game's own
  *              install pass, repoint g_Models[83..87] at the park models
  *              (bit31 clear = SimpleModel, m_Verts==model+0x10 = baked).
@@ -29,7 +31,12 @@
 /* ── layout contract with tools/convert_to_s1.py ─────────────────────── */
 
 #define PACK_MAGIC   0x31473353u /* "S3G1" little-endian */
-#define PARK_BASE    0x80008000u /* free guest RAM: below EXE, above page 0 */
+/* The converter LINKS model pointers against this base; at runtime the
+ * payload prefers the engine's guest scratch arena (guest_alloc) and is
+ * RELOCATED there. Legacy fixed-park fallback if the arena is
+ * unavailable (or if the arena's >2MB window proves unreadable to a
+ * renderer path — S3G_FIXED_PARK=1 forces it). */
+#define PARK_LINK    0x80008000u
 #define PARK_LIMIT   0x80010000u
 
 typedef struct {
@@ -51,6 +58,8 @@ static const openpete_mod_api_t* A;
 static openpete_mod_t* SELF;
 
 static pack_header_t s_pack;
+static uint8_t* s_payload;             /* host copy of the pack payload */
+static uint32_t s_park;                /* guest vaddr the payload lives at */
 static int      s_have_pack;
 static int      s_calibrated;          /* stock-gem dump done */
 static uint8_t* s_vag_host;            /* host copy for sfx_replace */
@@ -118,6 +127,45 @@ static int dump_live_gems(void);
 
 /* ── hook 2: models ──────────────────────────────────────────────────── */
 
+/* Park the payload in guest-addressable memory (tick context): prefer
+ * the engine's scratch arena; fall back to the legacy fixed park below
+ * the EXE image. Model pointer words (+4/+8/+0xC) and the header's
+ * model_vaddr[] are linked against PARK_LINK — relocate by delta. */
+static int park_payload(void)
+{
+    void* view = NULL;
+    int i;
+    if (!getenv("S3G_FIXED_PARK"))
+        s_park = A->guest_alloc(SELF, s_pack.payload_size, 16, &view);
+    if (!s_park) {
+        if (PARK_LINK + s_pack.payload_size > PARK_LIMIT) {
+            A->log(SELF, OP_MOD_LOG_ERROR, "payload too big for fixed park");
+            return 0;
+        }
+        s_park = PARK_LINK;
+        view = A->guest(PARK_LINK);
+    }
+    if (!view) return 0;
+    memcpy(view, s_payload, s_pack.payload_size);
+    if (s_park != PARK_LINK) {
+        uint32_t delta = s_park - PARK_LINK;
+        for (i = 0; i < 5; i++) {
+            uint8_t* m = (uint8_t*)view + (s_pack.model_vaddr[i] - PARK_LINK);
+            uint32_t w;
+            int off;
+            for (off = 4; off <= 0xC; off += 4) {
+                memcpy(&w, m + off, 4);
+                w += delta;
+                memcpy(m + off, &w, 4);
+            }
+            s_pack.model_vaddr[i] += delta;
+        }
+    }
+    A->log(SELF, OP_MOD_LOG_INFO, "payload parked at %08x (%s)", s_park,
+           s_park == PARK_LINK ? "fixed park" : "guest arena");
+    return 1;
+}
+
 static void on_patch_models(CPUState* cpu)
 {
     int i;
@@ -127,6 +175,7 @@ static void on_patch_models(CPUState* cpu)
         for (i = 0; i < 5; i++) dump_stock_gem(i);
     }
     if (!s_have_pack) return;
+    if (!s_park && !park_payload()) { s_have_pack = 0; return; }
     for (i = 0; i < 5; i++) {
         op_write_u32(A, GEM_MODEL_SLOT0 + (uint32_t)i * 4u,
                      s_pack.model_vaddr[i] & 0x7FFFFFFFu);
@@ -195,34 +244,32 @@ static int load_pack(void)
     char path[512];
     FILE* f;
     size_t got;
-    uint8_t* park;
 
     snprintf(path, sizeof path, "%s/../assets/s3/gems_s1pack.bin", A->data_dir(SELF));
     f = fopen(path, "rb");
     if (!f) { A->log(SELF, OP_MOD_LOG_WARN, "no asset pack at %s — calibration mode (run tools/ generators)", path); return 0; }
     got = fread(&s_pack, 1, sizeof s_pack, f);
     if (got != sizeof s_pack || s_pack.magic != PACK_MAGIC ||
-        s_pack.payload_size == 0 ||
-        PARK_BASE + s_pack.payload_size > PARK_LIMIT) {
+        s_pack.payload_size == 0 || s_pack.payload_size > (1u << 20)) {
         A->log(SELF, OP_MOD_LOG_ERROR, "bad pack header (magic=%08x size=%u)", s_pack.magic, s_pack.payload_size);
         fclose(f); return 0;
     }
-    park = (uint8_t*)A->guest(PARK_BASE);
-    if (!park) { fclose(f); return 0; }
-    got = fread(park, 1, s_pack.payload_size, f);
+    s_payload = (uint8_t*)malloc(s_pack.payload_size);
+    if (!s_payload) { fclose(f); return 0; }
+    got = fread(s_payload, 1, s_pack.payload_size, f);
     fclose(f);
     if (got != s_pack.payload_size) {
         A->log(SELF, OP_MOD_LOG_ERROR, "pack payload truncated (%zu/%u)", got, s_pack.payload_size);
         return 0;
     }
     /* host copy of the chime body for the SFX overlay service (the
-     * models still live in the guest park; the sample never needs to) */
+     * models get parked guest-side lazily; the sample never does) */
     if (s_pack.vag_size &&
-        s_pack.vag_vaddr >= PARK_BASE &&
-        s_pack.vag_vaddr + s_pack.vag_size <= PARK_BASE + s_pack.payload_size) {
+        s_pack.vag_vaddr >= PARK_LINK &&
+        s_pack.vag_vaddr + s_pack.vag_size <= PARK_LINK + s_pack.payload_size) {
         s_vag_host = (uint8_t*)malloc(s_pack.vag_size);
         if (s_vag_host)
-            memcpy(s_vag_host, park + (s_pack.vag_vaddr - PARK_BASE),
+            memcpy(s_vag_host, s_payload + (s_pack.vag_vaddr - PARK_LINK),
                    s_pack.vag_size);
     }
     return 1;
@@ -235,8 +282,8 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     s_have_pack = load_pack();
     if (s_have_pack) {
         A->log(SELF, OP_MOD_LOG_INFO,
-               "pack loaded: payload=%u bytes @%08x, vag=%u bytes, pitch_base=%03x",
-               s_pack.payload_size, PARK_BASE, s_pack.vag_size, s_pack.pitch_base);
+               "pack loaded: payload=%u bytes, vag=%u bytes, pitch_base=%03x",
+               s_pack.payload_size, s_pack.vag_size, s_pack.pitch_base);
     }
 
     if (api->override_addr(self, OP_FNADDR_PatchMobyModelPointers, on_patch_models)) {
