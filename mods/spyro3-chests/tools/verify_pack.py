@@ -12,7 +12,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent / "assets" / "s3"
-PARK_LINK = 0x80008000
+from convert_chests import PARK_LINK  # single source of truth
 
 CLASSES = [194, 195, 255, 256, 257, 309, 310, 311]
 

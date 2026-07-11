@@ -49,7 +49,7 @@ HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent / "assets" / "s3"
 
 PACK_MAGIC = 0x31433353          # "S3C1"
-PARK_LINK = 0x80008000
+PARK_LINK = 0x8000B000   # 0x80008000 is spyro3-gems's fixed park (11.2 KB); stay clear
 PARK_LIMIT = 0x80010000
 
 # claimed VRAM rect (halfword columns x rows), 15bpp strip

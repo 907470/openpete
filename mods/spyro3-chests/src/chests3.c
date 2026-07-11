@@ -47,7 +47,8 @@
 #include <string.h>
 
 #define PACK_MAGIC  0x31433353u /* "S3C1" little-endian */
-#define PARK_LINK   0x80008000u /* fixed low park (21-bit vertex offsets) */
+#define PARK_LINK   0x8000B000u /* fixed low park (21-bit vertex offsets);
+                                     * 0x80008000 is spyro3-gems' fixed park */
 #define PARK_LIMIT  0x80010000u
 
 #define N_SLOTS 8
@@ -407,12 +408,22 @@ static void upload_sfx(CPUState* cpu, uint32_t bounce_va)
         def_idx = op_read_u8(A, ours + 4u);          /* copied stock byte */
         if (def_idx == 0xFF) continue;
         if (tail + len > 0x7F000u) break;            /* SPU 512K ceiling */
-        memcpy(bounce, s_file + vag_off[i], len);
-        cpu->a0 = tail;
-        A->call_addr(cpu, OP_FNADDR_SpuSetTransferStartAddr);
-        cpu->a0 = bounce_va;
-        cpu->a1 = len;
-        A->call_addr(cpu, OP_FNADDR_SpuWrite);
+        /* chunked through the small tex bounce — the park has no room
+         * for a whole VAG above the payload (0x80010000 = EXE base) */
+        {
+            uint32_t done = 0;
+            while (done < len) {
+                uint32_t chunk = len - done;
+                if (chunk > 2048u) chunk = 2048u;
+                memcpy(bounce, s_file + vag_off[i] + done, chunk);
+                cpu->a0 = tail + done;
+                A->call_addr(cpu, OP_FNADDR_SpuSetTransferStartAddr);
+                cpu->a0 = bounce_va;
+                cpu->a1 = chunk;
+                A->call_addr(cpu, OP_FNADDR_SpuWrite);
+                done += chunk;
+            }
+        }
         op_write_u32(A, defs_va + def_idx * 0x14u, tail);
         A->log(SELF, OP_MOD_LOG_INFO,
                "sfx: def %02x repointed to SPU %05x (%u bytes, %s)",
