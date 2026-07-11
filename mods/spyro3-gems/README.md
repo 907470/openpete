@@ -30,13 +30,11 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 2. **post-hook `PatchMobyModelPointers`** — after every model-install
    pass, repoint `g_Models[83..87]` at the park and refresh the burst
    colour words at `D_8006E44C[12..16]` (main-EXE .data).
-3. **post-hook `SetNewSoundTable`** — after the level's SPU bank upload,
-   `call_addr` the psyq `SpuSetTransferStartAddr`/`SpuWrite` thunks to
-   place the chime in the free SPU tail, then repoint the `gemPickup`
-   SoundDefinition (addr/pitch/no-loop/no-variance).
-4. **pre-hook `func_8003B854`** (gem collect) — step the S3 pitch ladder
-   (`+centre/16` per consecutive collect, ~3 s streak reset) into the
-   definition before `PlaySound` reads it.
+3. **SFX overlay service** — `sfx_replace("gem_pickup", …)` stages the
+   S3 chime host-side; `sfx_hook` drives the canonical rising ladder
+   (`0x400 + 0x40·n`, ~0.5 s streak reset) per play. Guest RAM, sound
+   tables and the gameplay `rand()` stream stay byte-stock — the engine
+   substitutes on a host copy of the voice attrs at key-on.
 
 ## Conversion notes
 
@@ -64,6 +62,6 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 - Chime ladder is canonical: `0x400 + 0x40·n` (a missed delay-slot
   `+0x1000` in the arrival handler; `assets/s3/pitch_canonical.md`),
   capped at one octave with a ~0.5 s streak reset.
-- Sound variance is zeroed for the gem sound, so the gameplay `rand()`
-  stream diverges from stock — this mod is intentionally
-  gameplay-divergent (like double-gems).
+- The model/burst guest writes make this mod gameplay-divergent (like
+  double-gems); the chime alone would now be sim-neutral via the SFX
+  overlay service.

@@ -57,6 +57,16 @@ typedef struct openpete_present_ctx {
 
 typedef void (*openpete_mod_present_fn)(const openpete_present_ctx_t* ctx);
 
+/* One play of a game-named sound, seen host-side at voice key-on (see
+ * sfx_replace/sfx_hook below). */
+typedef struct openpete_sfx_event {
+    const char* name;        /* game-registered sound name */
+    uint16_t pitch;          /* SPU units, 0x1000 = 44.1 kHz; writable */
+    uint8_t  suppress;       /* set nonzero to mute this play */
+    uint32_t play_index;     /* nth play of this name this session */
+    uint32_t ms_since_prev;  /* host ms since the previous play */
+} openpete_sfx_event_t;
+
 /* Savestate participation (see register_savestate_hooks): serialize the
  * mod's own non-canonical state alongside the engine snapshot. save
  * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
@@ -345,6 +355,34 @@ typedef struct openpete_mod_api {
      * int-sized; pass a struct of 4 ints. */
     void (*bk2_status)(openpete_mod_t* self, int* active, int* frame,
                        int* frame_count, int* overriding);
+
+    /* ── SFX overlay service ─────────────────────────────────────────
+     * Host-side sound replacement at the voice layer: guest RAM, SPU
+     * sample banks, sound tables and the gameplay rand() stream all
+     * stay byte-stock — the substitution happens on a host copy of the
+     * voice attributes at key-on, so an SFX mod is sim-neutral by
+     * construction (the sim never reads SPU state back).
+     *
+     * Names are game-registered (Spyro 1: the SoundTable slot names —
+     * "gem_pickup", "spyro_charge", ...). Unknown name => -1.
+     *
+     * sfx_replace: substitute the sample behind a named sound. body =
+     * raw SPU-ADPCM frames (no VAG header, final block end-flag 0x01),
+     * copied by the engine and staged into free SPU tail space per
+     * level. pitch = SPU units (0x1000 = 44.1 kHz) used instead of the
+     * game's pitch computation; 0 = keep the game's pitch. */
+    int (*sfx_replace)(openpete_mod_t* self, const char* name,
+                       const void* adpcm_body, uint32_t len,
+                       uint16_t pitch);
+
+    /* sfx_hook: per-play interception at key-on, host-side. ev->pitch
+     * arrives prefilled (replacement pitch, else the game's); the hook
+     * may rewrite it or set ev->suppress. ev->play_index counts plays
+     * of this name; ev->ms_since_prev is the host-clock gap to the
+     * previous play (~0 on the first). Keep hooks pure — no guest
+     * writes; they run whenever the game keys the sound. */
+    int (*sfx_hook)(openpete_mod_t* self, const char* name,
+                    void (*fn)(openpete_sfx_event_t* ev));
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

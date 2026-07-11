@@ -728,6 +728,10 @@ static void* api_import_sym(openpete_mod_t* self, const char* qualified) {
     return NULL;
 }
 
+const char* openpete_mods_id_of(openpete_mod_t* self) {
+    return self ? self->id : NULL;
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     .override_addr = api_override_addr,
@@ -762,6 +766,8 @@ static const openpete_mod_api_t s_api = {
     .binding_down        = api_binding_down,
     .guest_alloc         = api_guest_alloc,
     .bk2_status          = api_bk2_status,
+    .sfx_replace   = openpete_mods_sfx_replace,
+    .sfx_hook      = openpete_mods_sfx_hook,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

@@ -1541,9 +1541,73 @@ void psyq_CdIntToPos(CPUState* cpu) {
 
 /* --- libspu -------------------------------------------------------------- */
 
+#include "openpete_mods.h" /* SFX overlay service (mods/mod_sfx.c) */
+
+/* ── SFX overlay: Spyro-1 glue ─────────────────────────────────────────
+ * Names for the game's SoundTable slots (spyro-1/include/sound_table.h;
+ * slot value = index into the per-level SoundDefinition array). The
+ * resolver maps a keyed voice's sample addr back to the first named
+ * slot whose definition owns that addr; the uploader stages replacement
+ * ADPCM into the free SPU tail after the level bank. Everything here is
+ * host-side: guest RAM and the SPU bank image stay byte-stock.
+ */
+static const struct { uint8_t slot; const char* name; } k_sfx_names[] = {
+    {0x00, "gem_pickup"},   {0x03, "chest_break"},
+    {0x04, "spyro_charge"}, {0x05, "super_charge"},
+    {0x06, "waterfall"},    {0x1A, "exit_vortex"},
+    {0x1B, "spyro_stars"},  {0x1D, "water_splash"},
+    {0x1E, "spyro_walk"},   {0x20, "spyro_unsquish"},
+    {0x21, "flight_pling"}, {0x23, "flight_collected"},
+    {0x26, "moby_poof"},    {0x28, "spyro_flame"},
+    {0x2C, "menu_sound"},   {0x2D, "menu_cursor"},
+    {0x2E, "menu_confirm"}, {0x2F, "pickup_ding"},
+};
+
+#define SPYRO_SPU_SOUNDDEFS_VA  0x800761D0u /* g_Spu.m_SoundDefinitions */
+#define SPYRO_SPU_SOUNDTABLE_VA 0x800761D4u /* g_Spu.m_SoundTable */
+#define SPYRO_LEVELHDR_VRAMSPU  0x80076C04u /* g_LevelHeader.m_VramSramSize */
+#define SPYRO_SOUNDDEF_STRIDE   0x14u
+#define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
+#define SPYRO_SPU_TAIL_CEIL     0x7EF00u
+
+static const char* spyro_sfx_resolve(uint32_t spu_addr) {
+    uint32_t defs_va  = *(uint32_t*)PTR(SPYRO_SPU_SOUNDDEFS_VA);
+    uint32_t table_va = *(uint32_t*)PTR(SPYRO_SPU_SOUNDTABLE_VA);
+    if (!defs_va || !table_va) return nullptr;
+    const uint8_t* table = (const uint8_t*)PTR(table_va);
+    const uint8_t* defs  = (const uint8_t*)PTR(defs_va);
+    int count = *(const int32_t*)PTR(table_va + 256);
+    if (!table || !defs || count <= 0 || count > 256) return nullptr;
+    for (const auto& e : k_sfx_names) {
+        uint8_t id = table[e.slot];
+        if (id >= count) continue;
+        uint32_t addr;
+        memcpy(&addr, defs + id * SPYRO_SOUNDDEF_STRIDE, 4);
+        if (addr == spu_addr) return e.name;
+    }
+    return nullptr;
+}
+
+static uint32_t s_sfx_tail; /* next free SPU byte this bank-generation */
+
+static uint32_t spyro_sfx_upload(const void* body, uint32_t len) {
+    if (!s_sfx_tail) {
+        uint32_t vram = *(uint32_t*)PTR(SPYRO_LEVELHDR_VRAMSPU);
+        if (vram < 0x80000u || vram > 0x100000u) return 0;
+        s_sfx_tail = (0x1010u + vram - 0x80000u + 15u) & ~15u;
+    }
+    if (s_sfx_tail + len > SPYRO_SPU_TAIL_CEIL) return 0;
+    uint32_t dest = s_sfx_tail;
+    SpuSetTransferStartAddr(dest);
+    SpuWrite((unsigned char*)const_cast<void*>(body), len);
+    s_sfx_tail = (dest + len + 15u) & ~15u;
+    return dest;
+}
+
 void psyq_SpuInit(CPUState* cpu) {
     (void)cpu;
     SpuInit();
+    openpete_mods_sfx_set_fns(spyro_sfx_resolve, spyro_sfx_upload);
 }
 
 void psyq_SpuSetCommonAttr(CPUState* cpu) {
@@ -1565,7 +1629,25 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
 }
 
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
-    SpuSetVoiceAttr((SpuVoiceAttr*)PTR(cpu->a0));
+    /* SFX overlay: substitute on a HOST COPY only — the guest attr (and
+     * everything the sim can read) stays byte-stock. */
+    SpuVoiceAttr attr = *(SpuVoiceAttr*)PTR(cpu->a0);
+    if (attr.mask & SPU_VOICE_WDSA) {
+        uint32_t n_addr = 0; uint16_t n_pitch = 0; int mute = 0;
+        if (openpete_mods_sfx_on_key(attr.addr, attr.pitch,
+                                     &n_addr, &n_pitch, &mute)) {
+            if (mute) {
+                attr.volume.left = attr.volume.right = 0;
+                attr.mask |= SPU_VOICE_VOLL | SPU_VOICE_VOLR;
+            } else {
+                attr.addr = n_addr;
+                attr.pitch = n_pitch;
+                attr.mask |= SPU_VOICE_PITCH;
+                if (attr.mask & SPU_VOICE_LSAX) attr.loop_addr = n_addr;
+            }
+        }
+    }
+    SpuSetVoiceAttr(&attr);
 }
 
 void psyq_SpuSetVoiceVolume(CPUState* cpu) {
@@ -1596,6 +1678,12 @@ void psyq_SpuRead(CPUState* cpu) {
 }
 
 void psyq_SpuWrite(CPUState* cpu) {
+    /* The level-load bank blast overwrites all of SPU RAM including any
+     * staged SFX replacements — invalidate them (re-staged lazily). */
+    if ((unsigned int)cpu->a1 == SPYRO_SPU_BANK_BLAST) {
+        openpete_mods_sfx_bank_reset();
+        s_sfx_tail = 0;
+    }
     cpu->v0 = SpuWrite((unsigned char*)PTR(cpu->a0), (unsigned int)cpu->a1);
 }
 

@@ -292,6 +292,39 @@ int openpete_mods_moby_type_id(const char* mod_id, const char* name);
 uint32_t openpete_mods_moby_spawn(CPUState* cpu, const char* mod_id,
                                   const char* name);
 
+/* ── SFX overlay service (core/mods/mod_sfx.c) ─────────────────────
+ * Host-side sound substitution at voice key-on. The game's SPU thunk
+ * layer registers a resolver (sample SPU addr -> stable sound name) and
+ * an uploader (stage a replacement ADPCM body into free SPU tail space,
+ * returns its SPU addr or 0), then consults on_key with each keyed
+ * voice's stock addr+pitch and applies the returned substitution to a
+ * HOST COPY of the voice attrs only — guest state stays byte-stock. */
+typedef const char* (*openpete_mods_sfx_resolver_fn)(uint32_t spu_addr);
+typedef uint32_t (*openpete_mods_sfx_upload_fn)(const void* body,
+                                                uint32_t len);
+void openpete_mods_sfx_set_fns(openpete_mods_sfx_resolver_fn resolve,
+                               openpete_mods_sfx_upload_fn upload);
+
+/* Returns 1 if this play is substituted (out_addr/out_pitch filled;
+ * out_suppress=1 => mute the play), 0 = leave stock. */
+int openpete_mods_sfx_on_key(uint32_t spu_addr, uint16_t stock_pitch,
+                             uint32_t* out_addr, uint16_t* out_pitch,
+                             int* out_suppress);
+
+/* New SPU bank uploaded (level load): staged replacement addresses are
+ * invalid — forget them; they re-stage lazily at next key-on. */
+void openpete_mods_sfx_bank_reset(void);
+
+/* Mod identity (mod_loader.c): stable id string, NULL-safe. */
+const char* openpete_mods_id_of(openpete_mod_t* self);
+
+/* Loader-facing (wired into the mod api). */
+int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
+                              const void* body, uint32_t len,
+                              uint16_t pitch);
+int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
+                           void (*fn)(openpete_sfx_event_t* ev));
+
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 
 /* Queue a mod-requested savestate op (1=save, 2=load) for execution at

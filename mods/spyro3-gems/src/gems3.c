@@ -8,12 +8,11 @@
  *  2. post-hook PatchMobyModelPointers (0x800133E0): after the game's own
  *              install pass, repoint g_Models[83..87] at the park models
  *              (bit31 clear = SimpleModel, m_Verts==model+0x10 = baked).
- *  3. post-hook SetNewSoundTable (0x80012CF0): after the level's SPU bank
- *              upload, SpuWrite the chime body into the free tail of SPU
- *              RAM and repoint the gemPickup SoundDefinition at it.
- *  4. pre-hook func_8003B854 (gem collect): step the S3 pitch ladder and
- *              write the next pitch into the definition before PlaySound
- *              reads it.
+ *  3. SFX overlay service: sfx_replace("gem_pickup", ...) stages the S3
+ *              chime host-side and sfx_hook drives the rising ladder
+ *              per play — guest RAM, sound tables and the gameplay
+ *              rand() stream stay byte-stock (the service substitutes
+ *              on a host copy of the voice attrs at key-on).
  *
  * Without the asset pack the mod runs in calibration mode: it only logs
  * the stock gem model geometry (extent/counts) and touches nothing.
@@ -47,20 +46,13 @@ typedef struct {
 
 #define GEM_MODEL_SLOT0   (OP_GADDR_g_Models + 83u * 4u)  /* g_Models[83] */
 #define BURST_TABLE_VA    0x8006E47Cu   /* D_8006E44C words 12..16 */
-#define LEVELHDR_VRAMSPU  0x80076C04u   /* g_LevelHeader.m_VramSramSize */
-#define SPU_SOUNDDEFS_VA  0x800761D0u   /* g_Spu.m_SoundDefinitions */
-#define SPU_SOUNDTABLE_VA 0x800761D4u   /* g_Spu.m_SoundTable */
-#define FN_SPU_SET_XFER   0x8005CB24u   /* psyq SpuSetTransferStartAddr */
-#define FN_SPU_WRITE      0x8005CAC4u   /* psyq SpuWrite */
-#define FN_GEM_COLLECT    0x8003B854u   /* plays gemPickup; a0 = value */
-#define SOUNDDEF_STRIDE   0x14u
 
 /* S3 pitch ladder (assets/s3/pitch_canonical.md): voice pitch =
  * 0x400 + 0x40*n, n resetting to 0 per burst (~0.25s cadence). Cap at
  * one octave and reset after ~0.5s so a normal gem trail re-anchors at
  * the canonical 11kHz chime instead of parking high. */
 #define LADDER_MAX        16
-#define STREAK_RESET_TICKS 15u          /* ~0.5s at 29.97Hz game ticks */
+#define CHIME_RESET_MS    500u
 
 static const openpete_mod_api_t* A;
 static openpete_mod_t* SELF;
@@ -68,9 +60,8 @@ static openpete_mod_t* SELF;
 static pack_header_t s_pack;
 static int      s_have_pack;
 static int      s_calibrated;          /* stock-gem dump done */
-static uint32_t s_chime_spu_addr;      /* where the chime landed in SPU RAM */
+static uint8_t* s_vag_host;            /* host copy for sfx_replace */
 static uint32_t s_streak;
-static uint32_t s_last_collect_tick;
 
 static uint16_t ladder_pitch(uint32_t step)
 {
@@ -159,63 +150,21 @@ static void on_patch_models(CPUState* cpu)
     }
 }
 
-/* ── hook 3: SPU upload + sound-definition repoint ───────────────────── */
+/* ── chime: SFX overlay service ──────────────────────────────────────
+ * The whole guest-side dance this used to need (call_addr'd SpuWrite
+ * upload, SoundDefinition repoint, variance zeroing that shifted the
+ * gameplay rand() stream) now lives in the engine: sfx_replace stages
+ * the sample host-side and the per-play hook drives the S3 ladder.
+ * Guest RAM stays byte-stock. */
 
-static void on_sound_table(CPUState* cpu)
+static void chime_hook(openpete_sfx_event_t* ev)
 {
-    uint32_t saved[8];
-    uint32_t vram_spu_size, dest, defs, table, def;
-    uint8_t  gem_id;
-
-    A->base(cpu);
-    if (!s_have_pack || !s_pack.vag_size) return;
-
-    /* real SPU occupancy = 0x1010 + (m_VramSramSize - 0x80000) */
-    vram_spu_size = op_read_u32(A, LEVELHDR_VRAMSPU);
-    if (vram_spu_size < 0x80000u || vram_spu_size > 0x100000u) {
-        A->log(SELF, OP_MOD_LOG_WARN, "implausible VramSramSize %08x; chime skipped", vram_spu_size);
-        return;
-    }
-    dest = (0x1010u + vram_spu_size - 0x80000u + 15u) & ~15u;
-    if (dest + s_pack.vag_size > 0x7EF00u) {
-        A->log(SELF, OP_MOD_LOG_WARN, "no SPU room (dest=%05x len=%x); chime skipped", dest, s_pack.vag_size);
-        return;
-    }
-
-    /* nested guest calls clobber a/v/t regs; caller of SetNewSoundTable
-     * may still want its v0/a-regs — save/restore around the calls. */
-    saved[0] = cpu->a0; saved[1] = cpu->a1; saved[2] = cpu->a2; saved[3] = cpu->a3;
-    saved[4] = cpu->v0; saved[5] = cpu->v1; saved[6] = cpu->ra; saved[7] = cpu->at;
-
-    cpu->a0 = dest;
-    A->call_addr(cpu, FN_SPU_SET_XFER);
-    cpu->a0 = s_pack.vag_vaddr;
-    cpu->a1 = s_pack.vag_size;
-    A->call_addr(cpu, FN_SPU_WRITE);
-
-    cpu->a0 = saved[0]; cpu->a1 = saved[1]; cpu->a2 = saved[2]; cpu->a3 = saved[3];
-    cpu->v0 = saved[4]; cpu->v1 = saved[5]; cpu->ra = saved[6]; cpu->at = saved[7];
-
-    /* repoint gemPickup: def = defs + soundTable[0] * 0x14 */
-    defs  = op_read_u32(A, SPU_SOUNDDEFS_VA);
-    table = op_read_u32(A, SPU_SOUNDTABLE_VA);
-    if (!defs || !table) { A->log(SELF, OP_MOD_LOG_WARN, "sound table ptrs null; chime skipped"); return; }
-    gem_id = op_read_u8(A, table);
-    def = defs + gem_id * SOUNDDEF_STRIDE;
-
-    op_write_u32(A, def + 0x00, dest);              /* m_Addr            */
-    op_write_u32(A, def + 0x04, 0);                 /* m_LoopAddr 1-shot */
-    {   /* m_Pitch (u16) + zero variance so PlaySound uses it verbatim */
-        uint8_t* p = (uint8_t*)A->guest(def + 0x0A);
-        if (p) { uint16_t v = ladder_pitch(0); memcpy(p, &v, 2); }
-        p = (uint8_t*)A->guest(def + 0x0C);
-        if (p) { uint16_t z = 0; memcpy(p, &z, 2); }        /* variance  */
-        op_write_u32(A, def + 0x10, 0);                     /* var type  */
-    }
-    s_chime_spu_addr = dest;
-    A->log(SELF, OP_MOD_LOG_INFO,
-           "chime uploaded: spu=%05x len=%x gemPickup id=%u def=%08x burst[0]=%08x",
-           dest, s_pack.vag_size, gem_id, def, op_read_u32(A, BURST_TABLE_VA));
+    if (ev->play_index == 0 || ev->ms_since_prev > CHIME_RESET_MS)
+        s_streak = 0;
+    ev->pitch = ladder_pitch(s_streak);
+    if (s_streak + 1 < LADDER_MAX) s_streak++;
+    A->log(SELF, OP_MOD_LOG_INFO, "chime: streak=%u pitch=%03x gap=%ums",
+           s_streak, ev->pitch, ev->ms_since_prev);
 }
 
 /* S3G_DUMP_VERTS=1: one-shot live-gem pose dump once level mobys exist.
@@ -248,28 +197,6 @@ static int dump_live_gems(void)
         shown++;
     }
     return shown;
-}
-
-/* ── hook 4: pitch ladder per collect ────────────────────────────────── */
-
-static void on_gem_collect(CPUState* cpu)
-{
-    if (s_have_pack && s_chime_spu_addr) {
-        uint32_t tick = op_read_u32(A, OP_GADDR_g_GameTick);
-        uint32_t defs = op_read_u32(A, SPU_SOUNDDEFS_VA);
-        uint32_t table = op_read_u32(A, SPU_SOUNDTABLE_VA);
-        if (tick - s_last_collect_tick > STREAK_RESET_TICKS) s_streak = 0;
-        s_last_collect_tick = tick;
-        if (defs && table) {
-            uint32_t def = defs + op_read_u8(A, table) * SOUNDDEF_STRIDE;
-            uint8_t* p = (uint8_t*)A->guest(def + 0x0A);
-            if (p) { uint16_t v = ladder_pitch(s_streak); memcpy(p, &v, 2); }
-        }
-        A->log(SELF, OP_MOD_LOG_INFO, "gem collect: value=%u streak=%u pitch=%03x",
-               cpu->a0, s_streak, ladder_pitch(s_streak));
-        if (s_streak + 1 < LADDER_MAX) s_streak++;
-    }
-    A->base(cpu);
 }
 
 /* S3G_DUMP_VERTS only: piggyback CameraUpdate (every gameplay tick) to run
@@ -311,6 +238,16 @@ static int load_pack(void)
         A->log(SELF, OP_MOD_LOG_ERROR, "pack payload truncated (%zu/%u)", got, s_pack.payload_size);
         return 0;
     }
+    /* host copy of the chime body for the SFX overlay service (the
+     * models still live in the guest park; the sample never needs to) */
+    if (s_pack.vag_size &&
+        s_pack.vag_vaddr >= PARK_BASE &&
+        s_pack.vag_vaddr + s_pack.vag_size <= PARK_BASE + s_pack.payload_size) {
+        s_vag_host = (uint8_t*)malloc(s_pack.vag_size);
+        if (s_vag_host)
+            memcpy(s_vag_host, park + (s_pack.vag_vaddr - PARK_BASE),
+                   s_pack.vag_size);
+    }
     return 1;
 }
 
@@ -325,11 +262,17 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
                s_pack.payload_size, PARK_BASE, s_pack.vag_size, s_pack.pitch_base);
     }
 
-    if (api->override_addr(self, OP_FNADDR_PatchMobyModelPointers, on_patch_models) ||
-        api->override_addr(self, OP_FNADDR_SetNewSoundTable, on_sound_table) ||
-        api->override_addr(self, FN_GEM_COLLECT, on_gem_collect)) {
+    if (api->override_addr(self, OP_FNADDR_PatchMobyModelPointers, on_patch_models)) {
         A->log(SELF, OP_MOD_LOG_ERROR, "override registration failed");
         return 1;
+    }
+    if (s_have_pack && s_vag_host) {
+        if (api->sfx_replace(self, "gem_pickup", s_vag_host, s_pack.vag_size,
+                             (uint16_t)s_pack.pitch_base) ||
+            api->sfx_hook(self, "gem_pickup", chime_hook)) {
+            A->log(SELF, OP_MOD_LOG_ERROR, "sfx registration failed");
+            return 1;
+        }
     }
     if (getenv("S3G_DUMP_VERTS") &&
         api->override_addr(self, OP_FNADDR_CameraUpdate, on_camera_update_dump)) {
