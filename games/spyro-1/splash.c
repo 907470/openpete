@@ -8,8 +8,11 @@
 //   PROGRESS mode  — the ingest copy + first-boot module build report
 //                    through spyro1_progress_cb; the splash renders a
 //                    stage line + bar and keeps the window responsive.
-//   In-process continuation — the splash closes and openpete_run()
-//                    opens the game window; no relaunch.
+//   In-process continuation — in the default windowed vk mode the game
+//                    ADOPTS the splash window (spyro1_splash_detach_window;
+//                    native_render retitles + reuses it) so one OS window
+//                    carries splash and game; other modes close it and
+//                    open their own. No relaunch either way.
 //
 // Headless/CI never see this (console path unchanged). All art is
 // original: flat colors + the in-file 5x7 bitmap font below
@@ -96,9 +99,16 @@ static SDL_Renderer* s_ren;
 static char          s_stage[128];
 static int           s_done, s_total;
 static char          s_drop_path[4096];
+static int           s_req_w, s_req_h;  /* --window override (0 = default) */
 
+/* Logical layout space — matches the game window's default size (run.c
+ * WIN_W/WIN_H), so the vk-mode window handoff needs no resize. An explicit
+ * --window size is honored via s_req_w/h; SDL's logical presentation
+ * scales this layout to whatever the real window size is. */
 #define SPLASH_W 640
-#define SPLASH_H 360
+#define SPLASH_H 448
+/* The screens below were authored in a 640x360 band; centre it. */
+#define YOFF ((SPLASH_H - 360) / 2)
 
 static void draw_text(float x, float y, int scale, const char* s,
                       Uint8 r, Uint8 g, Uint8 b) {
@@ -138,8 +148,8 @@ static void maybe_shot(const char* tag) {
 static void frame_begin(void) {
     SDL_SetRenderDrawColor(s_ren, 24, 16, 40, 255);   /* deep purple */
     SDL_RenderClear(s_ren);
-    draw_text_centered(36, 4, "OPENPETE", 240, 138, 30);
-    draw_text_centered(72, 2, "SPYRO THE DRAGON PC PORT", 150, 130, 190);
+    draw_text_centered(36 + YOFF, 4, "OPENPETE", 240, 138, 30);
+    draw_text_centered(72 + YOFF, 2, "SPYRO THE DRAGON PC PORT", 150, 130, 190);
 }
 
 static void frame_end(const char* tag) {
@@ -149,6 +159,11 @@ static void frame_end(const char* tag) {
 
 void spyro1_splash_set_enabled(int enabled) { s_ui_enabled = enabled; }
 int  spyro1_splash_ui_enabled(void) { return s_ui_enabled; }
+
+void spyro1_splash_set_window_size(int w, int h) {
+    s_req_w = w;
+    s_req_h = h;
+}
 
 static SDL_Gamepad* s_pad;
 
@@ -168,10 +183,16 @@ int spyro1_splash_open(void) {
         OPL_WARN_F("splash", "SDL video init failed: %s", SDL_GetError());
         return -1;
     }
-    s_win = SDL_CreateWindow("OpenPete", SPLASH_W, SPLASH_H, 0);
+    int win_w = (s_req_w > 0) ? s_req_w : SPLASH_W;
+    int win_h = (s_req_h > 0) ? s_req_h : SPLASH_H;
+    s_win = SDL_CreateWindow("OpenPete", win_w, win_h, 0);
     if (!s_win) return -1;
     s_ren = SDL_CreateRenderer(s_win, NULL);
     if (!s_ren) { SDL_DestroyWindow(s_win); s_win = NULL; return -1; }
+    /* Draw in the fixed layout space whatever the real window size is
+     * (an explicit --window makes them differ). */
+    SDL_SetRenderLogicalPresentation(s_ren, SPLASH_W, SPLASH_H,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
     open_first_gamepad();
     return 0;
 }
@@ -207,6 +228,20 @@ void spyro1_splash_close(void) {
     if (s_win) { SDL_DestroyWindow(s_win); s_win = NULL; }
 }
 
+void* spyro1_splash_detach_window(void) {
+    /* In-process continuation, window flavour: tear down everything the
+     * splash owns EXCEPT the OS window, and hand that to the caller (the
+     * native vk renderer adopts it — retitle/resize — instead of closing
+     * one window and opening another). The SDL_Renderer must die here:
+     * its swapchain has to release the window surface before
+     * SDL_Vulkan_CreateSurface can claim it. */
+    SDL_Window* win = s_win;
+    if (s_pad) { SDL_CloseGamepad(s_pad); s_pad = NULL; }
+    if (s_ren) { SDL_DestroyRenderer(s_ren); s_ren = NULL; }
+    s_win = NULL;
+    return win;
+}
+
 int spyro1_splash_active(void) { return s_win != NULL; }
 
 /* ---- progress (called from disc_library + recomp_build) --------------- */
@@ -228,21 +263,21 @@ void spyro1_splash_progress(const char* stage, int done, int total) {
     while (SDL_PollEvent(&e)) { /* swallow; no cancel mid-build in v1 */ }
 
     frame_begin();
-    draw_text_centered(160, 2, "FIRST-TIME SETUP", 220, 210, 240);
+    draw_text_centered(160 + YOFF, 2, "FIRST-TIME SETUP", 220, 210, 240);
     char line[160];
     snprintf(line, sizeof line, "%s", s_stage);
-    draw_text_centered(196, 2, line, 255, 255, 255);
-    SDL_FRect outline = {80, 240, SPLASH_W - 160, 22};
+    draw_text_centered(196 + YOFF, 2, line, 255, 255, 255);
+    SDL_FRect outline = {80, 240 + YOFF, SPLASH_W - 160, 22};
     SDL_SetRenderDrawColor(s_ren, 90, 70, 140, 255);
     SDL_RenderRect(s_ren, &outline);
     if (s_total > 0) {
         float frac = (float)s_done / (float)s_total;
         if (frac > 1.0f) frac = 1.0f;
-        SDL_FRect fill = {82, 242, (SPLASH_W - 164) * frac, 18};
+        SDL_FRect fill = {82, 242 + YOFF, (SPLASH_W - 164) * frac, 18};
         SDL_SetRenderDrawColor(s_ren, 240, 138, 30, 255);
         SDL_RenderFillRect(s_ren, &fill);
     }
-    draw_text_centered(292, 1,
+    draw_text_centered(292 + YOFF, 1,
         "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.",
         150, 130, 190);
     frame_end("progress");
@@ -254,14 +289,14 @@ const char* spyro1_splash_wait_for_disc(void) {
     if (!s_win) return NULL;
     for (;;) {
         frame_begin();
-        draw_text_centered(160, 2, "DRAG YOUR SPYRO THE DRAGON", 255, 255, 255);
-        draw_text_centered(186, 2, "DISC IMAGE (.CUE / .BIN) HERE", 255, 255, 255);
-        draw_text_centered(232, 1, "OR PRESS SPACE / (A) TO BROWSE",
+        draw_text_centered(160 + YOFF, 2, "DRAG YOUR SPYRO THE DRAGON", 255, 255, 255);
+        draw_text_centered(186 + YOFF, 2, "DISC IMAGE (.CUE / .BIN) HERE", 255, 255, 255);
+        draw_text_centered(232 + YOFF, 1, "OR PRESS SPACE / (A) TO BROWSE",
                            220, 210, 240);
-        draw_text_centered(268, 1,
+        draw_text_centered(268 + YOFF, 1,
             "YOUR OWN DISC IS REQUIRED. NOTHING IS DOWNLOADED.",
             150, 130, 190);
-        draw_text_centered(296, 1, "ESC / (B) TO QUIT", 110, 95, 150);
+        draw_text_centered(296 + YOFF, 1, "ESC / (B) TO QUIT", 110, 95, 150);
         frame_end("drop");
 
         if (s_dialog_got) return s_drop_path;
@@ -303,8 +338,8 @@ int spyro1_splash_select(const char* const* labels, int count) {
     int sel = 0;
     for (;;) {
         frame_begin();
-        draw_text_centered(140, 2, "CHOOSE A VERSION", 220, 210, 240);
-        int y = 180;
+        draw_text_centered(140 + YOFF, 2, "CHOOSE A VERSION", 220, 210, 240);
+        int y = 180 + YOFF;
         for (int i = 0; i < count && i < 6; i++, y += 26) {
             char line[96];
             snprintf(line, sizeof line, "%s %s", i == sel ? ">" : " ",
@@ -314,7 +349,7 @@ int spyro1_splash_select(const char* const* labels, int count) {
                       i == sel ? 214 : 130,
                       i == sel ? 120 : 190);
         }
-        draw_text_centered(320, 1,
+        draw_text_centered(320 + YOFF, 1,
             "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT",
             110, 95, 150);
         frame_end("selector");

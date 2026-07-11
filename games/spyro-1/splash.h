@@ -15,6 +15,17 @@ int  spyro1_splash_ui_enabled(void);
 void spyro1_splash_close(void);
 int  spyro1_splash_active(void);
 
+/* Size the splash window opens at (call before the first open; 0 =
+ * the game window's default). Lets an explicit --window carry through
+ * so the vk-mode adoption below needs no resize. */
+void spyro1_splash_set_window_size(int w, int h);
+
+/* Adoption handoff (windowed vk mode): destroy the splash's renderer +
+ * gamepad but keep the OS window alive and return it (an SDL_Window*;
+ * void* keeps this header SDL-free). The splash is inactive afterwards
+ * and the caller owns the window. NULL if the splash never opened. */
+void* spyro1_splash_detach_window(void);
+
 /* DROP mode: block until a file is dropped (returns the path, owned by
  * the splash) or the user quits (NULL). */
 const char* spyro1_splash_wait_for_disc(void);

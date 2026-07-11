@@ -132,6 +132,9 @@ int main(int argc, char** argv) {
      * and the drag-a-disc first-run screen; it lazy-opens only when
      * one of those is actually needed. */
     spyro1_splash_set_enabled(!opts.headless);
+    /* Open at the game window's size (an explicit --window carries
+     * through) so the vk-mode window adoption below needs no resize. */
+    spyro1_splash_set_window_size(opts.window_w, opts.window_h);
     spyro1_progress_cb = spyro1_splash_progress;
 
     static char library_module_path[4096];
@@ -174,8 +177,16 @@ int main(int argc, char** argv) {
         return 1;
 
     /* In-process continuation: the splash's job ends where the game
-     * window begins. */
-    spyro1_splash_close();
+     * window begins. In the default windowed vk mode the game ADOPTS the
+     * splash window (native_render retitles + reuses it) so the window
+     * never closes and reopens; PsyCross/ab/diff create their own windows
+     * and close the splash as before. Progress is unhooked either way —
+     * nothing may lazy-reopen a splash window mid-game. */
+    spyro1_progress_cb = NULL;
+    if (opts.renderer == OPENPETE_RENDERER_VK && !opts.headless)
+        opts.adopted_window = spyro1_splash_detach_window();
+    else
+        spyro1_splash_close();
 
     /* fps-unlock Phase 2: register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called

@@ -292,6 +292,15 @@ typedef struct {
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
+    /* In-process continuation from the first-run splash: when non-NULL, an
+     * SDL_Window* (void* keeps this header SDL-free) that the windowed vk
+     * renderer adopts — retitle/resize/make-resizable — instead of opening
+     * a second window, so one OS window carries splash and game. Set by the
+     * game's main between splash teardown and openpete_run(); only handed
+     * over in windowed vk mode (PsyCross/ab/diff windows are created by
+     * their own paths and close the splash as before). Display-only. */
+    void* adopted_window;
+
     /* --ssaa N (default 1): supersampling factor for the native vk LIVE window.
      * The offscreen render target is allocated at N× the swapchain extent per
      * axis (N² samples/pixel) and the present blit box-downsamples to the

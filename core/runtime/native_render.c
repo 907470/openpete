@@ -1066,11 +1066,30 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                           : (opts->display_name && opts->display_name[0])
                                       ? opts->display_name
                                       : "Spyro the Dragon";
-        win = SDL_CreateWindow(title, w, h,
-                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
-        if (!win) {
-            OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
-            return 1;
+        SDL_Window *adopt = (SDL_Window*)opts->adopted_window;
+        if (adopt && !ab_mode && !diff_mode) {
+            /* In-process continuation: reuse the first-run splash's window
+             * (main.cpp hands it over in windowed vk mode only; its
+             * SDL_Renderer is already destroyed). SDL converts a plain
+             * window to Vulkan inside SDL_Vulkan_CreateSurface, so the
+             * missing SDL_WINDOW_VULKAN creation flag is fine — only the
+             * game's title/flags/size need applying. The splash opens at
+             * the game's size, so this is normally just a retitle. */
+            win = adopt;
+            SDL_SetWindowTitle(win, title);
+            SDL_SetWindowResizable(win, true);
+            int cur_w = 0, cur_h = 0;
+            SDL_GetWindowSize(win, &cur_w, &cur_h);
+            if (cur_w != w || cur_h != h)
+                SDL_SetWindowSize(win, w, h);
+            OPL_INFO_F("native", "adopted splash window (%dx%d)", w, h);
+        } else {
+            win = SDL_CreateWindow(title, w, h,
+                                   SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+            if (!win) {
+                OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
+                return 1;
+            }
         }
 
         dev = rhi_create(win, "openpete-native", opts->vsync);
