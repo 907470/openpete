@@ -170,7 +170,12 @@ static void on_patch_models(CPUState* cpu)
 {
     int i;
     A->base(cpu);
-    if (!s_calibrated && op_read_u32(A, GEM_MODEL_SLOT0) != 0) {
+    /* Nothing installed yet: skip the patch too, not just the dump —
+     * patching empty slots does nothing useful, and it used to flip the
+     * slots to OUR models before calibration ever saw stock, so the
+     * "stock gem" dump printed the S3 replacements. */
+    if (op_read_u32(A, GEM_MODEL_SLOT0) == 0) return;
+    if (!s_calibrated) {
         s_calibrated = 1;
         for (i = 0; i < 5; i++) dump_stock_gem(i);
     }
