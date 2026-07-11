@@ -1,0 +1,12 @@
+# crash-dummy — PoC ladder rung 6 (notes/plans/openpete-modding-framework.md)
+#
+# DELIBERATELY CRASHES THE GAME (null dereference on the 100th
+# CameraUpdate call). Exists to prove crash attribution: the engine's
+# crash report must name this mod ("MOD ATTRIBUTION: ... mod
+# 'crash-dummy'"). Dev/test rung — never enable it to play.
+
+[mod]
+id      = "crash-dummy"
+name    = "Crash Dummy"
+version = "0.1.0"
+api     = 1

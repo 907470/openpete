@@ -125,6 +125,21 @@ void openpete_mods_base(CPUState* cpu) {
     run_link(cpu, f.chain, f.link + 1);
 }
 
+/* Crash attribution (rung 6): called from the crash handler on the
+ * faulting thread. Non-NULL = the sim was inside an override chain —
+ * the innermost mod override on the stack (the crash may be in the mod
+ * itself or in code it called; either way that mod's override is the
+ * place to look). TLS reads are safe here: the handler runs on the
+ * thread that faulted. */
+const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
+    if (s_frame_depth <= 0) return NULL;
+    const mod_frame_t* f = &s_frames[s_frame_depth - 1];
+    if (addr_out) *addr_out = f->chain->addr;
+    if (f->link < f->chain->count && f->chain->links[f->link].owner_id)
+        return f->chain->links[f->link].owner_id;
+    return "?";
+}
+
 /* Register with priority: the loader loads mods in enabled-list order
  * and each new link goes to the FRONT of its chain, so the last-enabled
  * (highest-priority) mod runs first and base() walks toward

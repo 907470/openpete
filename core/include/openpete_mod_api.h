@@ -90,6 +90,18 @@ typedef struct openpete_mod_api {
      * are pointers hold guest vaddrs — re-translate before chasing.
      * Sim-thread use only (inside overrides / mod entry). */
     void* (*guest)(uint32_t vaddr);
+
+    /* Cross-mod services (namespaced "modid:name", collision-free by
+     * construction). A library mod publishes a pointer during its entry:
+     *     api->export_sym(self, "magic", (void*)&my_fn);
+     * A client that lists the lib in its mod.toml `deps` imports it —
+     * deps are topo-sorted, so the lib's entry has already run:
+     *     int (*magic)(void) = api->import_sym(self, "demo-lib:magic");
+     * import returns NULL if absent (optional layering: check and
+     * degrade gracefully). export returns 0 on success, non-zero on
+     * duplicate/overflow. */
+    int   (*export_sym)(openpete_mod_t* self, const char* name, void* ptr);
+    void* (*import_sym)(openpete_mod_t* self, const char* qualified);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

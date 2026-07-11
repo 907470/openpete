@@ -13,6 +13,7 @@
 #define _GNU_SOURCE
 #include "openpete_psx.h"
 #include "openpete_log.h"
+#include "openpete_mods.h"   /* crash attribution: name the offending mod */
 
 #include <signal.h>
 #include <stdio.h>
@@ -89,6 +90,17 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
                 g_diag_cpu->v0, g_diag_cpu->v1, g_diag_cpu->a0, g_diag_cpu->a1);
     } else {
         fprintf(stderr, "  (no CPUState registered)\n");
+    }
+
+    /* Rung 6: if the sim was inside a mod's override chain, say so —
+     * the crash is in that mod or in code it called. */
+    {
+        uint32_t maddr = 0;
+        const char* mod = openpete_mods_crash_attribution(&maddr);
+        if (mod)
+            fprintf(stderr,
+                    "  MOD ATTRIBUTION: inside override of 0x%08X "
+                    "registered by mod '%s'\n", maddr, mod);
     }
 
 #ifdef OPENPETE_HAS_BACKTRACE
@@ -172,6 +184,14 @@ static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
                 g_diag_cpu->v0, g_diag_cpu->v1, g_diag_cpu->a0, g_diag_cpu->a1);
     } else {
         fprintf(stderr, "  (no CPUState registered)\n");
+    }
+    {
+        uint32_t maddr = 0;
+        const char* mod = openpete_mods_crash_attribution(&maddr);
+        if (mod)
+            fprintf(stderr,
+                    "  MOD ATTRIBUTION: inside override of 0x%08X "
+                    "registered by mod '%s'\n", maddr, mod);
     }
     fflush(stderr);
     /* Hand back to Windows so the OS still terminates / can produce a

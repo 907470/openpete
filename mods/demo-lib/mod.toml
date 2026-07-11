@@ -1,0 +1,12 @@
+# demo-lib — the library half of PoC ladder rung 5 (lib-and-client).
+#
+# Exports a function under the namespaced id "demo-lib:magic" during its
+# entry. Clients declare `deps = ["demo-lib"]` and import it — the
+# dependency topo-sort guarantees this entry has already run. Log-only /
+# service-only: sim-neutral.
+
+[mod]
+id      = "demo-lib"
+name    = "Demo Library"
+version = "0.1.0"
+api     = 1

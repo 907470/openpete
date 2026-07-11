@@ -59,6 +59,12 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr);
 /* 1 while at least one override chain is registered. Hot-path gate. */
 extern int openpete_mods_active;
 
+/* Crash attribution: non-NULL = an override chain frame is live on this
+ * thread; returns the innermost mod id (addr_out = the overridden
+ * vaddr). Consumed by core/runtime/crash.c so a crash report names the
+ * offending mod (PoC rung 6). */
+const char* openpete_mods_crash_attribution(uint32_t* addr_out);
+
 #ifdef __cplusplus
 }
 #endif

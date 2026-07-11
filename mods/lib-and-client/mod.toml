@@ -1,0 +1,14 @@
+# lib-and-client — PoC ladder rung 5 (notes/plans/openpete-modding-framework.md)
+#
+# The client half: declares a hard dependency on demo-lib and imports
+# its "demo-lib:magic" export at entry. Proves: cross-mod export/import,
+# dependency topo-sort (works even when this mod is listed BEFORE
+# demo-lib in enabled.txt), and the missing-dep error UX (enable this
+# without demo-lib to see the actionable error). Log-only: sim-neutral.
+
+[mod]
+id      = "lib-and-client"
+name    = "Lib And Client"
+version = "0.1.0"
+api     = 1
+deps    = ["demo-lib"]

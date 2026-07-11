@@ -55,12 +55,16 @@ void openpete_mods_base(CPUState* cpu);
 #define MOD_ID_MAX        64
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
+#define MOD_DEPS_MAX      8
+#define MOD_EXPORTS_MAX   128
 
 struct openpete_mod {
     char  id[MOD_ID_MAX];
     char  version[32];
     char  dir[MOD_PATH_MAX];
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
+    char  deps[MOD_DEPS_MAX][MOD_ID_MAX];
+    int   n_deps;
     void* dl;
 };
 
@@ -136,6 +140,48 @@ static void* api_guest(uint32_t vaddr) {
     return ram ? ram + off : NULL;
 }
 
+/* Cross-mod export registry: "modid:name" → pointer (rung 5). */
+typedef struct {
+    char  name[MOD_ID_MAX + 64];
+    void* ptr;
+} mod_export_t;
+
+static mod_export_t s_exports[MOD_EXPORTS_MAX];
+static int          s_export_count = 0;
+
+static int api_export_sym(openpete_mod_t* self, const char* name, void* ptr) {
+    if (!self || !name || !ptr) return -1;
+    char q[sizeof s_exports[0].name];
+    snprintf(q, sizeof q, "%s:%s", self->id, name);
+    for (int i = 0; i < s_export_count; i++) {
+        if (strcmp(s_exports[i].name, q) == 0) {
+            OPL_ERROR_F(self->log_tag, "duplicate export \"%s\"", q);
+            return -1;
+        }
+    }
+    if (s_export_count >= MOD_EXPORTS_MAX) {
+        OPL_ERROR_F(self->log_tag, "export table full (%d)", MOD_EXPORTS_MAX);
+        return -1;
+    }
+    snprintf(s_exports[s_export_count].name,
+             sizeof s_exports[s_export_count].name, "%s", q);
+    s_exports[s_export_count].ptr = ptr;
+    s_export_count++;
+    OPL_INFO_F(self->log_tag, "exported \"%s\"", q);
+    return 0;
+}
+
+static void* api_import_sym(openpete_mod_t* self, const char* qualified) {
+    if (!qualified) return NULL;
+    for (int i = 0; i < s_export_count; i++) {
+        if (strcmp(s_exports[i].name, qualified) == 0)
+            return s_exports[i].ptr;
+    }
+    OPL_DEBUG_F(self ? self->log_tag : "mod:?",
+                "import \"%s\": not found", qualified);
+    return NULL;
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     .override_addr = api_override_addr,
@@ -144,6 +190,8 @@ static const openpete_mod_api_t s_api = {
     .resolve       = api_resolve,
     .log           = api_log,
     .guest         = api_guest,
+    .export_sym    = api_export_sym,
+    .import_sym    = api_import_sym,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -209,6 +257,19 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                        "across engine/decomp updates and region-pinned",
                        mod->id);
         free(tier.u.s);
+    }
+    /* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
+     * loading (a dep's entry runs before its dependents'); a missing or
+     * cyclic dep disables the mod with an actionable error. */
+    toml_array_t* deps = toml_array_in(t, "deps");
+    if (deps) {
+        int n = toml_array_nelem(deps);
+        for (int i = 0; i < n && mod->n_deps < MOD_DEPS_MAX; i++) {
+            toml_datum_t d = toml_string_at(deps, i);
+            if (!d.ok) continue;
+            snprintf(mod->deps[mod->n_deps++], MOD_ID_MAX, "%s", d.u.s);
+            free(d.u.s);
+        }
     }
     rc = 0;
 out:
@@ -332,6 +393,66 @@ static int cmp_str(const void* a, const void* b) {
     return strcmp(*(const char* const*)a, *(const char* const*)b);
 }
 
+/* Dependency topo-sort (rung 5). DFS, stable in enabled order: a dep
+ * loads before its dependents, so dependents keep HIGHER chain priority
+ * than their libraries and a lib's exports exist when the client's
+ * entry runs. Missing dep / cycle = actionable error, dependent
+ * disabled, run continues. */
+enum { TS_WHITE = 0, TS_GRAY, TS_BLACK, TS_FAILED };
+
+typedef struct {
+    struct openpete_mod* pending;
+    int                  n_pending;
+    int                  state[MODS_MAX];
+    int                  topo[MODS_MAX];
+    int                  n_topo;
+    const char*          mods_dir;
+} topo_ctx_t;
+
+static int topo_find(const topo_ctx_t* c, const char* id) {
+    for (int j = 0; j < c->n_pending; j++)
+        if (strcmp(c->pending[j].id, id) == 0) return j;
+    return -1;
+}
+
+static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
+    if (c->state[i] == TS_BLACK)  return 0;
+    if (c->state[i] == TS_FAILED) return -1;
+    if (c->state[i] == TS_GRAY) {
+        OPL_ERROR_F("mods", "dependency cycle through \"%s\" — disabled "
+                    "(break the cycle in the mods' mod.toml deps)",
+                    c->pending[i].id);
+        c->state[i] = TS_FAILED;
+        return -1;
+    }
+    c->state[i] = TS_GRAY;
+    for (int d = 0; d < c->pending[i].n_deps; d++) {
+        int j = topo_find(c, c->pending[i].deps[d]);
+        if (j < 0) {
+            OPL_ERROR_F("mods", "\"%s\" requires \"%s\", which is not "
+                        "enabled — add it to %s/enabled.txt (above "
+                        "\"%s\") or install it; \"%s\" disabled",
+                        c->pending[i].id, c->pending[i].deps[d],
+                        c->mods_dir, c->pending[i].id, c->pending[i].id);
+            c->state[i] = TS_FAILED;
+            return -1;
+        }
+        if (topo_visit(c, j) != 0) {
+            if (c->state[i] != TS_FAILED) {
+                OPL_ERROR_F("mods", "\"%s\" disabled: its dependency "
+                            "\"%s\" failed", c->pending[i].id,
+                            c->pending[i].deps[d]);
+                c->state[i] = TS_FAILED;
+            }
+            return -1;
+        }
+    }
+    if (c->state[i] == TS_FAILED) return -1; /* cycle marked us */
+    c->state[i] = TS_BLACK;
+    c->topo[c->n_topo++] = i;
+    return 0;
+}
+
 int openpete_mods_init(const openpete_options_t* opts) {
     char mods_dir[MOD_PATH_MAX];
     const char* src = opts && opts->mods_dir ? opts->mods_dir
@@ -391,8 +512,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
         snprintf(sdk_dir, sizeof sdk_dir, "%ssdk", base ? base : "./");
     }
 
-    int loaded = 0;
-    for (int i = 0; i < n_order; i++) {
+    /* Phase A: parse all enabled manifests (no loading yet). */
+    struct openpete_mod pending[MODS_MAX];
+    int n_pending = 0;
+    for (int i = 0; i < n_order && n_pending < MODS_MAX; i++) {
         int known = 0;
         for (int j = 0; j < n_ids; j++)
             if (strcmp(order[i], ids[j]) == 0) known = 1;
@@ -401,18 +524,48 @@ int openpete_mods_init(const openpete_options_t* opts) {
                        "no mod.toml — skipped", order[i], order[i]);
             continue;
         }
-        if (s_mod_count >= MODS_MAX) break;
-        struct openpete_mod* mod = &s_mods[s_mod_count];
+        struct openpete_mod* mod = &pending[n_pending];
         memset(mod, 0, sizeof(*mod));
         char dir[MOD_PATH_MAX];
         snprintf(dir, sizeof dir, "%s/%s", mods_dir, order[i]);
         if (parse_manifest(dir, mod) != 0) continue;
+        n_pending++;
+    }
+    for (int i = 0; i < n_ids; i++) free(ids[i]);
+
+    /* Phase B: topo-sort by hard deps (see topo_visit above). */
+    topo_ctx_t tc;
+    memset(&tc, 0, sizeof tc);
+    tc.pending   = pending;
+    tc.n_pending = n_pending;
+    tc.mods_dir  = mods_dir;
+    for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
+
+    /* Phase C: build + load in topo order; a load failure cascades to
+     * dependents (their imports would dangle). */
+    int loaded = 0;
+    int load_ok[MODS_MAX] = {0};
+    for (int t = 0; t < tc.n_topo; t++) {
+        int i = tc.topo[t];
+        int deps_ok = 1;
+        for (int d = 0; d < pending[i].n_deps; d++) {
+            int j = topo_find(&tc, pending[i].deps[d]);
+            if (j < 0 || !load_ok[j]) deps_ok = 0;
+        }
+        if (!deps_ok) {
+            OPL_ERROR_F("mods", "\"%s\" disabled: a dependency failed to "
+                        "load", pending[i].id);
+            continue;
+        }
+        if (s_mod_count >= MODS_MAX) break;
+        struct openpete_mod* mod = &s_mods[s_mod_count];
+        *mod = pending[i];
         if (load_mod(mod, sdk_dir) != 0) continue;
+        load_ok[i] = 1;
         s_mod_count++;
         loaded++;
     }
 
-    for (int i = 0; i < n_ids; i++) free(ids[i]);
     if (loaded > 0)
         OPL_INFO_F("mods", "%d mod%s active (dir: %s)", loaded,
                    loaded == 1 ? "" : "s", mods_dir);
