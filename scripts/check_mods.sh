@@ -375,11 +375,38 @@ else
     bad "run 2: prior recording not loaded"
 fi
 
-# ── 11. [test]-block rungs through the real modtest runner ──────────────
+# ── 11. triangle-flutter dormant gate (rung 13, flagship) ───────────────
+# The [test] block (section 12) proves the flutter FIRES on its bundled
+# glide+Triangle movie. This case proves the inverse: enabled over the
+# stock attract demo — which never glides — the gameplay mod stays
+# DORMANT and the oracle stays byte-exact (the fire condition never
+# triggers spuriously; the hook itself is observer-neutral).
+say "triangle-flutter: dormant over the attract demo (oracle-exact)"
+fixture "$WORK/flutter" triangle-flutter
+out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
+        --mods-dir "$WORK/flutter" 2>&1)"
+if printf '%s\n' "$out" | grep -q "triangle-flutter: armed"; then
+    ok "hook armed (dispatcher override live)"
+else
+    bad "flutter hook never armed"
+fi
+if printf '%s\n' "$out" | grep -q "triangle-flutter: flutter"; then
+    bad "flutter fired during the attract demo (spurious trigger)"
+else
+    ok "no spurious fire (demo has no player glides)"
+fi
+if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
+    ok "oracle PASS with the gameplay mod enabled but dormant"
+else
+    bad "oracle did not PASS with dormant triangle-flutter"
+fi
+
+# ── 12. [test]-block rungs through the real modtest runner ──────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
         mods/hud-stopwatch mods/state-rewind mods/ghost-lite \
+        mods/triangle-flutter \
         mods/hd-single-texture mods/music-swap; then
     ok "modtest runner: all [test] blocks green"
 else

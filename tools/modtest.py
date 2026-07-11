@@ -12,6 +12,7 @@ harness locally:
 mod.toml schema:
 
     [test]
+    args = "--skip-to-level artisans" # optional extra engine flags
     frames = 8000              # run window (--frame-limit)
     expect_oracle = "pass"     # "pass" | "fail" | "skip" (default skip)
                                #   pass: PSX-oracle byte-exact (observer
@@ -34,6 +35,7 @@ Exit 0 = all mods green; 1 = any failure.
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -80,7 +82,7 @@ def parse_manifest(mod_dir: Path):
             section = line.strip("[]").strip()
             if section == "test":
                 m["test"] = {"frames": 8000, "expect_oracle": "skip",
-                             "expect_log": [], "input": None}
+                             "expect_log": [], "input": None, "args": None}
             continue
         if "=" not in line:
             continue
@@ -99,6 +101,8 @@ def parse_manifest(mod_dir: Path):
                 m["test"]["expect_log"] = ARR_RE.findall(val)
             elif key == "input":
                 m["test"]["input"] = val.strip('"')
+            elif key == "args":
+                m["test"]["args"] = val.strip('"')
     return m
 
 
@@ -148,7 +152,12 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
                    "--run-recomp", "0x80012204",
                    "--frame-limit", frames, "--mods-dir", str(fixture)]
         if test["input"]:
-            cmd += ["--bk2", str(mod_dir / test["input"])]
+            cmd += ["--bk2", str(mod_dir / test["input"]), "--bk2-stop-on-end"]
+        if test["args"]:
+            # engine flags; in oracle mode cmd already ends with the
+            # post-`--` engine-arg tail, so appending works in both modes
+            cmd += shlex.split(test["args"])
+
 
         r = subprocess.run(cmd, cwd=REPO, env=env, timeout=600,
                            capture_output=True, text=True)
