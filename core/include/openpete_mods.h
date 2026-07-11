@@ -118,6 +118,14 @@ int openpete_mods_state_register(openpete_mod_state_save_fn save,
                                  openpete_mod_state_load_fn load,
                                  const char* owner);
 
+/* Asset-overlay roots: one per enabled mod with an assets/ dir, in
+ * enabled order (= priority; later wins). Consumers (texture pack,
+ * music override) layer these over their base dirs. */
+int         openpete_mods_register_asset_root(const char* dir,
+                                              const char* owner);
+int         openpete_mods_asset_root_count(void);
+const char* openpete_mods_asset_root(int i, const char** owner);
+
 /* savestate.c: append/read the trailing "mods" section (per-mod blobs).
  * Read buffers while the file is open and tolerates pre-mods files
  * (EOF ⇒ nothing to restore); dispatch runs after the engine committed

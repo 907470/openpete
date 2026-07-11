@@ -230,11 +230,69 @@ else
     bad "alias override never fired"
 fi
 
-# ── 8. [test]-block rungs through the real modtest runner ───────────────
+# ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
+say "asset overlay: mod texture joins the pack (rung 7 scan)"
+fixture "$WORK/tex" hd-single-texture
+out="$(timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+        --frame-limit 300 --mods-dir "$WORK/tex" \
+        --screenshot-on-frame 200 \
+        --screenshot-output "$WORK/tex-{n}.png" 2>&1)"
+if printf '%s\n' "$out" | grep -q "\[texpack\] + mod hd-single-texture: 1 entry"; then
+    ok "mod texture scanned into the replacement pack"
+else
+    bad "mod texture scan line missing"
+    printf '%s\n' "$out" | grep -i texpack | head -3
+fi
+
+say "asset overlay: two mods collide on one asset — last in order wins (rung 10)"
+for m in duel-a duel-b; do
+    mkdir -p "$WORK/duelsrc/$m/assets/textures/replacements"
+    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = 1\n' "$m" \
+        > "$WORK/duelsrc/$m/mod.toml"
+    python3 - "$WORK/duelsrc/$m/assets/textures/replacements/title_ui.png" <<'PY'
+import sys, zlib, struct
+w = h = 8
+raw = b''.join(b'\x00' + b'\xff\x00\x00\xff' * w for _ in range(h))
+def chunk(t, d):
+    return struct.pack('>I', len(d)) + t + d + \
+           struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+png = b'\x89PNG\r\n\x1a\n' + \
+      chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) + \
+      chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+open(sys.argv[1], 'wb').write(png)
+PY
+done
+mkdir -p "$WORK/duel"
+ln -sfn "$WORK/duelsrc/duel-a" "$WORK/duel/duel-a"
+ln -sfn "$WORK/duelsrc/duel-b" "$WORK/duel/duel-b"
+run_duel() { # run_duel -> stdout+stderr (short native-init headless run)
+    timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+        --frame-limit 300 --mods-dir "$WORK/duel" \
+        --screenshot-on-frame 200 \
+        --screenshot-output "$WORK/duel-{n}.png" 2>&1
+}
+printf 'duel-a\nduel-b\n' > "$WORK/duel/enabled.txt"
+out="$(run_duel)"
+if printf '%s\n' "$out" | grep -q 'mod duel-b overrides "title_ui" (was mod duel-a)'; then
+    ok "later-enabled mod wins the asset (b over a)"
+else
+    bad "duel resolution wrong for order [a,b]"
+    printf '%s\n' "$out" | grep -i texpack | head -3
+fi
+printf 'duel-b\nduel-a\n' > "$WORK/duel/enabled.txt"
+out="$(run_duel)"
+if printf '%s\n' "$out" | grep -q 'mod duel-a overrides "title_ui" (was mod duel-b)'; then
+    ok "flipping the order flips the winner (a over b)"
+else
+    bad "duel resolution wrong for order [b,a]"
+fi
+
+# ── 9. [test]-block rungs through the real modtest runner ───────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch mods/state-rewind; then
+        mods/hud-stopwatch mods/state-rewind \
+        mods/hd-single-texture mods/music-swap; then
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"

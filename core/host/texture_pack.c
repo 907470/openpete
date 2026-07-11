@@ -14,6 +14,7 @@
  * resolved id (openpete-texture-replacement plan: hash exactly what was
  * uploaded, never a guessed VRAM region). */
 #include "texture_pack.h"
+#include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_native_vram.h"
 
 #include <stdio.h>
@@ -77,12 +78,21 @@ typedef struct {
     unsigned char *px;             /* lazy; NULL until first match */
     int w, h;
     int load_failed;
+    unsigned char src;             /* index into s_srcs (0 = base pack dir) */
     char name[96];                 /* filename; for symbolic: asset name (no .png) */
 } tp_pack_entry;
 static tp_pack_entry s_pack[TP_PACK_MAX];
 static int  s_pack_n = 0;
 static char s_repl_dir[512];
 static int  s_repl_active = 0;
+/* Layered sources (asset-overlay v1): [0] = the base pack dir; then one
+ * per enabled mod with an assets/textures/replacements/ dir, in enabled
+ * order. A later source shipping the SAME identity replaces the earlier
+ * entry at scan time (last-writer-wins — the overlay's single priority
+ * truth), logged for the resolved-asset assert. */
+#define TP_SRC_MAX 17
+static struct { char dir[560]; char label[64]; } s_srcs[TP_SRC_MAX];
+static int s_src_n = 0;
 static char s_dir_override[512];   /* --texpack-dir; empty = unset (see set_dir_override) */
 
 void texture_pack_set_dir_override(const char *dir)
@@ -95,6 +105,69 @@ void texture_pack_set_dir_override(const char *dir)
 #define TP_MATCH_SLOTS 8192
 typedef struct { uint64_t key; int entry; } tp_match_slot;
 static tp_match_slot s_match[TP_MATCH_SLOTS];
+
+/* Scan one source dir into s_pack. A duplicate identity REPLACES the
+ * existing entry in place (last-writer-wins across sources). Returns
+ * entries touched (added or overridden). */
+static int tp_scan_dir(int src)
+{
+    DIR *d = opendir(s_srcs[src].dir);
+    if (!d) return 0;
+    int touched = 0;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        const char *dot = strrchr(de->d_name, '.');
+        if (!dot || strcmp(dot, ".png") != 0) continue;
+        if ((int)strlen(de->d_name) >= (int)sizeof(s_pack[0].name)) continue;
+        tp_pack_entry tmp;
+        unsigned long long th, ph;
+        int bx, by, bw, bh, bpp;
+        memset(&tmp, 0, sizeof tmp);
+        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
+                   &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
+            tmp.thash = th; tmp.phash = ph; tmp.bpp = bpp;
+            tmp.bx = bx; tmp.by = by; tmp.bw = bw; tmp.bh = bh;
+            snprintf(tmp.name, sizeof tmp.name, "%s", de->d_name);
+        } else {
+            /* Symbolic entry: <asset>.png, matched against the game layer's
+             * texture_pack_annotate name; covers the full upload. */
+            tmp.symbolic = 1;
+            snprintf(tmp.name, sizeof tmp.name, "%.*s",
+                     (int)(dot - de->d_name), de->d_name);
+        }
+        tmp.src = (unsigned char)src;
+        /* Same identity from an earlier source? Replace (later = higher
+         * priority) and say so — the resolved-asset table in log form. */
+        int hit = -1;
+        for (int i = 0; i < s_pack_n; i++) {
+            if (s_pack[i].symbolic != tmp.symbolic) continue;
+            if (tmp.symbolic ? (strcmp(s_pack[i].name, tmp.name) == 0)
+                             : (s_pack[i].thash == tmp.thash &&
+                                s_pack[i].phash == tmp.phash &&
+                                s_pack[i].bpp == tmp.bpp &&
+                                s_pack[i].bx == tmp.bx &&
+                                s_pack[i].by == tmp.by &&
+                                s_pack[i].bw == tmp.bw &&
+                                s_pack[i].bh == tmp.bh)) { hit = i; break; }
+        }
+        if (hit >= 0) {
+            fprintf(stderr, "[texpack] %s overrides \"%s\" (was %s)\n",
+                    s_srcs[src].label, tmp.name,
+                    s_srcs[s_pack[hit].src].label);
+            if (s_pack[hit].px) { /* identity re-resolved: drop stale pixels */
+                stbi_image_free(s_pack[hit].px);
+            }
+            tmp.w = tmp.h = 0;
+            s_pack[hit] = tmp;
+            touched++;
+        } else if (s_pack_n < TP_PACK_MAX) {
+            s_pack[s_pack_n++] = tmp;
+            touched++;
+        }
+    }
+    closedir(d);
+    return touched;
+}
 
 static void tp_repl_scan(void)
 {
@@ -111,36 +184,35 @@ static void tp_repl_scan(void)
         if (!base) return;
         snprintf(s_repl_dir, sizeof s_repl_dir, "%sassets/textures/replacements", base);
     }
-    DIR *d = opendir(s_repl_dir);
-    if (!d) return;
-    struct dirent *de;
-    while ((de = readdir(d)) && s_pack_n < TP_PACK_MAX) {
-        const char *dot = strrchr(de->d_name, '.');
-        if (!dot || strcmp(dot, ".png") != 0) continue;
-        if ((int)strlen(de->d_name) >= (int)sizeof(s_pack[0].name)) continue;
-        tp_pack_entry *e = &s_pack[s_pack_n];
-        unsigned long long th, ph;
-        int bx, by, bw, bh, bpp;
-        memset(e, 0, sizeof *e);
-        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
-                   &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
-            e->thash = th; e->phash = ph; e->bpp = bpp;
-            e->bx = bx; e->by = by; e->bw = bw; e->bh = bh;
-            snprintf(e->name, sizeof e->name, "%s", de->d_name);
-        } else {
-            /* Symbolic entry: <asset>.png, matched against the game layer's
-             * texture_pack_annotate name; covers the full upload. */
-            e->symbolic = 1;
-            snprintf(e->name, sizeof e->name, "%.*s",
-                     (int)(dot - de->d_name), de->d_name);
-        }
-        s_pack_n++;
+    s_src_n = 0;
+    snprintf(s_srcs[0].dir, sizeof s_srcs[0].dir, "%s", s_repl_dir);
+    snprintf(s_srcs[0].label, sizeof s_srcs[0].label, "base pack");
+    s_src_n = 1;
+    tp_scan_dir(0);
+    /* Mod asset roots, enabled order = priority (later wins). */
+    int n_roots = openpete_mods_asset_root_count();
+    for (int r = 0; r < n_roots && s_src_n < TP_SRC_MAX; r++) {
+        const char* owner = NULL;
+        const char* root = openpete_mods_asset_root(r, &owner);
+        if (!root) continue;
+        int si = s_src_n;
+        snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir,
+                 "%s/textures/replacements", root);
+        snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
+                 owner ? owner : "?");
+        int before = s_pack_n;
+        s_src_n++;
+        int added = tp_scan_dir(si);
+        if (added > 0 || s_pack_n != before)
+            fprintf(stderr, "[texpack] + %s: %d entr%s (%s)\n",
+                    s_srcs[si].label, added, added == 1 ? "y" : "ies",
+                    s_srcs[si].dir);
     }
-    closedir(d);
     s_repl_active = s_pack_n > 0;
     if (s_repl_active)
-        fprintf(stderr, "[texpack] replacement pack active: %d entries in %s\n",
-                s_pack_n, s_repl_dir);
+        fprintf(stderr, "[texpack] replacement pack active: %d entries "
+                "(%d source%s)\n", s_pack_n, s_src_n,
+                s_src_n == 1 ? "" : "s");
 }
 
 void texture_pack_init(void)
@@ -391,8 +463,8 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     if (ei < 0) return 0;
     tp_pack_entry *e = &s_pack[ei];
     if (!e->px && !e->load_failed) {            /* lazy first load */
-        char path[640];
-        snprintf(path, sizeof path, "%s/%s%s", s_repl_dir, e->name,
+        char path[704];
+        snprintf(path, sizeof path, "%s/%s%s", s_srcs[e->src].dir, e->name,
                  e->symbolic ? ".png" : "");
         int comp = 0;
         e->px = stbi_load(path, &e->w, &e->h, &comp, 4);

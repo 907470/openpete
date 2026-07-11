@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include "openpete_log.h"
+#include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_time.h"
 #include "wav_loader.h"
 
@@ -103,16 +104,31 @@ static const op_wav_pcm* load_track(int track)
     if (s.cache_state[track] == MO_FAILED) return NULL;
 
     char path[sizeof(s.dir) + 1040];
-    if (s.manifest[track])
-        snprintf(path, sizeof(path), "%s%s", s.dir, s.manifest[track]);
-    else
-        snprintf(path, sizeof(path), "%strack_%02d.wav", s.dir, track);
+    /* Asset overlay: mod roots outrank the base dir; later-enabled mods
+     * outrank earlier ones (single priority truth with the texture
+     * namespace). First hit wins. */
+    int found = 0;
+    for (int r = openpete_mods_asset_root_count() - 1; r >= 0 && !found;
+         r--) {
+        const char* root = openpete_mods_asset_root(r, NULL);
+        if (!root) continue;
+        snprintf(path, sizeof(path), "%s/music/track_%02d.wav", root,
+                 track);
+        FILE* mf = fopen(path, "rb");
+        if (mf) { fclose(mf); found = 1; }
+    }
+    if (!found) {
+        if (s.manifest[track])
+            snprintf(path, sizeof(path), "%s%s", s.dir, s.manifest[track]);
+        else
+            snprintf(path, sizeof(path), "%strack_%02d.wav", s.dir, track);
 
-    /* Missing file is the common no-override case — probe quietly and
-     * don't latch, so files dropped in mid-session are picked up. */
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-    fclose(f);
+        /* Missing file is the common no-override case — probe quietly and
+         * don't latch, so files dropped in mid-session are picked up. */
+        FILE* f = fopen(path, "rb");
+        if (!f) return NULL;
+        fclose(f);
+    }
 
     if (op_wav_load(path, &s.cache[track]) != 0) {
         s.cache_state[track] = MO_FAILED;  /* op_wav_load warned */

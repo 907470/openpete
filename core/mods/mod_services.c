@@ -180,3 +180,39 @@ void openpete_mods_state_dispatch(void) {
     s_read_buf = NULL;
     s_read_len = 0;
 }
+
+/* ---- asset-overlay roots (P2: logical-ID asset overlay v1) ----------- */
+/* One root per enabled mod with an assets/ dir, registered by the loader
+ * in ENABLED ORDER (= priority; later wins). Consumers (texture pack,
+ * music override) layer these over their base directories. */
+
+#define ASSET_ROOTS_MAX 16
+
+static struct {
+    char        dir[1024];
+    const char* owner;
+} s_roots[ASSET_ROOTS_MAX];
+static int s_root_n = 0;
+
+int openpete_mods_register_asset_root(const char* dir, const char* owner) {
+    if (!dir || !dir[0]) return -1;
+    if (s_root_n >= ASSET_ROOTS_MAX) {
+        OPL_WARN_F("mods", "asset-root table full (%d) — %s's assets "
+                   "ignored", ASSET_ROOTS_MAX, owner ? owner : "?");
+        return -1;
+    }
+    snprintf(s_roots[s_root_n].dir, sizeof s_roots[s_root_n].dir, "%s", dir);
+    s_roots[s_root_n].owner = owner;
+    s_root_n++;
+    OPL_INFO_F("mods", "asset root registered: %s (%s)", dir,
+               owner ? owner : "?");
+    return 0;
+}
+
+int openpete_mods_asset_root_count(void) { return s_root_n; }
+
+const char* openpete_mods_asset_root(int i, const char** owner) {
+    if (i < 0 || i >= s_root_n) return NULL;
+    if (owner) *owner = s_roots[i].owner;
+    return s_roots[i].dir;
+}

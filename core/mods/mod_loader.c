@@ -500,6 +500,23 @@ static int build_mod(const struct openpete_mod* mod, const char* sdk_dir,
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 
 static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
+    /* Pure-asset mods (textures/music only) are legal: no src/ dir means
+     * nothing to compile or dlopen — the manifest + assets/ root are the
+     * whole mod. */
+    {
+        char src_dir[MOD_PATH_MAX + 8];
+        snprintf(src_dir, sizeof src_dir, "%s/src", mod->dir);
+        struct stat st;
+        if (stat(src_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            OPL_INFO_F("mods", "loaded %s v%s (assets only)", mod->id,
+                       mod->version);
+            char assets[MOD_PATH_MAX + 8];
+            snprintf(assets, sizeof assets, "%s/assets", mod->dir);
+            if (stat(assets, &st) == 0 && S_ISDIR(st.st_mode))
+                (void)openpete_mods_register_asset_root(assets, mod->id);
+            return 0;
+        }
+    }
     char so_path[MOD_PATH_MAX];
     if (build_mod(mod, sdk_dir, so_path, sizeof so_path) != 0) return -1;
 
@@ -524,6 +541,15 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
     }
     OPL_INFO_F("mods", "loaded %s v%s (%s)", mod->id, mod->version,
                so_path);
+    /* Asset overlay: a mod's assets/ dir joins the overlay stack in
+     * enabled order (texture/music namespaces consume it). */
+    {
+        char assets[MOD_PATH_MAX + 8];
+        snprintf(assets, sizeof assets, "%s/assets", mod->dir);
+        struct stat st;
+        if (stat(assets, &st) == 0 && S_ISDIR(st.st_mode))
+            (void)openpete_mods_register_asset_root(assets, mod->id);
+    }
     return 0;
 }
 
