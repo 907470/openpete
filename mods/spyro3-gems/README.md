@@ -31,10 +31,12 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
    pass, repoint `g_Models[83..87]` at the park and refresh the burst
    colour words at `D_8006E44C[12..16]` (main-EXE .data).
 3. **SFX overlay service** — `sfx_replace("gem_pickup", …)` stages the
-   S3 chime host-side; `sfx_hook` drives the canonical rising ladder
-   (`0x400 + 0x40·n`, ~0.5 s streak reset) per play. Guest RAM, sound
-   tables and the gameplay `rand()` stream stay byte-stock — the engine
-   substitutes on a host copy of the voice attrs at key-on.
+   S3 gemCollect sample host-side at its canonical flat pitch (0x400 =
+   11025 Hz; the def has no variance and S3 gem touches don't
+   pitch-cycle — the rising blips belong to S3's counter-tick sparkle
+   mechanic, which S1 doesn't have). Guest RAM, sound tables and the
+   gameplay `rand()` stream stay byte-stock — the engine substitutes on
+   a host copy of the voice attrs at key-on.
 
 ## Conversion notes
 
@@ -61,9 +63,9 @@ See `docs/injection-spec.md` for byte-level evidence. Summary:
 
 - Gems don't spawn S3's flying digit-sparkles; S1's number mobys and
   yellow twinkle remain (S1 behavior, S3 look for model/burst/chime).
-- Chime ladder is canonical: `0x400 + 0x40·n` (a missed delay-slot
-  `+0x1000` in the arrival handler; `assets/s3/pitch_canonical.md`),
-  capped at one octave with a ~0.5 s streak reset.
+- No pitch ladder: S3's rising blips are its counter-tick sparkles
+  (`assets/s3/pitch_canonical.md` documents that mechanism), not the
+  gem touch — the collect gling plays flat, as in S3.
 - The model/burst guest writes make this mod gameplay-divergent (like
   double-gems); the chime alone would now be sim-neutral via the SFX
   overlay service.

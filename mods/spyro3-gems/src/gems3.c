@@ -9,10 +9,10 @@
  *              install pass, repoint g_Models[83..87] at the park models
  *              (bit31 clear = SimpleModel, m_Verts==model+0x10 = baked).
  *  3. SFX overlay service: sfx_replace("gem_pickup", ...) stages the S3
- *              chime host-side and sfx_hook drives the rising ladder
- *              per play — guest RAM, sound tables and the gameplay
- *              rand() stream stay byte-stock (the service substitutes
- *              on a host copy of the voice attrs at key-on).
+ *              gemCollect sample host-side at its canonical flat pitch —
+ *              guest RAM, sound tables and the gameplay rand() stream
+ *              stay byte-stock (the service substitutes on a host copy
+ *              of the voice attrs at key-on).
  *
  * Without the asset pack the mod runs in calibration mode: it only logs
  * the stock gem model geometry (extent/counts) and touches nothing.
@@ -47,13 +47,6 @@ typedef struct {
 #define GEM_MODEL_SLOT0   (OP_GADDR_g_Models + 83u * 4u)  /* g_Models[83] */
 #define BURST_TABLE_VA    0x8006E47Cu   /* D_8006E44C words 12..16 */
 
-/* S3 pitch ladder (assets/s3/pitch_canonical.md): voice pitch =
- * 0x400 + 0x40*n, n resetting to 0 per burst (~0.25s cadence). Cap at
- * one octave and reset after ~0.5s so a normal gem trail re-anchors at
- * the canonical 11kHz chime instead of parking high. */
-#define LADDER_MAX        16
-#define CHIME_RESET_MS    500u
-
 static const openpete_mod_api_t* A;
 static openpete_mod_t* SELF;
 
@@ -61,16 +54,6 @@ static pack_header_t s_pack;
 static int      s_have_pack;
 static int      s_calibrated;          /* stock-gem dump done */
 static uint8_t* s_vag_host;            /* host copy for sfx_replace */
-static uint32_t s_streak;
-
-static uint16_t ladder_pitch(uint32_t step)
-{
-    uint32_t base = s_pack.pitch_base ? s_pack.pitch_base : 0x400u;
-    uint32_t p;
-    if (step >= LADDER_MAX) step = LADDER_MAX - 1;
-    p = base + step * (base >> 4);
-    return (uint16_t)(p > 0x3FFFu ? 0x3FFFu : p);
-}
 
 /* ── calibration: log the stock gem models once, before we overwrite ─── */
 
@@ -107,9 +90,12 @@ static void dump_stock_gem(int cls_off)
             int vz = v[i * 3 + 0] * 2;
             int vx = v[i * 3 + 1] * 2;
             int vy = v[i * 3 + 2] * 2;
-            if (vx < mn[0]) mn[0] = vx; if (vx > mx[0]) mx[0] = vx;
-            if (vy < mn[1]) mn[1] = vy; if (vy > mx[1]) mx[1] = vy;
-            if (vz < mn[2]) mn[2] = vz; if (vz > mx[2]) mx[2] = vz;
+            if (vx < mn[0]) mn[0] = vx;
+            if (vx > mx[0]) mx[0] = vx;
+            if (vy < mn[1]) mn[1] = vy;
+            if (vy > mx[1]) mx[1] = vy;
+            if (vz < mn[2]) mn[2] = vz;
+            if (vz > mx[2]) mx[2] = vz;
             A->log(SELF, OP_MOD_LOG_INFO,
                    "  gem %d v%02d: VX=%4d VY=%4d VZ=%4d", 83 + cls_off, i, vx, vy, vz);
         }
@@ -151,21 +137,12 @@ static void on_patch_models(CPUState* cpu)
 }
 
 /* ── chime: SFX overlay service ──────────────────────────────────────
- * The whole guest-side dance this used to need (call_addr'd SpuWrite
- * upload, SoundDefinition repoint, variance zeroing that shifted the
- * gameplay rand() stream) now lives in the engine: sfx_replace stages
- * the sample host-side and the per-play hook drives the S3 ladder.
- * Guest RAM stays byte-stock. */
-
-static void chime_hook(openpete_sfx_event_t* ev)
-{
-    if (ev->play_index == 0 || ev->ms_since_prev > CHIME_RESET_MS)
-        s_streak = 0;
-    ev->pitch = ladder_pitch(s_streak);
-    if (s_streak + 1 < LADDER_MAX) s_streak++;
-    A->log(SELF, OP_MOD_LOG_INFO, "chime: streak=%u pitch=%03x gap=%ums",
-           s_streak, ev->pitch, ev->ms_since_prev);
-}
+ * sfx_replace stages the S3 gemCollect sample host-side and plays it
+ * at its canonical flat pitch (0x400 = 11025 Hz; the def's pitch
+ * min == max, no variance — S3 gem touches don't pitch-cycle; the
+ * rising blips belong to S3's counter-tick sparkles, a mechanic S1
+ * doesn't have). Guest RAM and the gameplay rand() stream stay
+ * byte-stock. */
 
 /* S3G_DUMP_VERTS=1: one-shot live-gem pose dump once level mobys exist.
  * Ground truth for the model→world axis map: m_Rotation bytes +0x44/45/46
@@ -268,8 +245,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     }
     if (s_have_pack && s_vag_host) {
         if (api->sfx_replace(self, "gem_pickup", s_vag_host, s_pack.vag_size,
-                             (uint16_t)s_pack.pitch_base) ||
-            api->sfx_hook(self, "gem_pickup", chime_hook)) {
+                             (uint16_t)s_pack.pitch_base)) {
             A->log(SELF, OP_MOD_LOG_ERROR, "sfx registration failed");
             return 1;
         }
