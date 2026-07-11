@@ -6,8 +6,10 @@
 # extract it into a clean directory, --ingest the reference disc, let
 # first boot extract+recompile+link the module, then replay the full
 # 20k hardware oracle against the dist exe + its self-built module.
-# This is the closest thing to "a stranger downloaded the zip and it
-# worked" that CI can check.
+# Finally, drop a source-only mod into mods/ and prove a subsequent
+# boot compiles + loads it (openpete-mod-compile-on-boot). This is the
+# closest thing to "a stranger downloaded the zip and it worked" that
+# CI can check.
 #
 # Exit 0 = PASS; 2 = failure; 64 = prerequisites missing.
 set -euo pipefail
@@ -52,4 +54,19 @@ echo "[dist-gate] full 20k oracle on the dist exe + self-built module..."
     || { echo "[dist-gate] FAIL: oracle divergence or crash" >&2;
          tail -20 "$WORK/oracle.log" >&2; exit 2; }
 
-echo "[dist-gate] PASS — packaged artifact: extract → ingest → self-build → oracle-clean"
+echo "[dist-gate] drop-in source mod compiles + loads on boot..."
+cp -r mods/hello-anchor "$appdir/mods/"
+rm -rf "$appdir/mods/hello-anchor/.build"
+( cd "$appdir" && ./openpete-spyro1 --headless --frame-limit 300 \
+      --run-recomp 0x80012204 --max-runtime-seconds 300 ) \
+      > "$WORK/mod-boot.log" 2>&1 \
+    || { echo "[dist-gate] FAIL: boot with drop-in mod crashed" >&2;
+         tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
+[[ -f "$appdir/mods/hello-anchor/.build/hello-anchor.so" ]] \
+    || { echo "[dist-gate] FAIL: drop-in mod did not compile" >&2;
+         tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
+grep -q "loaded hello-anchor" "$WORK/mod-boot.log" \
+    || { echo "[dist-gate] FAIL: drop-in mod compiled but did not load" >&2;
+         tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
+
+echo "[dist-gate] PASS — packaged artifact: extract → ingest → self-build → oracle-clean → mod drop-in"

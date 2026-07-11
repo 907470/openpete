@@ -192,6 +192,14 @@ int main(int argc, char** argv) {
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
         return 1;
 
+    /* Mod compile-on-boot (openpete-mod-compile-on-boot): compile any
+     * stale enabled source mods behind the splash while it is still
+     * alive — run_task lazy-opens the window only if there is real work,
+     * so a boot with nothing stale never flashes it. Loading stays in
+     * openpete_run(); this pass only warms the build cache. */
+    openpete_mods_prepare(&opts, spyro1_splash_progress,
+                          spyro1_splash_run_task);
+
     /* In-process continuation: the splash's job ends where the game
      * window begins. In the default windowed vk mode the game ADOPTS the
      * splash window (native_render retitles + reuses it) so the window

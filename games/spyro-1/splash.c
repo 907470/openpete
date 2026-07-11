@@ -247,10 +247,19 @@ int spyro1_splash_active(void) { return s_win != NULL; }
 /* ---- progress (called from disc_library + recomp_build) --------------- */
 
 static void progress_render(const char* stage, int done, int total) {
+    /* Mod compiles ride the same screen as the first-boot disc build
+     * but with their own banner — a warm boot that only recompiles a
+     * changed mod is neither "first-time" nor about the disc. */
+    int mods = strncmp(stage, "COMPILING MODS", 14) == 0;
     frame_begin();
-    draw_text_centered(160 + YOFF, 2, "FIRST-TIME SETUP", 220, 210, 240);
+    draw_text_centered(160 + YOFF, 2,
+                       mods ? "PREPARING MODS" : "FIRST-TIME SETUP",
+                       220, 210, 240);
     char line[160];
-    snprintf(line, sizeof line, "%s", stage);
+    if (mods && total > 0)
+        snprintf(line, sizeof line, "%s %d/%d", stage, done, total);
+    else
+        snprintf(line, sizeof line, "%s", stage);
     draw_text_centered(196 + YOFF, 2, line, 255, 255, 255);
     SDL_FRect outline = {80, 240 + YOFF, SPLASH_W - 160, 22};
     SDL_SetRenderDrawColor(s_ren, 90, 70, 140, 255);
@@ -263,7 +272,8 @@ static void progress_render(const char* stage, int done, int total) {
         SDL_RenderFillRect(s_ren, &fill);
     }
     draw_text_centered(292 + YOFF, 1,
-        "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.",
+        mods ? "CHANGED MOD SOURCES ARE COMPILED FOR THIS PC."
+             : "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.",
         150, 130, 190);
     frame_end("progress");
 }

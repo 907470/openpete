@@ -11,10 +11,10 @@
 // Mods compile against <exe>/sdk/ (openpete_mod_api.h, psx_runtime.h,
 // openpete_sdk_symbols.h — staged there by the build) into
 // mods/<id>/.build/<id>.so, rebuilt when the CONTENT-HASH build key
-// (api version + SDK headers + sources) differs from the stamped one —
-// mtime churn never forces a rebuild. Mods may also ship as
-// <id>.zip (unpacked to .unpacked/<id>/, content-stamped; "folder or
-// zip, identical"). The shared object is dlopen'd and its
+// (api version + compiler identity + SDK headers + sources) differs
+// from the stamped one — mtime churn never forces a rebuild. Mods may
+// also ship as <id>.zip (unpacked to .unpacked/<id>/, content-stamped;
+// "folder or zip, identical"). The shared object is dlopen'd and its
 // openpete_mod_entry(api, self) is called to register overrides.
 //
 // Failure posture: a mod that fails to parse/build/load is disabled with
@@ -22,16 +22,21 @@
 // never brick a launch. Zero mods loaded leaves the engine byte-
 // identical to a modless build (openpete_mods_active == 0).
 //
-// Platform: POSIX compiles mods on load; Windows loads PREBUILT DLLs
-// (mods/<id>/.build/<id>.dll, e.g. mingw cross-builds) until the
-// bundled-toolchain story from openpete-distribution-local-recomp
-// brings compile-on-load there too.
+// Platform (openpete-mod-compile-on-boot): every platform compiles
+// src/ mods on load — Windows resolves the bundled llvm-mingw the
+// distribution package ships (recomp/tools/llvm-mingw), falling back to
+// a prebuilt mods/<id>/.build/<id>.dll only when no compiler exists. A
+// mod with NO src/ but a prebuilt .build/<id>.{so,dll} is a binary-only
+// mod: loaded as-is, never hashed or compiled. openpete_mods_prepare()
+// lets the game compile stale mods behind its splash (progress UI)
+// before openpete_mods_init() loads them from the warmed cache.
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
-#include "../host/sha256.h" /* content-hash build cache key */
-#include "miniz.h"         /* zip mods (folder or zip, identical) */
+#include "../host/sha256.h"     /* content-hash build cache key */
+#include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
+#include "miniz.h"              /* zip mods (folder or zip, identical) */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,14 +48,10 @@
 #include <sys/types.h>
 
 #ifdef _WIN32
-/* Windows: mods LOAD from prebuilt DLLs (mods/<id>/.build/<id>.dll —
- * cross-compiled with mingw or built on a dev box); compile-on-load
- * arrives with the bundled toolchain (openpete-distribution-local-
- * recomp). Everything else (manifest, deps, chains, services) is
- * identical to POSIX. */
 #include <windows.h>
 #include <direct.h>
 #define MOD_DL_EXT ".dll"
+#define MOD_Q "\""  /* cmd.exe argument quoting */
 #define mod_mkdir(p) _mkdir(p)
 static void* mod_dlopen(const char* path) {
     return (void*)LoadLibraryA(path);
@@ -69,6 +70,7 @@ static const char* mod_dlerror(void) {
 #else
 #include <dlfcn.h>
 #define MOD_DL_EXT ".so"
+#define MOD_Q "'"   /* POSIX shell argument quoting */
 #define mod_mkdir(p) mkdir((p), 0755)
 static void* mod_dlopen(const char* path) {
     return dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -124,6 +126,8 @@ struct openpete_mod {
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
     char  build_key[65]; /* content-hash build key (hot-reload watch) */
+    int   has_src;       /* 0 = binary-only/assets-only: never compiled,
+                          * skipped by the hot-reload watch */
     int   enabled;       /* live-toggle state (loaded mods start on) */
     void* dl;
 };
@@ -364,6 +368,11 @@ static void exports_remove_owner(const char* id);
 
 static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len);
+static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
+                           char key_out[65]);
+static int mod_compile(const char* mod_dir, const char* id,
+                       const char* sdk_dir, const char* key,
+                       const char* out_path, int stamp);
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 static const openpete_mod_api_t s_api;
 
@@ -391,16 +400,30 @@ static void mod_hot_reload(struct openpete_mod* mod) {
                     "now INERT until the next successful reload", mod->id);
         return;
     }
+    static unsigned s_hot_n = 0;
+    char hot_path[MOD_PATH_MAX + 32];
+    snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
+             mod->dir, mod->id, ++s_hot_n);
+#ifdef _WIN32
+    /* The boot-loaded base DLL is file-locked on Windows: compile
+     * straight to the unique .hotN name and skip the stamp — the base
+     * DLL goes stale, so the next boot recompiles it once and
+     * re-stamps. */
+    char key[65];
+    if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0 ||
+        mod_compile(mod->dir, mod->id, s_sdk_dir, key, hot_path, 0) != 0) {
+        OPL_ERROR_F("mods", "%s: reload compile failed — mod is now "
+                    "INERT until the next successful reload", mod->id);
+        return;
+    }
+    snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
+#else
     char so_path[MOD_PATH_MAX];
     if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
         OPL_ERROR_F("mods", "%s: reload compile failed — mod is now "
                     "INERT until the next successful reload", mod->id);
         return;
     }
-    static unsigned s_hot_n = 0;
-    char hot_path[MOD_PATH_MAX + 32];
-    snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
-             mod->dir, mod->id, ++s_hot_n);
     {   /* copy: a fresh inode guarantees dlopen loads a fresh object */
         FILE* in = fopen(so_path, "rb");
         FILE* outf = in ? fopen(hot_path, "wb") : NULL;
@@ -417,6 +440,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         fclose(in);
         fclose(outf);
     }
+#endif
     void* dl = mod_dlopen(hot_path);
     if (!dl) {
         OPL_ERROR_F("mods", "%s: reload dlopen failed: %s", mod->id,
@@ -451,14 +475,13 @@ static void hot_reload_poll(void) {
     if (++s_cnt % 64u) return;
     for (int i = 0; i < s_mod_count; i++) {
         struct openpete_mod* mod = &s_mods[i];
-        if (!mod->dl) continue;
-        char prev_key[65];
-        memcpy(prev_key, mod->build_key, sizeof prev_key);
-        char so_path[MOD_PATH_MAX];
-        /* build_mod recomputes the key; unchanged = cache hit (no-op). */
-        if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0)
+        if (!mod->dl || !mod->has_src) continue;
+        /* Key-only recompute (pure hashing, ms); the compile happens
+         * inside mod_hot_reload on a real change. */
+        char key[65];
+        if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0)
             continue;
-        if (strcmp(prev_key, mod->build_key) != 0)
+        if (strcmp(key, mod->build_key) != 0)
             mod_hot_reload(mod);
     }
 }
@@ -936,23 +959,78 @@ static void sort_srcs(char srcs[][MOD_PATH_MAX], int n) {
     }
 }
 
-/* Compile src/*.c → .build/<id>.so when the CONTENT-HASH build key
- * (api version + SDK header bytes + sorted source bytes) differs from
- * the stamped one — mtime churn (git checkout, cp) never forces a
- * rebuild, and real changes always do. Returns 0 with so_path filled. */
-static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
-                     char* so_path, size_t so_path_len) {
-    char src_dir[MOD_PATH_MAX];
-    snprintf(src_dir, sizeof src_dir, "%s/src", mod->dir);
-
-    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
-    int n_srcs = 0;
-
-    DIR* d = opendir(src_dir);
-    if (!d) {
-        OPL_ERROR_F("mods", "%s: no src/ directory", mod->id);
-        return -1;
+/* The compiler for mod builds. OPENPETE_MOD_CC is the explicit dev
+ * override; under it, the bundled toolchain the distribution package
+ * stages next to the exe (same paths as the first-boot module build in
+ * recomp_build.cpp) is the zero-config default; then the module build's
+ * env override; then the system compiler (POSIX only — Windows has
+ * none, "" = fall back to a prebuilt DLL). */
+static void mods_resolve_cc(char* cc, size_t cap) {
+    const char* env = getenv("OPENPETE_MOD_CC");
+    if (env && env[0]) {
+        snprintf(cc, cap, "%s", env);
+        return;
     }
+    {
+        const char* base = SDL_GetBasePath(); /* trailing sep, SDL-owned */
+#ifdef _WIN32
+        static const char* const rel = "recomp/tools/llvm-mingw/bin/"
+                                       "x86_64-w64-mingw32-clang.exe";
+#else
+        static const char* const rel = "recomp/tools/clang/bin/clang";
+#endif
+        char bundled[MOD_PATH_MAX];
+        snprintf(bundled, sizeof bundled, "%s%s", base ? base : "./", rel);
+        if (file_mtime(bundled) != (time_t)-1) {
+            snprintf(cc, cap, "%s", bundled);
+            return;
+        }
+    }
+    env = getenv("OPENPETE_CC");
+    if (env && env[0]) {
+        snprintf(cc, cap, "%s", env);
+        return;
+    }
+#ifdef _WIN32
+    cc[0] = '\0';
+#else
+    env = getenv("CC");
+    snprintf(cc, cap, "%s", env && env[0] ? env : "cc");
+#endif
+}
+
+/* First line of `<cc> --version`, cached per process — folded into the
+ * build key so a toolchain bump (or an author's stamp from a different
+ * box) invalidates the cache instead of silently reusing an object
+ * built by a different compiler. "" if the probe fails (degrades to
+ * source+SDK keying, the prior behavior). */
+static const char* mods_cc_identity(void) {
+    static int  s_probed = 0;
+    static char s_identity[256];
+    if (s_probed) return s_identity;
+    s_probed = 1;
+    char cc[MOD_PATH_MAX];
+    mods_resolve_cc(cc, sizeof cc);
+    if (!cc[0]) return s_identity;
+    char cmd[MOD_PATH_MAX + 32];
+    snprintf(cmd, sizeof cmd, MOD_Q "%s" MOD_Q " --version 2>&1", cc);
+    char out[1024];
+    if (openpete_host_spawn_capture(cmd, out, sizeof out) < 0) return s_identity;
+    out[strcspn(out, "\r\n")] = '\0';
+    snprintf(s_identity, sizeof s_identity, "%s", out);
+    return s_identity;
+}
+
+/* Enumerate + sort src/*.c. Returns the count, 0 if src/ has no .c
+ * files, or -1 if there is no src/ directory at all (quiet — callers
+ * decide whether that's binary-only, assets-only, or an error). */
+static int mod_list_srcs(const char* mod_dir,
+                         char srcs[][MOD_PATH_MAX]) {
+    char src_dir[MOD_PATH_MAX];
+    snprintf(src_dir, sizeof src_dir, "%s/src", mod_dir);
+    DIR* d = opendir(src_dir);
+    if (!d) return -1;
+    int n_srcs = 0;
     struct dirent* e;
     while ((e = readdir(d)) != NULL && n_srcs < MOD_SRCS_MAX) {
         size_t len = strlen(e->d_name);
@@ -961,21 +1039,33 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
         n_srcs++;
     }
     closedir(d);
-    if (n_srcs == 0) {
-        OPL_ERROR_F("mods", "%s: no .c sources in src/", mod->id);
-        return -1;
-    }
     sort_srcs(srcs, n_srcs);
+    return n_srcs;
+}
 
-    /* Build key: api version + SDK headers + sources, all by CONTENT.
-     * An SDK regen or api bump rebuilds every mod. */
+/* CONTENT-HASH build key: api version + compiler identity + SDK header
+ * bytes + sorted source bytes. mtime churn (git checkout, cp, zip
+ * re-extract) never changes it; an SDK regen, api bump, toolchain swap,
+ * or real source edit always does. Returns 0 with key_out filled, -1 if
+ * the mod has no compilable sources. */
+static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
+                           char key_out[65]) {
+    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
+    int n_srcs = mod_list_srcs(mod_dir, srcs);
+    if (n_srcs <= 0) return -1;
+
     openpete_sha256_ctx hc;
     openpete_sha256_init(&hc);
     const unsigned api_ver = OPENPETE_MOD_API_VERSION;
     openpete_sha256_update(&hc, &api_ver, sizeof api_ver);
+    {
+        const char* ident = mods_cc_identity();
+        openpete_sha256_update(&hc, ident, strlen(ident));
+    }
     static const char* const sdk_inputs[] = {
         "openpete_mod_api.h", "openpete_sdk_symbols.h",
         "openpete_sdk_wrappers.h", "psx_runtime.h",
+        "openpete_game_structs.h", "spyro1_actor_pose.h",
     };
     for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {
         char p[MOD_PATH_MAX];
@@ -985,110 +1075,195 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
     for (int i = 0; i < n_srcs; i++)
         (void)hash_file(&hc, srcs[i]);
     uint8_t digest[32];
-    char    key[65];
     openpete_sha256_final(&hc, digest);
-    openpete_sha256_hex(digest, key);
-    snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
+    openpete_sha256_hex(digest, key_out);
+    return 0;
+}
+
+static void mod_stamp_path(const char* mod_dir, const char* id,
+                           char* out, size_t cap) {
+    snprintf(out, cap, "%s/.build/%s.hash", mod_dir, id);
+}
+
+static void mod_read_stamp(const char* mod_dir, const char* id,
+                           char stamped[65]) {
+    stamped[0] = '\0';
+    char stamp_path[MOD_PATH_MAX + 16];
+    mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
+    FILE* f = fopen(stamp_path, "rb");
+    if (!f) return;
+    size_t got = fread(stamped, 1, 64, f);
+    stamped[got] = '\0';
+    if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+    fclose(f);
+}
+
+/* 1 = .build/<id>.{so,dll} exists and its stamp matches `key` — the
+ * cached object is current, nothing to compile. */
+static int mod_key_cached(const char* mod_dir, const char* id,
+                          const char* key) {
+    char so_path[MOD_PATH_MAX];
+    snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT, mod_dir,
+             id);
+    if (file_mtime(so_path) == (time_t)-1) return 0;
+    char stamped[65];
+    mod_read_stamp(mod_dir, id, stamped);
+    return strcmp(stamped, key) == 0;
+}
+
+/* Compile src/*.c → out_path with the resolved compiler. `stamp` = 1
+ * records the build key on success so an unchanged mod never
+ * recompiles (0 = hot-reload .hotN objects on Windows, where the base
+ * DLL is file-locked and must go stale until the next boot). */
+static int mod_compile(const char* mod_dir, const char* id,
+                       const char* sdk_dir, const char* key,
+                       const char* out_path, int stamp) {
+    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
+    int n_srcs = mod_list_srcs(mod_dir, srcs);
+    if (n_srcs <= 0) {
+        OPL_ERROR_F("mods", "%s: no .c sources in src/", id);
+        return -1;
+    }
+
+    char cc[MOD_PATH_MAX];
+    mods_resolve_cc(cc, sizeof cc);
+    if (!cc[0]) {
+        OPL_ERROR_F("mods", "%s: no compiler — expected the bundled "
+                    "toolchain at recomp/tools/ next to the exe, or set "
+                    "OPENPETE_MOD_CC", id);
+        return -1;
+    }
 
     char build_dir[MOD_PATH_MAX];
-    snprintf(build_dir, sizeof build_dir, "%s/.build", mod->dir);
+    snprintf(build_dir, sizeof build_dir, "%s/.build", mod_dir);
     mod_mkdir(build_dir); /* EEXIST is fine */
 
-    snprintf(so_path, so_path_len, "%s/%s" MOD_DL_EXT, build_dir, mod->id);
-    time_t so_m = file_mtime(so_path);
-
     char stamp_path[MOD_PATH_MAX + 16];
-    snprintf(stamp_path, sizeof stamp_path, "%s/%s.hash", build_dir, mod->id);
-    char stamped[65] = "";
-    {
-        FILE* f = fopen(stamp_path, "rb");
-        if (f) {
-            size_t got = fread(stamped, 1, sizeof stamped - 1, f);
-            stamped[got] = '\0';
-            if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
-            fclose(f);
-        }
+    mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
+
+#ifdef _WIN32
+    static const char* const flags =
+        "-shared -O2 -g -fno-strict-aliasing -Wall";
+#else
+    static const char* const flags =
+        "-shared -fPIC -O2 -g -fno-strict-aliasing -Wall";
+#endif
+    char cmd[8192];
+    int off = snprintf(cmd, sizeof cmd,
+                       MOD_Q "%s" MOD_Q " %s -I" MOD_Q "%s" MOD_Q
+                       " -o " MOD_Q "%s" MOD_Q,
+                       cc, flags, sdk_dir, out_path);
+    for (int i = 0; i < n_srcs && off < (int)sizeof cmd; i++)
+        off += snprintf(cmd + off, sizeof cmd - (size_t)off,
+                        " " MOD_Q "%s" MOD_Q, srcs[i]);
+    snprintf(cmd + off, sizeof cmd - (size_t)off,
+             " >" MOD_Q "%s/compile.log" MOD_Q " 2>&1", build_dir);
+
+    OPL_INFO_F("mods", "%s: compiling %d source file%s", id, n_srcs,
+               n_srcs == 1 ? "" : "s");
+    int rc = openpete_host_spawn(cmd);
+    if (rc != 0) {
+        OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) — "
+                    "disabled", id, build_dir);
+        /* Remove the STAMP only: nothing may cache-hit a failed build,
+         * but the object file survives — it may be an author-shipped
+         * prebuilt (cross-build handoff) that a no-compiler boot can
+         * still fall back to. Deleting it here destroyed exactly that
+         * artifact once; don't repeat it. */
+        remove(stamp_path);
+        return -1;
     }
-    if (so_m != (time_t)-1 && strcmp(stamped, key) == 0) {
+    if (stamp) {
+        FILE* f = fopen(stamp_path, "wb");
+        if (f) { fprintf(f, "%s\n", key); fclose(f); }
+    }
+    return 0;
+}
+
+/* Build src/*.c → .build/<id>.{so,dll} when the build key differs from
+ * the stamped one. Returns 0 with so_path filled (cache hit, fresh
+ * compile, or — Windows without a compiler — a prebuilt DLL). */
+static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
+                     char* so_path, size_t so_path_len) {
+    char key[65];
+    if (mod_compute_key(mod->dir, sdk_dir, key) != 0) {
+        OPL_ERROR_F("mods", "%s: no .c sources in src/", mod->id);
+        return -1;
+    }
+    snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
+
+    snprintf(so_path, so_path_len, "%s/.build/%s" MOD_DL_EXT, mod->dir,
+             mod->id);
+    if (mod_key_cached(mod->dir, mod->id, key)) {
         OPL_DEBUG_F("mods", "%s: cached %s up to date (key %.12s)",
                     mod->id, so_path, key);
         return 0;
     }
 
-#ifdef _WIN32
-    /* No on-box compiler yet: a prebuilt DLL is required. Verified-
-     * stale (a stamp exists and mismatches) loads loudly; an unstamped
-     * DLL (typical for cross-compiled staging) loads silently — there
-     * is nothing trustworthy to compare against. */
-    if (so_m != (time_t)-1) {
-        if (stamped[0])
-            OPL_WARN_F("mods", "%s: %s was built from DIFFERENT sources/"
-                       "SDK than what is on disk — loading it anyway "
-                       "(rebuild the DLL to update)", mod->id, so_path);
-        return 0;
-    }
-    OPL_ERROR_F("mods", "%s: no prebuilt %s — Windows loads prebuilt mod "
-                "DLLs (compile-on-load arrives with the bundled "
-                "toolchain); build one with e.g. x86_64-w64-mingw32-gcc "
-                "-shared -O2 -I<sdk> — disabled", mod->id, so_path);
-    return -1;
-#else
-    const char* cc = getenv("OPENPETE_MOD_CC");
-    if (!cc || !cc[0]) cc = getenv("CC");
-    if (!cc || !cc[0]) cc = "cc";
-
-    char cmd[8192];
-    int off = snprintf(cmd, sizeof cmd,
-                       "'%s' -shared -fPIC -O2 -g -fno-strict-aliasing "
-                       "-Wall -I'%s' -o '%s'",
-                       cc, sdk_dir, so_path);
-    for (int i = 0; i < n_srcs && off < (int)sizeof cmd; i++)
-        off += snprintf(cmd + off, sizeof cmd - (size_t)off, " '%s'",
-                        srcs[i]);
-    snprintf(cmd + off, sizeof cmd - (size_t)off,
-             " >'%s/compile.log' 2>&1", build_dir);
-
-    OPL_INFO_F("mods", "%s: compiling %d source file%s", mod->id, n_srcs,
-               n_srcs == 1 ? "" : "s");
-    int rc = system(cmd);
-    if (rc != 0) {
-        OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) — "
-                    "disabled", mod->id, build_dir);
-        remove(so_path);
-        remove(stamp_path);
-        return -1;
-    }
-    /* Stamp the build key so an unchanged mod never recompiles. */
     {
-        FILE* f = fopen(stamp_path, "wb");
-        if (f) { fprintf(f, "%s\n", key); fclose(f); }
+        char cc[MOD_PATH_MAX];
+        mods_resolve_cc(cc, sizeof cc);
+        if (!cc[0]) {
+            /* No compiler on this box (Windows without the bundled
+             * toolchain): fall back to a prebuilt DLL. Verified-stale (a
+             * stamp exists and mismatches) loads loudly; an unstamped
+             * DLL (typical for cross-compiled staging) loads silently —
+             * there is nothing trustworthy to compare against. */
+            if (file_mtime(so_path) != (time_t)-1) {
+                char stamped[65];
+                mod_read_stamp(mod->dir, mod->id, stamped);
+                if (stamped[0])
+                    OPL_WARN_F("mods", "%s: %s was built from DIFFERENT "
+                               "sources/SDK than what is on disk — "
+                               "loading it anyway (rebuild the DLL to "
+                               "update)", mod->id, so_path);
+                return 0;
+            }
+            OPL_ERROR_F("mods", "%s: no compiler and no prebuilt %s — "
+                        "install the packaged toolchain (recomp/tools/), "
+                        "set OPENPETE_MOD_CC, or build the DLL with e.g. "
+                        "x86_64-w64-mingw32-gcc -shared -O2 -I<sdk> — "
+                        "disabled", mod->id, so_path);
+            return -1;
+        }
     }
-    return 0;
-#endif /* !_WIN32 */
+    return mod_compile(mod->dir, mod->id, sdk_dir, key, so_path, 1);
 }
 
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 
 static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
-    /* Pure-asset mods (textures/music only) are legal: no src/ dir means
-     * nothing to compile or dlopen — the manifest + assets/ root are the
-     * whole mod. */
+    char so_path[MOD_PATH_MAX];
     {
         char src_dir[MOD_PATH_MAX + 8];
         snprintf(src_dir, sizeof src_dir, "%s/src", mod->dir);
         struct stat st;
-        if (stat(src_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        mod->has_src = (stat(src_dir, &st) == 0 && S_ISDIR(st.st_mode));
+    }
+    if (!mod->has_src) {
+        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
+                 mod->dir, mod->id);
+        if (file_mtime(so_path) == (time_t)-1) {
+            /* Pure-asset mods (textures/music only) are legal: no src/
+             * and no prebuilt object means the manifest + assets/ root
+             * are the whole mod. */
             OPL_INFO_F("mods", "loaded %s v%s (assets only)", mod->id,
                        mod->version);
             char assets[MOD_PATH_MAX + 8];
             snprintf(assets, sizeof assets, "%s/assets", mod->dir);
+            struct stat st;
             if (stat(assets, &st) == 0 && S_ISDIR(st.st_mode))
                 (void)openpete_mods_register_asset_root(assets, mod->id);
             return 0;
         }
+        /* Binary-only mod: the prebuilt object IS the mod — loaded
+         * as-is, never hashed or compiled, skipped by hot reload. */
+        OPL_INFO_F("mods", "%s: binary-only mod (no src/), loading %s "
+                   "as-is", mod->id, so_path);
+    } else {
+        if (build_mod(mod, sdk_dir, so_path, sizeof so_path) != 0)
+            return -1;
     }
-    char so_path[MOD_PATH_MAX];
-    if (build_mod(mod, sdk_dir, so_path, sizeof so_path) != 0) return -1;
 
     mod->dl = mod_dlopen(so_path);
     if (!mod->dl) {
@@ -1279,16 +1454,30 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     return 0;
 }
 
-int openpete_mods_init(const openpete_options_t* opts) {
-    char mods_dir[MOD_PATH_MAX];
+/* ---- discovery (shared by prepare + init) ---------------------------- */
+
+typedef struct {
+    char id[MOD_ID_MAX];
+    char dir[MOD_PATH_MAX]; /* folder, or .unpacked/<id> for zip mods */
+} mod_ref_t;
+
+/* Resolve the mods dir (opts → env → <exe>/mods), unpack zips, and
+ * produce the ordered enabled set (enabled.txt order = priority;
+ * fallback: all discovered, lexicographic). Returns the count (0 = no
+ * mods directory / nothing enabled: inert). openpete_mods_prepare and
+ * openpete_mods_init both run this so they see the same set; everything
+ * here is idempotent (zip unpack is content-stamped). */
+static int mods_discover(const openpete_options_t* opts,
+                         char* mods_dir, size_t mods_dir_cap,
+                         mod_ref_t* out, int max) {
     const char* src = opts && opts->mods_dir ? opts->mods_dir
                                              : getenv("OPENPETE_MODS_DIR");
     if (src) {
-        snprintf(mods_dir, sizeof mods_dir, "%s", src);
+        snprintf(mods_dir, mods_dir_cap, "%s", src);
     } else {
         const char* base = SDL_GetBasePath(); /* trailing sep, SDL-owned */
         if (!base) return 0;
-        snprintf(mods_dir, sizeof mods_dir, "%smods", base);
+        snprintf(mods_dir, mods_dir_cap, "%smods", base);
     }
 
     DIR* d = opendir(mods_dir);
@@ -1343,17 +1532,8 @@ int openpete_mods_init(const openpete_options_t* opts) {
             snprintf(order[n_order++], MOD_ID_MAX, "%s", ids[i]);
     }
 
-    char sdk_dir[MOD_PATH_MAX];
-    {
-        const char* base = SDL_GetBasePath();
-        snprintf(sdk_dir, sizeof sdk_dir, "%ssdk", base ? base : "./");
-    }
-    snprintf(s_sdk_dir, sizeof s_sdk_dir, "%s", sdk_dir);
-
-    /* Phase A: parse all enabled manifests (no loading yet). */
-    struct openpete_mod pending[MODS_MAX];
-    int n_pending = 0;
-    for (int i = 0; i < n_order && n_pending < MODS_MAX; i++) {
+    int n_out = 0;
+    for (int i = 0; i < n_order && n_out < max; i++) {
         int known = 0;
         for (int j = 0; j < n_ids; j++)
             if (strcmp(order[i], ids[j]) == 0) known = 1;
@@ -1362,19 +1542,116 @@ int openpete_mods_init(const openpete_options_t* opts) {
                        "no mod.toml — skipped", order[i], order[i]);
             continue;
         }
-        struct openpete_mod* mod = &pending[n_pending];
-        memset(mod, 0, sizeof(*mod));
-        char dir[MOD_PATH_MAX];
-        snprintf(dir, sizeof dir, "%s/%s", mods_dir, order[i]);
+        mod_ref_t* r = &out[n_out];
+        snprintf(r->id, sizeof r->id, "%s", order[i]);
+        snprintf(r->dir, sizeof r->dir, "%s/%s", mods_dir, order[i]);
         char probe[MOD_PATH_MAX + 12];
-        snprintf(probe, sizeof probe, "%s/mod.toml", dir);
+        snprintf(probe, sizeof probe, "%s/mod.toml", r->dir);
         if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
-            snprintf(dir, sizeof dir, "%s/.unpacked/%s", mods_dir,
+            snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir,
                      order[i]);
-        if (parse_manifest(dir, mod) != 0) continue;
-        n_pending++;
+        n_out++;
     }
     for (int i = 0; i < n_ids; i++) free(ids[i]);
+    return n_out;
+}
+
+static void mods_sdk_dir(char* out, size_t cap) {
+    const char* base = SDL_GetBasePath();
+    snprintf(out, cap, "%ssdk", base ? base : "./");
+}
+
+/* ---- compile-on-boot prepare (openpete-mod-compile-on-boot) ---------- */
+
+struct mods_prepare_ctx {
+    mod_ref_t                 refs[MODS_MAX];
+    char                      keys[MODS_MAX][65];
+    int                       stale[MODS_MAX];
+    int                       n_stale;
+    char                      sdk_dir[MOD_PATH_MAX];
+    openpete_mods_progress_fn progress;
+};
+
+static int mods_prepare_task(void* ud) {
+    struct mods_prepare_ctx* c = (struct mods_prepare_ctx*)ud;
+    for (int i = 0; i < c->n_stale; i++) {
+        const mod_ref_t* r = &c->refs[c->stale[i]];
+        if (c->progress) c->progress("COMPILING MODS", i, c->n_stale);
+        char so_path[MOD_PATH_MAX];
+        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
+                 r->dir, r->id);
+        /* A failure is logged (+ compile.log) and left for init to
+         * report as disabled — prepare never aborts the boot. */
+        (void)mod_compile(r->dir, r->id, c->sdk_dir,
+                          c->keys[c->stale[i]], so_path, 1);
+    }
+    if (c->progress) c->progress("COMPILING MODS", c->n_stale, c->n_stale);
+    return 0;
+}
+
+int openpete_mods_prepare(const openpete_options_t* opts,
+                          openpete_mods_progress_fn progress,
+                          openpete_mods_run_task_fn run_task) {
+    {
+        char cc[MOD_PATH_MAX];
+        mods_resolve_cc(cc, sizeof cc);
+        if (!cc[0]) return 0; /* no compiler on this box: init's
+                               * prebuilt-DLL fallback owns messaging */
+    }
+    /* Boot-once, main-thread; static keeps ~37 KB off the stack. */
+    static struct mods_prepare_ctx c;
+    memset(&c, 0, sizeof c);
+    char mods_dir[MOD_PATH_MAX];
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, c.refs,
+                               MODS_MAX);
+    if (n_refs <= 0) return 0;
+    mods_sdk_dir(c.sdk_dir, sizeof c.sdk_dir);
+    c.progress = progress;
+
+    /* Pass 1: pure hashing — milliseconds; no window, no compile. */
+    for (int i = 0; i < n_refs; i++) {
+        char key[65];
+        if (mod_compute_key(c.refs[i].dir, c.sdk_dir, key) != 0)
+            continue; /* assets-only or binary-only mod */
+        if (mod_key_cached(c.refs[i].dir, c.refs[i].id, key))
+            continue;
+        memcpy(c.keys[i], key, sizeof key);
+        c.stale[c.n_stale++] = i;
+    }
+    if (c.n_stale == 0) return 0;
+
+    /* Pass 2: compile the stale set as ONE worker task (the splash
+     * runner is not reentrant); progress from inside the worker
+     * lazy-opens the UI. */
+    OPL_INFO_F("mods", "%d mod%s stale — compiling before boot",
+               c.n_stale, c.n_stale == 1 ? "" : "s");
+    if (run_task)
+        (void)run_task(mods_prepare_task, &c);
+    else
+        (void)mods_prepare_task(&c);
+    return c.n_stale;
+}
+
+int openpete_mods_init(const openpete_options_t* opts) {
+    char mods_dir[MOD_PATH_MAX];
+    mod_ref_t refs[MODS_MAX];
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, refs,
+                               MODS_MAX);
+    if (n_refs <= 0) return 0;
+
+    char sdk_dir[MOD_PATH_MAX];
+    mods_sdk_dir(sdk_dir, sizeof sdk_dir);
+    snprintf(s_sdk_dir, sizeof s_sdk_dir, "%s", sdk_dir);
+
+    /* Phase A: parse all enabled manifests (no loading yet). */
+    struct openpete_mod pending[MODS_MAX];
+    int n_pending = 0;
+    for (int i = 0; i < n_refs && n_pending < MODS_MAX; i++) {
+        struct openpete_mod* mod = &pending[n_pending];
+        memset(mod, 0, sizeof(*mod));
+        if (parse_manifest(refs[i].dir, mod) != 0) continue;
+        n_pending++;
+    }
 
     /* Phase A.5: validate advisory above/below relations against the
      * enabled order. Priority = position (later = higher), so

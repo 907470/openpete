@@ -39,6 +39,17 @@ stage_common() {  # stage_common <build-game-dir>
     mkdir -p "$STAGE/recomp"
     cp -a "$B/recomp/manifest" "$STAGE/recomp/"
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
+    # Mod SDK + drop-in mod dir (openpete-mod-compile-on-boot): mods
+    # ship mod.toml + src/ and compile at boot against <exe>/sdk with
+    # the bundled toolchain. The SDK is a handful of headers.
+    cp -a "$B/sdk" "$STAGE/sdk"
+    mkdir -p "$STAGE/mods"
+    printf '%s\n' \
+        "Drop mods here: mods/<id>/ (or mods/<id>.zip) containing" \
+        "mod.toml, plus src/*.c (compiled automatically at boot) and/or" \
+        "assets/. mods/enabled.txt (one id per line) fixes the load" \
+        "order; without it every mod loads, alphabetically." \
+        > "$STAGE/mods/README.txt"
     mkdir -p "$STAGE/assets/music"
     cp games/spyro-1/assets/music/manifest.txt "$STAGE/assets/music/" 2>/dev/null || true
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true

@@ -55,6 +55,30 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
  * continues; mods never brick a launch). */
 int openpete_mods_init(const openpete_options_t* opts);
 
+/* Compile-on-boot UX pass (plan openpete-mod-compile-on-boot): compile
+ * any enabled source mod whose content-hash build key is stale, BEFORE
+ * openpete_mods_init() — the game calls this while its splash is still
+ * alive so the compiles render as a progress stage instead of a silent
+ * stall. Pass 1 hashes every enabled src mod (milliseconds); if nothing
+ * is stale it returns 0 without invoking either callback (no window
+ * flash on warm boots). Otherwise the stale set compiles inside ONE
+ * `run_task` callback (NULL = inline), reporting
+ * progress("COMPILING MODS", done, total) from the worker.
+ *
+ * Purely an acceleration/UX layer: init behaves identically whether or
+ * not prepare ran (it re-checks the cache and compiles anything still
+ * stale, inline and silent). Compile failures are logged and left for
+ * init to disable — never fatal. Returns the number of mods that were
+ * stale. */
+typedef void (*openpete_mods_progress_fn)(const char* stage, int done,
+                                          int total);
+typedef int (*openpete_mods_task_fn)(void* userdata);
+typedef int (*openpete_mods_run_task_fn)(openpete_mods_task_fn fn,
+                                         void* userdata);
+int openpete_mods_prepare(const openpete_options_t* opts,
+                          openpete_mods_progress_fn progress,
+                          openpete_mods_run_task_fn run_task);
+
 /* Per-function-entry chain dispatch. Returns 1 = an override chain ran
  * (skip the recompiled body), 0 = no chain for addr (run the body).
  * Called from psx_override_dispatch_game behind the
