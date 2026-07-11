@@ -9,6 +9,7 @@
 #include "game_extras.h"
 #include "openpete_mods.h"
 #include "recomp_attach.h"
+#include "mod_wad_overlay.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -100,6 +101,9 @@ int main(int argc, char** argv) {
     /* ...and the draw service's text rasterizer (Spyro's 3D gold
      * text-moby glyphs — the same font as the FPS overlay). */
     openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
+    /* Level-segment asset overlay (rung 9): needs the disc image to read
+     * the WAD TOC (lazy — first CdRead). */
+    spyro1_mod_wad_configure(opts.disc_path);
 
     /* Distribution D2: standalone extraction stage — carve PSX.EXE +
      * overlay blobs from the disc and exit (also the first stage of the
@@ -154,6 +158,9 @@ int main(int argc, char** argv) {
      * path and for library entries; an explicit --recomp-module points
      * at a module the user asserts exists. */
     int allow_build = (opts.recomp_module_path == NULL);
+    /* Re-point the WAD overlay at the resolved disc (the library path
+     * above may have filled opts.disc_path). */
+    spyro1_mod_wad_configure(opts.disc_path);
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
         return 1;
 

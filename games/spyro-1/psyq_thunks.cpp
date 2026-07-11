@@ -21,6 +21,7 @@
 extern "C" {
 #include "openpete_fiber.h"
 #include "openpete_log.h"
+#include "mod_wad_overlay.h" /* rung 9: level-segment asset overlay */
 #include "openpete_ticker.h"
 #include "openpete_psx.h"
 #include "openpete_memcard.h"
@@ -1235,6 +1236,11 @@ static void start_music_stream(int sector) {
 }
 
 static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
+    if (com == CdlSetloc && param) {
+        /* Track the head position for the level-segment asset overlay
+         * (mod_wad_overlay.c) — CdRead has no location arg. */
+        mod_wad_setloc((uint32_t)CdPosToInt((CdlLOC*)param));
+    }
     if (com == CdlSetfilter) {
         CdlFILTER* f = (CdlFILTER*)param;
         if (f) {
@@ -1281,6 +1287,10 @@ void psyq_CdControlB(CPUState* cpu) {
      *   CdControlB(CdlReadS,     &startLoc)
      * which is the canonical "start XA streaming" sequence. */
     switch (com) {
+        case CdlSetloc:
+            if (param)
+                mod_wad_setloc((uint32_t)CdPosToInt((CdlLOC*)param));
+            break;
         case CdlSetmode: {
             uint8_t mode = param ? param[0] : 0;
             s_xa_armed = ((mode & CdlModeRT) && (mode & CdlModeSF));
@@ -1377,6 +1387,10 @@ void psyq_CdRead(CPUState* cpu) {
     if (remaining > 0) {
         OPL_WARN_F("thunks", "CdReadSync left %d sectors unread", remaining);
     }
+    /* Level-segment asset overlay (rung 9): serve mod-supplied bytes over
+     * the just-drained read BEFORE the game's loader parses them. Also
+     * advances the tracked head position. */
+    mod_wad_apply((uint8_t*)buf, sectors);
     /* Verify g_CdState.m_IsReading at 0x80076BB8 is cleared after the cb. */
     uint8_t* ram = openpete_psx_get_ram();
     uint32_t before = 0;

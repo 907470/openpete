@@ -194,6 +194,7 @@ endif()
 add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
+    mod_wad_overlay.c
     feature_list.c
     features/render_paths.c
     features/render_decouple.c

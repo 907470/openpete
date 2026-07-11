@@ -287,7 +287,63 @@ else
     bad "duel resolution wrong for order [b,a]"
 fi
 
-# ── 9. [test]-block rungs through the real modtest runner ───────────────
+# ── 9. level-segment overlay: CdRead chokepoint (rung 9) ────────────────
+say "wad overlay: byte-identical blob — chokepoint provably transparent"
+mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"
+printf '[mod]\nid = "wad-identity"\nversion = "0.0.1"\napi = 1\n' \
+    > "$WORK/wadsrc/wad-identity/mod.toml"
+if python3 tools/extract_wad_entry.py --disc "$DISC" --level 11 \
+        --out "$WORK/wadsrc/wad-identity/assets/wad/level11.data.bin" \
+        >/dev/null 2>&1; then
+    mkdir -p "$WORK/wadid"
+    ln -sfn "$WORK/wadsrc/wad-identity" "$WORK/wadid/wad-identity"
+    printf 'wad-identity\n' > "$WORK/wadid/enabled.txt"
+    out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
+            --mods-dir "$WORK/wadid" 2>&1)"
+    if printf '%s\n' "$out" | grep -q "wad overlay: level 11 data served from wad-identity"; then
+        ok "level-11 (demo 1) data served through the CdRead chokepoint"
+    else
+        bad "wad overlay never served"
+        printf '%s\n' "$out" | grep -i wadmod | head -3
+    fi
+    if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
+        ok "byte-identical override is oracle-exact (transparent chokepoint)"
+    else
+        bad "oracle did not PASS with the identity blob"
+    fi
+else
+    bad "extract_wad_entry.py failed against $DISC"
+fi
+
+say "wad overlay: recoloured blob loads clean (bg-colour patch)"
+mkdir -p "$WORK/wadsrc/wad-recolor/assets/wad"
+printf '[mod]\nid = "wad-recolor"\nversion = "0.0.1"\napi = 1\n' \
+    > "$WORK/wadsrc/wad-recolor/mod.toml"
+if python3 tools/extract_wad_entry.py --disc "$DISC" --level 10 \
+        --recolor-bg 255,0,255 \
+        --out "$WORK/wadsrc/wad-recolor/assets/wad/level10.data.bin" \
+        >/dev/null 2>&1; then
+    mkdir -p "$WORK/wadrc"
+    ln -sfn "$WORK/wadsrc/wad-recolor" "$WORK/wadrc/wad-recolor"
+    printf 'wad-recolor\n' > "$WORK/wadrc/enabled.txt"
+    out="$(timeout 300 "$BIN" --headless --disc "$DISC" \
+            --run-recomp 0x80012204 --skip-to-level 10 --frame-limit 2600 \
+            --mods-dir "$WORK/wadrc" 2>&1)"
+    if printf '%s\n' "$out" | grep -q "wad overlay: level 10 data served from wad-recolor"; then
+        ok "recoloured blob served"
+    else
+        bad "recoloured blob not served"
+    fi
+    if printf '%s\n' "$out" | grep -q "openpete-exit: reason=frame-limit"; then
+        ok "level loaded and ran clean with the edited blob"
+    else
+        bad "run did not reach the frame limit with the edited blob"
+    fi
+else
+    bad "extract_wad_entry.py --recolor-bg failed"
+fi
+
+# ── 10. [test]-block rungs through the real modtest runner ──────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
