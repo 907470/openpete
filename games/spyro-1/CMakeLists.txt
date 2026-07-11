@@ -203,6 +203,7 @@ add_executable(openpete-spyro1
     features/moby_native.c
     features/spyro_native.c
     features/s3_actor_native.c
+    features/mod_moby_ops.c
     features/flame_native.c
     features/shadow_native.c
     features/particle_native.c

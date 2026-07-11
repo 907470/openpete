@@ -1,0 +1,33 @@
+# new-moby — PoC ladder rung 11: the content registry
+# (notes/plans/openpete-modding-framework.md, P3 registries).
+#
+# A NOVEL moby type ("new-moby:orbiter") with mod-provided behavior:
+# the engine claims a level-free class id, seeds its model row from a
+# donor (butterfly), and dispatches the mod's update_fn per live
+# instance per tick. The mod spawns one through the game's own spawner
+# next to Spyro in Artisans and orbits it. Proof of the full vanilla
+# pipeline is structural: the game's render walk sets m_WasDrawn on the
+# instance, which the mod reads back and logs.
+#
+# Ids are LEVEL-SCOPED (the loader repopulates the model table per
+# level); lifts beyond the 512-row vanilla table ride
+# openpete-ram-virtualization.
+
+[mod]
+id      = "new-moby"
+name    = "New Moby (orbiter)"
+version = "0.1.0"
+api     = 1
+tier    = "raw"   # pokes moby fields by offset; region-pinned
+
+[test]
+# --skip-to-level artisans lands in gameplay ~frame 1700; the type goes
+# live on the first GS_Playing tick, the spawn follows, and 256 orbit
+# ticks need ~512 more frames. 6000 leaves margin. Gameplay-divergent by
+# design (a new object exists) — oracle skip.
+frames        = 6000
+expect_oracle = "skip"
+args          = "--skip-to-level artisans"
+# (needles avoid embedded quotes — modtest's parser is a line-based
+#  restricted-TOML reader)
+expect_log    = ["registered (donor class 16)", "new-moby: spawned orbiter @0x", "new-moby: rendered (m_WasDrawn=1)", "new-moby: ticking (t=256)"]

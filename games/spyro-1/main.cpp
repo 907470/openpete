@@ -69,6 +69,8 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
 int spyro1_actor_pose_capture(int kind, void* buf, int cap);
 int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
                       uint32_t tint_rgba);
+/* Moby-type registry game ops (features/mod_moby_ops.c, rung 11). */
+void spyro1_moby_ops_register(void);
 }
 #include "splash.h"
 extern "C" {
@@ -119,6 +121,8 @@ int main(int argc, char** argv) {
      * recorded-pose ghost emit through the native Spyro extractor. */
     openpete_mods_draw_set_actor_fns(spyro1_actor_pose_capture,
                                      spyro1_actor_emit);
+    /* ...and the moby-type registry's game ops (rung 11). */
+    spyro1_moby_ops_register();
     /* Level-segment asset overlay (rung 9): needs the disc image to read
      * the WAD TOC (lazy — first CdRead). */
     spyro1_mod_wad_configure(opts.disc_path);

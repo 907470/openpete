@@ -305,6 +305,29 @@ static int api_site_handler(openpete_mod_t* self, const char* name,
     return openpete_mods_site_attach(self->id, name, fn, self->log_tag);
 }
 
+/* Content registry: moby types (rung 11). Registration is entry-time;
+ * spawning mutates sim state — tick context only. */
+static int api_register_moby_type(openpete_mod_t* self, const char* name,
+                                  int donor_class,
+                                  openpete_moby_update_fn update_fn) {
+    if (!self || !name) return -1;
+    if (purity_violation("register_moby_type")) return -1;
+    return openpete_mods_moby_register(self->id, name, donor_class,
+                                       update_fn, self->log_tag);
+}
+
+static int api_moby_type_id(openpete_mod_t* self, const char* name) {
+    if (!self || !name) return -1;
+    return openpete_mods_moby_type_id(self->id, name);
+}
+
+static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
+                               const char* name) {
+    if (!self || !cpu || !name) return 0;
+    if (purity_violation("spawn_moby")) return 0;
+    return openpete_mods_moby_spawn(cpu, self->id, name);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -371,6 +394,9 @@ static const openpete_mod_api_t s_api = {
     .draw_actor         = api_draw_actor,
     .suppress_player_draw = api_suppress_player_draw,
     .site_handler       = api_site_handler,
+    .register_moby_type = api_register_moby_type,
+    .moby_type_id       = api_moby_type_id,
+    .spawn_moby         = api_spawn_moby,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

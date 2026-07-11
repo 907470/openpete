@@ -46,6 +46,7 @@ add_library(openpete_core STATIC
     mods/mod_draw.c
     mods/mod_services.c
     mods/mod_sites.c
+    mods/mod_registry.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
 
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf

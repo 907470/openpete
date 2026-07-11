@@ -260,6 +260,32 @@ typedef struct openpete_mod_api {
      * only (refused inside present hooks). */
     int (*site_handler)(openpete_mod_t* self, const char* name,
                         void (*fn)(CPUState* cpu, uint32_t site_addr));
+
+    /* ── Content registry: moby types (PoC rung 11) ──────────────────
+     * Register a NEW moby type: the engine claims a class id that is
+     * FREE in the current level (its model row is empty, so the level's
+     * update switch has no case for it), seeds the model row from
+     * donor_class (the new type renders/collides with the donor's
+     * model), and calls update_fn once per live instance per sim tick,
+     * AFTER the game's own update. Ids are LEVEL-SCOPED — invalidated
+     * on level change and re-claimed when gameplay resumes; write
+     * level-independent behavior against the moby pointer, not the id.
+     *
+     * spawn_moby instantiates one through the game's own spawner (full
+     * donor-class init: model, renderer, collision; placed at Spyro
+     * when no parent), rebranded to the registered type. Returns the
+     * guest moby vaddr (position at +0x0C, 3×i32) or 0 while the type
+     * isn't live / the pool is full. TICK context only.
+     *
+     * moby_type_id returns the currently claimed class id, -1 if the
+     * type isn't live in this level (yet). */
+    int (*register_moby_type)(openpete_mod_t* self, const char* name,
+                              int donor_class,
+                              void (*update_fn)(CPUState* cpu,
+                                                uint32_t moby_vaddr));
+    int (*moby_type_id)(openpete_mod_t* self, const char* name);
+    uint32_t (*spawn_moby)(openpete_mod_t* self, CPUState* cpu,
+                           const char* name);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */
