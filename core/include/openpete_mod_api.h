@@ -390,6 +390,19 @@ typedef struct openpete_mod_api {
      * writes; they run whenever the game keys the sound. */
     int (*sfx_hook)(openpete_mod_t* self, const char* name,
                     void (*fn)(openpete_sfx_event_t* ev));
+
+    /* texture_register: mod-owned RGBA8 texture (w*h*4 bytes, row-major)
+     * under a MOD-CHOSEN 16-bit id, so converted model faceblocks can
+     * bake the id at pack time. Faces select it with the PSX-RESERVED
+     * Tiledef encoding: tpage attr MODE bits ((attr>>7)&3) == 3, id in
+     * the CLUT u16; UVs are raw texel coords into the registered image.
+     * Sampled by the NATIVE renderer only (the PSX path shows garbage
+     * for such faces — mode 3 does not exist on hardware). Re-register
+     * an id to replace the pixels (hot reload). Returns 0, or -1 (bad
+     * args / id space full). Host-side only: guest RAM, VRAM and the
+     * oracle are untouched. */
+    int (*texture_register)(openpete_mod_t* self, uint16_t id,
+                            const void* rgba, int w, int h);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

@@ -19,13 +19,17 @@
  *     g_Models rows at our parked full Model structs (each: header +
  *     1-frame AnimationHeader + all-literal vertex stream + faceblock
  *     + colour blocks + collision primitive blobs).
- *  3. texture upload: the pack carries a 15bpp texel strip; it is
- *     uploaded into a claimed VRAM rect via the game's own LoadImage
- *     (guest call), so both the PSX path and the native renderer
- *     sample it natively. Baked Tiledefs in our faceblocks point there.
- *  4. SFX overlay: sfx_replace("chest_break", basket ADPCM) +
- *     sfx_replace(metal slot name, vase ADPCM); host-side substitution
- *     at key-on, guest sound state byte-stock.
+ *  3. textures: the pack's texel strip registers as a MOD-OWNED RGBA
+ *     texture (api->texture_register, id 0x53C1); faceblocks bake the
+ *     PSX-reserved tpage MODE 3 + the id, and the native renderer binds
+ *     it through the HD pipe. No VRAM is claimed (a claimed rect
+ *     corrupted level terrain: levels upload a full 512x512 image over
+ *     the whole right half, so no rect is ever free). The PSX-path
+ *     panes (og/diff) show garbage on chest faces — native-only by
+ *     design.
+ *  4. SFX: S3 break samples SpuWrite'd into the free SPU tail and the
+ *     stock SoundDefinitions repointed (per-level def indices read from
+ *     the live models' m_Sounds[0]).
  *
  * Collision: our Models carry their own primitive blobs (u16 bounding
  * radius header + typed prims; type 2 = vertical cylinder) sized to the
@@ -80,7 +84,7 @@ static uint32_t s_file_size;
 static const uint8_t* s_payload;   /* = s_file + sizeof header */
 static int s_have_pack;
 static int s_calibrated;
-static int s_need_tex;    /* park done; VRAM upload pending (camera hook) */
+static int s_need_tex;    /* park done; SPU upload pending (camera hook) */
 
 /* ── calibration: dump one stock Model in full ───────────────────────── */
 
@@ -274,36 +278,6 @@ static void dump_sound_table(void)
 
 /* ── park + patch ────────────────────────────────────────────────────── */
 
-/* texture upload: LoadImage the 15bpp strip into the claimed VRAM rect
- * in 8-row slices through a small bounce buffer in the park tail
- * (RECT + pixels must be guest-visible; LoadImage reads guest RAM). */
-static void upload_textures(CPUState* cpu, uint32_t bounce_va)
-{
-    const uint8_t* strip = s_file + s_pack.tex_off;
-    uint32_t rows_per = 8;
-    uint32_t slice_bytes = s_pack.tex_w * rows_per * 2u;
-    uint8_t* bounce = (uint8_t*)A->guest(bounce_va);
-    uint32_t y;
-    uint32_t saved_a0 = cpu->a0, saved_a1 = cpu->a1;
-    if (!bounce) { A->log(SELF, OP_MOD_LOG_ERROR, "bounce unmapped"); return; }
-    for (y = 0; y < s_pack.tex_h; y += rows_per) {
-        int16_t* rect = (int16_t*)bounce;
-        rect[0] = (int16_t)s_pack.vram_x;
-        rect[1] = (int16_t)(s_pack.vram_y + y);
-        rect[2] = (int16_t)s_pack.tex_w;
-        rect[3] = (int16_t)rows_per;
-        memcpy(bounce + 16, strip + (size_t)y * s_pack.tex_w * 2u,
-               slice_bytes);
-        cpu->a0 = bounce_va;
-        cpu->a1 = bounce_va + 16u;
-        A->call_addr(cpu, OP_FNADDR_LoadImage);
-    }
-    cpu->a0 = saved_a0; cpu->a1 = saved_a1;
-    A->log(SELF, OP_MOD_LOG_INFO,
-           "textures: %ux%u 15bpp uploaded to VRAM (%u,%u)",
-           s_pack.tex_w, s_pack.tex_h, s_pack.vram_x, s_pack.vram_y);
-}
-
 static void park_and_patch(CPUState* cpu)
 {
     uint32_t bounce_va = (PARK_LINK + s_pack.payload_size + 15u) & ~15u;
@@ -441,7 +415,6 @@ static void on_camera_update(CPUState* cpu)
     if (s_need_tex) {
         uint32_t bounce_va = (PARK_LINK + s_pack.payload_size + 15u) & ~15u;
         s_need_tex = 0;
-        upload_textures(cpu, bounce_va);
         upload_sfx(cpu, bounce_va);
         dump_sound_table();
     }
@@ -500,6 +473,31 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     if (s_have_pack)
         A->log(SELF, OP_MOD_LOG_INFO, "pack loaded: payload=%u bytes",
                s_pack.payload_size);
+
+    if (s_have_pack) {
+        /* the texel strip becomes a mod-owned RGBA texture: faces bake
+         * tpage MODE 3 + MODTEX_ID (see convert_chests.py) — no VRAM is
+         * touched (the first cut claimed a rect and corrupted terrain:
+         * levels upload a full 512x512 image over the whole right half,
+         * so no rect is ever free) */
+        uint32_t n = s_pack.tex_w * s_pack.tex_h;
+        const uint16_t* t5551 = (const uint16_t*)(s_file + s_pack.tex_off);
+        uint8_t* rgba = (uint8_t*)malloc((size_t)n * 4u);
+        if (rgba) {
+            uint32_t k;
+            for (k = 0; k < n; k++) {
+                uint16_t p = t5551[k];
+                rgba[k * 4 + 0] = (uint8_t)(((p >> 0) & 0x1Fu) * 255u / 31u);
+                rgba[k * 4 + 1] = (uint8_t)(((p >> 5) & 0x1Fu) * 255u / 31u);
+                rgba[k * 4 + 2] = (uint8_t)(((p >> 10) & 0x1Fu) * 255u / 31u);
+                rgba[k * 4 + 3] = (uint8_t)(p ? 255u : 0u);  /* 0x0000 = PSX transparent */
+            }
+            if (api->texture_register(self, 0x53C1u, rgba,
+                                      (int)s_pack.tex_w, (int)s_pack.tex_h))
+                A->log(SELF, OP_MOD_LOG_ERROR, "texture_register failed");
+            free(rgba);   /* registry keeps its own copy */
+        }
+    }
 
     if (api->override_addr(self, OP_FNADDR_PatchMobyModelPointers,
                            on_patch_models)) {

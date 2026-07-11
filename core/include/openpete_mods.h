@@ -349,6 +349,15 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
 int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev));
 
+/* Mod-owned RGBA8 textures (mod_texture.c): registered under a
+ * mod-chosen 16-bit id; model faces select them with the PSX-reserved
+ * Tiledef tpage MODE 3 encoding + the id in the CLUT u16; the native
+ * renderer resolves via _get and binds through the HD pipe. Host-side
+ * only (guest RAM / VRAM / oracle untouched). */
+int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
+                                   const void* rgba, int w, int h);
+const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h);
+
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 
 /* Queue a mod-requested savestate op (1=save, 2=load) for execution at

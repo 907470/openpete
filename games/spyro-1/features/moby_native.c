@@ -1412,10 +1412,20 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                 F->u[1]=(uint8_t)(td1&0xFFu); F->v[1]=(uint8_t)((td1>>8)&0xFFu);  unsigned tp=(td1>>16)&0xFFFFu;
                 F->u[2]=(uint8_t)(td2&0xFFu); F->v[2]=(uint8_t)((td2>>8)&0xFFu);
                 F->u[3]=(uint8_t)((td2>>16)&0xFFu); F->v[3]=(uint8_t)((td2>>24)&0xFFu);   /* quad u3v3 */
-                F->tpx=(int16_t)((tp&0xFu)*64); F->tpy=(int16_t)(((tp>>4)&1u)*256);
-                int mode=(int)((tp>>7)&3u); F->bpp=(uint8_t)((mode==0)?4:(mode==1)?8:16);
+                int mode=(int)((tp>>7)&3u);
                 F->abr=(uint8_t)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
-                F->clx=(int16_t)((cl&0x3Fu)*16); F->cly=(int16_t)((cl>>6)&0x1FFu);
+                if (mode == 3) {
+                    /* PSX-RESERVED tpage mode = mod-texture material
+                     * (api->texture_register): the CLUT u16 carries the
+                     * registered id; native-only (og shows garbage). */
+                    F->bpp = 32;
+                    F->tpx = (int16_t)cl;   /* the mod texture id */
+                    F->tpy = 0; F->clx = 0; F->cly = 0;
+                } else {
+                    F->tpx=(int16_t)((tp&0xFu)*64); F->tpy=(int16_t)(((tp>>4)&1u)*256);
+                    F->bpp=(uint8_t)((mode==0)?4:(mode==1)?8:16);
+                    F->clx=(int16_t)((cl&0x3Fu)*16); F->cly=(int16_t)((cl>>6)&0x1FFu);
+                }
             }
             n++;
         }

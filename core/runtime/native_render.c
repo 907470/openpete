@@ -22,6 +22,7 @@
 
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
+#include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
@@ -2794,6 +2795,33 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
                 s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
             run++;
+        }
+        if (s0->bpp == 32) {
+            /* mod-texture run (openpete_mods_texture_register): tpage_x
+             * carries the registered id; bind the RGBA texture through
+             * the HD pipe, UVs raw texel coords -> rect (0,0,w,h). A
+             * pending upload (first sighting) or a missing registration
+             * draws NOTHING this frame — SD would sample VRAM noise. */
+            int mw = 0, mh = 0;
+            const unsigned char* px =
+                openpete_mods_texture_get((uint16_t)s0->tpage_x, &mw, &mh);
+            if (px && hd_pipe) {
+                uint64_t key = (uint64_t)(uintptr_t)px;   /* stable per registration */
+                rhi_texture* tex = hd_cache_lookup(key);
+                if (!tex) {
+                    hd_pending_add(key, px, mw, mh);
+                } else {
+                    const float rect[4] = { 0.f, 0.f, (float)mw, (float)mh };
+                    rhi_bind_pipeline(s_nr.dev, hd_pipe);
+                    rhi_bind_vram(s_nr.dev, tex);
+                    rhi_push_constants(s_nr.dev, rect, sizeof rect);
+                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+                    rhi_bind_pipeline(s_nr.dev, self);
+                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                }
+            }
+            i += run;
+            continue;
         }
         /* Registry query — Phase-1 validation (RESOLVE_LOG), Phase-2 dump
          * (DUMP_DIR), Phase-4 replacement. Identity is PER TRI (a run-union

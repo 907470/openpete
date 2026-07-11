@@ -791,6 +791,7 @@ static const openpete_mod_api_t s_api = {
     .bk2_status          = api_bk2_status,
     .sfx_replace   = openpete_mods_sfx_replace,
     .sfx_hook      = openpete_mods_sfx_hook,
+    .texture_register = openpete_mods_texture_register,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

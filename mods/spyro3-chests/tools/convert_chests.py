@@ -52,10 +52,15 @@ PACK_MAGIC = 0x31433353          # "S3C1"
 PARK_LINK = 0x8000B000   # 0x80008000 is spyro3-gems's fixed park (11.2 KB); stay clear
 PARK_LIMIT = 0x80010000
 
-# claimed VRAM rect (halfword columns x rows), 15bpp strip
-VRAM_X, VRAM_Y = 896, 0
+# Mod-texture material (api->texture_register): tpage MODE bits = 3
+# (PSX-reserved) select the mod texture registered under MODTEX_ID,
+# which rides the CLUT u16. No VRAM is claimed — the first cut uploaded
+# into (896,0) and corrupted level terrain: the level image covers the
+# ENTIRE right half of VRAM, so no rect is ever safely free.
 STRIP_W, STRIP_H = 128, 128
-TPAGE_ATTR = (VRAM_X // 64) | ((VRAM_Y // 256) << 4) | (2 << 7)  # 15bpp, ABR 0
+MODTEX_ID = 0x53C1               # "S3 Chests" — baked into the CLUT u16
+TPAGE_ATTR = 3 << 7              # mode 3 = mod texture, ABR 0
+VRAM_X, VRAM_Y = 0, 0            # header fields kept, unused
 
 # stock per-slot constants (calibration dump, Stone Hill install pass 27)
 #   env: model-unit extents (x0,x1,y0,y1,z0,z1); radius/depth/shadow: header
@@ -367,7 +372,7 @@ class ModelBuilder:
             if r["tex"]:
                 us, vv = r["tex"]
                 struct.pack_into("<3I", blob, fp,
-                                 (us[0] & 0xFF) | (vv[0] & 0xFF) << 8 | 0 << 16,
+                                 (us[0] & 0xFF) | (vv[0] & 0xFF) << 8 | MODTEX_ID << 16,
                                  (us[1] & 0xFF) | (vv[1] & 0xFF) << 8 |
                                  TPAGE_ATTR << 16,
                                  (us[2] & 0xFF) | (vv[2] & 0xFF) << 8 |
