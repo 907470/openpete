@@ -1065,6 +1065,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     openpete_memcard_set_presence(0, opts->card_a_present);
     openpete_memcard_set_presence(1, opts->card_b_present);
     openpete_memcard_set_unformatted(opts->card_unformatted);
+    openpete_memcard_set_adopt(opts->adopt_saves);
+    openpete_memcard_startup_check();
 
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */

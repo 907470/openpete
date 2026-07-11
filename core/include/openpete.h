@@ -494,6 +494,7 @@ typedef struct {
     int         card_a_present;/* card in port A (default 1) */
     int         card_b_present;/* card in port B (default 1) */
     int         card_unformatted; /* --card-unformatted: provision a blank card so the in-game format UI runs (default 0 = pre-formatted) */
+    int         adopt_saves;   /* --adopt-saves: re-tag card modset sidecars to the running modset at open */
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title

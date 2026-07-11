@@ -19,6 +19,7 @@
 
 #include "openpete_memcard.h"
 #include "openpete_log.h"
+#include "openpete_mods.h" /* openpete_mods_modset_tag — save safety */
 
 #include <errno.h>
 #include <stddef.h>
@@ -75,6 +76,13 @@ static char    s_path[2][1280];                /* resolved image path (once load
 static char    s_path_override[2][1024];       /* --card1 / --card2 */
 static char    s_dir_override[1024];           /* --card-dir */
 static int     s_unformatted     = 0;          /* --card-unformatted */
+
+/* Per-modset save safety (modding plan P3): a sidecar "<image>.modset"
+ * records the modset tag the card's progress belongs to. Mismatch at
+ * open warns (never blocks); --adopt-saves retags explicitly. */
+static int  s_adopt = 0;                       /* --adopt-saves */
+static char s_ms_tag[2][1024];                 /* sidecar tag at open */
+static int  s_ms_write_warned[2];
 
 /* Async-sync latch surfaced by MemCardSync. */
 static int     s_mc_cmds   = -1;
@@ -184,6 +192,99 @@ static int mc_is_formatted(int slot)
     return s_card[slot][0] == 'M' && s_card[slot][1] == 'C';
 }
 
+/* --- per-modset save safety ------------------------------------------ */
+
+static void mc_modset_sidecar_path(int slot, char* out, size_t cap) {
+    snprintf(out, cap, "%s.modset", s_path[slot]);
+}
+
+static void mc_modset_read_sidecar(int slot) {
+    char p[1300];
+    mc_modset_sidecar_path(slot, p, sizeof p);
+    s_ms_tag[slot][0] = '\0';
+    FILE* f = fopen(p, "rb");
+    if (!f) return;
+    size_t got = fread(s_ms_tag[slot], 1, sizeof s_ms_tag[slot] - 1, f);
+    fclose(f);
+    s_ms_tag[slot][got] = '\0';
+    /* trim trailing newline/space */
+    while (got && (s_ms_tag[slot][got - 1] == '\n' ||
+                   s_ms_tag[slot][got - 1] == '\r' ||
+                   s_ms_tag[slot][got - 1] == ' '))
+        s_ms_tag[slot][--got] = '\0';
+}
+
+static void mc_modset_write_sidecar(int slot, const char* tag) {
+    char p[1300];
+    mc_modset_sidecar_path(slot, p, sizeof p);
+    FILE* f = fopen(p, "wb");
+    if (!f) {
+        OPL_ERROR_F("memcard", "cannot write %s: %s", p, strerror(errno));
+        return;
+    }
+    fprintf(f, "%s\n", tag);
+    fclose(f);
+    snprintf(s_ms_tag[slot], sizeof s_ms_tag[slot], "%s", tag);
+}
+
+/* At card open: compare the sidecar tag against the running modset.
+ * Mismatch WARNS and continues — progress is never blocked; the tag
+ * only changes through the explicit --adopt-saves flow (or the
+ * birth-tagging of a card that has no vanilla progress recorded). */
+static int s_ms_checked[2];
+
+static void mc_modset_check_open(int slot) {
+    if (s_ms_checked[slot]) return; /* once per session per slot */
+    s_ms_checked[slot] = 1;
+    const char* cur = openpete_mods_modset_tag();
+    mc_modset_read_sidecar(slot);
+    const char* tag = s_ms_tag[slot];
+    if (strcmp(tag, cur) == 0) return; /* matched (incl. vanilla+vanilla) */
+    if (s_adopt) {
+        mc_modset_write_sidecar(slot, cur);
+        OPL_INFO_F("memcard", "card %d: modset tag adopted (\"%s\")",
+                   slot, cur[0] ? cur : "vanilla");
+        return;
+    }
+    if (!tag[0])
+        OPL_WARN_F("memcard", "card %d holds VANILLA progress but mods "
+                   "are active (%s) — saving will mix modded progress "
+                   "into it; pass --adopt-saves to accept and tag",
+                   slot, cur);
+    else if (!cur[0])
+        OPL_WARN_F("memcard", "card %d is tagged with modset \"%s\" but "
+                   "no mods are active — its progress may depend on "
+                   "them; pass --adopt-saves to re-tag as vanilla",
+                   slot, tag);
+    else
+        OPL_WARN_F("memcard", "card %d modset MISMATCH: tagged \"%s\", "
+                   "running \"%s\" — pass --adopt-saves to accept",
+                   slot, tag, cur);
+}
+
+/* At each persisted write: birth-tag an untagged card under the active
+ * modset (recorded truth, with a log); never silently CHANGE an
+ * existing tag — a mismatched write warns once and leaves the tag, so
+ * the mismatch keeps surfacing until explicitly adopted. */
+static void mc_modset_on_write(int slot) {
+    const char* cur = openpete_mods_modset_tag();
+    const char* tag = s_ms_tag[slot];
+    if (strcmp(tag, cur) == 0) return;
+    if (!tag[0] && cur[0]) {
+        mc_modset_write_sidecar(slot, cur);
+        OPL_INFO_F("memcard", "card %d: first save under modset \"%s\" — "
+                   "tagged", slot, cur);
+        return;
+    }
+    if (!s_ms_write_warned[slot]) {
+        s_ms_write_warned[slot] = 1;
+        OPL_WARN_F("memcard", "card %d written under a modset that does "
+                   "not match its tag (\"%s\" vs running \"%s\"); tag "
+                   "unchanged — pass --adopt-saves to re-tag",
+                   slot, tag, cur[0] ? cur : "vanilla");
+    }
+}
+
 /* Persist a card image to disk (write-through after every mutation). */
 static void mc_flush(int slot)
 {
@@ -197,6 +298,7 @@ static void mc_flush(int slot)
     if (fwrite(s_card[slot], 1, MC_CARD_SIZE, f) != MC_CARD_SIZE)
         OPL_ERROR_F("memcard", "short write to %s", s_path[slot]);
     fclose(f);
+    mc_modset_on_write(slot);
 }
 
 /* Load a card image on first access, or provision one if absent. */
@@ -218,13 +320,15 @@ static void mc_ensure_loaded(int slot)
         if (got == MC_CARD_SIZE) {
             s_loaded[slot] = 1;
             OPL_INFO_F("memcard", "loaded card %d from %s", slot, s_path[slot]);
+            mc_modset_check_open(slot);
             return;
         }
         OPL_ERROR_F("memcard", "%s: short read (%zu/%d) — reprovisioning",
                     s_path[slot], got, MC_CARD_SIZE);
     }
 
-    /* First run for this slot: provision + materialize on disk. */
+    /* First run for this slot: provision + materialize on disk. The
+     * flush birth-tags the fresh card under the active modset. */
     if (s_unformatted) memset(s_card[slot], 0, MC_CARD_SIZE);
     else               mc_format_image(s_card[slot]);
     s_loaded[slot] = 1;
@@ -297,6 +401,27 @@ void openpete_memcard_set_paths(const char* card_a, const char* card_b)
 void openpete_memcard_set_presence(int slot, int present)
 {
     if (slot == 0 || slot == 1) s_present[slot] = present ? 1 : 0;
+}
+
+void openpete_memcard_set_adopt(int on)
+{
+    s_adopt = on ? 1 : 0;
+}
+
+void openpete_memcard_startup_check(void)
+{
+    /* Spyro only touches the card from its save UI, but the modset
+     * warning is about the LAUNCH configuration — surface it at startup.
+     * Existing images only: a fresh dir has no progress to protect (the
+     * game's first real write birth-tags via mc_flush). */
+    for (int slot = 0; slot < 2; slot++) {
+        if (!s_present[slot]) continue;
+        if (mc_resolve_path(slot) != 0) continue;
+        FILE* f = fopen(s_path[slot], "rb");
+        if (!f) continue;
+        fclose(f);
+        mc_modset_check_open(slot);
+    }
 }
 
 void openpete_memcard_set_unformatted(int on)

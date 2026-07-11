@@ -469,6 +469,53 @@ else
     ok "SKIP (regen toolchain not present — PSXRecomp / PSX.EXE missing)"
 fi
 
+# ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────
+# The modset tag ("id@ver+...", sim_neutral mods excluded) is checked at
+# engine startup against the card's sidecar. Five flows, ~300 frames each:
+# fresh-vanilla silence, vanilla-card+mods warn, mismatch warn, explicit
+# adopt (sidecar rewritten), tagged-card+vanilla warn. The last uses a
+# sim_neutral observer to prove neutral mods don't taint the tag.
+say "save safety: modset tag / warn / adopt on the memcard sidecar"
+CARDS="$WORK/cards"; mkdir -p "$CARDS"
+fixture "$WORK/ss-gems" double-gems
+fixture "$WORK/ss-observer" hello-anchor
+mc_run() { OPENPETE_CARD_DIR="$CARDS" timeout 120 "$BIN" --headless \
+    --disc "$DISC" --run-recomp 0x80012204 --frame-limit 300 "$@" 2>&1; }
+out="$(mc_run)"
+if [ ! -e "$CARDS/card1.mcr.modset" ] && \
+   ! printf '%s\n' "$out" | grep -q "memcard.*modset"; then
+    ok "vanilla + fresh dir: silent, no sidecar"
+else
+    bad "vanilla fresh-dir run warned or created a sidecar"
+fi
+dd if=/dev/zero of="$CARDS/card1.mcr" bs=1024 count=128 2>/dev/null
+out="$(mc_run --mods-dir "$WORK/ss-gems")"
+if printf '%s\n' "$out" | grep -q "holds VANILLA progress but mods are active"; then
+    ok "vanilla card + divergent mod: warned"
+else
+    bad "vanilla-card warning missing"
+fi
+echo "other-mod@9.9" > "$CARDS/card1.mcr.modset"
+out="$(mc_run --mods-dir "$WORK/ss-gems")"
+if printf '%s\n' "$out" | grep -q "modset MISMATCH"; then
+    ok "mismatched tag: warned (tag preserved)"
+else
+    bad "mismatch warning missing"
+fi
+out="$(mc_run --mods-dir "$WORK/ss-gems" --adopt-saves)"
+if printf '%s\n' "$out" | grep -q "modset tag adopted" && \
+   grep -q "^double-gems@" "$CARDS/card1.mcr.modset"; then
+    ok "--adopt-saves: adopted + sidecar rewritten"
+else
+    bad "adopt flow failed (log or sidecar content)"
+fi
+out="$(mc_run --mods-dir "$WORK/ss-observer")"
+if printf '%s\n' "$out" | grep -q "but no mods are active"; then
+    ok "tagged card + observer-only modset: warned (sim_neutral excluded from tag)"
+else
+    bad "tagged-card/vanilla warning missing (sim_neutral exclusion broken?)"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

@@ -37,6 +37,17 @@ void openpete_memcard_set_presence(int slot, int present);
  * default pre-formatted-empty card. */
 void openpete_memcard_set_unformatted(int on);
 
+/* Per-modset save safety (--adopt-saves): explicitly re-tag card
+ * sidecars to the RUNNING modset at open, silencing the mismatch
+ * warning. Without it, a mismatch warns (never blocks) and the tag is
+ * preserved so the warning keeps surfacing. */
+void openpete_memcard_set_adopt(int on);
+
+/* Run the save-safety modset check at engine startup for existing card
+ * images (the game may not touch the card for a long time; the warning
+ * concerns the launch configuration). Call after mods init + setters. */
+void openpete_memcard_startup_check(void);
+
 /* --- libmcrd surface (called by the psyq_MemCard* thunks) ----------------- */
 
 /* Reset the async-sync latch + "new card" flags. Driven by the game's

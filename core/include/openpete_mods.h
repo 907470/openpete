@@ -70,6 +70,12 @@ extern int openpete_mods_active;
  * offending mod (PoC rung 6). */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
+/* Per-modset save safety: canonical tag of the loaded gameplay-relevant
+ * modset ("id@ver+id@ver", ids sorted; mods declaring sim_neutral=true
+ * excluded). "" = vanilla. Stable after openpete_mods_init(); consumed
+ * by core/host/memcard.c to tag cards + warn on mismatch. */
+const char* openpete_mods_modset_tag(void);
+
 /* ── Draw service (core/mods/mod_draw.c) ───────────────────────────── */
 
 #include "openpete_mod_api.h" /* openpete_mod_present_fn / ctx */

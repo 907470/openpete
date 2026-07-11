@@ -106,6 +106,10 @@ struct openpete_mod {
     int   n_above;
     char  below[MOD_DEPS_MAX][MOD_ID_MAX]; /* advisory: lower priority */
     int   n_below;
+    int   sim_neutral; /* [mod] sim_neutral=true: author declares the mod
+                        * never diverges gameplay state (observers/HUD/
+                        * presentation) — excluded from the save modset
+                        * tag. Advisory, like tier. */
     void* dl;
 };
 
@@ -328,6 +332,41 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
+/* Save modset tag (per-modset save safety): the canonical identity of
+ * the running gameplay-relevant modset — "id@ver+id@ver", ids sorted,
+ * sim_neutral mods excluded. Empty string = vanilla. Consumed by the
+ * host memcard module to tag save cards and warn on mismatch. */
+const char* openpete_mods_modset_tag(void) {
+    static char s_tag[1024];
+    static int  s_built = 0;
+    if (s_built) return s_tag;
+    s_built = 1;
+    s_tag[0] = '\0';
+    /* Sorted id order → order-independent canonical form. */
+    const struct openpete_mod* picked[MODS_MAX];
+    int n = 0;
+    for (int i = 0; i < s_mod_count; i++)
+        if (s_mods[i].dl && !s_mods[i].sim_neutral)
+            picked[n++] = &s_mods[i];
+    for (int i = 1; i < n; i++) {
+        const struct openpete_mod* m = picked[i];
+        int j = i - 1;
+        while (j >= 0 && strcmp(picked[j]->id, m->id) > 0) {
+            picked[j + 1] = picked[j];
+            j--;
+        }
+        picked[j + 1] = m;
+    }
+    size_t off = 0;
+    for (int i = 0; i < n; i++) {
+        int w = snprintf(s_tag + off, sizeof s_tag - off, "%s%s@%s",
+                         i ? "+" : "", picked[i]->id, picked[i]->version);
+        if (w < 0 || (size_t)w >= sizeof s_tag - off) break;
+        off += (size_t)w;
+    }
+    return s_tag;
+}
+
 /* Content registry: level slots (rung 12). */
 static int api_register_level_slot(openpete_mod_t* self, const char* name,
                                    int donor_level_id) {
@@ -487,6 +526,10 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                        mod->id);
         free(tier.u.s);
     }
+    /* sim_neutral = true: author-declared observer/presentation-only —
+     * excluded from the save modset tag (per-modset save safety). */
+    toml_datum_t sn = toml_bool_in(t, "sim_neutral");
+    mod->sim_neutral = (sn.ok && sn.u.b) ? 1 : 0;
     /* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
      * loading (a dep's entry runs before its dependents'); a missing or
      * cyclic dep disables the mod with an actionable error. */
