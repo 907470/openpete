@@ -254,8 +254,11 @@ static inline void op__restore(CPUState* c, const uint32_t* s) {
             f"     (api)->override_addr((self), 0x{addr:08X}u, "
             f"IMPL##__op_tramp))\n")
         # base
+        # pointer returns are opaque guest vaddrs: cast through intptr_t
+        # so Win64 compiles clean (value identical — the sign-extension
+        # matches the 64-bit-Linux behaviour)
         ret_grab = "" if ret == "void" else \
-            f"    {rtype} rv__ = ({rtype})(int32_t)cpu->v0;\n"
+            f"    {rtype} rv__ = ({rtype})(intptr_t)(int32_t)cpu->v0;\n"
         ret_stmt = "" if ret == "void" else "    return rv__;\n"
         L.append(
             f"static inline {rtype} op_base_{name}({sig}) {{\n"
