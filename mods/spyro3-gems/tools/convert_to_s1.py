@@ -181,26 +181,31 @@ def build_model(anim_json, substate, scale):
 def main():
     anims = [json.loads((S3 / f"gem_anim{n}.json").read_text()) for n in range(5)]
 
-    # Scale rule: S3 relative sizes, clamped to the stock envelope.
-    # One GLOBAL scale anchors the set — the tallest S3 gem (red) maps
-    # to the stock height (S3G_DUMP_VERTS ground truth, true coords: VY
-    # spans [-128, 0], horizontal ±84) — so denominations keep their S3
-    # size hierarchy (gold is authentically the small, compact one).
-    # Then each model CLAMPS to the envelope, uniform per model so its
-    # shape survives: blue/pink/green are genuinely anisotropic in S3
-    # (wide axis 1.17–1.42× the narrow one) and at the global scale
-    # their wide axis overshoots stock (blue hit 118 vs 84 — visibly
-    # oversized in-world, and outside the stock m_RenderRadius cull the
-    # spec requires fitting). Two rejected cuts: capping the global
-    # scale at the int8 format ceiling (±127) let the wide gems through;
-    # maximizing every model inside the envelope inflated gold to stock
-    # size. Gems rest at identity orientation and the collect wobble
-    # sweeps the full horizontal radius, so the symmetric tight bound
-    # (84) is the safe horizontal limit for both axes.
+    # Scale rule: ENGINE-EXACT world size, clamped to the stock envelope.
+    # The cross-game factor is fully derived (no tuned anchor):
+    #   1 S3 simple vert unit = 4 world units   (SpyroEdit UpdateMoby
+    #     non-animated path: scale = MOBYPOSSCALE * 4, disc-verified)
+    #   1 S1 stored vert unit = 2 world units   (S1 shaded moby path,
+    #     probe-verified in openpete moby_native.c: TR=(pos-cam)>>2<<1,
+    #     GTE space = world/2, verts feed the rotation raw)
+    #   world units are 1:1 across the trilogy (SpyroEdit renders S1 and
+    #     S3 with the SAME MOBYPOSSCALE; the only game branch is terrain
+    #     sector-Z, not mobys)
+    # => exact S1_stored = S3_vert * 2.0. NOTE: exact is BIG — S3 gems
+    # are authentically 1.5-1.9x larger in world units than S1's stock
+    # gem (S3 red: 244 world units tall vs stock 128), which reads as
+    # oversized inside S1 and overflows the stock m_RenderRadius cull.
+    # So each model then CLAMPS to the stock envelope (S3G_DUMP_VERTS
+    # ground truth, true coords: VY spans [-128, 0], horizontal ±84),
+    # uniform per model so its S3 shape survives — the clamp is the
+    # deliberate S1-localization step, and it only bites the gems that
+    # overflow (all but gold, whose compact S3 build fits). Gems rest at
+    # identity orientation and the collect wobble sweeps the full
+    # horizontal radius, so the symmetric tight bound (84) is the safe
+    # horizontal limit for both axes.
+    S3_TO_S1_EXACT = 2.0
     STOCK_TALL = 128.0
     STOCK_HORIZ = 84.0
-    global_scale = STOCK_TALL / max(z / 2.0 for a in anims
-                                    for _, _, z in a["frame0"]["verts"])
 
     force = os.environ.get("S3G_FORCE_STATE")
     payload = bytearray()
@@ -211,9 +216,10 @@ def main():
         tall = max(z / 2.0 for _, _, z in a["frame0"]["verts"])
         horiz = max(max(abs(x), abs(y))
                     for x, y, _ in a["frame0"]["verts"])
-        scale = min(global_scale, STOCK_TALL / tall, STOCK_HORIZ / horiz)
+        scale = min(S3_TO_S1_EXACT, STOCK_TALL / tall, STOCK_HORIZ / horiz)
         print(f"state {n}: tall {tall:.1f} horiz {horiz:.1f} "
-              f"-> scale {scale:.3f}{' (clamped)' if scale < global_scale else ''}")
+              f"-> scale {scale:.3f}"
+              f"{' (envelope-clamped)' if scale < S3_TO_S1_EXACT else ''}")
         body, ov, oc, of = build_model(a, sub, scale)
         while len(payload) % 16:
             payload.append(0)
