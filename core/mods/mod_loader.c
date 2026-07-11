@@ -220,7 +220,11 @@ static void* api_guest(uint32_t vaddr) {
     uint32_t seg = vaddr >> 24;
     if (seg != 0x00u && seg != 0x80u && seg != 0xA0u) return NULL;
     uint32_t off = vaddr & 0x00FFFFFFu;
-    if (off >= 2u * 1024u * 1024u) return NULL;
+    if (off >= 2u * 1024u * 1024u) {
+        /* Expansion window: registered regions (the mod guest arena,
+         * relocated buffers) resolve through the runtime's cold path. */
+        return openpete_psx_to_host_ptr(vaddr);
+    }
     uint8_t* ram = openpete_psx_get_ram();
     return ram ? ram + off : NULL;
 }
@@ -413,6 +417,15 @@ static int api_binding_down(openpete_mod_t* self, const char* name) {
     return 0;
 }
 
+/* Guest scratch arena: sim-visible state — tick context only. */
+static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
+                                uint32_t align, void** host_view) {
+    if (host_view) *host_view = NULL;
+    if (!self) return 0;
+    if (purity_violation("guest_alloc")) return 0;
+    return openpete_mods_guest_alloc(size, align, host_view, self->id);
+}
+
 /* bk2 status: read-only mirror published by run.c per sim frame. */
 static void api_bk2_status(openpete_mod_t* self, int* active, int* frame,
                            int* frame_count, int* overriding) {
@@ -509,6 +522,7 @@ static const openpete_mod_api_t s_api = {
     .enter_level         = api_enter_level,
     .play_sound          = api_play_sound,
     .binding_down        = api_binding_down,
+    .guest_alloc         = api_guest_alloc,
     .bk2_status          = api_bk2_status,
 };
 

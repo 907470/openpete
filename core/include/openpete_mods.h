@@ -77,6 +77,14 @@ typedef struct {
 void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st);
 void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 
+/* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
+ * allocator in the >2MB expansion window, registered as a psx_runtime
+ * region — guest-addressable through the standard accessors, host-
+ * addressable via *host_view. Returns the guest vaddr, 0 on failure.
+ * NOT in the engine savestate snapshot; no free. */
+uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
+                                   void** host_view, const char* owner);
+
 /* One-shot mod sound (core/host/mod_sound.c): host-side additive OpenAL
  * playback of a PCM WAV at `path`, gain-clamped [0,4]. Sim-neutral by
  * construction; legal from tick and present hooks. 0 ok / -1 failed

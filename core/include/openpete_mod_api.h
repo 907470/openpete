@@ -323,6 +323,19 @@ typedef struct openpete_mod_api {
      * host_key_down. Undeclared name = error log + 0. */
     int (*binding_down)(openpete_mod_t* self, const char* name);
 
+    /* ── Guest scratch arena (op_guest_alloc, P3) ────────────────────
+     * Allocate `size` bytes at a GUEST-addressable vaddr (the >2MB
+     * expansion window) with a typed HOST view of the same bytes —
+     * for marshalled calls whose parameters are guest pointers.
+     * Session-lifetime bump (no free); align must be a power of two
+     * (0 = 8). Returns the guest vaddr, 0 = exhausted/unavailable.
+     * NOT savestate-carried: rehydrate persistent contents in your
+     * savestate-participation callbacks. Recompiled sites that MASK
+     * addresses to 2MB cannot see arena data (standard accessor paths
+     * all can). TICK context only. */
+    uint32_t (*guest_alloc)(openpete_mod_t* self, uint32_t size,
+                            uint32_t align, void** host_view);
+
     /* ── bk2 input-movie status (engine services, read-only v1) ──────
      * active: a movie is loaded this session; frame: current movie
      * frame (<0 before the offset); frame_count: movie length;

@@ -1,0 +1,17 @@
+# arena-probe — CI proof of the guest scratch arena (op_guest_alloc,
+# the modding framework's P3 item). Allocates in the >2MB expansion
+# window, writes through the host view, reads back through the guest
+# path, and stays ORACLE-EXACT: the arena is host-backed, so merely
+# using it perturbs no canonical guest RAM.
+
+[mod]
+id      = "arena-probe"
+name    = "Guest Arena Probe"
+version = "0.1.0"
+api     = 1
+sim_neutral = true  # allocation alone touches no canonical RAM
+
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["guest arena live @ 0x80700000", "arena-probe: guest/host roundtrip OK"]
