@@ -1628,14 +1628,29 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     }
 }
 
+/* Per-voice SFX-overlay state: Spyro's per-tick voice updater
+ * (spu.c SpuUpdate ~:470) re-applies SPU_VOICE_PITCH from the guest
+ * ActiveSound (= the STOCK definition pitch) every tick with no WDSA in
+ * the mask — a key-on-only substitution would be overwritten one tick
+ * later (heard as the replacement racing at the stock rate). Track the
+ * override per voice and keep re-applying until the voice is re-keyed. */
+static uint16_t s_sfx_voice_pitch[24]; /* 0 = no override */
+static uint8_t  s_sfx_voice_mute[24];
+
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     /* SFX overlay: substitute on a HOST COPY only — the guest attr (and
      * everything the sim can read) stays byte-stock. */
     SpuVoiceAttr attr = *(SpuVoiceAttr*)PTR(cpu->a0);
     if (attr.mask & SPU_VOICE_WDSA) {
         uint32_t n_addr = 0; uint16_t n_pitch = 0; int mute = 0;
-        if (openpete_mods_sfx_on_key(attr.addr, attr.pitch,
-                                     &n_addr, &n_pitch, &mute)) {
+        int sub = openpete_mods_sfx_on_key(attr.addr, attr.pitch,
+                                           &n_addr, &n_pitch, &mute);
+        for (int v = 0; v < 24; v++) {
+            if (!(attr.voice & (1u << v))) continue;
+            s_sfx_voice_pitch[v] = (sub && !mute) ? n_pitch : 0;
+            s_sfx_voice_mute[v]  = (uint8_t)(sub && mute);
+        }
+        if (sub) {
             if (mute) {
                 attr.volume.left = attr.volume.right = 0;
                 attr.mask |= SPU_VOICE_VOLL | SPU_VOICE_VOLR;
@@ -1645,6 +1660,18 @@ void psyq_SpuSetVoiceAttr(CPUState* cpu) {
                 attr.mask |= SPU_VOICE_PITCH;
                 if (attr.mask & SPU_VOICE_LSAX) attr.loop_addr = n_addr;
             }
+        }
+    } else {
+        /* pitch/volume refresh from guest state: keep overridden voices
+         * overridden. (Refreshes are per-voice single-bit calls; the
+         * SPU_ALLCH boot init runs before any override exists.) */
+        for (int v = 0; v < 24; v++) {
+            if (!(attr.voice & (1u << v))) continue;
+            if (s_sfx_voice_pitch[v] && (attr.mask & SPU_VOICE_PITCH))
+                attr.pitch = s_sfx_voice_pitch[v];
+            if (s_sfx_voice_mute[v] &&
+                (attr.mask & (SPU_VOICE_VOLL | SPU_VOICE_VOLR)))
+                attr.volume.left = attr.volume.right = 0;
         }
     }
     SpuSetVoiceAttr(&attr);
