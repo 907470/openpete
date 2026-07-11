@@ -351,6 +351,23 @@ int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
 uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
                                  uint32_t len);
 
+/* Per-mod user configuration (mod_config.c): mods/<id>/config.toml,
+ * parsed by the loader right before the mod's entry runs (boot and hot
+ * reload). Keys are dotted paths ("chests.collision"); getters return
+ * `def` for an absent file/key/type-mismatch. The loader watches the
+ * file's content hash in dev hot-reload mode, so a config edit re-enters
+ * the mod with fresh values. */
+void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
+                               const char* log_tag);
+int     openpete_mods_config_bool(openpete_mod_t* self, const char* key,
+                                  int def);
+int64_t openpete_mods_config_int(openpete_mod_t* self, const char* key,
+                                 int64_t def);
+double  openpete_mods_config_float(openpete_mod_t* self, const char* key,
+                                   double def);
+int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
+                                 const char* def, char* buf, int cap);
+
 /* Mod-owned RGBA8 textures (mod_texture.c): registered under a
  * mod-chosen 16-bit id; model faces select them with the PSX-reserved
  * Tiledef tpage MODE 3 encoding + the id in the CLUT u16; the native

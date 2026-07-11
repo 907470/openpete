@@ -126,6 +126,9 @@ struct openpete_mod {
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
     char  build_key[65]; /* content-hash build key (hot-reload watch) */
+    char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
+                          * a config edit re-enters entry without a
+                          * recompile — the cached object is reused) */
     int   has_src;       /* 0 = binary-only/assets-only: never compiled,
                           * skipped by the hot-reload watch */
     int   enabled;       /* live-toggle state (loaded mods start on) */
@@ -370,6 +373,7 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len);
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]);
+static int config_compute_key(const char* mod_dir, char key_out[65]);
 static int mod_compile(const char* mod_dir, const char* id,
                        const char* sdk_dir, const char* key,
                        const char* out_path, int stamp);
@@ -448,6 +452,8 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
+    openpete_mods_config_load(mod, mod->dir, mod->log_tag);
+    (void)config_compute_key(mod->dir, mod->cfg_key);
     if (!entry || entry(&s_api, mod) != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
                     mod->id);
@@ -477,11 +483,15 @@ static void hot_reload_poll(void) {
         struct openpete_mod* mod = &s_mods[i];
         if (!mod->dl || !mod->has_src) continue;
         /* Key-only recompute (pure hashing, ms); the compile happens
-         * inside mod_hot_reload on a real change. */
-        char key[65];
+         * inside mod_hot_reload on a real change. config.toml is watched
+         * too — a config-only edit reloads against the cached object, so
+         * entry re-reads the fresh values. */
+        char key[65], ckey[65];
         if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0)
             continue;
-        if (strcmp(key, mod->build_key) != 0)
+        (void)config_compute_key(mod->dir, ckey);
+        if (strcmp(key, mod->build_key) != 0 ||
+            strcmp(ckey, mod->cfg_key) != 0)
             mod_hot_reload(mod);
     }
 }
@@ -793,6 +803,10 @@ static const openpete_mod_api_t s_api = {
     .sfx_hook      = openpete_mods_sfx_hook,
     .texture_register = openpete_mods_texture_register,
     .sfx_stage     = openpete_mods_sfx_stage,
+    .config_bool   = openpete_mods_config_bool,
+    .config_int    = openpete_mods_config_int,
+    .config_float  = openpete_mods_config_float,
+    .config_str    = openpete_mods_config_str,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -1082,6 +1096,25 @@ static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
     return 0;
 }
 
+/* Content hash of config.toml (hot-reload watch companion to
+ * mod_compute_key — config is not a compile input, so its key is
+ * tracked separately and a config-only change reloads the mod against
+ * the CACHED object). Absent file hashes to a stable sentinel. */
+static int config_compute_key(const char* mod_dir, char key_out[65]) {
+    char p[MOD_PATH_MAX + 16];
+    snprintf(p, sizeof p, "%s/config.toml", mod_dir);
+    openpete_sha256_ctx hc;
+    openpete_sha256_init(&hc);
+    if (hash_file(&hc, p) != 0) {
+        snprintf(key_out, 65, "-");   /* no config file */
+        return 0;
+    }
+    uint8_t digest[32];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, key_out);
+    return 0;
+}
+
 static void mod_stamp_path(const char* mod_dir, const char* id,
                            char* out, size_t cap) {
     snprintf(out, cap, "%s/.build/%s.hash", mod_dir, id);
@@ -1280,6 +1313,8 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
                     mod->id);
         return -1; /* keep the .so resident; it is inert without chains */
     }
+    openpete_mods_config_load(mod, mod->dir, mod->log_tag);
+    (void)config_compute_key(mod->dir, mod->cfg_key);
     int rc = entry(&s_api, mod);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",

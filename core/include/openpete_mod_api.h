@@ -413,6 +413,31 @@ typedef struct openpete_mod_api {
      * bank blast frees the tail) — re-stage per level. */
     uint32_t (*sfx_stage)(openpete_mod_t* self, const void* body,
                           uint32_t len);
+
+    /* ── Per-mod user configuration (config.toml) ────────────────────
+     * Read a value from mods/<id>/config.toml (optional, user-editable
+     * — the manifest describes what the mod IS, config.toml what the
+     * user WANTS from it). Keys are dotted paths: "chests.collision"
+     * reads key `collision` in table [chests]; bare "verbose" reads a
+     * root-level key. `def` is returned when the file, the key, or a
+     * type-compatible value is absent — ship a config.toml documenting
+     * the defaults, but make the CODE defaults authoritative.
+     *
+     * The file is parsed once, right before entry runs — read config at
+     * entry and branch there. In dev hot-reload mode the loader watches
+     * config.toml alongside the sources: an edit reloads the mod, so
+     * entry re-runs with fresh values. Numeric coercion: bools read as
+     * 0/1 through config_int/config_float; ints read through
+     * config_float (and floats truncate through config_int); strings
+     * never coerce. config_str copies at most cap-1 chars + NUL into
+     * buf and returns 1 if the key was present (0 = default copied). */
+    int     (*config_bool)(openpete_mod_t* self, const char* key, int def);
+    int64_t (*config_int)(openpete_mod_t* self, const char* key,
+                          int64_t def);
+    double  (*config_float)(openpete_mod_t* self, const char* key,
+                            double def);
+    int     (*config_str)(openpete_mod_t* self, const char* key,
+                          const char* def, char* buf, int cap);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */
