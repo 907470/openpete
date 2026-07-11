@@ -140,9 +140,16 @@ def build_model(anim_json, substate, scale):
             packs.append(([v[0], v[2], v[1], v[1]],
                           tuple(-c for c in n)))
         else:
-            # S3 quads are stored in the same strip order S1 packs
-            # (i0,i1,i2,i3 -> tris (0,1,2)+(1,3,2)); copy through.
-            packs.append(([v[0], v[1], v[2], v[3]], n))
+            # S3 quads share S1's strip packing but the OPPOSITE facing
+            # convention (same as the tris — S1's quad NCLIP OR-rule is
+            # single-sided for consistent windings: kept iff
+            # NCLIP(i0,i1,i2)>0 || NCLIP(i3,i1,i2)<0, both true only
+            # from the front). Swap the middle two indices for the
+            # front face; emit the back face too (negated normal) so
+            # no cap ever holes out.
+            packs.append(([v[0], v[2], v[1], v[3]], n))
+            packs.append(([v[0], v[1], v[2], v[3]],
+                          tuple(-c for c in n)))
         for idx, nn in packs:
             if any(ix >= len(verts) for ix in idx):
                 raise SystemExit(f"vert index OOB in face {f}")
