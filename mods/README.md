@@ -1,5 +1,12 @@
 # openpete mods
 
+**Full mod-author documentation** (guides + generated API/function/
+global/struct reference) builds with the game: `cmake --build --preset
+linux-release --target mod_docs` →
+`build/<preset>/games/spyro-1/moddocs/site/index.html`, or
+`scripts/build-mod-docs.sh --serve` for a live-preview server
+(needs `pip install mkdocs-material`; sources in `docs/modding/`).
+
 Every subdirectory here with a `mod.toml` is a mod; `<id>.zip` archives
 load identically (unpacked + cached automatically). `enabled.txt` lists
 enabled mods, one id per line — **the order IS the priority**: mods

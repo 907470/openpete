@@ -383,6 +383,35 @@ add_custom_target(spyro1_game_structs ALL
     COMMENT "Staging typed game structs into <exe>/sdk/")
 add_dependencies(openpete-spyro1 spyro1_game_structs)
 
+# --- Mod-author docs (notes/plans/openpete-mod-docs.md) ---
+# tools/gen_mod_docs.py extracts the SDK surface (api header, symbol/
+# global/prototype manifests, typed structs, mod gallery) into markdown;
+# scripts/build-mod-docs.sh then builds the mkdocs-material site when
+# mkdocs is installed (notice + green build when it isn't). Stamp-
+# guarded: the docs rebuild exactly when an input changed — "the docs
+# never lie" is a build property, not a policy.
+set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
+file(GLOB _mod_docs_manifests ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
+file(GLOB _mod_docs_pages ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
+add_custom_command(
+    OUTPUT  ${_mod_docs_stamp}
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
+            --structs ${_mod_sdk_gen}/openpete_game_structs.h
+            --site-dir ${CMAKE_CURRENT_BINARY_DIR}/moddocs/site
+    COMMAND ${CMAKE_COMMAND} -E touch ${_mod_docs_stamp}
+    DEPENDS ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
+            ${_mod_sdk_gen}/openpete_game_structs.h
+            ${CMAKE_SOURCE_DIR}/tools/gen_mod_docs.py
+            ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
+            ${CMAKE_SOURCE_DIR}/docs/modding/mkdocs.yml
+            ${_mod_docs_manifests}
+            ${_mod_docs_pages}
+    COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
+add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
+
 # Instruction-site registry (rung 14): generated/mod_sites_registry.c maps
 # (mod_id, site name) → the baked guarded index. scripts/regen-mod-sites.sh
 # (or a full regen) rewrites it; seed an EMPTY registry at configure time so
