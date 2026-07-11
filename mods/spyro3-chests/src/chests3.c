@@ -85,6 +85,7 @@ static const uint8_t* s_payload;   /* = s_file + sizeof header */
 static int s_have_pack;
 static int s_calibrated;
 static int s_need_tex;    /* park done; SPU upload pending (camera hook) */
+static int s_force_flame; /* probe armed via mods/spyro3-chests/.flame */
 
 /* ── calibration: dump one stock Model in full ───────────────────────── */
 
@@ -539,7 +540,18 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
         A->log(SELF, OP_MOD_LOG_ERROR, "camera hook registration failed");
         return 1;
     }
-    if (getenv("S3C_FORCE_FLAME") &&
+    /* env OR a flag file next to the mod (env vars don't cross the
+     * WSL->Windows interop boundary; `cmd /c set` output is uncapturable
+     * for a GUI-subsystem exe) */
+    {
+        char fpath[512]; FILE* ff;
+        snprintf(fpath, sizeof fpath, "%s/../.flame", A->data_dir(SELF));
+        if ((ff = fopen(fpath, "rb")) != NULL) {
+            fclose(ff);
+            s_force_flame = 1;
+        }
+    }
+    if ((getenv("S3C_FORCE_FLAME") || s_force_flame) &&
         api->override_addr(self, OP_FNADDR_CameraUpdateMatrices,
                            on_camera_matrices))
         A->log(SELF, OP_MOD_LOG_WARN, "flame probe hook failed");

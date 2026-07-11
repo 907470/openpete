@@ -470,6 +470,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
         "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
         "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
+        "  --freecam-pose STR         engage the debug free camera at a pose once the level is\n"
+        "                             live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
+        "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE — env vars don't\n"
+        "                             cross the WSL->Windows interop boundary.\n"
         "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
         "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
@@ -795,6 +799,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--run-recomp") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--freecam-pose") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+            _putenv_s("OPENPETE_FREECAM_POSE", v);
+#else
+            setenv("OPENPETE_FREECAM_POSE", v, 1);
+#endif
+            i++;
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
         } else if (strcmp(a, "--skip-to-level") == 0) {
