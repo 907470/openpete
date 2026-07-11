@@ -82,7 +82,7 @@ def axis_map_parity():
     return -1 if (swaps + flips) % 2 else 1
 
 
-FLIP_N = os.environ.get("S3G_FLIP_N", "1") == "1"
+FLIP_N = os.environ.get("S3G_FLIP_N", "0") == "1"
 
 
 def face_normal(f):
@@ -98,11 +98,18 @@ def face_normal(f):
     return tuple(-c for c in n) if FLIP_N else n
 
 
+PLAIN = os.environ.get("S3G_PLAIN", "0") == "1"
+
+
 def pack_metal_face(idx, n):
     """8-byte S1 SHADED face: flat+metal flags, w1 = face normal
-    (b3=Nz, b2=Nx, b1=Ny — spec §A.5 flat-face layout)."""
+    (b3=Nz, b2=Nx, b1=Ny — spec §A.5 flat-face layout).
+    S3G_PLAIN=1 diagnostic: gouraud face (flags 0), corner colour 0."""
     def c8(v):
         return max(-128, min(127, int(round(v)))) & 0xFF
+    if PLAIN:
+        w0 = (idx[0] << 23) | (idx[1] << 16) | (idx[2] << 9) | (idx[3] << 2)
+        return struct.pack("<II", w0, 0)
     w0 = (idx[0] << 23) | (idx[1] << 16) | (idx[2] << 9) | (idx[3] << 2) | 3
     w1 = (c8(n[2]) << 24) | (c8(n[0]) << 16) | (c8(n[1]) << 8)
     return struct.pack("<II", w0, w1)
@@ -132,24 +139,22 @@ def build_model(anim_json, substate, scale):
         if mirrored:
             v = list(reversed(v))          # restore outward winding
         packs = []
+        # Two conversions per face (winding-probe + wedge-hole evidence,
+        # 2026-07-11):
+        #  1. WINDING: S3's convention is globally opposite to S1's
+        #     NCLIP keep-rules — every face emits reversed, single-sided
+        #     (double-siding z-fights coplanar twins into stipple).
+        #  2. QUAD ORDER: S3 quads are PERIMETER-ordered (A,B,C,D); S1
+        #     packs a STRIP (tris (i0,i1,i2)+(i3,i1,i2), diagonal
+        #     i1-i2). A naive index copy tiles {A,B,C}+{B,C,D}, leaving
+        #     the A-D corner sliver uncovered — the wedge holes on the
+        #     gem caps. Correct reversed strip = (A,D,B,C):
+        #     tris (A,D,B)+(C,D,B) = reversed {A,B,D}+{B,C,D} across the
+        #     true B-D diagonal.
         if f.get("tri") or len(v) == 3:
-            # S1 lone tris are single-sided (NCLIP>0); S3 gem tris render
-            # screen-facing. Emit both windings (reverse copy gets the
-            # negated normal) so no facet ever drops out.
-            packs.append(([v[0], v[1], v[2], v[2]], n))
-            packs.append(([v[0], v[2], v[1], v[1]],
-                          tuple(-c for c in n)))
+            packs.append(([v[0], v[2], v[1], v[1]], n))
         else:
-            # S3 quads share S1's strip packing but the OPPOSITE facing
-            # convention (same as the tris — S1's quad NCLIP OR-rule is
-            # single-sided for consistent windings: kept iff
-            # NCLIP(i0,i1,i2)>0 || NCLIP(i3,i1,i2)<0, both true only
-            # from the front). Swap the middle two indices for the
-            # front face; emit the back face too (negated normal) so
-            # no cap ever holes out.
-            packs.append(([v[0], v[2], v[1], v[3]], n))
-            packs.append(([v[0], v[1], v[2], v[3]],
-                          tuple(-c for c in n)))
+            packs.append(([v[0], v[3], v[1], v[2]], n))
         for idx, nn in packs:
             if any(ix >= len(verts) for ix in idx):
                 raise SystemExit(f"vert index OOB in face {f}")
@@ -161,7 +166,7 @@ def build_model(anim_json, substate, scale):
     # All faces are flat+metal: the gouraud colour table is vestigial but
     # the baked-mode layout (m_Verts == model+0x10, ctab before faces) is
     # kept identical to the stock gems.
-    colours = [PALETTE[substate][0]]
+    colours = [PALETTE[substate][1] if PLAIN else PALETTE[substate][0]]
     ctab = b"".join(struct.pack("<I", w) for w in colours)
     body = bytearray()
     body += struct.pack("<bBbB", len(verts), nfaces, NEAR_BIAS, 0xFF)
