@@ -286,6 +286,25 @@ typedef struct openpete_mod_api {
     int (*moby_type_id)(openpete_mod_t* self, const char* name);
     uint32_t (*spawn_moby)(openpete_mod_t* self, CPUState* cpu,
                            const char* name);
+
+    /* ── Content registry: level slots (PoC rung 12) ─────────────────
+     * Register a NEW level slot: the engine claims a free level id
+     * (Spyro 1 has exactly ONE free in-bounds slot — id 65 / index 35;
+     * more slots ride ram-virtualization), clones the donor level's
+     * WAD TOC entry so the stock loader streams the donor's real disc
+     * sectors, and aliases the id-keyed load functions to the donor so
+     * the slot loads and plays donor-faithful while keeping its OWN
+     * per-level state index (visited/gem/kill masks start fresh).
+     *
+     * level_slot_id returns the claimed id (-1 until claimed — the
+     * claim lands on the first tick after the boot TOC read).
+     * enter_level triggers a transition into any level id from live
+     * gameplay (the level-select cheat's path; works for retail ids
+     * too). TICK context only. */
+    int (*register_level_slot)(openpete_mod_t* self, const char* name,
+                               int donor_level_id);
+    int (*level_slot_id)(openpete_mod_t* self, const char* name);
+    int (*enter_level)(openpete_mod_t* self, CPUState* cpu, int level_id);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

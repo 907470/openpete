@@ -1,0 +1,28 @@
+# mirror-level — PoC ladder rung 12: a NEW level slot, the
+# total-conversion keystone (notes/plans/openpete-modding-framework.md,
+# P3 registries). Registry + capacity + asset resolution end-to-end:
+# the engine claims Spyro 1's one free in-bounds slot (id 65/index 35),
+# clones Artisans' WAD TOC entry (the stock loader streams the donor's
+# real disc sectors), aliases the id-keyed load path to the donor
+# (overlay pointers + the 65%10==5 flight fork), and the mod warps in
+# and verifies the clone structurally from guest state.
+#
+# Caveat (documented, not fixed in v1): index 35's visited/gem state
+# persists into the save file's last slot; the retail UI shows the
+# placeholder name "A" for it. Cosmetic-wrong, non-fatal.
+
+[mod]
+id      = "mirror-level"
+name    = "Mirror Level (Artisans clone)"
+version = "0.1.0"
+api     = 1
+tier    = "raw"   # reads level/load globals by address; region-pinned
+
+[test]
+# --skip-to-level artisans reaches gameplay ~frame 1700; SETTLE_TICKS
+# (90) + a full 14-stage level load (~600 frames) + verification needs
+# ~3000 frames; 8000 leaves margin. Divergent by design — oracle skip.
+frames        = 8000
+expect_oracle = "skip"
+args          = "--skip-to-level artisans"
+expect_log    = ["level slot mirror-level:mirror-artisans live (id=65", "mirror-level: entering slot 65", "mirror-level: reached gameplay id=65 index=35 magic=11 flight=0", "mirror-level: clone verified"]

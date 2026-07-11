@@ -328,6 +328,27 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
+/* Content registry: level slots (rung 12). */
+static int api_register_level_slot(openpete_mod_t* self, const char* name,
+                                   int donor_level_id) {
+    if (!self || !name) return -1;
+    if (purity_violation("register_level_slot")) return -1;
+    return openpete_mods_level_register(self->id, name, donor_level_id,
+                                        self->log_tag);
+}
+
+static int api_level_slot_id(openpete_mod_t* self, const char* name) {
+    if (!self || !name) return -1;
+    return openpete_mods_level_slot_id(self->id, name);
+}
+
+static int api_enter_level(openpete_mod_t* self, CPUState* cpu,
+                           int level_id) {
+    if (!self || !cpu) return -1;
+    if (purity_violation("enter_level")) return -1;
+    return openpete_mods_level_enter(cpu, level_id);
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -397,6 +418,9 @@ static const openpete_mod_api_t s_api = {
     .register_moby_type = api_register_moby_type,
     .moby_type_id       = api_moby_type_id,
     .spawn_moby         = api_spawn_moby,
+    .register_level_slot = api_register_level_slot,
+    .level_slot_id       = api_level_slot_id,
+    .enter_level         = api_enter_level,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

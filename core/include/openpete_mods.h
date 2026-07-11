@@ -203,6 +203,29 @@ typedef struct {
 
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
 
+/* Level-slot namespace (rung 12). A registered slot is a NEW level id
+ * whose WAD TOC entry is cloned from a donor level; the game ops own
+ * the id→behavior aliasing so the slot loads and plays like the donor
+ * while keeping its own per-level state index. v1 capacity: the guest
+ * tables have exactly ONE free in-bounds slot (index 35 / id 65 in
+ * Spyro 1); lifts beyond that ride openpete-ram-virtualization. */
+typedef struct {
+    /* Claim the free slot for donor_level_id: seed its TOC entry and
+     * install the alias hooks. Returns the claimed level id, 0 = not
+     * ready yet (boot TOC not loaded) or no free slot. */
+    int (*claim_slot)(CPUState* cpu, int donor_level_id);
+    /* Trigger a transition into level_id from live gameplay (the
+     * level-select cheat's writes). 0 = queued, -1 = not in gameplay. */
+    int (*enter_level)(CPUState* cpu, int level_id);
+} openpete_level_ops_t;
+
+void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
+
+int openpete_mods_level_register(const char* mod_id, const char* name,
+                                 int donor_level_id, const char* log_tag);
+int openpete_mods_level_slot_id(const char* mod_id, const char* name);
+int openpete_mods_level_enter(CPUState* cpu, int level_id);
+
 /* Loader-facing (wired into the mod api). */
 int openpete_mods_moby_register(const char* mod_id, const char* name,
                                 int donor_class,
