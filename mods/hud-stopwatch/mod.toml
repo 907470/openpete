@@ -1,0 +1,23 @@
+# hud-stopwatch — PoC ladder rung 15 (notes/plans/openpete-modding-framework.md)
+#
+# The native draw service proof: screen-space HUD text via the vk
+# renderer with ZERO guest-RAM writes — this mod ENABLED must pass the
+# observer-neutrality oracle gate WHILE drawing. Also the per-present
+# hook proof: the elapsed time is evaluated at ctx->alpha in a present
+# hook, so the hundredths spin smoothly at high --render-fps (the mod
+# owns its sub-tick curve; the engine never interpolates mod visuals).
+#
+# Draws: a dark backdrop rect (tick context, persists per tick) and the
+# "M:SS.hh" gameplay stopwatch (present context, one present each).
+# Time base: sim ticks / 29.97 — a gameplay-time stopwatch.
+
+[mod]
+id      = "hud-stopwatch"
+name    = "HUD Stopwatch"
+version = "0.1.0"
+api     = 1
+
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["hud-stopwatch: ticking", "present hook registered"]

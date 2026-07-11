@@ -45,6 +45,12 @@ int text_moby_native_emit(const char* str,
                           unsigned base_rgb,
                           openpete_hud_vert* out, int out_cap);
 
+/* Mod draw-service rasterizer (matches openpete_mods_text_emit_fn; void*
+ * out = openpete_hud_vert[]). Registered with the core in main.cpp. */
+int text_moby_native_mod_emit(const char* str, float x, float y,
+                              float cap_h, unsigned rgb,
+                              void* out_verts, int cap);
+
 /* Per-frame FPS-overlay consumer: refreshes the cache, then (once ready) builds
  * "FPS:<value>" and hands it to the native renderer's overlay slot
  * (openpete_native_set_overlay_glyphs). Called from game_on_frame_pre; a no-op

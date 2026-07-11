@@ -105,9 +105,21 @@ static uint32_t api_resolve(const char* name) {
     return s ? s->addr : 0;
 }
 
+/* Render-purity guard: present hooks may only draw. Presents are
+ * non-deterministic in count/timing, so guest access / game calls /
+ * registration from one would desync replay (plan: render-pure by API
+ * shape AND enforcement). */
+static int purity_violation(const char* what) {
+    if (!openpete_mods_in_present) return 0;
+    OPL_ERROR_F("mods", "%s refused inside a present hook (render-pure "
+                "context) — move sim-affecting work to a tick hook", what);
+    return 1;
+}
+
 static int api_override_addr(openpete_mod_t* self, uint32_t addr,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
+    if (purity_violation("override_addr")) return -1;
     int rc = openpete_mods_chain_add(addr, fn, self->id);
     if (rc == 0)
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
@@ -117,6 +129,7 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
 static int api_override_name(openpete_mod_t* self, const char* name,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
+    if (purity_violation("override_name")) return -1;
     const openpete_sdk_symbol_t* sym = sym_find(name);
     if (!sym) {
         OPL_ERROR_F(self->log_tag,
@@ -151,6 +164,7 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
 }
 
 static void* api_guest(uint32_t vaddr) {
+    if (purity_violation("guest")) return NULL;
     uint32_t seg = vaddr >> 24;
     if (seg != 0x00u && seg != 0x80u && seg != 0xA0u) return NULL;
     uint32_t off = vaddr & 0x00FFFFFFu;
@@ -175,7 +189,17 @@ static uint32_t api_guest_addr(const void* host) {
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
 static void api_call_addr(CPUState* cpu, uint32_t addr) {
+    if (purity_violation("call_addr")) return;
     call_by_address(cpu, addr);
+}
+
+static int api_register_present_hook(openpete_mod_t* self,
+                                     openpete_mod_present_fn fn) {
+    if (!self) return -1;
+    int rc = openpete_mods_register_present_hook(fn, self->id);
+    if (rc == 0)
+        OPL_INFO_F(self->log_tag, "present hook registered");
+    return rc;
 }
 
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
@@ -232,6 +256,9 @@ static const openpete_mod_api_t s_api = {
     .import_sym    = api_import_sym,
     .guest_addr    = api_guest_addr,
     .call_addr     = api_call_addr,
+    .draw_text     = openpete_mods_draw_text,
+    .draw_rect     = openpete_mods_draw_rect,
+    .register_present_hook = api_register_present_hook,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

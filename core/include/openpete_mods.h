@@ -69,6 +69,38 @@ extern int openpete_mods_active;
  * offending mod (PoC rung 6). */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
+/* ── Draw service (core/mods/mod_draw.c) ───────────────────────────── */
+
+#include "openpete_mod_api.h" /* openpete_mod_present_fn / ctx */
+
+/* Per-present flush, called from run.c's two present legs (canonical +
+ * sub-tick) just before openpete_native_render_frame(). canonical=1
+ * commits the tick-scoped command buffer (the sim tick that just ran);
+ * both legs run present hooks and push the composed overlay vertices to
+ * the native renderer. Near-zero cost when no mod ever drew. */
+void openpete_mods_present_flush(int canonical);
+
+/* Game-registered text rasterizer: lays out `str` at (x, y) with glyph
+ * cap-height cap_h (overlay space) and tint rgb into out_verts (an
+ * openpete_hud_vert array, cap entries), returning the vertex count.
+ * Spyro registers a text_moby_native wrapper (main.cpp). */
+typedef int (*openpete_mods_text_emit_fn)(const char* str, float x, float y,
+                                          float cap_h, unsigned rgb,
+                                          void* out_verts, int cap);
+void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
+
+/* Loader-facing submission entry points (wired into the mod api). */
+void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
+                             const char* str);
+void openpete_mods_draw_rect(float x, float y, float w, float h,
+                             uint32_t rgba);
+int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
+                                         const char* owner_id);
+
+/* 1 while a present hook is executing on this thread — the loader's
+ * guest/call/override entry points refuse during it (render-purity). */
+extern int openpete_mods_in_present;
+
 #ifdef __cplusplus
 }
 #endif

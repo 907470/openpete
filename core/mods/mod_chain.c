@@ -117,6 +117,11 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
 }
 
 void openpete_mods_base(CPUState* cpu) {
+    if (openpete_mods_in_present) {
+        OPL_ERROR_F("mods", "base() refused inside a present hook "
+                    "(render-pure context)");
+        return;
+    }
     if (s_frame_depth <= 0) {
         OPL_ERROR_F("mods", "base() called outside an override — ignored");
         return;

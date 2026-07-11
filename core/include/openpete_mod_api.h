@@ -45,6 +45,18 @@ typedef struct openpete_mod openpete_mod_t;
  * api->base(cpu) to fall through to the next link / the original. */
 typedef void (*openpete_mod_override_fn)(CPUState* cpu);
 
+/* Per-present context handed to present hooks (see
+ * register_present_hook below). */
+typedef struct openpete_present_ctx {
+    uint32_t tick;   /* canonical sim tick counter (openpete_frame)   */
+    float    alpha;  /* sub-tick phase [0,1) between tick and tick+1;
+                      * 0 on canonical presents                       */
+    float    dt;     /* wall seconds since the previous present       */
+    float    aspect; /* overlay-space width: x spans [0, aspect]      */
+} openpete_present_ctx_t;
+
+typedef void (*openpete_mod_present_fn)(const openpete_present_ctx_t* ctx);
+
 enum {
     OP_MOD_LOG_DEBUG = 1,
     OP_MOD_LOG_INFO  = 2,
@@ -117,6 +129,42 @@ typedef struct openpete_mod_api {
      * save/restore the arg registers. Only valid on the sim thread with
      * a live cpu (i.e. inside an override). */
     void (*call_addr)(CPUState* cpu, uint32_t addr);
+
+    /* ── Screen-space draw service (native vk renderer) ─────────────
+     * Coordinates are OVERLAY SPACE: window-height fractions, origin
+     * top-left, +y down; x spans [0, aspect], y spans [0, 1]. Draws are
+     * host-side only (zero guest-RAM writes — a drawing observer mod
+     * stays sim-neutral by construction) and render on the native vk
+     * display: live window and --record videos. (--screenshot PNGs read
+     * the scene-only reference target and do not include overlay layers
+     * — same as the FPS overlay.) Headless and PsyCross-only runs
+     * consume nothing.
+     *
+     * Immediate mode, two contexts:
+     *   - called from a TICK context (inside an override): the command
+     *     shows for all of that tick's presents; redraw every tick.
+     *   - called from a PRESENT hook: the command lives one present.
+     *
+     * draw_text glyphs: digits, A-Z (lowercase folds), % / ? + ^ . '
+     * and ':' — Spyro's own 3D gold text mobys; rgb is the glyph tint
+     * (e.g. 0x605010 for HUD gold). Text appears once the game has
+     * loaded the glyph font (early boot frames may draw nothing).
+     * draw_rect rgba: R,G,B,A bytes (alpha currently ignored: opaque). */
+    void (*draw_text)(float x, float y, float cap_h, uint32_t rgb,
+                      const char* str);
+    void (*draw_rect)(float x, float y, float w, float h, uint32_t rgba);
+
+    /* Register a per-present hook: runs once per presented frame (30 Hz
+     * canonical + every sub-tick present at high --render-fps) with the
+     * present context. RENDER-PURE by contract AND enforcement: while a
+     * present hook runs, guest access / game calls / base() / override
+     * registration are refused with an error — presents are
+     * non-deterministic in count and timing, so anything sim-affecting
+     * belongs in tick hooks. Publish state from tick hooks into your own
+     * variables; evaluate your own curves at ctx->alpha here (the engine
+     * never interpolates mod visuals). Never runs headless. */
+    int (*register_present_hook)(openpete_mod_t* self,
+                                 openpete_mod_present_fn fn);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

@@ -233,7 +233,8 @@ fi
 # ── 8. [test]-block rungs through the real modtest runner ───────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
-        mods/double-gems mods/natural-gems mods/lib-and-client; then
+        mods/double-gems mods/natural-gems mods/lib-and-client \
+        mods/hud-stopwatch; then
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"

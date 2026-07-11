@@ -53,6 +53,11 @@ extern "C" void spyro_state_regions_register(void);
 extern "C" {
 extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
 extern const size_t                openpete_sdk_symbol_count;
+/* Draw-service text rasterizer (features/text_moby_native.c — that header
+ * has no C++ guards, so declare the one symbol we need directly). */
+int text_moby_native_mod_emit(const char* str, float x, float y,
+                              float cap_h, unsigned rgb,
+                              void* out_verts, int cap);
 }
 #include "splash.h"
 extern "C" {
@@ -92,6 +97,9 @@ int main(int argc, char** argv) {
      * itself runs from openpete_run() after all setup. */
     openpete_mods_set_symbol_table(openpete_sdk_symbols,
                                    openpete_sdk_symbol_count);
+    /* ...and the draw service's text rasterizer (Spyro's 3D gold
+     * text-moby glyphs — the same font as the FPS overlay). */
+    openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
 
     /* Distribution D2: standalone extraction stage — carve PSX.EXE +
      * overlay blobs from the disc and exit (also the first stage of the

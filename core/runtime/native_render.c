@@ -150,6 +150,7 @@ typedef struct {
 #define OCCL_GW 64
 #define OCCL_GH 48
 #define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
+#define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
 #define MENU_GLYPH_MAX 16384 /* in-game menu 3D glyph text verts (labels/values/title) */
 /* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
@@ -817,6 +818,7 @@ static struct {
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
+    rhi_buffer   *mod_ovl_vb;         /* mod draw-service overlay (rects + text glyphs, NDC), rebuilt per present */
     rhi_buffer   *menu_vb;            /* in-game settings menu panel/border/selection quads (NDC) */
     rhi_buffer   *menu_glyph_vb;      /* in-game settings menu 3D glyph text (NDC, depth-tested) */
 
@@ -1485,6 +1487,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *overlay_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
+    /* Mod draw-service overlay (optional — NULL just disables mod draws). */
+    rhi_buffer   *mod_ovl_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MOD_OVL_MAX_VERTS);
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
@@ -1597,6 +1601,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.overlay_vb   = overlay_vb;
+    s_nr.mod_ovl_vb   = mod_ovl_vb;
     /* Optional menu overlay buffer (init has already passed the fatal guard —
      * a NULL here just disables the menu draw, it doesn't fail the renderer). */
     s_nr.menu_vb      = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_MAX_VERTS);
@@ -4000,6 +4005,31 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
     s_overlay_glyph_n = nverts;
 }
 
+/* Mod draw-service overlay geometry (core/mods/mod_draw.c): rects + text
+ * glyphs in the same overlay space as the FPS overlay, pushed once per
+ * present by openpete_mods_present_flush. Drawn by draw_mod_overlay on the
+ * vk variant, deliberately NOT s_overlay_live-gated so --record videos
+ * include it (a HUD mod's drawing is content, not chrome). Empirical note:
+ * --screenshot PNGs read the scene-only reference target and do NOT show
+ * overlay layers (verified M6) — visual proof of mod HUD = live window or
+ * a --record clip. */
+static openpete_hud_vert s_mod_overlay_verts[MOD_OVL_MAX_VERTS];
+static int               s_mod_overlay_n = 0;
+void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts) {
+    if (nverts < 0) nverts = 0;
+    if (nverts > MOD_OVL_MAX_VERTS) nverts = MOD_OVL_MAX_VERTS;
+    if (nverts > 0 && verts) memcpy(s_mod_overlay_verts, verts, (size_t)nverts * sizeof(verts[0]));
+    s_mod_overlay_n = nverts;
+}
+
+/* Window aspect (w/h) for mod HUD layout in overlay space: x spans
+ * [0, aspect], y spans [0, 1]. Falls back to 4:3 pre-init. */
+float openpete_native_overlay_aspect(void) {
+    if (s_nr.win_w > 0 && s_nr.win_h > 0)
+        return (float)s_nr.win_w / (float)s_nr.win_h;
+    return 4.0f / 3.0f;
+}
+
 /* In-game menu glyph geometry (labels/values/title), pushed each frame by the
  * game-side builder. Drawn by draw_menu_overlay over the panel. */
 static openpete_hud_vert s_menu_glyph_verts[MENU_GLYPH_MAX];
@@ -4045,6 +4075,36 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.overlay_vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
     return true;
+}
+
+/* Draw the mod draw-service overlay (rects + text glyphs) into the currently
+ * open offscreen pass. Same overlay space + NDC mapping + depth-isolation
+ * trick as draw_overlay_glyphs_3d, own vertex buffer, 1× direct draw (no
+ * supersample pre-pass in v1). Runs in screenshot/record composes too — mod
+ * HUD is content, not chrome. */
+static void draw_mod_overlay(void) {
+    if (s_mod_overlay_n < 3 || !s_nr.gouraud_pipe || !s_nr.mod_ovl_vb) return;
+    if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    static rhi_vertex buf[MOD_OVL_MAX_VERTS];
+    const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
+    const float ay = 2.0f;
+    int n = 0;
+    for (int i = 0; i < s_mod_overlay_n && n < MOD_OVL_MAX_VERTS; i++) {
+        const openpete_hud_vert *v = &s_mod_overlay_verts[i];
+        buf[n].x = v->x * ax - 1.0f;
+        buf[n].y = 1.0f - v->y * ay;
+        buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].tex = 0;
+        n++;
+    }
+    n -= n % 3;
+    if (n <= 0) return;
+    rhi_update_buffer(s_nr.mod_ovl_vb, buf, (size_t)n * sizeof(rhi_vertex));
+    rhi_reset_scissor(s_nr.dev);
+    rhi_clear_depth(s_nr.dev);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.mod_ovl_vb);
+    rhi_draw(s_nr.dev, (uint32_t)n, 0);
 }
 
 /* True when the FPS overlay should render this frame: glyphs built, enabled, and
@@ -4448,6 +4508,7 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 0);
         }
+        draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
         rhi_end_offscreen(s_nr.dev);
@@ -4494,6 +4555,8 @@ static bool compose_variant(int variant, bool have_ref)
         }
     }
 
+    /* Mod HUD overlay — vk variant, live + record composes (content). */
+    if (variant == NRV_VK) draw_mod_overlay();
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();

@@ -109,6 +109,16 @@ typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
  * for other text overlays. Display-only; never touches gameplay state. */
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
 
+/* Mod draw-service overlay (core/mods/mod_draw.c): rects + text glyphs in the
+ * same overlay space, pushed once per present. Drawn on the vk variant in the
+ * live present AND screenshot/record composes (mod HUD is content, not
+ * chrome). nverts==0 clears it. Display-only. */
+void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts);
+
+/* Window aspect (w/h) for overlay-space layout: x spans [0, aspect], y spans
+ * [0, 1]. Falls back to 4:3 before the window exists. */
+float openpete_native_overlay_aspect(void);
+
 /* Hand the native renderer the in-game settings menu's glyph geometry (the row
  * labels/values/title, built game-side by text_moby_native from the same 3D gold
  * glyph mobys, with the selected row's per-glyph yaw baked in). Same overlay

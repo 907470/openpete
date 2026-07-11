@@ -324,6 +324,21 @@ int text_moby_native_emit(const char* str,
     return emit_string(str, origin_x, origin_y, cap_h, base_rgb, -1, out, out_cap);
 }
 
+/* Mod draw-service text rasterizer (core/mods/mod_draw.c; registered in
+ * main.cpp). void* out keeps the core-facing fn type free of the
+ * openpete_hud_vert dependency. The glyph cache is populated by the
+ * per-tick fps-overlay driver above (unconditionally under the native
+ * renderer, --show-fps or not), so at present time we only read the
+ * snapshot: mod text appears as soon as the game has loaded the font —
+ * absent before that (no bitmap fallback exists). */
+int text_moby_native_mod_emit(const char* str, float x, float y,
+                              float cap_h, unsigned rgb,
+                              void* out_verts, int cap) {
+    if (!text_moby_native_ready()) return 0;
+    return text_moby_native_emit(str, x, y, cap_h, rgb,
+                                 (openpete_hud_vert*)out_verts, cap);
+}
+
 /* ---- FPS overlay (the first consumer) ----------------------------------- */
 #define FPS_OVL_MAX   4096
 #define FPS_ORIGIN_X  0.014f
