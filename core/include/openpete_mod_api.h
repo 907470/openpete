@@ -229,6 +229,16 @@ typedef struct openpete_mod_api {
     int (*capture_actor_pose)(int kind, void* buf, int cap);
     int (*draw_actor)(int kind, const void* pose, int len,
                       uint32_t tint_rgba);
+
+    /* Hide the game's own player render while a draw_actor stand-in is
+     * on screen (e.g. the hover cels replacing the jump pose). Same two
+     * submission contexts as the draw calls: tick context hides the
+     * player for all of that tick's presents, a present hook's call for
+     * that present only. SAFE BY CONSTRUCTION: suppression only takes
+     * effect on presents where a draw_actor emit actually produced
+     * triangles — a missing/failed stand-in never leaves an invisible
+     * player. Display-only — gameplay state is untouched. */
+    void (*suppress_player_draw)(void);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

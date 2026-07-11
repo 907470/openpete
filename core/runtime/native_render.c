@@ -331,6 +331,14 @@ void openpete_native_scene_begin_frame(unsigned frame) {
  * use it to append ONLY to a live scene: calling begin_frame with a
  * newer frame would snapshot-and-wipe a held scene during load stalls. */
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
+
+/* Mod actor render service: suppress the PLAYER-category scene tris for
+ * the NEXT presented frame (the flutter's hover window draws a stand-in
+ * actor instead). Set per present by the mod draw service's flush;
+ * cleared after each native render. Draw-only — occlusion/census
+ * consumers still see the player's coverage. */
+static int s_suppress_player;
+void openpete_native_set_player_suppress(int on) { s_suppress_player = on ? 1 : 0; }
 /* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
  * set, openpete_native_scene_add_tri_grouped rounds each 3D-world vertex's PSX
  * screen coordinate (sx,sy — still in 512x240 display space at that point) to
@@ -3173,6 +3181,8 @@ static bool draw_native_scene(bool full_extent)
             if (scene[t].category == OPENPETE_SCENE_HUD ||
                 scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
+            if (s_suppress_player &&
+                scene[t].category == OPENPETE_SCENE_PLAYER) continue;
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
@@ -3419,6 +3429,7 @@ static bool draw_native_scene(bool full_extent)
             if (!scene[t].textured) continue;
             if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
             int cat = scene[t].category;
+            if (s_suppress_player && cat == OPENPETE_SCENE_PLAYER) continue;
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);

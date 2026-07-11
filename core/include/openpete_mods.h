@@ -114,6 +114,7 @@ void openpete_mods_draw_rect(float x, float y, float w, float h,
 int  openpete_mods_capture_actor_pose(int kind, void* buf, int cap);
 int  openpete_mods_draw_actor(int kind, const void* pose, int len,
                               uint32_t tint_rgba);
+void openpete_mods_suppress_player_draw(void);
 int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                          const char* owner_id);
 

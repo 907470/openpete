@@ -70,6 +70,7 @@ typedef struct {
     int         n_rects;
     cmd_actor_t actors[DRAW_ACTORS_MAX];
     int         n_actors;
+    int         suppress_player; /* hide the game's own player render */
 } cmd_buf_t;
 
 static cmd_buf_t s_tick_staging;   /* written by tick-context draws     */
@@ -147,6 +148,11 @@ void openpete_mods_draw_rect(float x, float y, float w, float h,
 int openpete_mods_capture_actor_pose(int kind, void* buf, int cap) {
     if (!s_actor_capture_fn || !buf || cap <= 0) return -1;
     return s_actor_capture_fn(kind, buf, cap);
+}
+
+void openpete_mods_suppress_player_draw(void) {
+    target_buf()->suppress_player = 1;
+    s_any_draw = 1;
 }
 
 int openpete_mods_draw_actor(int kind, const void* pose, int len,
@@ -243,15 +249,24 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * run.c present legs call this flush AFTER the scene (re)build and
      * before the render, so the tris land in this present's draw. The
      * game-side emit guards scene liveness + model validity itself. */
+    int stand_in_drawn = 0;
     if (s_actor_emit_fn && cpu) {
         const cmd_buf_t* bufs[2] = { &s_tick_committed, &s_present };
         for (int b = 0; b < 2; b++)
             for (int i = 0; i < bufs[b]->n_actors; i++) {
                 const cmd_actor_t* a = &bufs[b]->actors[i];
-                s_actor_emit_fn(cpu, a->kind, a->pose, a->len,
-                                a->tint_rgba);
+                if (s_actor_emit_fn(cpu, a->kind, a->pose, a->len,
+                                    a->tint_rgba) > 0)
+                    stand_in_drawn = 1;
             }
     }
+
+    /* Player-draw suppression: explicit per-present state, and it only
+     * takes effect when a stand-in actor ACTUALLY drew this present —
+     * a missing model blob can never leave an invisible player. */
+    openpete_native_set_player_suppress(
+        (s_tick_committed.suppress_player || s_present.suppress_player) &&
+        stand_in_drawn);
 
     int n = 0;
     n = emit_buf(&s_tick_committed, n);

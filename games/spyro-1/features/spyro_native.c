@@ -34,6 +34,7 @@
 #include "openpete_mods.h"           /* openpete_mods_active (actor-pose snapshot) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
 #include "spyro1_actor_pose.h"       /* mod actor render service pose blob (rung 16) */
+#include "s3_actor_native.h"         /* kind 1: Spyro 3 player model (M12) */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "render_paths.h"  /* --render-paths isolation */
 
@@ -1359,6 +1360,8 @@ static void actor_emit_diag(const char* what, unsigned a, unsigned b) {
 
 int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
                       uint32_t tint_rgba) {
+    if (kind == SPYRO1_ACTOR_KIND_S3_PLAYER)
+        return spyro1_s3_actor_emit(cpu, pose, len, tint_rgba);
     if (kind != SPYRO1_ACTOR_KIND_PLAYER || !pose ||
         len < (int)sizeof(spyro1_actor_pose_t)) return 0;
     const spyro1_actor_pose_t* p = (const spyro1_actor_pose_t*)pose;
@@ -1515,6 +1518,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
 
     if (feed && endp > startp && render_path_enabled(RP_SPYRO)) {  /* native feed (if selected) */
         spyro_feed_walk(cpu);                     /* independent face-stream walk: native verts+topology+colour+UV */
+        spyro1_s3_actor_test_emit(cpu);           /* OPENPETE_S3_ACTOR_TEST harness (inert unless set) */
         /* Sub-tick spine: snapshot the per-segment scratch (keyframe stream
          * pointers + vert counts) and Spyro's projected SXY (the NCLIP cull
          * verdict), both live now, so intermediates can re-derive Spyro. */
@@ -1611,6 +1615,7 @@ void spyro_player_native_reextract(CPUState* cpu) {
         }
     }
     if (!two_pass) spyro_feed_walk(cpu);
+    spyro1_s3_actor_test_emit(cpu);   /* test harness re-emits on sub-ticks too */
 
     static int ad = -1;
     if (ad < 0) { const char* e = getenv("OPENPETE_ANIMDBG"); ad = (e && *e && *e != '0'); }

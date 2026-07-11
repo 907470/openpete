@@ -291,6 +291,10 @@ static int api_draw_actor(int kind, const void* pose, int len,
     return openpete_mods_draw_actor(kind, pose, len, tint_rgba);
 }
 
+static void api_suppress_player_draw(void) {
+    openpete_mods_suppress_player_draw();
+}
+
 /* Cross-mod export registry: "modid:name" → pointer (rung 5). */
 typedef struct {
     char  name[MOD_ID_MAX + 64];
@@ -355,6 +359,7 @@ static const openpete_mod_api_t s_api = {
     .host_key_down = api_host_key_down,
     .capture_actor_pose = api_capture_actor_pose,
     .draw_actor         = api_draw_actor,
+    .suppress_player_draw = api_suppress_player_draw,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

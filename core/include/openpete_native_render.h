@@ -442,6 +442,11 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * the scene is live — begin_frame with a NEWER frame wipes a held scene
  * (load stalls hold the last composed frame on purpose). */
 unsigned openpete_native_scene_frame(void);
+/* Mod actor render: hide the PLAYER-category scene tris for the frames
+ * where a stand-in actor is drawn instead (the flutter's hover window).
+ * Explicit per-present state — the mod draw service's flush sets it
+ * both ways every present. Draw-only (occlusion/census unaffected). */
+void openpete_native_set_player_suppress(int on);
 /* Append one screen-space triangle to the current native scene. `category`
  * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
  * call — there is NO ambient/global scene category (the old set_category /
