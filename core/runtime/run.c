@@ -32,6 +32,7 @@
 #include "openpete_psxtrace.h"
 #include "music_override.h"
 #include "openpete_memcard.h"
+#include "openpete_handoff.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -1067,6 +1068,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     openpete_memcard_set_unformatted(opts->card_unformatted);
     openpete_memcard_set_adopt(opts->adopt_saves);
     openpete_memcard_startup_check();
+    openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
+                          opts->handoff_argv);
 
     /* Forward CLI overrides to the per-game impl. game_on_frame applies
      * them when the relevant in-game globals are ready. */
@@ -1620,6 +1623,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     openpete_frame = loaded_frame;
                 }
             }
+
+            /* Process handoff (modding P2): resume on the first pass of
+             * a --resume-handoff process; checkpoint+exec when armed
+             * (OPENPETE_HANDOFF_AT / openpete_handoff_request). Same
+             * quiescence guarantees as the savestate ops above. */
+            openpete_handoff_poll(&g_game.cpu);
 
             /* Frame-step hotkeys. F7 edge-triggered toggle; F8 sets
              * g_step_one whenever held while paused, so the natural

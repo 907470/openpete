@@ -495,6 +495,9 @@ typedef struct {
     int         card_b_present;/* card in port B (default 1) */
     int         card_unformatted; /* --card-unformatted: provision a blank card so the in-game format UI runs (default 0 = pre-formatted) */
     int         adopt_saves;   /* --adopt-saves: re-tag card modset sidecars to the running modset at open */
+    const char* resume_handoff;/* --resume-handoff: process-handoff checkpoint to restore at first quiescence */
+    int         handoff_argc;  /* original argv snapshot for the handoff exec */
+    char**      handoff_argv;
 
     /* Skip the title screen / save-file picker and load directly into a
      * specific level. The game's natural post-intro path puts the title

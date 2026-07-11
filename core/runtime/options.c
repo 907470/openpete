@@ -425,6 +425,8 @@ static void print_help(const char* display_name, const char* argv0) {
     fputs(
         "\nDebug / diagnostic flags:\n"
         "  --headless                 no on-screen window (offscreen video driver)\n"
+        "  --resume-handoff PATH      resume a session from a process-handoff checkpoint\n"
+        "                             (written by the handoff exec; not for manual use)\n"
         "  --frame-limit N            exit after N rendered frames\n"
         "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
         "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
@@ -510,6 +512,9 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->card_b_present      = 1;
     opts->card_unformatted    = 0;     /* pre-formatted empty card by default */
     opts->adopt_saves         = 0;     /* modset-mismatch saves warn until adopted */
+    opts->resume_handoff      = NULL;  /* process-handoff resume file */
+    opts->handoff_argc        = 0;     /* original argv (exec rebuild) */
+    opts->handoff_argv        = NULL;
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
@@ -525,6 +530,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
      * spliced-in openpete.opts defaults) into its .args sidecar. */
     int    orig_argc = argc;
     char** orig_argv = argv;
+
+    /* Process handoff re-execs with the ORIGINAL argv (the fresh
+     * process re-splices env/opts/sidecar files itself). */
+    opts->handoff_argc = orig_argc;
+    opts->handoff_argv = orig_argv;
 
     /* Set when --bk2-record is present, even with no path argument (the
      * default path is resolved after the parse loop). */
@@ -869,6 +879,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->card_unformatted = 1;
         } else if (strcmp(a, "--adopt-saves") == 0) {
             opts->adopt_saves = 1;
+        } else if (strcmp(a, "--resume-handoff") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->resume_handoff = v; i++;
         } else if (strcmp(a, "--unlock-frames") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->unlock_frames_spec = v;

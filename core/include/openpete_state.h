@@ -27,6 +27,16 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
  * openpete_frame. Returns 0 on success, non-zero otherwise. */
 int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 
+/* Path-based variants (the process-handoff checkpoint file; slots
+ * delegate to these). Same format + build-hash gating as slots. */
+int openpete_state_save_file(const char* path, const CPUState* cpu,
+                             unsigned frame);
+int openpete_state_load_file(const char* path, CPUState* cpu,
+                             unsigned* out_frame);
+
+/* Resolve the per-user state directory (created as needed). */
+int openpete_state_resolve_dir(char* out, unsigned long out_size);
+
 /* Whether slot N has a readable file on disk. Cheap stat-only check;
  * does not validate magic or build_hash. */
 int openpete_state_slot_present(unsigned slot);

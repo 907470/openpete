@@ -27,6 +27,7 @@ add_library(openpete_core STATIC
     # Save states (F2/F4 quick save/load). See
     # plans/openpete-savestate-frame-step-rewind.md.
     runtime/savestate.c
+    runtime/handoff.c
 
     # Phase 1b: slim PSX runtime
     runtime/cpu.c

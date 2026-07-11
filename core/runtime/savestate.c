@@ -211,9 +211,8 @@ int openpete_state_slot_present(unsigned slot) {
     return (stat(path, &st) == 0 && (st.st_mode & S_IFREG)) ? 1 : 0;
 }
 
-int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
-    char path[1280];
-    if (slot_path(slot, path, sizeof(path)) != 0) return -1;
+int openpete_state_save_file(const char* path, const CPUState* cpu,
+                             unsigned frame) {
 
     FILE* fp = fopen(path, "wb");
     if (!fp) {
@@ -259,14 +258,18 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     free(vram_snap);
     fclose(fp);
     if (rc != 0) return -1;
-    OPL_INFO_F("savestate", "saved slot %u to %s (frame=%u)", slot, path, frame);
+    OPL_INFO_F("savestate", "saved %s (frame=%u)", path, frame);
     return 0;
 }
 
-int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame) {
+int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     char path[1280];
     if (slot_path(slot, path, sizeof(path)) != 0) return -1;
+    return openpete_state_save_file(path, cpu, frame);
+}
 
+int openpete_state_load_file(const char* path, CPUState* cpu,
+                             unsigned* out_frame) {
     FILE* fp = fopen(path, "rb");
     if (!fp) {
         OPL_ERROR_F("savestate", "fopen %s for read failed: %s",
@@ -373,7 +376,17 @@ int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame) {
     openpete_mods_state_dispatch();
 
     if (out_frame) *out_frame = hdr.frame;
-    OPL_INFO_F("savestate", "loaded slot %u from %s (frame=%u)",
-               slot, path, hdr.frame);
+    OPL_INFO_F("savestate", "loaded %s (frame=%u)", path, hdr.frame);
     return 0;
+}
+
+int openpete_state_load(unsigned slot, CPUState* cpu,
+                        unsigned* out_frame) {
+    char path[1280];
+    if (slot_path(slot, path, sizeof(path)) != 0) return -1;
+    return openpete_state_load_file(path, cpu, out_frame);
+}
+
+int openpete_state_resolve_dir(char* out, unsigned long out_size) {
+    return resolve_state_dir(out, (size_t)out_size);
 }

@@ -581,6 +581,36 @@ else
     bad "no active window after re-enable"
 fi
 
+# ── 17. process handoff: checkpoint → exec → restore ────────────────────
+# OPENPETE_HANDOFF_AT=2000 checkpoints the session and execs the same
+# image mid-run; the fresh process resumes the state and runs to the
+# frame limit. Asserts exactly ONE exec (the resume consumes the
+# trigger), the resume landing on the checkpoint frame, mod hooks live
+# after the exec, and a normal frame-limit exit.
+say "process handoff: exec mid-run, session continuity"
+fixture "$WORK/handoff" hello-anchor
+out="$(OPENPETE_HANDOFF_AT=2000 run_game "$WORK/handoff" 6000)"
+execs=$(printf '%s\n' "$out" | grep -c "handoff: exec at frame")
+if [ "$execs" = "1" ] &&
+   printf '%s\n' "$out" | grep -q "handoff: session resumed at frame 2000"; then
+    ok "one exec + resume at the checkpoint frame"
+else
+    bad "handoff exec/resume broken (execs=$execs)"
+fi
+if printf '%s\n' "$out" | \
+   awk '/handoff: session resumed/{r=1}
+        r && /hello from the override chain/{found=1}
+        END{exit !found}'; then
+    ok "mod hooks live in the resumed process"
+else
+    bad "mod hook never fired after resume"
+fi
+if printf '%s\n' "$out" | grep -q "reason=frame-limit frames=6000"; then
+    ok "resumed session ran to the frame limit"
+else
+    bad "resumed session did not complete"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"
