@@ -361,6 +361,28 @@ add_custom_command(
     COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
 
+# Typed game structs for mods (P1 SDK-gen): curated decomp layouts with
+# guest-pointer fields rewritten to uint32_t + _Static_assert pins.
+add_custom_command(
+    OUTPUT  ${_mod_sdk_gen}/openpete_game_structs.h
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
+            --include ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include
+            --out ${_mod_sdk_gen}/openpete_game_structs.h
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/moby.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/vector.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/matrix.h
+            ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
+    COMMENT "Generating typed game structs for the mod SDK (gen_game_structs.py)")
+add_custom_target(spyro1_game_structs ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${_mod_sdk_gen}/openpete_game_structs.h
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
+    DEPENDS ${_mod_sdk_gen}/openpete_game_structs.h
+    COMMENT "Staging typed game structs into <exe>/sdk/")
+add_dependencies(openpete-spyro1 spyro1_game_structs)
+
 # Instruction-site registry (rung 14): generated/mod_sites_registry.c maps
 # (mod_id, site name) → the baked guarded index. scripts/regen-mod-sites.sh
 # (or a full regen) rewrites it; seed an EMPTY registry at configure time so
@@ -383,6 +405,7 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
+            ${_mod_sdk_gen}/openpete_game_structs.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMENT "Staging mod SDK headers into <exe>/sdk/")
 

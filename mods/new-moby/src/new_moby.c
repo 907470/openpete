@@ -24,12 +24,9 @@
 #include <openpete_mod_api.h>
 #include <openpete_sdk_symbols.h>
 #include <openpete_sdk_wrappers.h>
+#include <openpete_game_structs.h> /* typed Moby view over guest RAM */
 
 #define DONOR_CLASS 16 /* MOBYCLASS_BUTTERFLY — loaded wherever fodder is */
-
-#define MOBY_OFF_POS      0x0Cu /* 3 x i32 world units */
-#define MOBY_OFF_ROT_Y    0x45u /* Vector3D8 rotation, middle byte */
-#define MOBY_OFF_WASDRAWN 0x51u
 
 #define ORBIT_RADIUS 600  /* world units (Spyro's jump apex is ~506) */
 #define ORBIT_HEIGHT 300
@@ -44,19 +41,21 @@ static uint32_t g_t;         /* orbit clock */
 static int      g_last_id = -1;
 static int      g_logged_draw, g_logged_tick;
 
-static void orbiter_update(CPUState* cpu, uint32_t moby) {
-    if (moby != g_moby) return; /* only the instance we spawned */
+static void orbiter_update(CPUState* cpu, uint32_t moby_va) {
+    if (moby_va != g_moby) return; /* only the instance we spawned */
+    /* Typed view over guest RAM (openpete_game_structs.h): field names
+     * instead of magic offsets; the layout is pinned by the header's
+     * _Static_asserts, so drift fails THIS compile. */
+    Moby* m = (Moby*)g_api->guest(moby_va);
+    if (!m) return;
     g_t++;
     int32_t ang = (int32_t)((g_t * ORBIT_STEP) & 0xFFFu);
     int32_t s = op_call_Sin(cpu, ang);                     /* q12 */
     int32_t c = op_call_Sin(cpu, (ang + 1024) & 0xFFF);    /* cos */
-    op_write_u32(g_api, moby + MOBY_OFF_POS + 0,
-                 (uint32_t)(g_center[0] + ((ORBIT_RADIUS * c) >> 12)));
-    op_write_u32(g_api, moby + MOBY_OFF_POS + 4,
-                 (uint32_t)(g_center[1] + ((ORBIT_RADIUS * s) >> 12)));
-    op_write_u32(g_api, moby + MOBY_OFF_POS + 8,
-                 (uint32_t)(g_center[2] + ORBIT_HEIGHT));
-    op_write_u8(g_api, moby + MOBY_OFF_ROT_Y, (uint8_t)(g_t * 3));
+    m->m_Position.x = g_center[0] + ((ORBIT_RADIUS * c) >> 12);
+    m->m_Position.y = g_center[1] + ((ORBIT_RADIUS * s) >> 12);
+    m->m_Position.z = g_center[2] + ORBIT_HEIGHT;
+    m->m_Rotation.y = (uint8_t)(g_t * 3);
 
     if (!g_logged_tick && g_t == 256) {
         g_logged_tick = 1;
@@ -64,15 +63,10 @@ static void orbiter_update(CPUState* cpu, uint32_t moby) {
         g_api->log(g_self, OP_MOD_LOG_INFO,
                    "new-moby: diag state=0x%02X sub=0x%02X rend=0x%02X "
                    "wasdrawn=%d radius=%d updist=%d",
-                   op_read_u8(g_api, moby + 0x48),
-                   op_read_u8(g_api, moby + 0x49),
-                   op_read_u8(g_api, moby + 0x4B),
-                   op_read_u8(g_api, moby + MOBY_OFF_WASDRAWN),
-                   op_read_u8(g_api, moby + 0x50),
-                   op_read_u8(g_api, moby + 0x52));
+                   m->m_State, m->m_Substate, m->m_Renderer.raw,
+                   m->m_WasDrawn, m->m_RenderRadius, m->m_UpdateDistance);
     }
-    if (!g_logged_draw && g_t > 8 &&
-        op_read_u8(g_api, moby + MOBY_OFF_WASDRAWN) == 1) {
+    if (!g_logged_draw && g_t > 8 && m->m_WasDrawn == 1) {
         g_logged_draw = 1;
         g_api->log(g_self, OP_MOD_LOG_INFO,
                    "new-moby: rendered (m_WasDrawn=1)");
@@ -86,9 +80,9 @@ static void on_gamestate_update(CPUState* cpu) {
     int id = g_api->moby_type_id(g_self, "orbiter");
     if (id != g_last_id) { g_last_id = id; g_moby = 0; }
     if (id <= 0 || g_moby) return;
-    uint32_t m = g_api->spawn_moby(g_self, cpu, "orbiter");
-    if (!m) return;
-    g_moby = m;
+    uint32_t mva = g_api->spawn_moby(g_self, cpu, "orbiter");
+    if (!mva) return;
+    g_moby = mva;
     g_t = 0;
     g_logged_draw = g_logged_tick = 0;
     /* Orbit around Spyro's CURRENT position (g_Spyro.m_Position is the
@@ -97,12 +91,14 @@ static void on_gamestate_update(CPUState* cpu) {
     g_center[0] = (int32_t)op_read_u32(g_api, OP_GADDR_g_Spyro + 0);
     g_center[1] = (int32_t)op_read_u32(g_api, OP_GADDR_g_Spyro + 4);
     g_center[2] = (int32_t)op_read_u32(g_api, OP_GADDR_g_Spyro + 8);
-    op_write_u32(g_api, m + MOBY_OFF_POS + 0, (uint32_t)g_center[0]);
-    op_write_u32(g_api, m + MOBY_OFF_POS + 4, (uint32_t)g_center[1]);
-    op_write_u32(g_api, m + MOBY_OFF_POS + 8,
-                 (uint32_t)(g_center[2] + ORBIT_HEIGHT));
+    Moby* m = (Moby*)g_api->guest(mva);
+    if (m) {
+        m->m_Position.x = g_center[0];
+        m->m_Position.y = g_center[1];
+        m->m_Position.z = g_center[2] + ORBIT_HEIGHT;
+    }
     g_api->log(g_self, OP_MOD_LOG_INFO,
-               "new-moby: spawned orbiter @0x%08X (class %d)", m, id);
+               "new-moby: spawned orbiter @0x%08X (class %d)", mva, id);
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
