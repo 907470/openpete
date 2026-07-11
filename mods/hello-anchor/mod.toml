@@ -9,3 +9,8 @@ id      = "hello-anchor"
 name    = "Hello Anchor"
 version = "0.1.0"
 api     = 1
+
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["hello from the override chain: CameraUpdate call #1"]

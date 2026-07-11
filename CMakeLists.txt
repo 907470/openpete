@@ -132,7 +132,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mods.sh)
     set_tests_properties(mod_poc_ladder PROPERTIES
         LABELS "slow;mods"
-        TIMEOUT 900
+        TIMEOUT 1800
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

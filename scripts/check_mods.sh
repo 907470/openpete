@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# check_mods.sh — modtest v0: the PoC-ladder gate script.
-# (notes/plans/openpete-modding-framework.md, "modtest harness" P1 item —
-# v0 is shell + log/oracle assertions; the mod.toml [test] block form
-# arrives with bk2-scripted rungs.)
+# check_mods.sh — the PoC-ladder CI gate (modtest orchestration).
+# (notes/plans/openpete-modding-framework.md, "modtest harness" P1 item.)
 #
-# Test classes exercised:
-#   1. observer-neutrality — hello-anchor + raw-probe + chain-duo enabled
-#      ⇒ smoke oracle stays byte-exact (inertness gate #2, and the
-#      chain-duo matrix run doubles as it).
-#   2. chain order matrix — chain-duo under both orderings; the nesting
-#      in the logs must flip (order IS priority).
-#   3. expected divergence — double-gems enabled ⇒ the oracle MUST fail,
-#      and the first hard-failed region must be gem state (the failure
-#      is the proof the mod diverges gameplay).
+# Single-mod rungs declare their own tests in mod.toml [test] blocks and
+# run through tools/modtest.py (the identical harness third-party modders
+# use). This script adds the CROSS-mod matrix cases that no single
+# manifest can express:
+#   - chain-duo under both orderings (order IS priority; nesting flips)
+#   - observer-neutrality with 4 mods stacked vs the PSX oracle
+#   - deps topo-sort / missing-dep UX / dependency-cycle rejection
+#   - advisory above/below violation => actionable move-this-mod error
+#   - crash attribution naming the offending mod
+#   - decomp promotion: legacy raw alias resolves + warns (churn test)
+# plus the tools/modtest.py run over every [test]-block rung.
 #
-# Usage: scripts/check_mods.sh   (repo root; ~2-3 min, mostly 3 smoke runs)
-# Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to check_psx_oracle.sh.
+# Usage: scripts/check_mods.sh   (repo root; ~8 min — ctest mod_poc_ladder)
+# Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to runs + oracle.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -162,48 +162,81 @@ else
     printf '%s\n' "$out" | grep -A3 "openpete crash" | head -6
 fi
 
-# ── 3. expected divergence: double-gems must FAIL the oracle at gems ────
-say "expected divergence: double-gems must fail the oracle at gem state"
-fixture "$WORK/gems" double-gems
-out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
-        --mods-dir "$WORK/gems" 2>&1)"
-rc_line="$(printf '%s\n' "$out" | grep -E "\[psx-oracle\] exit code=" | tail -1)"
-if printf '%s\n' "$out" | grep -q "gem pickup doubled"; then
-    ok "double-gems fired (post-hook + state-diff)"
+# ── 6. advisory above/below: violation = actionable error (not silent) ──
+say "advisory ordering: above=[] violation disables with a move error"
+for m in adv-a adv-b; do
+    mkdir -p "$WORK/advsrc/$m/src"
+    printf '#include <openpete_mod_api.h>\nint openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* s){(void)a;(void)s;return 0;}\n' \
+        > "$WORK/advsrc/$m/src/m.c"
+done
+printf '[mod]\nid = "adv-a"\nversion = "0.0.1"\napi = 1\n' \
+    > "$WORK/advsrc/adv-a/mod.toml"
+printf '[mod]\nid = "adv-b"\nversion = "0.0.1"\napi = 1\nabove = ["adv-a"]\n' \
+    > "$WORK/advsrc/adv-b/mod.toml"
+mkdir -p "$WORK/adv"
+ln -sfn "$WORK/advsrc/adv-a" "$WORK/adv/adv-a"
+ln -sfn "$WORK/advsrc/adv-b" "$WORK/adv/adv-b"
+printf 'adv-b\nadv-a\n' > "$WORK/adv/enabled.txt"   # violates above
+out="$(run_game "$WORK/adv" 600)"
+if printf '%s\n' "$out" | grep -q 'move "adv-b" AFTER "adv-a"'; then
+    ok "violation produced the move-this-mod error"
 else
-    bad "double-gems never fired in $SMOKE_FRAMES frames"
+    bad "advisory violation error absent/wrong"
 fi
-if printf '%s\n' "$out" | grep -qE "verdict: FAIL"; then
-    if printf '%s\n' "$out" | grep -E "hard" | grep -qi "gem"; then
-        ok "oracle FAILED at a gem region (expected divergence proven)"
-    else
-        ok "oracle FAILED (expected divergence proven)"
-        printf '%s\n' "$out" | grep -iE "hard|first" | head -3
-    fi
+if printf '%s\n' "$out" | grep -q "1 mod active"; then
+    ok "only the compliant mod loaded"
 else
-    bad "oracle did not FAIL with double-gems enabled ($rc_line)"
+    bad "unexpected active-mod count"
+fi
+printf 'adv-a\nadv-b\n' > "$WORK/adv/enabled.txt"   # satisfies above
+out="$(run_game "$WORK/adv" 600)"
+if printf '%s\n' "$out" | grep -q "2 mods active"; then
+    ok "compliant order loads both"
+else
+    bad "compliant order did not load both"
 fi
 
-# ── 6. natural-gems: prototype-driven marshalling wrappers ──────────────
-say "natural-gems: natural-signature override + base + call wrappers"
-fixture "$WORK/natural" natural-gems
-out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
-        --mods-dir "$WORK/natural" 2>&1)"
-if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
-    ok "natural call: Sin(1024) == 4096 (marshal + reg save/restore)"
+# ── 7. decomp promotion: legacy raw alias resolves + warns (churn test) ─
+say "promotion contract: override via legacy raw name of a renamed fn"
+mkdir -p "$WORK/aliassrc/alias-probe/src"
+printf '[mod]\nid = "alias-probe"\nversion = "0.0.1"\napi = 1\n' \
+    > "$WORK/aliassrc/alias-probe/mod.toml"
+cat > "$WORK/aliassrc/alias-probe/src/m.c" <<'EOF'
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* A; static openpete_mod_t* S; static int n;
+static void fn(CPUState* cpu) {
+    if (!n++) A->log(S, OP_MOD_LOG_INFO, "alias override fired");
+    A->base(cpu);
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    A = api; S = self;
+    /* func_8003B9D4 is CollectItem's historical raw name — the alias
+     * table must resolve it forever (with a migrate warning). */
+    return api->override_name(self, "func_8003B9D4", fn);
+}
+EOF
+mkdir -p "$WORK/alias"
+ln -sfn "$WORK/aliassrc/alias-probe" "$WORK/alias/alias-probe"
+printf 'alias-probe\n' > "$WORK/alias/enabled.txt"
+out="$(run_game "$WORK/alias" 8000)"
+if printf '%s\n' "$out" | grep -q "is a legacy raw alias"; then
+    ok "legacy-alias warning printed"
 else
-    bad "natural Sin call wrong/missing"
-    printf '%s\n' "$out" | grep "natural call" | head -1
+    bad "legacy-alias warning missing"
 fi
-if printf '%s\n' "$out" | grep -q "natural gem double"; then
-    ok "natural override fired (typed Moby* arg, natural base())"
+if printf '%s\n' "$out" | grep -q "alias override fired"; then
+    ok "chain attached through the historical name (promotion-safe)"
 else
-    bad "natural override never fired"
+    bad "alias override never fired"
 fi
-if printf '%s\n' "$out" | grep -qE "verdict: FAIL"; then
-    ok "oracle FAILED (expected divergence via natural wrappers)"
+
+# ── 8. [test]-block rungs through the real modtest runner ───────────────
+say "[test] blocks via tools/modtest.py (the harness modders run)"
+if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
+        mods/double-gems mods/natural-gems mods/lib-and-client; then
+    ok "modtest runner: all [test] blocks green"
 else
-    bad "oracle did not FAIL with natural-gems enabled"
+    bad "modtest runner reported failures"
 fi
 
 echo

@@ -35,6 +35,10 @@ typedef struct CPUState CPUState;
 typedef struct {
     const char* name;
     uint32_t    addr;
+    uint8_t     legacy; /* 1 = historical raw alias (func_XXXXXXXX for a
+                         * since-renamed function) — resolvable forever
+                         * (decomp promotion contract), but the loader
+                         * warns so mods migrate to the stable name. */
 } openpete_sdk_symbol_t;
 
 void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,

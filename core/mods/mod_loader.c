@@ -65,6 +65,12 @@ struct openpete_mod {
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     char  deps[MOD_DEPS_MAX][MOD_ID_MAX];
     int   n_deps;
+    char  above[MOD_DEPS_MAX][MOD_ID_MAX]; /* advisory: must be HIGHER
+                                            * priority (later in
+                                            * enabled.txt) than these */
+    int   n_above;
+    char  below[MOD_DEPS_MAX][MOD_ID_MAX]; /* advisory: lower priority */
+    int   n_below;
     void* dl;
 };
 
@@ -82,16 +88,21 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
 
 /* ---- mod-facing API impl ------------------------------------------- */
 
-static uint32_t api_resolve(const char* name) {
-    if (!name || !s_symbols) return 0;
+static const openpete_sdk_symbol_t* sym_find(const char* name) {
+    if (!name || !s_symbols) return NULL;
     size_t lo = 0, hi = s_symbol_count;
     while (lo < hi) { /* table is sorted by strcmp at generation time */
         size_t mid = lo + (hi - lo) / 2;
         int c = strcmp(s_symbols[mid].name, name);
-        if (c == 0) return s_symbols[mid].addr;
+        if (c == 0) return &s_symbols[mid];
         if (c < 0) lo = mid + 1; else hi = mid;
     }
-    return 0;
+    return NULL;
+}
+
+static uint32_t api_resolve(const char* name) {
+    const openpete_sdk_symbol_t* s = sym_find(name);
+    return s ? s->addr : 0;
 }
 
 static int api_override_addr(openpete_mod_t* self, uint32_t addr,
@@ -106,17 +117,25 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
 static int api_override_name(openpete_mod_t* self, const char* name,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
-    uint32_t addr = api_resolve(name);
-    if (addr == 0) {
+    const openpete_sdk_symbol_t* sym = sym_find(name);
+    if (!sym) {
         OPL_ERROR_F(self->log_tag,
                     "override target \"%s\" not in the SDK symbol table",
                     name ? name : "(null)");
         return -1;
     }
-    int rc = openpete_mods_chain_add(addr, fn, self->id);
+    if (sym->legacy) {
+        /* Decomp promotion contract: historical raw names resolve
+         * forever, but say so — the stable name is the durable one. */
+        OPL_WARN_F(self->log_tag,
+                   "\"%s\" is a legacy raw alias (function has been "
+                   "renamed) — resolved to 0x%08X; update the mod to the "
+                   "stable name", name, sym->addr);
+    }
+    int rc = openpete_mods_chain_add(sym->addr, fn, self->id);
     if (rc == 0)
         OPL_INFO_F(self->log_tag, "override registered: %s (0x%08X)",
-                   name, addr);
+                   name, sym->addr);
     return rc;
 }
 
@@ -289,6 +308,29 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             toml_datum_t d = toml_string_at(deps, i);
             if (!d.ok) continue;
             snprintf(mod->deps[mod->n_deps++], MOD_ID_MAX, "%s", d.u.s);
+            free(d.u.s);
+        }
+    }
+    /* Advisory ordering relations (validated against the enabled-list
+     * order, never silently reordered — the user's list is the truth;
+     * violations produce an actionable "move this mod" error). */
+    toml_array_t* above = toml_array_in(t, "above");
+    if (above) {
+        int n = toml_array_nelem(above);
+        for (int i = 0; i < n && mod->n_above < MOD_DEPS_MAX; i++) {
+            toml_datum_t d = toml_string_at(above, i);
+            if (!d.ok) continue;
+            snprintf(mod->above[mod->n_above++], MOD_ID_MAX, "%s", d.u.s);
+            free(d.u.s);
+        }
+    }
+    toml_array_t* below = toml_array_in(t, "below");
+    if (below) {
+        int n = toml_array_nelem(below);
+        for (int i = 0; i < n && mod->n_below < MOD_DEPS_MAX; i++) {
+            toml_datum_t d = toml_string_at(below, i);
+            if (!d.ok) continue;
+            snprintf(mod->below[mod->n_below++], MOD_ID_MAX, "%s", d.u.s);
             free(d.u.s);
         }
     }
@@ -554,6 +596,55 @@ int openpete_mods_init(const openpete_options_t* opts) {
         n_pending++;
     }
     for (int i = 0; i < n_ids; i++) free(ids[i]);
+
+    /* Phase A.5: validate advisory above/below relations against the
+     * enabled order. Priority = position (later = higher), so
+     * above=["x"] means "must be listed AFTER x". Violations disable the
+     * DECLARING mod with a move-this-mod error; relations naming mods
+     * that aren't enabled are vacuously satisfied (advisory, not dep). */
+    {
+        int keep = 0;
+        for (int i = 0; i < n_pending; i++) {
+            int ok_adv = 1;
+            for (int a = 0; a < pending[i].n_above && ok_adv; a++) {
+                for (int j = 0; j < n_pending; j++) {
+                    if (strcmp(pending[j].id, pending[i].above[a]) != 0)
+                        continue;
+                    if (j > i) {
+                        OPL_ERROR_F("mods", "\"%s\" declares "
+                                    "above=[\"%s\"] (must run first): "
+                                    "move \"%s\" AFTER \"%s\" in "
+                                    "enabled.txt — disabled",
+                                    pending[i].id, pending[j].id,
+                                    pending[i].id, pending[j].id);
+                        ok_adv = 0;
+                    }
+                    break;
+                }
+            }
+            for (int b = 0; b < pending[i].n_below && ok_adv; b++) {
+                for (int j = 0; j < n_pending; j++) {
+                    if (strcmp(pending[j].id, pending[i].below[b]) != 0)
+                        continue;
+                    if (j < i) {
+                        OPL_ERROR_F("mods", "\"%s\" declares "
+                                    "below=[\"%s\"] (must run last): "
+                                    "move \"%s\" BEFORE \"%s\" in "
+                                    "enabled.txt — disabled",
+                                    pending[i].id, pending[j].id,
+                                    pending[i].id, pending[j].id);
+                        ok_adv = 0;
+                    }
+                    break;
+                }
+            }
+            if (ok_adv) {
+                if (keep != i) pending[keep] = pending[i];
+                keep++;
+            }
+        }
+        n_pending = keep;
+    }
 
     /* Phase B: topo-sort by hard deps (see topo_visit above). */
     topo_ctx_t tc;

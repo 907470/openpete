@@ -12,3 +12,8 @@ name    = "Raw Probe"
 version = "0.1.0"
 api     = 1
 tier    = "raw"
+
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["raw probe #1:"]
