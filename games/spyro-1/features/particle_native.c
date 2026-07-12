@@ -1046,12 +1046,13 @@ static void sparkle_build(CPUState* cpu) {
         int hue = (styleByte >> 4) & 0x0F;                   /* 1..6 = k_s3_glint row+1 */
         if (hue > 6) hue = 6;
         /* S3 two-mode switch: a hued glint beyond the near threshold is
-         * drawn as the plain cross, pale-tinted with the hue's word0
-         * (S3's far path: opaque lines, tableEntry.word0 colour). */
-        if (style == 1 && hue > 0 && c.m3 >= S3_GLINT_NEAR_M3) {
+         * drawn as the plain cross. S3's far path colours its lines
+         * with word0 (asm: t2+0x06000000 at 0x8002F4D8), but that pale
+         * tint on a 1px PSX line READS white — on our crisp native
+         * lines it reads salmon/green/etc (user report, 2026-07-12).
+         * Perceptual fidelity wins: far cross stays stock white. */
+        if (style == 1 && hue > 0 && c.m3 >= S3_GLINT_NEAR_M3)
             style = 0;
-            color = k_s3_glint[hue - 1][0];
-        }
         if (style == 1 && s_sstar_n < MAX_SSTAR) {
             /* 4-point star flare: tips = the stock cross's 4 diagonal
              * endpoints (same pulse+spin), waist points 45° between at
