@@ -9,7 +9,7 @@ same legal posture as every openpete asset tool — mods never SHIP it:
 this tool derives it locally from a disc the user supplies:
 
     tools/extract_s3_player.py \
-        --disc "roms/SCUS-94467/Spyro ... .img" \
+        --disc "roms/SCUS-94467/SCUS-94467.bin" \
         --out  mods/triangle-flutter/data/s3_player.bin
 
 Format facts (spyro-3 decomp, disc-verified 2026-07-11):
