@@ -952,17 +952,42 @@ static sline s_sline[MAX_SLINE]; static int s_sline_n;
  * written by nothing in the game — a mod that hooks the spawner
  * (SpawnMobySparkle) can stamp a style id there per sparkle and the
  * NATIVE renderer restyles it (the PSX path still draws the stock
- * cross, same posture as mod textures). 0 = stock twinkle cross;
+ * cross, same posture as mod textures). Byte layout: low nibble =
+ * style, high nibble = hue index+1 (0 = no hue). Styles:
+ * 0 = stock twinkle cross;
  * 1 = 4-point star flare (the Spyro 3 gem-glint look): filled concave
- * star through the SAME centre/pulse/spin pipeline, additive blend,
- * white-hot core fading to m_Color at the tips. */
+ * star through the SAME centre/pulse/spin pipeline, additive blend.
+ * With no hue: white-hot core fading to m_Color at the tips (legacy).
+ * With a hue: the full S3 two-mode glint (traced from SCUS-94467
+ * func_8002F098) — S3 does NOT lerp; it switches prim style at
+ * viewZ 0x4000: far = the plain cross, pale-tinted (word0, opaque);
+ * near = the additive gouraud star, pale core (word0) -> deep hue at
+ * the spike tips (word1) -> near-black at the waists (word2, S3's
+ * ring verts). */
 typedef struct {
     float sx[9], sy[9];      /* centre + 8 outline points (tip/waist x4) */
     float cz;
     uint32_t rgb;
+    int hue;                 /* 0 = legacy white flare; 1..6 = k_s3_glint row+1 */
 } sstar;
 #define MAX_SSTAR 16
 static sstar s_sstar[MAX_SSTAR]; static int s_sstar_n;
+
+/* S3 gem-glint colour table, D_80066B64 in SCUS-94467 (bytes verified
+ * against the ROM): per hue {centre + far-line, spike tip, ring}.
+ * Packed 0xBBGGRR to match the sparkle m_Color/rgba convention. */
+#define S3G(r, g, b) ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16))
+static const uint32_t k_s3_glint[6][3] = {
+    { S3G(224,160,128), S3G(64,16, 0), S3G(16, 0, 0) },  /* red   (1)  */
+    { S3G(160,224,160), S3G( 0,64, 0), S3G( 0,16, 0) },  /* green (2)  */
+    { S3G(160,128,224), S3G(32, 0,64), S3G( 8, 0,16) },  /* blue  (5)  */
+    { S3G(208,208,128), S3G(48,48, 0), S3G(16,16, 0) },  /* gold  (10) */
+    { S3G(224,128,192), S3G(64, 0,32), S3G(32, 0,16) },  /* pink  (25) */
+    { S3G(128,128,128), S3G( 0, 0, 0), S3G( 0, 0, 0) },  /* misc/grey  */
+};
+/* S3 near/far switch: viewZ < 0x4000 world units -> star; c.m3 is
+ * view-Z in world/4, so the threshold is 0x1000 in c.m3 units. */
+#define S3_GLINT_NEAR_M3 4096.0
 
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
@@ -1016,7 +1041,17 @@ static void sparkle_build(CPUState* cpu) {
         double TR0 = c.m1*2.0, TR1 = c.m2*2.0, TR2 = c.m3*2.0;
         double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
         double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
-        int style = (int)(cpu->read_word(sp + 0x10) >> 24);  /* pad byte +0x13 */
+        int styleByte = (int)(cpu->read_word(sp + 0x10) >> 24);  /* pad byte +0x13 */
+        int style = styleByte & 0x0F;
+        int hue = (styleByte >> 4) & 0x0F;                   /* 1..6 = k_s3_glint row+1 */
+        if (hue > 6) hue = 6;
+        /* S3 two-mode switch: a hued glint beyond the near threshold is
+         * drawn as the plain cross, pale-tinted with the hue's word0
+         * (S3's far path: opaque lines, tableEntry.word0 colour). */
+        if (style == 1 && hue > 0 && c.m3 >= S3_GLINT_NEAR_M3) {
+            style = 0;
+            color = k_s3_glint[hue - 1][0];
+        }
         if (style == 1 && s_sstar_n < MAX_SSTAR) {
             /* 4-point star flare: tips = the stock cross's 4 diagonal
              * endpoints (same pulse+spin), waist points 45° between at
@@ -1036,6 +1071,7 @@ static void sparkle_build(CPUState* cpu) {
             }
             st->cz = (float)c.m3 * PART_VZ_WORLD4;
             st->rgb = color;
+            st->hue = hue;
             continue;
         }
         double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
@@ -1067,21 +1103,37 @@ static void sparkle_feed_native(CPUState* cpu) {
     for (int i = 0; i < s_sstar_n; i++) {
         sstar* st = &s_sstar[i];
         float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(st->cz));
-        uint32_t rim = st->rgb & 0xFFFFFFu;
-        /* core = rim pushed toward white (x2, clamped) for the hot centre */
-        uint32_t cr = ((rim >> 0) & 0xFF) * 2; if (cr > 255) cr = 255;
-        uint32_t cg = ((rim >> 8) & 0xFF) * 2; if (cg > 255) cg = 255;
-        uint32_t cb = ((rim >> 16) & 0xFF) * 2; if (cb > 255) cb = 255;
-        uint32_t core = cr | (cg << 8) | (cb << 16);
+        uint32_t core, tipc, waistc;
+        if (st->hue > 0) {
+            /* S3 near-star gouraud (func_8002F098): centre = word0
+             * (pale, white-hot under additive), spike tips = word1
+             * (deep hue), waists = word2 (S3's near-black ring). The
+             * hue IS the gradient — additive falloff along each arm. */
+            core   = k_s3_glint[st->hue - 1][0];
+            tipc   = k_s3_glint[st->hue - 1][1];
+            waistc = k_s3_glint[st->hue - 1][2];
+        } else {
+            /* legacy: rim = m_Color, core pushed toward white (x2) */
+            uint32_t rim = st->rgb & 0xFFFFFFu;
+            uint32_t cr = ((rim >> 0) & 0xFF) * 2; if (cr > 255) cr = 255;
+            uint32_t cg = ((rim >> 8) & 0xFF) * 2; if (cg > 255) cg = 255;
+            uint32_t cb = ((rim >> 16) & 0xFF) * 2; if (cb > 255) cb = 255;
+            core = cr | (cg << 8) | (cb << 16);
+            tipc = waistc = rim;
+        }
         for (int k = 0; k < 8; k++) {
             int k2 = (k + 1) & 7;
             openpete_scene_tri t;
             t.v[0].sx = st->sx[0];    t.v[0].sy = st->sy[0];
             t.v[1].sx = st->sx[k+1];  t.v[1].sy = st->sy[k+1];
             t.v[2].sx = st->sx[k2+1]; t.v[2].sy = st->sy[k2+1];
+            /* outline points alternate tip (even k) / waist (odd k) */
+            uint32_t oc1 = (k  & 1) ? waistc : tipc;
+            uint32_t oc2 = (k2 & 1) ? waistc : tipc;
             for (int m = 0; m < 3; m++) {
+                uint32_t c = m == 0 ? core : (m == 1 ? oc1 : oc2);
                 t.v[m].z = depth; t.v[m].u = 0.0f; t.v[m].v = 0.0f;
-                t.v[m].rgba = ((m == 0 ? core : rim) & 0xFFFFFFu) | 0xFF000000u;
+                t.v[m].rgba = (c & 0xFFFFFFu) | 0xFF000000u;
             }
             t.textured = 0;
             t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
