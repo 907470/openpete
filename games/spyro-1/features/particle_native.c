@@ -1097,13 +1097,28 @@ static void sparkle_build(CPUState* cpu) {
  * triangles-only, so LINE_F becomes a 2-tri ribbon along the centerline.
  * Style-1 stars feed as an 8-tri fan (centre + consecutive outline
  * pairs), ADDITIVE, white-hot core fading to m_Color at the rim. */
+
+/* OT tie-break pull (user report 2026-07-12: sparkles hid BEHIND their
+ * gems/statues). The PSX links a moby's whole model into ONE OT bucket at
+ * its centre depth and the sparkle renderer appends into that same bucket
+ * AFTER the mobys (tail-append idiom at 0x80058508 ff.), so a sparkle
+ * draws over its ENTIRE source moby; per-pixel Z inverts that tie (the
+ * body's front polys are nearer than the centre-spawned sparkle). Pull
+ * sparkle depth by a fixed distance that clears typical source bodies
+ * (gems ~250, chests ~300, statue parts more). Residual vs PSX: geometry
+ * BETWEEN sparkle and camera within this margin is overdrawn (PSX's own
+ * pierce bound was its ~128-unit bucket); transient 5px glints make that
+ * invisible in practice. */
+#define SPARKLE_OT_PULL 1024.0f
+
 static void sparkle_feed_native(CPUState* cpu) {
     sparkle_build(cpu);
     if (s_sline_n <= 0 && s_sstar_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_sstar_n; i++) {
         sstar* st = &s_sstar[i];
-        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(st->cz));
+        float depth = openpete_native_depth_from_viewz(
+            openpete_worldvz_pull(openpete_worldvz_full(st->cz), SPARKLE_OT_PULL));
         uint32_t core, tipc, waistc;
         if (st->hue > 0) {
             /* S3 near-star gouraud (func_8002F098): centre = word0
@@ -1152,7 +1167,8 @@ static void sparkle_feed_native(CPUState* cpu) {
         if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
         float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
         float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
-        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(l->cz));
+        float depth = openpete_native_depth_from_viewz(
+            openpete_worldvz_pull(openpete_worldvz_full(l->cz), SPARKLE_OT_PULL));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st;
             for (int k = 0; k < 3; k++) {

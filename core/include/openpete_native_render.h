@@ -370,6 +370,15 @@ static inline openpete_worldvz openpete_worldvz_scaled(float vz, float mul) {
 static inline openpete_worldvz openpete_worldvz_bias(openpete_worldvz z, float mul) {
     z.vz *= mul; return z;
 }
+/* An INTENTIONAL ordering pull by a FIXED world-unit distance (toward the
+ * camera), applied after unit normalization. For OT-tie-break emulation: the
+ * PSX links a whole moby's prims at its CENTRE-depth bucket, so late-added
+ * attachments (sparkles) draw over the entire model regardless of per-pixel
+ * depth; a constant pull that clears the body's protrusion is the Z-buffer
+ * realization. Use _bias for proportional policy, _pull for absolute. */
+static inline openpete_worldvz openpete_worldvz_pull(openpete_worldvz z, float world_units) {
+    z.vz -= world_units; return z;
+}
 static inline float openpete_native_depth_from_viewz(openpete_worldvz z) {
     float vz = z.vz;
     if (vz < 1.0f) vz = 1.0f;              /* near guard (behind-camera is culled) */
