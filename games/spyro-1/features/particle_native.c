@@ -948,8 +948,25 @@ typedef struct {
 #define MAX_SLINE 64
 static sline s_sline[MAX_SLINE]; static int s_sline_n;
 
+/* Sparkle STYLE channel: the pad byte after m_Color's rgb (+0x13) is
+ * written by nothing in the game — a mod that hooks the spawner
+ * (SpawnMobySparkle) can stamp a style id there per sparkle and the
+ * NATIVE renderer restyles it (the PSX path still draws the stock
+ * cross, same posture as mod textures). 0 = stock twinkle cross;
+ * 1 = 4-point star flare (the Spyro 3 gem-glint look): filled concave
+ * star through the SAME centre/pulse/spin pipeline, additive blend,
+ * white-hot core fading to m_Color at the tips. */
+typedef struct {
+    float sx[9], sy[9];      /* centre + 8 outline points (tip/waist x4) */
+    float cz;
+    uint32_t rgb;
+} sstar;
+#define MAX_SSTAR 16
+static sstar s_sstar[MAX_SSTAR]; static int s_sstar_n;
+
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
+    s_sstar_n = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
     /* RAW (the .s shifts the diff >>2); fractional interpolated camera when
      * bracketed (sub-tick floor fix), else floored RAM. */
@@ -999,6 +1016,28 @@ static void sparkle_build(CPUState* cpu) {
         double TR0 = c.m1*2.0, TR1 = c.m2*2.0, TR2 = c.m3*2.0;
         double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
         double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
+        int style = (int)(cpu->read_word(sp + 0x10) >> 24);  /* pad byte +0x13 */
+        if (style == 1 && s_sstar_n < MAX_SSTAR) {
+            /* 4-point star flare: tips = the stock cross's 4 diagonal
+             * endpoints (same pulse+spin), waist points 45° between at
+             * ~0.21R — a filled concave star instead of two lines. */
+            double wc = (ec - es) * 0.2121, ws = (es + ec) * 0.2121;
+            double P[8][2] = {
+                { ec,  es}, { wc,  ws}, {-es,  ec}, {-ws,  wc},
+                {-ec, -es}, {-wc, -ws}, { es, -ec}, { ws, -wc} };
+            sstar* st = &s_sstar[s_sstar_n++];
+            st->sx[0] = (float)(ofx + clamp16(TR0)*qd);   /* centre */
+            st->sy[0] = (float)(ofy + clamp16(TR1)*qd);
+            for (int k = 0; k < 8; k++) {
+                double m1 = TR0 + a3 * P[k][0] / 4096.0;
+                double m2 = TR1 + a3 * P[k][1] / 4096.0;
+                st->sx[k+1] = (float)(ofx + clamp16(m1)*qd);
+                st->sy[k+1] = (float)(ofy + clamp16(m2)*qd);
+            }
+            st->cz = (float)c.m3 * PART_VZ_WORLD4;
+            st->rgb = color;
+            continue;
+        }
         double T[4][2] = { {-ec,-es}, {es,-ec}, {-es,ec}, {ec,es} };
         double sx[4], sy[4];
         for (int k = 0; k < 4; k++) {
@@ -1018,11 +1057,39 @@ static void sparkle_build(CPUState* cpu) {
 }
 
 /* Feed each sparkle line as a thin (1px-perp) opaque quad — the scene is
- * triangles-only, so LINE_F becomes a 2-tri ribbon along the centerline. */
+ * triangles-only, so LINE_F becomes a 2-tri ribbon along the centerline.
+ * Style-1 stars feed as an 8-tri fan (centre + consecutive outline
+ * pairs), ADDITIVE, white-hot core fading to m_Color at the rim. */
 static void sparkle_feed_native(CPUState* cpu) {
     sparkle_build(cpu);
-    if (s_sline_n <= 0) return;
+    if (s_sline_n <= 0 && s_sstar_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    for (int i = 0; i < s_sstar_n; i++) {
+        sstar* st = &s_sstar[i];
+        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(st->cz));
+        uint32_t rim = st->rgb & 0xFFFFFFu;
+        /* core = rim pushed toward white (x2, clamped) for the hot centre */
+        uint32_t cr = ((rim >> 0) & 0xFF) * 2; if (cr > 255) cr = 255;
+        uint32_t cg = ((rim >> 8) & 0xFF) * 2; if (cg > 255) cg = 255;
+        uint32_t cb = ((rim >> 16) & 0xFF) * 2; if (cb > 255) cb = 255;
+        uint32_t core = cr | (cg << 8) | (cb << 16);
+        for (int k = 0; k < 8; k++) {
+            int k2 = (k + 1) & 7;
+            openpete_scene_tri t;
+            t.v[0].sx = st->sx[0];    t.v[0].sy = st->sy[0];
+            t.v[1].sx = st->sx[k+1];  t.v[1].sy = st->sy[k+1];
+            t.v[2].sx = st->sx[k2+1]; t.v[2].sy = st->sy[k2+1];
+            for (int m = 0; m < 3; m++) {
+                t.v[m].z = depth; t.v[m].u = 0.0f; t.v[m].v = 0.0f;
+                t.v[m].rgba = ((m == 0 ? core : rim) & 0xFFFFFFu) | 0xFF000000u;
+            }
+            t.textured = 0;
+            t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
+            t.blend = 2;                          /* additive flare */
+            openpete_native_scene_add_tri(&t, OPENPETE_SCENE_WORLD, 0);
+        }
+    }
+    if (s_sline_n <= 0) return;
     int split[2][3] = { {0,1,2}, {1,3,2} };
     for (int i = 0; i < s_sline_n; i++) {
         sline* l = &s_sline[i];
