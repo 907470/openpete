@@ -4951,17 +4951,27 @@ static int native_render_screenshot_all_impl(const char *base)
     /* Render the native scene into the ref-sized RTT (full extent, no panels).
      * The offscreen + present are kept valid with a plain bg clear so the window
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
-    if (!rhi_begin_frame(s_nr.dev)) return 1;
-    upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
-    hd_flush_pending();        /* HD replacement textures queued at draw time */
-    native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
-    rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
-    draw_native_scene(true);
-    rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
-    rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
-    rhi_end_offscreen(s_nr.dev);
-    rhi_blit_to_swapchain(s_nr.dev);
-    rhi_end_frame(s_nr.dev);
+    for (int attempt = 0; ; attempt++) {
+        if (!rhi_begin_frame(s_nr.dev)) return 1;
+        upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
+        hd_flush_pending();        /* HD replacement textures queued at draw time */
+        native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
+        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
+        draw_native_scene(true);
+        rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
+        rhi_end_offscreen(s_nr.dev);
+        rhi_blit_to_swapchain(s_nr.dev);
+        rhi_end_frame(s_nr.dev);
+        /* Self-heal a first sighting: an HD/mod texture seen for the first
+         * time mid-draw only QUEUES its upload and draws nothing for those
+         * faces (hd_pending_add). Live presents absorb that as one SD frame,
+         * but in a headless run the only frames ARE these dumps — a single
+         * screenshot bakes the gap into the PNG (mod-textured faces
+         * invisible; cost a "chests don't render" ghost hunt, 2026-07-11).
+         * If this draw queued anything new, flush-and-redraw once. */
+        if (attempt > 0 || s_hd_pending_n == 0) break;
+    }
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
     unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */
