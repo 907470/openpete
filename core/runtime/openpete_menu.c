@@ -22,17 +22,17 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
-       ROW_FREECAM, ROW_MODSEL, ROW_MODEN, ROW_COUNT,
-       /* FOG is parked past ROW_COUNT: hidden from display + navigation for
-        * now, but all its plumbing stays live and compiled — s_fog_idx, the
-        * case labels below, openpete_fog_set/enabled and the LOD→fog
-        * autopilot coupling in no_lod.c (LOD switches still move the fog
-        * scale). Move it back before ROW_FREECAM to re-show the row. */
-       ROW_FOG };
+       ROW_FREECAM, ROW_COUNT,
+       /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
+        * + navigation for now, but all their plumbing stays live and
+        * compiled — the case labels below, the mod enumeration, s_fog_idx,
+        * openpete_fog_set/enabled and the LOD→fog autopilot coupling in
+        * no_lod.c (LOD switches still move the fog scale). Move a row back
+        * before ROW_COUNT (and restore its ROW_LABEL entry) to re-show it. */
+       ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
-    "MOD", "MOD ENABLED",
 };
 
 /* Aspect presets (label + width/height). */
