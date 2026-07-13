@@ -438,6 +438,75 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMENT "Staging mod SDK headers into <exe>/sdk/")
 
+# --- Build-time mod compile (notes/plans/openpete-mod-compile-on-boot.md)
+# `cmake --build` leaves every mod compiled, not just the engine:
+#  - Native presets: run the freshly built exe in --compile-mods mode over
+#    OPENPETE_COMPILE_MODS_DIR, so keys/stamps/flags are byte-identical to
+#    compile-on-boot (a boot after a clean build recompiles nothing). A
+#    failed mod compile fails the build (escape: -DOPENPETE_COMPILE_MODS=OFF
+#    or build --target openpete-spyro1).
+#  - Cross presets (windows-mingw*): the target exe can't run at build
+#    time; cross-compile each STAGED mod (<build>/games/spyro-1/mods/<id>)
+#    with the preset's own toolchain into .build/<id>.dll and DROP the
+#    stamp — an unstamped prebuilt is the loader's designed cross-handoff
+#    artifact (build_mod: loads silently when the host has no compiler,
+#    recompiles+stamps once when it does). This retires the stale-DLL
+#    trap: staged DLLs are refreshed by every build.
+option(OPENPETE_COMPILE_MODS "Compile all mods as part of the build" ON)
+set(OPENPETE_COMPILE_MODS_DIR ${CMAKE_SOURCE_DIR}/mods CACHE PATH
+    "Mods root the native-preset build-time compile runs over")
+if(OPENPETE_COMPILE_MODS)
+    if(CMAKE_CROSSCOMPILING)
+        # Staged-SDK *sources* — mirrors mod_compute_key()'s sdk_inputs
+        # list, so an SDK change re-cross-compiles every staged mod.
+        set(_mod_sdk_deps
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
+            ${_mod_sdk_gen}/openpete_sdk_symbols.h
+            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
+            ${_mod_sdk_gen}/openpete_game_structs.h)
+        file(GLOB _staged_mod_manifests CONFIGURE_DEPENDS
+             ${CMAKE_CURRENT_BINARY_DIR}/mods/*/mod.toml)
+        set(_staged_mod_dlls "")
+        foreach(_manifest IN LISTS _staged_mod_manifests)
+            get_filename_component(_mod_dir ${_manifest} DIRECTORY)
+            get_filename_component(_mod_id ${_mod_dir} NAME)
+            file(GLOB _mod_srcs CONFIGURE_DEPENDS ${_mod_dir}/src/*.c)
+            if(NOT _mod_srcs)
+                continue() # assets-only/binary-only mod: nothing to build
+            endif()
+            set(_dll ${_mod_dir}/.build/${_mod_id}.dll)
+            add_custom_command(OUTPUT ${_dll}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_dir}/.build
+                # Same compile line mod_compile() (core/mods/mod_loader.c)
+                # uses on Windows — keep in sync — plus -static-libgcc:
+                # the exe ships no mingw runtime DLLs (mingw-w64.cmake
+                # links -static), so the mod DLL must be self-contained.
+                COMMAND ${CMAKE_C_COMPILER} -shared -O2 -g
+                        -fno-strict-aliasing -Wall -static-libgcc
+                        -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk
+                        -o ${_dll} ${_mod_srcs}
+                COMMAND ${CMAKE_COMMAND} -E rm -f
+                        ${_mod_dir}/.build/${_mod_id}.hash
+                DEPENDS ${_mod_srcs} ${_mod_sdk_deps} openpete-spyro1
+                COMMENT "Cross-compiling staged mod ${_mod_id}.dll"
+                VERBATIM)
+            list(APPEND _staged_mod_dlls ${_dll})
+        endforeach()
+        add_custom_target(spyro1_mods ALL DEPENDS ${_staged_mod_dlls})
+    else()
+        # Always runs (cheap: the exe's pass-1 content-hash check skips
+        # up-to-date mods in milliseconds); nonzero exit fails the build.
+        add_custom_target(spyro1_mods ALL
+            COMMAND $<TARGET_FILE:openpete-spyro1> --compile-mods
+                    --mods-dir ${OPENPETE_COMPILE_MODS_DIR}
+            COMMENT "Compiling mods (openpete-spyro1 --compile-mods)"
+            VERBATIM)
+        add_dependencies(spyro1_mods openpete-spyro1)
+    endif()
+endif()
+
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "static")
     target_link_libraries(openpete-spyro1 PRIVATE spyro1_recomp_module)
 else()

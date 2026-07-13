@@ -437,6 +437,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             from PATH instead of the default next to the exe\n"
         "  --extract-recomp-inputs DIR extract PSX.EXE + overlay blobs from --disc\n"
         "                             into DIR and exit (recomp pipeline stage)\n"
+        "  --compile-mods             compile EVERY mod with src/ in the mods dir (see --mods-dir;\n"
+        "                             ignores enabled.txt) against <exe>/sdk and exit; nonzero exit\n"
+        "                             on any failed compile (the cmake build-time mods gate)\n"
         "  --render-paths LIST        render ONLY these paths in both renderers, e.g.\n"
         "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"
         "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
@@ -509,6 +512,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
     opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
+    opts->compile_mods        = 0;     /* --compile-mods: compile every mod and exit */
     opts->card_dir            = NULL;  /* NULL = default appdir; env OPENPETE_CARD_DIR */
     opts->card1_path          = NULL;
     opts->card2_path          = NULL;
@@ -875,6 +879,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--mods-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->mods_dir = v; i++;
+        } else if (strcmp(a, "--compile-mods") == 0) {
+            opts->compile_mods = 1;
         } else if (strcmp(a, "--card-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->card_dir = v; i++;

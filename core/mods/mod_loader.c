@@ -1362,10 +1362,6 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
 
 /* ---- enabled-list resolution ---------------------------------------- */
 
-static int cmp_str(const void* a, const void* b) {
-    return strcmp(*(const char* const*)a, *(const char* const*)b);
-}
-
 /* Dependency topo-sort (rung 5). DFS, stable in enabled order: a dep
  * loads before its dependents, so dependents keep HIGHER chain priority
  * than their libraries and a lib's exports exist when the client's
@@ -1529,46 +1525,77 @@ typedef struct {
  * mods directory / nothing enabled: inert). openpete_mods_prepare and
  * openpete_mods_init both run this so they see the same set; everything
  * here is idempotent (zip unpack is content-stamped). */
-static int mods_discover(const openpete_options_t* opts,
-                         char* mods_dir, size_t mods_dir_cap,
-                         mod_ref_t* out, int max) {
+/* Resolve the mods root: opts → env → <exe>/mods. Returns 0 with
+ * mods_dir filled, -1 if no base path is resolvable. */
+static int mods_root(const openpete_options_t* opts, char* mods_dir,
+                     size_t mods_dir_cap) {
     const char* src = opts && opts->mods_dir ? opts->mods_dir
                                              : getenv("OPENPETE_MODS_DIR");
     if (src) {
         snprintf(mods_dir, mods_dir_cap, "%s", src);
-    } else {
-        const char* base = SDL_GetBasePath(); /* trailing sep, SDL-owned */
-        if (!base) return 0;
-        snprintf(mods_dir, mods_dir_cap, "%smods", base);
+        return 0;
     }
+    const char* base = SDL_GetBasePath(); /* trailing sep, SDL-owned */
+    if (!base) return -1;
+    snprintf(mods_dir, mods_dir_cap, "%smods", base);
+    return 0;
+}
 
+/* Scan the mods root for candidate ids: subdirs containing mod.toml,
+ * plus <id>.zip archives (unpacked to .unpacked/<id>/, content-hash
+ * stamped so re-extraction only happens when the zip changes). A
+ * folder and a zip with the same id: the folder wins (consumers probe
+ * the folder first when resolving the dir). Returns the count. */
+static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
+                     int max) {
     DIR* d = opendir(mods_dir);
     if (!d) return 0; /* no mods directory: inert */
 
-    /* Discover candidate ids: subdirs containing mod.toml, plus
-     * <id>.zip archives (unpacked to .unpacked/<id>/, content-hash
-     * stamped so re-extraction only happens when the zip changes). A
-     * folder and a zip with the same id: the folder wins. */
-    char* ids[MODS_MAX];
     int n_ids = 0;
     struct dirent* e;
-    while ((e = readdir(d)) != NULL && n_ids < MODS_MAX) {
+    while ((e = readdir(d)) != NULL && n_ids < max) {
         if (e->d_name[0] == '.') continue;
         size_t nl = strlen(e->d_name);
         if (nl > 4 && strcmp(e->d_name + nl - 4, ".zip") == 0) {
             char id[MOD_ID_MAX];
             snprintf(id, sizeof id, "%.*s", (int)(nl - 4), e->d_name);
             if (mod_unpack_zip(mods_dir, id) == 0)
-                ids[n_ids++] = strdup(id);
+                snprintf(ids[n_ids++], MOD_ID_MAX, "%s", id);
             continue;
         }
         char manifest[MOD_PATH_MAX];
         snprintf(manifest, sizeof manifest, "%s/%s/mod.toml", mods_dir,
                  e->d_name);
         if (file_mtime(manifest) == (time_t)-1) continue;
-        ids[n_ids++] = strdup(e->d_name);
+        snprintf(ids[n_ids++], MOD_ID_MAX, "%s", e->d_name);
     }
     closedir(d);
+    return n_ids;
+}
+
+/* Resolve a candidate id to its mod dir: the folder, or the zip's
+ * .unpacked/<id>/ when no folder carries a mod.toml. */
+static void mod_ref_resolve(const char* mods_dir, const char* id,
+                            mod_ref_t* r) {
+    snprintf(r->id, sizeof r->id, "%s", id);
+    snprintf(r->dir, sizeof r->dir, "%s/%s", mods_dir, id);
+    char probe[MOD_PATH_MAX + 12];
+    snprintf(probe, sizeof probe, "%s/mod.toml", r->dir);
+    if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
+        snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir, id);
+}
+
+static int cmp_id_row(const void* a, const void* b) {
+    return strcmp((const char*)a, (const char*)b);
+}
+
+static int mods_discover(const openpete_options_t* opts,
+                         char* mods_dir, size_t mods_dir_cap,
+                         mod_ref_t* out, int max) {
+    if (mods_root(opts, mods_dir, mods_dir_cap) != 0) return 0;
+
+    char ids[MODS_MAX][MOD_ID_MAX];
+    int n_ids = mods_scan(mods_dir, ids, MODS_MAX);
     if (n_ids == 0) return 0;
 
     /* enabled.txt (one id per line, '#' comments) fixes the order; the
@@ -1589,7 +1616,7 @@ static int mods_discover(const openpete_options_t* opts,
         }
         fclose(en);
     } else {
-        qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_str);
+        qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
         for (int i = 0; i < n_ids; i++)
             snprintf(order[n_order++], MOD_ID_MAX, "%s", ids[i]);
     }
@@ -1604,17 +1631,9 @@ static int mods_discover(const openpete_options_t* opts,
                        "no mod.toml — skipped", order[i], order[i]);
             continue;
         }
-        mod_ref_t* r = &out[n_out];
-        snprintf(r->id, sizeof r->id, "%s", order[i]);
-        snprintf(r->dir, sizeof r->dir, "%s/%s", mods_dir, order[i]);
-        char probe[MOD_PATH_MAX + 12];
-        snprintf(probe, sizeof probe, "%s/mod.toml", r->dir);
-        if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
-            snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir,
-                     order[i]);
+        mod_ref_resolve(mods_dir, order[i], &out[n_out]);
         n_out++;
     }
-    for (int i = 0; i < n_ids; i++) free(ids[i]);
     return n_out;
 }
 
@@ -1692,6 +1711,61 @@ int openpete_mods_prepare(const openpete_options_t* opts,
     else
         (void)mods_prepare_task(&c);
     return c.n_stale;
+}
+
+int openpete_mods_compile_all(const openpete_options_t* opts) {
+    {
+        char cc[MOD_PATH_MAX];
+        mods_resolve_cc(cc, sizeof cc);
+        if (!cc[0]) {
+            OPL_ERROR_F("mods", "--compile-mods: no compiler — expected "
+                        "the bundled toolchain at recomp/tools/ next to "
+                        "the exe, or set OPENPETE_MOD_CC");
+            return -1;
+        }
+    }
+    char mods_dir[MOD_PATH_MAX];
+    if (mods_root(opts, mods_dir, sizeof mods_dir) != 0) {
+        OPL_ERROR_F("mods", "--compile-mods: no mods dir resolvable");
+        return -1;
+    }
+
+    /* EVERY candidate in the dir — enabled.txt is a runtime concern;
+     * the build gate wants a disabled mod's breakage surfaced too. */
+    char ids[MODS_MAX][MOD_ID_MAX];
+    int n_ids = mods_scan(mods_dir, ids, MODS_MAX);
+    if (n_ids == 0) {
+        OPL_INFO_F("mods", "--compile-mods: nothing to compile in %s",
+                   mods_dir);
+        return 0;
+    }
+    qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
+
+    char sdk_dir[MOD_PATH_MAX];
+    mods_sdk_dir(sdk_dir, sizeof sdk_dir);
+
+    int n_compiled = 0, n_cached = 0, n_failed = 0;
+    for (int i = 0; i < n_ids; i++) {
+        mod_ref_t r;
+        mod_ref_resolve(mods_dir, ids[i], &r);
+        char key[65];
+        if (mod_compute_key(r.dir, sdk_dir, key) != 0)
+            continue; /* assets-only or binary-only mod: nothing to do */
+        if (mod_key_cached(r.dir, r.id, key)) {
+            n_cached++;
+            continue;
+        }
+        char so_path[MOD_PATH_MAX];
+        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
+                 r.dir, r.id);
+        if (mod_compile(r.dir, r.id, sdk_dir, key, so_path, 1) == 0)
+            n_compiled++;
+        else
+            n_failed++; /* mod_compile logged + pointed at compile.log */
+    }
+    OPL_INFO_F("mods", "--compile-mods: %d compiled, %d up to date, "
+               "%d failed (%s)", n_compiled, n_cached, n_failed, mods_dir);
+    return n_failed;
 }
 
 int openpete_mods_init(const openpete_options_t* opts) {

@@ -483,6 +483,13 @@ typedef struct {
      * notes/plans/openpete-modding-framework.md. */
     const char* mods_dir;
 
+    /* --compile-mods: utility mode — compile EVERY mod with src/ in the
+     * resolved mods dir (ignoring enabled.txt) against <exe>/sdk through
+     * the loader's own key/stamp/compile path, then exit (nonzero if any
+     * compile failed). The cmake `spyro1_mods` build step for native
+     * presets; also pre-warms a dist install's compile-on-boot cache. */
+    int         compile_mods;
+
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
      * 128 KiB .mcr images under $XDG_STATE_HOME/openpete/cards (or

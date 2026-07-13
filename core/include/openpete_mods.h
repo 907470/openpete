@@ -79,6 +79,17 @@ int openpete_mods_prepare(const openpete_options_t* opts,
                           openpete_mods_progress_fn progress,
                           openpete_mods_run_task_fn run_task);
 
+/* --compile-mods utility mode (build-time gate): compile EVERY mod with
+ * src/ in the resolved mods dir — enabled.txt deliberately ignored, so a
+ * disabled mod's breakage still surfaces — against <exe>/sdk, through
+ * the same key/stamp/compile path boot uses (a warm cache stays warm; a
+ * boot after a clean pass recompiles nothing). Returns the number of
+ * failed compiles (0 = success), -1 on hard setup errors (no compiler /
+ * no mods dir resolvable). The cmake `spyro1_mods` step runs this on
+ * native presets; cross presets compile staged mods cmake-side instead
+ * (games/spyro-1/CMakeLists.txt). */
+int openpete_mods_compile_all(const openpete_options_t* opts);
+
 /* Per-function-entry chain dispatch. Returns 1 = an override chain ran
  * (skip the recompiled body), 0 = no chain for addr (run the body).
  * Called from psx_override_dispatch_game behind the

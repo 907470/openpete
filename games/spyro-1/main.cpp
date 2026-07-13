@@ -140,6 +140,13 @@ int main(int argc, char** argv) {
                    ? 1 : 0;
     }
 
+    /* Build-time mod compile (--compile-mods): compile every mod in the
+     * resolved mods dir against <exe>/sdk and exit — the cmake
+     * `spyro1_mods` step for native presets; also pre-warms a dist
+     * install's compile-on-boot cache. Needs no disc/library/window. */
+    if (opts.compile_mods)
+        return openpete_mods_compile_all(&opts) == 0 ? 0 : 1;
+
     /* Distribution D2.5: resolve disc + module through the
      * content-addressed library (--ingest copies an image in; no disc
      * at all boots the most recent library entry). Explicit --disc
