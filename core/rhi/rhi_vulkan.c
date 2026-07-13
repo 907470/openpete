@@ -157,6 +157,23 @@ struct rhi_device {
         bool        pending;
         int         w, h;
     } grid_ring[RHI_FRAMES_IN_FLIGHT];
+
+    /* GPU per-pass timestamp zones (OPENPETE_GPU_TIMERS=1): one timestamp
+     * query pool per frame in flight, 2 queries per zone. Slot i's results are
+     * harvested in rhi_begin_frame right after slot i's fence wait — the same
+     * discipline as readback_ring, so retrieval never blocks (results arrive
+     * RHI_FRAMES_IN_FLIGHT presents late; fine for a diagnostic). Both zone
+     * timestamps are BOTTOM_OF_PIPE: elapsed = previous work drained → this
+     * zone's work drained, which attributes correctly on a serial queue and
+     * degrades to an approximation where the GPU overlaps passes. */
+    bool        gpu_timers;                 /* env set AND queue has timestamps */
+    float       gpu_ts_period;              /* ns per timestamp tick */
+    VkQueryPool gpu_qp[RHI_FRAMES_IN_FLIGHT];
+    const char *gpu_zone_name[RHI_FRAMES_IN_FLIGHT][RHI_GPU_ZONES_MAX];
+    int         gpu_zone_n[RHI_FRAMES_IN_FLIGHT];
+    bool        gpu_zone_open;              /* a begin without its end yet */
+    rhi_gpu_zone_result gpu_results[RHI_GPU_ZONES_MAX];
+    int         gpu_results_n;
 };
 
 struct rhi_buffer {
@@ -941,6 +958,100 @@ static bool create_sync_and_commands(rhi_device *dev)
     return true;
 }
 
+/* GPU per-pass timestamp zones — created only when OPENPETE_GPU_TIMERS=1 AND
+ * the graphics queue supports timestamps; otherwise the zone calls compile to
+ * a flag check. Unsupported hardware disables with one log line. */
+static bool create_gpu_timers(rhi_device *dev)
+{
+    const char *e = getenv("OPENPETE_GPU_TIMERS");
+    if (!(e && *e && *e != '0')) return true;   /* off: zero cost */
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    uint32_t qn = 0, valid_bits = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qn, NULL);
+    if (qn > 0) {
+        VkQueueFamilyProperties *q = calloc(qn, sizeof(*q));
+        if (!q) return true;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qn, q);
+        if (dev->gfx_family < qn) valid_bits = q[dev->gfx_family].timestampValidBits;
+        free(q);
+    }
+    if (valid_bits == 0 || props.limits.timestampPeriod <= 0.0f) {
+        RHI_LOG("OPENPETE_GPU_TIMERS: no timestamp support on the graphics queue — disabled\n");
+        return true;
+    }
+    dev->gpu_ts_period = props.limits.timestampPeriod;
+
+    VkQueryPoolCreateInfo qi = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = RHI_GPU_ZONES_MAX * 2,
+    };
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+        VK_CHECK(vkCreateQueryPool(dev->device, &qi, NULL, &dev->gpu_qp[i]));
+    dev->gpu_timers = true;
+    RHI_LOG("GPU pass timers on (%.3f ns/tick)\n", (double)dev->gpu_ts_period);
+    return true;
+}
+
+/* Pull the finished timestamps for the slot rhi_begin_frame just fenced.
+ * Never blocks: the in_flight fence proves the slot's queries completed. */
+static void gpu_timers_harvest(rhi_device *dev)
+{
+    int slot = (int)dev->frame;
+    int n = dev->gpu_zone_n[slot];
+    dev->gpu_results_n = 0;
+    dev->gpu_zone_n[slot] = 0;
+    if (n <= 0) return;
+    uint64_t ts[RHI_GPU_ZONES_MAX * 2];
+    VkResult r = vkGetQueryPoolResults(dev->device, dev->gpu_qp[slot], 0,
+                                       (uint32_t)(n * 2),
+                                       sizeof(uint64_t) * (size_t)(n * 2), ts,
+                                       sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+    if (r != VK_SUCCESS) return;    /* shouldn't happen post-fence; drop the frame */
+    for (int i = 0; i < n; i++) {
+        dev->gpu_results[i].name = dev->gpu_zone_name[slot][i];
+        dev->gpu_results[i].us =
+            (double)(ts[i * 2 + 1] - ts[i * 2]) * (double)dev->gpu_ts_period / 1000.0;
+    }
+    dev->gpu_results_n = n;
+}
+
+int rhi_gpu_timers_on(const rhi_device *dev)
+{
+    return dev && dev->gpu_timers;
+}
+
+void rhi_gpu_zone_begin(rhi_device *dev, const char *name)
+{
+    if (!dev || !dev->gpu_timers || !dev->frame_active) return;
+    int slot = (int)dev->frame;
+    if (dev->gpu_zone_open || dev->gpu_zone_n[slot] >= RHI_GPU_ZONES_MAX) return;
+    dev->gpu_zone_name[slot][dev->gpu_zone_n[slot]] = name;
+    vkCmdWriteTimestamp(dev->cmd[slot], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        dev->gpu_qp[slot], (uint32_t)(dev->gpu_zone_n[slot] * 2));
+    dev->gpu_zone_open = true;
+}
+
+void rhi_gpu_zone_end(rhi_device *dev)
+{
+    if (!dev || !dev->gpu_timers || !dev->frame_active || !dev->gpu_zone_open) return;
+    int slot = (int)dev->frame;
+    vkCmdWriteTimestamp(dev->cmd[slot], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        dev->gpu_qp[slot], (uint32_t)(dev->gpu_zone_n[slot] * 2 + 1));
+    dev->gpu_zone_n[slot]++;
+    dev->gpu_zone_open = false;
+}
+
+int rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap)
+{
+    if (!dev || !out || cap <= 0) return 0;
+    int n = dev->gpu_results_n < cap ? dev->gpu_results_n : cap;
+    memcpy(out, dev->gpu_results, (size_t)n * sizeof(*out));
+    return n;
+}
+
 /* The VRAM sampler is NEAREST + integer format (R16_UINT): the PSX sampler
  * does its own texelFetch indexing, so no GPU filtering. The set layout is a
  * single combined-image-sampler at set 0 binding 0, shared by every
@@ -1106,6 +1217,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     if (!create_offscreen(dev))         goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
     if (!create_descriptor_infra(dev))  goto fail;
+    if (!create_gpu_timers(dev))        goto fail;
 
     RHI_LOG("device='%s'%s format=%d %ux%u images=%u\n",
             dev->device_name, headless ? " (headless)" : "", (int)dev->sc_format,
@@ -1162,6 +1274,7 @@ void rhi_destroy(rhi_device *dev)
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         if (dev->img_avail[i]) vkDestroySemaphore(dev->device, dev->img_avail[i], NULL);
         if (dev->in_flight[i]) vkDestroyFence(dev->device, dev->in_flight[i], NULL);
+        if (dev->gpu_qp[i])    vkDestroyQueryPool(dev->device, dev->gpu_qp[i], NULL);
     }
     if (dev->pool)   vkDestroyCommandPool(dev->device, dev->pool, NULL);
     if (dev->device) vkDestroyDevice(dev->device, NULL);
@@ -1188,6 +1301,10 @@ bool rhi_begin_frame(rhi_device *dev)
     }
 
     vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
+
+    /* This slot's previous submission has fully retired — its timestamp
+     * queries are ready for a block-free harvest. */
+    if (dev->gpu_timers) gpu_timers_harvest(dev);
 
     /* Headless: no swapchain image to acquire — the command buffer records
      * directly into the offscreen / render-target images. */
@@ -1224,6 +1341,11 @@ bool rhi_begin_frame(rhi_device *dev)
     vkBeginCommandBuffer(cb, &bi);
     dev->frame_active = true;
     dev->draw_calls = 0;
+    if (dev->gpu_timers) {
+        /* Reset must be recorded outside a render pass — here, before any. */
+        vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
+        dev->gpu_zone_open = false;
+    }
     return true;
 }
 

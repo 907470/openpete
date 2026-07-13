@@ -4704,6 +4704,50 @@ static void phase_present_done(void)
     s_pt_n = 0; s_pt_last_report = now;
 }
 
+/* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over
+ * the frame-lagged results rhi_begin_frame harvests, printed on the same
+ * ~1 s cadence as the phase report. Zone identity is the name POINTER (the
+ * brackets pass literals), with strcmp as the collision fallback. WSLg /
+ * lavapipe numbers measure the CPU rasterizer, not a GPU — real numbers come
+ * from the Windows build (see plans/openpete-gpu-pass-timers.md). */
+#define GPUZ_MAX 16
+static struct { const char *name; double ema; } s_gpuz[GPUZ_MAX];
+static int      s_gpuz_n = 0;
+static uint64_t s_gpuz_last = 0;
+
+static void gpu_zone_report(void)
+{
+    if (!rhi_gpu_timers_on(s_nr.dev)) return;
+    rhi_gpu_zone_result res[RHI_GPU_ZONES_MAX];
+    int n = rhi_gpu_zone_results(s_nr.dev, res, RHI_GPU_ZONES_MAX);
+    for (int i = 0; i < n; i++) {
+        int k = -1;
+        for (int j = 0; j < s_gpuz_n; j++) {
+            if (s_gpuz[j].name == res[i].name || strcmp(s_gpuz[j].name, res[i].name) == 0) {
+                k = j; break;
+            }
+        }
+        if (k < 0) {
+            if (s_gpuz_n >= GPUZ_MAX) continue;
+            k = s_gpuz_n++;
+            s_gpuz[k].name = res[i].name;
+            s_gpuz[k].ema  = res[i].us;      /* seed with the first sample */
+        } else {
+            s_gpuz[k].ema += 0.05 * (res[i].us - s_gpuz[k].ema);
+        }
+    }
+    uint64_t now = openpete_phase_now_us();
+    if (s_gpuz_last == 0) s_gpuz_last = now;
+    if (s_gpuz_n == 0 || now - s_gpuz_last < 1000000u) return;
+    char line[512]; int off = 0;
+    off += snprintf(line + off, sizeof(line) - (size_t)off, "[gpu-pass f=%u]", s_scene_frame);
+    for (int j = 0; j < s_gpuz_n && off < (int)sizeof(line); j++)
+        off += snprintf(line + off, sizeof(line) - (size_t)off,
+                        " %s %.0f", s_gpuz[j].name, s_gpuz[j].ema);
+    fprintf(stderr, "%s  (ema us)\n", line);
+    s_gpuz_last = now;
+}
+
 /* Game-registered sub-tick re-extract callback (high-FPS spine). Invoked by
  * the host loop on each intermediate present; rebuilds s_scene against an
  * interpolated gamestate view. NULL → no intermediates (present stays at sim
@@ -4826,17 +4870,24 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    gpu_zone_report();  /* fold in the zone results begin_frame just harvested */
     /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
      * — must precede the first render pass (the depth pre-pass below). */
+    rhi_gpu_zone_begin(s_nr.dev, "upload");
     upload_synced_textures();
     hd_flush_pending();        /* HD replacement textures queued at draw time */
+    rhi_gpu_zone_end(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) — must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
+    rhi_gpu_zone_begin(s_nr.dev, "prepass");
     native_depth_prepass();
+    rhi_gpu_zone_end(s_nr.dev);
     /* Moby occlusion grid: reduce + ring-readback (live presents only). */
+    rhi_gpu_zone_begin(s_nr.dev, "occl");
     native_occl_downsample();
+    rhi_gpu_zone_end(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_PREPASS, pt_t1 - pt_t0); pt_t0 = pt_t1; }
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
@@ -4844,23 +4895,34 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     /* Render the FPS glyphs at OVL_SS_FACTOR× into ovl_ss now — its own render
      * pass, so it must precede compose_variant's offscreen pass. compose's
      * draw_fps_overlay then composites the downsampled result. */
+    rhi_gpu_zone_begin(s_nr.dev, "ovl_ss");
     prepare_fps_overlay_ss();
+    rhi_gpu_zone_end(s_nr.dev);
+    rhi_gpu_zone_begin(s_nr.dev, "menu_ss");
     prepare_menu_ss();         /* menu glyphs at MENU_SS_FACTOR× → menu_ss (own pass) */
+    rhi_gpu_zone_end(s_nr.dev);
+    rhi_gpu_zone_begin(s_nr.dev, "compose");
     bool did_diff = compose_variant(variant, have_ref);
+    rhi_gpu_zone_end(s_nr.dev);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
                  openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
+    rhi_gpu_zone_begin(s_nr.dev, "blit");
     rhi_blit_to_swapchain(s_nr.dev);
+    rhi_gpu_zone_end(s_nr.dev);
     if (s_ptrace) { fprintf(stderr, "S"); fflush(stderr); }
 
     /* --record: capture the on-screen native frame via the async ring (no-op
      * unless recording is active). MUST run before end_frame, while this frame
      * slot is still current — the copy is appended to the frame's command
      * buffer. */
-    if (openpete_record_active())
+    if (openpete_record_active()) {
+        rhi_gpu_zone_begin(s_nr.dev, "record");
         record_cycle(record_pts_us);
+        rhi_gpu_zone_end(s_nr.dev);
+    }
 
     rhi_end_frame(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);

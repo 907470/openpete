@@ -404,4 +404,28 @@ void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
  * census — the draw-submission count the material batching is minimizing). */
 uint32_t rhi_draw_calls(rhi_device *dev);
 
+/* ------------------------------------------------------------------ */
+/* GPU per-pass timestamp zones (env OPENPETE_GPU_TIMERS=1).
+ *
+ * Bracket a named unit of GPU work between begin_frame and end_frame:
+ *
+ *     rhi_gpu_zone_begin(dev, "prepass");
+ *     native_depth_prepass();
+ *     rhi_gpu_zone_end(dev);
+ *
+ * Flat sequence only (no nesting; a begin while a zone is open is ignored).
+ * `name` must be a string literal or otherwise outlive the frame — it is
+ * stored by pointer and handed back in results two presents later.
+ * Results are harvested by rhi_begin_frame after the slot's fence wait
+ * (never blocks; frame-lagged by RHI_FRAMES_IN_FLIGHT presents) and fetched
+ * with rhi_gpu_zone_results — returns the zone count, elapsed in µs with
+ * timestampPeriod applied. All zone calls are no-ops when the env is unset
+ * or the queue lacks timestamp support (one boot log line either way). */
+#define RHI_GPU_ZONES_MAX 64
+typedef struct { const char *name; double us; } rhi_gpu_zone_result;
+int  rhi_gpu_timers_on(const rhi_device *dev);
+void rhi_gpu_zone_begin(rhi_device *dev, const char *name);
+void rhi_gpu_zone_end(rhi_device *dev);
+int  rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap);
+
 #endif /* OPENPETE_RHI_H */
