@@ -224,6 +224,12 @@ static void draw_mod_meshes(void);
  * (S8a) bind them from earlier in the file. */
 #define PFX_PIPE_FAILED OPENPETE_POSTFX_PIPE_FAILED
 static rhi_ubo* s_pfx_ubo;
+/* Material-selector UBO (S8b): block 0 = engine block, blocks 1+slot =
+ * per-instance uniform blocks. Filled once per present at the top of
+ * draw_native_scene (defined after the postfx typedef); draw_tex_runs'
+ * override binds it. */
+static rhi_ubo* s_mat_ubo;
+static void fill_material_ubo(void);
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
@@ -315,7 +321,7 @@ static int s_scene_hud_under = 0;
  * Z would amputate them. Reset per frame. */
 static int s_scene_actor_front = 0;
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; }
+void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -2838,9 +2844,13 @@ static void hd_cache_shutdown(void)
  * run, not per tri). Caller binds the pipeline + vram + vertex buffer; `self` is
  * the pipeline the caller bound, restored after an HD-replaced run (an HD run
  * swaps pipeline + texture, so batching survives: a replaced material is its own
- * run by construction). NB: if a replaced material ever appears in the
- * depth-bias (shadow) group, the caller's rhi_set_depth_bias is NOT re-applied
- * on restore — fine for the PoC's HUD-only key. */
+ * run by construction). The same restore covers S8a/S8b material
+ * overrides (a resolved run swaps to the mod pipeline, then restores).
+ * NB: `self` is never a depth_bias pipeline at any current call site
+ * (those are the shadow-decal/stencil pipes, not the scene_tex* pipes
+ * passed here), so the dynamic-bias-invalidation-on-restore gap is
+ * unreachable today — a depth_bias caller would have to re-apply its
+ * bias after this function returns. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe, int allow_override) {
@@ -2890,7 +2900,12 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 if (*mg.pipeline_slot != PFX_PIPE_FAILED) {
                     rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*mg.pipeline_slot);
                     rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
-                    if (s_pfx_ubo) rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, 0);
+                    /* engine block 0 + the per-instance slot's mod block
+                     * (S8b, block 1+slot; slot 0 = declarative binds the
+                     * engine block as the mod block too — harmless). */
+                    if (s_mat_ubo)
+                        rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
+                                     mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
                     rhi_push_constants(s_nr.dev, &m, sizeof m);
                     rhi_draw(s_nr.dev, (uint32_t)(run * 3),
                              (uint32_t)(first_vert + i * 3));
@@ -3204,6 +3219,11 @@ static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
+
+    /* S8b: publish this present's interned per-instance material uniforms
+     * into the material UBO before any draw_tex_runs override binds them.
+     * No-op (and cheap) when no per-instance selector is active. */
+    fill_material_ubo();
 
     /* Load-window census (OPENPETE_LOAD_CENSUS=1): what THIS present actually
      * composes — tri counts per category/blend + the fade/freeze covers. One
@@ -4831,6 +4851,62 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
     float    aspect;
     float    res[2], win[2];
 } pfx_engine_ubo_t;
+
+/* The engine block (op_engine, set 3 binding 0) — shared fill for the
+ * postfx and material UBOs. `w`,`h` = the pass/render resolution. */
+static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
+{
+    pfx_engine_ubo_t eng;
+    memset(&eng, 0, sizeof eng);
+    eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
+    eng.present = s_scene_frame;
+    int canonical = 1;
+    openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
+    eng.canonical = (uint32_t)canonical;
+    int ww = 0, wh = 0;
+    rhi_swapchain_extent(s_nr.dev, &ww, &wh);
+    eng.res[0] = (float)(w > 0 ? w : ww);  eng.res[1] = (float)(h > 0 ? h : wh);
+    eng.win[0] = (float)ww;                eng.win[1] = (float)wh;
+    eng.aspect = eng.res[1] > 0 ? eng.res[0] / eng.res[1] : 1.0f;
+    rhi_ubo_write(u, blk, &eng, sizeof eng);
+}
+
+/* S8b: (re)fill the material UBO — engine block 0 + each interned
+ * per-instance slot's uniform bytes (blocks 1+slot). Called per present
+ * before the scene draw. Lazy-creates the UBO on first override use;
+ * a no-op beyond the engine block when no slots are interned. Block
+ * count covers OPENPETE_MATERIAL_SLOTS interned slots + block 0. */
+#define MAT_UBO_BLOCKS 129   /* 1 engine + 128 slots (MOD_MATERIAL_SLOTS) */
+static void fill_material_ubo(void)
+{
+    if (!tag_split_on()) return;   /* no selector / dev split armed */
+    if (!s_mat_ubo)
+        s_mat_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_MATERIAL_UNIFORMS_MAX,
+                                   MAT_UBO_BLOCKS);
+    if (!s_mat_ubo) return;
+    write_engine_block(s_mat_ubo, 0, 0, 0);
+    int nslots = openpete_mods_material_slot_count();   /* 1 + interned */
+    /* Per-instance material census (OPENPETE_MATERIAL_STATS=1): the peak
+     * interned-slot count is the structural proof that per-instance
+     * callbacks produce distinct outcomes AND the batcher splits by
+     * them — and the honest budget signal (each slot is an extra draw).
+     * Prints once when a new peak is reached. */
+    {
+        static int stats = -1, peak = 0;
+        if (stats < 0) { const char* e = getenv("OPENPETE_MATERIAL_STATS");
+                         stats = (e && *e && *e != '0'); }
+        if (stats && nslots - 1 > peak) {
+            peak = nslots - 1;
+            fprintf(stderr, "[material] per-instance slots interned this "
+                            "present = %d (each = one extra draw)\n", peak);
+        }
+    }
+    for (int s = 1; s < nslots && s < MAT_UBO_BLOCKS - 1; s++) {
+        uint32_t len = 0;
+        const void* p = openpete_mods_material_slot_uniforms(s, &len);
+        if (p && len) rhi_ubo_write(s_mat_ubo, 1 + s, p, len);
+    }
+}
 
 /* Ping-pong RT pool: two sizes in practice (window for live presents,
  * reference for screenshot dumps) — LRU-evict beyond that (rare; under

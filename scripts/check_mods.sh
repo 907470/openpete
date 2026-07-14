@@ -772,6 +772,34 @@ else
     ok "ffmpeg/PIL unavailable — mesh recording assertion skipped"
 fi
 
+# ── mod shaders S8b: per-instance material callback splits the batched
+# scene by distinct callback outcome. The structural proof (instruments
+# over pixels — colour classifiers false-positive on natural content)
+# is the interned per-instance slot census: moby-instance-tint tints
+# every moby by a per-vaddr hash, so many distinct slots intern in a
+# present. Assert the census reports > 1 (per-instance ran AND the
+# batcher split by outcome). Headless is fine — the census is emitted
+# during extraction, not from a composed frame.
+say "mod shaders: per-instance material callback splits by outcome"
+fixture "$WORK/inst" moby-instance-tint
+# WINDOWED (no --headless): the material census is emitted on the draw
+# side, which only runs when the native renderer composes a frame. Same
+# reason the mesh rung runs windowed; skip cleanly with no display.
+OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --disc "$DISC" \
+    --run-recomp 0x80012204 --frame-limit 400 --mods-dir "$WORK/inst" \
+    --record "$WORK/inst/probe.mkv" > "$WORK/inst.log" 2>&1 || true
+inst_peak=$(sed -n 's/.*per-instance slots interned this present = \([0-9]*\).*/\1/p' \
+            "$WORK/inst.log" | sort -n | tail -1)
+if ! grep -q "material selector armed .*per-instance" "$WORK/inst.log"; then
+    bad "per-instance selector did not arm (see $WORK/inst.log)"
+elif [ -z "$inst_peak" ] && grep -qiE "no vulkan|no display|surface|failed to (create|open)" "$WORK/inst.log"; then
+    ok "no display for the windowed census — selector armed (assertion skipped)"
+elif [ -n "$inst_peak" ] && [ "$inst_peak" -gt 1 ]; then
+    ok "per-instance callback interned $inst_peak distinct slots (batch split by outcome)"
+else
+    bad "per-instance split not observed (peak='$inst_peak'; see $WORK/inst.log)"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

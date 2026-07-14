@@ -102,11 +102,40 @@ position, depth, stencil, category) stays engine-owned. `-1` on a
 shader handle keeps the stock stage — fork
 `sdk/shaders/psx_scene.frag` as your starting point (it samples PSX
 VRAM through the material push constants; keep that interface).
-Current scope: declarative selectors on plain opaque textured runs
-(moby class, terrain env-anim/tier); texture-id selectors and the
-per-instance callback (state-aware overrides, e.g. only FLAMED chests)
-are the next engine milestone and refuse with a log line today.
-Conflicts: enabled-list priority, first match wins.
+Applies to plain opaque textured runs (moby class, terrain
+env-anim/tier); conflicts resolve by enabled-list priority, first
+match wins.
+
+### Per-instance callback (state-aware)
+
+Pass a callback as the last argument to shade *specific instances* by
+their live gameplay state — the "only FLAMED metal chests" case:
+
+```c
+static int flamed_chest(CPUState* cpu, uint32_t moby, void* out, uint32_t cap) {
+    if (op_read_u8(g_api, moby + 0x4E) == 0) return -1;  /* not flamed → decline */
+    float* rgb = out;                                    /* → stock shading    */
+    rgb[0] = 1.0f; rgb[1] = 0.3f; rgb[2] = 0.0f; rgb[3] = 1.0f;
+    return 16;                                           /* bytes of uniform   */
+}
+openpete_mod_material_selector_t sel = { OP_RP_MOBY, /*class*/195, -1, 0 };
+api->material_register(self, &sel, -1, frag, flamed_chest);
+```
+
+The callback runs at extraction per matching moby instance (guest RAM
+readable through `cpu`/`op_read_*`); return the bytes of a per-draw
+uniform block (bound at set 3 binding 1, `<= 256` bytes) or `-1` to
+leave that instance stock. Distinct outcomes land in distinct batches
+automatically. Read-only: the callback must not write guest state.
+
+Cost: each distinct outcome is one extra draw (it splits the batched
+scene). Scope the selector to a class + a *rare* state so the common
+case stays cheap; the `[gpu-pass]` / draw-count instruments name the
+cost. Uniforms are recomputed every present (the callback reads
+tick-stable guest RAM, so results don't strobe across sub-tick
+frames). See `mods/moby-instance-tint` for a working example.
+
+Texture-id selectors (`sel.texture`) are not yet available — use `-1`.
 
 ## Verifying your effect (read this before debugging "it doesn't draw")
 

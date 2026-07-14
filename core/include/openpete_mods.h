@@ -427,19 +427,44 @@ void openpete_mods_drawmesh_clear(void);
 void openpete_mods_pipeline_remove_owner(const char* mod_id);
 void openpete_mods_pipeline_retire_all(void);
 
-/* Material selectors (S8a) — draw-time resolve for the batcher. NULL
- * spv side = keep the stock stage (executor falls back to the embedded
- * psx_scene shaders). */
+/* Material selectors (S8a/S8b) — draw-time resolve for the batcher.
+ * NULL spv side = keep the stock stage (executor falls back to the
+ * embedded psx_scene shaders). uniform_slot > 0 = a per-instance
+ * override (S8b): bind material-UBO block (1 + uniform_slot) as the mod
+ * block; 0 = declarative whole-class (engine block only). */
 typedef struct {
     const uint32_t* vert_spv; size_t vert_words;
     const uint32_t* frag_spv; size_t frag_words;
     void** pipeline_slot;
     const char* owner;
+    int   uniform_slot;
 } openpete_mod_material_gpu_t;
 int  openpete_mods_material_resolve(uint32_t tag,
                                     openpete_mod_material_gpu_t* out);
 void openpete_mods_material_remove_owner(const char* mod_id);
 void openpete_mods_material_retire_all(void);
+
+/* Per-instance material callback (S8b). Cap on a per-draw uniform
+ * block (fits the material UBO block; matches the postfx cap). */
+#define OPENPETE_MATERIAL_UNIFORMS_MAX 256u
+/* True when any registered selector carries a per-instance callback —
+ * the moby walk skips the resolve entirely otherwise (single bool). */
+int  openpete_mods_material_has_instance(void);
+/* Resolve ONE moby instance at extraction (moby walk, cpu available):
+ * returns the batch-split slot stamped into the provenance tag — 0 =
+ * defer to draw-time class resolve (declarative / no per-instance
+ * winner), OPENPETE_MATERIAL_SLOT_STOCK = the callback declined (force
+ * stock), else an interned per-instance slot (1..). */
+#define OPENPETE_MATERIAL_SLOT_STOCK 0xFFF
+int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
+                                      uint32_t moby_vaddr);
+/* Per-present interned-slot table lifecycle + readout for the material
+ * UBO (native_render): reset at scene-begin, then the extractor interns
+ * during the walk, then native_render writes each slot's bytes into the
+ * UBO before the scene draw. */
+void openpete_mods_material_frame_reset(void);
+int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
+const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's

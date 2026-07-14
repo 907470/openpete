@@ -494,6 +494,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
  * by tag hash (visual coverage instrument, no split needed). */
 #define OPENPETE_TAG_MOBY(cls) \
     (0x10000000u | ((uint32_t)(cls) & 0xFFFFu))
+/* moby + a per-instance material slot (S8b) in the spare bits [27:16];
+ * slot 0 == OPENPETE_TAG_MOBY (declarative / no per-instance winner). */
+#define OPENPETE_TAG_MOBY_SLOT(cls, slot) \
+    (0x10000000u | (((uint32_t)(slot) & 0xFFFu) << 16) | ((uint32_t)(cls) & 0xFFFFu))
 #define OPENPETE_TAG_TERRAIN(lp, env, sec) \
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))

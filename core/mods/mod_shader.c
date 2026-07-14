@@ -879,12 +879,25 @@ void openpete_mods_pipeline_retire_all(void) {
     }
 }
 /* ------------------------------------------------------------------ */
-/* material-selector tier (S8a): declarative whole-class overrides.
- * Matching happens at DRAW time against the S6 provenance tag + run
- * material — the extractors need no selector knowledge. Conflicts:
- * enabled-list priority, FIRST match wins (collect order). The
- * per-instance callback (S8b) is accepted but not yet driven —
- * registrations carrying one are refused until it lands. */
+/* material-selector tier (S8a declarative + S8b per-instance).
+ *
+ * S8a: whole-class overrides matched at DRAW time against the S6
+ * provenance tag — extractors stay selector-agnostic. S8b: a
+ * per-instance callback runs at EXTRACTION (the moby walk, cpu
+ * available) per matching instance, returns a per-draw uniform block
+ * or declines. Its outcome is interned to a small per-present SLOT id
+ * stamped into the tag's spare bits, so the batcher splits draws by
+ * outcome (two instances of one class with different callback results
+ * land in different batches); the slot's uniform block binds at the
+ * override draw. Conflicts: enabled-list priority, FIRST match wins.
+ *
+ * Per-present, not identity-replayed: reextract_record_pass re-walks
+ * every present, and the callback reads TICK-STABLE guest RAM (the
+ * sub-tick spine interpolates render-side only, never mutating
+ * gameplay RAM — the oracle guarantees it), so per-present invocation
+ * yields identical results across a canonical+intermediates span (no
+ * strobing). Canonical-compute + identity-replay would only save the
+ * callback cost on intermediates; deferred as a pure optimization. */
 
 #define MOD_MATERIAL_MAX 32
 
@@ -892,6 +905,7 @@ typedef struct {
     const char* owner;
     openpete_mod_material_selector_t sel;
     int  vert, frag;       /* shader handles; -1 = stock stage */
+    openpete_mod_material_fn per_instance;   /* NULL = declarative (S8a) */
     int  load_index;
     void* pipeline;        /* executor-cached rhi_pipeline* */
     int  live;
@@ -899,14 +913,30 @@ typedef struct {
 
 static mod_material_t s_mats[MOD_MATERIAL_MAX];
 static int s_mat_count;
+static int s_mat_has_instance;   /* cached: any live selector has a callback */
 
-/* native_render arms the batcher tag-split while any selector lives. */
+/* Per-present interned per-instance slots (S8b). Index 0 reserved
+ * (= "defer to draw-time class resolve"); 1.. are interned outcomes. */
+#define MOD_MATERIAL_SLOTS 128
+typedef struct {
+    int      mat;            /* winning selector index */
+    uint32_t len;
+    unsigned char bytes[OPENPETE_MATERIAL_UNIFORMS_MAX];
+} mat_slot_t;
+static mat_slot_t s_mat_slots[MOD_MATERIAL_SLOTS];
+static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
+
+/* native_render arms the batcher tag-split while any selector lives;
+ * s_mat_has_instance gates the moby walk's per-instance resolve. */
 static void material_rearm_split(void) {
-    int any = 0;
+    int any = 0, inst = 0;
     for (int i = 0; i < s_mat_count; i++)
-        if (s_mats[i].live) { any = 1; break; }
+        if (s_mats[i].live) { any = 1; if (s_mats[i].per_instance) inst = 1; }
+    s_mat_has_instance = inst;
     openpete_native_set_tag_split(any);
 }
+
+int openpete_mods_material_has_instance(void) { return s_mat_has_instance; }
 
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
@@ -917,12 +947,6 @@ int openpete_mods_material_register(openpete_mod_t* self,
     if (openpete_mods_in_present) {
         OPL_ERROR_F("mods", "%s: material_register refused inside a present "
                     "hook (register at entry)", id);
-        return -1;
-    }
-    if (per_instance) {
-        OPL_WARN_F("mods", "%s: per-instance material callbacks are not "
-                   "available in this engine build yet (declarative "
-                   "selectors only)", id);
         return -1;
     }
     if (sel->texture != -1) {
@@ -960,23 +984,105 @@ int openpete_mods_material_register(openpete_mod_t* self,
     m->sel = *sel;
     m->vert = vert_shader;
     m->frag = frag_shader;
+    m->per_instance = per_instance;
     m->load_index = openpete_mods_load_index_of(self);
     m->live = 1;
     s_mat_count++;
     material_rearm_split();
     OPL_INFO_F("mods", "%s: material selector armed (path %d class %d "
-               "flags %#x)", id, sel->path, sel->moby_class, sel->flags);
+               "flags %#x%s)", id, sel->path, sel->moby_class, sel->flags,
+               per_instance ? ", per-instance" : "");
     return 0;
 }
 
+/* The winning selector index for a moby of class `cls` (enabled-list
+ * priority, first match wins), or -1. Mobys have no env/tier, so those
+ * flags exclude a moby match. */
+static int material_moby_winner(int cls) {
+    int best = -1;
+    for (int i = 0; i < s_mat_count; i++) {
+        mod_material_t* m = &s_mats[i];
+        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.path != -1 && m->sel.path != 0 /*OP_RP_MOBY*/) continue;
+        if (m->sel.moby_class != -1 && m->sel.moby_class != cls) continue;
+        if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER))
+            continue;   /* terrain-only refinements never match a moby */
+        if (best < 0 || m->load_index > s_mats[best].load_index)
+            best = i;
+    }
+    return best;
+}
+
+void openpete_mods_material_frame_reset(void) { s_mat_slot_n = 1; }
+int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
+
+const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
+    if (slot <= 0 || slot >= s_mat_slot_n) { if (len) *len = 0; return NULL; }
+    if (len) *len = s_mat_slots[slot].len;
+    return s_mat_slots[slot].bytes;
+}
+
+int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
+                                     uint32_t moby_vaddr) {
+    if (!s_mat_has_instance) return 0;
+    int w = material_moby_winner(moby_class);
+    if (w < 0 || !s_mats[w].per_instance) return 0;   /* declarative → draw-time */
+
+    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    int rc = s_mats[w].per_instance(cpu, moby_vaddr, buf, sizeof buf);
+    if (rc < 0) return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined → stock */
+    if (rc > (int)sizeof buf) rc = (int)sizeof buf;
+
+    /* Intern (winner, bytes): identical outcomes share a slot so they
+     * stay in ONE batch. Linear scan — the interned set is small. */
+    for (int s = 1; s < s_mat_slot_n; s++)
+        if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
+            memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
+            return s;
+    if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
+        return OPENPETE_MATERIAL_SLOT_STOCK;   /* table full → graceful stock */
+    int s = s_mat_slot_n++;
+    s_mat_slots[s].mat = w;
+    s_mat_slots[s].len = (uint32_t)rc;
+    memcpy(s_mat_slots[s].bytes, buf, (size_t)rc);
+    return s;
+}
+
+/* Fill `out` from selector index `best` + per-instance uniform slot. */
+static int material_fill_gpu(int best, int uniform_slot,
+                             openpete_mod_material_gpu_t* out) {
+    mod_material_t* m = &s_mats[best];
+    out->vert_spv = m->vert >= 0
+        ? openpete_mods_shader_spv(m->vert, &out->vert_words, NULL) : NULL;
+    out->frag_spv = m->frag >= 0
+        ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
+    if (m->vert < 0) out->vert_words = 0;
+    if (m->frag < 0) out->frag_words = 0;
+    out->pipeline_slot = &m->pipeline;
+    out->owner = m->owner;
+    out->uniform_slot = uniform_slot;
+    return best;
+}
+
 /* Draw-time resolve (native_render draw_tex_runs): the run's S6 tag →
- * the winning override, or -1. Tag layout: [31:28] path+1, moby class
- * [15:0], terrain env bit 27 / LP bit 26. Enabled-list priority then
- * registration order — the FIRST match in that order wins. */
+ * the winning override, or -1. Tag layout: [31:28] path+1; moby class
+ * [15:0] + per-instance slot [27:16] (S8b); terrain env bit 27 / LP
+ * bit 26 + sector [8:0]. Enabled-list priority, FIRST match wins. */
 int openpete_mods_material_resolve(uint32_t tag,
                                    openpete_mod_material_gpu_t* out) {
     if (!tag || s_mat_count == 0) return -1;
     int path = (int)(tag >> 28) - 1;              /* 0 = moby, 1 = terrain */
+
+    if (path == 0) {   /* moby: check the per-instance slot first (S8b) */
+        int slot = (int)((tag >> 16) & 0xFFFu);
+        if (slot == OPENPETE_MATERIAL_SLOT_STOCK) return -1;   /* declined */
+        if (slot != 0) {
+            if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
+        }
+        /* slot 0 → fall through to declarative class resolve */
+    }
+
     int cls  = (path == 0) ? (int)(tag & 0xFFFFu) : -1;
     int env  = (path == 1) && (tag & 0x08000000u);
     int lp   = (path == 1) && (tag & 0x04000000u);
@@ -984,6 +1090,7 @@ int openpete_mods_material_resolve(uint32_t tag,
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
         if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
         if (m->sel.path != -1 && m->sel.path != path) continue;
         if (path == 0 && m->sel.moby_class != -1 && m->sel.moby_class != cls)
             continue;
@@ -995,16 +1102,7 @@ int openpete_mods_material_resolve(uint32_t tag,
             best = i;
     }
     if (best < 0) return -1;
-    mod_material_t* m = &s_mats[best];
-    out->vert_spv = m->vert >= 0
-        ? openpete_mods_shader_spv(m->vert, &out->vert_words, NULL) : NULL;
-    out->frag_spv = m->frag >= 0
-        ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
-    if (m->vert < 0) out->vert_words = 0;
-    if (m->frag < 0) out->frag_words = 0;
-    out->pipeline_slot = &m->pipeline;
-    out->owner = m->owner;
-    return best;
+    return material_fill_gpu(best, 0, out);
 }
 
 void openpete_mods_material_remove_owner(const char* mod_id) {
