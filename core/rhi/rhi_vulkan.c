@@ -26,6 +26,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>       /* floorf/ceilf — rhi_clear_depth_rect_ndc */
 
 #define RHI_FRAMES_IN_FLIGHT 2
 #define RHI_MAX_SC_IMAGES    8
@@ -2178,6 +2179,34 @@ void rhi_clear_depth(rhi_device *dev)
     };
     VkClearRect rect = {
         .rect = { .offset = {0, 0}, .extent = dev->cur_extent },
+        .baseArrayLayer = 0, .layerCount = 1,
+    };
+    vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
+}
+
+void rhi_clear_depth_rect_ndc(rhi_device *dev, float x0, float y0,
+                              float x1, float y1)
+{
+    if (!dev->frame_active) return;
+    float W = (float)dev->cur_extent.width, H = (float)dev->cur_extent.height;
+    /* NDC → framebuffer px (Y-flipped viewport: see rhi_set_viewport). */
+    float px0 = (x0 + 1.0f) * 0.5f * W, px1 = (x1 + 1.0f) * 0.5f * W;
+    float py0 = (1.0f - y0) * 0.5f * H, py1 = (1.0f - y1) * 0.5f * H;
+    int xlo = (int)floorf(px0 < px1 ? px0 : px1);
+    int xhi = (int)ceilf (px0 < px1 ? px1 : px0);
+    int ylo = (int)floorf(py0 < py1 ? py0 : py1);
+    int yhi = (int)ceilf (py0 < py1 ? py1 : py0);
+    if (xlo < 0) xlo = 0; if (ylo < 0) ylo = 0;
+    if (xhi > (int)dev->cur_extent.width)  xhi = (int)dev->cur_extent.width;
+    if (yhi > (int)dev->cur_extent.height) yhi = (int)dev->cur_extent.height;
+    if (xhi <= xlo || yhi <= ylo) return;   /* empty after clamp */
+    VkClearAttachment att = {
+        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+        .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+    };
+    VkClearRect rect = {
+        .rect = { .offset = { xlo, ylo },
+                  .extent = { (uint32_t)(xhi - xlo), (uint32_t)(yhi - ylo) } },
         .baseArrayLayer = 0, .layerCount = 1,
     };
     vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);

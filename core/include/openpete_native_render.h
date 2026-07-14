@@ -303,6 +303,19 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_ve
  * through the decal path discarded every sky-borne puff (height test) and
  * sampled the wrong texture (the range-uniform shadow sprite material). */
 #define OPENPETE_SCENE_SHADOW 12
+/* ACTOR_FRONT: the dragon-rescue CUTSCENE actors — the mobys the game keeps in
+ * g_DragonCutscene (m_RescuedDragonMoby / m_CutsceneDragon / m_CutsceneSpyro).
+ * They render like ACTOR (opaque, depth-tested) EXCEPT during a rescue cutscene,
+ * when draw_native_scene clears depth WITHIN THEIR SCREEN BBOX (a scissored
+ * rhi_clear_depth_rect_ndc, not the whole frame) and re-draws them there so they
+ * win over terrain they interpenetrate (Delvin's spread wing inside the tower).
+ * The bbox scissor is what keeps the fix local: terrain depth everywhere else is
+ * intact, so distant level mobys (--lod extended un-culls statues / chests / the
+ * level-end vortex + critters) — opaque AND transparent — keep true occlusion,
+ * and the pass runs BEFORE the PLAYER group so Spyro sorts against the dragon by
+ * real Z instead of being painted over. Tagged by the moby feeder via pointer
+ * match against g_DragonCutscene (the game's own actor set — no heuristic). */
+#define OPENPETE_SCENE_ACTOR_FRONT 13
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but

@@ -401,6 +401,17 @@ void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
  * Z-sorts internally without being occluded by, or occluding, world geometry. */
 void rhi_clear_depth(rhi_device *dev);
 
+/* Clear the depth attachment to far within an NDC-space rectangle of the current
+ * pass. (x0,y0)-(x1,y1) are clip/NDC coords in [-1,1] (any corner order); they
+ * are mapped to the current render area with the Y-flipped-viewport convention
+ * (ndc_x → (ndc_x+1)/2·W, ndc_y → (1-ndc_y)/2·H) and clamped, so callers stay in
+ * the same clip space scene_to_clip produces (mode/SSAA/widescreen-agnostic).
+ * Depth-only (stencil untouched). Used to depth-isolate an on-top overlay to its
+ * own screen bbox — the dragon-rescue front pass — without wiping terrain depth
+ * elsewhere. Empty/degenerate rect (after clamp) is a no-op. */
+void rhi_clear_depth_rect_ndc(rhi_device *dev, float x0, float y0,
+                              float x1, float y1);
+
 /* Clear the STENCIL aspect to 0 WITHIN the current pass (offscreen or render
  * target). Used between per-object stencil-mask groups (e.g. one portal's
  * aperture mask + masked draw, then clear, then the next portal's), so a fixed

@@ -381,3 +381,31 @@ ab_env = "OPENPETE_ACTOR_FRONT"
   kind   = "ab-active"
   min_px = 1000
   bbox   = [120, 150, 300, 260]
+
+# Dragon-rescue front pass leak under --lod extended (found in testing, 2026-07-14):
+# the actor front pass used to clear the WHOLE depth buffer, safe only while the
+# LOD cull kept the cutscene draw list free of distant level mobys.  Extended LOD
+# un-culls them (statues / chests / the level-end vortex + its critters), and the
+# whole-frame clear made both their opaque AND transparent faces punch through
+# terrain.  Fix: front-pass ONLY the cutscene actors (tagged by pointer match
+# against g_DragonCutscene) and clear depth just within THEIR screen bbox
+# (rhi_clear_depth_rect_ndc), so every other moby keeps true terrain occlusion.
+# Guard: with --lod extended, toggling OPENPETE_ACTOR_FRONT leaves the CRITTER
+# region (outside the dragon bbox) pixel-identical — the front pass no longer
+# reaches it.  A regression to the whole-frame clear re-leaks ~311 px here (the
+# dragon's own front-pass delta sits at x>=446, outside this bbox).  Companion to
+# townsquare-delvin-wing-front, which proves the pass still fires (the wing draws
+# over the tower).  --lod extended comes from the .bk2.args sidecar (pinned too).
+# Repro: alban-rescue.bk2 @ f1756.
+[[case]]
+name   = "dark-hollow-alban-rescue-nolod-noleak"
+level  = "dark_hollow"
+lod    = "extended"
+bk2    = "games/spyro-1/bk2/alban-rescue.bk2"
+frame  = 1756
+mode   = "full"
+ab_env = "OPENPETE_ACTOR_FRONT"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 100
+  bbox   = [60, 300, 340, 430]

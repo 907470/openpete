@@ -769,7 +769,7 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
         /* SKY counts as world: the cyclorama was WORLD before the W2.6-c split
          * and a dome-only frame qualified as a gameplay frame — preserve that. */
         if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
-            c == OPENPETE_SCENE_SKY)
+            c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_SKY)
             return true;
     }
     return false;
@@ -3329,7 +3329,11 @@ static bool draw_native_scene(bool full_extent)
      * 11 = SKY (cyclorama dome — WORLD-like, drawn FIRST with the PLAIN pipe so
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
      * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[14], ut_count[14];
+    int ut_first[15], ut_count[15];
+    /* ACTOR_FRONT screen bbox (scene sx/sy) — the depth-clear scissor for the
+     * dragon-rescue front pass. Accumulated across the ut[14]/txg[9] builds. */
+    float af_x0 = 1e30f, af_y0 = 1e30f, af_x1 = -1e30f, af_y1 = -1e30f;
+    int   af_n = 0;
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
@@ -3527,6 +3531,28 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[13] = n - ut_first[13];
+    /* ACTOR_FRONT untextured (opaque): the rescue actors' flat-shaded faces.
+     * Same content class as ACTOR (blend 0, depth-tested opaque); split out so the
+     * dragon-rescue pass can front-pass ONLY these, scissored to their bbox. */
+    ut_first[14] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_ACTOR_FRONT ||
+            n + 3 > SCENE_VB_VERTS) continue;
+        int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+        if (b != 0) continue;   /* transparent rescue-actor faces route by blend (ALPHA/ADD) */
+        for (int k = 0; k < 3; k++) {
+            float sx = scene[t].v[k].sx, sy = scene[t].v[k].sy;
+            if (sx < af_x0) af_x0 = sx; if (sx > af_x1) af_x1 = sx;
+            if (sy < af_y0) af_y0 = sy; if (sy > af_y1) af_y1 = sy;
+            float cx, cy;
+            scene_to_clip(sx, sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
+        }
+        n += 3; af_n++;
+    }
+    ut_count[14] = n - ut_first[14];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -3578,8 +3604,8 @@ static bool draw_native_scene(bool full_extent)
      * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
      * backdrops want painter's order) and only coalesce already-adjacent runs. */
     int tx_start = n;
-    int txg_first[9], txg_count[9], txtri = 0;
-    for (int b = 0; b < 9; b++) {
+    int txg_first[10], txg_count[10], txtri = 0;
+    for (int b = 0; b < 10; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
@@ -3589,6 +3615,21 @@ static bool draw_native_scene(bool full_extent)
             if (s_suppress_player && cat == OPENPETE_SCENE_PLAYER) continue;
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
+            else if (b == 9) {
+                /* ACTOR_FRONT (opaque): the rescue actors' textured faces — same
+                 * class as the ACTOR textured group (b==2), split for the front
+                 * pass. Accumulate the front-pass bbox here too. */
+                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                belongs = cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
+                if (belongs) {
+                    for (int k = 0; k < 3; k++) {
+                        float sx = scene[t].v[k].sx, sy = scene[t].v[k].sy;
+                        if (sx < af_x0) af_x0 = sx; if (sx > af_x1) af_x1 = sx;
+                        if (sy < af_y0) af_y0 = sy; if (sy > af_y1) af_y1 = sy;
+                    }
+                    af_n++;
+                }
+            }
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
             else if (b == 8) {
                 /* SUBTRACT-WORLD (textured): blend-3 that is NOT a shadow
@@ -3611,7 +3652,7 @@ static bool draw_native_scene(bool full_extent)
             }
             if (belongs) s_txscene[txtri++] = t;
         }
-        if (b == 0 || b == 2 || b == 3) {   /* opaque: material-sort (depth-correct) */
+        if (b == 0 || b == 2 || b == 3 || b == 9) {   /* opaque: material-sort (depth-correct) */
             s_txsort_scene = scene;
             qsort(&s_txscene[run_start], (size_t)(txtri - run_start), sizeof(int), tex_mat_cmp);
         }
@@ -3778,10 +3819,31 @@ static bool draw_native_scene(bool full_extent)
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
         const struct scene_group *g = &groups[gi];
-        /* Dragon-rescue cutscene (actor_front): the ACTOR buckets are skipped
-         * at their normal slot and re-drawn depth-isolated after the PLAYER
-         * group (the gi==3 block below). */
-        const int actor_front_skip = (gi == 2 && actor_front);
+        /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
+         * depth-isolate the cutscene actors to their own screen bbox and draw
+         * them there so they win over terrain they interpenetrate (Delvin's wing
+         * inside the tower). Scissored so terrain depth elsewhere stays intact
+         * (distant level mobys keep true occlusion under --lod extended), and
+         * BEFORE the player so Spyro sorts against the dragon by real Z. The
+         * regular ACTOR group already drew normally at gi==2. */
+        if (gi == 3 && actor_front && af_n > 0) {
+            float cx0, cy0, cx1, cy1;
+            scene_to_clip(af_x0, af_y0, &cx0, &cy0);
+            scene_to_clip(af_x1, af_y1, &cx1, &cy1);
+            rhi_clear_depth_rect_ndc(s_nr.dev, cx0, cy0, cx1, cy1);
+            if (s_nr.gouraud_pipe && ut_count[14] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
+            }
+            if (txg_count[9] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
+                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 1);
+            }
+        }
         /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
          * depth bias for these draws (both sub pipes are .depth_bias). This is
          * the W2.5 replacement for the moby-shadow ×0.96 multiplicative view-Z
@@ -3794,7 +3856,7 @@ static bool draw_native_scene(bool full_extent)
          * that has the same state static (every non-decal pipeline here), so
          * the bias must be set AFTER each depth_bias pipeline bind, before its
          * draws — never rely on a value set earlier in the pass. */
-        if (g->utex && ut_count[gi] > 0 && !actor_front_skip) {
+        if (g->utex && ut_count[gi] > 0) {
             if (gi == 1) {
                 /* Untextured SUBTRACT = the Spyro silhouette shadow. Preferred
                  * path: the DEPTH-AWARE decal (shadow_decal.frag samples the
@@ -3845,7 +3907,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
-        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex && !actor_front_skip) {
+        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
             /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
              * shared WORLD-opaque depth pre-pass is available this present — the
              * same fix Spyro's silhouette shadow got (shadow_decal_tex.frag owns
@@ -3924,6 +3986,25 @@ static bool draw_native_scene(bool full_extent)
                 int mat_ok = (gi == 2 || gi == 3) ||
                              (gi == 0 && g->tex == s_nr.scene_tex_pipe);
                 draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd, mat_ok);
+            }
+        }
+        /* ACTOR_FRONT (rescue actors) at the normal actor layer — only when NO
+         * cutscene is active (a stale g_DragonCutscene pointer can still match a
+         * live moby outside states 1..6). During a cutscene they are front-passed
+         * above (gi==3), so skip them here then. Same pipelines as the ACTOR
+         * group: outside a cutscene this is pixel-identical to leaving them ACTOR. */
+        if (gi == 2 && !actor_front) {
+            if (s_nr.gouraud_pipe && ut_count[14] > 0) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
+            }
+            if (txg_count[9] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
+                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 1);
             }
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
@@ -4055,33 +4136,9 @@ static bool draw_native_scene(bool full_extent)
          * In every other state the flat HUD draws OVER the player (after the loop). */
         if (gi == 2 && hud_under)
             draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
-        /* Dragon-rescue cutscene (actor_front): draw the ACTOR buckets here —
-         * after world/portal/player, before the ALPHA/ADDITIVE groups — behind
-         * a mid-pass depth CLEAR (the HUD3D trick). The cutscene actors (the
-         * rescue dragon / cutscene Spyro / crystal fragments — the .s cutscene
-         * draw list holds ONLY these) Z-sort among their own faces but are
-         * never occluded by terrain: the PSX's coarse OT bucketing painted
-         * them over walls they interpenetrate (the spread-wing close-ups),
-         * which true per-pixel Z would amputate. The transparent groups draw
-         * AFTER, testing the actors' fresh depth, so rescue sparkles still
-         * sort against the dragon; their terrain-depth occlusion is lost for
-         * these frames — invisible in practice, since the cutscene draw list
-         * has no level mobys (no torch glows etc. behind walls). */
-        if (gi == 3 && actor_front) {
-            rhi_clear_depth(s_nr.dev);
-            if (s_nr.gouraud_pipe && ut_count[2] > 0) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[2], (uint32_t)ut_first[2]);
-            }
-            if (txg_count[2] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[2], txg_count[2], tx_start, scene,
-                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 0);
-            }
-        }
+        /* (Dragon-rescue front pass now runs at the TOP of gi==3, before PLAYER —
+         * bbox-scissored so it never wipes terrain depth for the transparent
+         * groups below, and so Spyro sorts against the dragon by real Z.) */
     }
 
     /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player

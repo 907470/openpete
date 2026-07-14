@@ -1187,8 +1187,31 @@ static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay
 static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's fog band: the .s
                                          * prims carry fogged colours the walk dropped — adopt
                                          * must NOT copy them back (distant-chest saturation) */
+static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue CUTSCENE actor
+                                        * (matches a g_DragonCutscene pointer): route to
+                                        * OPENPETE_SCENE_ACTOR_FRONT so draw_native_scene front-
+                                        * passes ONLY the rescue actors (bbox-scissored depth
+                                        * clear), leaving every other moby's terrain occlusion
+                                        * intact — the --lod extended leak fix. */
 static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
+static int     s_cur_front;           /* per-record: 1 = a g_DragonCutscene actor (front-pass) */
 static int     s_cur_fogsup;          /* per-record: --no-lod dropped a live fog band here */
+
+/* The dragon-rescue cutscene actor set the game maintains (g_DragonCutscene,
+ * struct @0x80077030): the rescued dragon + the cutscene Spyro/dragon mobys.
+ * These are EXACTLY what func_8001CFDC draws during states 1..6, so matching a
+ * moby pointer against them is the game's own selector — no class/heuristic.
+ * Offsets: m_CutsceneSpyro @+0x88, m_CutsceneDragon @+0x8C, m_RescuedDragonMoby
+ * @+0x90 (anchored off m_State @0x80077058 == base+0x28). */
+#define G_DRAGONCUTSCENE_CUTSPYRO   0x800770B8u
+#define G_DRAGONCUTSCENE_CUTDRAGON  0x800770BCu
+#define G_DRAGONCUTSCENE_RESCUED    0x800770C0u
+static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob) {
+    if (mob < 0x80000000u) return 0;
+    return mob == cpu->read_word(G_DRAGONCUTSCENE_RESCUED) ||
+           mob == cpu->read_word(G_DRAGONCUTSCENE_CUTDRAGON) ||
+           mob == cpu->read_word(G_DRAGONCUTSCENE_CUTSPYRO);
+}
 
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
  * each emitted walk tri so the canonical frame can snapshot the .s's transient
@@ -1240,6 +1263,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
     s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
+    s_wtri_front[s_wtri_n] = (uint8_t)s_cur_front;  /* cutscene actor (front-pass eligible) */
     s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
     s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
@@ -1629,6 +1653,9 @@ static int build_walk_tris_inner(CPUState* cpu) {
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
+        /* Front-pass eligibility: this moby is one of the dragon-rescue cutscene
+         * actors (g_DragonCutscene). Only for real actors (ui==0). */
+        s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, mob);
         /* --no-lod fog suppression marker: the neutralize replaced a canonical
          * verdict that was IN the fog band (raw < 1024) — the .s prims for this
          * record carry fogged colours (vk mode never arms the game-side
@@ -2671,6 +2698,7 @@ static void push_scene_moby(void) {
     for (int i = 0; i < s_wtri_n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
+                : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
                                     : OPENPETE_SCENE_ACTOR;
         openpete_scene_tri t;
         for (int k = 0; k < 3; k++) {
@@ -3961,6 +3989,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
                  : 0;
+        s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, R->moby);
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
         /* Per-vertex gouraud lit colours from the inline normal stream
@@ -4121,7 +4150,14 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
  * the full level moby set (func_800521C0) while fading back to gameplay —
  * front-passing every level moby there would be wrong. Called at both feed
  * sites (canonical + sub-tick re-extract), after begin_frame's reset.
- * OPENPETE_ACTOR_FRONT=0 disables (A/B kill-switch; the corpus guard flips it). */
+ * OPENPETE_ACTOR_FRONT=0 disables (A/B kill-switch; the corpus guard flips it).
+ *
+ * Safe at ALL LOD levels: draw_native_scene front-passes ONLY the cutscene
+ * actors (tagged OPENPETE_SCENE_ACTOR_FRONT by pointer match, above) and clears
+ * depth only WITHIN THEIR SCREEN BBOX, so --lod extended's un-culled distant
+ * level mobys (statues / chests / the level-end vortex + critters) keep their
+ * true terrain occlusion (the whole-frame clear used to punch them through).
+ * Repro that drove this: alban-rescue.bk2 @ f1756. */
 static void moby_native_set_actor_front(CPUState* cpu) {
     static int s_en = -1;
     if (s_en < 0) { const char* e = getenv("OPENPETE_ACTOR_FRONT"); s_en = (e && *e) ? (*e != '0') : 1; }
