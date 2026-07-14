@@ -87,6 +87,56 @@ to before the distribution work, so the dev loop is unchanged.
 it (the hybrid decomp path is static-only). The `*-shared` presets also
 pin `OPENPETE_ROM_FREE_ICON=ON` so no game bytes are baked in.
 
+### Preset-pinned cache variables
+
+What `CMakePresets.json` deliberately pins where (beyond
+`CMAKE_BUILD_TYPE`):
+
+| Cache variable | Pinned by | Why |
+|----------------|-----------|-----|
+| `OPENPETE_SKIP_DECOMP=ON` | `linux-release`, `windows-mingw*`, `wasm` | full-recompilation mode; only `linux-debug` builds the WIP hybrid decomp path |
+| `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64-v3` | `windows-mingw*` | portable perf floor for distributable Windows binaries |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `windows-mingw-opt`, `linux-release-shared` | LTO. **Never** LTO the Windows *shared* exe: GNU LTO DCEs the `.def`-exported `psyq_*` thunks (exports are not liveness roots) and ld silently emits absolute-0 exports → DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt` forces it OFF on that target as a guard. |
+| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `windows-mingw-opt` | `--help` shows only the user-facing flag block |
+| `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis (see above) |
+| `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
+| `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record` (drops the libav dependency) |
+| `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod *sources* only, no cmake-side DLLs — the dist exe's first-boot mod compile is the validation surface. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/`. |
+| `OPENPETE_BUILD_PCSX_REDUX_GTE=OFF`, `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
+
+Related non-preset knobs (defaults apply everywhere):
+`OPENPETE_COMPILE_MODS=ON` (every `cmake --build` also compiles all
+mods — native presets via the exe's `--compile-mods` mode, cross
+presets cmake-side) and `OPENPETE_COMPILE_MODS_DIR` (the mods root that
+tier runs over, default `<repo>/mods`).
+
+### Cache variables are sticky — re-run `cmake --preset` after preset edits
+
+CMake presets only inject `cacheVariables` when you run
+`cmake --preset <p>`. A `cmake --build --preset <p>` (or any incremental
+rebuild) reuses the existing `CMakeCache.txt` as-is — it re-runs the
+configure step when CMake files change, but **never re-reads
+`CMakePresets.json`**. Two failure modes follow:
+
+- **Added/changed var doesn't apply.** If a preset gains a variable (or
+  changes a value), every already-configured build dir keeps its old
+  cache until you re-run `cmake --preset <p>`. That command is safe on a
+  warm tree — it re-applies the preset's variables without nuking
+  anything else.
+- **Removed var keeps applying.** `cmake --preset` never *unsets* a
+  variable the preset stops mentioning; it stays in the build dir's
+  cache forever. This is the nastier one — it once kept
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` alive in
+  `build/windows-mingw-shared` after the preset dropped it, producing
+  the DEP crash above that "reproduced" at known-good commits (checking
+  out old code doesn't touch the poisoned cache) and masqueraded as a
+  toolchain regression. Remove it explicitly
+  (`cmake -U <VAR> build/<preset>`) or wipe the build dir.
+
+When a build behaves as if a flag you removed were still set — or a flag
+you added weren't — `grep <VAR> build/<preset>/CMakeCache.txt` **before**
+suspecting the environment or toolchain.
+
 ### Dev build (static — what you use to iterate)
 
 ```bash
@@ -148,6 +198,10 @@ package is required.
 
 ## Troubleshooting
 
+- **A cache variable you added/removed in `CMakePresets.json` isn't
+  taking effect** — preset variables are sticky; see "Cache variables
+  are sticky" above. Re-run `cmake --preset <p>` (additions/changes) or
+  `cmake -U <VAR> build/<preset>` (removals).
 - **`cmake: command not found`** — install via your package manager. Minimum
   version is 3.22.
 - **SDL fails to configure/build** — ensure the `third_party/SDL/`
