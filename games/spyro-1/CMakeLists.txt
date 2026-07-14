@@ -673,8 +673,12 @@ if(WIN32)
         COMMAND ${_spyro_icon_ico_cmd}
         DEPENDS ${_spyro_icon_deps}
         COMMENT "Generating openpete-spyro1.ico")
-    file(GENERATE OUTPUT ${_spyro_icon_rc}
-         CONTENT "1 ICON \"${_spyro_icon_ico}\"\n")
+    # Icon + VERSIONINFO (openpete-spyro1.rc.in). Version is the dist
+    # versioning scheme's placeholder until real release tags exist.
+    set(OPENPETE_VERSION_NUM "0,1,0,0")
+    set(OPENPETE_VERSION_STR "0.1.0")
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
+                   ${_spyro_icon_rc} @ONLY)
     target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
 endif()
 

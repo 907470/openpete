@@ -35,6 +35,10 @@ offline. Modified discs (romhacks) are detected and run best-effort.
 
 - Linux: a C compiler (`cc`) must be installed for the first run
   (`sudo apt install gcc` or equivalent). Windows bundles its own.
+- Windows may show a SmartScreen warning ("Windows protected your PC")
+  because the download is new and unsigned — click "More info" → "Run
+  anyway". If in doubt, verify the download against the published
+  `.sha256` checksum first.
 - Do not share your `library/` folder — it contains your game data.
 - Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
   very deep folders can hit Windows' path-length limit during first run.

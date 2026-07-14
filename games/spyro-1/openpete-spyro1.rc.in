@@ -1,0 +1,32 @@
+// Windows resources for openpete-spyro1.exe. Configured by CMake
+// (icon path + version). VERSIONINFO matters beyond cosmetics: an exe
+// with no version metadata reads as illegitimate to SmartScreen/AV
+// heuristics and shows an empty Properties->Details pane; it is also
+// where a future Authenticode signing step expects sane fields.
+1 ICON "@_spyro_icon_ico@"
+
+1 VERSIONINFO
+FILEVERSION     @OPENPETE_VERSION_NUM@
+PRODUCTVERSION  @OPENPETE_VERSION_NUM@
+FILEOS          0x40004L
+FILETYPE        0x1L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "ProductName",      "OpenPete"
+      VALUE "FileDescription",  "OpenPete - Spyro the Dragon PC port (bring your own disc)"
+      VALUE "CompanyName",      "OpenPete project"
+      VALUE "InternalName",     "openpete-spyro1"
+      VALUE "OriginalFilename", "openpete-spyro1.exe"
+      VALUE "FileVersion",      "@OPENPETE_VERSION_STR@"
+      VALUE "ProductVersion",   "@OPENPETE_VERSION_STR@"
+      VALUE "LegalCopyright",   "(c) OpenPete contributors. Not affiliated with Sony, Insomniac Games, or Activision."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

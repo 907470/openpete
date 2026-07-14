@@ -85,6 +85,7 @@ linux)
              "system cc (README-dist documents this)." >&2
     fi
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
+    ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
     ;;
 windows)
     B=build/windows-mingw-shared/games/spyro-1
@@ -120,6 +121,7 @@ windows)
              "\$OPENPETE_CC or a later toolchain drop-in for first boot" >&2
     fi
     ( cd "$OUT" && python3 -m zipfile -c "$NAME.zip" "$NAME" )
+    ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
     ;;
 *)
     echo "usage: scripts/package-dist.sh {linux|windows} [--out DIR] [--toolchain DIR]" >&2
