@@ -455,12 +455,15 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
 #    failed mod compile fails the build (escape: -DOPENPETE_COMPILE_MODS=OFF
 #    or build --target openpete-spyro1).
 #  - Cross presets (windows-mingw*): the target exe can't run at build
-#    time; cross-compile each STAGED mod (<build>/games/spyro-1/mods/<id>)
-#    with the preset's own toolchain into .build/<id>.dll and DROP the
-#    stamp — an unstamped prebuilt is the loader's designed cross-handoff
-#    artifact (build_mod: loads silently when the host has no compiler,
-#    recompiles+stamps once when it does). This retires the stale-DLL
-#    trap: staged DLLs are refreshed by every build.
+#    time; stage every repo mod next to the exe (cmake/stage_mods.cmake:
+#    exact source mirror; user-owned config.toml/enabled.txt and staged-
+#    only mod dirs untouched) and cross-compile each one with the
+#    preset's own toolchain into <build>/games/spyro-1/mods/<id>/.build/
+#    <id>.dll, DROPPING the stamp — an unstamped prebuilt is the
+#    loader's designed cross-handoff artifact (build_mod: loads silently
+#    when the host has no compiler, recompiles+stamps once when it
+#    does). DLLs compile from the REPO src/*.c (identical to the staged
+#    mirror), so neither staged sources nor staged DLLs can rot.
 option(OPENPETE_COMPILE_MODS "Compile all mods as part of the build" ON)
 set(OPENPETE_COMPILE_MODS_DIR ${CMAKE_SOURCE_DIR}/mods CACHE PATH
     "Mods root the native-preset build-time compile runs over")
@@ -475,19 +478,31 @@ if(OPENPETE_COMPILE_MODS)
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h)
-        file(GLOB _staged_mod_manifests CONFIGURE_DEPENDS
-             ${CMAKE_CURRENT_BINARY_DIR}/mods/*/mod.toml)
+        # Always runs (cheap: copy-if-different over a <5MB tree); keeps
+        # staged mod sources/assets current with the repo every build.
+        add_custom_target(spyro1_mods_stage ALL
+            COMMAND ${CMAKE_COMMAND}
+                    -DSRC=${OPENPETE_COMPILE_MODS_DIR}
+                    -DDST=${CMAKE_CURRENT_BINARY_DIR}/mods
+                    -P ${CMAKE_SOURCE_DIR}/cmake/stage_mods.cmake
+            COMMENT "Staging mods into <exe>/mods/ (source mirror)"
+            VERBATIM)
+        file(GLOB _mod_manifests CONFIGURE_DEPENDS
+             ${OPENPETE_COMPILE_MODS_DIR}/*/mod.toml)
         set(_staged_mod_dlls "")
-        foreach(_manifest IN LISTS _staged_mod_manifests)
-            get_filename_component(_mod_dir ${_manifest} DIRECTORY)
-            get_filename_component(_mod_id ${_mod_dir} NAME)
-            file(GLOB _mod_srcs CONFIGURE_DEPENDS ${_mod_dir}/src/*.c)
+        foreach(_manifest IN LISTS _mod_manifests)
+            get_filename_component(_src_mod_dir ${_manifest} DIRECTORY)
+            get_filename_component(_mod_id ${_src_mod_dir} NAME)
+            file(GLOB _mod_srcs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.c)
             if(NOT _mod_srcs)
                 continue() # assets-only/binary-only mod: nothing to build
             endif()
-            set(_dll ${_mod_dir}/.build/${_mod_id}.dll)
+            file(GLOB _mod_hdrs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.h)
+            set(_mod_build_dir
+                ${CMAKE_CURRENT_BINARY_DIR}/mods/${_mod_id}/.build)
+            set(_dll ${_mod_build_dir}/${_mod_id}.dll)
             add_custom_command(OUTPUT ${_dll}
-                COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_dir}/.build
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}
                 # Same compile line mod_compile() (core/mods/mod_loader.c)
                 # uses on Windows — keep in sync — plus -static-libgcc:
                 # the exe ships no mingw runtime DLLs (mingw-w64.cmake
@@ -497,13 +512,15 @@ if(OPENPETE_COMPILE_MODS)
                         -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk
                         -o ${_dll} ${_mod_srcs}
                 COMMAND ${CMAKE_COMMAND} -E rm -f
-                        ${_mod_dir}/.build/${_mod_id}.hash
-                DEPENDS ${_mod_srcs} ${_mod_sdk_deps} openpete-spyro1
-                COMMENT "Cross-compiling staged mod ${_mod_id}.dll"
+                        ${_mod_build_dir}/${_mod_id}.hash
+                DEPENDS ${_mod_srcs} ${_mod_hdrs} ${_mod_sdk_deps}
+                        openpete-spyro1
+                COMMENT "Cross-compiling mod ${_mod_id}.dll"
                 VERBATIM)
             list(APPEND _staged_mod_dlls ${_dll})
         endforeach()
         add_custom_target(spyro1_mods ALL DEPENDS ${_staged_mod_dlls})
+        add_dependencies(spyro1_mods spyro1_mods_stage)
     else()
         # Always runs (cheap: the exe's pass-1 content-hash check skips
         # up-to-date mods in milliseconds); nonzero exit fails the build.
