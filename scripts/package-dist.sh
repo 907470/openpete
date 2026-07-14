@@ -64,6 +64,11 @@ linux)
     [[ -x "$B/openpete-spyro1" ]] || { echo "build linux-release-shared first" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp "$B/openpete-spyro1" "$STAGE/"
+    # Strip debug info from the SHIPPED copy only (RelWithDebInfo embeds
+    # thousands of absolute build paths — a username/layout leak). The
+    # build-tree exe keeps its symbols for dev debugging. Exports live in
+    # .dynsym, which strip preserves, so the first-boot module still binds.
+    strip "$STAGE/openpete-spyro1"
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build/PSXRecomp "$STAGE/recomp/tools/"
@@ -86,6 +91,11 @@ windows)
     [[ -f "$B/openpete-spyro1.exe" ]] || { echo "build windows-mingw-shared first" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp "$B/openpete-spyro1.exe" "$STAGE/"
+    # Strip debug info from the SHIPPED copy only (same rationale as the
+    # Linux branch). PE exports live in the export table data directory,
+    # not the COFF symbol table, and the first-boot module links against
+    # the staged implib — stripping cannot break either.
+    x86_64-w64-mingw32-strip "$STAGE/openpete-spyro1.exe"
     cp "$B/OpenAL32.dll" "$STAGE/" 2>/dev/null \
         || cp third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll "$STAGE/"
     # OpenAL Soft is LGPL: its license text must ride with the DLL (NOTICE.md).
