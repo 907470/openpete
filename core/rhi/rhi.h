@@ -213,6 +213,13 @@ typedef struct {
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
+    bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
+                                 * triangle from gl_VertexIndex — pair with the
+                                 * embedded postfx_fs.vert), sets 0..2 = one
+                                 * sampler each (prev pass / depth / prev frame),
+                                 * set 3 = the 2-binding dynamic UBO layout
+                                 * (engine block, mod block — rhi_ubo_bind).
+                                 * uses_vram/uses_vram2 are ignored.           */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).
@@ -236,6 +243,47 @@ void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
+
+/* Pipeline from IN-MEMORY SPIR-V (mod shaders — S2 of
+ * plans/openpete-mod-shaders.md). Words are copied into driver objects
+ * during the call; the caller keeps ownership. Either side may be NULL
+ * to fall back to the desc's embedded filename (e.g. mod postfx: vert
+ * NULL + desc->vert_spv = "postfx_fs.vert.spv", frag from the mod). */
+rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
+                                      const rhi_pipeline_desc *desc,
+                                      const uint32_t *vert_words, size_t vert_n,
+                                      const uint32_t *frag_words, size_t frag_n);
+
+/* ---- uniform-buffer blocks (S2: postfx/custom-pipeline uniforms) ----
+ * A rhi_ubo is `blocks` fixed-size uniform blocks × the frame ring, in
+ * one HOST_VISIBLE buffer, with a 2-binding DYNAMIC-offset descriptor
+ * set (binding 0 = block_a, binding 1 = block_b at bind time; both
+ * visible to vertex+fragment). block_size is rounded up to the device's
+ * minUniformBufferOffsetAlignment. Write targets the CURRENT frame slot
+ * (same parity contract as rhi_create_vertex_buffer_dynamic: write
+ * every frame that binds). Bind attaches set 3 of a postfx pipeline. */
+typedef struct rhi_ubo rhi_ubo;
+rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks);
+void     rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data,
+                       uint32_t len);
+void     rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
+                      uint32_t block_b);
+void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
+
+/* ---- offscreen-as-input (S2: the COMPOSITE postfx point) ------------
+ * rhi_offscreen_to_sampled: barrier off_image TRANSFER_SRC →
+ * SHADER_READ (call between render passes) so a postfx pass can sample
+ * the composed frame. rhi_bind_offscreen_tex: bind it as the sampler at
+ * `set` (inside a pass, after the pipeline bind). resume_attachment:
+ * the return barrier before re-beginning the offscreen pass (fragment
+ * reads → color writes) for a chain's final pass, whose off_rp end
+ * restores TRANSFER_SRC for the present blit. */
+void rhi_offscreen_to_sampled(rhi_device *dev);
+void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
+void rhi_offscreen_resume_attachment(rhi_device *dev);
+/* Bind any texture/RT's sampler set at an arbitrary set index (postfx
+ * inputs live at sets 0..2; rhi_bind_vram/vram2 remain the 0/1 pair). */
+void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set);
 
 /* ---- the native-res PSX VRAM model (milestone 1b.2) -------------- */
 

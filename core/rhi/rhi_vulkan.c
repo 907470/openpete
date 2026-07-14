@@ -166,6 +166,16 @@ struct rhi_device {
      * timestamps are BOTTOM_OF_PIPE: elapsed = previous work drained → this
      * zone's work drained, which attributes correctly on a serial queue and
      * degrades to an approximation where the GPU overlaps passes. */
+    /* S2 mod-shader extensions: 2-binding dynamic-UBO set layout (postfx
+     * set 3), per-frame-slot descriptor sets for sampling off_image (the
+     * COMPOSITE postfx input — lazily (re)written when off_gen moves, i.e.
+     * after every offscreen recreate), and the UBO offset alignment. */
+    VkDescriptorSetLayout ubo_set_layout;
+    VkDescriptorSet off_sampled_set[RHI_FRAMES_IN_FLIGHT];
+    uint32_t        off_gen;                          /* bumped per create_offscreen */
+    uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
+    VkDeviceSize    ubo_align;                        /* minUniformBufferOffsetAlignment */
+
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
     VkQueryPool gpu_qp[RHI_FRAMES_IN_FLIGHT];
@@ -817,8 +827,11 @@ static bool create_offscreen(rhi_device *dev)
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
+        /* SAMPLED: the COMPOSITE postfx point reads the composed frame
+         * (rhi_offscreen_to_sampled) — S2 mod-shader extension. */
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -919,6 +932,9 @@ static bool create_offscreen(rhi_device *dev)
         RHI_LOG("offscreen vkCreateFramebuffer failed\n");
         return false;
     }
+    /* New image/view ⇒ the per-slot off_sampled_set descriptors are stale;
+     * rhi_bind_offscreen_tex rewrites a slot's set when its gen lags. */
+    dev->off_gen++;
     return true;
 }
 
@@ -1089,13 +1105,39 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateDescriptorSetLayout(dev->device, &li, NULL, &dev->vram_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout failed\n"); return false;
     }
-    VkDescriptorPoolSize ps = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 32,
+    /* S2: dynamic-UBO pair layout (postfx set 3: binding 0 = engine block,
+     * binding 1 = mod block), vertex+fragment visible. */
+    VkDescriptorSetLayoutBinding ub[2] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .descriptorCount = 1,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .descriptorCount = 1,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+    };
+    VkDescriptorSetLayoutCreateInfo uli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2, .pBindings = ub,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &uli, NULL, &dev->ubo_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (ubo) failed\n"); return false;
+    }
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(dev->phys, &props);
+        dev->ubo_align = props.limits.minUniformBufferOffsetAlignment;
+        if (dev->ubo_align == 0) dev->ubo_align = 256;
+    }
+
+    VkDescriptorPoolSize ps[2] = {
+        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 32 },
+        /* S2: off_image sampled sets (per frame slot) + rhi_ubo pairs. */
+        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 32 },
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 32, .poolSizeCount = 1, .pPoolSizes = &ps,
+        .maxSets = 48, .poolSizeCount = 2, .pPoolSizes = ps,
     };
     if (vkCreateDescriptorPool(dev->device, &pi, NULL, &dev->desc_pool) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorPool failed\n"); return false;
@@ -1268,6 +1310,7 @@ void rhi_destroy(rhi_device *dev)
 
     if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
+    if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
@@ -2609,16 +2652,16 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
     return create_shader_module(dev, spv, n, filename);
 }
 
-rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc)
+/* Shared pipeline builder: both public entry points land here with the
+ * shader modules already created (ownership transfers; destroyed before
+ * return). desc->postfx selects the mod-postfx layout — no vertex input
+ * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
+ * each, set 3 = the dynamic-UBO pair. */
+static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
+                                                  const rhi_pipeline_desc *desc,
+                                                  VkShaderModule vs,
+                                                  VkShaderModule fs)
 {
-    VkShaderModule vs = load_shader_module(dev, desc->vert_spv);
-    VkShaderModule fs = load_shader_module(dev, desc->frag_spv);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
-        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
-        return NULL;
-    }
-
     rhi_pipeline *p = calloc(1, sizeof(*p));
     if (!p) {
         vkDestroyShaderModule(dev->device, vs, NULL);
@@ -2654,6 +2697,12 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
         .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = attrs,
     };
+    if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
+        vi.vertexBindingDescriptionCount = 0;
+        vi.pVertexBindingDescriptions = NULL;
+        vi.vertexAttributeDescriptionCount = 0;
+        vi.pVertexAttributeDescriptions = NULL;
+    }
     VkPipelineInputAssemblyStateCreateInfo ia = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -2762,9 +2811,12 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         .offset = 0, .size = desc->push_const_size,
     };
     /* set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
-     * reference sampler) — both reuse the single-binding vram set layout. */
-    VkDescriptorSetLayout set_layouts[2] = { dev->vram_set_layout, dev->vram_set_layout };
-    uint32_t set_count = desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
+     * reference sampler) — both reuse the single-binding vram set layout.
+     * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. */
+    VkDescriptorSetLayout set_layouts[4] = { dev->vram_set_layout, dev->vram_set_layout,
+                                             dev->vram_set_layout, dev->ubo_set_layout };
+    uint32_t set_count = desc->postfx ? 4u
+                       : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = set_count,
@@ -2802,6 +2854,212 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
         free(p); return NULL;
     }
     return p;
+}
+
+rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc)
+{
+    VkShaderModule vs = load_shader_module(dev, desc->vert_spv);
+    VkShaderModule fs = load_shader_module(dev, desc->frag_spv);
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
+        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
+        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
+        return NULL;
+    }
+    return create_pipeline_with_modules(dev, desc, vs, fs);
+}
+
+rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
+                                      const rhi_pipeline_desc *desc,
+                                      const uint32_t *vert_words, size_t vert_n,
+                                      const uint32_t *frag_words, size_t frag_n)
+{
+    VkShaderModule vs = vert_words
+        ? create_shader_module(dev, vert_words, vert_n * 4, "(mod vert)")
+        : load_shader_module(dev, desc->vert_spv);
+    VkShaderModule fs = frag_words
+        ? create_shader_module(dev, frag_words, frag_n * 4, "(mod frag)")
+        : load_shader_module(dev, desc->frag_spv);
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
+        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
+        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
+        return NULL;
+    }
+    return create_pipeline_with_modules(dev, desc, vs, fs);
+}
+
+/* ---- rhi_ubo: fixed-size uniform blocks × frame ring (S2) ---------- */
+
+struct rhi_ubo {
+    rhi_buffer     *buf;         /* HOST_VISIBLE|COHERENT, UNIFORM usage */
+    uint32_t        block_size;  /* aligned to minUniformBufferOffsetAlignment */
+    uint32_t        blocks;      /* per frame slot */
+    VkDescriptorSet set;         /* 2 dynamic-UBO bindings into buf */
+    rhi_device     *dev;
+};
+
+rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
+{
+    if (!dev || block_size == 0 || blocks == 0) return NULL;
+    rhi_ubo *u = calloc(1, sizeof(*u));
+    if (!u) return NULL;
+    u->dev = dev;
+    u->blocks = blocks;
+    u->block_size = (uint32_t)((block_size + dev->ubo_align - 1) &
+                               ~(dev->ubo_align - 1));
+    size_t total = (size_t)u->block_size * blocks * RHI_FRAMES_IN_FLIGHT;
+    u->buf = create_host_buffer(dev, total, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                /*prefer_cached=*/false);
+    if (!u->buf) { free(u); return NULL; }
+    memset(u->buf->mapped, 0, total);   /* unwritten blocks read as zeros */
+
+    VkDescriptorSetAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = dev->desc_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &dev->ubo_set_layout,
+    };
+    if (vkAllocateDescriptorSets(dev->device, &ai, &u->set) != VK_SUCCESS) {
+        RHI_LOG("rhi_create_ubo: descriptor alloc failed\n");
+        rhi_destroy_buffer(dev, u->buf);
+        free(u); return NULL;
+    }
+    /* Both bindings view the same buffer; the dynamic offsets at bind time
+     * select (frame slot, block) per binding. Range = one block. */
+    VkDescriptorBufferInfo bi = {
+        .buffer = u->buf->buffer, .offset = 0, .range = u->block_size,
+    };
+    VkWriteDescriptorSet wr[2] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set,
+          .dstBinding = 0, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .pBufferInfo = &bi },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set,
+          .dstBinding = 1, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .pBufferInfo = &bi },
+    };
+    vkUpdateDescriptorSets(dev->device, 2, wr, 0, NULL);
+    return u;
+}
+
+void rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data, uint32_t len)
+{
+    if (!ubo || !data || block >= ubo->blocks) return;
+    if (len > ubo->block_size) len = ubo->block_size;
+    size_t slot = ubo->dev->frame_active ? ubo->dev->frame : 0;
+    uint8_t *dst = (uint8_t *)ubo->buf->mapped +
+        ((size_t)slot * ubo->blocks + block) * ubo->block_size;
+    if (ubo->dev->frame_active) {
+        memcpy(dst, data, len);
+    } else {
+        /* Outside a frame: fill every parity (init-time writes). */
+        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+            memcpy((uint8_t *)ubo->buf->mapped +
+                       ((size_t)i * ubo->blocks + block) * ubo->block_size,
+                   data, len);
+    }
+}
+
+void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
+                  uint32_t block_b)
+{
+    if (!dev || !ubo || !dev->frame_active || !dev->cur_layout) return;
+    if (block_a >= ubo->blocks || block_b >= ubo->blocks) return;
+    uint32_t base = (uint32_t)dev->frame * ubo->blocks;
+    uint32_t offs[2] = {
+        (base + block_a) * ubo->block_size,
+        (base + block_b) * ubo->block_size,
+    };
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, 3, 1, &ubo->set, 2, offs);
+}
+
+void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
+{
+    if (!ubo) return;
+    if (ubo->set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set);
+    rhi_destroy_buffer(dev, ubo->buf);
+    free(ubo);
+}
+
+/* ---- offscreen-as-input: the COMPOSITE postfx point (S2) ----------- */
+
+void rhi_offscreen_to_sampled(rhi_device *dev)
+{
+    if (!dev || !dev->frame_active) return;
+    /* off_rp left the image TRANSFER_SRC (its finalLayout); its subpass->
+     * external dependency covers TRANSFER reads only, so raise our own
+     * color-write -> fragment-read barrier with the layout flip. */
+    image_barrier(dev->cmd[dev->frame], dev->off_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+}
+
+void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set)
+{
+    if (!dev || !dev->frame_active || !dev->cur_layout) return;
+    uint32_t slot = dev->frame;
+    if (dev->off_sampled_set[slot] == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dev->desc_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &dev->vram_set_layout,
+        };
+        if (vkAllocateDescriptorSets(dev->device, &ai,
+                                     &dev->off_sampled_set[slot]) != VK_SUCCESS) {
+            RHI_LOG("off_sampled_set alloc failed\n");
+            return;
+        }
+        dev->off_sampled_gen[slot] = 0;   /* force the write below */
+    }
+    if (dev->off_sampled_gen[slot] != dev->off_gen) {
+        /* Safe to rewrite THIS slot's set: begin_frame fenced this slot, so
+         * no in-flight use remains (the other slot keeps its own set). */
+        VkDescriptorImageInfo ii = {
+            .sampler = dev->linear_sampler,
+            .imageView = dev->off_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet wr = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = dev->off_sampled_set[slot],
+            .dstBinding = 0, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &ii,
+        };
+        vkUpdateDescriptorSets(dev->device, 1, &wr, 0, NULL);
+        dev->off_sampled_gen[slot] = dev->off_gen;
+    }
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1,
+                            &dev->off_sampled_set[slot], 0, NULL);
+}
+
+void rhi_offscreen_resume_attachment(rhi_device *dev)
+{
+    if (!dev || !dev->frame_active) return;
+    /* Fragment reads of off_image must finish before the re-begun offscreen
+     * pass writes it (off_rp initialLayout is UNDEFINED + loadOp CLEAR, so
+     * the layout value here only names the source scope). */
+    image_barrier(dev->cmd[dev->frame], dev->off_image,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+}
+
+void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set)
+{
+    if (!dev || !tex || !dev->frame_active || !dev->cur_layout) return;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &tex->set, 0, NULL);
 }
 
 void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)

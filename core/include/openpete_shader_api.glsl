@@ -10,18 +10,19 @@
  * auto-invalidates every cached mod shader (source builds recompile;
  * prebuilt .spv sidecars refuse until re-issued).
  *
- * Descriptor sets, postfx tier:
+ * Descriptor sets, postfx tier (one sampler per set — the engine binds
+ * inputs through its per-texture descriptor sets):
  *   set 0, binding 0  sampler2D  op_prev_pass   — previous pass output
  *                                                 (first pass: the point's
  *                                                 input image)
- *   set 0, binding 1  sampler2D  op_scene_depth — opaque pre-pass depth
+ *   set 1, binding 0  sampler2D  op_scene_depth — opaque pre-pass depth
  *                                                 (WORLD opaque only; 1.0
  *                                                 where unavailable)
- *   set 0, binding 2  sampler2D  op_prev_frame  — previous present's
+ *   set 2, binding 0  sampler2D  op_prev_frame  — previous present's
  *                                                 composite (temporal FX)
- *   set 1, binding 0  UBO        op_engine      — engine frame state
+ *   set 3, binding 0  UBO        op_engine      — engine frame state
  *                                                 (declared below)
- *   set 1, binding 1  UBO        (mod-declared) — the mod's own block;
+ *   set 3, binding 1  UBO        (mod-declared) — the mod's own block;
  *                                                 bytes come verbatim from
  *                                                 postfx_set_uniforms.
  *                                                 Declare it std140 and
@@ -41,18 +42,20 @@
 #ifndef OPENPETE_SHADER_API_GLSL
 #define OPENPETE_SHADER_API_GLSL
 
-#define OP_INPUT_SET          0
-#define OP_UNIFORM_SET        1
+#define OP_PREV_PASS_SET      0
+#define OP_DEPTH_SET          1
+#define OP_PREV_FRAME_SET     2
+#define OP_UNIFORM_SET        3
 #define OP_ENGINE_UBO_BINDING 0
 #define OP_MOD_UBO_BINDING    1
 
 layout(set = 0, binding = 0) uniform sampler2D op_prev_pass;
-layout(set = 0, binding = 1) uniform sampler2D op_scene_depth;
-layout(set = 0, binding = 2) uniform sampler2D op_prev_frame;
+layout(set = 1, binding = 0) uniform sampler2D op_scene_depth;
+layout(set = 2, binding = 0) uniform sampler2D op_prev_frame;
 
 /* Engine frame state (std140; the C mirror is openpete_shader_engine_ubo_t
  * in the engine — offsets are load-bearing, append only). */
-layout(set = 1, binding = 0, std140) uniform op_engine_ubo {
+layout(set = 3, binding = 0, std140) uniform op_engine_ubo {
     float op_time;        /* host seconds since boot                     */
     float op_alpha;       /* sub-tick interp phase [0,1); 0 on canonical */
     uint  op_tick;        /* canonical sim tick (openpete_frame, 60 Hz)  */
