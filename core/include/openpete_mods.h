@@ -426,6 +426,20 @@ int  openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
 void openpete_mods_drawmesh_clear(void);
 void openpete_mods_pipeline_remove_owner(const char* mod_id);
 void openpete_mods_pipeline_retire_all(void);
+
+/* Material selectors (S8a) — draw-time resolve for the batcher. NULL
+ * spv side = keep the stock stage (executor falls back to the embedded
+ * psx_scene shaders). */
+typedef struct {
+    const uint32_t* vert_spv; size_t vert_words;
+    const uint32_t* frag_spv; size_t frag_words;
+    void** pipeline_slot;
+    const char* owner;
+} openpete_mod_material_gpu_t;
+int  openpete_mods_material_resolve(uint32_t tag,
+                                    openpete_mod_material_gpu_t* out);
+void openpete_mods_material_remove_owner(const char* mod_id);
+void openpete_mods_material_retire_all(void);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's

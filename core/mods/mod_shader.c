@@ -23,6 +23,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "openpete_native_render.h"   /* set_tag_split arming (S8) */
 #include "../host/sha256.h"
 
 #ifndef OPENPETE_NO_GLSLANG
@@ -877,11 +878,155 @@ void openpete_mods_pipeline_retire_all(void) {
         s_pipes[i].pipeline = NULL;
     }
 }
+/* ------------------------------------------------------------------ */
+/* material-selector tier (S8a): declarative whole-class overrides.
+ * Matching happens at DRAW time against the S6 provenance tag + run
+ * material — the extractors need no selector knowledge. Conflicts:
+ * enabled-list priority, FIRST match wins (collect order). The
+ * per-instance callback (S8b) is accepted but not yet driven —
+ * registrations carrying one are refused until it lands. */
+
+#define MOD_MATERIAL_MAX 32
+
+typedef struct {
+    const char* owner;
+    openpete_mod_material_selector_t sel;
+    int  vert, frag;       /* shader handles; -1 = stock stage */
+    int  load_index;
+    void* pipeline;        /* executor-cached rhi_pipeline* */
+    int  live;
+} mod_material_t;
+
+static mod_material_t s_mats[MOD_MATERIAL_MAX];
+static int s_mat_count;
+
+/* native_render arms the batcher tag-split while any selector lives. */
+static void material_rearm_split(void) {
+    int any = 0;
+    for (int i = 0; i < s_mat_count; i++)
+        if (s_mats[i].live) { any = 1; break; }
+    openpete_native_set_tag_split(any);
+}
+
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
                                     openpete_mod_material_fn per_instance) {
-    (void)sel; (void)vert_shader; (void)frag_shader; (void)per_instance;
-    STUB_ONCE("material_register");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id || !sel) return -1;
+    if (openpete_mods_in_present) {
+        OPL_ERROR_F("mods", "%s: material_register refused inside a present "
+                    "hook (register at entry)", id);
+        return -1;
+    }
+    if (per_instance) {
+        OPL_WARN_F("mods", "%s: per-instance material callbacks are not "
+                   "available in this engine build yet (declarative "
+                   "selectors only)", id);
+        return -1;
+    }
+    if (sel->texture != -1) {
+        OPL_WARN_F("mods", "%s: material selector texture ids are not "
+                   "available yet — use texture = -1", id);
+        return -1;
+    }
+    if (frag_shader >= 0) {
+        size_t w = 0; int st = -1;
+        if (!openpete_mods_shader_spv(frag_shader, &w, &st) ||
+            st != MOD_SHADER_STAGE_FRAG) {
+            OPL_ERROR_F("mods", "%s: material: bad frag handle %d", id,
+                        frag_shader);
+            return -1;
+        }
+    }
+    if (vert_shader >= 0) {
+        size_t w = 0; int st = -1;
+        if (!openpete_mods_shader_spv(vert_shader, &w, &st) ||
+            st != MOD_SHADER_STAGE_VERT) {
+            OPL_ERROR_F("mods", "%s: material: bad vert handle %d", id,
+                        vert_shader);
+            return -1;
+        }
+    }
+    if (vert_shader < 0 && frag_shader < 0) return -1;   /* nothing to do */
+    if (s_mat_count >= MOD_MATERIAL_MAX) {
+        OPL_ERROR_F("mods", "%s: material table full (%d)", id,
+                    MOD_MATERIAL_MAX);
+        return -1;
+    }
+    mod_material_t* m = &s_mats[s_mat_count];
+    memset(m, 0, sizeof *m);
+    m->owner = id;
+    m->sel = *sel;
+    m->vert = vert_shader;
+    m->frag = frag_shader;
+    m->load_index = openpete_mods_load_index_of(self);
+    m->live = 1;
+    s_mat_count++;
+    material_rearm_split();
+    OPL_INFO_F("mods", "%s: material selector armed (path %d class %d "
+               "flags %#x)", id, sel->path, sel->moby_class, sel->flags);
+    return 0;
+}
+
+/* Draw-time resolve (native_render draw_tex_runs): the run's S6 tag →
+ * the winning override, or -1. Tag layout: [31:28] path+1, moby class
+ * [15:0], terrain env bit 27 / LP bit 26. Enabled-list priority then
+ * registration order — the FIRST match in that order wins. */
+int openpete_mods_material_resolve(uint32_t tag,
+                                   openpete_mod_material_gpu_t* out) {
+    if (!tag || s_mat_count == 0) return -1;
+    int path = (int)(tag >> 28) - 1;              /* 0 = moby, 1 = terrain */
+    int cls  = (path == 0) ? (int)(tag & 0xFFFFu) : -1;
+    int env  = (path == 1) && (tag & 0x08000000u);
+    int lp   = (path == 1) && (tag & 0x04000000u);
+    int best = -1;
+    for (int i = 0; i < s_mat_count; i++) {
+        mod_material_t* m = &s_mats[i];
+        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.path != -1 && m->sel.path != path) continue;
+        if (path == 0 && m->sel.moby_class != -1 && m->sel.moby_class != cls)
+            continue;
+        if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
+        if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
+        if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
+        if (best < 0 ||
+            m->load_index > s_mats[best].load_index)  /* later = higher prio */
+            best = i;
+    }
+    if (best < 0) return -1;
+    mod_material_t* m = &s_mats[best];
+    out->vert_spv = m->vert >= 0
+        ? openpete_mods_shader_spv(m->vert, &out->vert_words, NULL) : NULL;
+    out->frag_spv = m->frag >= 0
+        ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
+    if (m->vert < 0) out->vert_words = 0;
+    if (m->frag < 0) out->frag_words = 0;
+    out->pipeline_slot = &m->pipeline;
+    out->owner = m->owner;
+    return best;
+}
+
+void openpete_mods_material_remove_owner(const char* mod_id) {
+    for (int i = 0; i < s_mat_count; i++) {
+        if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
+        if (s_mats[i].pipeline &&
+            s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        s_mats[i].pipeline = NULL;
+        s_mats[i].live = 0;
+    }
+    material_rearm_split();
+}
+
+void openpete_mods_material_retire_all(void) {
+    for (int i = 0; i < s_mat_count; i++) {
+        if (!s_mats[i].live) continue;
+        if (s_mats[i].pipeline &&
+            s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        s_mats[i].pipeline = NULL;
+    }
 }

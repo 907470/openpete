@@ -219,6 +219,11 @@ static int tag_tint_on(void) {
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
 static void draw_mod_meshes(void);
+/* Shared with the postfx executor below (S3): the build-failed pipeline
+ * sentinel and the engine/mod UBO — draw_tex_runs' material overrides
+ * (S8a) bind them from earlier in the file. */
+#define PFX_PIPE_FAILED OPENPETE_POSTFX_PIPE_FAILED
+static rhi_ubo* s_pfx_ubo;
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
@@ -2838,7 +2843,7 @@ static void hd_cache_shutdown(void)
  * on restore — fine for the PoC's HUD-only key. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
-                          rhi_pipeline* hd_pipe) {
+                          rhi_pipeline* hd_pipe, int allow_override) {
     int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
     while (i < ntri) {
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
@@ -2853,6 +2858,48 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
              * the split. */
             if (tag_split_on() && s1->tag != s0->tag) break;
             run++;
+        }
+        /* Mod material override (S8a): the run's provenance tag resolves
+         * to a registered selector — draw the WHOLE run with the mod
+         * pipeline (same bucket/pass/depth: scheduling is engine-owned;
+         * runs are tag-pure because the split key is armed whenever a
+         * selector lives). Only in plain opaque groups (allow_override):
+         * stencil-marking WORLD (holefill) and blend groups keep stock.
+         * Stock-stage fallbacks: psx_scene.vert/.frag — fork them from
+         * sdk/shaders/. */
+        if (allow_override && tag_split_on() && s0->tag) {
+            openpete_mod_material_gpu_t mg;
+            if (openpete_mods_material_resolve(s0->tag, &mg) >= 0) {
+                if (*mg.pipeline_slot == NULL) {
+                    rhi_pipeline_desc md = {
+                        .vert_spv = "psx_scene.vert.spv",
+                        .frag_spv = "psx_scene.frag.spv",
+                        .blend = RHI_BLEND_NONE,
+                        .depth_test = true,
+                        .mod_pipeline = true,
+                        .push_const_size = sizeof(psx_material),
+                    };
+                    rhi_pipeline* p = rhi_create_pipeline_spv(
+                        s_nr.dev, &md, mg.vert_spv, mg.vert_words,
+                        mg.frag_spv, mg.frag_words);
+                    *mg.pipeline_slot = p ? (void*)p : PFX_PIPE_FAILED;
+                    if (!p)
+                        fprintf(stderr, "[native] material: pipeline build "
+                                        "FAILED for %s\n", mg.owner);
+                }
+                if (*mg.pipeline_slot != PFX_PIPE_FAILED) {
+                    rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*mg.pipeline_slot);
+                    rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
+                    if (s_pfx_ubo) rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, 0);
+                    rhi_push_constants(s_nr.dev, &m, sizeof m);
+                    rhi_draw(s_nr.dev, (uint32_t)(run * 3),
+                             (uint32_t)(first_vert + i * 3));
+                    rhi_bind_pipeline(s_nr.dev, self);   /* HD-path restore discipline */
+                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                    i += run;
+                    continue;
+                }
+            }
         }
         if (s0->bpp == 32) {
             /* mod-texture run (openpete_mods_texture_register): tpage_x
@@ -3023,7 +3070,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
-                      s_nr.hd_tex_pipe);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
+                      s_nr.hd_tex_pipe, 0);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
     }
     if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
         /* The slot-6 VB range is depth-sorted back-to-front at build time (see
@@ -3847,7 +3894,12 @@ static bool draw_native_scene(bool full_extent)
                   : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
                   : (g->blend == 2) ? s_nr.hd_scene_add_pipe
                   : NULL;
-                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd);
+                /* Material overrides only in the plain opaque groups: the
+                 * stencil-marking WORLD variant (holefill) and the blend
+                 * groups keep stock shading (scheduling contract). */
+                int mat_ok = (gi == 2 || gi == 3) ||
+                             (gi == 0 && g->tex == s_nr.scene_tex_pipe);
+                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd, mat_ok);
             }
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
@@ -3896,7 +3948,7 @@ static bool draw_native_scene(bool full_extent)
                  * caller's dynamic depth-bias state, which an HD rebind
                  * would invalidate. */
                 draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
-                              s_nr.scene_tex_sub_pipe, NULL);
+                              s_nr.scene_tex_sub_pipe, NULL, 0);
             }
         }
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
@@ -3970,7 +4022,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe,
-                              s_nr.hd_cutout_pipe);
+                              s_nr.hd_cutout_pipe, 0);
             }
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
@@ -4003,7 +4055,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[2], txg_count[2], tx_start, scene,
-                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe);
+                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 0);
             }
         }
     }
@@ -4773,7 +4825,6 @@ static void phase_present_done(void)
  * plan review). Engine UBO rides block 0, pass i's mod block 1+i.
  * S4 completes the engine-block fields (tick/alpha/canonical). */
 #define PFX_MAX_PASSES 15
-#define PFX_PIPE_FAILED OPENPETE_POSTFX_PIPE_FAILED   /* build-failed sentinel */
 typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing */
     float    time, alpha;
     uint32_t tick, present, canonical;
@@ -4786,7 +4837,6 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
  * wait-idle). */
 static struct { int w, h; rhi_texture* t[2]; uint32_t used; } s_pfx_pool[2];
 static uint32_t s_pfx_stamp;
-static rhi_ubo* s_pfx_ubo;
 /* Previous present's final composite (set 2, temporal effects) —
  * snapshotted from off_image AFTER the live chain each present, so
  * during pass N of present P it holds present P-1's output. Cleared
@@ -5554,6 +5604,7 @@ void openpete_native_render_shutdown(void)
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
         openpete_mods_pipeline_retire_all();
+        openpete_mods_material_retire_all();
         void* dead[PFX_MAX_PASSES];
         int n;
         while ((n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES)) > 0)
