@@ -675,11 +675,14 @@ run_game "$WORK/crt" 400 --screenshot-on-frame 350 \
 mkdir -p "$WORK/crtoff"; : > "$WORK/crtoff/enabled.txt"
 run_game "$WORK/crtoff" 400 --screenshot-on-frame 350 \
     --screenshot-output "$WORK/crtoff/shot.png" > "$WORK/crtoff.log" 2>&1 || true
-if grep -q "crt.frag compiled" "$WORK/crt.log" ||
-   grep -q "shader shaders/crt.frag" "$WORK/crt.log"; then
-    ok "crt.frag compiled by the in-process service"
+# "crt filter armed" = shader_register succeeded (fresh compile OR
+# cache hit — a hit logs no compile line) AND postfx_register/enable
+# went through. Grepping for the compile line alone false-fails on
+# every cache-hit run.
+if grep -q "crt filter armed" "$WORK/crt.log"; then
+    ok "crt.frag registered + postfx armed (compile or cache hit)"
 else
-    bad "crt.frag did not compile (see $WORK/crt.log)"
+    bad "crt filter did not arm (see $WORK/crt.log)"
 fi
 if [ -f "$WORK/crt/shot-vk.png" ] && [ -f "$WORK/crtoff/shot-vk.png" ] &&
    python3 -c "import PIL" 2>/dev/null; then

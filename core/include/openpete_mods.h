@@ -412,6 +412,9 @@ void openpete_mods_postfx_remove_owner(const char* mod_id);
 void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
+/* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's
+ * tick/alpha/canonical source, identical to the present-hook ctx. */
+void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical);
 int openpete_mods_pipeline_register(openpete_mod_t* self,
                                     const openpete_mod_pipeline_desc_t* desc);
 int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,

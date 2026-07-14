@@ -4728,6 +4728,12 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
 static struct { int w, h; rhi_texture* t[2]; uint32_t used; } s_pfx_pool[2];
 static uint32_t s_pfx_stamp;
 static rhi_ubo* s_pfx_ubo;
+/* Previous present's final composite (set 2, temporal effects) —
+ * snapshotted from off_image AFTER the live chain each present, so
+ * during pass N of present P it holds present P-1's output. Cleared
+ * at creation (first present would otherwise sample garbage). */
+static rhi_texture* s_pfx_prev;
+static int s_pfx_prev_w, s_pfx_prev_h;
 
 static rhi_texture** pfx_pings(int w, int h) {
     int victim = 0;
@@ -4785,6 +4791,14 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
     memset(&eng, 0, sizeof eng);
     eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
     eng.present = s_scene_frame;
+    {
+        /* Same source as the present-hook ctx (mod_draw.c) — shaders
+         * and mod C code can never disagree on the sub-tick phase. */
+        int canonical = 1;
+        openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
+        eng.canonical = (uint32_t)canonical;
+        if (target) { eng.alpha = 0.0f; eng.canonical = 1; } /* dump compose */
+    }
     eng.res[0] = (float)w;   eng.res[1] = (float)h;
     {
         int ww = 0, wh = 0;
@@ -4793,6 +4807,17 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
     }
     eng.aspect = (h > 0) ? (float)w / (float)h : 1.0f;
     rhi_ubo_write(s_pfx_ubo, 0, &eng, sizeof eng);
+
+    /* Prev-frame RT (live path only): (re)create cleared on size change. */
+    if (!target && (s_pfx_prev_w != w || s_pfx_prev_h != h)) {
+        if (s_pfx_prev) { rhi_wait_idle(s_nr.dev); rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
+        s_pfx_prev = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+        if (s_pfx_prev) {
+            rhi_begin_render_target(s_nr.dev, s_pfx_prev, 0.f, 0.f, 0.f, 1.f);
+            rhi_end_render_target(s_nr.dev, s_pfx_prev);
+        }
+        s_pfx_prev_w = w; s_pfx_prev_h = h;
+    }
     for (int i = 0; i < n; i++)
         if (pass[i].uniforms_len)
             rhi_ubo_write(s_pfx_ubo, (uint32_t)(1 + i), pass[i].uniforms,
@@ -4822,22 +4847,22 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
         rhi_texture* out = ping[out_idx];
         rhi_begin_render_target(s_nr.dev, out, 0.f, 0.f, 0.f, 1.f);
         rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pass[i].pipeline_slot);
-        if (ran == 0) {
-            if (!target) {
-                rhi_bind_offscreen_tex(s_nr.dev, 0);
-                rhi_bind_offscreen_tex(s_nr.dev, 1);   /* S4: real depth */
-                rhi_bind_offscreen_tex(s_nr.dev, 2);   /* S4: prev frame */
-            } else {
-                rhi_bind_texture_set(s_nr.dev, target, 0);
-                rhi_bind_texture_set(s_nr.dev, target, 1);
-                rhi_bind_texture_set(s_nr.dev, target, 2);
-            }
-        } else {
-            rhi_texture* in = ping[out_idx ^ 1];
-            rhi_bind_texture_set(s_nr.dev, in, 0);
-            rhi_bind_texture_set(s_nr.dev, in, 1);
-            rhi_bind_texture_set(s_nr.dev, in, 2);
-        }
+        /* set 0 = previous pass (chain input on pass 0); set 1 = opaque
+         * pre-pass depth (contract: WORLD-opaque only, the input color
+         * as a documented fallback when the pre-pass is absent); set 2 =
+         * previous present's composite (live path; dumps fall back to
+         * the input). */
+        rhi_texture* in0 = (ran == 0) ? target : ping[out_idx ^ 1];
+        if (in0) rhi_bind_texture_set(s_nr.dev, in0, 0);
+        else     rhi_bind_offscreen_tex(s_nr.dev, 0);
+        if (s_nr.opaque_depth)
+            rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 1);
+        else if (in0) rhi_bind_texture_set(s_nr.dev, in0, 1);
+        else          rhi_bind_offscreen_tex(s_nr.dev, 1);
+        if (!target && s_pfx_prev)
+            rhi_bind_texture_set(s_nr.dev, s_pfx_prev, 2);
+        else if (in0) rhi_bind_texture_set(s_nr.dev, in0, 2);
+        else          rhi_bind_offscreen_tex(s_nr.dev, 2);
         rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, (uint32_t)(1 + i));
         rhi_draw(s_nr.dev, 3, 0);
         rhi_end_render_target(s_nr.dev, out);
@@ -4850,8 +4875,15 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
         return 0;
     }
     rhi_texture* final_rt = ping[out_idx ^ 1];
-    if (!target) rhi_blit_rt_to_offscreen(s_nr.dev, final_rt);
-    else         rhi_blit_rt_to_rt(s_nr.dev, target, final_rt);
+    if (!target) {
+        rhi_blit_rt_to_offscreen(s_nr.dev, final_rt);
+        /* Temporal input for the NEXT present: off_image is TRANSFER_SRC
+         * again — snapshot the post-chain composite. */
+        if (s_pfx_prev)
+            rhi_snapshot_offscreen_to_rt(s_nr.dev, s_pfx_prev, 0, 0, w, h);
+    } else {
+        rhi_blit_rt_to_rt(s_nr.dev, target, final_rt);
+    }
     return ran;
 }
 
@@ -5336,6 +5368,7 @@ void openpete_native_render_shutdown(void)
                 s_pfx_pool[i].t[j] = NULL;
             }
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
+    if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
         void* dead[PFX_MAX_PASSES];

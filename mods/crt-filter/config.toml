@@ -1,0 +1,9 @@
+# crt-filter — user knobs (code defaults are authoritative; see
+# src/crt_filter.c). Values land in the shader through the mod uniform
+# block (postfx_set_uniforms), std140: four floats.
+
+[crt]
+curvature      = 0.12   # barrel amount; 0.0 = flat
+scanline_depth = 0.28   # scanline darkening [0,1]; 0.0 = off
+mask_depth     = 0.18   # slot-mask darkening [0,1]; 0.0 = off
+corner_fade    = 0.02   # vignette width at the curved edge

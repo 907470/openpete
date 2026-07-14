@@ -104,6 +104,19 @@ static present_hook_t s_phooks[PRESENT_HOOKS_MAX];
 static int            s_phook_count = 0;
 static int            s_any_draw = 0; /* fast bail for modless runs */
 
+/* Last present's ctx (tick/alpha/canonical) — the postfx engine UBO
+ * reads these through openpete_mods_present_ctx (same source as the
+ * present-hook ctx, so mods and shaders can never disagree on phase). */
+static uint32_t s_pctx_tick;
+static float    s_pctx_alpha;
+static int      s_pctx_canonical = 1;
+
+void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical) {
+    if (tick) *tick = s_pctx_tick;
+    if (alpha) *alpha = s_pctx_alpha;
+    if (canonical) *canonical = s_pctx_canonical;
+}
+
 void openpete_mods_draw_remove_owner(const char* owner_id) {
     if (!owner_id) return;
     int w = 0;
@@ -250,9 +263,11 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         memset(&s_tick_staging, 0, sizeof s_tick_staging);
     }
 
-    /* Present hooks: render-pure by API shape (see header comment). */
+    /* Present hooks: render-pure by API shape (see header comment). The
+     * ctx is computed unconditionally — the postfx engine UBO reads the
+     * same values through openpete_mods_present_ctx (S4), hooks or not. */
     memset(&s_present, 0, sizeof s_present);
-    if (s_phook_count > 0) {
+    {
         static op_time_t s_prev_present_ns = 0;
         const op_time_t now = openpete_interp_present_now();
         openpete_present_ctx_t ctx;
@@ -275,6 +290,11 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
             openpete_interp_query(now, sim_period, &a, &prev, &curr))
             ctx.alpha = (float)a;
 
+        s_pctx_tick = ctx.tick;
+        s_pctx_alpha = ctx.alpha;
+        s_pctx_canonical = canonical ? 1 : 0;
+
+        if (s_phook_count > 0) {
         openpete_mods_in_present = 1;
         for (int i = 0; i < s_phook_count; i++) {
             if (s_phooks[i].disabled) continue;
@@ -283,6 +303,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
             openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1);
         }
         openpete_mods_in_present = 0;
+        }
     }
 
 
