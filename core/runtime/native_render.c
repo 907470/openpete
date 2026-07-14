@@ -153,7 +153,9 @@ typedef struct {
 #define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
-#define MENU_GLYPH_MAX 16384 /* in-game menu 3D glyph text verts (labels/values/title) */
+#define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
+                              * must match MENU_TXT_MAX (text_moby_native.c) — 8 rows
+                              * overflowed 16384 (truncated border/last rows) */
 /* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
  * RGBA target covering the top-left OVL_REGION_W × OVL_REGION_H of the frame (in
  * win_h-fraction units, matching the glyph layout's win_h-relative coords), then

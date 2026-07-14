@@ -266,7 +266,11 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * capped so the widest row ("SHOW FPS" label / "EXTENDED" value) still fits
      * the narrow sidebar. */
     const float title_cap = 0.080f, row_cap = 0.044f;   /* header > rows */
-    const float spacing   = 0.072f;   /* row-to-row (pause menu ≈ 0.069) */
+    /* row_cap is the CEILING: the glyph builder shrinks every row uniformly
+     * to fit the widest value ("FULLSCREEN") in the value column (~0.82×).
+     * Spacing is scaled by the same ratio from the pause-menu-tuned 0.072 so
+     * the shrunk rows keep the original visual density. */
+    const float spacing   = 0.060f;   /* row-to-row (0.072 × the font shrink) */
     const float top_pad   = 0.055f;   /* panel top → title top */
     const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
     out->title_cap_h = title_cap;

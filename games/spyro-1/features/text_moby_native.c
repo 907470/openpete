@@ -375,7 +375,9 @@ void text_moby_native_fps_overlay(CPUState* cpu) {
 }
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */
-#define MENU_TXT_MAX    16384
+#define MENU_TXT_MAX    32768   /* must match MENU_GLYPH_MAX (native_render.c);
+                                 * 8 rows of label+value+title+border overflowed
+                                 * 16384 and emit_string drops trailing glyphs */
 /* Mid-tone gold BASE — the signed light swings faces both ways around it (lit →
  * white-gold, shadowed → dark), so base is the average, not the floor. The game's
  * HUD/menu gold is R==G with a low B (measured (96,96,0)→(214,214,118)); R>G is
@@ -535,22 +537,31 @@ void text_moby_native_menu(CPUState* cpu) {
                          L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
                          MENU_TITLE_TINT, -1, s_menu_buf + n, MENU_TXT_MAX - n);
     }
+    /* Uniform row font: shrink EVERY row (labels + values; the SETTINGS title
+     * keeps its own cap) to the size the widest value needs to fit its column
+     * — "FULLSCREEN" — so no single row reads smaller than its neighbours.
+     * Measured from the FIXED reference string, not the live values, so the
+     * size never breathes as a value toggles (WINDOWED <-> FULLSCREEN).
+     * measure_string is linear in cap_h, so one proportional shrink is exact.
+     * Rows keep their spacing (L.row_y); only the glyph size changes. */
+    const float vavail = (L.panel_x1 - 0.015f) - L.value_x;
+    float row_cap = L.row_cap_h;
+    {
+        const float w = measure_string("FULLSCREEN", L.row_cap_h);
+        if (w > vavail && w > 0.0f) row_cap = L.row_cap_h * (vavail / w);
+    }
     for (int r = 0; r < L.row_count; r++) {
         const int wob = (r == cursor) ? phase : -1;   /* only the selected row wobbles */
         char vb[16];
         const char* label = openpete_menu_row_label(r);
         const char* value = openpete_menu_row_value(r, vb, sizeof vb);
-        const float lw = measure_string(label, L.row_cap_h);
+        const float lw = measure_string(label, row_cap);
         n += emit_string(label, L.label_x - lw,
-                         L.row_y[r] - L.row_cap_h * 0.5f, L.row_cap_h,
+                         L.row_y[r] - row_cap * 0.5f, row_cap,
                          MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
-        /* Auto-fit over-wide values: shrink the cap so the string ends before
-         * the panel border (small margin), keeping it vertically centred on
-         * the row — "FULLSCREEN" is wider than the column the row font was
-         * tuned for ("EXTENDED"). measure_string is linear in cap_h, so one
-         * proportional shrink is exact. */
-        float vcap = L.row_cap_h;
-        const float vavail = (L.panel_x1 - 0.015f) - L.value_x;
+        /* Safety net for any future value wider than the reference: shrink
+         * that one value further so it still ends before the panel border. */
+        float vcap = row_cap;
         const float vw = measure_string(value, vcap);
         if (vw > vavail && vw > 0.0f) vcap *= vavail / vw;
         n += emit_string(value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
