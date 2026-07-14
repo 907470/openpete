@@ -71,9 +71,12 @@ int  openpete_native_fps_value(void);
  * the native renderer isn't the active present path. See
  * notes/plans/openpete-ingame-settings-menu.md. */
 
-/* Target display aspect (W/H, e.g. 16.0f/9.0f). <= 0 → plain 4:3. Forces a
- * layout recompute so the fitted panel rect updates next present; the window
- * keeps its size and letterboxes/pillarboxes the new aspect (vk-only Hor+). */
+/* Target display aspect (W/H, e.g. 16.0f/9.0f). <= 0 → AUTO (the default):
+ * follow the window/fullscreen shape live, filling it with no bars. >0 →
+ * FIXED: when windowed, resizes the window width to match (like --aspect at
+ * launch); when fullscreen — or after the user resizes away — the window
+ * letterboxes/pillarboxes the fixed aspect (vk-only Hor+). Forces a layout
+ * recompute so the fitted panel rect updates next present. */
 void openpete_native_set_aspect(float w_over_h);
 
 /* SSAA supersampling factor (1 = off, 2/4/8/16). Clamped to [1,32]; ensure_ss_rtt

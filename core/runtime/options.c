@@ -363,7 +363,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
         "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff)\n"
         "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
-        "  --aspect W:H               Hor+ widescreen (e.g. 16:9, 21:9; sizes the window — the native renderer widens at the display layer)\n"
+        "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
+        "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
+        "                             render aspect (sizes the window; bars when the window mismatches)\n"
         "  --fov DEG                  horizontal FOV override (PsyCross reference mode only; default ~50°, range 30-140)\n"
         "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
         "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
@@ -653,13 +655,20 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             i++;
         } else if (strcmp(a, "--aspect") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            int aw = 0, ah = 0;
-            if (sscanf(v, "%d:%d", &aw, &ah) != 2 || aw <= 0 || ah <= 0) {
-                fprintf(stderr, "openpete: --aspect expects W:H (e.g. 16:9), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "auto") == 0) {
+                /* Explicit auto = same as unset: the render aspect follows the
+                 * window / fullscreen shape (Hor+ fill, the default). */
+                opts->aspect_w_over_h = 0.0f;
+                i++;
+            } else {
+                int aw = 0, ah = 0;
+                if (sscanf(v, "%d:%d", &aw, &ah) != 2 || aw <= 0 || ah <= 0) {
+                    fprintf(stderr, "openpete: --aspect expects W:H (e.g. 16:9) or auto, got: %s\n", v);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                opts->aspect_w_over_h = (float)aw / (float)ah;
+                i++;
             }
-            opts->aspect_w_over_h = (float)aw / (float)ah;
-            i++;
         } else if (strcmp(a, "--fov") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fov_deg = (float)atof(v); i++;

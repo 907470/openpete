@@ -37,6 +37,7 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
 
 /* Aspect presets (label + width/height). */
 static const struct { const char* label; float wh; } s_aspect[] = {
+    { "AUTO",  0.0f          },   /* follow the window/fullscreen shape (default) */
     { "4:3",   4.0f  / 3.0f  },
     { "16:10", 16.0f / 10.0f },
     { "16:9",  16.0f / 9.0f  },
@@ -61,7 +62,7 @@ static int s_fps_count = 0;
 /* --- live selection ------------------------------------------------------ */
 static int s_open       = 0;
 static int s_cursor     = 0;
-static int s_aspect_idx = 0;   /* 4:3      */
+static int s_aspect_idx = 0;   /* AUTO     */
 static int s_fps_idx    = 0;   /* first ladder entry (30) */
 static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
@@ -179,17 +180,19 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
 
     if (!opts) return;
 
-    /* Aspect: nearest preset to the launch --aspect (unset → 4:3). */
+    /* Aspect: nearest FIXED preset to an explicit launch --aspect (the i=1
+     * start skips the AUTO entry — its 0.0 sentinel isn't a ratio); unset /
+     * `--aspect auto` → AUTO (follow the window, the default). */
     if (opts->aspect_w_over_h > 0.0f) {
-        int best = 0; float bestd = -1.0f;
-        for (int i = 0; i < N_ASPECT; i++) {
+        int best = 1; float bestd = -1.0f;
+        for (int i = 1; i < N_ASPECT; i++) {
             float d = s_aspect[i].wh - opts->aspect_w_over_h;
             if (d < 0.0f) d = -d;
             if (bestd < 0.0f || d < bestd) { bestd = d; best = i; }
         }
         s_aspect_idx = best;
     } else {
-        s_aspect_idx = 0;   /* 4:3 */
+        s_aspect_idx = 0;   /* AUTO */
     }
 
     /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target —

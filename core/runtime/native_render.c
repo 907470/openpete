@@ -828,17 +828,20 @@ static struct {
     rhi_pipeline *hd_scene_add_pipe;  /* HD replacement, additive scene group (ABR 1): ztest, no zwrite */
     rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
-    /* Target display aspect (W/H), from --aspect (0 → default 4:3). Drives the
-     * Hor+ render aspect independently of the window: the scene renders at this
-     * aspect and is letterboxed/pillarboxed into the window (like PsyCross), NOT
-     * stretched/auto-widened to fill it. Set at init from opts->aspect_w_over_h. */
+    /* Target display aspect (W/H), from --aspect. 0 = AUTO (the default):
+     * the render aspect follows the window/fullscreen shape live, filling it
+     * with no bars (update_layout re-derives on every size change). >0 =
+     * FIXED: the scene renders at this aspect and is letterboxed/pillarboxed
+     * into the window (like PsyCross), NOT stretched to fill it. Set at init
+     * from opts->aspect_w_over_h; live via openpete_native_set_aspect. */
     float         aspect_wh;
     /* Widescreen (Hor+) widen factor = render_aspect / 4:3, i.e. how much MORE
-     * horizontal world the --aspect view reveals vs 4:3 (1.0 = plain 4:3). Now
-     * driven by --aspect (FIXED per run), not the window. The panel-0 content
-     * mapping (scene_to_clip via p0_hx) is the centred 4:3 sub-rect; the reveal
-     * extends to ±p0_hx*ws_factor (the --aspect rect), which fit_cell fits into
-     * the window with bars. vk-only (ab/diff stay 4:3). See update_layout. */
+     * horizontal world the render aspect reveals vs 4:3 (1.0 = plain 4:3) —
+     * window-derived under AUTO, --aspect-derived when fixed. The panel-0
+     * content mapping (scene_to_clip via p0_hx) is the centred 4:3 sub-rect;
+     * the reveal extends to ±p0_hx*ws_factor (the render rect), which fit_cell
+     * fits into the window with bars (none under AUTO — the rect IS the
+     * window shape). vk-only (ab/diff stay 4:3). See update_layout. */
     float         ws_factor;
 
     /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
@@ -1091,8 +1094,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     bool diff_mode = (opts->renderer == OPENPETE_RENDERER_DIFF);
     s_nr.ab_mode  = ab_mode;
     s_nr.diff_mode = diff_mode;
-    /* Render aspect from --aspect (W/H); 0 → default 4:3. Drives the Hor+ amount
-     * + letterbox/pillarbox (vk-only; ab/diff stay 4:3 vs the reference). */
+    /* Render aspect from --aspect (W/H); 0 → AUTO (follow the window shape,
+     * filling it live on resize). >0 fixes the Hor+ amount + letterbox/
+     * pillarbox (vk-only; ab/diff stay 4:3 vs the reference). */
     s_nr.aspect_wh = (opts->aspect_w_over_h > 0.0f) ? opts->aspect_w_over_h : 0.0f;
     s_nr.stats_enabled = diff_mode && opts->render_stats;  /* per-frame diff readback */
     s_nr.n_panels = ab_mode ? 2 : 1;   /* vk/diff are single full-window panels */
@@ -2070,24 +2074,33 @@ static void update_layout(void)
         int fit_w = have_clip ? s_nr.ref_w  : NR_VRAM_W;  /* 4:3 display shape */
         int fit_h = have_clip ? s_nr.ref_h  : NR_VRAM_H;
 
-        /* Hor+ widen factor from --aspect (FIXED per run): how much wider the
-         * --aspect view is than 4:3. vk-only; ab/diff stay 4:3 vs the reference.
-         * Clamp ≥1 — Hor+ only ADDS world; a narrower --aspect just renders 4:3
-         * and the window letterboxes. */
+        /* Hor+ widen factor: how much wider the render view is than 4:3.
+         * vk-only; ab/diff stay 4:3 vs the reference. FIXED --aspect (>0)
+         * derives it from the flag; AUTO (0, the default) derives it from the
+         * CELL shape so the render rect exactly fills the window — re-derived
+         * here on every size change (resize/fullscreen), since the layout
+         * change-cache keys on the window size. fit_w/fit_h is the crop-
+         * corrected 4:3 display shape, so the AUTO ratio is exact regardless
+         * of the overscan crop. Clamp ≥1 in both modes — Hor+ only ADDS
+         * world; a narrower target just renders 4:3 and the window
+         * letterboxes. */
         float wf = 1.0f;
-        if (!s_scene_ref_compare && s_nr.aspect_wh > 0.0f) {
-            wf = s_nr.aspect_wh / (4.0f / 3.0f);
+        if (!s_scene_ref_compare) {
+            if (s_nr.aspect_wh > 0.0f)
+                wf = s_nr.aspect_wh / (4.0f / 3.0f);
+            else if (fit_w > 0 && fit_h > 0)
+                wf = ((float)s_nr.win_w * (float)fit_h * chx) /
+                     ((float)s_nr.win_h * (float)fit_w);
             if (wf < 1.0f) wf = 1.0f;
         }
         s_nr.ws_factor = wf;
 
-        /* Fit the FULL --aspect display rect (4:3 content widened by wf) into the
-         * window → letterbox/pillarbox bars where the window ≠ --aspect. The 4:3
-         * CONTENT sub-rect (what scene_to_clip maps the canonical 512-wide screen
-         * onto, unstretched) is 1/wf of that width and centred; the Hor+ reveal
-         * fills the rest of the --aspect rect. (Replaces the old window-driven
-         * auto-Hor+ that filled the whole window — now --aspect controls the render
-         * shape and the window only adds bars, matching PsyCross.) */
+        /* Fit the FULL render rect (4:3 content widened by wf) into the
+         * window → letterbox/pillarbox bars where the window ≠ the fixed
+         * --aspect (under AUTO the rect is the window shape → no bars). The
+         * 4:3 CONTENT sub-rect (what scene_to_clip maps the canonical
+         * 512-wide screen onto, unstretched) is 1/wf of that width and
+         * centred; the Hor+ reveal fills the rest of the render rect. */
         float cx = -1.0f + chx, hx, hy;
         fit_cell(cx, 0.0f, chx, 1.0f, (int)((float)fit_w * wf + 0.5f), fit_h,
                  s_nr.win_w, s_nr.win_h, &hx, &hy);
@@ -2120,6 +2133,10 @@ static void update_layout(void)
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
     s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_clip_h = s_nr.clip_h;
+    OPL_DEBUG_F("native", "layout: window %dx%d ref %dx%d wf=%.3f (%s)",
+                s_nr.win_w, s_nr.win_h, s_nr.ref_w, s_nr.ref_h,
+                (double)s_nr.ws_factor,
+                s_nr.aspect_wh > 0.0f ? "fixed --aspect" : "AUTO");
 }
 
 /* Map a PSX screen-space point (x in [0,disp_w], y in [0,disp_h]) into panel
@@ -4221,11 +4238,33 @@ int  openpete_native_fps_value(void) { return s_fps_value; }
  * gameplay RAM. See notes/plans/openpete-ingame-settings-menu.md. */
 void openpete_native_set_aspect(float w_over_h) {
     s_nr.aspect_wh = (w_over_h > 0.0f) ? w_over_h : 0.0f;
+    /* Fixed aspect picked live (O menu): resize the window width to match,
+     * like --aspect does at launch — the render rect then fills the window
+     * exactly, no bars. Skipped when fullscreen (can't resize — the fixed
+     * aspect letterboxes/pillarboxes instead) and under AUTO (0 — the render
+     * follows the window, which stays as the user left it). ref_w/ref_h is
+     * the crop-corrected 4:3 display shape (synthesized in pure vk), so the
+     * target window shape is rect = wf × ref shape — the same rect
+     * update_layout fits, making the fit exact. Logical window units on both
+     * sides of the resize so HiDPI scales cancel. */
+    if (s_nr.aspect_wh > 0.0f && s_nr.window &&
+        !(SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN)) {
+        float wf = s_nr.aspect_wh / (4.0f / 3.0f);
+        if (wf < 1.0f) wf = 1.0f;
+        float rect_wh = (s_nr.ref_w > 0 && s_nr.ref_h > 0)
+            ? wf * (float)s_nr.ref_w / (float)s_nr.ref_h
+            : wf * (4.0f / 3.0f) * (240.0f / 224.0f); /* pre-first-frame fallback */
+        int lw = 0, lh = 0;
+        SDL_GetWindowSize(s_nr.window, &lw, &lh);
+        int new_w = (int)((float)lh * rect_wh + 0.5f);
+        if (lh > 0 && new_w > 0 && new_w != lw)
+            SDL_SetWindowSize(s_nr.window, new_w, lh);
+    }
     /* update_layout()'s change-cache keys on window/ref/disp sizes, NOT aspect,
      * so force it to recompute the fitted panel rect on the next present. */
     s_nr.layout_win_w = -1;
     OPL_INFO_F("native", "aspect -> %.4f (%s)", s_nr.aspect_wh,
-               s_nr.aspect_wh > 0.0f ? "Hor+ widen" : "4:3");
+               s_nr.aspect_wh > 0.0f ? "Hor+ widen (fixed)" : "AUTO (follow window)");
 }
 
 void openpete_native_set_ssaa(int factor) {
@@ -5567,6 +5606,8 @@ static int native_render_screenshot_all_impl(const char *base)
         live = malloc(lcap);
         if (live && !rhi_read_offscreen(s_nr.dev, live, lcap, &live_w, &live_h)) {
             free(live); live = NULL;
+            OPL_WARN_F("native", "%s", "widescreen -vk live-grab failed "
+                       "(rhi_read_offscreen); falling back to the 4:3 RTT dump");
         }
     }
 

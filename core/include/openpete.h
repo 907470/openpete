@@ -140,15 +140,14 @@ typedef struct {
      * notes/plans/openpete-widescreen-fov.md "FOV slider". */
     float fov_deg;
 
-    /* Target display aspect ratio (width / height). 0 = no override
-     * (4:3 native). >0 widens the DISPENV / DRAWENV horizontally and
-     * re-centres SetGeomOffset so the GTE projects geometry across the
-     * wider framebuffer — Hor+ widescreen. PsyCross's non-PGXP render
-     * path reads activeDispEnv.disp.w directly into GR_Ortho2D, so no
-     * PsyCross commit is needed (PGXP is currently off; if it gets
-     * re-enabled per Step 7 the PSX_SCREEN_ASPECT macro will need
-     * promoting to a runtime variable). HUD draws stay at native
-     * 512-wide pixel coords — Phase 2 re-anchors per-element. */
+    /* Target display aspect ratio (width / height), native renderer only —
+     * the Hor+ widening happens purely at the display layer from canonical
+     * 4:3 producers (the PsyCross-mode substitution stack was retired
+     * 2026-07-06). 0 = auto (`--aspect auto`, the default): the render
+     * aspect follows the window / fullscreen shape live, filling it with no
+     * bars (clamped ≥ 4:3 — Hor+ only ADDS world). >0 = fixed (`--aspect
+     * W:H`): sizes the launch window to match and letterboxes/pillarboxes
+     * whenever the window shape differs. */
     float aspect_w_over_h;
 
     /* --lod original|extended: sector level-of-detail policy (see
