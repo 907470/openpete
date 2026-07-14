@@ -192,9 +192,15 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
         s_aspect_idx = 0;   /* 4:3 */
     }
 
-    /* FPS: exact/nearest in the ladder (--render-fps 0 → the 30 entry). */
-    s_fps_idx = nearest_idx(s_fps_vals, s_fps_count,
-                            opts->render_fps > 0 ? opts->render_fps : 30);
+    /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target —
+     * run.c resolves the --render-fps default (display refresh when unset,
+     * windowed) into s_render_fps before this init, so opts->render_fps may
+     * still hold the -1 sentinel. 0 = legacy match-sim → the 30 entry. */
+    {
+        int live_fps = openpete_get_render_fps();
+        s_fps_idx = nearest_idx(s_fps_vals, s_fps_count,
+                                live_fps > 0 ? live_fps : 30);
+    }
 
     /* VSync: -1 (unset) defaults to ON (FIFO); 0/1 as given. */
     s_vsync_idx = (opts->vsync == 0) ? 0 : 1;

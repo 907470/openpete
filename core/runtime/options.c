@@ -371,7 +371,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
         "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
         "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
-        "  --render-fps N             target render Hz (0=match sim/30fps, >0=wall-clock dual-pacer)\n"
+        "  --render-fps N             target render Hz (default: the display's refresh rate; 0=match\n"
+        "                             sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)\n"
         "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
         "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
         "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
@@ -504,6 +505,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / O-menu SHOW FPS row */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
+    opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
+                                        * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;

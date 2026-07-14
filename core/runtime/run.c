@@ -697,7 +697,8 @@ static void ftl_record_present(openpete_frame_time_log_t* log,
  * updates s_render_fps and flags a re-anchor; the host loop recomputes the
  * period (it needs the loop's tick_scale) and resets the deadlines to avoid a
  * catch-up burst. Display-only: pacing, never gameplay. Initialised from
- * opts->render_fps just before the loop. */
+ * the RESOLVED launch target just before the loop (an unset --render-fps
+ * defaults to the display refresh rate, windowed; 0, headless). */
 static int       s_render_fps       = 0;
 static op_time_t s_render_period_ns = 0;
 static int       s_render_fps_dirty = 0;
@@ -707,6 +708,10 @@ void openpete_set_render_fps(int fps) {
     if (fps == s_render_fps) return;
     s_render_fps = fps;
     s_render_fps_dirty = 1;   /* the host loop recomputes the period + re-anchors */
+}
+
+int openpete_get_render_fps(void) {
+    return s_render_fps;
 }
 
 static int run_recomp_fiber(const openpete_options_t* opts) {
@@ -1140,6 +1145,32 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
+    /* Monitor refresh rate (primary display — the window spawns there; 60
+     * when headless / query failure). Feeds the --render-fps default below
+     * and the settings menu's FPS ladder before the loop. */
+    int refresh_hz = 60;
+    if (!opts->headless) {
+        const SDL_DisplayMode* dm =
+            SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (dm && dm->refresh_rate > 0.0f)
+            refresh_hz = (int)(dm->refresh_rate + 0.5f);
+    }
+
+    /* Resolve the launch --render-fps target (Phase 2f default-on decision,
+     * openpete-fps-unlock.md). -1 = unset: windowed runs default to the
+     * display's refresh rate — the wall-clock dual-pacer + transform-interp
+     * path — while headless keeps the legacy match-sim pacer (0): those runs
+     * are unpaced (unlock) and the oracle/determinism harnesses expect one
+     * present per tick. An explicit --render-fps 0 selects the legacy pacer.
+     * opts stays const; everything below reads the resolved local, and the
+     * live pacer state (s_render_fps) is seeded from it. */
+    const int render_fps = (opts->render_fps >= 0) ? opts->render_fps
+                         : opts->headless          ? 0
+                                                   : refresh_hz;
+    if (opts->render_fps < 0 && !opts->headless)
+        OPL_INFO_F("pacer", "--render-fps unset: defaulting to display refresh %d Hz",
+                   render_fps);
+
     /* Phase 2 pacer state — single time source (op_now / op_sleep_until)
      * for both the legacy --render-fps=0 path and the --render-fps>0
      * wall-clock pacer. Both branches step phase-locked deadlines in
@@ -1168,23 +1199,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     const double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
     const op_time_t sim_period_ns    =
         (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
-    const op_time_t render_period_ns = (opts->render_fps > 0)
-        ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)opts->render_fps) / tick_scale)
+    const op_time_t render_period_ns = (render_fps > 0)
+        ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)render_fps) / tick_scale)
         : sim_period_ns;   /* sim_period_ns is already tick-scaled */
     /* Seed the live pacer state (openpete_set_render_fps mutates it; the loop
      * reads s_render_fps / s_render_period_ns instead of the consts above). */
-    s_render_fps       = opts->render_fps;
+    s_render_fps       = render_fps;
     s_render_period_ns = render_period_ns;
     s_render_fps_dirty = 0;
     const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
     op_time_t next_render_ns = start_ns;
-    if (opts->render_fps > 0) {
-        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (--render-fps=%d, --tick-scale=%.3f)",
+    if (render_fps > 0) {
+        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (render-fps=%d, --tick-scale=%.3f)",
                    (double)sim_period_ns / 1e6,
                    (double)render_period_ns / 1e6,
-                   opts->render_fps, tick_scale);
+                   render_fps, tick_scale);
     } else {
         OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0, --tick-scale=%.3f)",
                    (double)sim_period_ns / 1e6, tick_scale);
@@ -1203,11 +1234,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const op_time_t render_hz_x1000 = (render_period_ns > 0)
             ? (OP_NS_PER_SEC * 1000) / render_period_ns
             : 0;
-        if (opts->render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
+        if (render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
             openpete_interp_set_enabled(1);
             OPL_INFO_F("interp",
-                       "capture enabled (--render-fps=%d > sim ~30 Hz)",
-                       opts->render_fps);
+                       "capture enabled (render-fps=%d > sim ~30 Hz)",
+                       render_fps);
         }
     }
 
@@ -1305,12 +1336,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * notes/plans/openpete-frame-pacing.md. */
     if (opts->frame_time_log_path && *opts->frame_time_log_path) {
         /* Default target: NTSC present cadence = 1001/30000 sec per
-         * present (= 1/2 of 59.94 Hz VBL). When --render-fps N is set
-         * the dual-pacer drives the loop at N Hz instead, so use that.
-         * See plan §1: "ship --vbl-rate=59.94 as default". */
-        if (opts->render_fps > 0) {
+         * present (= 1/2 of 59.94 Hz VBL). When the render-fps target is
+         * set (explicit --render-fps N, or the unset windowed default =
+         * display refresh) the dual-pacer drives the loop at N Hz instead,
+         * so use that. See plan §1: "ship --vbl-rate=59.94 as default". */
+        if (render_fps > 0) {
             frame_time_log_target_period_ns =
-                (int64_t)((double)OP_NS_PER_SEC / (double)opts->render_fps / tick_scale);
+                (int64_t)((double)OP_NS_PER_SEC / (double)render_fps / tick_scale);
         } else {
             frame_time_log_target_period_ns =
                 (int64_t)((double)((OP_NS_PER_SEC * (int64_t)1001) / (int64_t)30000) / tick_scale);
@@ -1370,16 +1402,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_menu_open = false;
 
     /* Seed the in-game settings menu from the launch flags, and build its FPS
-     * ladder from the monitor refresh (primary display; 60 if unknown/headless).
+     * ladder from the monitor refresh queried above (60 if unknown/headless).
      * Applies nothing — it only makes the menu reflect what the game launched
-     * with. */
-    {
-        int refresh_hz = 60;
-        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        if (dm && dm->refresh_rate > 0.0f)
-            refresh_hz = (int)(dm->refresh_rate + 0.5f);
-        openpete_menu_init(opts, refresh_hz);
-    }
+     * with (the FPS row reads the live pacer target, which already holds the
+     * resolved render-fps default). */
+    openpete_menu_init(opts, refresh_hz);
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under

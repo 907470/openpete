@@ -97,11 +97,13 @@ typedef struct {
     int max_runtime_seconds;      /* 0 = unlimited */
     bool headless;                /* no on-screen window (offscreen video driver) */
 
-    /* Render-cadence target. 0 = match sim (condvar-paced ticker, the
-     * historical behavior). >0 = wall-clock dual-pacer: sim still yields at
-     * the native PSX 60 Hz vblank, input pump runs at this Hz, and present
-     * fires when the game produced new draw commands. See
-     * notes/plans/openpete-fps-unlock.md "Phase 1". */
+    /* Render-cadence target. -1 = unset (the default): resolved at startup
+     * to the display's refresh rate for windowed runs, 0 for headless
+     * (run_recomp_fiber, before the pacer is seeded). 0 = match sim
+     * (condvar-paced ticker, the historical behavior). >0 = wall-clock
+     * dual-pacer: sim still yields at the native PSX 60 Hz vblank, input
+     * pump runs at this Hz, and present fires when the game produced new
+     * draw commands. See notes/plans/openpete-fps-unlock.md "Phase 1". */
     int render_fps;
 
     /* --tick-scale F (default 1.0): wall-clock SPEED multiplier for the whole
@@ -539,6 +541,12 @@ int  openpete_run(const openpete_options_t* opts);
  * burst). Pure pacing; never perturbs gameplay-readable state. See
  * notes/plans/openpete-ingame-settings-menu.md. */
 void openpete_set_render_fps(int fps);
+
+/* The live render-fps target the pacer is currently driving — the resolved
+ * launch value (an unset --render-fps defaults to the display refresh rate,
+ * windowed) or whatever openpete_set_render_fps last applied. 0 = legacy
+ * match-sim pacer. The settings menu seeds its FPS row from this. */
+int openpete_get_render_fps(void);
 
 #ifdef __cplusplus
 }
