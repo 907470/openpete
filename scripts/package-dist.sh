@@ -22,13 +22,37 @@ PLATFORM="${1:-}"
 shift || true
 OUT=dist
 TOOLCHAIN=""
+# --sign '<command>' — Authenticode hook, Windows platform only. Invoked
+# once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
+# file path appended; a nonzero exit fails the package. Evaluated per
+# file so embedded $(...) (e.g. a fresh az access token) re-runs each
+# time. The bundled llvm-mingw binaries are NOT signed (SmartScreen
+# only screens the shell-executed download; ~400 upstream tools would
+# burn signatures attesting binaries we didn't build). jsign example:
+#   --sign 'jsign --storetype TRUSTEDSIGNING
+#           --keystore eus.codesigning.azure.net
+#           --storepass "$(az account get-access-token
+#               --resource https://codesigning.azure.net
+#               --query accessToken -o tsv)"
+#           --alias <account>/<profile>
+#           --tsaurl http://timestamp.acs.microsoft.com'
+# The RFC3161 timestamp is NOT optional with Artifact Signing: its
+# certs live ~3 days; only the countersignature keeps releases valid.
+SIGN_CMD=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
         --toolchain) TOOLCHAIN="$2"; shift 2 ;;
+        --sign) SIGN_CMD="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
 done
+
+sign_pe() {  # sign_pe <file> — no-op unless --sign was given
+    [[ -n "$SIGN_CMD" ]] || return 0
+    echo "[package] signing $(basename "$1")"
+    eval "$SIGN_CMD \"\$1\"" || { echo "[package] signing FAILED: $1" >&2; exit 1; }
+}
 
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 NAME="openpete-spyro1-${VERSION}-${PLATFORM}-x86_64"
@@ -84,6 +108,8 @@ linux)
         echo "[package] NOTE: no --toolchain — Linux archive uses the" \
              "system cc (README-dist documents this)." >&2
     fi
+    [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
+        "(Authenticode); ignored for linux" >&2
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
     ;;
@@ -120,6 +146,10 @@ windows)
         echo "[package] NOTE: no --toolchain given — archive will need" \
              "\$OPENPETE_CC or a later toolchain drop-in for first boot" >&2
     fi
+    # Sign after strip and staging, before archiving. First-party PEs
+    # only (see --sign notes above).
+    sign_pe "$STAGE/openpete-spyro1.exe"
+    sign_pe "$STAGE/recomp/tools/PSXRecomp.exe"
     ( cd "$OUT" && python3 -m zipfile -c "$NAME.zip" "$NAME" )
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
     ;;
