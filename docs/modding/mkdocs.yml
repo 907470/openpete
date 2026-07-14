@@ -51,6 +51,7 @@ nav:
   - Getting started: getting-started.md
   - Concepts: concepts.md
   - Manifest & config: manifest.md
+  - Shaders: shaders.md
   - Reference:
       - API: reference/api.md
       - Functions: reference/functions.md

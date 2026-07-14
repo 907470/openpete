@@ -38,8 +38,15 @@
  * link goes core -> rhi, not back. */
 static void (*s_device_lost_cb)(void) = NULL;
 void rhi_set_device_lost_handler(void (*fn)(void)) { s_device_lost_cb = fn; }
+static const char *s_last_gpu_zone;   /* set by rhi_gpu_zone_begin */
 static void rhi_signal_device_lost(const char *where) {
     RHI_LOG("FATAL: device lost on %s — requesting shutdown\n", where);
+    if (s_last_gpu_zone)
+        RHI_LOG("device-lost suspect: last GPU zone begun = \"%s\" "
+                "(a runaway mod shader TDRs here)\n", s_last_gpu_zone);
+    else
+        RHI_LOG("re-run with OPENPETE_GPU_TIMERS=1 to attribute the hang "
+                "to a named pass/mod\n");
     if (s_device_lost_cb) s_device_lost_cb();
 }
 
@@ -1041,11 +1048,14 @@ int rhi_gpu_timers_on(const rhi_device *dev)
     return dev && dev->gpu_timers;
 }
 
+/* s_last_gpu_zone (declared beside rhi_signal_device_lost, which prints
+ * it): the device-lost suspect — populated only when timers are on. */
 void rhi_gpu_zone_begin(rhi_device *dev, const char *name)
 {
     if (!dev || !dev->gpu_timers || !dev->frame_active) return;
     int slot = (int)dev->frame;
     if (dev->gpu_zone_open || dev->gpu_zone_n[slot] >= RHI_GPU_ZONES_MAX) return;
+    s_last_gpu_zone = name;
     dev->gpu_zone_name[slot][dev->gpu_zone_n[slot]] = name;
     vkCmdWriteTimestamp(dev->cmd[slot], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         dev->gpu_qp[slot], (uint32_t)(dev->gpu_zone_n[slot] * 2));

@@ -5076,6 +5076,10 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
         }
         if (*pass[i].pipeline_slot == PFX_PIPE_FAILED) continue;
         rhi_texture* out = ping[out_idx];
+        /* Per-mod GPU attribution (S9): one zone per pass, named by the
+         * owning mod id (loader-stable string). Live path only — the dump
+         * path runs outside the frame-loop zone budget. */
+        if (!target) rhi_gpu_zone_begin(s_nr.dev, pass[i].owner);
         rhi_begin_render_target(s_nr.dev, out, 0.f, 0.f, 0.f, 1.f);
         rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pass[i].pipeline_slot);
         /* set 0 = previous pass (chain input on pass 0); set 1 = opaque
@@ -5097,6 +5101,7 @@ static int native_postfx_run(rhi_texture* target, int w, int h)
         rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, (uint32_t)(1 + i));
         rhi_draw(s_nr.dev, 3, 0);
         rhi_end_render_target(s_nr.dev, out);
+        if (!target) rhi_gpu_zone_end(s_nr.dev);
         out_idx ^= 1;
         ran++;
     }
@@ -5322,14 +5327,15 @@ void openpete_native_render_frame(uint64_t record_pts_us)
 
     /* Mod postfx chain (COMPOSITE point) — vk variant only; the ab/diff
      * panes stay reference-pure. Runs on EVERY present (canonical +
-     * intermediate). */
+     * intermediate). No outer GPU zone: the executor emits ONE ZONE PER
+     * PASS NAMED BY THE OWNING MOD (zones don't nest), so a slow shader
+     * shows up BY MOD ID in the [gpu-pass] report — the S9 budget
+     * attribution. */
     if (variant == NRV_VK) {
-        rhi_gpu_zone_begin(s_nr.dev, "postfx");
         pfx_drain_retired();
         int pw = 0, ph = 0;
         rhi_swapchain_extent(s_nr.dev, &pw, &ph);
         native_postfx_run(NULL, pw, ph);
-        rhi_gpu_zone_end(s_nr.dev);
     }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
                  openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
