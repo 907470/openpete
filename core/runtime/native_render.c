@@ -4704,6 +4704,157 @@ static void phase_present_done(void)
     s_pt_n = 0; s_pt_last_report = now;
 }
 
+/* ── Mod postfx executor (S3, plans/openpete-mod-shaders.md) ─────────
+ * Runs the enabled COMPOSITE-point chain over the composed frame:
+ * input → ping/pong RTs → 1:1 blit back into the compose target, so
+ * every consumer (present blit, --record, live screenshot, AND the
+ * screenshot-all/headless native_rtt dump) sees the post-processed
+ * frame — the native_rtt compose bypasses off_image, so the chain is
+ * wired into both paths explicitly (the vacuous-gate trap from the
+ * plan review). Engine UBO rides block 0, pass i's mod block 1+i.
+ * S4 completes the engine-block fields (tick/alpha/canonical). */
+#define PFX_MAX_PASSES 15
+#define PFX_PIPE_FAILED OPENPETE_POSTFX_PIPE_FAILED   /* build-failed sentinel */
+typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing */
+    float    time, alpha;
+    uint32_t tick, present, canonical;
+    float    aspect;
+    float    res[2], win[2];
+} pfx_engine_ubo_t;
+
+/* Ping-pong RT pool: two sizes in practice (window for live presents,
+ * reference for screenshot dumps) — LRU-evict beyond that (rare; under
+ * wait-idle). */
+static struct { int w, h; rhi_texture* t[2]; uint32_t used; } s_pfx_pool[2];
+static uint32_t s_pfx_stamp;
+static rhi_ubo* s_pfx_ubo;
+
+static rhi_texture** pfx_pings(int w, int h) {
+    int victim = 0;
+    for (int i = 0; i < 2; i++) {
+        if (s_pfx_pool[i].w == w && s_pfx_pool[i].h == h && s_pfx_pool[i].t[0]) {
+            s_pfx_pool[i].used = ++s_pfx_stamp;
+            return s_pfx_pool[i].t;
+        }
+        if (s_pfx_pool[i].used < s_pfx_pool[victim].used) victim = i;
+    }
+    if (s_pfx_pool[victim].t[0]) {
+        rhi_wait_idle(s_nr.dev);   /* rare: a third size evicts (resize) */
+        rhi_destroy_texture(s_nr.dev, s_pfx_pool[victim].t[0]);
+        rhi_destroy_texture(s_nr.dev, s_pfx_pool[victim].t[1]);
+        s_pfx_pool[victim].t[0] = s_pfx_pool[victim].t[1] = NULL;
+    }
+    s_pfx_pool[victim].t[0] = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    s_pfx_pool[victim].t[1] = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    if (!s_pfx_pool[victim].t[0] || !s_pfx_pool[victim].t[1]) {
+        if (s_pfx_pool[victim].t[0]) rhi_destroy_texture(s_nr.dev, s_pfx_pool[victim].t[0]);
+        if (s_pfx_pool[victim].t[1]) rhi_destroy_texture(s_nr.dev, s_pfx_pool[victim].t[1]);
+        s_pfx_pool[victim].t[0] = s_pfx_pool[victim].t[1] = NULL;
+        return NULL;
+    }
+    s_pfx_pool[victim].w = w; s_pfx_pool[victim].h = h;
+    s_pfx_pool[victim].used = ++s_pfx_stamp;
+    return s_pfx_pool[victim].t;
+}
+
+/* Destroy pipelines orphaned by a mod hot-reload sweep. Dev-mode only
+ * path — the wait-idle is acceptable there. */
+static void pfx_drain_retired(void) {
+    void* dead[PFX_MAX_PASSES];
+    int n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES);
+    if (n <= 0) return;
+    rhi_wait_idle(s_nr.dev);
+    for (int i = 0; i < n; i++)
+        rhi_destroy_pipeline(s_nr.dev, (rhi_pipeline*)dead[i]);
+}
+
+/* Run the chain. target == NULL → over off_image (live present);
+ * else over the given compose RT (screenshot-all). Returns pass count. */
+static int native_postfx_run(rhi_texture* target, int w, int h)
+{
+    openpete_postfx_pass_t pass[PFX_MAX_PASSES];
+    int n = openpete_mods_postfx_collect(0 /* COMPOSITE */, pass, PFX_MAX_PASSES);
+    if (n <= 0 || w <= 0 || h <= 0) return 0;
+    if (!s_pfx_ubo)
+        s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
+                                   1 + PFX_MAX_PASSES);
+    rhi_texture** ping = pfx_pings(w, h);
+    if (!s_pfx_ubo || !ping) return 0;
+
+    pfx_engine_ubo_t eng;
+    memset(&eng, 0, sizeof eng);
+    eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
+    eng.present = s_scene_frame;
+    eng.res[0] = (float)w;   eng.res[1] = (float)h;
+    {
+        int ww = 0, wh = 0;
+        rhi_swapchain_extent(s_nr.dev, &ww, &wh);
+        eng.win[0] = (float)ww; eng.win[1] = (float)wh;
+    }
+    eng.aspect = (h > 0) ? (float)w / (float)h : 1.0f;
+    rhi_ubo_write(s_pfx_ubo, 0, &eng, sizeof eng);
+    for (int i = 0; i < n; i++)
+        if (pass[i].uniforms_len)
+            rhi_ubo_write(s_pfx_ubo, (uint32_t)(1 + i), pass[i].uniforms,
+                          pass[i].uniforms_len);
+
+    if (!target)
+        rhi_offscreen_to_sampled(s_nr.dev);   /* barrier, outside any pass */
+
+    int out_idx = 0, ran = 0;
+    for (int i = 0; i < n; i++) {
+        if (*pass[i].pipeline_slot == NULL) {
+            rhi_pipeline_desc pd = {
+                .vert_spv = "postfx_fs.vert.spv",
+                .frag_spv = NULL,
+                .blend = RHI_BLEND_NONE,
+                .postfx = true,
+            };
+            rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &pd, NULL, 0,
+                                                      pass[i].frag_spv,
+                                                      pass[i].frag_words);
+            *pass[i].pipeline_slot = p ? (void*)p : PFX_PIPE_FAILED;
+            if (!p)
+                fprintf(stderr, "[native] postfx: pipeline build FAILED for "
+                                "%s — pass disabled\n", pass[i].owner);
+        }
+        if (*pass[i].pipeline_slot == PFX_PIPE_FAILED) continue;
+        rhi_texture* out = ping[out_idx];
+        rhi_begin_render_target(s_nr.dev, out, 0.f, 0.f, 0.f, 1.f);
+        rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pass[i].pipeline_slot);
+        if (ran == 0) {
+            if (!target) {
+                rhi_bind_offscreen_tex(s_nr.dev, 0);
+                rhi_bind_offscreen_tex(s_nr.dev, 1);   /* S4: real depth */
+                rhi_bind_offscreen_tex(s_nr.dev, 2);   /* S4: prev frame */
+            } else {
+                rhi_bind_texture_set(s_nr.dev, target, 0);
+                rhi_bind_texture_set(s_nr.dev, target, 1);
+                rhi_bind_texture_set(s_nr.dev, target, 2);
+            }
+        } else {
+            rhi_texture* in = ping[out_idx ^ 1];
+            rhi_bind_texture_set(s_nr.dev, in, 0);
+            rhi_bind_texture_set(s_nr.dev, in, 1);
+            rhi_bind_texture_set(s_nr.dev, in, 2);
+        }
+        rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, (uint32_t)(1 + i));
+        rhi_draw(s_nr.dev, 3, 0);
+        rhi_end_render_target(s_nr.dev, out);
+        out_idx ^= 1;
+        ran++;
+    }
+    if (!ran) {
+        /* Every pass failed to build: restore off_image for the blit. */
+        if (!target) rhi_offscreen_resume_blit_src(s_nr.dev);
+        return 0;
+    }
+    rhi_texture* final_rt = ping[out_idx ^ 1];
+    if (!target) rhi_blit_rt_to_offscreen(s_nr.dev, final_rt);
+    else         rhi_blit_rt_to_rt(s_nr.dev, target, final_rt);
+    return ran;
+}
+
 /* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over
  * the frame-lagged results rhi_begin_frame harvests, printed on the same
  * ~1 s cadence as the phase report. Zone identity is the name POINTER (the
@@ -4905,6 +5056,18 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     bool did_diff = compose_variant(variant, have_ref);
     rhi_gpu_zone_end(s_nr.dev);
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
+
+    /* Mod postfx chain (COMPOSITE point) — vk variant only; the ab/diff
+     * panes stay reference-pure. Runs on EVERY present (canonical +
+     * intermediate). */
+    if (variant == NRV_VK) {
+        rhi_gpu_zone_begin(s_nr.dev, "postfx");
+        pfx_drain_retired();
+        int pw = 0, ph = 0;
+        rhi_swapchain_extent(s_nr.dev, &pw, &ph);
+        native_postfx_run(NULL, pw, ph);
+        rhi_gpu_zone_end(s_nr.dev);
+    }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
                  openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
@@ -5021,6 +5184,10 @@ static int native_render_screenshot_all_impl(const char *base)
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
         draw_native_scene(true);
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
+        /* Mod postfx over the dump compose too — this path bypasses
+         * off_image, so without this call a headless/screenshot-all gate
+         * would pass vacuously (plan-review trap). */
+        native_postfx_run(s_nr.native_rtt, W, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
@@ -5160,6 +5327,23 @@ void openpete_native_render_shutdown(void)
     if (!s_nr.enabled)
         return;
     rhi_wait_idle(s_nr.dev);
+    /* Mod postfx chain objects (S3): ping pool, UBO, cached pipelines
+     * (both live registrations and the retirement list). */
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 2; j++)
+            if (s_pfx_pool[i].t[j]) {
+                rhi_destroy_texture(s_nr.dev, s_pfx_pool[i].t[j]);
+                s_pfx_pool[i].t[j] = NULL;
+            }
+    if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
+    {
+        openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
+        void* dead[PFX_MAX_PASSES];
+        int n;
+        while ((n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES)) > 0)
+            for (int i = 0; i < n; i++)
+                rhi_destroy_pipeline(s_nr.dev, (rhi_pipeline*)dead[i]);
+    }
     if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);

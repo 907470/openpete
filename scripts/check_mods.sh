@@ -53,11 +53,14 @@ fixture() { # fixture <dir> <mod>...
     done
 }
 
-run_game() { # run_game <mods_dir> <frames> -> stdout+stderr
+run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     # NB: --frame-limit is the engine flag; OPENPETE_FRAME_LIMIT is a
     # check_psx_oracle.sh convention, NOT read by the engine itself.
+    local dir="$1" frames="$2"
+    shift 2
     timeout 300 "$BIN" --headless --disc "$DISC" \
-        --run-recomp 0x80012204 --frame-limit "$2" --mods-dir "$1" 2>&1
+        --run-recomp 0x80012204 --frame-limit "$frames" --mods-dir "$dir" \
+        "$@" 2>&1
 }
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) — also observer-neutral ──
@@ -655,6 +658,76 @@ if grep -q "hot-greeter: v1 alive" "$WORK/hot.log" &&
 else
     bad "hot reload sequence incomplete (see $WORK/hot.log)"
     grep -E "hot" "$WORK/hot.log" | head -5
+fi
+
+# ── mod shaders: engine-compiled GLSL postfx visibly present in the
+# headless dump (plans/openpete-mod-shaders.md S3). The headless
+# screenshot path composes native_rtt, which BYPASSES off_image — a
+# chain wired only into the live path passes a boots-and-screenshots
+# gate vacuously, so this rung asserts CONTENT: the crt scanlines make
+# the adjacent-row luma delta exceed the skip-row delta (alternating
+# rows); natural content is smoother row-to-row (measured: ratio ~2.5
+# with the filter, ~0.6 without).
+say "mod shaders: crt-filter postfx visible AND upright in the headless dump"
+fixture "$WORK/crt" crt-filter
+run_game "$WORK/crt" 400 --screenshot-on-frame 350 \
+    --screenshot-output "$WORK/crt/shot.png" > "$WORK/crt.log" 2>&1 || true
+mkdir -p "$WORK/crtoff"; : > "$WORK/crtoff/enabled.txt"
+run_game "$WORK/crtoff" 400 --screenshot-on-frame 350 \
+    --screenshot-output "$WORK/crtoff/shot.png" > "$WORK/crtoff.log" 2>&1 || true
+if grep -q "crt.frag compiled" "$WORK/crt.log" ||
+   grep -q "shader shaders/crt.frag" "$WORK/crt.log"; then
+    ok "crt.frag compiled by the in-process service"
+else
+    bad "crt.frag did not compile (see $WORK/crt.log)"
+fi
+if [ -f "$WORK/crt/shot-vk.png" ] && [ -f "$WORK/crtoff/shot-vk.png" ] &&
+   python3 -c "import PIL" 2>/dev/null; then
+    # Two assertions from one image pair:
+    #  1. presence — crt scanlines alternate rows, so the adjacent-row
+    #     luma delta exceeds the skip-row delta (~2.5x with the filter,
+    #     ~0.6x without);
+    #  2. orientation — the filtered dump's row-luma profile must
+    #     correlate better with the unfiltered dump's profile than with
+    #     its vertical REVERSAL (the first crt shot shipped upside down:
+    #     the fullscreen triangle ignored the engine's Y-flipped
+    #     viewport; a row-delta metric is orientation-blind by itself).
+    verdict=$(python3 - "$WORK/crt/shot-vk.png" "$WORK/crtoff/shot-vk.png" <<'PYEOF'
+import sys, statistics
+from PIL import Image
+def rows_of(p):
+    im = Image.open(p).convert("L")
+    w, h = im.size
+    px = im.load()
+    return [sum(px[x, y] for x in range(0, w, 4)) for y in range(h)]
+on, off = rows_of(sys.argv[1]), rows_of(sys.argv[2])
+h = min(len(on), len(off))
+on, off = on[:h], off[:h]
+d1 = statistics.mean(abs(on[y] - on[y + 1]) for y in range(h - 2))
+d2 = statistics.mean(abs(on[y] - on[y + 2]) for y in range(h - 2))
+ratio = d1 / (d2 + 1e-9)
+def corr(a, b):
+    ma, mb = statistics.mean(a), statistics.mean(b)
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    da = sum((x - ma) ** 2 for x in a) ** 0.5
+    db = sum((y - mb) ** 2 for y in b) ** 0.5
+    return num / (da * db + 1e-9)
+straight, flipped = corr(on, off), corr(on, off[::-1])
+print(f"{ratio:.2f} {straight:.3f} {flipped:.3f} "
+      f"{'OK' if ratio > 1.5 and straight > flipped else 'BAD'}")
+PYEOF
+)
+    if [ "${verdict##* }" = "OK" ]; then
+        ok "postfx present + upright (ratio/corr: $verdict)"
+    else
+        bad "postfx content check failed (ratio corr corr-flipped verdict: $verdict)"
+    fi
+else
+    if [ ! -f "$WORK/crt/shot-vk.png" ]; then
+        bad "no shot-vk.png from the crt rung (see $WORK/crt.log)"
+    else
+        ok "PIL unavailable — content assertion skipped (compile assert only)"
+    fi
 fi
 
 echo

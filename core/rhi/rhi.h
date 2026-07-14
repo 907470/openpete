@@ -281,9 +281,15 @@ void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 void rhi_offscreen_to_sampled(rhi_device *dev);
 void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
 void rhi_offscreen_resume_attachment(rhi_device *dev);
+void rhi_offscreen_resume_blit_src(rhi_device *dev);
 /* Bind any texture/RT's sampler set at an arbitrary set index (postfx
  * inputs live at sets 0..2; rhi_bind_vram/vram2 remain the 0/1 pair). */
 void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set);
+/* Postfx write-back blits: final ping RT → off_image (leaves it
+ * TRANSFER_SRC for the present blit) / → another RT (leaves it
+ * SHADER_READ for readback). Source is restored to SHADER_READ. */
+void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src);
+void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src);
 
 /* ---- the native-res PSX VRAM model (milestone 1b.2) -------------- */
 

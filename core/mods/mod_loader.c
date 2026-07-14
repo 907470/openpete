@@ -420,6 +420,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_site_detach_all(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
     openpete_mods_state_remove(mod->id);
+    openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
     openpete_mods_shader_remove_owner(mod->id);
     exports_remove_owner(mod->id);
 
@@ -797,6 +798,12 @@ const char* openpete_mods_id_of(openpete_mod_t* self) {
 
 const char* openpete_mods_dir_of(openpete_mod_t* self) {
     return self ? self->dir : NULL;
+}
+
+int openpete_mods_load_index_of(openpete_mod_t* self) {
+    if (!self) return -1;
+    ptrdiff_t i = self - s_mods;
+    return (i >= 0 && i < s_mod_count) ? (int)i : -1;
 }
 
 const char* openpete_mods_sdk_dir(void) {

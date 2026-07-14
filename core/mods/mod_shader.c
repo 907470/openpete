@@ -568,22 +568,156 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
         }                                                                   \
     } while (0)
 
+/* ------------------------------------------------------------------ */
+/* postfx tier (S3): registry + the renderer-facing collect. The GPU
+ * pipeline object is executor-owned (native_render.c) but cached in
+ * the slot via pass.pipeline_slot; a sweep moves it to the retirement
+ * list, drained by the renderer under its own frame discipline. */
+
+#define MOD_POSTFX_MAX 64
+
+typedef struct {
+    const char* owner;
+    int  shader;                 /* frag handle (s_shaders) */
+    int  point;                  /* OP_POSTFX_* */
+    int  order;                  /* tie-break within a mod */
+    int  load_index;             /* enabled-list position of the owner */
+    int  enabled;
+    int  live;
+    void* pipeline;              /* executor-cached rhi_pipeline* */
+    unsigned char uniforms[OPENPETE_POSTFX_UNIFORMS_MAX];
+    uint32_t uniforms_len;
+} mod_postfx_t;
+
+static mod_postfx_t s_fx[MOD_POSTFX_MAX];
+static int s_fx_count;
+static void* s_retired_pipelines[MOD_POSTFX_MAX];
+static int s_retired_n;
+
 int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                                   int point, int order) {
-    (void)frag_shader; (void)point; (void)order;
-    STUB_ONCE("postfx_register");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id) return -1;
+    if (openpete_mods_in_present) {
+        OPL_ERROR_F("mods", "%s: postfx_register refused inside a present "
+                    "hook (register at entry)", id);
+        return -1;
+    }
+    if (point != 0 /* OP_POSTFX_COMPOSITE */) {
+        OPL_WARN_F("mods", "%s: postfx point %d is not available yet "
+                   "(COMPOSITE only)", id, point);
+        return -1;
+    }
+    size_t words = 0; int stage = -1;
+    if (!openpete_mods_shader_spv(frag_shader, &words, &stage) ||
+        stage != MOD_SHADER_STAGE_FRAG) {
+        OPL_ERROR_F("mods", "%s: postfx_register: bad fragment shader "
+                    "handle %d", id, frag_shader);
+        return -1;
+    }
+    if (s_fx_count >= MOD_POSTFX_MAX) {
+        OPL_ERROR_F("mods", "%s: postfx table full (%d)", id, MOD_POSTFX_MAX);
+        return -1;
+    }
+    mod_postfx_t* fx = &s_fx[s_fx_count];
+    memset(fx, 0, sizeof *fx);
+    fx->owner = id;
+    fx->shader = frag_shader;
+    fx->point = point;
+    fx->order = order;
+    fx->load_index = openpete_mods_load_index_of(self);
+    fx->enabled = 0;             /* explicit postfx_enable arms it */
+    fx->live = 1;
+    return s_fx_count++;
 }
+
 int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) {
-    (void)fx; (void)enabled;
-    STUB_ONCE("postfx_enable");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live) return -1;
+    if (strcmp(s_fx[fx].owner, id) != 0) return -1;   /* not yours */
+    s_fx[fx].enabled = enabled ? 1 : 0;
+    return 0;
 }
+
 int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size) {
-    (void)fx; (void)data; (void)size;
-    STUB_ONCE("postfx_set_uniforms");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live || !data) return -1;
+    if (strcmp(s_fx[fx].owner, id) != 0) return -1;
+    if (size > OPENPETE_POSTFX_UNIFORMS_MAX) size = OPENPETE_POSTFX_UNIFORMS_MAX;
+    memcpy(s_fx[fx].uniforms, data, size);   /* copy-on-call, any context */
+    s_fx[fx].uniforms_len = size;
+    return 0;
+}
+
+/* Renderer-facing: enabled passes at `point`, ordered by enabled-list
+ * priority (load index) then per-mod order then registration. The fx
+ * table is small — selection sort into the out array. */
+int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
+                                 int cap) {
+    int idx[MOD_POSTFX_MAX];
+    int n = 0;
+    for (int i = 0; i < s_fx_count; i++) {
+        if (!s_fx[i].live || !s_fx[i].enabled || s_fx[i].point != point)
+            continue;
+        if (!openpete_mods_is_enabled(s_fx[i].owner)) continue;  /* live toggle */
+        if (n < cap) idx[n++] = i;
+    }
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0; j--) {
+            mod_postfx_t *a = &s_fx[idx[j - 1]], *b = &s_fx[idx[j]];
+            int swap = (a->load_index > b->load_index) ||
+                       (a->load_index == b->load_index && a->order > b->order) ||
+                       (a->load_index == b->load_index && a->order == b->order &&
+                        idx[j - 1] > idx[j]);
+            if (!swap) break;
+            int t = idx[j - 1]; idx[j - 1] = idx[j]; idx[j] = t;
+        }
+    for (int i = 0; i < n; i++) {
+        mod_postfx_t* fx = &s_fx[idx[i]];
+        out[i].frag_spv = openpete_mods_shader_spv(fx->shader,
+                                                   &out[i].frag_words, NULL);
+        out[i].uniforms = fx->uniforms;
+        out[i].uniforms_len = fx->uniforms_len;
+        out[i].pipeline_slot = &fx->pipeline;
+        out[i].owner = fx->owner;
+    }
+    return n;
+}
+
+/* Drain executor-cached pipelines orphaned by a sweep (hot reload).
+ * The renderer destroys them under its own synchronization. */
+int openpete_mods_postfx_take_retired(void** out, int cap) {
+    int n = s_retired_n < cap ? s_retired_n : cap;
+    memcpy(out, s_retired_pipelines, (size_t)n * sizeof(void*));
+    memmove(s_retired_pipelines, s_retired_pipelines + n,
+            (size_t)(s_retired_n - n) * sizeof(void*));
+    s_retired_n -= n;
+    return n;
+}
+
+/* Shutdown sweep: every cached pipeline (enabled or not) to the
+ * retirement list; registrations stay live (process is exiting or the
+ * renderer is about to drain). */
+void openpete_mods_postfx_retire_all(void) {
+    for (int i = 0; i < s_fx_count; i++) {
+        if (!s_fx[i].live) continue;
+        if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_fx[i].pipeline;
+        s_fx[i].pipeline = NULL;
+    }
+}
+
+void openpete_mods_postfx_remove_owner(const char* mod_id) {
+    for (int i = 0; i < s_fx_count; i++) {
+        if (!s_fx[i].live || strcmp(s_fx[i].owner, mod_id) != 0) continue;
+        if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_fx[i].pipeline;
+        s_fx[i].pipeline = NULL;
+        s_fx[i].live = 0;
+    }
 }
 int openpete_mods_pipeline_register(openpete_mod_t* self,
                                     const openpete_mod_pipeline_desc_t* desc) {

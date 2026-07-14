@@ -828,10 +828,12 @@ static bool create_offscreen(rhi_device *dev)
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         /* SAMPLED: the COMPOSITE postfx point reads the composed frame
-         * (rhi_offscreen_to_sampled) — S2 mod-shader extension. */
+         * (rhi_offscreen_to_sampled); TRANSFER_DST: the chain's final
+         * ping blits back in (rhi_blit_rt_to_offscreen) — S2/S3. */
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                 VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -3040,6 +3042,20 @@ void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set)
                             &dev->off_sampled_set[slot], 0, NULL);
 }
 
+/* Undo rhi_offscreen_to_sampled WITHOUT re-rendering (a chain that
+ * built no runnable pass): flip off_image straight back to TRANSFER_SRC
+ * so the present blit can read it. */
+void rhi_offscreen_resume_blit_src(rhi_device *dev)
+{
+    if (!dev || !dev->frame_active) return;
+    image_barrier(dev->cmd[dev->frame], dev->off_image,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+}
+
 void rhi_offscreen_resume_attachment(rhi_device *dev)
 {
     if (!dev || !dev->frame_active) return;
@@ -3060,6 +3076,83 @@ void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set)
     if (!dev || !tex || !dev->frame_active || !dev->cur_layout) return;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, set, 1, &tex->set, 0, NULL);
+}
+
+/* Postfx chain write-back (S3): 1:1 blit of the chain's final ping RT
+ * back into off_image, leaving off_image TRANSFER_SRC for the present
+ * blit and the source RT sampleable again. Expects off_image in
+ * SHADER_READ (rhi_offscreen_to_sampled ran) and src post-rt-pass
+ * (SHADER_READ). */
+void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src)
+{
+    if (!dev || !src || !src->is_rt || !dev->frame_active) return;
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    image_barrier(cb, src->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    image_barrier(cb, dev->off_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0, 0, 0}, {(int32_t)src->width, (int32_t)src->height, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0, 0, 0}, {(int32_t)dev->sc_extent.width,
+                                    (int32_t)dev->sc_extent.height, 1} },
+    };
+    vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region, VK_FILTER_NEAREST);
+    image_barrier(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    image_barrier(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    src->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+/* Same write-back for a render-target compose path (the screenshot-all
+ * native_rtt dump): dst ends SHADER_READ (readable by
+ * rhi_read_render_target), src restored to SHADER_READ. */
+void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src)
+{
+    if (!dev || !dst || !src || !dst->is_rt || !src->is_rt || !dev->frame_active)
+        return;
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    image_barrier(cb, src->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    image_barrier(cb, dst->image, dst->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0, 0, 0}, {(int32_t)src->width, (int32_t)src->height, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0, 0, 0}, {(int32_t)dst->width, (int32_t)dst->height, 1} },
+    };
+    vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region, VK_FILTER_NEAREST);
+    image_barrier(cb, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    image_barrier(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    src->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)

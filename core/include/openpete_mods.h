@@ -388,6 +388,30 @@ int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
 int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled);
 int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size);
+
+/* Renderer-facing postfx chain (native_render.c executor). Uniform
+ * blocks cap at 1 KiB (fits every portable UBO limit with room for the
+ * frame ring). pipeline_slot caches the executor's rhi_pipeline* inside
+ * the registration; a hot-reload sweep moves orphaned pipelines to the
+ * retirement list for the renderer to destroy safely. */
+#define OPENPETE_POSTFX_UNIFORMS_MAX 1024u
+/* pipeline_slot sentinel: build failed, don't retry or destroy. */
+#define OPENPETE_POSTFX_PIPE_FAILED ((void*)(uintptr_t)1)
+typedef struct {
+    const uint32_t* frag_spv;
+    size_t          frag_words;
+    const void*     uniforms;
+    uint32_t        uniforms_len;
+    void**          pipeline_slot;
+    const char*     owner;
+} openpete_postfx_pass_t;
+int  openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
+                                  int cap);
+int  openpete_mods_postfx_take_retired(void** out, int cap);
+void openpete_mods_postfx_remove_owner(const char* mod_id);
+void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
+/* Enabled-list position of a mod (0-based load order; -1 unknown). */
+int  openpete_mods_load_index_of(openpete_mod_t* self);
 int openpete_mods_pipeline_register(openpete_mod_t* self,
                                     const openpete_mod_pipeline_desc_t* desc);
 int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,

@@ -67,7 +67,9 @@ layout(set = 3, binding = 0, std140) uniform op_engine_ubo {
 };
 
 #ifdef OP_POSTFX_STAGE_FRAGMENT
-layout(location = 0) in  vec2 op_uv;     /* [0,1]² across the pass */
+layout(location = 0) in  vec2 op_uv;     /* [0,1]²; (0,0) = TOP-left —
+                                          * sample op_prev_pass at op_uv
+                                          * for the identity mapping */
 layout(location = 0) out vec4 op_color;
 #endif
 
