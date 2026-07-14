@@ -94,6 +94,11 @@ bool rhi_begin_frame(rhi_device *dev);
  * so a ring must thread the current slot through both). */
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a);
 void rhi_end_offscreen(rhi_device *dev);
+/* Re-begin the offscreen pass LOADing off_image's existing contents (the
+ * SCENE postfx point, S5): after a SCENE-point chain post-processed the
+ * scene into off_image (leaving it TRANSFER_SRC), resume drawing (HUD)
+ * over it. Depth clears. Pairs with rhi_end_offscreen. */
+void rhi_begin_offscreen_load(rhi_device *dev);
 
 /* Blit the offscreen color target onto the acquired swapchain image
  * (linear filter; handles the required layout transitions). */

@@ -89,6 +89,7 @@ struct rhi_device {
     /* Offscreen color target (== swapchain extent). SSAA supersampling lives in
      * the renderer as a separate render target that resolves into this. */
     VkRenderPass   off_rp;
+    VkRenderPass   off_load_rp;   /* off_rp but color LOADs (SCENE postfx re-begin, S5) */
     /* Render-to-texture pass: same attachment formats as off_rp (so off_rp-built
      * pipelines are compatible) but the color attachment ends in
      * SHADER_READ_ONLY_OPTIMAL so the result can be sampled the same frame. */
@@ -689,6 +690,22 @@ static bool create_render_pass(rhi_device *dev)
     };
     VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->off_rp);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass failed: %d\n", (int)r); return false; }
+
+    /* LOAD variant (SCENE postfx point, S5): identical attachments so it
+     * shares off_fb, but the color attachment LOADs its existing contents
+     * (initialLayout COLOR_ATTACHMENT — the caller barriers off_image
+     * TRANSFER_SRC → COLOR before begin) instead of clearing, so HUD draws
+     * land ON TOP of a scene that a SCENE-point chain already post-
+     * processed. Depth still CLEARs (HUD self-clears depth anyway; the
+     * scene pass discarded it). Only the external→subpass color-acquire
+     * dependency differs (LOAD reads the attachment), so keep the same
+     * dep set; drop the WAR dep's relevance by keeping it (harmless). */
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentDescription atts_load[2] = { color, depth };
+    rci.pAttachments = atts_load;
+    r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->off_load_rp);
+    if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass (load) failed: %d\n", (int)r); return false; }
     return true;
 }
 
@@ -1317,6 +1334,7 @@ void rhi_destroy(rhi_device *dev)
     }
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
+    if (dev->off_load_rp) vkDestroyRenderPass(dev->device, dev->off_load_rp, NULL);
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
     if (dev->rt_ds_rp) vkDestroyRenderPass(dev->device, dev->rt_ds_rp, NULL);
 
@@ -1404,6 +1422,11 @@ bool rhi_begin_frame(rhi_device *dev)
     return true;
 }
 
+static void image_barrier(VkCommandBuffer cb, VkImage img,
+                          VkImageLayout from, VkImageLayout to,
+                          VkAccessFlags src_access, VkAccessFlags dst_access,
+                          VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage);
+
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
 {
     if (!dev->frame_active) return;
@@ -1441,6 +1464,43 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
      * invalidates dynamic depth bias, so callers must set it after every
      * depth_bias pipeline bind (see rhi.h). */
     vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
+}
+
+/* Re-begin the offscreen pass LOADing off_image's existing contents
+ * (SCENE postfx point, S5): after a SCENE-point chain post-processed the
+ * scene and left off_image in TRANSFER_SRC, transition it back to a
+ * color attachment and resume drawing (the HUD) over it. Depth CLEARs
+ * (the HUD clears depth itself). Pairs with rhi_end_offscreen. */
+void rhi_begin_offscreen_load(rhi_device *dev)
+{
+    if (!dev->frame_active) return;
+    image_barrier(dev->cmd[dev->frame], dev->off_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    VkClearValue cv[2];
+    memset(&cv[0], 0, sizeof cv[0]);   /* color LOADs; value ignored */
+    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0;
+    VkRenderPassBeginInfo rp = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = dev->off_load_rp,
+        .framebuffer = dev->off_fb,
+        .renderArea = { .offset = {0, 0}, .extent = dev->sc_extent },
+        .clearValueCount = 2,
+        .pClearValues = cv,
+    };
+    vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
+    dev->cur_extent = dev->sc_extent;
+    VkViewport vp = {
+        .x = 0.0f, .y = (float)dev->sc_extent.height,
+        .width = (float)dev->sc_extent.width, .height = -(float)dev->sc_extent.height,
+        .minDepth = 0.0f, .maxDepth = 1.0f,
+    };
+    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->sc_extent };
+    vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
+    vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
 }
 
 void rhi_end_offscreen(rhi_device *dev)

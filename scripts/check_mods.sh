@@ -800,6 +800,49 @@ else
     bad "per-instance split not observed (peak='$inst_peak'; see $WORK/inst.log)"
 fi
 
+# ── mod shaders S5: the SCENE injection point processes the 3D scene
+# UNDER the HUD. scene-sepia sepia-tones the scene at the SCENE point,
+# then draws a yellow HUD marker AFTER. The decisive proof is that the
+# marker stays PURE YELLOW: if the SCENE split were broken (effect ran
+# over everything, or the load-rebegin lost the scene), the marker
+# would be sepia'd or the scene black. Assert the marker is yellow
+# (under-HUD) AND a scene sample is sepia (SCENE ran). Windowed + a
+# real level (--skip-to-level 10) so the frame has 3D content.
+say "mod shaders: SCENE point processes the scene under the HUD"
+if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
+    fixture "$WORK/sepia" scene-sepia
+    timeout 300 "$BIN" --disc "$DISC" --run-recomp 0x80012204 \
+        --skip-to-level 10 --frame-limit 1400 --mods-dir "$WORK/sepia" \
+        --record "$WORK/sepia/probe.mkv" > "$WORK/sepia.log" 2>&1 || true
+    if [ -s "$WORK/sepia/probe.mkv" ] &&
+       ffmpeg -y -loglevel error -ss 18 -i "$WORK/sepia/probe.mkv" \
+              -frames:v 1 "$WORK/sepia/frame.png" 2>/dev/null; then
+        sepia_v=$(python3 - "$WORK/sepia/frame.png" <<'PYEOF'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size; px = im.load()
+hud = px[int(w*0.09), int(h*0.09)]           # the mod's HUD marker (post-SCENE)
+sc  = px[int(w*0.5),  int(h*0.6)]            # 3D scene
+hud_yellow = hud[0] > 200 and hud[1] > 200 and hud[2] < 70
+scene_sepia = sc[0] >= sc[1] >= sc[2] and (sc[0] - sc[2]) > 15 and sc[0] > 40
+print("OK" if hud_yellow and scene_sepia else f"BAD hud={hud} scene={sc}")
+PYEOF
+)
+        if [ "$sepia_v" = "OK" ]; then
+            ok "HUD marker crisp yellow over a sepia scene — SCENE runs under the HUD"
+        else
+            bad "SCENE under-HUD not confirmed ($sepia_v — see $WORK/sepia.log)"
+        fi
+    elif grep -qiE "no vulkan|no display|surface|failed to (create|open)" "$WORK/sepia.log"; then
+        ok "no display for the windowed SCENE record — assertion skipped"
+    else
+        bad "recording failed for the SCENE rung (see $WORK/sepia.log)"
+    fi
+else
+    ok "ffmpeg/PIL unavailable — SCENE recording assertion skipped"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

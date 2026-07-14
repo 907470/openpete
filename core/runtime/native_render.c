@@ -219,6 +219,10 @@ static int tag_tint_on(void) {
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
 static void draw_mod_meshes(void);
+/* Postfx executor + SCENE-point split (S3/S5) — defined below the
+ * postfx typedef; compose_variant (above them) calls via these decls. */
+static int native_postfx_run(int point, rhi_texture* target, int w, int h);
+static int native_postfx_point_active(int point);
 /* Shared with the postfx executor below (S3): the build-failed pipeline
  * sentinel and the engine/mod UBO — draw_tex_runs' material overrides
  * (S8a) bind them from earlier in the file. */
@@ -4613,6 +4617,23 @@ enum { NRV_VK = 0, NRV_AB = 1, NRV_DIFF = 2 };
  * NRV_DIFF — native_rtt is allocated. Returns true iff the diff pass actually
  * ran (scene non-empty + reference present), so the caller can fold per-frame
  * --render-stats. Shared by the live render path and the screenshot-all dump. */
+/* SCENE injection point (S5): called INSIDE the live offscreen pass,
+ * right after the scene is composed into off_image and BEFORE the HUD
+ * draws. If a SCENE-point chain is enabled, end the pass, run the chain
+ * over the scene (depth available at set 1), and re-begin LOADing the
+ * post-processed scene so the HUD lands crisp on top. Inert (no pass
+ * split, byte-identical) when no SCENE pass is enabled. Live vk only —
+ * the caller gates on NRV_VK. */
+static void scene_postfx_split(void)
+{
+    if (!native_postfx_point_active(1 /* OP_POSTFX_SCENE */)) return;
+    int w = 0, h = 0;
+    rhi_swapchain_extent(s_nr.dev, &w, &h);
+    rhi_end_offscreen(s_nr.dev);                 /* scene → off_image (TRANSFER_SRC) */
+    native_postfx_run(1 /* SCENE */, NULL, w, h);/* chain over off_image, blit back */
+    rhi_begin_offscreen_load(s_nr.dev);          /* resume for HUD, scene preserved */
+}
+
 static bool compose_variant(int variant, bool have_ref)
 {
     int sn; uint32_t sbg, sfade, sfreeze;
@@ -4702,6 +4723,7 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 0);
         }
+        scene_postfx_split();                     /* SCENE point (S5): scene→chain→HUD */
         draw_mod_meshes();                        /* mod 3D (S7 — under mod HUD) */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
@@ -4750,8 +4772,8 @@ static bool compose_variant(int variant, bool have_ref)
         }
     }
 
-    /* Mod HUD overlay — vk variant, live + record composes (content). */
-    if (variant == NRV_VK) { draw_mod_meshes(); draw_mod_overlay(); }
+    /* SCENE point (S5) then mod HUD — vk variant, live + record composes. */
+    if (variant == NRV_VK) { scene_postfx_split(); draw_mod_meshes(); draw_mod_overlay(); }
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
@@ -5083,10 +5105,17 @@ static void pfx_drain_retired(void) {
 
 /* Run the chain. target == NULL → over off_image (live present);
  * else over the given compose RT (screenshot-all). Returns pass count. */
-static int native_postfx_run(rhi_texture* target, int w, int h)
+/* Any enabled postfx pass at `point`? Cheap gate for the SCENE split. */
+static int native_postfx_point_active(int point)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
-    int n = openpete_mods_postfx_collect(0 /* COMPOSITE */, pass, PFX_MAX_PASSES);
+    return openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES) > 0;
+}
+
+static int native_postfx_run(int point, rhi_texture* target, int w, int h)
+{
+    openpete_postfx_pass_t pass[PFX_MAX_PASSES];
+    int n = openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES);
     if (n <= 0 || w <= 0 || h <= 0) return 0;
     if (!s_pfx_ubo)
         s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
@@ -5411,7 +5440,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         pfx_drain_retired();
         int pw = 0, ph = 0;
         rhi_swapchain_extent(s_nr.dev, &pw, &ph);
-        native_postfx_run(NULL, pw, ph);
+        native_postfx_run(0 /* COMPOSITE */, NULL, pw, ph);
     }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
                  openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
@@ -5532,7 +5561,7 @@ static int native_render_screenshot_all_impl(const char *base)
         /* Mod postfx over the dump compose too — this path bypasses
          * off_image, so without this call a headless/screenshot-all gate
          * would pass vacuously (plan-review trap). */
-        native_postfx_run(s_nr.native_rtt, W, H);
+        native_postfx_run(0 /* COMPOSITE */, s_nr.native_rtt, W, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);

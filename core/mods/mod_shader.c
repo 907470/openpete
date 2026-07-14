@@ -604,9 +604,9 @@ int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                     "hook (register at entry)", id);
         return -1;
     }
-    if (point != 0 /* OP_POSTFX_COMPOSITE */) {
-        OPL_WARN_F("mods", "%s: postfx point %d is not available yet "
-                   "(COMPOSITE only)", id, point);
+    if (point != 0 /* COMPOSITE */ && point != 1 /* SCENE */) {
+        OPL_WARN_F("mods", "%s: postfx point %d not available "
+                   "(COMPOSITE / SCENE; PRESENT is future)", id, point);
         return -1;
     }
     size_t words = 0; int stage = -1;

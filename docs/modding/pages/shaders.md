@@ -57,18 +57,28 @@ api->postfx_set_uniforms(self, fx, &params, sizeof params);   /* copied; any con
 api->postfx_enable(self, fx, 1);
 ```
 
-`OP_POSTFX_COMPOSITE` runs after the scene+HUD compose, before the
-present blit, on **every present** (canonical and sub-tick). Pass order
+Two injection points:
+
+- `OP_POSTFX_COMPOSITE` runs after the scene **and HUD** are composed,
+  before the present blit — the whole frame, including the HUD.
+- `OP_POSTFX_SCENE` runs after the 3D scene but **before the HUD**, so
+  effects (grading, fog) tint the world while the HUD stays crisp on
+  top. It also gets real scene depth at `op_scene_depth`. (`PRESENT`,
+  post-blit, is future — identical to COMPOSITE until an upscaler
+  exists.)
+
+Both run on **every present** (canonical and sub-tick). Pass order
 across mods = enabled-list priority; `order` breaks ties within a mod.
 Inputs per the contract: `op_prev_pass` (set 0), `op_scene_depth`
-(set 1 — WORLD-opaque pre-pass depth), `op_prev_frame` (set 2,
-temporal). The engine block (`op_engine`, set 3 binding 0) carries
-time, canonical tick, **interp alpha** (the same value your present
-hooks see), resolutions, aspect. Your own block is set 3 binding 1 —
-declare it `std140` and mirror the layout in your C struct by hand
-(`postfx_set_uniforms` bytes arrive verbatim; 1 KiB cap). See
-`mods/crt-filter` for the whole pattern including config.toml-driven
-parameters.
+(set 1 — the WORLD-opaque pre-pass depth, most meaningful at the SCENE
+point; note it covers opaque terrain, not mobys), `op_prev_frame`
+(set 2, temporal). The engine block (`op_engine`, set 3 binding 0)
+carries time, canonical tick, **interp alpha** (the same value your
+present hooks see), resolutions, aspect. Your own block is set 3
+binding 1 — declare it `std140` and mirror the layout in your C struct
+by hand (`postfx_set_uniforms` bytes arrive verbatim; 1 KiB cap). See
+`mods/crt-filter` (COMPOSITE, config-driven) and `mods/scene-sepia`
+(SCENE, under-HUD) for the whole pattern.
 
 ## Custom-pipeline draws
 

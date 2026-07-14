@@ -1,0 +1,16 @@
+# scene-sepia — SCENE injection-point gallery rung (mod-shaders S5).
+# A SCENE-point postfx sepia-tones the 3D scene, then the mod draws a
+# HUD marker AFTER — which stays crisp full-colour, proving the SCENE
+# point runs UNDER the HUD (the property that distinguishes SCENE from
+# COMPOSITE, which would tint the HUD too). GPU-only: sim-neutral.
+
+[mod]
+id = "scene-sepia"
+name = "Scene Sepia"
+version = "0.1.0"
+api = 2
+sim_neutral = true
+
+[test]
+frames = 4000
+gameplay_neutral = true
