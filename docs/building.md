@@ -87,12 +87,28 @@ to before the distribution work, so the dev loop is unchanged.
 it (the hybrid decomp path is static-only). The `*-shared` presets also
 pin `OPENPETE_ROM_FREE_ICON=ON` so no game bytes are baked in.
 
-### Preset-pinned cache variables
+### Where preset knobs live: `cmake/presets/<preset>.cmake`
 
-What `CMakePresets.json` deliberately pins where (beyond
-`CMAKE_BUILD_TYPE`):
+`CMakePresets.json` deliberately pins almost **no** cache variables.
+Each preset pins exactly one: `CMAKE_PROJECT_openpete_INCLUDE`, an
+immutable pointer at a tracked `cmake/presets/<preset>.cmake` file that
+CMake re-executes at the end of `project()` on **every** reconfigure.
+All the real knobs are plain `set()`s /
+`openpete_preset_default()`s in those files (inheritance is an explicit
+`include()`, e.g. `windows-mingw-opt.cmake` includes
+`windows-mingw.cmake`). This kills the sticky-cache footgun described
+below: the preset files are configure inputs, so editing one
+auto-reconfigures every build dir — every worktree — on its next plain
+`cmake --build`, and adding/changing/removing a knob never needs a
+`cmake --preset` re-run.
 
-| Cache variable | Pinned by | Why |
+The only survivors in `CMakePresets.json` are things CMake needs before
+`project()` finishes: `generator`, `binaryDir`, `toolchainFile`, and
+`CMAKE_OSX_ARCHITECTURES` on the macOS placeholder.
+
+What the preset files pin (beyond `CMAKE_BUILD_TYPE`):
+
+| Variable | Set by preset file | Why |
 |----------------|-----------|-----|
 | `OPENPETE_SKIP_DECOMP=ON` | `linux-release`, `windows-mingw*`, `wasm` | full-recompilation mode; only `linux-debug` builds the WIP hybrid decomp path |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64-v3` | `windows-mingw*` | portable perf floor for distributable Windows binaries |
@@ -110,32 +126,48 @@ mods — native presets via the exe's `--compile-mods` mode, cross
 presets cmake-side) and `OPENPETE_COMPILE_MODS_DIR` (the mods root that
 tier runs over, default `<repo>/mods`).
 
-### Cache variables are sticky — re-run `cmake --preset` after preset edits
+### Cache variables are sticky — why the preset files exist
 
 CMake presets only inject `cacheVariables` when you run
 `cmake --preset <p>`. A `cmake --build --preset <p>` (or any incremental
 rebuild) reuses the existing `CMakeCache.txt` as-is — it re-runs the
 configure step when CMake files change, but **never re-reads
-`CMakePresets.json`**. Two failure modes follow:
+`CMakePresets.json`**. When presets carried the knobs directly, two
+failure modes followed: an added/changed variable silently didn't apply
+until a `cmake --preset` re-run, and a *removed* variable stayed in the
+cache forever (`cmake --preset` never unsets anything). The removed-var
+case once kept `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` alive in
+`build/windows-mingw-shared` after the preset dropped it, producing the
+DEP crash above — it "reproduced" at known-good commits (checking out
+old code doesn't touch the poisoned cache) and masqueraded as a
+toolchain regression. Worktrees multiplied the exposure: every build
+dir configured at a different time held a different snapshot.
 
-- **Added/changed var doesn't apply.** If a preset gains a variable (or
-  changes a value), every already-configured build dir keeps its old
-  cache until you re-run `cmake --preset <p>`. That command is safe on a
-  warm tree — it re-applies the preset's variables without nuking
-  anything else.
-- **Removed var keeps applying.** `cmake --preset` never *unsets* a
-  variable the preset stops mentioning; it stays in the build dir's
-  cache forever. This is the nastier one — it once kept
-  `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` alive in
-  `build/windows-mingw-shared` after the preset dropped it, producing
-  the DEP crash above that "reproduced" at known-good commits (checking
-  out old code doesn't touch the poisoned cache) and masqueraded as a
-  toolchain regression. Remove it explicitly
-  (`cmake -U <VAR> build/<preset>`) or wipe the build dir.
+The `cmake/presets/*.cmake` scheme removes the exposure by
+construction — the only preset-pinned cache entry is a pointer whose
+value never changes. What's still sticky, deliberately:
 
-When a build behaves as if a flag you removed were still set — or a flag
-you added weren't — `grep <VAR> build/<preset>/CMakeCache.txt` **before**
-suspecting the environment or toolchain.
+- **`-DVAR=...` on a preset build dir.** A command-line override beats
+  the preset file (detected via the cache entry's command-line
+  HELPSTRING) and persists until you drop it:
+  `cmake --preset <p> -U <VAR>`.
+- **The `CMakePresets.json` survivors** (generator, binaryDir,
+  toolchainFile, the include pointer). These are stable by design; if
+  one ever changes, existing build dirs need a `cmake --preset <p>`
+  re-run (or a wipe, for generator/toolchain changes).
+
+**Migrating a build dir configured before this scheme** (e.g. in
+another worktree): the old preset-injected entries carry the
+command-line HELPSTRING, so they'd be mistaken for deliberate
+overrides. Purge them once:
+
+```bash
+cmake --preset <p> -U "OPENPETE_*" -U "CMAKE_INTERPROCEDURAL_OPTIMIZATION"
+```
+
+When a build still behaves as if a flag were set that shouldn't be,
+`grep <VAR> build/<preset>/CMakeCache.txt` **before** suspecting the
+environment or toolchain.
 
 ### Dev build (static — what you use to iterate)
 
@@ -198,10 +230,13 @@ package is required.
 
 ## Troubleshooting
 
-- **A cache variable you added/removed in `CMakePresets.json` isn't
-  taking effect** — preset variables are sticky; see "Cache variables
-  are sticky" above. Re-run `cmake --preset <p>` (additions/changes) or
-  `cmake -U <VAR> build/<preset>` (removals).
+- **A preset knob isn't taking effect** — knobs live in
+  `cmake/presets/<preset>.cmake` (see "Where preset knobs live" above)
+  and propagate on any plain build. If one doesn't: the build dir
+  either predates the pointer scheme (run the one-time migration
+  command above) or holds a `-D` override
+  (`grep <VAR> build/<preset>/CMakeCache.txt`; drop it with
+  `cmake --preset <p> -U <VAR>`).
 - **`cmake: command not found`** — install via your package manager. Minimum
   version is 3.22.
 - **SDL fails to configure/build** — ensure the `third_party/SDL/`

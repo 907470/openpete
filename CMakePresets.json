@@ -8,11 +8,11 @@
   "configurePresets": [
     {
       "name": "linux-debug",
-      "displayName": "Linux native (Debug)",
+      "displayName": "Linux native (Debug, hybrid decomp mode)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/linux-debug.cmake"
       }
     },
     {
@@ -21,8 +21,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "OPENPETE_SKIP_DECOMP": "ON"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/linux-release.cmake"
       }
     },
     {
@@ -32,10 +31,7 @@
       "binaryDir": "${sourceDir}/build/windows-mingw",
       "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64.cmake",
       "cacheVariables": {
-        "OPENPETE_SKIP_DECOMP": "ON",
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_C_FLAGS": "-march=x86-64-v3",
-        "CMAKE_CXX_FLAGS": "-march=x86-64-v3"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw.cmake"
       }
     },
     {
@@ -44,8 +40,7 @@
       "inherits": "windows-mingw",
       "binaryDir": "${sourceDir}/build/windows-mingw-opt",
       "cacheVariables": {
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "OPENPETE_HIDE_DEBUG_FLAGS": "ON"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw-opt.cmake"
       }
     },
     {
@@ -57,7 +52,7 @@
         "value": "x64"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-msvc.cmake"
       }
     },
     {
@@ -66,7 +61,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/macos-universal",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/macos-universal.cmake",
         "CMAKE_OSX_ARCHITECTURES": "x86_64;arm64"
       }
     },
@@ -77,10 +72,7 @@
       "binaryDir": "${sourceDir}/build/wasm",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "OPENPETE_SKIP_DECOMP": "ON",
-        "OPENPETE_BUILD_PCSX_REDUX_GTE": "OFF",
-        "OPENPETE_BUILD_TESTS": "OFF"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/wasm.cmake"
       }
     },
     {
@@ -89,10 +81,7 @@
       "inherits": "linux-release",
       "binaryDir": "${sourceDir}/build/linux-release-shared",
       "cacheVariables": {
-        "OPENPETE_RECOMP_LINKAGE": "shared",
-        "OPENPETE_ROM_FREE_ICON": "ON",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "OPENPETE_ENABLE_RECORD": "OFF"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/linux-release-shared.cmake"
       }
     },
     {
@@ -101,10 +90,7 @@
       "inherits": "windows-mingw",
       "binaryDir": "${sourceDir}/build/windows-mingw-shared",
       "cacheVariables": {
-        "OPENPETE_RECOMP_LINKAGE": "shared",
-        "OPENPETE_STAGE_MOD_DLLS": "OFF",
-        "OPENPETE_ROM_FREE_ICON": "ON",
-        "OPENPETE_ENABLE_RECORD": "OFF"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw-shared.cmake"
       }
     }
   ],
