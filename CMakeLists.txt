@@ -56,6 +56,26 @@ add_subdirectory(third_party/SDL)
 # Which games to enable. Phase 0b only spyro-1 is wired up.
 set(OPENPETE_GAMES "spyro-1" CACHE STRING "Games to build (semicolon-separated)")
 
+# In-process GLSL→SPIR-V for the mod shader compile service
+# (notes/plans/openpete-mod-shaders.md S1). glslang 15.4.0 pinned:
+# C++17 under GCC 10 (the MinGW cross compiler's ceiling — same
+# constraint that keeps pcsx_redux_gte off for Windows), targets
+# vulkan1.0 like the engine's own glslangValidator -V builds. OFF is a
+# degraded build: mods' prebuilt .spv still load, GLSL sources refuse
+# with a log pointer.
+option(OPENPETE_BUILD_GLSLANG
+       "Build third_party/glslang for the mod shader compile service" ON)
+if(OPENPETE_BUILD_GLSLANG)
+    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)         # no SPIRV-Tools dep
+    set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+    set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
+    set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/glslang)
+endif()
+
 # PsyCross integration (Phase 1c+). Builds the static lib and links it
 # into openpete_core; psyq_thunks.cpp routes recompiled PSYQ calls into
 # PsyCross. PsyCross's CMake calls find_package(OpenAL REQUIRED), so a

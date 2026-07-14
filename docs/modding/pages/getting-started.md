@@ -31,7 +31,7 @@ code.
 id      = "hello"
 name    = "Hello"
 version = "0.1.0"
-api     = 1
+api     = 2
 sim_neutral = true   # log-only observer: never touches guest state
 ```
 

@@ -29,6 +29,12 @@ BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 SMOKE_FRAMES="${OPENPETE_MODTEST_FRAMES:-8000}"
 
+# Fixture manifests pin the CURRENT api version (derived from the SDK
+# header so an api bump can never silently disable the fixtures).
+API_VER="$(sed -n 's/#define OPENPETE_MOD_API_VERSION \([0-9]*\)u/\1/p' \
+           core/include/openpete_mod_api.h)"
+[ -n "$API_VER" ] || { echo "cannot derive OPENPETE_MOD_API_VERSION" >&2; exit 1; }
+
 fail=0
 say()  { printf '\n[modtest] %s\n' "$*"; }
 ok()   { printf '[modtest]   PASS: %s\n' "$*"; }
@@ -126,7 +132,7 @@ say "lib-and-client: dependency cycle — both disabled, run survives"
 for m in cycle-x cycle-y; do
     other=cycle-y; [ "$m" = cycle-y ] && other=cycle-x
     mkdir -p "$WORK/cycsrc/$m/src"
-    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = 1\ndeps = ["%s"]\n' \
+    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\ndeps = ["%s"]\n' \
         "$m" "$other" > "$WORK/cycsrc/$m/mod.toml"
     printf '#include <openpete_mod_api.h>\nint openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* s){(void)a;(void)s;return 0;}\n' \
         > "$WORK/cycsrc/$m/src/m.c"
@@ -170,9 +176,9 @@ for m in adv-a adv-b; do
     printf '#include <openpete_mod_api.h>\nint openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* s){(void)a;(void)s;return 0;}\n' \
         > "$WORK/advsrc/$m/src/m.c"
 done
-printf '[mod]\nid = "adv-a"\nversion = "0.0.1"\napi = 1\n' \
+printf '[mod]\nid = "adv-a"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/advsrc/adv-a/mod.toml"
-printf '[mod]\nid = "adv-b"\nversion = "0.0.1"\napi = 1\nabove = ["adv-a"]\n' \
+printf '[mod]\nid = "adv-b"\nversion = "0.0.1"\napi = '"$API_VER"'\nabove = ["adv-a"]\n' \
     > "$WORK/advsrc/adv-b/mod.toml"
 mkdir -p "$WORK/adv"
 ln -sfn "$WORK/advsrc/adv-a" "$WORK/adv/adv-a"
@@ -200,7 +206,7 @@ fi
 # ── 7. decomp promotion: legacy raw alias resolves + warns (churn test) ─
 say "promotion contract: override via legacy raw name of a renamed fn"
 mkdir -p "$WORK/aliassrc/alias-probe/src"
-printf '[mod]\nid = "alias-probe"\nversion = "0.0.1"\napi = 1\n' \
+printf '[mod]\nid = "alias-probe"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/aliassrc/alias-probe/mod.toml"
 cat > "$WORK/aliassrc/alias-probe/src/m.c" <<'EOF'
 #include <openpete_mod_api.h>
@@ -248,7 +254,7 @@ fi
 say "asset overlay: two mods collide on one asset — last in order wins (rung 10)"
 for m in duel-a duel-b; do
     mkdir -p "$WORK/duelsrc/$m/assets/textures/replacements"
-    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = 1\n' "$m" \
+    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
         > "$WORK/duelsrc/$m/mod.toml"
     python3 - "$WORK/duelsrc/$m/assets/textures/replacements/title_ui.png" <<'PY'
 import sys, zlib, struct
@@ -291,7 +297,7 @@ fi
 # ── 9. level-segment overlay: CdRead chokepoint (rung 9) ────────────────
 say "wad overlay: byte-identical blob — chokepoint provably transparent"
 mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"
-printf '[mod]\nid = "wad-identity"\nversion = "0.0.1"\napi = 1\n' \
+printf '[mod]\nid = "wad-identity"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/wadsrc/wad-identity/mod.toml"
 if python3 tools/extract_wad_entry.py --disc "$DISC" --level 11 \
         --out "$WORK/wadsrc/wad-identity/assets/wad/level11.data.bin" \
@@ -318,7 +324,7 @@ fi
 
 say "wad overlay: recoloured blob loads clean (bg-colour patch)"
 mkdir -p "$WORK/wadsrc/wad-recolor/assets/wad"
-printf '[mod]\nid = "wad-recolor"\nversion = "0.0.1"\napi = 1\n' \
+printf '[mod]\nid = "wad-recolor"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/wadsrc/wad-recolor/mod.toml"
 if python3 tools/extract_wad_entry.py --disc "$DISC" --level 10 \
         --recolor-bg 255,0,255 \
@@ -618,7 +624,7 @@ fi
 # re-runs entry — "v2 alive" must appear in the SAME session.
 say "hot reload: mid-run source edit goes live in-session"
 mkdir -p "$WORK/hotsrc/hot-greeter/src"
-printf '[mod]\nid = "hot-greeter"\nversion = "0.0.1"\napi = 1\n' \
+printf '[mod]\nid = "hot-greeter"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/hotsrc/hot-greeter/mod.toml"
 cat > "$WORK/hotsrc/hot-greeter/src/greet.c" <<'CEOF'
 #include <openpete_mod_api.h>

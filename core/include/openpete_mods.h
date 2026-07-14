@@ -368,6 +368,35 @@ void openpete_mods_sfx_bank_reset(void);
 
 /* Mod identity (mod_loader.c): stable id string, NULL-safe. */
 const char* openpete_mods_id_of(openpete_mod_t* self);
+/* Mod directory + the staged SDK directory (mod_loader.c), NULL-safe. */
+const char* openpete_mods_dir_of(openpete_mod_t* self);
+const char* openpete_mods_sdk_dir(void);
+
+/* ── Mod shaders (mod_shader.c) ───────────────────────────────────────
+ * GLSL compile service (tier S1 of plans/openpete-mod-shaders.md) +
+ * refusing stubs for the later tiers (slots exist from api v2). */
+int openpete_mods_shader_register(openpete_mod_t* self, const char* path);
+/* SPIR-V words for a live handle (NULL = bad/swept handle). stage is a
+ * glslang_stage_t value (vertex/fragment). */
+const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
+                                         int* stage);
+void openpete_mods_shader_remove_owner(const char* mod_id);
+/* Hot-reload watch: content hash of <mod>/shaders/ ("-" if absent). */
+int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]);
+int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
+                                  int point, int order);
+int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled);
+int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
+                                      const void* data, uint32_t size);
+int openpete_mods_pipeline_register(openpete_mod_t* self,
+                                    const openpete_mod_pipeline_desc_t* desc);
+int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,
+                            const void* verts, int vert_count,
+                            uint16_t texture_id);
+int openpete_mods_material_register(openpete_mod_t* self,
+                                    const openpete_mod_material_selector_t* sel,
+                                    int vert_shader, int frag_shader,
+                                    openpete_mod_material_fn per_instance);
 
 /* Loader-facing (wired into the mod api). */
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,

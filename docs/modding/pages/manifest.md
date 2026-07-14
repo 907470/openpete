@@ -10,7 +10,7 @@ The manifest describes what the mod **is**. Everything except
 id      = "my-mod"        # must match the directory (or zip) name
 name    = "My Mod"
 version = "0.1.0"
-api     = 1               # SDK api-version pin (OPENPETE_MOD_API_VERSION)
+api     = 2               # SDK api-version pin (OPENPETE_MOD_API_VERSION)
 deps    = ["other-mod"]   # hard deps: topo-sorted, cycles rejected,
                           # missing dep = actionable error
 above   = ["x"]           # advisory: must be listed AFTER x in

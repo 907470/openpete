@@ -1,0 +1,31 @@
+# supercharge-anywhere — toggle Spyro's supercharge state on ANY level,
+# not just the ones with supercharge ramps. Ports the practice-ROM
+# feature (C0mposer/Spyro-1-Practice-Rom) onto the openpete mod API.
+#
+# Mechanic: the running-state physics (func_80043FE4) applies the
+# supercharge speed/height behaviour whenever g_Spyro.m_doingSupercharge
+# (offset 0x250) is non-zero. Normally that flag is only raised by a
+# supercharge-ramp special surface (ApplySpecialSurfaceEffects case 4 ->
+# damage flag 0x2000 -> HandleSpyroDamage). This mod forces the flag on
+# each frame, so supercharge works everywhere.
+
+[mod]
+id      = "supercharge-anywhere"
+name    = "Supercharge Anywhere"
+version = "0.3.0"
+api     = 2
+
+[[binding]]
+name    = "toggle"
+key     = "G"
+purpose = "toggle supercharge-anywhere on/off"
+
+# Smoke test: the mod's gameplay divergence is input-dependent (it only
+# writes when Spyro is actively ground-charging, which the attract demo
+# doesn't reliably do), so we assert load + the per-level animation status
+# line rather than an oracle verdict. The trigger + injection are validated
+# separately with the level-charge bk2 and capture/inject runs.
+[test]
+frames        = 8000
+expect_oracle = "skip"
+expect_log    = ["supercharge anim ="]

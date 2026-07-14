@@ -52,6 +52,7 @@ add_library(openpete_core STATIC
     mods/mod_sfx.c
     mods/mod_texture.c
     mods/mod_config.c
+    mods/mod_shader.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
 
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
@@ -183,6 +184,19 @@ set_target_properties(openpete_core PROPERTIES
 # SDL3 is required for window/render/screenshot. Built from the
 # third_party/SDL submodule (see top-level CMakeLists.txt).
 target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)
+
+# In-process glslang for the mod shader compile service (mod_shader.c).
+# Include the repo root (for <glslang/Include/glslang_c_interface.h> and
+# <glslang/Public/resource_limits_c.h>) and the generated build_info.h.
+if(OPENPETE_BUILD_GLSLANG)
+    target_link_libraries(openpete_core PUBLIC
+        glslang glslang-default-resource-limits)
+    target_include_directories(openpete_core PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_BINARY_DIR}/third_party/glslang/include)
+else()
+    target_compile_definitions(openpete_core PRIVATE OPENPETE_NO_GLSLANG)
+endif()
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);

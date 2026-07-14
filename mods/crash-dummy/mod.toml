@@ -9,4 +9,4 @@
 id      = "crash-dummy"
 name    = "Crash Dummy"
 version = "0.1.0"
-api     = 1
+api     = 2

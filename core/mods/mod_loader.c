@@ -129,6 +129,10 @@ struct openpete_mod {
     char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
                           * a config edit re-enters entry without a
                           * recompile — the cached object is reused) */
+    char  shader_key[65];/* <mod>/shaders/ content hash (hot-reload watch;
+                          * a shader-only edit reloads against the cached
+                          * C object — the per-shader .spv stamps decide
+                          * what actually recompiles) */
     int   has_src;       /* 0 = binary-only/assets-only: never compiled,
                           * skipped by the hot-reload watch */
     int   enabled;       /* live-toggle state (loaded mods start on) */
@@ -416,6 +420,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_site_detach_all(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
     openpete_mods_state_remove(mod->id);
+    openpete_mods_shader_remove_owner(mod->id);
     exports_remove_owner(mod->id);
 
     mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
@@ -476,6 +481,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
+    (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     if (!entry || entry(&s_api, mod) != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
                     mod->id);
@@ -508,12 +514,14 @@ static void hot_reload_poll(void) {
          * inside mod_hot_reload on a real change. config.toml is watched
          * too — a config-only edit reloads against the cached object, so
          * entry re-reads the fresh values. */
-        char key[65], ckey[65];
+        char key[65], ckey[65], skey[65];
         if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0)
             continue;
         (void)config_compute_key(mod->dir, ckey);
+        (void)openpete_mods_shader_watch_key(mod->dir, skey);
         if (strcmp(key, mod->build_key) != 0 ||
-            strcmp(ckey, mod->cfg_key) != 0)
+            strcmp(ckey, mod->cfg_key) != 0 ||
+            strcmp(skey, mod->shader_key) != 0)
             mod_hot_reload(mod);
     }
 }
@@ -787,6 +795,14 @@ const char* openpete_mods_id_of(openpete_mod_t* self) {
     return self ? self->id : NULL;
 }
 
+const char* openpete_mods_dir_of(openpete_mod_t* self) {
+    return self ? self->dir : NULL;
+}
+
+const char* openpete_mods_sdk_dir(void) {
+    return s_sdk_dir;
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     .override_addr = api_override_addr,
@@ -832,6 +848,13 @@ static const openpete_mod_api_t s_api = {
     .on_level        = api_on_level,
     .sfx_def_replace = api_sfx_def_replace,
     .guest_alloc_low = api_guest_alloc_low,
+    .shader_register     = openpete_mods_shader_register,
+    .postfx_register     = openpete_mods_postfx_register,
+    .postfx_enable       = openpete_mods_postfx_enable,
+    .postfx_set_uniforms = openpete_mods_postfx_set_uniforms,
+    .pipeline_register   = openpete_mods_pipeline_register,
+    .draw_mesh           = openpete_mods_draw_mesh,
+    .material_register   = openpete_mods_material_register,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -1340,6 +1363,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
     }
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
+    (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     int rc = entry(&s_api, mod);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",

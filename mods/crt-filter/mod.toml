@@ -1,0 +1,16 @@
+# crt-filter — the mod-shader demo (plans/openpete-mod-shaders.md S3).
+#
+# Ships GLSL source; the engine compiles it on load (S1 compile
+# service). Pure postfx: reads the composed frame, writes pixels —
+# sim-neutral BY CONSTRUCTION (shaders cannot touch guest RAM).
+
+[mod]
+id      = "crt-filter"
+name    = "CRT Filter"
+version = "0.1.0"
+api     = 2
+sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
+
+[test]
+frames        = 4000
+gameplay_neutral = true

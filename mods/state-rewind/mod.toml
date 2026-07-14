@@ -15,7 +15,7 @@
 id      = "state-rewind"
 name    = "State Rewind"
 version = "0.1.0"
-api     = 1
+api     = 2
 
 [test]
 frames        = 8000

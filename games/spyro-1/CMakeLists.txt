@@ -436,6 +436,11 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_shader_api.glsl
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
     COMMENT "Staging mod SDK headers into <exe>/sdk/")
 
 # --- Build-time mod compile (notes/plans/openpete-mod-compile-on-boot.md)

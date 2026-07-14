@@ -17,7 +17,7 @@
 id      = "ghost-lite"
 name    = "Ghost Lite"
 version = "0.1.0"
-api     = 1
+api     = 2
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
 
 [test]

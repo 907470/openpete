@@ -84,7 +84,75 @@ enum {
     OP_MOD_LOG_ERROR = 4,
 };
 
-#define OPENPETE_MOD_API_VERSION 1u
+/* ── Mod shader types (see the shader sections in the struct below) ──
+ * Shaders are GPU-only: they can never touch guest RAM, so every shader
+ * tier is sim-neutral by construction. The C side may READ gameplay
+ * state to feed uniforms; nothing flows back. */
+
+/* Post-process injection points (postfx_register). Points are defined
+ * SEMANTICALLY, not by resolution. */
+enum {
+    OP_POSTFX_COMPOSITE = 0, /* after scene+HUD compose, before the present
+                              * blit — the first and default point */
+    OP_POSTFX_SCENE     = 1, /* post-3D, pre-HUD (not yet available) */
+    OP_POSTFX_PRESENT   = 2, /* post-blit, swapchain (not yet available) */
+};
+
+/* Vertex formats for custom-pipeline draws (pipeline_register). */
+enum {
+    OP_VTX_POS_UV_RGBA = 0,  /* float x,y,z; float u,v; uint32_t rgba —
+                              * 24 bytes per vertex, tightly packed */
+};
+
+/* Blend modes — the engine's PSX-derived set. */
+enum {
+    OP_BLEND_OPAQUE = 0,
+    OP_BLEND_AVG    = 1,     /* (back+front)/2 */
+    OP_BLEND_ADD    = 2,
+    OP_BLEND_SUB    = 3,
+    OP_BLEND_ADD4   = 4,     /* back + front/4 */
+};
+
+/* Custom-pipeline description (pipeline_register). Append-only, like
+ * the api struct itself; _reserved must be zero. */
+typedef struct openpete_mod_pipeline_desc {
+    int      vert_shader;    /* shader_register handle of a .vert */
+    int      frag_shader;    /* shader_register handle of a .frag */
+    int      vertex_format;  /* OP_VTX_* */
+    int      blend;          /* OP_BLEND_* */
+    int      depth_test;     /* nonzero = test against scene depth */
+    int      depth_write;    /* nonzero = write scene depth */
+    uint32_t _reserved[4];   /* zero */
+} openpete_mod_pipeline_desc_t;
+
+/* Material-selector target paths + flags (material_register). */
+enum {
+    OP_RP_MOBY    = 0,
+    OP_RP_TERRAIN = 1,
+};
+enum {
+    OP_SEL_ENV_ANIM = 1u << 0,  /* env-animated tile set (water/lava/portals) */
+    OP_SEL_HP_TIER  = 1u << 1,  /* high-poly terrain tier only */
+    OP_SEL_LP_TIER  = 1u << 2,  /* low-poly terrain tier only */
+};
+
+/* Declarative subset selector: which of the engine's own draws a
+ * registered material overrides. -1 = wildcard. */
+typedef struct openpete_mod_material_selector {
+    int      path;        /* OP_RP_* ; -1 = any path */
+    int      moby_class;  /* Moby m_Class; -1 = any (terrain: ignored) */
+    int      texture;     /* tiledef/texture id; -1 = any */
+    unsigned flags;       /* OP_SEL_* refinements, 0 = none */
+} openpete_mod_material_selector_t;
+
+/* Per-instance material callback: runs host-side at extraction for each
+ * matching instance. Fill uniform_out (<= cap bytes) and return the
+ * byte count to override this instance, or return -1 to decline (stock
+ * shading). READ-ONLY guest access; render-pure context rules apply. */
+typedef int (*openpete_mod_material_fn)(CPUState* cpu, uint32_t moby_vaddr,
+                                        void* uniform_out, uint32_t cap);
+
+#define OPENPETE_MOD_API_VERSION 2u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION */
@@ -487,6 +555,72 @@ typedef struct openpete_mod_api {
      * scratch. TICK context only. */
     uint32_t (*guest_alloc_low)(openpete_mod_t* self, uint32_t size,
                                 uint32_t align, void** host_view);
+
+    /* ── Mod shaders: GLSL compile service ───────────────────────────
+     * Register a GLSL shader by path relative to the mod directory
+     * (e.g. "shaders/crt.frag"); stage from the extension (.vert /
+     * .frag). The ENGINE compiles it to SPIR-V on load (in-process
+     * glslang, vulkan1.0 dialect — the same dialect as the engine's
+     * own shaders), content-hash cached under .build/shaders/. A
+     * prebuilt "<path>.spv" next to a MISSING source loads instead
+     * (binary-mod parity) but requires a "<path>.spv.ihash" sidecar
+     * matching the current shader-interface hash — a stale prebuilt
+     * refuses cleanly rather than misrendering. `#include
+     * "openpete_shader_api.glsl"` resolves to the SDK interface
+     * header; includes also resolve relative to the shader's own
+     * directory. Returns a shader handle >= 0, or -1 (missing file /
+     * compile error — see .build/shaders/<name>.log; the mod keeps
+     * loading, the effect is simply unavailable). Entry/tick context
+     * only. Sources join the dev hot-reload watch. */
+    int (*shader_register)(openpete_mod_t* self, const char* path);
+
+    /* ── Mod shaders: post-process chain ─────────────────────────────
+     * Fullscreen fragment passes at a named injection point
+     * (OP_POSTFX_*). Pass order across mods = enabled-list priority;
+     * `order` breaks ties within a mod (lower runs first). The pass
+     * samples the previous pass (set 0) and receives the engine UBO
+     * (time, tick, interp alpha, resolution — see
+     * sdk/shaders/openpete_shader_api.glsl) plus the mod's uniform
+     * block. postfx_set_uniforms COPIES data on call (<= 1024 bytes;
+     * push from tick or present hooks). postfx_register returns an fx
+     * handle >= 0 (registered DISABLED; call postfx_enable) or -1.
+     * Entry/tick context for register; enable/uniforms any context. */
+    int (*postfx_register)(openpete_mod_t* self, int frag_shader,
+                           int point, int order);
+    int (*postfx_enable)(openpete_mod_t* self, int fx, int enabled);
+    int (*postfx_set_uniforms)(openpete_mod_t* self, int fx,
+                               const void* data, uint32_t size);
+
+    /* ── Mod shaders: custom-pipeline draws ──────────────────────────
+     * Draw mod geometry with mod shaders through the native renderer.
+     * pipeline_register builds a GPU pipeline from a desc (returns
+     * handle >= 0 / -1; entry/tick context). draw_mesh submits
+     * `vert_count` vertices of the pipeline's vertex format from a
+     * PRESENT HOOK (canonical + intermediate); texture_id is a
+     * texture_register id, 0 = untextured. Mods never see Vulkan —
+     * RHI-shaped descriptions only. */
+    int (*pipeline_register)(openpete_mod_t* self,
+                             const openpete_mod_pipeline_desc_t* desc);
+    int (*draw_mesh)(openpete_mod_t* self, int pipeline,
+                     const void* verts, int vert_count,
+                     uint16_t texture_id);
+
+    /* ── Mod shaders: material selectors ─────────────────────────────
+     * Override the SHADING of a subset of the engine's own draws —
+     * a moby class, a terrain texture, the env-animated tile set —
+     * without touching scheduling (pass position, depth, stencil and
+     * category stay engine-owned). shader_pair = vert+frag handles;
+     * either may be -1 to keep the stock stage. per_instance (may be
+     * NULL = always override, no uniforms) runs at extraction per
+     * matching instance: return a uniform block or -1 to decline that
+     * instance. Uniforms are computed on CANONICAL presents and
+     * replayed by identity on sub-tick presents (tick-stable by
+     * default). Conflicts: enabled-list priority, first match wins.
+     * Returns 0 or -1. Entry/tick context. */
+    int (*material_register)(openpete_mod_t* self,
+                             const openpete_mod_material_selector_t* sel,
+                             int vert_shader, int frag_shader,
+                             openpete_mod_material_fn per_instance);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

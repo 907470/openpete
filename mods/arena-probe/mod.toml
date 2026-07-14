@@ -8,7 +8,7 @@
 id      = "arena-probe"
 name    = "Guest Arena Probe"
 version = "0.1.0"
-api     = 1
+api     = 2
 sim_neutral = true  # allocation alone touches no canonical RAM
 
 [test]
