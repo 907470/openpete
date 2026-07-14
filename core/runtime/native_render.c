@@ -1637,6 +1637,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
         if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
+        if (mod_ovl_vb)    rhi_destroy_buffer(dev, mod_ovl_vb);
+        if (ovl_quad_vb)   rhi_destroy_buffer(dev, ovl_quad_vb);
+        if (menu_quad_vb)  rhi_destroy_buffer(dev, menu_quad_vb);
         if (fs_quad_vb)    rhi_destroy_buffer(dev, fs_quad_vb);
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (diff_quad_vb)  rhi_destroy_buffer(dev, diff_quad_vb);
@@ -5862,6 +5865,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.diff_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.diff_quad_vb);
     if (s_nr.fs_quad_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     if (s_nr.overlay_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
+    if (s_nr.mod_ovl_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.mod_ovl_vb);
     if (s_nr.menu_vb)      rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
     if (s_nr.menu_glyph_vb) rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
