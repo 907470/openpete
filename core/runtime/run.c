@@ -1075,6 +1075,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * them when the relevant in-game globals are ready. */
     game_set_skip_to_level(opts->skip_to_level);
 
+    /* --skip-to-level: fast-forward the logos / title / loading / flyby with a
+     * black window (skip presents + pacer) until the target level is playable.
+     * Windowed-only — headless is already unlocked and has nothing to show; the
+     * game side clears it at GS_Playing (see openpete_skip_present_until_level). */
+    openpete_skip_present_until_level =
+        (opts->skip_to_level > 0 && !opts->headless) ? 1 : 0;
+    if (openpete_skip_present_until_level)
+        OPL_INFO_F("skip-to-level",
+                   "fast-forwarding presents until the level loads");
+
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it
      * the first time real draw commands hit, so host yields engage exactly
      * when the game starts rendering — no CLI knob needed. */
@@ -1387,6 +1397,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         const char* fp_env = getenv("OPENPETE_FORCE_PACING");
         bool force_pacing = (fp_env && *fp_env && *fp_env != '0');
         bool unlock_now = (opts->headless && !force_pacing) ||
+                          openpete_skip_present_until_level ||
                           (kbd_top && kbd_top[SDL_SCANCODE_TAB]) ||
                           (opts->unlock_ranges_count > 0 &&
                            unlock_frame_in_ranges(opts, openpete_frame));
@@ -1951,7 +1962,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * present sequence. Tracks how many presents have fired since
          * the sim reached the start frame. */
         static int s_presents_captured = 0;
-        if (openpete_present_pending) {
+        if (openpete_present_pending && !openpete_skip_present_until_level) {
             /* Canonical draw-tick counter: the Nth increment is the same sim
              * moment in every run (tick-deterministic sim), unlike
              * openpete_frame whose VBL↔tick mapping drifts with host timing.
@@ -2393,7 +2404,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                           (kbd && kbd[SDL_SCANCODE_TAB]);
         bool sched_unlock = opts->unlock_ranges_count > 0 &&
                             unlock_frame_in_ranges(opts, openpete_frame);
-        bool unlock_fps = tab_unlock || sched_unlock;
+        bool unlock_fps = tab_unlock || sched_unlock ||
+                          openpete_skip_present_until_level;
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
 

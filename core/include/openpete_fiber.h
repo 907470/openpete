@@ -58,6 +58,19 @@ extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed b
  * has progressed from boot init to issuing real draw commands. */
 extern int      openpete_fast_boot_active;
 
+/* --skip-to-level "fast-boot to the level": while set, the host loop skips
+ * presents AND the frame pacer (like fast-boot, but AFTER the first DrawOTag),
+ * so the logos / title / loading / level-load all fast-forward with a black
+ * window instead of playing out at 60 Hz for ~25 s. Unlike fast-boot, the game
+ * still yields each frame, so `openpete_frame` advances normally — bk2 input
+ * timing and frame-keyed captures are unaffected. Armed at boot iff
+ * --skip-to-level is set and NOT headless (headless is already unlocked and has
+ * no window); the game side (game_on_frame_pre) clears it the moment the level
+ * becomes playable (g_Gamestate == GS_Playing — past the black "THE ADVENTURE
+ * BEGINS" flyby), or on a generous frame-cap fail-safe so a mis-induced skip can
+ * never leave a permanently black window. */
+extern int      openpete_skip_present_until_level;
+
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
  * `openpete_vbl` is *not* touched here — the ticker (openpete_ticker.h)
  * is the sole writer once running. Used by the VSync(0) thunk outside

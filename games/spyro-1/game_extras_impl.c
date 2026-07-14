@@ -548,6 +548,25 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
             }
         }
     }
+
+    /* --skip-to-level fast-forward (openpete_skip_present_until_level): the host
+     * loop skips presents + pacing until the target level is actually PLAYABLE.
+     * Resume the moment g_Gamestate reaches GS_Playing (0). Note TSS_Active (the
+     * LoadLevel-complete signal) is NOT the right stop — the homeworld-entrance
+     * flyby that follows is a "THE ADVENTURE BEGINS" title card over black for
+     * ~380 frames; the level itself only appears when the flyby hands off to
+     * GS_Playing. Gated on s_skip_applied so early-boot GS_Playing (before the
+     * title) can't trip it; the frame cap is a fail-safe so a never-induced skip
+     * can't leave a permanently black window. */
+    if (openpete_skip_present_until_level) {
+        uint32_t gs = cpu->read_word(0x800757D8u); /* g_Gamestate */
+        if ((s_skip_applied && gs == 0u /*GS_Playing*/) || frame_counter > 4000u) {
+            openpete_skip_present_until_level = 0;
+            fprintf(stderr,
+                    "[skip-to-level] level playable — presents resume at "
+                    "frame=%u\n", (unsigned)frame_counter);
+        }
+    }
 }
 
 /* --- G2 (transform-interp §7): moby slot/address-reuse probe ---------

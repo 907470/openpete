@@ -17,6 +17,7 @@ unsigned     openpete_canon_tick       = 0u;
 unsigned     openpete_primitives_drawn = 0u;
 int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;
+int          openpete_skip_present_until_level = 0;
 int          openpete_fov_h_override    = 0;
 /* openpete_no_lod lives in core/features/no_lod.c. (The Hor+ widening
  * factor/knob-staging globals that used to sit here were retired
