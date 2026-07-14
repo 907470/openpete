@@ -43,9 +43,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 bool openpete_native_render_enabled(void);
 
 /* Toggle the native window between windowed and borderless-desktop fullscreen.
- * Bound to Alt+Enter and double-click by run.c. No-op until the native window
- * is up (so it's inert in headless / PsyCross-only runs). */
+ * Bound to Alt+Enter and double-click by run.c, and the O-menu DISPLAY row.
+ * No-op until the native window is up (so it's inert in headless /
+ * PsyCross-only runs). */
 void openpete_native_toggle_fullscreen(void);
+
+/* Live fullscreen state (1 = borderless-desktop fullscreen, 0 = windowed or
+ * no native window). The O-menu DISPLAY row reads this each frame instead of
+ * keeping a shadow index, so it stays in sync with Alt+Enter / double-click. */
+int openpete_native_fullscreen_active(void);
 
 /* FPS overlay (vk live window). Default on; drawn only on the live vk present
  * (never ab/diff/screenshots). set() forces a state; the SHOW FPS row in the

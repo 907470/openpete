@@ -325,6 +325,12 @@ typedef struct {
      * ignored under --headless / psycross. */
     int vsync;
 
+    /* --fullscreen 0|1: launch the native window in borderless-desktop
+     * fullscreen (same mode Alt+Enter / double-click / the O-menu DISPLAY row
+     * toggle live). Default 0 = windowed. Display-only; ignored under
+     * --headless / psycross (warned). */
+    int fullscreen;
+
     /* --render-stats (debug): in --renderer diff, read the per-pixel diff back
      * each frame and log colour-closeness statistics (per-channel mean/max abs
      * diff, % within tolerance, differing-pixel count) over the panel, plus an

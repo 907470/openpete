@@ -817,6 +817,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * aspect (--aspect only sizes the window above). */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         widescreen_apply_fov(opts);
+        if (opts->fullscreen)
+            OPL_WARN_F("display", "%s", "--fullscreen is native-renderer-only "
+                       "(the PsyCross GL window has no fullscreen path); ignored");
     } else {
         if (opts->fov_deg > 0.0f) {
             OPL_WARN_F("fov", "--fov is PsyCross-reference-mode only for now "

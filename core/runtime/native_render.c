@@ -1167,6 +1167,16 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             }
         }
 
+        /* --fullscreen 1: launch in borderless-desktop fullscreen — the exact
+         * state openpete_native_toggle_fullscreen switches into, so Alt+Enter /
+         * the O-menu DISPLAY row toggle straight back to the windowed size
+         * above. Before rhi_create so the swapchain sizes to the monitor. */
+        if (opts->fullscreen) {
+            SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
+            SDL_SetWindowFullscreen(win, true);
+            OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
+        }
+
         dev = rhi_create(win, "openpete-native", opts->vsync);
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
@@ -1753,6 +1763,16 @@ void openpete_native_toggle_fullscreen(void)
         SDL_SetWindowFullscreenMode(s_nr.window, NULL);  /* borderless desktop */
     SDL_SetWindowFullscreen(s_nr.window, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
+}
+
+/* Live fullscreen state, read straight from the SDL window flags — the O-menu
+ * DISPLAY row displays this each frame (no shadow index), so it can never
+ * drift from the Alt+Enter / double-click toggles. 0 when there is no native
+ * window (headless / PsyCross-only). */
+int openpete_native_fullscreen_active(void)
+{
+    if (!s_nr.enabled || !s_nr.window) return 0;
+    return (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
 void openpete_native_set_display_rect(int x, int y, int w, int h)

@@ -540,12 +540,21 @@ void text_moby_native_menu(CPUState* cpu) {
         char vb[16];
         const char* label = openpete_menu_row_label(r);
         const char* value = openpete_menu_row_value(r, vb, sizeof vb);
-        const float oy = L.row_y[r] - L.row_cap_h * 0.5f;
         const float lw = measure_string(label, L.row_cap_h);
-        n += emit_string(label, L.label_x - lw, oy, L.row_cap_h, MENU_TXT_TINT, wob,
-                         s_menu_buf + n, MENU_TXT_MAX - n);
-        n += emit_string(value, L.value_x, oy, L.row_cap_h, MENU_TXT_TINT, wob,
-                         s_menu_buf + n, MENU_TXT_MAX - n);
+        n += emit_string(label, L.label_x - lw,
+                         L.row_y[r] - L.row_cap_h * 0.5f, L.row_cap_h,
+                         MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
+        /* Auto-fit over-wide values: shrink the cap so the string ends before
+         * the panel border (small margin), keeping it vertically centred on
+         * the row — "FULLSCREEN" is wider than the column the row font was
+         * tuned for ("EXTENDED"). measure_string is linear in cap_h, so one
+         * proportional shrink is exact. */
+        float vcap = L.row_cap_h;
+        const float vavail = (L.panel_x1 - 0.015f) - L.value_x;
+        const float vw = measure_string(value, vcap);
+        if (vw > vavail && vw > 0.0f) vcap *= vavail / vw;
+        n += emit_string(value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
+                         MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
     }
     /* Gold frame — same rotating light as the rows above (s_light still set). */
     n += emit_menu_border(&L, s_menu_buf + n, MENU_TXT_MAX - n);

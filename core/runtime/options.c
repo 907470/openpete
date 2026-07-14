@@ -372,6 +372,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             max image size / VRAM. Display-only.\n"
         "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
         "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
+        "  --fullscreen 0|1           launch in borderless-desktop fullscreen (default 0 = windowed;\n"
+        "                             on|off also accepted). Alt+Enter / double-click / the O-menu\n"
+        "                             DISPLAY row toggle it live. Display-only.\n"
         "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
         "  --render-fps N             target render Hz (default: the display's refresh rate; 0=match\n"
         "                             sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)\n"
@@ -509,6 +512,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
+    opts->fullscreen          = 0;     /* windowed by default; --fullscreen 1 = borderless-desktop launch */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
@@ -626,6 +630,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->vsync = 0;
             else {
                 fprintf(stderr, "openpete: --vsync expects 0|1 (on|off also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--fullscreen") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            /* Accept 0|1 (preferred) plus on|off, matching --vsync / --mute. */
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->fullscreen = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->fullscreen = 0;
+            else {
+                fprintf(stderr, "openpete: --fullscreen expects 0|1 (on|off also accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;

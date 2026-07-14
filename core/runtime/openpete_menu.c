@@ -21,8 +21,8 @@
 #include <stdio.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
-       ROW_FREECAM, ROW_COUNT,
+enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
+       ROW_LOD, ROW_FREECAM, ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
         * compiled — the case labels below, the mod enumeration, s_fog_idx,
@@ -32,7 +32,7 @@ enum { ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA, ROW_LOD,
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
+    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
@@ -114,6 +114,10 @@ static int s_modsel_idx = 0;
 /* Current value string for a row (for the log + later the draw). */
 static const char* value_str(int row, char* buf, int buflen) {
     switch (row) {
+    /* DISPLAY reads the LIVE window state each frame (no shadow index) — like
+     * MOD ENABLED — so Alt+Enter / a double-click can never leave it stale. */
+    case ROW_DISPLAY:
+        return openpete_native_fullscreen_active() ? "FULLSCREEN" : "WINDOWED";
     case ROW_ASPECT: return s_aspect[s_aspect_idx].label;
     case ROW_FPS: {
         int v = (s_fps_idx < s_fps_count) ? s_fps_vals[s_fps_idx] : 0;
@@ -302,6 +306,12 @@ void openpete_menu_adjust(int dx) {
     if (!s_open) return;
     const int step = (dx > 0 ? 1 : -1);
     switch (s_cursor) {
+    case ROW_DISPLAY:
+        /* Two-state cycle: either direction flips windowed <-> fullscreen via
+         * the same toggle Alt+Enter / double-click use; the value string reads
+         * the resulting live state back (nothing to apply below). */
+        openpete_native_toggle_fullscreen();
+        break;
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
     case ROW_FPS:      s_fps_idx    = wrap_idx(s_fps_idx    + step, s_fps_count); break;
     case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
