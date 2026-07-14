@@ -1,0 +1,18 @@
+# supercharge-anywhere user config. Edit and reload (dev hot-reload
+# watches this file).
+
+# Start with supercharge forced on at load. Set false to start disabled
+# and flip it in-game with the toggle key (default G — chosen to avoid
+# PsyCross's keyboard pad map, where V = Circle).
+start_enabled = false
+
+# The authentic supercharge animation is captured from your own disc the
+# first time you enter a level that has a supercharge ramp (e.g. Wizard
+# Peak, Tree Tops) and cached under this mod's data/ dir, after which it is
+# injected on every level automatically. Until that first capture, index 45
+# is aliased to this present locomotion animation so nothing faults
+# (3 = walk/run). Range 0..44.
+anim_substitute = 3
+
+# Log Spyro state transitions to the console (diagnostics).
+debug = false
