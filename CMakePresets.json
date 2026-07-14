@@ -102,6 +102,7 @@
       "binaryDir": "${sourceDir}/build/windows-mingw-shared",
       "cacheVariables": {
         "OPENPETE_RECOMP_LINKAGE": "shared",
+        "OPENPETE_STAGE_MOD_DLLS": "OFF",
         "OPENPETE_ROM_FREE_ICON": "ON",
         "OPENPETE_ENABLE_RECORD": "OFF"
       }

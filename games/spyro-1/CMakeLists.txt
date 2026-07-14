@@ -464,7 +464,14 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
 #    when the host has no compiler, recompiles+stamps once when it
 #    does). DLLs compile from the REPO src/*.c (identical to the staged
 #    mirror), so neither staged sources nor staged DLLs can rot.
+#    OPENPETE_STAGE_MOD_DLLS=OFF (windows-mingw-shared, the distribution
+#    preset) stages sources only, no cmake-side DLLs: that exe's mods
+#    dir is the first-boot-compile validation surface — the bundled
+#    llvm-mingw must build every mod at boot exactly as it would on an
+#    end user's box, so cmake pre-seeding .build/ would mask it.
 option(OPENPETE_COMPILE_MODS "Compile all mods as part of the build" ON)
+option(OPENPETE_STAGE_MOD_DLLS
+    "Cross presets: also cross-compile each staged mod's DLL (OFF = stage sources only; the exe compiles them on boot)" ON)
 set(OPENPETE_COMPILE_MODS_DIR ${CMAKE_SOURCE_DIR}/mods CACHE PATH
     "Mods root the native-preset build-time compile runs over")
 if(OPENPETE_COMPILE_MODS)
@@ -487,9 +494,10 @@ if(OPENPETE_COMPILE_MODS)
                     -P ${CMAKE_SOURCE_DIR}/cmake/stage_mods.cmake
             COMMENT "Staging mods into <exe>/mods/ (source mirror)"
             VERBATIM)
+        set(_staged_mod_dlls "")
+        if(OPENPETE_STAGE_MOD_DLLS)
         file(GLOB _mod_manifests CONFIGURE_DEPENDS
              ${OPENPETE_COMPILE_MODS_DIR}/*/mod.toml)
-        set(_staged_mod_dlls "")
         foreach(_manifest IN LISTS _mod_manifests)
             get_filename_component(_src_mod_dir ${_manifest} DIRECTORY)
             get_filename_component(_mod_id ${_src_mod_dir} NAME)
@@ -519,6 +527,7 @@ if(OPENPETE_COMPILE_MODS)
                 VERBATIM)
             list(APPEND _staged_mod_dlls ${_dll})
         endforeach()
+        endif() # OPENPETE_STAGE_MOD_DLLS
         add_custom_target(spyro1_mods ALL DEPENDS ${_staged_mod_dlls})
         add_dependencies(spyro1_mods spyro1_mods_stage)
     else()
