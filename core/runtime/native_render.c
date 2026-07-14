@@ -180,6 +180,8 @@ typedef struct {
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
     int group;      /* per-portal grouping id (add_tri_grouped; plain add_tri: 0) */
+    uint32_t tag;   /* provenance (mod-shaders S6): sticky set_tag value; joins
+                     * the material key ONLY when tag_split_on() (else inert) */
 } scene_tri_t;
 /* C99 compile-time prefix check: if a field is added to openpete_scene_tri
  * without mirroring it here (or vice versa), this array gets a negative size. */
@@ -187,6 +189,32 @@ typedef char nr_assert_scene_tri_prefix[
     (offsetof(scene_tri_t, category) == sizeof(openpete_scene_tri)) ? 1 : -1];
 static scene_tri_t s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
+
+/* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
+ * selector registry (S8); the env flags are the dev instruments. */
+static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
+static int      s_tag_tint = -1;  /* OPENPETE_TAG_TINT: tint colours by tag */
+static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
+static int      s_tag_split_ext = 0;    /* armed by registered selectors (S8) */
+
+void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
+/* S8 arms this when material selectors register (0 selectors ⇒ inert key). */
+void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
+
+static int tag_split_on(void) {
+    if (s_tag_split_env < 0) {
+        const char* e = getenv("OPENPETE_TAG_SPLIT");
+        s_tag_split_env = (e && *e && *e != '0');
+        const char* t = getenv("OPENPETE_TAG_TINT");
+        s_tag_tint = (t && *t && *t != '0');
+    }
+    return s_tag_split_env || s_tag_split_ext;
+}
+
+static int tag_tint_on(void) {
+    (void)tag_split_on();          /* lazy env init lives there */
+    return s_tag_tint > 0;
+}
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
@@ -397,6 +425,21 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
+        s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
+        if (s_cur_tag && tag_tint_on()) {
+            /* Coverage instrument: hash the tag to a stable tint and modulate
+             * the vertex colours — "which source produced this pixel". */
+            uint32_t hsh = s_cur_tag * 2654435761u;
+            uint32_t tr = 128u + (hsh & 0x7Fu), tg = 128u + ((hsh >> 8) & 0x7Fu),
+                     tb = 128u + ((hsh >> 16) & 0x7Fu);
+            for (int k = 0; k < 3; k++) {
+                uint32_t c = s_scene[s_scene_n].v[k].rgba;
+                uint32_t r = (((c) & 0xFFu) * tr) >> 8,
+                         g = (((c >> 8) & 0xFFu) * tg) >> 8,
+                         b = (((c >> 16) & 0xFFu) * tb) >> 8;
+                s_scene[s_scene_n].v[k].rgba = (c & 0xFF000000u) | (b << 16) | (g << 8) | r;
+            }
+        }
         /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
          * the PSX integer pixel grid — the polygon wobble. Round X/Y only; depth
          * and UVs are untouched (Z-buffer + perspective texturing preserved). The
@@ -2693,6 +2736,13 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
     if (a->clut_y  != b->clut_y ) return a->clut_y  < b->clut_y  ? -1 : 1;
     if (a->clut_x  != b->clut_x ) return a->clut_x  < b->clut_x  ? -1 : 1;
     if (a->bpp     != b->bpp    ) return a->bpp     < b->bpp     ? -1 : 1;
+    /* Provenance tag joins the key ONLY when a split consumer is armed
+     * (registered selector / OPENPETE_TAG_SPLIT) — MUST stay in lockstep
+     * with the coalesce run-break in draw_tex_runs, or batches that this
+     * sort separates get re-merged (or worse, interleave and split into
+     * many runs). Inert ⇒ byte-identical batching without mods. */
+    if (tag_split_on() && a->tag != b->tag)
+        return a->tag < b->tag ? -1 : 1;
     return 0;
 }
 /* ---- HD texture replacement (openpete-texture-replacement Phases 3+4) -----
@@ -2794,6 +2844,10 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             const scene_tri_t* s1 = &scene[s_txscene[base + i + run]];
             if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
                 s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
+            /* Lockstep with tex_mat_cmp's tag term (S6): a tag the sort
+             * separated must also break the run here or coalescing undoes
+             * the split. */
+            if (tag_split_on() && s1->tag != s0->tag) break;
             run++;
         }
         if (s0->bpp == 32) {

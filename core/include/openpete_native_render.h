@@ -474,6 +474,32 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * the explicit category/carry args). */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
+
+/* ── Provenance tag (mod-shaders S6) ─────────────────────────────────
+ * Sticky per-tri provenance stamped by add_tri until changed (same
+ * ambient-state pattern as the terrain feeder's s_emit_* context; set
+ * 0 when leaving a tagged emit loop). Carries what the material key
+ * LACKS — the batcher already splits on tpage/clut, so texture-level
+ * selectors ride the material key; the tag adds source identity:
+ *
+ *   bits 31:28  path (0 = untagged, 1 = moby, 2 = terrain)
+ *   moby:       bits 15:0  m_Class
+ *   terrain:    bit 27 env-anim member (func_8002A6FC rewrite set),
+ *               bit 26 LP tier, bits 8:0 sector id
+ *
+ * INERT BY DEFAULT: the tag joins the material sort/coalesce key ONLY
+ * when a split consumer is armed (a registered material selector — S8 —
+ * or the OPENPETE_TAG_SPLIT=1 dev flag), so the ~70-draw batching is
+ * byte-identical without mods. OPENPETE_TAG_TINT=1 tints vertex colours
+ * by tag hash (visual coverage instrument, no split needed). */
+#define OPENPETE_TAG_MOBY(cls) \
+    (0x10000000u | ((uint32_t)(cls) & 0xFFFFu))
+#define OPENPETE_TAG_TERRAIN(lp, env, sec) \
+    (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
+     ((uint32_t)(sec) & 0x1FFu))
+void openpete_native_scene_set_tag(uint32_t tag);
+/* Arm/disarm the tag as a batch-split key (material-selector registry). */
+void openpete_native_set_tag_split(int on);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
  * before the scene so uncovered areas show it instead of black, mirroring the
  * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).

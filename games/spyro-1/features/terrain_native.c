@@ -273,6 +273,7 @@ typedef struct {
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
+    uint8_t env;                                   /* env-anim tile member (provenance tag) */
     float otkey;                                   /* parent face's .s OT key (full-world mean
                                                     * vz of the 4 corners; portal conformance) */
 } ttri;
@@ -280,6 +281,7 @@ static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
 static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
+static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
 static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
@@ -531,6 +533,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
     t->sec = (int16_t)s_emit_sec; t->face = (int16_t)s_emit_face;
+    t->env = (uint8_t)s_emit_env;
     t->otkey = s_emit_otkey;
     if (m->textured) s_tex_tris++;
 }
@@ -2264,6 +2267,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             int quad = F->quad;
             s_dbg_faces++;
             s_emit_sec = (int)i; s_emit_face = f;   /* fardbg attribution identity */
+            s_emit_env = (F->tgen != 0);            /* env-anim member (rewrite set) */
             /* Portal OT-conformance key: the face's .s OT bucket base — the
              * raw 4-corner view-Z sum ((Σ4 SZ)>>7 in the walk; .s tris sum
              * the shared i2==i3 corner twice, and so does this), expressed
@@ -3163,8 +3167,11 @@ static void terrain_feed_native(CPUState* cpu) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
+        openpete_native_scene_set_tag(
+            OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec));
         openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);
+        openpete_native_scene_set_tag(0);
         /* PSX mask-bit mirror: re-feed .s-deferred (near-band) tris as the
          * portal guard, drawn after the portal sky (see the category doc).
          * Opaque only (the defer test excludes ABE); gated on a portal having

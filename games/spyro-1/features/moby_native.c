@@ -1204,7 +1204,9 @@ static int     s_cur_fogsup;          /* per-record: --no-lod dropped a live fog
  * across the intermediates is correct. */
 static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
+static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
 static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
+static uint16_t s_cur_moby_cls;        /* m_Class of that moby (set beside the key) */
 static float    s_cur_env_az;          /* current record's TR azimuth (env-UV bias) */
 static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
@@ -1239,6 +1241,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
     s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
+    s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
     ntri_t* t = &s_wtri[s_wtri_n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez};
@@ -1614,6 +1617,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
             if (dup) continue;
         }
         s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
+        s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
         s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
@@ -2675,8 +2679,10 @@ static void push_scene_moby(void) {
         t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
         t.bpp      = s_wtri[i].bpp;
         t.blend    = s_wtri[i].blend;
+        openpete_native_scene_set_tag(OPENPETE_TAG_MOBY(s_wtri_cls[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
+    openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts --
@@ -3940,6 +3946,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : model_3d ? "HUD3D" : "HUDflat");
         }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
+        s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + 0x36) : 0;
         s_cur_fogsup = 0;         /* shaded mobys have no fog band — never fog-suppressed */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
