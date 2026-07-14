@@ -14,7 +14,7 @@
 //
 // returns 0 on success (non-zero disables the mod with a log line).
 //
-// Override semantics (P1 of notes/plans/openpete-modding-framework.md):
+// Override semantics:
 // pre-hook / post-hook / full replacement are ONE mechanism, distinguished
 // by where the override calls api->base(cpu) — last / first / never.
 // base() falls through the priority chain and bottoms out at the
@@ -331,7 +331,7 @@ typedef struct openpete_mod_api {
      * player. Display-only — gameplay state is untouched. */
     void (*suppress_player_draw)(void);
 
-    /* ── Instruction-site hook tier (PoC rung 14 — the escape hatch) ──
+    /* ── Instruction-site hook tier (the escape hatch) ────────────────
      * Attach a handler to a [[site]] this mod declared in its mod.toml.
      * A site anchors ONE guest instruction (by vaddr): kind "replace"
      * runs the handler INSTEAD of that instruction; kind "append" runs
@@ -352,7 +352,7 @@ typedef struct openpete_mod_api {
     int (*site_handler)(openpete_mod_t* self, const char* name,
                         void (*fn)(CPUState* cpu, uint32_t site_addr));
 
-    /* ── Content registry: moby types (PoC rung 11) ──────────────────
+    /* ── Content registry: moby types ────────────────────────────────
      * Register a NEW moby type: the engine claims a class id that is
      * FREE in the current level (its model row is empty, so the level's
      * update switch has no case for it), seeds the model row from
@@ -378,7 +378,7 @@ typedef struct openpete_mod_api {
     uint32_t (*spawn_moby)(openpete_mod_t* self, CPUState* cpu,
                            const char* name);
 
-    /* ── Content registry: level slots (PoC rung 12) ─────────────────
+    /* ── Content registry: level slots ───────────────────────────────
      * Register a NEW level slot: the engine claims a free level id
      * (Spyro 1 has exactly ONE free in-bounds slot — id 65 / index 35;
      * more slots ride ram-virtualization), clones the donor level's

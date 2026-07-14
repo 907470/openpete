@@ -1,6 +1,5 @@
 // spyro1_actor_pose.h — the kind-0 (player) actor pose blob for the mod
-// actor render service (openpete_mod_api.h capture_actor_pose/draw_actor;
-// PoC ladder rung 16 of notes/plans/openpete-modding-framework.md).
+// actor render service (openpete_mod_api.h capture_actor_pose/draw_actor).
 //
 // Staged into <exe>/sdk/ next to openpete_mod_api.h. The blob is EXACTLY
 // the field set the native player extractor reads — a recorded pose

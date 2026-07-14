@@ -157,7 +157,7 @@ void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t va
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
-/* Mod site-hook tier (openpete modding framework, PoC rung 14). The code
+/* Mod site-hook tier (openpete modding framework). The code
  * generator's guarded ModReplace/ModAppend emission reads the active flag
  * and calls the dispatcher; both are defined engine-side in
  * core/mods/mod_sites.c. Identity when active[idx] == 0 — the guarded
@@ -206,7 +206,7 @@ void openpete_diag_cone_dump(void* cpu,
                              int32_t mac3,
                              uint8_t native_pass);
 
-/* §7.5 terrain-reproject validation probe. Recompiler emits a call at
+/* Terrain-reproject validation probe. Recompiler emits a call at
  * r_environment.s 0x80025A34 with the camera-free packed world vertex
  * (w0=X<<16|Y, w1=Z<<16|flags), vert ptr, scaled camera position.
  * Read-only; gated by OPENPETE_ENVVERT_LOG. Impl game_extras_impl.c. */
@@ -221,8 +221,7 @@ void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
  * (cpu->read_X / write_X, mem_ptr, openpete_psx_to_host_ptr, savestate
  * scans). NOT auto-rerouted into recompiler-emitted inline g_ram[]
  * accesses — consumers redirect those via psxrecomp instruction
- * substitutions at the relevant lui+addiu sites. See
- * .claude/plans/openpete-ram-virtualization.md.
+ * substitutions at the relevant lui+addiu sites.
  *
  * Determinism: regions are presentation-only by contract. Gameplay code
  * never addresses a registered range. Debug builds with
