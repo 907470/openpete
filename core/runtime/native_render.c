@@ -215,6 +215,10 @@ static int tag_tint_on(void) {
     (void)tag_split_on();          /* lazy env init lives there */
     return s_tag_tint > 0;
 }
+
+/* Mod custom-pipeline drain (S7) — defined with the postfx executor
+ * below; called from compose_variant (mod 3D under mod HUD). */
+static void draw_mod_meshes(void);
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
@@ -4626,6 +4630,7 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 0);
         }
+        draw_mod_meshes();                        /* mod 3D (S7 — under mod HUD) */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
@@ -4674,7 +4679,7 @@ static bool compose_variant(int variant, bool have_ref)
     }
 
     /* Mod HUD overlay — vk variant, live + record composes (content). */
-    if (variant == NRV_VK) draw_mod_overlay();
+    if (variant == NRV_VK) { draw_mod_meshes(); draw_mod_overlay(); }
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
@@ -4815,6 +4820,128 @@ static rhi_texture** pfx_pings(int w, int h) {
     s_pfx_pool[victim].w = w; s_pfx_pool[victim].h = h;
     s_pfx_pool[victim].used = ++s_pfx_stamp;
     return s_pfx_pool[victim].t;
+}
+
+/* ── Mod custom-pipeline draws (S7) ──────────────────────────────────
+ * Drains the present-hook draw_mesh queue inside the scene pass (called
+ * beside draw_mod_overlay, after the world — mod 3D under mod HUD).
+ * Vertices convert to rhi_vertex into a per-frame ring VB; pipelines
+ * build lazily from the mod's SPIR-V (desc.mod_pipeline layout: std
+ * attributes + engine UBO at set 3). Queue lifecycle is owned by the
+ * present flush (cleared at flush start), so composes never re-drain
+ * stale draws and headless runs can't accumulate. */
+static rhi_buffer* s_mesh_vb;
+static rhi_vertex  s_mesh_scratch[65536];
+
+static void draw_mod_meshes(void)
+{
+    int nd = openpete_mods_drawmesh_count();
+    if (nd <= 0) return;
+    if (!s_pfx_ubo)
+        s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
+                                   1 + PFX_MAX_PASSES);
+    if (!s_pfx_ubo) return;
+    if (!s_mesh_vb)
+        s_mesh_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev, sizeof s_mesh_scratch);
+    if (!s_mesh_vb) return;
+
+    /* Engine UBO block 0: written here so mesh-only presents (no postfx
+     * chain) still see live values; the postfx run rewrites the same
+     * frame slot with identical content later in the frame. */
+    {
+        pfx_engine_ubo_t eng;
+        memset(&eng, 0, sizeof eng);
+        eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
+        eng.present = s_scene_frame;
+        int canonical = 1;
+        openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
+        eng.canonical = (uint32_t)canonical;
+        int ww = 0, wh = 0;
+        rhi_swapchain_extent(s_nr.dev, &ww, &wh);
+        eng.res[0] = eng.win[0] = (float)ww;
+        eng.res[1] = eng.win[1] = (float)wh;
+        eng.aspect = wh > 0 ? (float)ww / (float)wh : 1.0f;
+        rhi_ubo_write(s_pfx_ubo, 0, &eng, sizeof eng);
+    }
+
+    /* Convert + pack every queued draw into the ring VB (one update). */
+    int total = 0;
+    for (int i = 0; i < nd; i++) {
+        openpete_mod_pipe_gpu_t pd;
+        const openpete_mod_vertex_t* mv; int n; uint16_t tex;
+        if (openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex) != 0) continue;
+        if (total + n > (int)(sizeof s_mesh_scratch / sizeof s_mesh_scratch[0]))
+            break;
+        for (int k = 0; k < n; k++) {
+            rhi_vertex* v = &s_mesh_scratch[total + k];
+            v->x = mv[k].x; v->y = mv[k].y; v->z = mv[k].z;
+            v->u = mv[k].u; v->v = mv[k].v;
+            v->rgba = mv[k].rgba;
+            v->tex = 0; v->sx = 0.f; v->sy = 0.f;
+        }
+        total += n;
+    }
+    if (total == 0) return;
+    rhi_update_buffer(s_mesh_vb, s_mesh_scratch, (size_t)total * sizeof(rhi_vertex));
+    /* Precautionary parity with draw_mod_overlay: the scene path can leave
+     * a sub-region scissor armed (HD-replacement clip rects). Not observed
+     * to clip mod meshes in practice (the S7 bring-up "invisible triangle"
+     * was blind INSTRUMENTS, not state — see the plan's S7 note), but a
+     * clipped first mod draw would be miserable to rediscover. Depth is NOT
+     * cleared: mesh pipelines with depth_test z-test against the world. */
+    rhi_reset_scissor(s_nr.dev);
+    rhi_bind_vertex_buffer(s_nr.dev, s_mesh_vb);
+
+    int first = 0;
+    for (int i = 0; i < nd; i++) {
+        openpete_mod_pipe_gpu_t pd;
+        const openpete_mod_vertex_t* mv; int n; uint16_t tex;
+        if (openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex) != 0) continue;
+        if (first + n > total) break;
+        if (*pd.pipeline_slot == NULL) {
+            rhi_pipeline_desc rd = {
+                .blend = pd.blend == OP_BLEND_ADD ? RHI_BLEND_ADD
+                       : pd.blend == OP_BLEND_ADD4 ? RHI_BLEND_ADD
+                       : pd.blend == OP_BLEND_SUB ? RHI_BLEND_SUBTRACT
+                       : pd.blend == OP_BLEND_AVG ? RHI_BLEND_ALPHA
+                       : RHI_BLEND_NONE,
+                .depth_test = pd.depth_test != 0,
+                .depth_write_off = pd.depth_write == 0,
+                .mod_pipeline = true,
+            };
+            rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &rd,
+                                                      pd.vert_spv, pd.vert_words,
+                                                      pd.frag_spv, pd.frag_words);
+            *pd.pipeline_slot = p ? (void*)p : PFX_PIPE_FAILED;
+            if (!p)
+                fprintf(stderr, "[native] draw_mesh: pipeline build FAILED "
+                                "for %s\n", pd.owner);
+        }
+        if (*pd.pipeline_slot != PFX_PIPE_FAILED) {
+            rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pd.pipeline_slot);
+            /* set 0: the mod texture (texture_register id) through the HD
+             * cache; untextured/missing binds the VRAM texture (inert for
+             * shaders that don't sample). Sets 1/2 mirror it (contract:
+             * postfx-only inputs are undefined for mesh pipelines). */
+            rhi_texture* t0 = s_nr.vram_tex;
+            if (tex) {
+                int mw = 0, mh = 0;
+                const unsigned char* px = openpete_mods_texture_get(tex, &mw, &mh);
+                if (px) {
+                    uint64_t key = (uint64_t)(uintptr_t)px;
+                    rhi_texture* mt = hd_cache_lookup(key);
+                    if (!mt) hd_pending_add(key, px, mw, mh);
+                    else t0 = mt;
+                }
+            }
+            rhi_bind_texture_set(s_nr.dev, t0, 0);
+            rhi_bind_texture_set(s_nr.dev, t0, 1);
+            rhi_bind_texture_set(s_nr.dev, t0, 2);
+            rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, 0);
+            rhi_draw(s_nr.dev, (uint32_t)n, (uint32_t)first);
+        }
+        first += n;
+    }
 }
 
 /* Destroy pipelines orphaned by a mod hot-reload sweep. Dev-mode only
@@ -5423,8 +5550,10 @@ void openpete_native_render_shutdown(void)
             }
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
+    if (s_mesh_vb) { rhi_destroy_buffer(s_nr.dev, s_mesh_vb); s_mesh_vb = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
+        openpete_mods_pipeline_retire_all();
         void* dead[PFX_MAX_PASSES];
         int n;
         while ((n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES)) > 0)

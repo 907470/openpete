@@ -1,0 +1,22 @@
+# mesh-probe — custom-pipeline draw gallery rung (mod-shaders S7).
+#
+# Draws one magenta clip-space triangle in the bottom-left corner from a
+# present hook through pipeline_register + draw_mesh (mod vert+frag,
+# engine-compiled). GPU-only presentation: sim-neutral by construction.
+#
+# VERIFICATION NOTE: this content exists ONLY in the composed present
+# (off_image) — the --screenshot-on-frame -vk dump recomposes native_rtt
+# WITHOUT compose_variant content, and --screenshot-presents captures
+# the PsyCross REFERENCE frame. Probe recordings (--record) or the live
+# window; the check_mods rung uses --record.
+
+[mod]
+id      = "mesh-probe"
+name    = "Mesh Probe"
+version = "0.1.0"
+api     = 2
+sim_neutral = true
+
+[test]
+frames        = 4000
+gameplay_neutral = true

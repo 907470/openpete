@@ -719,18 +719,163 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) {
         s_fx[i].live = 0;
     }
 }
+/* ------------------------------------------------------------------ */
+/* custom-pipeline tier (S7): registry + per-present draw queue. The
+ * queue is filled from PRESENT HOOKS (render-pure) and drained by the
+ * renderer inside the scene pass (native_render.c, beside the mod HUD
+ * overlay), then cleared. Vertices are copied at call time. */
+
+#define MOD_PIPE_MAX       32
+#define MOD_MESH_VERTS_MAX 65536
+#define MOD_MESH_DRAWS_MAX 256
+
+typedef struct {
+    const char* owner;
+    int  vert, frag;             /* shader handles */
+    int  blend;                  /* OP_BLEND_* */
+    int  depth_test, depth_write;
+    void* pipeline;              /* executor-cached rhi_pipeline* */
+    int  live;
+} mod_pipe_t;
+
+static mod_pipe_t s_pipes[MOD_PIPE_MAX];
+static int s_pipe_count;
+
+static openpete_mod_vertex_t s_mesh_verts[MOD_MESH_VERTS_MAX];
+static int s_mesh_vert_n;
+typedef struct { int pipe; int first, n; uint16_t tex; } mesh_draw_t;
+static mesh_draw_t s_mesh_draws[MOD_MESH_DRAWS_MAX];
+static int s_mesh_draw_n;
+
 int openpete_mods_pipeline_register(openpete_mod_t* self,
                                     const openpete_mod_pipeline_desc_t* desc) {
-    (void)desc;
-    STUB_ONCE("pipeline_register");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id || !desc) return -1;
+    if (openpete_mods_in_present) {
+        OPL_ERROR_F("mods", "%s: pipeline_register refused inside a present "
+                    "hook (register at entry)", id);
+        return -1;
+    }
+    for (size_t i = 0; i < sizeof desc->_reserved / sizeof desc->_reserved[0]; i++)
+        if (desc->_reserved[i] != 0) {
+            OPL_ERROR_F("mods", "%s: pipeline desc _reserved must be zero", id);
+            return -1;
+        }
+    if (desc->vertex_format != OP_VTX_POS_UV_RGBA ||
+        desc->blend < OP_BLEND_OPAQUE || desc->blend > OP_BLEND_ADD4) {
+        OPL_ERROR_F("mods", "%s: pipeline desc: bad vertex_format/blend", id);
+        return -1;
+    }
+    size_t words = 0; int stage = -1;
+    if (!openpete_mods_shader_spv(desc->vert_shader, &words, &stage) ||
+        stage != MOD_SHADER_STAGE_VERT) {
+        OPL_ERROR_F("mods", "%s: pipeline: bad vertex shader handle %d", id,
+                    desc->vert_shader);
+        return -1;
+    }
+    if (!openpete_mods_shader_spv(desc->frag_shader, &words, &stage) ||
+        stage != MOD_SHADER_STAGE_FRAG) {
+        OPL_ERROR_F("mods", "%s: pipeline: bad fragment shader handle %d", id,
+                    desc->frag_shader);
+        return -1;
+    }
+    if (s_pipe_count >= MOD_PIPE_MAX) {
+        OPL_ERROR_F("mods", "%s: pipeline table full (%d)", id, MOD_PIPE_MAX);
+        return -1;
+    }
+    mod_pipe_t* p = &s_pipes[s_pipe_count];
+    memset(p, 0, sizeof *p);
+    p->owner = id;
+    p->vert = desc->vert_shader;
+    p->frag = desc->frag_shader;
+    p->blend = desc->blend;
+    p->depth_test = desc->depth_test ? 1 : 0;
+    p->depth_write = desc->depth_write ? 1 : 0;
+    p->live = 1;
+    return s_pipe_count++;
 }
+
 int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,
                             const void* verts, int vert_count,
                             uint16_t texture_id) {
-    (void)pipeline; (void)verts; (void)vert_count; (void)texture_id;
-    STUB_ONCE("draw_mesh");
-    return -1;
+    const char* id = openpete_mods_id_of(self);
+    if (!id || !verts || vert_count <= 0 || (vert_count % 3) != 0) return -1;
+    if (!openpete_mods_in_present) {
+        static int s_warned = 0;
+        if (!s_warned) {
+            s_warned = 1;
+            OPL_ERROR_F("mods", "%s: draw_mesh outside a present hook — "
+                        "submit from register_present_hook", id);
+        }
+        return -1;
+    }
+    if (pipeline < 0 || pipeline >= s_pipe_count || !s_pipes[pipeline].live ||
+        strcmp(s_pipes[pipeline].owner, id) != 0)
+        return -1;
+    if (s_mesh_draw_n >= MOD_MESH_DRAWS_MAX ||
+        s_mesh_vert_n + vert_count > MOD_MESH_VERTS_MAX)
+        return -1;   /* per-present pool exhausted — drop, never grow */
+    memcpy(&s_mesh_verts[s_mesh_vert_n], verts,
+           (size_t)vert_count * sizeof(openpete_mod_vertex_t));
+    mesh_draw_t* d = &s_mesh_draws[s_mesh_draw_n++];
+    d->pipe = pipeline;
+    d->first = s_mesh_vert_n;
+    d->n = vert_count;
+    d->tex = texture_id;
+    s_mesh_vert_n += vert_count;
+    return 0;
+}
+
+/* Renderer-facing drain (native_render.c): draw i → its pipeline desc
+ * (SPIR-V + state + cache slot), vertex range, texture id. */
+int openpete_mods_drawmesh_count(void) { return s_mesh_draw_n; }
+
+int openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
+                               const openpete_mod_vertex_t** verts, int* n,
+                               uint16_t* tex) {
+    if (i < 0 || i >= s_mesh_draw_n || !pd || !verts || !n || !tex) return -1;
+    const mesh_draw_t* d = &s_mesh_draws[i];
+    mod_pipe_t* p = &s_pipes[d->pipe];
+    if (!p->live || !openpete_mods_is_enabled(p->owner)) return -1;
+    pd->vert_spv = openpete_mods_shader_spv(p->vert, &pd->vert_words, NULL);
+    pd->frag_spv = openpete_mods_shader_spv(p->frag, &pd->frag_words, NULL);
+    pd->blend = p->blend;
+    pd->depth_test = p->depth_test;
+    pd->depth_write = p->depth_write;
+    pd->pipeline_slot = &p->pipeline;
+    pd->owner = p->owner;
+    *verts = &s_mesh_verts[d->first];
+    *n = d->n;
+    *tex = d->tex;
+    return 0;
+}
+
+void openpete_mods_drawmesh_clear(void) {
+    s_mesh_draw_n = 0;
+    s_mesh_vert_n = 0;
+}
+
+void openpete_mods_pipeline_remove_owner(const char* mod_id) {
+    for (int i = 0; i < s_pipe_count; i++) {
+        if (!s_pipes[i].live || strcmp(s_pipes[i].owner, mod_id) != 0) continue;
+        if (s_pipes[i].pipeline &&
+            s_pipes[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_pipes[i].pipeline;
+        s_pipes[i].pipeline = NULL;
+        s_pipes[i].live = 0;
+    }
+}
+
+void openpete_mods_pipeline_retire_all(void) {
+    for (int i = 0; i < s_pipe_count; i++) {
+        if (!s_pipes[i].live) continue;
+        if (s_pipes[i].pipeline &&
+            s_pipes[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_pipes[i].pipeline;
+        s_pipes[i].pipeline = NULL;
+    }
 }
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,

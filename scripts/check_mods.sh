@@ -733,6 +733,45 @@ else
     fi
 fi
 
+# ── mod shaders S7: custom-pipeline draw visible in a RECORDING.
+# Screenshots CANNOT gate this: the -vk dump recomposes native_rtt
+# without compose_variant content, and --screenshot-presents captures
+# the PsyCross REFERENCE frame — both are structurally blind to mod
+# draws (the S7 bring-up burned hours re-"fixing" a working triangle;
+# a look at the live window broke the loop). --record reads
+# the composed off_image, so a decoded recording frame is the honest
+# instrument.
+say "mod shaders: mesh-probe custom-pipeline draw visible in a recording"
+if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
+    fixture "$WORK/mesh" mesh-probe
+    timeout 300 "$BIN" --disc "$DISC" --run-recomp 0x80012204 \
+        --frame-limit 300 --mods-dir "$WORK/mesh" \
+        --record "$WORK/mesh/probe.mkv" > "$WORK/mesh.log" 2>&1 || true
+    if [ -s "$WORK/mesh/probe.mkv" ] &&
+       ffmpeg -y -loglevel error -ss 3 -i "$WORK/mesh/probe.mkv" \
+              -frames:v 1 "$WORK/mesh/frame.png" 2>/dev/null; then
+        mesh_ok=$(python3 - "$WORK/mesh/frame.png" <<'PYEOF'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+px = im.load()
+p = px[int(w * 0.1), int(h * 0.85)]     # inside the bottom-left triangle
+print("OK" if p[0] > 180 and p[2] > 180 and p[1] < 90 else f"BAD{p}")
+PYEOF
+)
+        if [ "$mesh_ok" = "OK" ]; then
+            ok "magenta mesh present in the decoded recording frame"
+        else
+            bad "mesh draw missing from the recording ($mesh_ok — see $WORK/mesh.log)"
+        fi
+    else
+        bad "recording failed for the mesh rung (see $WORK/mesh.log)"
+    fi
+else
+    ok "ffmpeg/PIL unavailable — mesh recording assertion skipped"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

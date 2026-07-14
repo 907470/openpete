@@ -410,6 +410,22 @@ int  openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
 int  openpete_mods_postfx_take_retired(void** out, int cap);
 void openpete_mods_postfx_remove_owner(const char* mod_id);
 void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
+
+/* Custom-pipeline draw queue (S7) — renderer-facing drain. */
+typedef struct {
+    const uint32_t* vert_spv; size_t vert_words;
+    const uint32_t* frag_spv; size_t frag_words;
+    int blend, depth_test, depth_write;   /* OP_BLEND_* + flags */
+    void** pipeline_slot;
+    const char* owner;
+} openpete_mod_pipe_gpu_t;
+int  openpete_mods_drawmesh_count(void);
+int  openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
+                                const openpete_mod_vertex_t** verts, int* n,
+                                uint16_t* tex);
+void openpete_mods_drawmesh_clear(void);
+void openpete_mods_pipeline_remove_owner(const char* mod_id);
+void openpete_mods_pipeline_retire_all(void);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's

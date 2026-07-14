@@ -100,9 +100,19 @@ enum {
 
 /* Vertex formats for custom-pipeline draws (pipeline_register). */
 enum {
-    OP_VTX_POS_UV_RGBA = 0,  /* float x,y,z; float u,v; uint32_t rgba —
-                              * 24 bytes per vertex, tightly packed */
+    OP_VTX_POS_UV_RGBA = 0,  /* openpete_mod_vertex_t below — 24 bytes */
 };
+
+/* The OP_VTX_POS_UV_RGBA vertex. The MOD's vertex shader owns the
+ * interpretation of pos (attributes arrive untransformed: location 0 =
+ * vec3 pos, 1 = vec2 uv, 2 = vec4 rgba/255; the engine UBO — time,
+ * tick, alpha, resolution — is at set 3 binding 0, see
+ * sdk/shaders/openpete_shader_api.glsl). rgba byte order R,G,B,A. */
+typedef struct openpete_mod_vertex {
+    float    x, y, z;
+    float    u, v;
+    uint32_t rgba;
+} openpete_mod_vertex_t;
 
 /* Blend modes — the engine's PSX-derived set. */
 enum {

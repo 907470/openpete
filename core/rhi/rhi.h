@@ -220,6 +220,12 @@ typedef struct {
                                  * set 3 = the 2-binding dynamic UBO layout
                                  * (engine block, mod block — rhi_ubo_bind).
                                  * uses_vram/uses_vram2 are ignored.           */
+    bool           mod_pipeline; /* mod custom-draw layout (S7): the STANDARD
+                                 * rhi_vertex input + the postfx 4-set layout
+                                 * (sets 0..2 samplers, set 3 UBO pair), so
+                                 * mod vert/frag pairs see attributes at
+                                 * locations 0..2 and the engine UBO at set 3
+                                 * binding 0. uses_vram/uses_vram2 ignored.   */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).

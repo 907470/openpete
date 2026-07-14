@@ -421,6 +421,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_registry_remove_owner(mod->id);
     openpete_mods_state_remove(mod->id);
     openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
+    openpete_mods_pipeline_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
     exports_remove_owner(mod->id);
 

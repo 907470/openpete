@@ -2817,7 +2817,7 @@ static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
      * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. */
     VkDescriptorSetLayout set_layouts[4] = { dev->vram_set_layout, dev->vram_set_layout,
                                              dev->vram_set_layout, dev->ubo_set_layout };
-    uint32_t set_count = desc->postfx ? 4u
+    uint32_t set_count = (desc->postfx || desc->mod_pipeline) ? 4u
                        : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
