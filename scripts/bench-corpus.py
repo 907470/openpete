@@ -36,7 +36,7 @@ DEFAULT_EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spy
 EXIT_SKIP = 64
 
 DEVICE_RE = re.compile(r"device='([^']*)'")
-EXIT_RE = re.compile(r"openpete-exit: reason=(\S+)")
+EXIT_RE = re.compile(r"exit: reason=([a-z0-9-]+)")
 
 
 def wslpath_w(p):
@@ -46,12 +46,14 @@ def wslpath_w(p):
         return p
 
 
-def run_movie(exe, movie_path, opp_path, ftl_path, args, log_path):
+def run_movie(exe, movie_path, opp_path, args, log_path):
     is_win = exe.endswith(".exe")
     disc = wslpath_w(DISC) if is_win else DISC
     bk2 = wslpath_w(movie_path) if is_win else movie_path
     opp = wslpath_w(opp_path) if is_win else opp_path
-    ftl = wslpath_w(ftl_path) if is_win else ftl_path
+    # NOTE: do NOT also pass --frame-time-log — a second concurrent file open
+    # collides with --profile-out's fopen on the Windows exe and leaks stderr
+    # into the .opp. fps comes from the trace's own present cadence anyway.
     cmd = [
         exe, "--disc", disc, "--run-recomp", "0x80012204",
         "--bk2", bk2, "--bk2-stop-on-end",
@@ -59,14 +61,19 @@ def run_movie(exe, movie_path, opp_path, ftl_path, args, log_path):
         "--render-fps", str(args.render_fps),
         "--frame-limit", str(args.frame_limit),
         "--max-runtime-seconds", str(args.max_runtime_seconds),
-        "--profile-out", opp, "--frame-time-log", ftl,
+        "--profile-out", opp,
     ]
     env = dict(os.environ)
     if args.gpu_timers:
         env["OPENPETE_GPU_TIMERS"] = "1"
+    # Capture via PIPE, not a file FD: redirecting a Windows .exe's stdout to a
+    # real file descriptor makes its --profile-out fopen collide with the
+    # redirected fd, leaking late stderr into the .opp trace. PIPE avoids it.
+    p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out = p.stdout or b""
     with open(log_path, "wb") as lf:
-        p = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT)
-    stderr_txt = open(log_path, "r", errors="replace").read()
+        lf.write(out)
+    stderr_txt = out.decode("utf-8", "replace")
     dev = DEVICE_RE.search(stderr_txt)
     reason = EXIT_RE.search(stderr_txt)
     return {
@@ -221,10 +228,9 @@ def main():
     for mp in movies:
         stem = os.path.basename(mp)[:-4]
         opp = os.path.join(out, stem + ".opp")
-        ftl = os.path.join(out, stem + ".ftl")
         log = os.path.join(out, stem + ".log")
         print("[bench] %s ..." % stem, file=sys.stderr, flush=True)
-        run = run_movie(args.exe, mp, opp, ftl, args, log)
+        run = run_movie(args.exe, mp, opp, args, log)
         if platform is None:
             platform = platform_tag(args.exe, run["device"])
         summ = None
