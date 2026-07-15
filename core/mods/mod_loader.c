@@ -181,13 +181,61 @@ static int purity_violation(const char* what) {
     return 1;
 }
 
+/* ---- native-renderer visual-bypass advisory ------------------------------
+ * The default --renderer vk draws the 3D world from gamestate and does NOT
+ * rasterize the PSX ordering table, so overriding one of the original PSX
+ * render / GPU-submission functions to change the picture has NO visible effect
+ * under vk (it shows only under --renderer psycross). Warn so the author isn't
+ * left wondering. True only when native is the sole display (pure vk, windowed);
+ * under psycross / ab / diff / headless the PSX path still rasterizes.
+ *
+ * Scope: the *visual* no-op only. Freezing these can also drop the render→
+ * gameplay channel writes (m_WasDrawn etc.) and desync — a separate, sharper
+ * concern this advisory deliberately does not cover. */
+static int s_native_hides_psx = 0;   /* set in openpete_mods_init from opts */
+
+/* Original PSX render / GPU-submission functions whose rasterized output the
+ * native renderer replaces. Matched by resolved address, so both override_addr
+ * and override_name are covered. */
+static const char* const k_psx_render_fns[] = {
+    "GamestateDraw",                                   /* top-level world draw */
+    "DrawOTag", "DrawSync",                            /* OT submit / GPU sync */
+    "PutDrawEnv", "SetDefDrawEnv", "SetDrawMode",      /* PsyQ GPU draw state   */
+    "TitlescreenDraw", "TitlescreenDrawSprite",        /* titlescreen render    */
+};
+
+/* If addr is one of the native-bypassed render functions (resolved against the
+ * SDK symbol table), return its name; else NULL. */
+static const char* psx_render_fn_name(uint32_t addr) {
+    if (!addr || !s_symbols) return NULL;
+    for (size_t i = 0; i < sizeof k_psx_render_fns / sizeof k_psx_render_fns[0]; i++) {
+        const openpete_sdk_symbol_t* s = sym_find(k_psx_render_fns[i]);
+        if (s && s->addr == addr) return k_psx_render_fns[i];
+    }
+    return NULL;
+}
+
+static void warn_render_bypassed(openpete_mod_t* self, uint32_t addr) {
+    if (!s_native_hides_psx) return;
+    const char* rn = psx_render_fn_name(addr);
+    if (!rn) return;
+    OPL_WARN_F(self->log_tag,
+               "override targets PSX render function %s (0x%08X): the native "
+               "renderer (--renderer vk) draws the world from gamestate and does "
+               "not rasterize the PSX ordering table, so visual changes here "
+               "won't appear under vk. Draw via the mod draw API for native "
+               "visuals, or run --renderer psycross to see this path.", rn, addr);
+}
+
 static int api_override_addr(openpete_mod_t* self, uint32_t addr,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
     if (purity_violation("override_addr")) return -1;
     int rc = openpete_mods_chain_add(addr, fn, self->id);
-    if (rc == 0)
+    if (rc == 0) {
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
+        warn_render_bypassed(self, addr);
+    }
     return rc;
 }
 
@@ -211,9 +259,11 @@ static int api_override_name(openpete_mod_t* self, const char* name,
                    "stable name", name, sym->addr);
     }
     int rc = openpete_mods_chain_add(sym->addr, fn, self->id);
-    if (rc == 0)
+    if (rc == 0) {
         OPL_INFO_F(self->log_tag, "override registered: %s (0x%08X)",
                    name, sym->addr);
+        warn_render_bypassed(self, sym->addr);
+    }
     return rc;
 }
 
@@ -1802,6 +1852,12 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
 }
 
 int openpete_mods_init(const openpete_options_t* opts) {
+    /* Pure vk windowed = native is the sole display and the PSX ordering table
+     * is not rasterized, so render-function overrides are visual no-ops. Under
+     * psycross / ab / diff / headless the PSX path still rasterizes. */
+    s_native_hides_psx = opts && opts->renderer == OPENPETE_RENDERER_VK
+                              && !opts->headless;
+
     char mods_dir[MOD_PATH_MAX];
     mod_ref_t refs[MODS_MAX];
     int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, refs,
