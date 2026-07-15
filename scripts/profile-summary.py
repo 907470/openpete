@@ -20,7 +20,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _opp_reader import read_opp, KIND_CANONICAL, KIND_INTERMEDIATE  # noqa: E402
+from _opp_reader import (read_opp, present_busy_us, partition_transients,  # noqa: E402
+                         KIND_CANONICAL, KIND_INTERMEDIATE)
 
 
 def pct(sorted_vals, q):
@@ -33,31 +34,28 @@ def pct(sorted_vals, q):
 
 
 def interval_union_us(spans):
-    """Total wall-time covered by span [t0, t0+dur) intervals (overlap-safe)."""
-    if not spans:
-        return 0
-    iv = sorted((t0, t0 + dur) for (_d, _n, t0, dur, _a) in spans)
-    total = 0
-    cur_s, cur_e = iv[0]
-    for s, e in iv[1:]:
-        if s > cur_e:
-            total += cur_e - cur_s
-            cur_s, cur_e = s, e
-        elif e > cur_e:
-            cur_e = e
-    total += cur_e - cur_s
-    return total
+    """Deprecated shim: use _opp_reader.present_busy_us. Kept for callers passing
+    a raw span list."""
+    class _P:
+        pass
+    p = _P()
+    p.spans = spans
+    return present_busy_us(p)
 
 
-def summarize(path, skip_ticks=0, label=None):
+def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     names, presents, funcs = read_opp(path)
     presents = [p for p in presents if p.canon_tick >= skip_ticks]
+    presents, transients = partition_transients(presents, transient_ms * 1000)
 
     kinds = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate"}
     out = {
         "trace": os.path.basename(path),
         "label": label or "",
         "presents_total": len(presents),
+        "transients_excluded": len(transients),
+        "transients_total_ms": round(sum(present_busy_us(p) for p in transients) / 1000.0, 1),
+        "transient_ms_threshold": transient_ms,
         "kinds": {},
         "cpu_scopes": [],
         "gpu_zones": [],
@@ -82,7 +80,7 @@ def summarize(path, skip_ticks=0, label=None):
     all_t = [p.t_now_us for p in presents]
     busy_by_kind = {k: [] for k in kinds}
     for p in presents:
-        busy_by_kind[p.kind].append(interval_union_us(p.spans))
+        busy_by_kind[p.kind].append(present_busy_us(p))
 
     for k, kname in kinds.items():
         b = sorted(busy_by_kind[k])
@@ -183,6 +181,10 @@ def render_text(s):
     L.append(hdr)
     L.append("# presents=%d canonical=%d intermediate=%d"
              % (s["presents_total"], ncanon, ninter))
+    if s.get("transients_excluded"):
+        L.append("# excluded %d load-transient present(s) >%dms (%.0f ms total — level "
+                 "loads / CD stalls)" % (s["transients_excluded"],
+                 s["transient_ms_threshold"], s["transients_total_ms"]))
     ck = s["kinds"].get("canonical", {})
     ik = s["kinds"].get("intermediate", {})
     L.append("# present_busy_us p50/p99/max: canonical %d/%d/%d  intermediate %d/%d/%d"
@@ -221,11 +223,15 @@ def main():
     ap.add_argument("trace")
     ap.add_argument("--skip-ticks", type=int, default=0,
                     help="drop presents with canon_tick < N (warm-up exclusion)")
+    ap.add_argument("--transient-ms", type=int, default=40,
+                    help="exclude presents whose CPU busy exceeds N ms as load "
+                         "transients (level loads / CD stalls); 0 disables")
     ap.add_argument("--label", default=None)
     ap.add_argument("--json", default=None, help="also write JSON summary here")
     args = ap.parse_args()
 
-    s = summarize(args.trace, skip_ticks=args.skip_ticks, label=args.label)
+    s = summarize(args.trace, skip_ticks=args.skip_ticks, label=args.label,
+                  transient_ms=args.transient_ms)
     print(render_text(s))
     if args.json:
         with open(args.json, "w") as f:

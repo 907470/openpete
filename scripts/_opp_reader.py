@@ -30,6 +30,37 @@ class Present:
         return KIND_NAME.get(self.kind, "?")
 
 
+def present_busy_us(present):
+    """Wall-time union of a present's CPU span intervals (overlap de-duplicated):
+    the real CPU cost of the present, independent of scope nesting."""
+    spans = present.spans
+    if not spans:
+        return 0
+    iv = sorted((t0, t0 + dur) for (_d, _n, t0, dur, _a) in spans)
+    total = 0
+    cur_s, cur_e = iv[0]
+    for s, e in iv[1:]:
+        if s > cur_e:
+            total += cur_e - cur_s
+            cur_s, cur_e = s, e
+        elif e > cur_e:
+            cur_e = e
+    total += cur_e - cur_s
+    return total
+
+
+def partition_transients(presents, threshold_us):
+    """Split presents into (steady, transients) where a transient is any present
+    whose CPU busy-time exceeds threshold_us — i.e. a level-load / CD-stall spike
+    (~1.4s) rather than a steady-state frame (~1-9ms). threshold_us<=0 disables."""
+    if threshold_us <= 0:
+        return presents, []
+    steady, trans = [], []
+    for p in presents:
+        (trans if present_busy_us(p) > threshold_us else steady).append(p)
+    return steady, trans
+
+
 def read_opp(path):
     """Return (names: dict[int,str], presents: list[Present], funcs: list[dict]).
     Records after the last PRESENT (an incomplete trailing present) are dropped;

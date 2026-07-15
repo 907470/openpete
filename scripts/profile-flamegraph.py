@@ -18,7 +18,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _opp_reader import read_opp, KIND_NAME  # noqa: E402
+from _opp_reader import read_opp, partition_transients, KIND_NAME  # noqa: E402
 
 
 def build_tree_for_present(spans):
@@ -150,12 +150,19 @@ def main():
     ap.add_argument("trace")
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--skip-ticks", type=int, default=0)
+    ap.add_argument("--transient-ms", type=int, default=40,
+                    help="exclude presents whose CPU busy exceeds N ms as load "
+                         "transients; 0 disables")
     ap.add_argument("--which", choices=["cpu", "gpu", "func"], default="cpu")
     ap.add_argument("--title", default=None)
     args = ap.parse_args()
 
     names, presents, funcs = read_opp(args.trace)
     presents = [p for p in presents if p.canon_tick >= args.skip_ticks]
+    presents, transients = partition_transients(presents, args.transient_ms * 1000)
+    if transients:
+        print("excluded %d load-transient present(s) >%dms" %
+              (len(transients), args.transient_ms), file=sys.stderr)
 
     acc = {}
     if args.which == "func":
