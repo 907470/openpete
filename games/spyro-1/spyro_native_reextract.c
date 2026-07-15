@@ -1412,8 +1412,9 @@ static void spyro_native_reextract(void* cpu_v) {
      * spawn into inactive slots → have_prev=0 → snap (no streak from a stale slot),
      * despawns are evicted. Pure LERP of two observed states → never calls the
      * particle update's rand() (which would break gameplay 1:1), so it's safe for
-     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life, carved
-     * out) or glows (they ride their owner moby). Teleport-guard a slot reused by a
+     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life — no RAM
+     * writeback; its twinkle PHASE interps render-side in sparkle_build instead)
+     * or glows (they ride their owner moby). Teleport-guard a slot reused by a
      * new particle mid-flight. */
     {
         op_time_t now = openpete_interp_present_now();

@@ -220,9 +220,9 @@ static void spyro_interp_capture_objs(void) {
      * elsewhere): a stride-0x20 array behind a pointer. Capture each ACTIVE slot
      * keyed by its PSX address so the sub-tick spine can lerp particle positions.
      * Particles spawn into INACTIVE slots, so a fresh particle gets have_prev=0
-     * (snap, no streak); despawned slots go unseen → evicted. NOT g_Sparkles
-     * (separate pool, rand m_Life — carved out) or glows (derive from their owner
-     * moby). Capture 0x20 = the full record (pos @ +0x04 X/Y, +0x08 Z). */
+     * (snap, no streak); despawned slots go unseen → evicted. NOT glows (derive
+     * from their owner moby); g_Sparkles is captured separately below (phase-only
+     * interp). Capture 0x20 = the full record (pos @ +0x04 X/Y, +0x08 Z). */
     uint32_t ppool = rd32(G_PARTICLES);
     if (ppool >= 0x80000000u) {
         for (uint32_t i = 0; i < PART_MAX; ++i) {
@@ -235,6 +235,27 @@ static void spyro_interp_capture_objs(void) {
             if (sel & 0x80u) continue;          /* inactive slot */
             openpete_interp_objs_capture(pa, host, PART_STRIDE);
         }
+    }
+
+    /* g_Sparkles pool (gem/chest/statue twinkles): a FIXED Sparkle[8] array,
+     * stride 0x18. A sparkle's POSITION is static for its whole life — what
+     * steps at the 29.97 Hz sim rate is the twinkle ANIMATION phase: m_Life
+     * (pulse scale, decremented per tick by the .s renderer) and m_0x0E (spin,
+     * +~3·dt per tick). Capture live slots so the native feeder (sparkle_build,
+     * particle_native.c) can lerp the PHASE sub-tick at float precision — user
+     * report 2026-07-14: gem sparkles animate at 29.97 Hz regardless of
+     * --render-fps. Render-side only: nothing is written back to the pool (the
+     * reextract RAM-writeback still carves g_Sparkles out — its rand()-seeded
+     * respawns must never be simulated host-side). A slot reused by a respawn
+     * pairs with m_Life INCREASING, which the feeder detects and snaps on;
+     * a slot dead for a tick goes unseen → evicted → fresh spawn (no pair). */
+    for (uint32_t i = 0; i < 8u; ++i) {
+        uint32_t sa = G_SPARKLES + i * 0x18u;
+        const void* host = openpete_psx_to_host_ptr(sa);
+        if (!host) break;
+        uint32_t w3; memcpy(&w3, (const uint8_t*)host + 0x0C, 4);
+        if ((w3 & 0xFFu) == 0) continue;        /* m_Life==0 → dead slot */
+        openpete_interp_objs_capture(sa, host, 0x18u);
     }
 
     /* SHADED render list (G_SCRATCH+0x2400 — flat Moby*[256] the .s shaded

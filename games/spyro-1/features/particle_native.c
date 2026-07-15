@@ -26,6 +26,8 @@
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
+#include "openpete_interp.h"       /* openpete_interp_present_now (sparkle phase) */
+#include "openpete_interp_objs.h"  /* per-slot prev/curr snapshots (sparkle phase) */
 #include "render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
@@ -989,6 +991,24 @@ static const uint32_t k_s3_glint[6][3] = {
  * view-Z in world/4, so the threshold is 0x1000 in c.m3 units. */
 #define S3_GLINT_NEAR_M3 4096.0
 
+/* Sub-tick twinkle-PHASE interpolation (user report 2026-07-14: gem sparkles
+ * animate at 29.97 Hz regardless of --render-fps). A sparkle's position is
+ * static for its whole life — what steps is the ANIMATION phase: m_Life
+ * (pulse scale) decremented per tick and m_0x0E (spin) advanced ~3·dt per
+ * tick by the .s. The interp-objs table captures live g_Sparkles slots per
+ * tick (spyro_interp_regions.c); when the re-extract pass is active we lerp
+ * life + spin between a slot's prev/curr snapshots at its own alpha and run
+ * the fade math at FLOAT precision (fade8, scaledFade, table-interpolated
+ * sin/cos) — the same treatment moby rotation got (moby_native.c
+ * sincos_interp). Latched by particle_native_reextract around the feed so
+ * the canonical inline render (interp off) stays integer/byte-exact for the
+ * sparkle A/B harness. Render-side only: sparkle RAM is never written. */
+static op_time_t s_sparkle_now = 0;   /* present clock; 0 = phase interp off
+                                       * (latched in particle_native_reextract) */
+/* One NTSC sim tick (29.97 Hz) — the per-slot alpha denominator cap, same
+ * constant as TICK_PERIOD_NS in spyro_native_reextract.c. */
+#define SPARKLE_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
     s_sstar_n = 0;
@@ -1027,13 +1047,70 @@ static void sparkle_build(CPUState* cpu) {
          * twinkle. ANGLE: indexed by the animated m_0x0E seed (+0xE), which the
          * .s increments ~3·dt/frame for a smooth spin (NOT fade8 — that only
          * scales). Read post-.s m_0x0E (the value the .s used + wrote). */
-        int df = speed - newLife; if (df < 0) df = -df;
-        int fade8 = speed ? (df * 256) / speed : 0;
-        if (fade8 < 0) fade8 = 0; else if (fade8 > 255) fade8 = 255;
-        double scaledFade = (double)(256 - fade8) * fade;
         int angIdx = (int)((w3 >> 16) & 0xFF);       /* m_0x0E (spin angle) */
-        int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2);
-        int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2 + 128);  /* cos = +0x80 */
+        /* Sub-tick phase: lerp life + spin between this slot's prev/curr
+         * interp-objs snapshots (see s_sparkle_now above). Guards: same slot
+         * identity (position + m_Speed unchanged) and life non-increasing —
+         * a respawn re-arms m_Life upward → snap, never lerp across it. */
+        double lifef = (double)newLife, angf = (double)angIdx;
+        int phase_interp = 0;
+        if (s_sparkle_now) {
+            const openpete_interp_obj_t* o = openpete_interp_objs_find(sp);
+            if (o && o->have_prev) {
+                uint32_t pw3, pp0, pp1, pp2;
+                memcpy(&pw3, o->prev + 0x0C, 4);
+                memcpy(&pp0, o->prev + 0x00, 4);
+                memcpy(&pp1, o->prev + 0x04, 4);
+                memcpy(&pp2, o->prev + 0x08, 4);
+                int pLife = (int)(pw3 & 0xFF), pSpeed = (int)((pw3 >> 8) & 0xFF);
+                int pAng  = (int)((pw3 >> 16) & 0xFF);
+                op_time_t per = o->curr_ns - o->prev_ns;
+                if (per > SPARKLE_TICK_PERIOD_NS) per = SPARKLE_TICK_PERIOD_NS;
+                if (pLife >= newLife && pSpeed == speed && per > 0 &&
+                    pp0 == (uint32_t)px && pp1 == (uint32_t)py && pp2 == (uint32_t)pz) {
+                    double a = (double)(s_sparkle_now - o->curr_ns) / (double)per;
+                    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+                    lifef = (double)pLife + ((double)newLife - (double)pLife) * a;
+                    int d = (angIdx - pAng) & 0xFF; if (d >= 128) d -= 256;
+                    angf = (double)pAng + (double)d * a;
+                    phase_interp = 1;
+                }
+            }
+        }
+        /* OPENPETE_SPARKLE_INTERP_DBG: per-present phase trace for slot 0 —
+         * fractional lifef/angf between the byte grid prove the sub-tick sweep. */
+        {
+            static int s_sdbg = -1;
+            if (s_sdbg < 0) { const char* e = getenv("OPENPETE_SPARKLE_INTERP_DBG"); s_sdbg = (e && *e && *e != '0'); }
+            if (s_sdbg && i == 0)
+                fprintf(stderr, "[sparkle-phase f=%u] slot0 %s life=%.3f ang=%.3f (raw %d/%d)\n",
+                        openpete_frame, phase_interp ? "lerp" : "snap", lifef, angf, newLife, angIdx);
+        }
+        double scaledFade, sinv, cosv;
+        if (phase_interp) {
+            /* Float mirror of the integer math below (identical at alpha=1):
+             * fractional fade8 + sin/cos lerped between adjacent table entries
+             * (exact at integer angles), so the pulse/spin sweep sub-tick. */
+            double dff = (double)speed - lifef; if (dff < 0.0) dff = -dff;
+            double fade8f = dff * 256.0 / (double)speed;
+            if (fade8f < 0.0) fade8f = 0.0; else if (fade8f > 255.0) fade8f = 255.0;
+            scaledFade = (256.0 - fade8f) * (double)fade;
+            double fb = angf; while (fb < 0.0) fb += 256.0; while (fb >= 256.0) fb -= 256.0;
+            int b0 = (int)fb; double fr = fb - (double)b0;
+            uint32_t i0 = (uint32_t)b0 * 2u, i1 = (uint32_t)((b0 + 1) & 0xFF) * 2u;
+            double s0 = rd_s16(cpu, D_SIN_TABLE + i0),       s1 = rd_s16(cpu, D_SIN_TABLE + i1);
+            double c0 = rd_s16(cpu, D_SIN_TABLE + i0 + 128), c1 = rd_s16(cpu, D_SIN_TABLE + i1 + 128);
+            sinv = s0 + (s1 - s0) * fr;
+            cosv = c0 + (c1 - c0) * fr;
+        } else {
+            /* canonical integer path — byte-exact for the A/B harness */
+            int df = speed - newLife; if (df < 0) df = -df;
+            int fade8 = speed ? (df * 256) / speed : 0;
+            if (fade8 < 0) fade8 = 0; else if (fade8 > 255) fade8 = 255;
+            scaledFade = (double)(256 - fade8) * fade;
+            sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2);
+            cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx*2 + 128);  /* cos = +0x80 */
+        }
         double ec = scaledFade * cosv / 524288.0;    /* >>19 */
         double es = scaledFade * sinv / 524288.0;
         /* tips view-space (VZ=0); transform diag(a3)+TR=2*centre, then project */
@@ -1496,7 +1573,12 @@ void particle_native_reextract(CPUState* cpu) {
     if (!render_path_canon_drawn(RP_PARTICLES)) return;
     particle_feed_native(cpu);
     glow_feed_native(cpu);
+    /* Twinkle-phase interp on for the re-extract feed only (every present when
+     * the sub-tick spine is active — canonical-lag leg + intermediates); reset
+     * so the canonical inline hook feed stays integer/byte-exact. */
+    s_sparkle_now = openpete_interp_present_now();
     sparkle_feed_native(cpu);
+    s_sparkle_now = 0;
     dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag */
 }
 
