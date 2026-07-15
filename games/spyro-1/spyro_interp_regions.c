@@ -258,6 +258,21 @@ static void spyro_interp_capture_objs(void) {
         openpete_interp_objs_capture(sa, host, 0x18u);
     }
 
+    /* Glow pool (D_80078800 Glow[16], stride 0x24 — Sparx aura, torch glows):
+     * the ring CENTRE rides the owner moby's bracket-lerped position, but the
+     * record's own animated channels — size (+0x10, censused ramping +32/tick
+     * on the Sparx aura spawn), colour (+0x0C) and the position offset
+     * (+0x14/18/1C) — stepped at the sim rate. Capture live slots (count>0)
+     * so glow_build can lerp them sub-tick (phase-only; nothing written back). */
+    for (uint32_t i = 0; i < 16u; ++i) {
+        uint32_t ga = D_GLOWS + i * 0x24u;
+        const void* host = openpete_psx_to_host_ptr(ga);
+        if (!host) break;
+        int32_t cnt; memcpy(&cnt, host, 4);
+        if (cnt <= 0) continue;                 /* inactive slot */
+        openpete_interp_objs_capture(ga, host, 0x24u);
+    }
+
     /* SHADED render list (G_SCRATCH+0x2400 — flat Moby*[256] the .s shaded
      * renderer walks): capture EVERY listed moby. Mostly a dedup-overwrite of
      * the g_LevelMobys walk above, but load-screen props (the level-transition

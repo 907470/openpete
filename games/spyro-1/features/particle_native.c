@@ -240,6 +240,98 @@ static int rd_s16(CPUState* cpu, uint32_t addr) {
 }
 static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
 
+/* ---- sub-tick CHANNEL-PHASE interpolation (pool-wide) ---------------------- *
+ * The g_Particles position bracket (spyro_native_reextract.c) lerps only X/Y/Z;
+ * every other per-tick-animated channel — billboard SPIN (B byte3) and SIZE
+ * (B byte2), sel-3 rect half-extents, sel-1/4 line FAR endpoints (B.hi + word C)
+ * — was read raw-curr and stepped at 29.97 Hz while the position glided (same
+ * class as the gem-sparkle twinkle phase, fixed 2026-07-14). When the re-extract
+ * pass is active (s_phase_now latched by particle_native_reextract) the build
+ * walks lerp those channels between the slot's prev/curr interp-objs snapshots
+ * at FLOAT precision. Line/tile COLOURS (+0x0C/+0x10/+0x14 rgb) are HELD at
+ * curr, not lerped — colour ramps can encode palette cycling where a linear rgb
+ * sweep is wrong; revisit if a stepped colour is ever visible.
+ * Canonical inline feeds (hook time, s_phase_now==0) stay integer/byte-exact
+ * for the A/B harnesses. Render-side only: particle RAM is never written here. */
+static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
+                                     * (latched in particle_native_reextract) */
+/* One NTSC sim tick (29.97 Hz) — the per-slot alpha denominator cap, same
+ * constant as TICK_PERIOD_NS in spyro_native_reextract.c. */
+#define PART_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+
+/* Guarded prev-state lookup for a g_Particles slot. Returns 1 + fills prev
+ * words A/B/C + the slot's own alpha iff the SAME identity guards the position
+ * bracket applies all pass (spyro_native_reextract.c pool loop) — a slot whose
+ * position SNAPPED (spawn / reuse / teleport) must not lerp its other channels,
+ * or spin/size would sweep across two different particles. */
+typedef struct { uint32_t A, B, C; double alpha; } part_prev_t;
+static int part_phase_prev(uint32_t pp, part_prev_t* out) {
+    if (!s_phase_now) return 0;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(pp);
+    if (!o || !o->have_prev) return 0;                 /* spawn → snap */
+    uint32_t ph, ch;
+    memcpy(&ph, o->prev + 0x00, 4);
+    memcpy(&ch, o->curr + 0x00, 4);
+    if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) return 0;    /* m_Class/sel changed → reuse */
+    uint8_t plife = (uint8_t)(ph >> 16), clife = (uint8_t)(ch >> 16);
+    if (clife < plife) return 0;                       /* life reset → reuse */
+    uint32_t pA, pB, pC, cA, cB;
+    memcpy(&pA, o->prev + 0x04, 4); memcpy(&pB, o->prev + 0x08, 4);
+    memcpy(&pC, o->prev + 0x0C, 4);
+    memcpy(&cA, o->curr + 0x04, 4); memcpy(&cB, o->curr + 0x08, 4);
+    double dX = (double)(int16_t)(cA & 0xFFFF) - (double)(int16_t)(pA & 0xFFFF);
+    double dY = (double)(int16_t)(cA >> 16)    - (double)(int16_t)(pA >> 16);
+    double dZ = (double)(int16_t)(cB & 0xFFFF) - (double)(int16_t)(pB & 0xFFFF);
+    double d2 = dX*dX + dY*dY + dZ*dZ;
+    if (clife == plife && d2 > 300.0*300.0) return 0;  /* stalled-life far reuse */
+    if (d2 > 1250.0*1250.0) return 0;                  /* teleport guard */
+    op_time_t per = o->curr_ns - o->prev_ns;
+    if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
+    if (per <= 0) return 0;
+    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
+    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+    out->A = pA; out->B = pB; out->C = pC; out->alpha = a;
+    return 1;
+}
+
+/* channel lerp helpers: plain byte, wrapping byte angle (256/circle shortest
+ * arc), and int16 (line endpoints) */
+static double lerp_b(int p, int c, double a) { return (double)p + ((double)c - (double)p) * a; }
+static double lerp_wrap_b(int p, int c, double a) {
+    int d = (c - p) & 0xFF; if (d >= 128) d -= 256;
+    return (double)p + (double)d * a;
+}
+
+/* sin/cos at fractional TABLE-ENTRY resolution (256 entries/circle, int16 Q12,
+ * cos at +0x80 bytes = +64 entries): lerp adjacent entries — exact at integer
+ * entries, so the canonical value is reproduced at alpha ∈ {0,1}. `ef` is in
+ * entries (byte-angle units); callers pass byte offsets / 2. */
+static void sincos_entry_f(CPUState* cpu, double ef, double* s_out, double* c_out) {
+    while (ef < 0.0) ef += 256.0;
+    while (ef >= 256.0) ef -= 256.0;
+    int b0 = (int)ef; double fr = ef - (double)b0;
+    uint32_t i0 = (uint32_t)b0 * 2u, i1 = (uint32_t)((b0 + 1) & 0xFF) * 2u;
+    double s0 = rd_s16(cpu, D_SIN_TABLE + i0),       s1 = rd_s16(cpu, D_SIN_TABLE + i1);
+    double c0 = rd_s16(cpu, D_SIN_TABLE + i0 + 128), c1 = rd_s16(cpu, D_SIN_TABLE + i1 + 128);
+    *s_out = s0 + (s1 - s0) * fr;
+    *c_out = c0 + (c1 - c0) * fr;
+}
+
+/* OPENPETE_PART_PHASE_DBG: per-present one-line trace of the first phase-lerped
+ * particle (spin/size channels) — fractional values prove the sub-tick sweep. */
+static int part_phase_dbg(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_PART_PHASE_DBG"); s = (e && *e && *e != '0'); }
+    return s;
+}
+static int s_ppdbg_done = 0;   /* reset per build walk */
+/* OPENPETE_GLOW_ANIM_DBG: raw-change census + per-present phase trace (glows) */
+static int glow_anim_dbg(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_GLOW_ANIM_DBG"); s = (e && *e && *e != '0'); }
+    return s;
+}
+
 /* generic SHORTMATRIX loader (5 packed words -> 9 int16) at an arbitrary base */
 static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
     ngte_read_matrix(cpu, base, R);
@@ -367,7 +459,7 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
 }
 
 static void particle_build(CPUState* cpu) {
-    s_fq_n = 0; s_pline_n = 0;
+    s_fq_n = 0; s_pline_n = 0; s_ppdbg_done = 0;
     int R[3][3]; load_cam_matrix(cpu, R);
     /* Camera at FRACTIONAL /4 (not >>2): the particle positions (A/B) are int16
      * world/4 gameplay storage we can't change, but flooring the CAMERA to /4
@@ -414,7 +506,16 @@ static void particle_build(CPUState* cpu) {
             double qd = sz3 <= 0.0 ? 0.0 : (double)H / sz3;
             double ir0 = qd < 0.0 ? 0.0 : (qd > 1.0 ? 1.0 : qd);   /* GTE caps the reciprocal at 1.0 */
             int sizeB = (int)((B >> 16) & 0xFF), alphaB = (int)((B >> 24) & 0xFF);
-            double a2 = sizeB * ir0, a3 = alphaB * ir0;  /* halfW, halfH (sub-pixel) */
+            double szf = (double)sizeB, alf = (double)alphaB;
+            part_prev_t pv;                              /* sub-tick half-extent sweep */
+            if (part_phase_prev(pp, &pv)) {
+                szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
+                alf = lerp_b((int)((pv.B >> 24) & 0xFF), alphaB, pv.alpha);
+                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
+                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=3 lerp sz=%.2f al=%.2f (raw %d/%d)\n",
+                            openpete_frame, i, szf, alf, sizeB, alphaB); }
+            }
+            double a2 = szf * ir0, a3 = alf * ir0;       /* halfW, halfH (sub-pixel) */
             double t0 = a2 * 0.5, t1 = a3 * 0.5;
             double cx = c.sx + t0, cy = c.sy + t1;       /* rect corners (screen) */
             double X0 = cx - a2, X1 = cx, Y0 = cy - a3, Y1 = cy;
@@ -430,9 +531,24 @@ static void particle_build(CPUState* cpu) {
             if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
             int sizeB = (int)((B >> 16) & 0xFF);
             int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
-            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            double a2 = (double)sizeB * sinv / 1024.0, a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
+            double a2, a3;                               /* corner extents (sub-pixel) */
+            part_prev_t pv;                              /* sub-tick spin/size sweep */
+            if (part_phase_prev(pp, &pv)) {
+                /* angle channel = B byte3 (angIdx == (byte3+32 entries) — the
+                 * bit-23 term is cleared by the &0x1FE); wrap-lerp it, then
+                 * float sin/cos. Identical to the integer path at alpha=1. */
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha) + 32.0;
+                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
+                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
+                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=2 lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
+                            openpete_frame, i, ef, szf, (int)(B >> 24), sizeB); }
+            } else {
+                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+                a2 = (double)sizeB * sinv / 1024.0; a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
+            }
             double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
             double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
             double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
@@ -450,9 +566,23 @@ static void particle_build(CPUState* cpu) {
         } else if (sel >= 6) {                          /* rotated-billboard FT4 default */
             int sizeB = (int)((B >> 16) & 0xFF);
             int angIdx = (int)((B >> 23) & 0x1FE);
-            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            double eS = (double)sizeB * sinv / 4096.0, eC = (double)sizeB * cosv / 4096.0;  /* float (not >>12): sub-pixel corner extent */
+            double eS, eC;                               /* corner extents (sub-pixel) */
+            part_prev_t pv;                              /* sub-tick spin/size sweep */
+            if (part_phase_prev(pp, &pv)) {
+                /* angle channel = B byte3 (angIdx == byte3 entries — bit 23 is
+                 * cleared by the &0x1FE); wrap-lerp + float sin/cos. */
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha);
+                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                eS = szf * sf / 4096.0; eC = szf * cf / 4096.0;
+                if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
+                    fprintf(stderr, "[part-phase f=%u] slot=%d sel=%d lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
+                            openpete_frame, i, sel, ef, szf, (int)(B >> 24), sizeB); }
+            } else {
+                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+                eS = (double)sizeB * sinv / 4096.0; eC = (double)sizeB * cosv / 4096.0;  /* float (not >>12): sub-pixel corner extent */
+            }
             double cx[4] = { (double)VYb-eS, (double)VYb+eC, (double)VYb-eC, (double)VYb+eS };
             double cz[4] = { (double)VXb+eC, (double)VXb+eS, (double)VXb-eS, (double)VXb-eC };
             projres pr[4]; double zsum = 0;
@@ -496,10 +626,17 @@ static void particle_build(CPUState* cpu) {
              * already hold EP0's swizzle (GTE-Z/X/Y). EP1 = (X1=B>>16,
              * Y1=C&0xFFFF, Z1=C>>16). Same camera-rel /4 swizzle. */
             uint32_t C = cpu->read_word(pp + 0x0C);
-            int X1 = (int)(B >> 16), Y1 = (int)(C & 0xFFFF), Z1 = (int)(C >> 16);
+            double X1 = (double)(B >> 16), Y1 = (double)(C & 0xFFFF), Z1 = (double)(C >> 16);
+            part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
+                                          * position bracket; EP1 was stepping) */
+            if (part_phase_prev(pp, &pv)) {
+                X1 = (double)(pv.B >> 16)    + ((double)(B >> 16)    - (double)(pv.B >> 16))    * pv.alpha;
+                Y1 = (double)(pv.C & 0xFFFF) + ((double)(C & 0xFFFF) - (double)(pv.C & 0xFFFF)) * pv.alpha;
+                Z1 = (double)(pv.C >> 16)    + ((double)(C >> 16)    - (double)(pv.C >> 16))    * pv.alpha;
+            }
             projres e0, e1;
             proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
-            proj2(R, ofx, ofy, H, (double)(t8 - Y1), (double)(t9 - Z1), (double)(X1 - s7), &e1); /* EP1 */
+            proj2(R, ofx, ofy, H, (t8 - Y1), (t9 - Z1), (X1 - s7), &e1);         /* EP1 */
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
             if (sz3 == 0 || sz3 >= 8192) continue;       /* EP0 SZ window */
             if (screen_rect_cull(e0.sx, e0.sy)) continue; /* EP0 screen-rect */
@@ -521,9 +658,17 @@ static void particle_build(CPUState* cpu) {
             uint32_t C = cpu->read_word(pp + 0x0C);
             int X0=(int)(int16_t)(A&0xFFFF), Y0=(int)(int16_t)(A>>16), Z0=(int)(int16_t)(B&0xFFFF);
             int X1=(int)(int16_t)(B>>16),    Y1=(int)(int16_t)(C&0xFFFF), Z1=(int)(int16_t)(C>>16);
+            double X1f = (double)X1, Y1f = (double)Y1, Z1f = (double)Z1;
+            part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
+                                          * position bracket; EP1 was stepping) */
+            if (part_phase_prev(pp, &pv)) {
+                X1f = (double)(int16_t)(pv.B >> 16)    + ((double)X1 - (double)(int16_t)(pv.B >> 16))    * pv.alpha;
+                Y1f = (double)(int16_t)(pv.C & 0xFFFF) + ((double)Y1 - (double)(int16_t)(pv.C & 0xFFFF)) * pv.alpha;
+                Z1f = (double)(int16_t)(pv.C >> 16)    + ((double)Z1 - (double)(int16_t)(pv.C >> 16))    * pv.alpha;
+            }
             projres e0, e1;
             proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
-            proj_view(ofx, ofy, H, (double)X1, (double)Y1, (double)Z1, &e1);
+            proj_view(ofx, ofy, H, X1f, Y1f, Z1f, &e1);
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
             uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
@@ -554,9 +699,18 @@ static void particle_build(CPUState* cpu) {
             if (((sz3i >> 7) - lod) < 0) continue;       /* sel-5 cull TRZ>>7 - lod */
             int sizeB = (int)((B >> 16) & 0xFF);
             int angIdx = (int)(((B >> 23) + 64) & 0x1FE);
-            int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
-            int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
-            double a2 = (double)sizeB * sinv / 1024.0, a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
+            double a2, a3;                               /* corner extents (sub-pixel) */
+            part_prev_t pv;                              /* sub-tick spin/size sweep */
+            if (part_phase_prev(pp, &pv)) {
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha) + 32.0;
+                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
+            } else {
+                int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
+                int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx + 0x80);
+                a2 = (double)sizeB * sinv / 1024.0; a3 = (double)sizeB * cosv / 1024.0;  /* float (not >>10): sub-pixel corner extent */
+            }
             double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
             double sz3 = TR2 > 65535 ? 65535 : TR2;
             double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
@@ -822,6 +976,7 @@ static void glow_build(CPUState* cpu) {
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
 
+    int gdbg_done = 0;                                /* one glow-phase line per walk */
     for (int i = 0; i < 16 && s_gtri_n < MAX_GTRI; i++) {
         uint32_t g = D_GLOWS + (uint32_t)i*0x24;
         int count = (int)cpu->read_word(g + 0x00);    /* unk_0x00 = ring point count */
@@ -830,20 +985,86 @@ static void glow_build(CPUState* cpu) {
         if (!mpp) continue;
         uint32_t tmpl = cpu->read_word(g + 0x04);     /* ring template (int32 x,y pairs) */
         if (!tmpl) continue;
-        int px = (int)cpu->read_word(mpp+0) + (int)cpu->read_word(g + 0x14);  /* + PosOffset */
-        int py = (int)cpu->read_word(mpp+4) + (int)cpu->read_word(g + 0x18);
-        int pz = (int)cpu->read_word(mpp+8) + (int)cpu->read_word(g + 0x1C);
-        /* swizzle like particles but in raw world units: GTE-X=camY-py,
-         * GTE-Y=camZ-pz, GTE-Z=px-camX; TR=0 through the camera matrix. */
-        projres c; proj2(R, ofx, ofy, H, (double)(camY-py), (double)(camZ-pz), (double)(px-camX), &c);
-        double mac3 = c.m3;
-        if (mac3 <= 0.0) continue;                    /* behind camera */
+        int offx = (int)cpu->read_word(g + 0x14);     /* PosOffset (animatable) */
+        int offy = (int)cpu->read_word(g + 0x18);
+        int offz = (int)cpu->read_word(g + 0x1C);
+        int px = (int)cpu->read_word(mpp+0);          /* owner pos (rides the moby bracket) */
+        int py = (int)cpu->read_word(mpp+4);
+        int pz = (int)cpu->read_word(mpp+8);
         int size = (int)cpu->read_word(g + 0x10);
         int bias = (int)cpu->read_word(g + 0x20);
+        uint32_t color = cpu->read_word(g + 0x0C) & 0xFFFFFF;
+
+        /* Sub-tick phase: lerp size/colour/offset between the slot's prev/curr
+         * interp-objs snapshots (captured in spyro_interp_regions.c). The Sparx
+         * aura RAMPS size +32/tick over ~18 ticks on spawn (censused
+         * 2026-07-14) and stepped at 29.97 Hz. Guards: same owner (+0x08),
+         * template (+0x04) and ring count — a slot reused for a different glow
+         * snaps. Colour is additive light, so a per-byte linear lerp is safe. */
+        double sizef = (double)size;
+        double offxf = (double)offx, offyf = (double)offy, offzf = (double)offz;
+        uint32_t colorL = color;
+        if (s_phase_now) {
+            const openpete_interp_obj_t* o = openpete_interp_objs_find(g);
+            if (o && o->have_prev) {
+                uint32_t pcnt, ptmpl, pmpp;
+                memcpy(&pcnt,  o->prev + 0x00, 4);
+                memcpy(&ptmpl, o->prev + 0x04, 4);
+                memcpy(&pmpp,  o->prev + 0x08, 4);
+                op_time_t per = o->curr_ns - o->prev_ns;
+                if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
+                if ((int32_t)pcnt == count && ptmpl == tmpl && pmpp == mpp && per > 0) {
+                    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
+                    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+                    uint32_t pcol, psz, po14, po18, po1c;
+                    memcpy(&pcol, o->prev + 0x0C, 4);
+                    memcpy(&psz,  o->prev + 0x10, 4);
+                    memcpy(&po14, o->prev + 0x14, 4);
+                    memcpy(&po18, o->prev + 0x18, 4);
+                    memcpy(&po1c, o->prev + 0x1C, 4);
+                    sizef = (double)(int32_t)psz  + ((double)size - (double)(int32_t)psz)  * a;
+                    offxf = (double)(int32_t)po14 + ((double)offx - (double)(int32_t)po14) * a;
+                    offyf = (double)(int32_t)po18 + ((double)offy - (double)(int32_t)po18) * a;
+                    offzf = (double)(int32_t)po1c + ((double)offz - (double)(int32_t)po1c) * a;
+                    double cr = lerp_b((int)(pcol & 0xFF),         (int)(color & 0xFF),         a);
+                    double cg = lerp_b((int)((pcol >> 8) & 0xFF),  (int)((color >> 8) & 0xFF),  a);
+                    double cb = lerp_b((int)((pcol >> 16) & 0xFF), (int)((color >> 16) & 0xFF), a);
+                    colorL = (uint32_t)(cr + 0.5) | ((uint32_t)(cg + 0.5) << 8)
+                           | ((uint32_t)(cb + 0.5) << 16);
+                    if (glow_anim_dbg() && !gdbg_done) { gdbg_done = 1;
+                        fprintf(stderr, "[glow-phase f=%u] slot=%d lerp size=%.2f col=%06X (raw %d/%06X)\n",
+                                openpete_frame, i, sizef, colorL, size, color); }
+                }
+            }
+        }
+
+        /* OPENPETE_GLOW_ANIM_DBG: census — does the game ANIMATE glow records
+         * per tick (size/colour/offset pulse)? Logs RAW values on CHANGE only;
+         * a change stream at ~tick rate = a stepping channel (verdict
+         * 2026-07-14: Sparx aura size ramps +32/tick on spawn — hence the
+         * phase lerp above). */
+        if (glow_anim_dbg()) {
+            static uint32_t s_glast[16][6]; static int s_gseen[16];
+            uint32_t cur[6] = { (uint32_t)count, (uint32_t)size, color,
+                                (uint32_t)offx, (uint32_t)offy, (uint32_t)offz };
+            if (!s_gseen[i] || memcmp(cur, s_glast[i], sizeof cur) != 0) {
+                fprintf(stderr, "[glow-anim f=%u] slot=%d cnt=%u size=%u col=%06X off=(%d,%d,%d)%s\n",
+                        openpete_frame, i, cur[0], cur[1], cur[2],
+                        (int32_t)cur[3], (int32_t)cur[4], (int32_t)cur[5],
+                        s_gseen[i] ? "" : " (new)");
+                memcpy(s_glast[i], cur, sizeof cur); s_gseen[i] = 1;
+            }
+        }
+
+        /* swizzle like particles but in raw world units: GTE-X=camY-py,
+         * GTE-Y=camZ-pz, GTE-Z=px-camX; TR=0 through the camera matrix. */
+        projres c; proj2(R, ofx, ofy, H, camY - ((double)py + offyf),
+                         camZ - ((double)pz + offzf), ((double)px + offxf) - camX, &c);
+        double mac3 = c.m3;
+        if (mac3 <= 0.0) continue;                    /* behind camera */
         double depthidx = mac3 / 128.0 + bias;        /* the .s OT-depth cull (a3<=0) */
         if (depthidx <= 0.0) continue;
-        double persize = (double)size * 4096.0 / mac3;/* IR0 = size*4096/Z */
-        uint32_t color = cpu->read_word(g + 0x0C) & 0xFFFFFF;
+        double persize = sizef * 4096.0 / mac3;       /* IR0 = size*4096/Z */
 
         int nc = count > 64 ? 64 : count;
         double rx[64], ry[64];
@@ -855,7 +1076,7 @@ static void glow_build(CPUState* cpu) {
         }
         for (int j = 1; j < nc && s_gtri_n < MAX_GTRI; j++) {
             gtri* t = &s_gtri[s_gtri_n++];
-            t->sx[0]=(float)c.sx;   t->sy[0]=(float)c.sy;   t->rgb[0]=color;   /* centre */
+            t->sx[0]=(float)c.sx;   t->sy[0]=(float)c.sy;   t->rgb[0]=colorL;  /* centre */
             t->sx[1]=(float)rx[j-1];t->sy[1]=(float)ry[j-1];t->rgb[1]=0;       /* prev ring */
             t->sx[2]=(float)rx[j];  t->sy[2]=(float)ry[j];  t->rgb[2]=0;       /* this ring */
             t->cz = (float)mac3;
@@ -996,19 +1217,13 @@ static const uint32_t k_s3_glint[6][3] = {
  * static for its whole life — what steps is the ANIMATION phase: m_Life
  * (pulse scale) decremented per tick and m_0x0E (spin) advanced ~3·dt per
  * tick by the .s. The interp-objs table captures live g_Sparkles slots per
- * tick (spyro_interp_regions.c); when the re-extract pass is active we lerp
- * life + spin between a slot's prev/curr snapshots at its own alpha and run
- * the fade math at FLOAT precision (fade8, scaledFade, table-interpolated
- * sin/cos) — the same treatment moby rotation got (moby_native.c
- * sincos_interp). Latched by particle_native_reextract around the feed so
- * the canonical inline render (interp off) stays integer/byte-exact for the
- * sparkle A/B harness. Render-side only: sparkle RAM is never written. */
-static op_time_t s_sparkle_now = 0;   /* present clock; 0 = phase interp off
-                                       * (latched in particle_native_reextract) */
-/* One NTSC sim tick (29.97 Hz) — the per-slot alpha denominator cap, same
- * constant as TICK_PERIOD_NS in spyro_native_reextract.c. */
-#define SPARKLE_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
-
+ * tick (spyro_interp_regions.c); when the re-extract pass is active
+ * (s_phase_now — the shared pool-wide latch above) we lerp life + spin
+ * between a slot's prev/curr snapshots at its own alpha and run the fade
+ * math at FLOAT precision (fade8, scaledFade, sincos_entry_f) — the same
+ * treatment moby rotation got (moby_native.c sincos_interp). The canonical
+ * inline render (latch off) stays integer/byte-exact for the sparkle A/B
+ * harness. Render-side only: sparkle RAM is never written. */
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
     s_sstar_n = 0;
@@ -1054,7 +1269,7 @@ static void sparkle_build(CPUState* cpu) {
          * a respawn re-arms m_Life upward → snap, never lerp across it. */
         double lifef = (double)newLife, angf = (double)angIdx;
         int phase_interp = 0;
-        if (s_sparkle_now) {
+        if (s_phase_now) {
             const openpete_interp_obj_t* o = openpete_interp_objs_find(sp);
             if (o && o->have_prev) {
                 uint32_t pw3, pp0, pp1, pp2;
@@ -1065,14 +1280,13 @@ static void sparkle_build(CPUState* cpu) {
                 int pLife = (int)(pw3 & 0xFF), pSpeed = (int)((pw3 >> 8) & 0xFF);
                 int pAng  = (int)((pw3 >> 16) & 0xFF);
                 op_time_t per = o->curr_ns - o->prev_ns;
-                if (per > SPARKLE_TICK_PERIOD_NS) per = SPARKLE_TICK_PERIOD_NS;
+                if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
                 if (pLife >= newLife && pSpeed == speed && per > 0 &&
                     pp0 == (uint32_t)px && pp1 == (uint32_t)py && pp2 == (uint32_t)pz) {
-                    double a = (double)(s_sparkle_now - o->curr_ns) / (double)per;
+                    double a = (double)(s_phase_now - o->curr_ns) / (double)per;
                     if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
                     lifef = (double)pLife + ((double)newLife - (double)pLife) * a;
-                    int d = (angIdx - pAng) & 0xFF; if (d >= 128) d -= 256;
-                    angf = (double)pAng + (double)d * a;
+                    angf = lerp_wrap_b(pAng, angIdx, a);
                     phase_interp = 1;
                 }
             }
@@ -1095,13 +1309,7 @@ static void sparkle_build(CPUState* cpu) {
             double fade8f = dff * 256.0 / (double)speed;
             if (fade8f < 0.0) fade8f = 0.0; else if (fade8f > 255.0) fade8f = 255.0;
             scaledFade = (256.0 - fade8f) * (double)fade;
-            double fb = angf; while (fb < 0.0) fb += 256.0; while (fb >= 256.0) fb -= 256.0;
-            int b0 = (int)fb; double fr = fb - (double)b0;
-            uint32_t i0 = (uint32_t)b0 * 2u, i1 = (uint32_t)((b0 + 1) & 0xFF) * 2u;
-            double s0 = rd_s16(cpu, D_SIN_TABLE + i0),       s1 = rd_s16(cpu, D_SIN_TABLE + i1);
-            double c0 = rd_s16(cpu, D_SIN_TABLE + i0 + 128), c1 = rd_s16(cpu, D_SIN_TABLE + i1 + 128);
-            sinv = s0 + (s1 - s0) * fr;
-            cosv = c0 + (c1 - c0) * fr;
+            sincos_entry_f(cpu, angf, &sinv, &cosv);
         } else {
             /* canonical integer path — byte-exact for the A/B harness */
             int df = speed - newLife; if (df < 0) df = -df;
@@ -1571,14 +1779,16 @@ void particle_native_reextract(CPUState* cpu) {
      * else the spine replays the previous level's particle pool over the
      * cyclorama. */
     if (!render_path_canon_drawn(RP_PARTICLES)) return;
+    /* Channel-phase interp on for the re-extract feeds only (every present when
+     * the sub-tick spine is active — canonical-lag leg + intermediates); reset
+     * so the canonical inline hook feeds stay integer/byte-exact for the A/Bs.
+     * Covers particle spin/size/extents + line far endpoints + sparkle
+     * life/spin (see the s_phase_now block). */
+    s_phase_now = openpete_interp_present_now();
     particle_feed_native(cpu);
     glow_feed_native(cpu);
-    /* Twinkle-phase interp on for the re-extract feed only (every present when
-     * the sub-tick spine is active — canonical-lag leg + intermediates); reset
-     * so the canonical inline hook feed stays integer/byte-exact. */
-    s_sparkle_now = openpete_interp_present_now();
     sparkle_feed_native(cpu);
-    s_sparkle_now = 0;
+    s_phase_now = 0;
     dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag */
 }
 
