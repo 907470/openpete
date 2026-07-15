@@ -13,6 +13,8 @@
 #include "openpete_ticker.h"
 #include "openpete_time.h"
 #include "openpete_frame_time_log.h"
+#include "openpete_profile.h"
+#include "openpete_func_trace.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "screenshot.h"
@@ -1358,6 +1360,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         frame_time_log_start_ns = op_now();
     }
 
+    /* Performance trace (--profile-out): streams CPU scope spans + GPU zones +
+     * census, keyed per present / canonical tick. Inert unless the flag is set. */
+    if (opts->profile_out_path && *opts->profile_out_path) {
+        if (op_prof_open(opts->profile_out_path) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+    }
+
     /* Input pump rate. We used to throttle to 120 Hz when Tab was held
      * to keep per-iter cost down at 1000+ Hz, but that broke BK2 replay
      * determinism: g_PsyX_Pad_InputOverride is set per host iter, and
@@ -2163,6 +2172,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * gameplay-hash-log. */
             ftl_record_present(&frame_time_log, frame_time_log_start_ns,
                                frame_time_log_target_period_ns, openpete_frame);
+
+            /* Perf trace: close out this canonical present. Every CPU span
+             * (SIM_TICK, the lag re-extract, native prepass/compose/gpu-sync)
+             * and census emitted since the previous present binds here. */
+            if (op_prof_on())
+                op_prof_present((uint32_t)openpete_canon_tick, OP_PROF_CANONICAL);
         }
 
         /* Native sub-tick intermediate render between sim ticks
@@ -2240,6 +2255,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * present cadence at --render-fps>30 (not just the ~30 Hz canon). */
             ftl_record_present(&frame_time_log, frame_time_log_start_ns,
                                frame_time_log_target_period_ns, openpete_frame);
+
+            /* Perf trace: close out this intermediate present (re-extract +
+             * native render spans since the canonical present bind here). */
+            if (op_prof_on())
+                op_prof_present((uint32_t)openpete_canon_tick, OP_PROF_INTERMEDIATE);
 
             /* Multi-present capture of native SUB-TICK frames (smoothness check):
              * --screenshot-presents-start/count captures consecutive presents
@@ -2589,6 +2609,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
+    op_functrace_dump_aggregate();   /* emit per-function aggregate into the trace */
+    op_prof_close();
     if (openpete_interp_enabled()) {
         OPL_INFO_F("interp",
                    "captured=%llu, dedupe-skipped=%llu",

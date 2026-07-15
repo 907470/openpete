@@ -450,6 +450,12 @@ typedef struct {
      * scripts/measure-pacing.py. */
     const char* frame_time_log_path;
 
+    /* --profile-out PATH (default NULL): stream a binary `.opp` performance
+     * trace (CPU scope spans + GPU zones + census, keyed per present /
+     * canonical tick). Off by default. See core/include/openpete_profile.h,
+     * scripts/profile-to-trace.py, scripts/profile-summary.py. */
+    const char* profile_out_path;
+
     /* --record PATH: capture gameplay video. True VFR — one encoded frame
      * per game-presented frame, PTS = wall-clock capture time, so playback
      * matches real game cadence (frame drops show as fewer frames/sec).

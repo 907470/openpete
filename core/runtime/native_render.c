@@ -21,6 +21,7 @@
  */
 
 #include "openpete_native_render.h"
+#include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 
@@ -4920,21 +4921,49 @@ static int      s_pt_cnt_cur[OPPC_COUNT];
 static int      s_pt_n = 0;
 static uint64_t s_pt_last_report = 0;
 
-int openpete_phase_timers_on(void) {
+/* Env-gated stderr report (the legacy [phase ...] once-per-sec line). Separate
+ * from openpete_phase_timers_on() so a --profile-out-only run measures the
+ * phases (and forwards them to the trace) without spamming stderr. */
+static int pt_report_on(void) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_PHASE_TIMERS"); on = (e && *e && *e != '0'); }
     return on;
+}
+int openpete_phase_timers_on(void) {
+    /* True when EITHER the env report is requested OR a perf trace is open —
+     * both need the per-phase µs measured at the call sites. */
+    return pt_report_on() || op_prof_on();
 }
 uint64_t openpete_phase_now_us(void) {
     static double us_per_tick = 0.0;
     if (us_per_tick == 0.0) us_per_tick = 1e6 / (double)SDL_GetPerformanceFrequency();
     return (uint64_t)((double)SDL_GetPerformanceCounter() * us_per_tick);
 }
+
+/* Map the fixed OPPT/OPPC enums to interned trace-scope names (lazy). */
+static const char* const s_oppt_names[OPPT_COUNT] = {
+    "rex_total", "rex.terrain", "rex.moby", "rex.shadow", "rex.spyro",
+    "prepass", "compose", "gpu_sync", "sim_tick"
+};
+static const char* const s_oppc_names[OPPC_COUNT] = { "mobys", "tris", "draws", "culled" };
+static int s_oppt_id[OPPT_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+static int s_oppc_id[OPPC_COUNT] = { -1, -1, -1, -1 };
+
 void openpete_phase_add(int phase, uint64_t us) {
-    if ((unsigned)phase < OPPT_COUNT) s_pt_cur[phase] += (uint32_t)us;
+    if ((unsigned)phase >= OPPT_COUNT) return;
+    s_pt_cur[phase] += (uint32_t)us;
+    if (op_prof_on()) {
+        if (s_oppt_id[phase] < 0) s_oppt_id[phase] = op_prof_intern(s_oppt_names[phase]);
+        op_prof_add_span(s_oppt_id[phase], us);
+    }
 }
 void openpete_phase_set_count(int which, int n) {
-    if ((unsigned)which < OPPC_COUNT) s_pt_cnt_cur[which] = n;
+    if ((unsigned)which >= OPPC_COUNT) return;
+    s_pt_cnt_cur[which] = n;
+    if (op_prof_on()) {
+        if (s_oppc_id[which] < 0) s_oppc_id[which] = op_prof_intern(s_oppc_names[which]);
+        op_prof_count(s_oppc_id[which], (uint64_t)n);
+    }
 }
 
 static int pt_cmp_u32(const void* a, const void* b) {
@@ -4952,6 +4981,10 @@ static void phase_present_done(void)
     uint64_t now = openpete_phase_now_us();
     if (s_pt_last_report == 0) s_pt_last_report = now;
     if (s_pt_n < PT_WINDOW && now - s_pt_last_report < 1000000u) return;
+
+    /* --profile-out-only runs roll+reset the ring (above/below) but skip the
+     * stderr line; only OPENPETE_PHASE_TIMERS=1 prints it. */
+    if (!pt_report_on()) { s_pt_n = 0; s_pt_last_report = now; return; }
 
     static const char* pname[OPPT_COUNT] =
         { "rex", "ter", "moby", "shdw", "spy", "prep", "comp", "gpu", "sim" };
@@ -5365,6 +5398,19 @@ static void gpu_zone_report(void)
     if (!rhi_gpu_timers_on(s_nr.dev)) return;
     rhi_gpu_zone_result res[RHI_GPU_ZONES_MAX];
     int n = rhi_gpu_zone_results(s_nr.dev, res, RHI_GPU_ZONES_MAX);
+
+    /* Forward the harvested (frame-lagged) zones to the perf trace, bound to the
+     * present that submitted them via the token stored at that frame's begin. */
+    if (op_prof_on() && n > 0) {
+        uint32_t pidx = (uint32_t)rhi_gpu_results_token(s_nr.dev);
+        for (int i = 0; i < n; i++) {
+            int zid = op_prof_intern(res[i].name);
+            op_prof_gpu_zone(zid, res[i].depth, pidx,
+                             (uint32_t)(res[i].start_us + 0.5),
+                             (uint32_t)(res[i].us + 0.5));
+        }
+    }
+
     for (int i = 0; i < n; i++) {
         int k = -1;
         for (int j = 0; j < s_gpuz_n; j++) {
@@ -5515,6 +5561,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    /* Tag this frame's GPU work with the present it will become, so the
+     * frame-lagged harvest (next few presents) can bind zones back to it. */
+    if (op_prof_on()) rhi_gpu_frame_token(s_nr.dev, (uint64_t)op_prof_next_present_index());
     gpu_zone_report();  /* fold in the zone results begin_frame just harvested */
     /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
      * — must precede the first render pass (the depth pre-pass below). */

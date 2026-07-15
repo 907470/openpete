@@ -20,6 +20,15 @@ option(OPENPETE_SKIP_DECOMP
        "Skip native-decomp TUs and run the full recomp path"
        OFF)
 
+# Per-function CPU tracing (Tier B of the perf profiler): instrument the main
+# generated EXE with -finstrument-functions so func_trace.c can attribute
+# self/total time per recompiled func_80XXXXXX. ~1-8 ms/tick overhead — a
+# drill-down build, never the baseline. Off by default (zero cost).
+# See notes/plans/openpete-perf-profiling.md.
+option(OPENPETE_FUNC_TRACE
+       "Instrument the generated EXE for per-function CPU tracing"
+       OFF)
+
 # Pick up every recompiled overlay automatically. CONFIGURE_DEPENDS
 # re-runs the GLOB on subsequent cmake invocations so newly-regen'd
 # overlays get picked up without a manual reconfigure.
@@ -778,12 +787,45 @@ set_target_properties(openpete-spyro1 PROPERTIES
 # about (unused labels, unused variables held for future use). Mute
 # warnings on every generated TU.
 set_source_files_properties(
-    ${SPYRO_GENERATED}/PSX.EXE_full.c
     ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
     ${SPYRO_OVERLAY_FULL_C}
     ${SPYRO_OVERLAY_DISPATCH_C}
     PROPERTIES
         COMPILE_FLAGS "-w"
+)
+
+# The main EXE TU carries the same -w, plus -finstrument-functions under
+# OPENPETE_FUNC_TRACE (per-function CPU tracing). The exclude-list keeps the
+# hot unaligned-access helpers and the dispatch switch uninstrumented. When the
+# option is OFF, only -w is applied → zero instrumentation, byte-identical code.
+if(OPENPETE_FUNC_TRACE)
+    set(_functrace_full_flags
+        "-w -finstrument-functions -finstrument-functions-exclude-function-list=psx_lwl,psx_lwr,psx_swl,psx_swr,psx_dispatch")
+
+    # Generate the pointer→name symtab func_trace.c resolves the hooks against.
+    set(_functrace_symtab ${CMAKE_CURRENT_BINARY_DIR}/gen/func_trace_symtab.c)
+    add_custom_command(
+        OUTPUT  ${_functrace_symtab}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_func_trace_symtab.py
+                --dispatch ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
+                --symbols  ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+                --out      ${_functrace_symtab}
+        DEPENDS ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+                ${CMAKE_SOURCE_DIR}/tools/gen_func_trace_symtab.py
+        COMMENT "Generating func-trace symtab")
+    target_sources(openpete-spyro1 PRIVATE ${_functrace_symtab})
+    set_source_files_properties(${_functrace_symtab} PROPERTIES
+        COMPILE_FLAGS "-w"
+        INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/core/include")
+else()
+    set(_functrace_full_flags "-w")
+endif()
+set_source_files_properties(
+    ${SPYRO_GENERATED}/PSX.EXE_full.c
+    PROPERTIES
+        COMPILE_FLAGS "${_functrace_full_flags}"
 )
 
 # Common compile flags for any spyro-1/src/*.c TU compiled natively.

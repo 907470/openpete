@@ -189,10 +189,14 @@ struct rhi_device {
     float       gpu_ts_period;              /* ns per timestamp tick */
     VkQueryPool gpu_qp[RHI_FRAMES_IN_FLIGHT];
     const char *gpu_zone_name[RHI_FRAMES_IN_FLIGHT][RHI_GPU_ZONES_MAX];
-    int         gpu_zone_n[RHI_FRAMES_IN_FLIGHT];
-    bool        gpu_zone_open;              /* a begin without its end yet */
+    uint8_t     gpu_zone_depth[RHI_FRAMES_IN_FLIGHT][RHI_GPU_ZONES_MAX];
+    int         gpu_zone_n[RHI_FRAMES_IN_FLIGHT];   /* zones begun this frame */
+    int         gpu_zone_stack[RHI_GPU_ZONES_MAX];  /* open-zone index stack   */
+    int         gpu_zone_sp;                        /* nesting depth           */
+    uint64_t    gpu_zone_token[RHI_FRAMES_IN_FLIGHT];   /* caller tag @ submit  */
     rhi_gpu_zone_result gpu_results[RHI_GPU_ZONES_MAX];
     int         gpu_results_n;
+    uint64_t    gpu_results_token;                  /* tag of harvested slot   */
 };
 
 struct rhi_buffer {
@@ -1053,12 +1057,20 @@ static void gpu_timers_harvest(rhi_device *dev)
                                        sizeof(uint64_t) * (size_t)(n * 2), ts,
                                        sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
     if (r != VK_SUCCESS) return;    /* shouldn't happen post-fence; drop the frame */
+    /* Frame anchor = earliest begin timestamp, so start_us places every zone
+     * on one per-present timeline the trace can lay out. */
+    uint64_t t_min = ts[0];
+    for (int i = 0; i < n; i++) if (ts[i * 2] < t_min) t_min = ts[i * 2];
     for (int i = 0; i < n; i++) {
-        dev->gpu_results[i].name = dev->gpu_zone_name[slot][i];
+        dev->gpu_results[i].name  = dev->gpu_zone_name[slot][i];
+        dev->gpu_results[i].depth = dev->gpu_zone_depth[slot][i];
         dev->gpu_results[i].us =
             (double)(ts[i * 2 + 1] - ts[i * 2]) * (double)dev->gpu_ts_period / 1000.0;
+        dev->gpu_results[i].start_us =
+            (double)(ts[i * 2] - t_min) * (double)dev->gpu_ts_period / 1000.0;
     }
     dev->gpu_results_n = n;
+    dev->gpu_results_token = dev->gpu_zone_token[slot];
 }
 
 int rhi_gpu_timers_on(const rhi_device *dev)
@@ -1072,22 +1084,24 @@ void rhi_gpu_zone_begin(rhi_device *dev, const char *name)
 {
     if (!dev || !dev->gpu_timers || !dev->frame_active) return;
     int slot = (int)dev->frame;
-    if (dev->gpu_zone_open || dev->gpu_zone_n[slot] >= RHI_GPU_ZONES_MAX) return;
+    if (dev->gpu_zone_n[slot] >= RHI_GPU_ZONES_MAX ||
+        dev->gpu_zone_sp >= RHI_GPU_ZONES_MAX) return;
+    int idx = dev->gpu_zone_n[slot]++;          /* reserve the query pair now  */
     s_last_gpu_zone = name;
-    dev->gpu_zone_name[slot][dev->gpu_zone_n[slot]] = name;
+    dev->gpu_zone_name[slot][idx]  = name;
+    dev->gpu_zone_depth[slot][idx] = (uint8_t)dev->gpu_zone_sp;
+    dev->gpu_zone_stack[dev->gpu_zone_sp++] = idx;
     vkCmdWriteTimestamp(dev->cmd[slot], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        dev->gpu_qp[slot], (uint32_t)(dev->gpu_zone_n[slot] * 2));
-    dev->gpu_zone_open = true;
+                        dev->gpu_qp[slot], (uint32_t)(idx * 2));
 }
 
 void rhi_gpu_zone_end(rhi_device *dev)
 {
-    if (!dev || !dev->gpu_timers || !dev->frame_active || !dev->gpu_zone_open) return;
+    if (!dev || !dev->gpu_timers || !dev->frame_active || dev->gpu_zone_sp <= 0) return;
     int slot = (int)dev->frame;
+    int idx = dev->gpu_zone_stack[--dev->gpu_zone_sp];
     vkCmdWriteTimestamp(dev->cmd[slot], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        dev->gpu_qp[slot], (uint32_t)(dev->gpu_zone_n[slot] * 2 + 1));
-    dev->gpu_zone_n[slot]++;
-    dev->gpu_zone_open = false;
+                        dev->gpu_qp[slot], (uint32_t)(idx * 2 + 1));
 }
 
 int rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap)
@@ -1096,6 +1110,17 @@ int rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap)
     int n = dev->gpu_results_n < cap ? dev->gpu_results_n : cap;
     memcpy(out, dev->gpu_results, (size_t)n * sizeof(*out));
     return n;
+}
+
+void rhi_gpu_frame_token(rhi_device *dev, uint64_t token)
+{
+    if (!dev || !dev->gpu_timers || !dev->frame_active) return;
+    dev->gpu_zone_token[(int)dev->frame] = token;
+}
+
+uint64_t rhi_gpu_results_token(const rhi_device *dev)
+{
+    return dev ? dev->gpu_results_token : 0;
 }
 
 /* The VRAM sampler is NEAREST + integer format (R16_UINT): the PSX sampler
@@ -1418,7 +1443,7 @@ bool rhi_begin_frame(rhi_device *dev)
     if (dev->gpu_timers) {
         /* Reset must be recorded outside a render pass — here, before any. */
         vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
-        dev->gpu_zone_open = false;
+        dev->gpu_zone_sp = 0;   /* fresh nesting stack for this frame */
     }
     return true;
 }

@@ -489,7 +489,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
         "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
         "                             Primary determinism gate — see check_aspect_determinism.sh\n"
-        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n",
+        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
+        "  --profile-out PATH         stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
+        "                             keyed per present / canonical tick) for scripts/profile-summary.py\n"
+        "                             (text summary) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
+        "                             Windowed only for GPU/intermediate coverage; ~0.1%% CPU overhead.\n",
         stderr);
 #endif
 }
@@ -963,6 +967,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--frame-time-log") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->frame_time_log_path = v; i++;
+        } else if (strcmp(a, "--profile-out") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->profile_out_path = v; i++;
         } else if (strcmp(a, "--psxtrace-verify") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->psxtrace_verify_path = v; i++;

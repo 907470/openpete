@@ -64,6 +64,17 @@ add_library(openpete_core STATIC
     # Off by default; enabled by --frame-time-log PATH.
     runtime/openpete_frame_time_log.c
 
+    # Empirical CPU+GPU performance trace (per present / canonical tick).
+    # Off by default; enabled by --profile-out PATH. See openpete_profile.h.
+    runtime/profile.c
+
+    # Per-function tracing hooks (Tier B). Always compiled; the __cyg_profile
+    # hooks fire only when a TU is built with -finstrument-functions
+    # (-DOPENPETE_FUNC_TRACE, applied to the generated EXE). Inert otherwise
+    # (the generated symtab TU self-registers at startup; none present = inert).
+    # See openpete_func_trace.h.
+    runtime/func_trace.c
+
     # Render-side state interpolation snapshot ring (game-agnostic;
     # regions supplied by games/<game>/). Capture-only in v1; lerp +
     # re-emission lands in fps-unlock Phase 2a. See

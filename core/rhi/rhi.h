@@ -489,19 +489,27 @@ uint32_t rhi_draw_calls(rhi_device *dev);
  *     native_depth_prepass();
  *     rhi_gpu_zone_end(dev);
  *
- * Flat sequence only (no nesting; a begin while a zone is open is ignored).
- * `name` must be a string literal or otherwise outlive the frame — it is
- * stored by pointer and handed back in results two presents later.
+ * Zones MAY nest (begin/end pair like a stack): a zone begun while another is
+ * open becomes its child, and the result carries a `depth`. `name` must be a
+ * string literal or otherwise outlive the frame — it is stored by pointer and
+ * handed back in results a few presents later.
  * Results are harvested by rhi_begin_frame after the slot's fence wait
  * (never blocks; frame-lagged by RHI_FRAMES_IN_FLIGHT presents) and fetched
- * with rhi_gpu_zone_results — returns the zone count, elapsed in µs with
- * timestampPeriod applied. All zone calls are no-ops when the env is unset
- * or the queue lacks timestamp support (one boot log line either way). */
-#define RHI_GPU_ZONES_MAX 64
-typedef struct { const char *name; double us; } rhi_gpu_zone_result;
+ * with rhi_gpu_zone_results — returns the zone count; each result has elapsed
+ * µs (timestampPeriod applied), `start_us` (µs from the frame's first GPU
+ * timestamp, for laying zones out on a timeline), and nesting `depth`.
+ * rhi_gpu_frame_token tags the current frame with a caller id (e.g. the
+ * present_index); rhi_gpu_results_token returns the tag of the harvested
+ * (frame-lagged) results so the caller can attribute them to the right present.
+ * All zone calls are no-ops when the env is unset or the queue lacks timestamp
+ * support (one boot log line either way). */
+#define RHI_GPU_ZONES_MAX 128
+typedef struct { const char *name; double us; double start_us; int depth; } rhi_gpu_zone_result;
 int  rhi_gpu_timers_on(const rhi_device *dev);
 void rhi_gpu_zone_begin(rhi_device *dev, const char *name);
 void rhi_gpu_zone_end(rhi_device *dev);
 int  rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap);
+void rhi_gpu_frame_token(rhi_device *dev, uint64_t token);
+uint64_t rhi_gpu_results_token(const rhi_device *dev);
 
 #endif /* OPENPETE_RHI_H */

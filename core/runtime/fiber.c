@@ -5,6 +5,7 @@
 // can call `openpete_yield_to_host()` without dragging in libco directly.
 
 #include "openpete_fiber.h"
+#include "openpete_func_trace.h"
 
 #include <libco.h>
 #include <stddef.h>
@@ -29,10 +30,14 @@ void openpete_yield_to_host(void) {
      * openpete_ticker.h). Yields only bump the host-side render counter so
      * frame-limit / screenshot / bk2 alignment stay yield-driven. */
     openpete_frame++;
+    op_functrace_pause();     /* exclude host render+sleep from func-trace */
     co_switch((cothread_t)openpete_host_fiber);
+    op_functrace_resume();
 }
 
 void openpete_yield_to_host_no_tick(void) {
     if (!openpete_host_fiber) return;
+    op_functrace_pause();
     co_switch((cothread_t)openpete_host_fiber);
+    op_functrace_resume();
 }
