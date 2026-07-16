@@ -4617,6 +4617,37 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
         moby_fields f;
         if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
+        /* Led coherence (runahead): build_moby_record_fields read the LIVE
+         * moby's anim state — under runahead that's the restored REAL tick,
+         * which ≈ the table's PREV (led-1): the sub-tick pose pair
+         * degenerated and keyframe ANIMATIONS stepped at 30 Hz while
+         * positions (already table-driven) stayed smooth (user report).
+         * Re-derive the CURR pose from the snapshot table's curr blob —
+         * identical bytes when runahead is off (curr was captured from this
+         * very moby at the tick). Same guards as moby_prev_keyframe. */
+        if (s_rot_now) {
+            const openpete_interp_obj_t* oc =
+                openpete_interp_objs_find(spyro_interp_moby_key(mobys[i]));
+            uint16_t ccls5 = 0;
+            if (oc) memcpy(&ccls5, oc->curr + 0x36, 2);
+            if (oc && ccls5 == (uint16_t)cpu->read_half(mobys[i] + 0x36)) {
+                uint32_t cls5   = ccls5;
+                uint32_t model5 = cpu->read_word(G_MODELS + cls5 * 4u);
+                uint32_t anim_c = oc->curr[0x3C] & 0xFFu;
+                uint32_t hdr_c  = model5 >= 0x80000000u
+                                ? cpu->read_word(model5 + 0x38u + anim_c * 4u) : 0;
+                if (hdr_c >= 0x80000000u) {
+                    uint32_t frm_c  = oc->curr[0x3E] & 0xFFu;
+                    uint32_t nfrm_c = oc->curr[0x3F] & 0xFFu;
+                    uint32_t prog_c = oc->curr[0x40] & 0xFFu;
+                    f.header = hdr_c;
+                    f.frameA = hdr_c + 0x24u + frm_c  * 8u;
+                    f.frameB = hdr_c + 0x24u + nfrm_c * 8u;
+                    f.w0     = (prog_c << 8) & 0xFF00u;
+                    if (nfrm_c == 0) { f.frameB = f.frameA; f.w0 = 0; }
+                }
+            }
+        }
         /* .s far-skip parity: the host-rebuilt w0 has no low byte (the GPF-TR
          * scale), so moby_decode_project's mirror of .L8001F888 can't fire on
          * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
