@@ -259,6 +259,25 @@ static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
  * constant as TICK_PERIOD_NS in spyro_native_reextract.c. */
 #define PART_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
 
+/* OPENPETE_STREAK_DBG: rate-limited log of any emitted line / fan leg
+ * longer than 300 px on screen — when a streak is visible, one run with
+ * this set names the family + slot instead of a debugging session. */
+static int streak_dbg(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_STREAK_DBG"); v = (e && *e && *e != '0'); }
+    return v;
+}
+static void streak_log(const char* fam, uint32_t slot,
+                       double ax, double ay, double bx, double by) {
+    double dx = bx - ax, dy = by - ay;
+    if (dx*dx + dy*dy < 300.0*300.0) return;
+    static unsigned s_n, s_lastf;
+    if (openpete_frame != s_lastf) { s_lastf = openpete_frame; s_n = 0; }
+    if (s_n++ > 4) return;                     /* max 5 lines per VBL */
+    fprintf(stderr, "[streak f=%u] %s slot=0x%X (%.0f,%.0f)->(%.0f,%.0f)\n",
+            openpete_frame, fam, slot, ax, ay, bx, by);
+}
+
 /* Guarded prev-state lookup for a g_Particles slot. Returns 1 + fills prev
  * words A/B/C + the slot's own alpha iff the SAME identity guards the position
  * bracket applies all pass (spyro_native_reextract.c pool loop) — a slot whose
@@ -651,9 +670,27 @@ static void particle_build(CPUState* cpu) {
             part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
                                           * position bracket; EP1 was stepping) */
             if (part_phase_prev(pp, &pv)) {
-                X1 = (double)(pv.B >> 16)    + ((double)(pv.cB >> 16)    - (double)(pv.B >> 16))    * pv.alpha;
-                Y1 = (double)(pv.C & 0xFFFF) + ((double)(pv.cC & 0xFFFF) - (double)(pv.C & 0xFFFF)) * pv.alpha;
-                Z1 = (double)(pv.C >> 16)    + ((double)(pv.cC >> 16)    - (double)(pv.C >> 16))    * pv.alpha;
+                /* The FAR endpoint needs its own physics ceiling: the
+                 * part_phase_prev teleport guard covers only the BASE
+                 * position (A word), so a cross-branch pair with a stable
+                 * base but divergent far endpoint still lerped — and this
+                 * class decodes UNSIGNED, so a pair straddling any wrap
+                 * sweeps the LONG way across the coordinate space, painting
+                 * a line to a consistent screen side (user report
+                 * 2026-07-16: Sparx glints streaking left, live analog
+                 * play). Over the ceiling: snap to table-CURR (never live —
+                 * rule 2). */
+                double pX1 = (double)(pv.B >> 16),    cX1f = (double)(pv.cB >> 16);
+                double pY1 = (double)(pv.C & 0xFFFF), cY1f = (double)(pv.cC & 0xFFFF);
+                double pZ1 = (double)(pv.C >> 16),    cZ1f = (double)(pv.cC >> 16);
+                double dx = cX1f - pX1, dy = cY1f - pY1, dz = cZ1f - pZ1;
+                if (dx*dx + dy*dy + dz*dz <= 300.0*300.0) {
+                    X1 = pX1 + dx * pv.alpha;
+                    Y1 = pY1 + dy * pv.alpha;
+                    Z1 = pZ1 + dz * pv.alpha;
+                } else {
+                    X1 = cX1f; Y1 = cY1f; Z1 = cZ1f;
+                }
             }
             projres e0, e1;
             proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
@@ -670,6 +707,7 @@ static void particle_build(CPUState* cpu) {
             l->cz = (float)e0.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
             l->sel = 1;
+            if (streak_dbg()) streak_log("line1", pp, e0.sx, e0.sy, e1.sx, e1.sy);
         } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
             /* VALIDATED vs egg.bk2 (egg-collection HUD burst, level_11 f3579): 32/32
              * count-exact, endpoint NN ~0.6-1.1px mean / ~2px worst. A gouraud LINE_G
@@ -683,9 +721,20 @@ static void particle_build(CPUState* cpu) {
             part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
                                           * position bracket; EP1 was stepping) */
             if (part_phase_prev(pp, &pv)) {
-                X1f = (double)(int16_t)(pv.B >> 16)    + ((double)(int16_t)(pv.cB >> 16)    - (double)(int16_t)(pv.B >> 16))    * pv.alpha;
-                Y1f = (double)(int16_t)(pv.C & 0xFFFF) + ((double)(int16_t)(pv.cC & 0xFFFF) - (double)(int16_t)(pv.C & 0xFFFF)) * pv.alpha;
-                Z1f = (double)(int16_t)(pv.C >> 16)    + ((double)(int16_t)(pv.cC >> 16)    - (double)(int16_t)(pv.C >> 16))    * pv.alpha;
+                /* Same far-endpoint ceiling as sel-1 (signed decode here):
+                 * the base-position guard doesn't cover these words. Over
+                 * the ceiling → snap to table-curr. */
+                double pX1 = (double)(int16_t)(pv.B >> 16),    cX1s = (double)(int16_t)(pv.cB >> 16);
+                double pY1 = (double)(int16_t)(pv.C & 0xFFFF), cY1s = (double)(int16_t)(pv.cC & 0xFFFF);
+                double pZ1 = (double)(int16_t)(pv.C >> 16),    cZ1s = (double)(int16_t)(pv.cC >> 16);
+                double dx = cX1s - pX1, dy = cY1s - pY1, dz = cZ1s - pZ1;
+                if (dx*dx + dy*dy + dz*dz <= 300.0*300.0) {
+                    X1f = pX1 + dx * pv.alpha;
+                    Y1f = pY1 + dy * pv.alpha;
+                    Z1f = pZ1 + dz * pv.alpha;
+                } else {
+                    X1f = cX1s; Y1f = cY1s; Z1f = cZ1s;
+                }
             }
             projres e0, e1;
             proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
@@ -703,6 +752,7 @@ static void particle_build(CPUState* cpu) {
             l->cz = (float)e0.m3;
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;
             l->sel = 4;
+            if (streak_dbg()) streak_log("line4", pp, e0.sx, e0.sy, e1.sx, e1.sy);
         } else if (sel == 5) {                           /* HUD key-burst affine FT4 (block_80057750) */
             /* VALIDATED vs key.bk2 (key-collection HUD burst, level_11 f2435): 6/6
              * count-exact, FT4 NN ~0.9-1.1px mean / ~1.8px worst, 0 over-emission
@@ -1099,6 +1149,12 @@ static void glow_build(CPUState* cpu) {
         double depthidx = mac3 / 128.0 + bias;        /* the .s OT-depth cull (a3<=0) */
         if (depthidx <= 0.0) continue;
         double persize = sizef * 4096.0 / mac3;       /* IR0 = size*4096/Z */
+        /* GTE IR0 saturates at 0x1000 on hardware — without the clamp a
+         * near-camera glow (mac3 → small) spikes its ring across the
+         * screen where the PSX caps it at template scale. Runahead makes
+         * the near pass MORE common: the committed camera trails the led
+         * Sparx by N extra ticks, so he crosses the camera plane closer. */
+        if (persize > 4096.0) persize = 4096.0;
 
         int nc = count > 64 ? 64 : count;
         double rx[64], ry[64];
@@ -1114,6 +1170,7 @@ static void glow_build(CPUState* cpu) {
             t->sx[1]=(float)rx[j-1];t->sy[1]=(float)ry[j-1];t->rgb[1]=0;       /* prev ring */
             t->sx[2]=(float)rx[j];  t->sy[2]=(float)ry[j];  t->rgb[2]=0;       /* this ring */
             t->cz = (float)mac3;
+            if (streak_dbg()) streak_log("glow", g, c.sx, c.sy, rx[j], ry[j]);
         }
     }
 }
@@ -1420,6 +1477,8 @@ static void sparkle_build(CPUState* cpu) {
         sline* l1 = &s_sline[s_sline_n++];
         l1->ax=(float)sx[1]; l1->ay=(float)sy[1]; l1->bx=(float)sx[2]; l1->by=(float)sy[2];
         l1->cz=(float)c.m3 * PART_VZ_WORLD4; l1->rgb=color;
+        if (streak_dbg()) { streak_log("sparkle", sp, sx[0], sy[0], sx[3], sy[3]);
+                            streak_log("sparkle", sp, sx[1], sy[1], sx[2], sy[2]); }
     }
 }
 
