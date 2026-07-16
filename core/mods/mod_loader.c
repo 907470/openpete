@@ -137,10 +137,56 @@ struct openpete_mod {
                           * skipped by the hot-reload watch */
     int   enabled;       /* live-toggle state (loaded mods start on) */
     void* dl;
+
+    /* State-ABI descriptor (openpete_mod_stateabi symbol, resolved at
+     * dlopen; savestate plan P2b). has_stateabi=0 = opaque tier: state
+     * blobs gate on the exact build_key instead. */
+    int      has_stateabi;
+    uint32_t st_ver;
+    uint32_t st_size;
+    uint32_t st_flags;   /* OP_MOD_STATE_* | OP_MOD_RA_* */
+    uint64_t st_fp;      /* fnv1a64 over ver+size+field table */
 };
 
 static struct openpete_mod s_mods[MODS_MAX];
 static int                 s_mod_count = 0;
+
+/* Resolve + fingerprint a mod's optional state-ABI descriptor (see
+ * openpete_mod_api.h "Savestate state-ABI declaration"). Called after a
+ * successful entry() on every (re)load path — hot reload re-resolves, so
+ * a layout edit changes the fingerprint immediately. */
+static uint64_t stateabi_fnv1a64(const void* data, size_t len, uint64_t h) {
+    const uint8_t* p = (const uint8_t*)data;
+    for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+
+static void mod_resolve_stateabi(struct openpete_mod* mod, void* dl) {
+    mod->has_stateabi = 0;
+    mod->st_ver = mod->st_size = mod->st_flags = 0;
+    mod->st_fp = 0;
+    const openpete_mod_stateabi_t* d =
+        (const openpete_mod_stateabi_t*)mod_dlsym(dl, "openpete_mod_stateabi");
+    if (!d) return;
+    if (d->magic != 0x53414249u || !d->fields || d->n_fields == 0 ||
+        d->n_fields > 4096u) {
+        OPL_ERROR_F("mods", "%s: malformed openpete_mod_stateabi descriptor "
+                    "— treating as opaque (build-key gated)", mod->id);
+        return;
+    }
+    uint64_t h = 0xcbf29ce484222325ull;
+    h = stateabi_fnv1a64(&d->abi_version, 4, h);
+    h = stateabi_fnv1a64(&d->abi_size, 4, h);
+    h = stateabi_fnv1a64(d->fields, (size_t)d->n_fields * 8u, h);
+    mod->has_stateabi = 1;
+    mod->st_ver   = d->abi_version;
+    mod->st_size  = d->abi_size;
+    mod->st_flags = d->flags;
+    mod->st_fp    = h;
+    OPL_INFO_F("mods", "%s: state-ABI v%u size=%u flags=0x%x fp=%016llx",
+               mod->id, d->abi_version, d->abi_size, d->flags,
+               (unsigned long long)h);
+}
 
 static const openpete_sdk_symbol_t* s_symbols = NULL;
 static size_t                       s_symbol_count = 0;
@@ -541,6 +587,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     mod->dl = dl; /* old object deliberately stays resident */
+    mod_resolve_stateabi(mod, dl);
     if (blen >= 0)
         openpete_mods_state_restore(mod->id, blob, blen);
     OPL_INFO_F("mods", "hot reload: %s live (state %s)", mod->id,
@@ -682,6 +729,47 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
     }
     s_toggle_n = 0;
+}
+
+/* State-ABI queries (savestate P2b — consumed by mod_services' verdict
+ * ladder and, later, the runahead arming check). */
+int openpete_mods_stateabi_query(const char* id, uint32_t* ver,
+                                 uint32_t* size, uint32_t* flags,
+                                 uint64_t* fp) {
+    if (!id) return 0;
+    for (int i = 0; i < s_mod_count; i++) {
+        if (strcmp(s_mods[i].id, id) != 0) continue;
+        if (!s_mods[i].has_stateabi) return 0;
+        if (ver)   *ver   = s_mods[i].st_ver;
+        if (size)  *size  = s_mods[i].st_size;
+        if (flags) *flags = s_mods[i].st_flags;
+        if (fp)    *fp    = s_mods[i].st_fp;
+        return 1;
+    }
+    return 0;
+}
+
+const char* openpete_mods_build_key(const char* id) {
+    if (!id) return NULL;
+    for (int i = 0; i < s_mod_count; i++)
+        if (strcmp(s_mods[i].id, id) == 0) return s_mods[i].build_key;
+    return NULL;
+}
+
+/* 1 iff every ENABLED mod declares a runahead capability (RA_PURE or
+ * RA_HOST_FX). Mods without a descriptor, or with one lacking RA bits,
+ * make runahead unarmable; *offender names the first one. */
+int openpete_mods_runahead_capable(const char** offender) {
+    for (int i = 0; i < s_mod_count; i++) {
+        if (!s_mods[i].enabled) continue;
+        uint32_t fl = s_mods[i].has_stateabi ? s_mods[i].st_flags : 0;
+        if (!(fl & (OP_MOD_RA_PURE | OP_MOD_RA_HOST_FX))) {
+            if (offender) *offender = s_mods[i].id;
+            return 0;
+        }
+    }
+    if (offender) *offender = NULL;
+    return 1;
 }
 
 /* Save modset tag (per-modset save safety): the canonical identity of
@@ -1429,6 +1517,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
                     mod->id, rc);
         return -1;
     }
+    mod_resolve_stateabi(mod, mod->dl);
     OPL_INFO_F("mods", "loaded %s v%s (%s)", mod->id, mod->version,
                so_path);
     /* Asset overlay: a mod's assets/ dir joins the overlay stack in

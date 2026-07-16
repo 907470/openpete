@@ -558,10 +558,40 @@ const char* openpete_mods_asset_root(int i, const char** owner);
 /* savestate.c: append/read the trailing "mods" section (per-mod blobs).
  * Read buffers while the file is open and tolerates pre-mods files
  * (EOF ⇒ nothing to restore); dispatch runs after the engine committed
- * guest state so mod load_fns see the restored world. */
+ * guest state so mod load_fns see the restored world.
+ *
+ * P2b verdict ladder: verdict() runs PRE-COMMIT over the buffered
+ * section — per blob: ABI-fingerprint match → deliver; mismatch with
+ * DROP_OK → drop + reinit; mismatch without → REFUSE the whole load
+ * (returns -1, caller must abort before touching guest state); opaque
+ * (no descriptor) → deliver only on exact build-key match, else drop +
+ * reinit. dispatch() then honors the cached verdicts and reinit-signals
+ * (load(NULL,0)) enabled hook-mods absent from the file. */
 int  openpete_mods_state_write_section(FILE* fp);
 int  openpete_mods_state_read_section(FILE* fp);
+int  openpete_mods_state_verdict(void);
 void openpete_mods_state_dispatch(void);
+
+/* State-ABI descriptor lookup (mod_loader; savestate P2b). Returns 1 and
+ * fills the outs iff mod `id` exported a valid openpete_mod_stateabi. */
+int openpete_mods_stateabi_query(const char* id, uint32_t* ver,
+                                 uint32_t* size, uint32_t* flags,
+                                 uint64_t* fp);
+/* Compile-on-boot content key for mod `id` (65-byte hex), NULL if unknown. */
+const char* openpete_mods_build_key(const char* id);
+/* 1 iff every enabled mod declares OP_MOD_RA_PURE or OP_MOD_RA_HOST_FX
+ * (runahead arming gate); else 0 with *offender = first blocker's id. */
+int openpete_mods_runahead_capable(const char** offender);
+
+/* Low-park arena ledger (savestate P2b): serialized with the engine
+ * state so a restored guest RAM's parked payloads can never be clobbered
+ * by the live bump cursor. verdict() prefix-matches live allocations
+ * against the saved ledger pre-commit (-1 = refuse); apply() re-anchors
+ * the cursor to max(live, saved) and adopts saved entries post-commit. */
+uint32_t openpete_mods_arena_state_size(void);
+void     openpete_mods_arena_state_save(void* dst);
+int      openpete_mods_arena_state_verdict(const void* src, uint32_t size);
+void     openpete_mods_arena_state_apply(const void* src, uint32_t size);
 
 #ifdef __cplusplus
 }

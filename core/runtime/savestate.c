@@ -19,7 +19,8 @@
 //   uint32_t  cd_state_bytes   — PsyCross CD head-position globals
 //   uint32_t  game_extra_bytes — opaque per-game host blob (game_extras)
 //   uint32_t  modset_tag_bytes — enabled-modset tag string (no NUL)
-//   uint32_t  reserved[4]   = 0 (DRAWENV/DISPENV later)
+//   uint32_t  arena_bytes      — low-park arena ledger (P2b)
+//   uint32_t  reserved[3]   = 0 (DRAWENV/DISPENV later)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -28,6 +29,7 @@
 //   uint8_t   spu_mem[spu_mem_bytes]
 //   uint8_t   cd_state[cd_state_bytes]
 //   uint8_t   game_extra[game_extra_bytes]
+//   uint8_t   arena[arena_bytes]
 //   char      modset_tag[modset_tag_bytes]
 //
 // Note on the libco game fiber: its host call stack is NOT snapshotted.
@@ -111,9 +113,10 @@ extern int g_cdReadDoneFlag;
 #define OPENPETE_STATE_HASH_LEN 32
 
 /* Curated state-layout ABI. Bump on ANY change to a section's layout
- * (header fields, SPUALVoiceState packing, cd_state_t, ...). Part of the
- * ident hash, so a bump cleanly orphans older files. */
-#define OPENPETE_STATE_ABI 3u
+ * (header fields, SPUALVoiceState packing, cd_state_t, mods-section
+ * framing, arena ledger, ...). Part of the ident hash, so a bump cleanly
+ * orphans older files. 4 = P2b (arena section, MSv2 mods framing). */
+#define OPENPETE_STATE_ABI 4u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -134,7 +137,8 @@ typedef struct {
     uint32_t cd_state_bytes;
     uint32_t game_extra_bytes;
     uint32_t modset_tag_bytes;
-    uint32_t reserved[4];
+    uint32_t arena_bytes;      /* low-park arena ledger (P2b) */
+    uint32_t reserved[3];
 } openpete_state_header_t;
 
 /* CD head-position section (fixed layout, ABI-covered). */
@@ -327,6 +331,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
     hdr.game_extra_bytes = game_state_extra_size();
     hdr.modset_tag_bytes = (uint32_t)strlen(modset_tag);
+    hdr.arena_bytes      = openpete_mods_arena_state_size();
 
     /* Snapshot the host-side mirrors into heap buffers before writing —
      * keeps them stable across the (potentially slow) disk I/O even
@@ -335,17 +340,21 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     void* spu_snap   = malloc(hdr.spu_state_bytes);
     void* spumem_snap= malloc(hdr.spu_mem_bytes);
     void* extra_snap = hdr.game_extra_bytes ? malloc(hdr.game_extra_bytes) : NULL;
+    void* arena_snap = hdr.arena_bytes ? malloc(hdr.arena_bytes) : NULL;
     if (!vram_snap || !spu_snap || !spumem_snap ||
         (hdr.game_extra_bytes && !extra_snap) ||
+        (hdr.arena_bytes && !arena_snap) ||
         PsyX_VRAM_Snapshot(vram_snap, hdr.vram_bytes) != 0 ||
         PsyX_SPUAL_SnapshotState(spu_snap, hdr.spu_state_bytes) != 0 ||
         PsyX_SPUAL_SnapshotMem(spumem_snap, hdr.spu_mem_bytes) != 0) {
         free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
+        free(arena_snap);
         fclose(fp);
         OPL_ERROR_F("savestate", "%s: host-mirror snapshot failed", path);
         return -1;
     }
     if (hdr.game_extra_bytes) game_state_extra_save(extra_snap);
+    if (hdr.arena_bytes)      openpete_mods_arena_state_save(arena_snap);
 
     state_cd_t cd;
     cd.cur_sector  = g_cdCurrentSector;
@@ -368,6 +377,8 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     if (rc == 0) rc = write_section(fp, path, "cd",      &cd, sizeof(cd));
     if (rc == 0 && hdr.game_extra_bytes)
         rc = write_section(fp, path, "game-extra", extra_snap, hdr.game_extra_bytes);
+    if (rc == 0 && hdr.arena_bytes)
+        rc = write_section(fp, path, "arena", arena_snap, hdr.arena_bytes);
     if (rc == 0 && hdr.modset_tag_bytes)
         rc = write_section(fp, path, "modset-tag", modset_tag, hdr.modset_tag_bytes);
     /* Trailing mods section: per-mod participation blobs (rewinds rewind
@@ -375,6 +386,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     if (rc == 0) rc = openpete_mods_state_write_section(fp);
 
     free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
+    free(arena_snap);
     fclose(fp);
     if (rc != 0) return -1;
     OPL_INFO_F("savestate", "saved %s (frame=%u)", path, frame);
@@ -467,14 +479,16 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     uint8_t* spu_buf    = (uint8_t*)malloc(hdr.spu_state_bytes);
     uint8_t* spumem_buf = (uint8_t*)malloc(hdr.spu_mem_bytes);
     uint8_t* extra_buf  = hdr.game_extra_bytes ? (uint8_t*)malloc(hdr.game_extra_bytes) : NULL;
+    uint8_t* arena_buf  = hdr.arena_bytes ? (uint8_t*)malloc(hdr.arena_bytes) : NULL;
     char*    tag_buf    = (char*)malloc((size_t)hdr.modset_tag_bytes + 1);
     uint8_t  scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
     state_cd_t cd;
 
     if (!ram_buf || !vram_buf || !spu_buf || !spumem_buf || !tag_buf ||
-        (hdr.game_extra_bytes && !extra_buf)) {
+        (hdr.game_extra_bytes && !extra_buf) ||
+        (hdr.arena_bytes && !arena_buf)) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
-        free(extra_buf); free(tag_buf);
+        free(extra_buf); free(arena_buf); free(tag_buf);
         fclose(fp);
         OPL_ERROR_F("savestate", "%s: out of memory", path);
         return -1;
@@ -490,15 +504,27 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (rc == 0) rc = read_section(fp, path, "cd",      &cd,         sizeof(cd));
     if (rc == 0 && hdr.game_extra_bytes)
         rc = read_section(fp, path, "game-extra", extra_buf, hdr.game_extra_bytes);
+    if (rc == 0 && hdr.arena_bytes)
+        rc = read_section(fp, path, "arena", arena_buf, hdr.arena_bytes);
     if (rc == 0 && hdr.modset_tag_bytes)
         rc = read_section(fp, path, "modset-tag", tag_buf, hdr.modset_tag_bytes);
     tag_buf[hdr.modset_tag_bytes] = '\0';
     if (rc == 0) (void)openpete_mods_state_read_section(fp); /* buffers only */
     fclose(fp);
 
+    /* PRE-COMMIT verdicts (P2b): both must pass BEFORE any guest byte is
+     * touched — a refused load leaves the running timeline untouched. */
+    if (rc == 0 && openpete_mods_arena_state_verdict(arena_buf,
+                                                     hdr.arena_bytes) != 0)
+        rc = -1;
+    if (rc == 0 && openpete_mods_state_verdict() != 0)
+        rc = -1;
+
     if (rc != 0) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
-        free(extra_buf); free(tag_buf);
+        free(extra_buf); free(arena_buf); free(tag_buf);
+        OPL_ERROR_F("savestate", "%s: load refused — running state untouched",
+                    path);
         return -1;
     }
 
@@ -550,6 +576,11 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (hdr.game_extra_bytes)
         game_state_extra_load(extra_buf, hdr.game_extra_bytes);
     free(extra_buf);
+
+    /* Arena ledger apply (verdict passed pre-commit): re-anchor the low-
+     * park cursor BEFORE mod load_fns run — they may re-park. */
+    openpete_mods_arena_state_apply(arena_buf, hdr.arena_bytes);
+    free(arena_buf);
 
     /* Mod participation blobs — after commit so load_fns that peek at
      * guest state see the restored world. */

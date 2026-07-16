@@ -82,6 +82,39 @@ static int           g_have_blob = 0;
 static uint32_t g_park_vaddr = 0;
 static void*    g_park_host  = 0;
 
+/* ---- savestate participation (reference OPENPETE_MOD_STATE adoption) ----
+ * The park vaddr is host state the restored guest RAM depends on (the
+ * model's anim slot in that RAM points at it). Declaring the state ABI
+ * makes saves survive recompiles that keep this layout; DROP_OK because
+ * losing the park is safe (we re-park lazily); RA_HOST_FX because the
+ * toggle path logs/reads bindings (engine-suppressible under runahead). */
+typedef struct { uint32_t park_vaddr; } sca_state_t;
+OPENPETE_MOD_STATE(sca_state_t, 1, OP_MOD_STATE_DROP_OK | OP_MOD_RA_HOST_FX,
+    OP_STATE_FIELD(sca_state_t, park_vaddr))
+
+static int sca_state_save(void* buf, int cap) {
+    if (cap < (int)sizeof(sca_state_t)) return -1;
+    sca_state_t st = { g_park_vaddr };
+    memcpy(buf, &st, sizeof(st));
+    return (int)sizeof(st);
+}
+
+static void sca_state_load(const void* buf, int len) {
+    if (buf && len >= (int)sizeof(sca_state_t)) {
+        sca_state_t st;
+        memcpy(&st, buf, sizeof(st));
+        g_park_vaddr = st.park_vaddr;
+        g_park_host  = st.park_vaddr ? g_api->guest(st.park_vaddr) : NULL;
+        if (g_park_vaddr && !g_park_host) g_park_vaddr = 0; /* paranoia */
+    } else {
+        /* Reinit signal: restored world has no memory of our park. Drop
+         * the cached vaddr — the next inject re-parks (arena ledger keeps
+         * the cursor safe either way). */
+        g_park_vaddr = 0;
+        g_park_host  = NULL;
+    }
+}
+
 static uint32_t anim_slot(uint32_t model, uint32_t idx) {
     return model + MODEL_ANIM_TABLE + idx * 4u;
 }
@@ -276,6 +309,8 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         g_sub_idx = 3;
 
     blob_load(); /* authentic anim from a previous session, if captured */
+
+    api->register_savestate_hooks(self, sca_state_save, sca_state_load);
 
     op_sdk_bind(api);
     OP_REGISTER_OVERRIDE_PatchInSpyroAnimations(api, self, sc_capture);

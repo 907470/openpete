@@ -29,6 +29,9 @@
 #include "psx_runtime.h" /* psx_runtime_register_region */
 #include "openpete_psx.h" /* openpete_psx_get_ram — low-window views */
 
+#include <stdio.h>
+#include <string.h>
+
 #define ARENA_BASE 0x80700000u /* clear of the no-lod/polybuf windows */
 #define ARENA_SIZE (1u * 1024u * 1024u)
 
@@ -86,6 +89,23 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
 
 static uint32_t s_low_base, s_low_size, s_low_used;
 
+/* Low-park ledger (savestate P2b): every low allocation is recorded so a
+ * savestate can carry {owner, size, align, offset} + the watermark. On
+ * load the live ledger must PREFIX-match the saved one (same mods
+ * allocating in the same order); the cursor is then re-anchored to
+ * max(live, saved) so the restored RAM's parked payloads can never be
+ * handed out again by the live bump. */
+#define ARENA_LEDGER_MAX 128
+typedef struct {
+    char     owner[24];
+    uint32_t size;
+    uint32_t align;
+    uint32_t off;
+} arena_low_rec_t;
+static arena_low_rec_t s_low_ledger[ARENA_LEDGER_MAX];
+static uint32_t        s_low_ledger_n = 0;
+static int             s_low_ledger_overflow = 0;
+
 void openpete_mods_arena_low_init(uint32_t base, uint32_t size) {
     if ((base >> 24) != 0x80u || (base & 0x00FFFFFFu) + size > 0x200000u) {
         OPL_ERROR_F("mods", "low park window rejected (%08X+%u)", base,
@@ -119,6 +139,16 @@ uint32_t openpete_mods_guest_alloc_low(uint32_t size, uint32_t align,
         return 0;
     }
     s_low_used = off + size;
+    if (s_low_ledger_n < ARENA_LEDGER_MAX) {
+        arena_low_rec_t* r = &s_low_ledger[s_low_ledger_n++];
+        memset(r, 0, sizeof(*r));
+        snprintf(r->owner, sizeof(r->owner), "%s", owner ? owner : "?");
+        r->size = size; r->align = align; r->off = off;
+    } else if (!s_low_ledger_overflow) {
+        s_low_ledger_overflow = 1;
+        OPL_ERROR_F("mods", "low-park ledger overflow (%d) — savestate "
+                    "arena verification degraded", ARENA_LEDGER_MAX);
+    }
     uint8_t* ram = openpete_psx_get_ram();
     if (host_view && ram)
         *host_view = ram + ((s_low_base + off) & 0x00FFFFFFu);
@@ -126,4 +156,84 @@ uint32_t openpete_mods_guest_alloc_low(uint32_t size, uint32_t align,
                size, s_low_base + off, owner ? owner : "?",
                s_low_used, s_low_size);
     return s_low_base + off;
+}
+
+/* ── Ledger serialization (see openpete_mods.h; consumed by savestate.c) */
+
+typedef struct {
+    uint32_t ver;        /* 1 */
+    uint32_t count;
+    uint32_t low_used;   /* watermark at save */
+    uint32_t overflow;   /* ledger overflowed at save (verify degraded) */
+} arena_state_hdr_t;
+
+uint32_t openpete_mods_arena_state_size(void) {
+    return (uint32_t)(sizeof(arena_state_hdr_t)
+                      + s_low_ledger_n * sizeof(arena_low_rec_t));
+}
+
+void openpete_mods_arena_state_save(void* dst) {
+    arena_state_hdr_t h;
+    h.ver = 1u;
+    h.count = s_low_ledger_n;
+    h.low_used = s_low_used;
+    h.overflow = (uint32_t)s_low_ledger_overflow;
+    memcpy(dst, &h, sizeof(h));
+    memcpy((uint8_t*)dst + sizeof(h), s_low_ledger,
+           s_low_ledger_n * sizeof(arena_low_rec_t));
+}
+
+int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
+    if (!src || size < sizeof(arena_state_hdr_t)) return 0; /* no section */
+    arena_state_hdr_t h;
+    memcpy(&h, src, sizeof(h));
+    if (h.ver != 1u ||
+        size < sizeof(h) + h.count * sizeof(arena_low_rec_t)) {
+        OPL_ERROR_F("mods", "arena ledger: malformed section — REFUSING");
+        return -1;
+    }
+    const arena_low_rec_t* saved =
+        (const arena_low_rec_t*)((const uint8_t*)src + sizeof(h));
+    uint32_t common = h.count < s_low_ledger_n ? h.count : s_low_ledger_n;
+    for (uint32_t i = 0; i < common; i++) {
+        const arena_low_rec_t* a = &saved[i];
+        const arena_low_rec_t* b = &s_low_ledger[i];
+        if (a->off != b->off || a->size != b->size || a->align != b->align ||
+            strncmp(a->owner, b->owner, sizeof(a->owner)) != 0) {
+            OPL_ERROR_F("mods", "arena ledger: allocation #%u diverges "
+                        "(saved %s %uB@+%u vs live %s %uB@+%u) — parked "
+                        "guest data would be inconsistent; REFUSING the "
+                        "state load", i,
+                        a->owner, a->size, a->off,
+                        b->owner, b->size, b->off);
+            return -1;
+        }
+    }
+    if (h.overflow || s_low_ledger_overflow)
+        OPL_WARN_F("mods", "arena ledger overflowed (save=%u live=%d) — "
+                   "verification is prefix-only", h.overflow,
+                   s_low_ledger_overflow);
+    return 0;
+}
+
+void openpete_mods_arena_state_apply(const void* src, uint32_t size) {
+    if (!src || size < sizeof(arena_state_hdr_t)) return;
+    arena_state_hdr_t h;
+    memcpy(&h, src, sizeof(h));
+    if (h.ver != 1u ||
+        size < sizeof(h) + h.count * sizeof(arena_low_rec_t)) return;
+    const arena_low_rec_t* saved =
+        (const arena_low_rec_t*)((const uint8_t*)src + sizeof(h));
+    /* Adopt saved entries the live session hasn't made yet (verdict
+     * proved the common prefix matches), then re-anchor the cursor to
+     * whichever timeline consumed more — future allocations must clobber
+     * NEITHER the restored payloads NOR live ones. */
+    for (uint32_t i = s_low_ledger_n;
+         i < h.count && i < ARENA_LEDGER_MAX; i++) {
+        s_low_ledger[i] = saved[i];
+        s_low_ledger_n = i + 1;
+    }
+    if (h.low_used > s_low_used) s_low_used = h.low_used;
+    OPL_INFO_F("mods", "arena ledger applied: %u entries, cursor %u/%u",
+               s_low_ledger_n, s_low_used, s_low_size);
 }

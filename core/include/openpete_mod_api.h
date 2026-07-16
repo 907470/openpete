@@ -30,6 +30,7 @@
 #define OPENPETE_MOD_API_H
 
 #include <stdint.h>
+#include <stddef.h>  /* offsetof — OP_STATE_FIELD */
 
 #ifdef __cplusplus
 extern "C" {
@@ -73,9 +74,71 @@ typedef void (*openpete_mod_level_fn)(CPUState* cpu, int level_id);
 /* Savestate participation (see register_savestate_hooks): serialize the
  * mod's own non-canonical state alongside the engine snapshot. save
  * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
- * receives the blob saved by the same mod id. */
+ * receives the blob saved by the same mod id.
+ *
+ * REINIT SIGNAL: load may also be invoked as load(NULL, 0), meaning "the
+ * engine restored a state that carries NO usable blob for you" (state
+ * predates the mod, or your blob was dropped by the state-ABI verdict
+ * below). Treat it as: the guest world just changed under you — reset
+ * host statics to a from-scratch posture and re-derive from guest RAM. */
 typedef int  (*openpete_mod_state_save_fn)(void* buf, int cap);
 typedef void (*openpete_mod_state_load_fn)(const void* buf, int len);
+
+/* ── Savestate state-ABI declaration (compile-time verified) ──────────
+ * A mod that persists state via register_savestate_hooks SHOULD also
+ * declare its state layout with OPENPETE_MOD_STATE below. The macro bakes
+ * a {offsetof, sizeof} field table + version into an exported const
+ * descriptor (`openpete_mod_stateabi`, resolved by the loader at dlopen);
+ * the engine fingerprints it and records the fingerprint in every state
+ * file. On load:
+ *   fp match                     -> blob delivered to load()
+ *   fp mismatch + DROP_OK        -> blob dropped, load(NULL,0) reinit
+ *   fp mismatch, no DROP_OK      -> WHOLE state load refused (no corruption)
+ *   no descriptor (opaque tier)  -> blob delivered only under an exact
+ *                                   build-key match, else dropped + reinit
+ * So: declaring buys your states longevity across recompiles that keep
+ * the layout; not declaring pins them to the exact build. */
+enum {
+    OP_MOD_STATE_DROP_OK = 1u << 0, /* on fp mismatch: drop my blob and
+                                     * reinit me instead of refusing the
+                                     * whole load */
+    OP_MOD_RA_PURE       = 1u << 1, /* tick hooks touch guest state only —
+                                     * safe to re-run speculatively
+                                     * (runahead) with no suppression */
+    OP_MOD_RA_HOST_FX    = 1u << 2, /* tick hooks have host side effects
+                                     * (sfx_play, draw, logs) that the
+                                     * engine can suppress during
+                                     * speculative ticks */
+};
+
+typedef struct openpete_mod_stateabi {
+    uint32_t magic;              /* 'SABI' = 0x53414249 */
+    uint32_t abi_version;        /* mod-declared state schema version */
+    uint32_t abi_size;           /* sizeof(state struct) */
+    uint32_t flags;              /* OP_MOD_STATE_* | OP_MOD_RA_* */
+    uint32_t n_fields;
+    const uint32_t (*fields)[2]; /* {offsetof, member sizeof} table */
+} openpete_mod_stateabi_t;
+
+#define OP_STATE_FIELD(S, f) { (uint32_t)offsetof(S, f), \
+                               (uint32_t)sizeof(((S*)0)->f) }
+
+/* One per mod, file scope. FIELDS... is a brace list of OP_STATE_FIELD.
+ * Example:
+ *   typedef struct { uint32_t ticks; uint32_t park_vaddr; } my_state_t;
+ *   OPENPETE_MOD_STATE(my_state_t, 1, OP_MOD_RA_PURE,
+ *       OP_STATE_FIELD(my_state_t, ticks),
+ *       OP_STATE_FIELD(my_state_t, park_vaddr))
+ * Tip: put host-cached guest vaddrs (arena parks) IN the struct — they
+ * restore with the state, fixing the stale-park-pointer class outright. */
+#define OPENPETE_MOD_STATE(S, ver, fl, ...)                               \
+    _Static_assert(sizeof(S) <= 64 * 1024,                                \
+                   "mod state blob exceeds the 64KiB cap");               \
+    static const uint32_t op_stateabi_fields_[][2] = { __VA_ARGS__ };     \
+    const openpete_mod_stateabi_t openpete_mod_stateabi = {               \
+        0x53414249u, (ver), (uint32_t)sizeof(S), (fl),                    \
+        (uint32_t)(sizeof(op_stateabi_fields_) / sizeof(uint32_t[2])),    \
+        op_stateabi_fields_ };
 
 enum {
     OP_MOD_LOG_DEBUG = 1,
