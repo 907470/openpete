@@ -237,6 +237,12 @@ typedef struct {
     int         rewind_hold_frame;     /* -1 = disabled */
     int         rewind_hold_iters;
 
+    /* Runahead (savestate P5): lead the presented timeline by N sim
+     * ticks to collapse internal input latency (measured L_submit =
+     * 2 ticks; N=2 collapses it fully). 0 = off. Arms only when every
+     * enabled mod declares a runahead capability. */
+    int         runahead;              /* 0 = disabled; clamped 0..3 */
+
     /* Seed g_ram from a 2 MB file before the recomp dispatches. Used to
      * pin-prime openpete with PCSX-Redux's RAM at the same instant — gives
      * the recompiler a byte-identical starting state, so any subsequent

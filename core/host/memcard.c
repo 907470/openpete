@@ -21,6 +21,8 @@
 #include "openpete_log.h"
 #include "openpete_mods.h" /* openpete_mods_modset_tag — save safety */
 
+extern int openpete_speculative; /* openpete_fiber.h — runahead lookahead */
+
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -289,6 +291,19 @@ static void mc_modset_on_write(int slot) {
 static void mc_flush(int slot)
 {
     if (!s_loaded[slot]) return;
+    if (openpete_speculative) {
+        /* Runahead lookahead: this mutation belongs to a timeline that is
+         * about to be rolled back — persisting it would leak a phantom
+         * save to disk. The real tick re-runs the same guest code and
+         * flushes for real. (Residual: s_card[] itself is host state; a
+         * speculative mutation the real tick doesn't repeat would linger
+         * in the in-memory card until the next real write. Card writes
+         * happen at save points, which are not gameplay-live, and
+         * runahead is gated on liveness — accepted.) */
+        OPL_WARN_F("memcard", "flush during speculative tick suppressed "
+                   "(slot %d)", slot);
+        return;
+    }
     FILE* f = fopen(s_path[slot], "wb");
     if (!f) {
         OPL_ERROR_F("memcard", "fopen %s for write failed: %s",

@@ -140,6 +140,14 @@ typedef struct openpete_mod_stateabi {
         (uint32_t)(sizeof(op_stateabi_fields_) / sizeof(uint32_t[2])),    \
         op_stateabi_fields_ };
 
+/* Capability-only form: declare runahead safety (OP_MOD_RA_*) for a mod
+ * with NO persisted state. Required for runahead to arm — the engine
+ * refuses speculation unless every enabled mod declares RA_PURE or
+ * RA_HOST_FX. */
+#define OPENPETE_MOD_RA_CAPS(fl)                                          \
+    const openpete_mod_stateabi_t openpete_mod_stateabi = {               \
+        0x53414249u, 0u, 0u, (fl), 0u, (const uint32_t (*)[2])0 };
+
 enum {
     OP_MOD_LOG_DEBUG = 1,
     OP_MOD_LOG_INFO  = 2,

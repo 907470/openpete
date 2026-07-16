@@ -168,8 +168,13 @@ static void mod_resolve_stateabi(struct openpete_mod* mod, void* dl) {
     const openpete_mod_stateabi_t* d =
         (const openpete_mod_stateabi_t*)mod_dlsym(dl, "openpete_mod_stateabi");
     if (!d) return;
-    if (d->magic != 0x53414249u || !d->fields || d->n_fields == 0 ||
-        d->n_fields > 4096u) {
+    /* n_fields == 0 with fields == NULL is the CAPS-ONLY form
+     * (OPENPETE_MOD_RA_CAPS): declares runahead capability without any
+     * persisted state. Everything else malformed → opaque tier. */
+    int caps_only = (d->n_fields == 0 && !d->fields && d->abi_size == 0);
+    if (d->magic != 0x53414249u ||
+        (!caps_only && (!d->fields || d->n_fields == 0 ||
+                        d->n_fields > 4096u))) {
         OPL_ERROR_F("mods", "%s: malformed openpete_mod_stateabi descriptor "
                     "— treating as opaque (build-key gated)", mod->id);
         return;
@@ -177,7 +182,8 @@ static void mod_resolve_stateabi(struct openpete_mod* mod, void* dl) {
     uint64_t h = 0xcbf29ce484222325ull;
     h = stateabi_fnv1a64(&d->abi_version, 4, h);
     h = stateabi_fnv1a64(&d->abi_size, 4, h);
-    h = stateabi_fnv1a64(d->fields, (size_t)d->n_fields * 8u, h);
+    if (!caps_only)
+        h = stateabi_fnv1a64(d->fields, (size_t)d->n_fields * 8u, h);
     mod->has_stateabi = 1;
     mod->st_ver   = d->abi_version;
     mod->st_size  = d->abi_size;

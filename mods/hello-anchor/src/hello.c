@@ -13,6 +13,10 @@ static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
 static unsigned                  g_calls;
 
+/* Runahead capability: the hook only counts calls and logs — a host side
+ * effect the engine can suppress during speculative ticks. */
+OPENPETE_MOD_RA_CAPS(OP_MOD_RA_HOST_FX)
+
 static void on_camera_update(CPUState* cpu) {
     g_calls++;
     if (g_calls == 1u || (g_calls % 300u) == 0u)

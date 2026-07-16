@@ -1253,6 +1253,29 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * at the quiescent point below (Backspace / --rewind-hold). */
     openpete_rewind_configure(opts->rewind_window);
 
+    /* --runahead: arm only when every enabled mod declares a runahead
+     * capability (OP_MOD_RA_PURE / OP_MOD_RA_HOST_FX) — speculative
+     * re-execution of tick hooks with undeclared host side effects would
+     * double-fire them. */
+    int runahead_n = opts->runahead;
+    openpete_state_mem_t* ra_snap = NULL;
+    if (runahead_n > 0) {
+        const char* ra_offender = NULL;
+        if (!openpete_mods_runahead_capable(&ra_offender)) {
+            OPL_ERROR_F("runahead",
+                        "disabled: mod \"%s\" declares no runahead "
+                        "capability (add OPENPETE_MOD_STATE flags or "
+                        "OPENPETE_MOD_RA_CAPS)",
+                        ra_offender ? ra_offender : "?");
+            runahead_n = 0;
+        } else {
+            ra_snap = openpete_state_mem_new();
+            if (!ra_snap) runahead_n = 0;
+            else OPL_INFO_F("runahead", "armed: leading presentation by "
+                            "%d tick(s)", runahead_n);
+        }
+    }
+
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
      * naturally pacing the host loop at ~60 Hz. The previous fractional
@@ -2037,8 +2060,46 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             ticked_this_iter = (openpete_frame != frame_before_yield);
 
+            bool ra_speculated = false;
             if (ticked_this_iter) {
                 game_on_frame(&g_game.cpu, openpete_frame);
+
+                /* Runahead (savestate P5): the tick above is the
+                 * COMMITTED timeline. Save it, speculate 2N more VBLs
+                 * with held input (audible SPU muted; external side
+                 * effects gated by openpete_speculative), let the interp
+                 * captures below snapshot the LED state, then restore
+                 * the real tick after them — everything downstream
+                 * (hash/position logs, input log, recorders, pacer,
+                 * canonical state) sees the real timeline while every
+                 * present interpolates one led by ~N ticks. Measured
+                 * L_submit = 2 ticks; N=2 collapses it. */
+                if (runahead_n > 0 && ra_snap &&
+                    game_is_gameplay_live(&g_game.cpu) &&
+                    openpete_state_mem_save(ra_snap, &g_game.cpu,
+                                            openpete_frame) == 0) {
+                    /* Host flags the guest's draw thunks mutate are part
+                     * of the rolled-back state: a speculative DrawOTag
+                     * leaking present_pending fired EXTRA canonical
+                     * presents (measured: canon_tick cadence doubled
+                     * under runahead — every tick-keyed instrument
+                     * sampled the wrong sim moments). */
+                    int      ra_pp    = openpete_present_pending;
+                    unsigned ra_prims = openpete_primitives_drawn;
+                    int prev_mute = PsyX_SPUAL_SetMute(1);
+                    openpete_speculative = 1;
+                    for (int v = 0; v < 2 * runahead_n; v++) {
+                        unsigned bf = openpete_frame;
+                        game_on_frame_pre(&g_game.cpu, openpete_frame);
+                        co_switch((cothread_t)openpete_game_fiber);
+                        if (openpete_frame == bf) break;   /* safety */
+                    }
+                    openpete_speculative = 0;
+                    (void)PsyX_SPUAL_SetMute(prev_mute);
+                    openpete_present_pending  = ra_pp;
+                    openpete_primitives_drawn = ra_prims;
+                    ra_speculated = true;
+                }
 
                 /* fps-unlock Phase 2: snapshot the transform-bearing
                  * regions into the interp ring while the game fiber
@@ -2108,6 +2169,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * prev/curr table for sub-tick lerp. Same read-only, same
                  * --render-fps>sim gate. No-op if no game callback. */
                 openpete_interp_objs_run_capture();
+
+                /* Runahead: captures done at the led head — roll back to
+                 * the committed tick before anything else observes RAM. */
+                if (ra_speculated) {
+                    unsigned ra_lf = openpete_frame;
+                    if (openpete_state_mem_load(ra_snap, &g_game.cpu,
+                                                &ra_lf, 1) == 0)
+                        openpete_frame = ra_lf;
+                }
 
                 /* Spine health probe (OPENPETE_INTERP_QUERYTEST): confirm the
                  * interp ring PAIRS consecutive snapshots when gameplay state

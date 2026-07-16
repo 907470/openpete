@@ -378,6 +378,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
+        "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off;\n"
+        "                             2 recommended — collapses the game's internal input lag.\n"
+        "                             Costs ~N extra sim ticks/tick of CPU; gameplay state is\n"
+        "                             UNCHANGED — presentation-only, like interpolation)\n"
         "  --render-fps N             target render Hz (default: the display's refresh rate; 0=match\n"
         "                             sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)\n"
         "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
@@ -526,6 +530,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->rewind_window       = 0;
     opts->rewind_hold_frame   = -1;
     opts->rewind_hold_iters   = 0;
+    opts->runahead            = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
@@ -814,6 +819,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--rewind") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->rewind_window = atoi(v); i++;
+        } else if (strcmp(a, "--runahead") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->runahead = atoi(v);
+            if (opts->runahead < 0) opts->runahead = 0;
+            if (opts->runahead > 3) opts->runahead = 3;
+            i++;
         } else if (strcmp(a, "--rewind-hold") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if (sscanf(v, "%d:%d", &opts->rewind_hold_frame,

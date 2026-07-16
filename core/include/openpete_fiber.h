@@ -50,6 +50,15 @@ extern unsigned openpete_canon_tick;
 extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
 extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 
+/* 1 while the host is running SPECULATIVE guest ticks that will be rolled
+ * back (runahead lookahead — savestate plan P5). Externally-visible host
+ * side effects fired from guest thunks must be suppressed while set: the
+ * guest-RAM half of the effect rolls back, the file/audio half wouldn't.
+ * Checked by the memcard flush; audio's audible half is bracketed with
+ * SPU mute by the driver. Plain int: only the host loop writes it, only
+ * host-thread thunk code reads it. */
+extern int openpete_speculative;
+
 /* Fast-boot gate. While set, psyq_VSync(0) bumps `openpete_vbl` without
  * yielding to the host fiber, so the game's Initialize() busy-waits run as
  * fast as the CPU allows (nothing is rendered during them anyway — the

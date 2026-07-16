@@ -80,6 +80,20 @@ sys.exit(0 if ok else 1)
 EOF
 done
 
+# P5 runahead determinism gate: with --runahead 2 the presented timeline
+# leads, but the COMMITTED timeline must be byte-identical to clean —
+# gameplay state is never allowed to feel the speculation.
+echo "== runahead (beast_makers_wall, --runahead 2)"
+run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-clean.csv" \
+    || { echo "  clean run FAILED"; fail=1; }
+run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-on.csv" --runahead 2 \
+    || { echo "  runahead run FAILED"; fail=1; }
+if cmp -s "$OUT/ra-clean.csv" "$OUT/ra-on.csv"; then
+    echo "  runahead(2): real timeline byte-identical PASS"
+else
+    echo "  runahead(2): real timeline DIVERGED FAIL"; fail=1
+fi
+
 # P4 driver gate: hold rewind for 40 iterations mid-gameplay via
 # --rewind-hold; the scrub must be a single backward jump and the
 # post-release timeline must match the clean run bit-for-bit (movie
