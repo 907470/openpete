@@ -846,6 +846,7 @@ typedef struct {
 static tscache_t s_tsc[TSC_SLOTS];
 static uint32_t s_tsc_stamp;                 /* bumped once per terrain_build call */
 static long s_tsc_hit, s_tsc_miss;
+static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
     if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_CACHE_DBG"); on = (e && *e && *e != '0') ? 1 : 0; }
@@ -1822,6 +1823,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_animdbg(cpu);
     terrain_abr_scan(cpu);
     tsc_census();
+    {   /* OPENPETE_TERRAIN_OCCL_DBG: occlusion-cull census (~1/120 walks) */
+        static int on = -1, n; static long prev_tris;
+        if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_OCCL_DBG"); on = (e && *e && *e != '0'); }
+        if (on && ++n >= 120) {
+            fprintf(stderr, "[ter-occl f=%u] sectors-culled=%ld/window last-tris=%ld\n",
+                    openpete_frame, s_tocc_culled, prev_tris);
+            s_tocc_culled = 0; n = 0;
+        }
+        prev_tris = s_tri_n;
+    }
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
@@ -2047,6 +2058,43 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                                       sectorPtr, sectorCnt);
         tsc_refresh_anim(cpu, (tscache_t*)SC, lqTable, hqTable, texTblMode,
                          s_hidet >= 0 ? s_hidet : 0);
+
+        /* Sector occlusion cull — the extended-LOD win. A sector whose entire
+         * screen bbox sits BEHIND nearer opaque terrain paints zero pixels: the
+         * GPU depth-tests it away, but the CPU still paid to extract, sort and
+         * upload it. Under --lod extended the game's distance cull is defeated,
+         * so fully-occluded distant sectors (everything behind a wall) still get
+         * walked — measured ~22k tris vs ~2.7k against a beast_makers wall, a
+         * pixel-identical frame at ~172 vs ~453 fps (4:3; the ultrawide win is
+         * larger). Reuse the moby occlusion grid (built from the WORLD-opaque
+         * terrain depth pre-pass, frames-lagged like the moby query): cull a
+         * sector only when EVERY grid cell over its (inflated) bbox is nearer
+         * than the sector's NEAREST point — partial occlusion keeps it, so no
+         * pop-in. openpete_native_occl_query returns 0 (keep) whenever the grid
+         * is absent/stale/too-near, so this is a pure conservative skip.
+         * Display-only: the canonical PSX render that writes gameplay channels
+         * is a separate pass, untouched (and the native feed is inert headless,
+         * so the oracle/determinism gates are unaffected). Bit-identical off vs
+         * on, verified at 4:3 and 21:9. OPENPETE_TERRAIN_OCCL=0 disables (A/B). */
+        static int s_tocc = -1;
+        if (s_tocc < 0) { const char* e = getenv("OPENPETE_TERRAIN_OCCL"); s_tocc = (e && *e) ? (*e != '0') : 1; }
+        if (s_tocc) {
+            double oc1, oc2, oc3;
+            ngte_mac(M, camy - SC->centreY, camz - SC->centreZ,
+                     SC->centreX - camx, &oc1, &oc2, &oc3);
+            if (oc3 > (double)SC->radius + 1.0) {   /* wholly in front of camera */
+                double inv = s_H / oc3;
+                float sx  = (float)(s_ofx + oc1 * inv);
+                float sy  = (float)(s_ofy + oc2 * inv);
+                float rpx = (float)((double)SC->radius * inv * 1.5 + 8.0);  /* generous bbox */
+                float vz_near = (float)((oc3 - (double)SC->radius) * 16.0);  /* world/16 → full-world */
+                if (openpete_native_occl_query(sx - rpx, sy - rpx, sx + rpx, sy + rpx, vz_near)) {
+                    s_tocc_culled++;
+                    continue;   /* fully behind nearer terrain — skip extraction */
+                }
+            }
+        }
+
         int flags   = SC->flags;
         int originX = SC->originX, originY = SC->originY, originZ = SC->originZ;
         double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
