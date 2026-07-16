@@ -19,6 +19,7 @@
 #include "bk2_record.h"
 #include "bk2_movie.h"   /* bk2_frame_t */
 #include "openpete_discontinuity.h"
+#include "openpete_input_log.h"
 #include "openpete_log.h"
 
 #include "miniz.h"
@@ -42,9 +43,7 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
 static struct {
     char*        path;
     char*        args;       /* .args sidecar content, or NULL — written at finalize */
-    bk2_frame_t* frames;
-    int          count;
-    int          capacity;
+    int          start_idx;  /* input_log index of the movie's first frame */
     int          active;
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
@@ -60,7 +59,7 @@ static void bk2_record_on_guest_discontinuity(void) {
     OPL_ERROR_F("bk2-record",
                 "guest state replaced (savestate load) at frame %d — "
                 "finalizing movie here; frames after the load are NOT recorded",
-                s_rec.count);
+                input_log_count() - s_rec.start_idx);
     (void)bk2_record_finalize();
 }
 
@@ -71,11 +70,8 @@ int bk2_record_begin(const char* path, const char* args_sidecar) {
     }
     (void)openpete_on_guest_discontinuity(bk2_record_on_guest_discontinuity);
     s_rec.path = strdup(path);
-    s_rec.capacity = 16 * 1024;
-    s_rec.frames = (bk2_frame_t*)malloc((size_t)s_rec.capacity * sizeof(bk2_frame_t));
-    if (!s_rec.path || !s_rec.frames) {
+    if (!s_rec.path) {
         OPL_ERROR_F("bk2-record", "out of memory at begin");
-        free(s_rec.path); free(s_rec.frames);
         memset(&s_rec, 0, sizeof(s_rec));
         return -1;
     }
@@ -83,7 +79,7 @@ int bk2_record_begin(const char* path, const char* args_sidecar) {
     s_rec.args = args_sidecar ? strdup(args_sidecar) : NULL;
     if (args_sidecar && !s_rec.args)
         OPL_ERROR_F("bk2-record", "out of memory copying args sidecar; skipping it");
-    s_rec.count = 0;
+    s_rec.start_idx = input_log_count();
     s_rec.active = 1;
     s_rec.prev_bits = 0xFFFF;  /* all released */
     OPL_INFO_F("bk2-record", "recording to %s", path);
@@ -131,40 +127,18 @@ void bk2_format_button_diff(uint16_t prev, uint16_t cur,
     release_out[rn] = '\0';
 }
 
-void bk2_record_append(uint16_t bits, const uint8_t axes[4]) {
+void bk2_record_note(uint16_t bits, int log_idx) {
     if (!s_rec.active) return;
     /* Diff against the previous frame and log press/release transitions
      * so a debug-level run shows the same input timeline that lands in
-     * the .bk2. */
+     * the .bk2. The bits are already in the input log; nothing buffers. */
     if (bits != s_rec.prev_bits) {
         char p_buf[17], r_buf[17];
         bk2_format_button_diff(s_rec.prev_bits, bits, p_buf, r_buf);
         OPL_INFO_F("bk2-record", "frame %d: press=[%s] release=[%s] bits=0x%04x",
-                    s_rec.count, p_buf, r_buf, bits);
+                    log_idx - s_rec.start_idx, p_buf, r_buf, bits);
     }
     s_rec.prev_bits = bits;
-    if (s_rec.count == s_rec.capacity) {
-        int new_cap = s_rec.capacity * 2;
-        bk2_frame_t* g = (bk2_frame_t*)realloc(s_rec.frames, (size_t)new_cap * sizeof(bk2_frame_t));
-        if (!g) {
-            /* Drop the frame rather than terminating the run. The recorded
-             * movie will just be truncated; better than crashing the game. */
-            OPL_ERROR_F("bk2-record", "realloc failed at %d frames; recording truncated",
-                        s_rec.count);
-            s_rec.active = 0;
-            return;
-        }
-        s_rec.frames = g;
-        s_rec.capacity = new_cap;
-    }
-    bk2_frame_t* fr = &s_rec.frames[s_rec.count++];
-    fr->buttons = bits;
-    if (axes) {
-        fr->axes[0] = axes[0]; fr->axes[1] = axes[1];
-        fr->axes[2] = axes[2]; fr->axes[3] = axes[3];
-    } else {
-        fr->axes[0] = fr->axes[1] = fr->axes[2] = fr->axes[3] = 128;
-    }
 }
 
 /* Render one frame line into `out` (must hold >= 64 chars). Returns
@@ -206,6 +180,10 @@ static const char* const kHeader =
 int bk2_record_finalize(void) {
     if (!s_rec.active) return 0;
 
+    /* The movie is the input-log window [start_idx, count). */
+    int frame_count = input_log_count() - s_rec.start_idx;
+    if (frame_count < 0) frame_count = 0;   /* defensive (log reset under us) */
+
     /* Build Input Log.txt in memory: header + N frame lines + trailer. */
     size_t key_len     = strlen(kLogKey);
     size_t trailer_len = strlen(kInputTrailer);
@@ -216,19 +194,25 @@ int bk2_record_finalize(void) {
     bk2_frame_t probe = { 0xFFFF, {128, 128, 128, 128} };
     int  frame_line_len = format_frame(frame_buf, &probe);
     size_t log_size = key_len
-                    + (size_t)s_rec.count * (size_t)frame_line_len
+                    + (size_t)frame_count * (size_t)frame_line_len
                     + trailer_len;
     char* log = (char*)malloc(log_size + 1);
     if (!log) {
         OPL_ERROR_F("bk2-record", "out of memory at finalize (%zu bytes)", log_size);
-        free(s_rec.path); free(s_rec.args); free(s_rec.frames);
+        free(s_rec.path); free(s_rec.args);
         memset(&s_rec, 0, sizeof(s_rec));
         return -1;
     }
     char* p = log;
     memcpy(p, kLogKey, key_len); p += key_len;
-    for (int i = 0; i < s_rec.count; i++) {
-        int n = format_frame(p, &s_rec.frames[i]);
+    for (int i = 0; i < frame_count; i++) {
+        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
+        if (!r) break;   /* defensive; log frozen mid-recording */
+        bk2_frame_t fr;
+        fr.buttons = r->bits;
+        fr.axes[0] = r->axes[0]; fr.axes[1] = r->axes[1];
+        fr.axes[2] = r->axes[2]; fr.axes[3] = r->axes[3];
+        int n = format_frame(p, &fr);
         p += n;
     }
     memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
@@ -258,7 +242,7 @@ int bk2_record_finalize(void) {
         OPL_ERROR_F("bk2-record", "finalize failed");
         goto out_close;
     }
-    OPL_INFO_F("bk2-record", "wrote %d frames to %s", s_rec.count, s_rec.path);
+    OPL_INFO_F("bk2-record", "wrote %d frames to %s", frame_count, s_rec.path);
     /* Drop the launch-args sidecar next to the movie now that the .bk2
      * exists, so `--bk2 <path>` picks it up on replay. */
     if (s_rec.args)
@@ -268,7 +252,7 @@ out_close:
     mz_zip_writer_end(&zip);
 out:
     free(log);
-    free(s_rec.path); free(s_rec.args); free(s_rec.frames);
+    free(s_rec.path); free(s_rec.args);
     memset(&s_rec, 0, sizeof(s_rec));
     return rc;
 }

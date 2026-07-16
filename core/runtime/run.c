@@ -21,6 +21,7 @@
 #include "game_extras.h"
 #include "bk2_movie.h"
 #include "bk2_record.h"
+#include "openpete_input_log.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
@@ -1975,14 +1976,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * frame counter didn't advance (gated event pumps, no-tick yields
          * from dispatch stubs), which would otherwise inflate the movie
          * length. */
-        if (bk2_recording && ticked_this_iter) {
+        if (ticked_this_iter) {
+            /* Per-VBL input log — ALWAYS on (savestate plan P1): one entry
+             * per VBL the fiber consumed this iteration, all carrying the
+             * tick-latched bits (the same expansion the bk2 recorder used
+             * before the lift-out, so recorded movies stay byte-identical).
+             * Consumers: bk2_record (window [begin,finalize)), and later
+             * the rewind replay / runahead inject drivers. */
             unsigned ticks = openpete_frame - frame_before_yield;
             uint16_t bits = PsyX_Pad_GetLastP1Bits();
             unsigned char ax[4];                 /* PSX pad->analog order: RX,RY,LX,LY */
             PsyX_Pad_GetLastP1Analog(ax);
             unsigned char bk2axes[4] = { ax[2], ax[3], ax[0], ax[1] };  /* -> LX,LY,RX,RY */
             for (unsigned t = 0; t < ticks; t++) {
-                bk2_record_append(bits, bk2axes);
+                int idx = input_log_append(bits, bk2axes);
+                if (bk2_recording) bk2_record_note(bits, idx);
             }
         }
 

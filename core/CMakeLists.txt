@@ -24,6 +24,11 @@ add_library(openpete_core STATIC
     runtime/bk2_record.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
 
+    # Per-VBL input log — single source of truth for "what was pressed at
+    # VBL i"; shared by bk2_record and the rewind/runahead drivers. See
+    # openpete_input_log.h (savestate plan P1).
+    runtime/input_log.c
+
     # Save states (F2/F4 quick save/load). See
     # plans/openpete-savestate-frame-step-rewind.md.
     runtime/savestate.c

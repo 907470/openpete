@@ -1,11 +1,12 @@
 /* core/runtime/bk2_record.h — record live pad input into a BizHawk
  * (.bk2) movie zip. Sister of bk2_movie.{c,h} (replay).
  *
- * Each frame, the host samples PsyX_Pad_GetLastP1Bits() and appends to
- * an in-memory buffer. On finalize, the buffer is serialized as
- * "Input Log.txt" and packed into a .bk2 zip alongside a stub
- * "Header.txt" so the file round-trips through BizHawk and through our
- * own bk2_movie_load.
+ * The per-VBL input buffer lives in openpete_input_log (always-on, fed by
+ * the host loop); this module marks the window [begin, finalize) and
+ * serializes those entries as "Input Log.txt" packed into a .bk2 zip
+ * alongside a stub "Header.txt" so the file round-trips through BizHawk
+ * and through our own bk2_movie_load. (Savestate plan P1 lift-out: the
+ * log is shared with the rewind/runahead drivers.)
  *
  * P1 digital buttons and the 4 analog axes are recorded, plus the analog-
  * mode flag (MODE column) — see openpete-bk2-input.md.
@@ -30,10 +31,12 @@ extern "C" {
  * sidecar. The string is copied; the caller may free it after the call. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/* Append the current frame: PSX pad bitfield (released=1, pressed=0) and the
- * 4 analog axis bytes (LX, LY, RX, RY; 128 = centre, NULL = all centre).
+/* Note a just-logged frame while recording: emits the press/release
+ * transition log line (`log_idx` is the input_log index the host loop got
+ * back from input_log_append; the line shows the movie-relative frame).
+ * The bits themselves already live in the input log — this never buffers.
  * No-op if recording isn't active. */
-void bk2_record_append(uint16_t bits, const uint8_t axes[4]);
+void bk2_record_note(uint16_t bits, int log_idx);
 
 /* Write the .bk2 zip and free the buffer. No-op if recording isn't
  * active. Returns 0 on success, non-zero on write failure. Always safe
