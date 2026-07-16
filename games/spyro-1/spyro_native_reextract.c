@@ -25,12 +25,18 @@ extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
  * eye already is to the corrected branch over one tick; backward motion
  * never reaches the screen.
  *
- * SPYRO ONLY in the default configuration: the camera region is
- * ra_commit (presented from the committed timeline — see
- * spyro_interp_regions.c), so its pair never crosses a branch and a
- * rebase would only kink it. The camera arm below stays as the fallback
- * for OPENPETE_RA_CAM_COMMIT=0 A/Bs (where the led camera DID measure
- * -36u/-88u per present at N=1/2 on an R2 release, -20/-70 rebased). */
+ * LED-CAMERA A/B CONFIG ONLY (OPENPETE_RA_CAM_COMMIT=0) in BOTH arms:
+ * with the default committed-timeline camera the camera pair never
+ * crosses a branch (a rebase would only kink it), and the Spyro arm
+ * proved actively harmful under analog input — the stick differs almost
+ * every tick, so the edge fires continuously and the standing re-anchor
+ * bunches motion into the late presents + steps backward at negative
+ * alpha (user: "Spyro very jittery in motion, especially with analog").
+ * Spyro's cross-branch error at N=1-2 is a few units of physics; the
+ * plain led table pair absorbs it invisibly, like the mobys. In the
+ * led-camera A/B the rebase remains the measured snap mitigation
+ * (-36u/-88u per present raw at N=1/2 on an R2 release, -20/-70
+ * rebased). */
 static int ra_rebase_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_RA_REBASE"); v = !(e && *e == '0'); }
@@ -1116,9 +1122,19 @@ static void spyro_native_reextract(void* cpu_v) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
             const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION];
             static uint8_t s_psp_rb[SPYRO_SAVE];
-            if (openpete_ra_input_edge && ra_rebase_on() && s_shown_sp_ok) {
+            if (openpete_ra_input_edge && ra_rebase_on() && s_shown_sp_ok &&
+                !openpete_interp_ra_commit_active()) {
                 /* Rebase POSITION only (the shown pos is mid-lerp, valid);
-                 * anim clocks/rot keep the table pair. */
+                 * anim clocks/rot keep the table pair. LED-CAMERA A/B
+                 * CONFIG ONLY: under analog input the stick differs almost
+                 * every tick, so the edge fires continuously and a
+                 * standing rebase re-anchors the lerp at the shown pos
+                 * every tick — motion bunches into the late presents and
+                 * the negative-alpha presents extrapolate BACKWARD from
+                 * the shown point ("Spyro very jittery in motion,
+                 * especially with analog", 2026-07-16). The plain table
+                 * pair absorbs the few-unit branch error invisibly, like
+                 * the (rebase-free, smooth) mobys. */
                 memcpy(s_psp_rb, psp, SPYRO_SAVE);
                 memcpy(s_psp_rb, s_shown_sp, 12);
                 psp = s_psp_rb;
@@ -1180,6 +1196,15 @@ static void spyro_native_reextract(void* cpu_v) {
             sp_bracketed = 1;
             memcpy(s_shown_sp, sp, 12);            /* shown m_Position */
             s_shown_sp_ok = 1;
+            /* Spyro leg of OPENPETE_LAG_TRACE (see the camera leg above):
+             * shown position + pair endpoints per present. */
+            if (lt) {
+                const int32_t* ip = (const int32_t*)sp;
+                const int32_t* pp = (const int32_t*)psp;
+                const int32_t* cp = (const int32_t*)csp;
+                fprintf(stderr, "[lag-trace-sp f=%u] a=%.3f spX=%d spZ=%d prevX=%d currX=%d\n",
+                        openpete_frame, alpha, ip[0], ip[2], pp[0], cp[0]);
+            }
         }
 
         /* (c) Flame breath pose (singleton, region FLAME_REGION). The ribbon is
