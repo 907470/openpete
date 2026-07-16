@@ -75,6 +75,16 @@ void game_on_hash_emit(uint32_t frame);
  * the game hangs on the next overlay-resident call. */
 void game_on_state_loaded(CPUState* cpu);
 
+/* --- Game-side extra savestate payload ---
+ * Small per-game host state that must travel with the state blob but is
+ * not guest RAM (e.g. Spyro's WAD-overlay append cursor — a host-side
+ * disc cursor the guest's next mod-asset read depends on). Fixed size per
+ * game build; core writes/reads it as an opaque section. `size` may be 0
+ * (no extra state). Load is called AFTER game_on_state_loaded. */
+uint32_t game_state_extra_size(void);
+void     game_state_extra_save(void* dst);            /* dst has extra_size bytes */
+void     game_state_extra_load(const void* src, uint32_t size);
+
 /* --- Position probe (for the BK2 determinism harness) ---
  * Returns 0 and writes the player's world position into [out_x, out_y,
  * out_z] (engine units, signed) when game state is meaningful. Returns

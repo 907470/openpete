@@ -1,26 +1,34 @@
 // core/runtime/savestate.c — save/load of openpete game state to slot files.
 //
-// CPUState register file + g_ram + g_scratch + PsyCross VRAM mirror +
-// frame counter. Slot file layout (little-endian throughout, no padding
-// inside the header thanks to fixed-size fields):
+// v3 file layout (little-endian throughout, no padding inside the header
+// thanks to fixed-size fields):
 //
 //   uint32_t  magic         = 'OSv1' (0x3176534F LE)
-//   uint32_t  version       = 2
-//   char      build_hash[32]
-//   uint32_t  frame
+//   uint32_t  version       = 3
+//   char      ident[32]     — content identity, see ident_fill()
+//   uint32_t  frame         — openpete_frame (VBL counter) at save
 //   uint32_t  cpu_bytes
 //   uint32_t  ram_bytes
 //   uint32_t  scratch_bytes
 //   uint32_t  vram_bytes    (1 MiB — VRAM_WIDTH * VRAM_HEIGHT * 2)
-//   uint32_t  reserved[7]   — [0] = openpete_vbl at save, [1] = 1 iff [0]
-//                             is present (older files: both 0 → vbl not
-//                             restored, guest wait-loops self-heal with one
-//                             wild delta). [2..6] = 0 (room for DRAWENV/
-//                             DISPENV/SPU offsets later).
+//   uint32_t  vbl           — openpete_vbl (guest-visible VSync counter);
+//                             restored so post-load wait loops don't see a
+//                             wild delta (P0 finding: one-VBL timeline skew)
+//   uint32_t  spu_state_bytes  — PsyX SPU voice mirror + cursors
+//   uint32_t  spu_mem_bytes    — SPU sample RAM (wrong-bank fix, P2a)
+//   uint32_t  cd_state_bytes   — PsyCross CD head-position globals
+//   uint32_t  game_extra_bytes — opaque per-game host blob (game_extras)
+//   uint32_t  modset_tag_bytes — enabled-modset tag string (no NUL)
+//   uint32_t  reserved[4]   = 0 (DRAWENV/DISPENV later)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
 //   uint8_t   vram[vram_bytes]
+//   uint8_t   spu_state[spu_state_bytes]
+//   uint8_t   spu_mem[spu_mem_bytes]
+//   uint8_t   cd_state[cd_state_bytes]
+//   uint8_t   game_extra[game_extra_bytes]
+//   char      modset_tag[modset_tag_bytes]
 //
 // Note on the libco game fiber: its host call stack is NOT snapshotted.
 // On resume the fiber unwinds through whatever frames were live at load
@@ -35,22 +43,51 @@
 // memory-callback function pointers — those point at host code and must
 // not survive a save/load roundtrip.
 //
-// Build-hash gating: any rebuild changes __DATE__/__TIME__, so a slot
-// from an old binary refuses to load. Cheap insurance against silent
-// layout drift between recompiles. (Ship-quality hashing — e.g. of the
-// full ELF — can come later; the requirement here is "different builds
-// must not load each other's slots", and __DATE__ "T" __TIME__ meets
-// that as long as the user does a fresh build between sessions.)
+// Identity gating (v3): ident = sha256("stateabi:<N>|cg:<codegen_stamp>|
+// rom:<rom_sha256>") hex-truncated to 31 chars. This covers what actually
+// varies between installations — the recomp module (boot-compiled per
+// machine under the distribution model) and the ROM — and pins the state
+// LAYOUT via the curated OPENPETE_STATE_ABI number (bump it whenever any
+// section layout changes). Unlike the old __DATE__/__TIME__ hash, dev
+// rebuilds with unchanged layout keep their slots (the section-size checks
+// below still catch gross drift). Residual dev-only risk: a layout-only
+// change under an unbumped ABI on a "dev-static" codegen stamp — accepted,
+// same curation contract as OPENPETE_RECOMP_ABI_VERSION.
 
 #include "openpete_state.h"
 #include "openpete_discontinuity.h"
-#include "openpete_fiber.h"  /* openpete_vbl — saved/restored via reserved[0] */
+#include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
 #include "openpete_log.h"
-#include "openpete_mods.h"   /* per-mod state participation */
+#include "openpete_mods.h"   /* per-mod state participation + modset tag */
 #include "openpete_psx.h"
+#include "openpete_recomp_module.h"  /* codegen_stamp / rom_sha256 identity */
 #include "game_extras.h"
+#include "sha256.h"
 
 #include "PsyX/PsyX_public.h"
+
+/* PsyX SPU state-export (PsyX_SPUAL.h is a PsyCross-internal header; the
+ * thunks extern these the same way). */
+extern unsigned int PsyX_SPUAL_StateSize(void);
+extern int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size);
+extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
+extern unsigned int PsyX_SPUAL_MemSize(void);
+extern int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size);
+extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);
+
+/* PsyCross CD head-position globals (LIBCD.C; plain global-scope names,
+ * identical symbols under C and C++ linkage). Saved so a state taken
+ * between a guest CdlSetloc and its CdRead doesn't resume reading from
+ * wherever the OTHER timeline left the head. The command QUEUE
+ * (g_cdComQueue) is NOT saved: it holds callback pointers and is drained
+ * synchronously in this port; a queued-command-in-flight save would need
+ * the P3 quiescence audit first. */
+extern int g_cdCurrentSector;
+extern int g_cdSectorSize;
+extern int g_cdCurrentTrack;
+extern int g_cdNumFrames;
+extern int g_CD_com;
+extern int g_cdReadDoneFlag;
 
 #include <errno.h>
 #include <stddef.h>
@@ -70,8 +107,13 @@
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
-#define OPENPETE_STATE_VERSION  2u
+#define OPENPETE_STATE_VERSION  3u
 #define OPENPETE_STATE_HASH_LEN 32
+
+/* Curated state-layout ABI. Bump on ANY change to a section's layout
+ * (header fields, SPUALVoiceState packing, cd_state_t, ...). Part of the
+ * ident hash, so a bump cleanly orphans older files. */
+#define OPENPETE_STATE_ABI 3u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -80,14 +122,30 @@
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    char     build_hash[OPENPETE_STATE_HASH_LEN];
+    char     ident[OPENPETE_STATE_HASH_LEN];
     uint32_t frame;
     uint32_t cpu_bytes;
     uint32_t ram_bytes;
     uint32_t scratch_bytes;
     uint32_t vram_bytes;
-    uint32_t reserved[7];
+    uint32_t vbl;
+    uint32_t spu_state_bytes;
+    uint32_t spu_mem_bytes;
+    uint32_t cd_state_bytes;
+    uint32_t game_extra_bytes;
+    uint32_t modset_tag_bytes;
+    uint32_t reserved[4];
 } openpete_state_header_t;
+
+/* CD head-position section (fixed layout, ABI-covered). */
+typedef struct {
+    int32_t cur_sector;
+    int32_t sector_size;
+    int32_t cur_track;
+    int32_t num_frames;
+    int32_t cd_com;
+    int32_t read_done;
+} state_cd_t;
 
 /* Chunked fwrite/fread. Some Windows stdio configurations short-write
  * multi-megabyte blobs in a single fwrite call (observed on the 8 MiB
@@ -131,11 +189,29 @@ static int read_section(FILE* fp, const char* path, const char* what,
     return 0;
 }
 
-static void build_hash_fill(char out[OPENPETE_STATE_HASH_LEN]) {
+static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
+    const openpete_recomp_module* m = openpete_recomp_module_get();
+    char src[512];
+    int n = snprintf(src, sizeof(src), "stateabi:%u|cg:%s|rom:%s",
+                     OPENPETE_STATE_ABI,
+                     (m && m->codegen_stamp) ? m->codegen_stamp : "?",
+                     (m && m->rom_sha256)    ? m->rom_sha256    : "?");
+    if (n < 0) n = 0;
+    if ((size_t)n > sizeof(src)) n = (int)sizeof(src);
+
+    uint8_t digest[32];
+    openpete_sha256_ctx c;
+    openpete_sha256_init(&c);
+    openpete_sha256_update(&c, src, (size_t)n);
+    openpete_sha256_final(&c, digest);
+
     memset(out, 0, OPENPETE_STATE_HASH_LEN);
-    /* __DATE__ is 11 chars, __TIME__ is 8, plus a 'T' separator = 20.
-     * Fits comfortably in 32; remainder stays zero. */
-    snprintf(out, OPENPETE_STATE_HASH_LEN, "%sT%s", __DATE__, __TIME__);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < (OPENPETE_STATE_HASH_LEN - 1) / 2; ++i) {
+        out[i * 2]     = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0xF];
+    }
+    /* 15 bytes of digest as 30 hex chars + NUL padding to 32. */
 }
 
 /* Resolve $XDG_STATE_HOME/openpete/states (or %LOCALAPPDATA%/openpete/states
@@ -227,11 +303,14 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         return -1;
     }
 
+    const char* modset_tag = openpete_mods_modset_tag();
+    if (!modset_tag) modset_tag = "";
+
     openpete_state_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic         = OPENPETE_STATE_MAGIC;
     hdr.version       = OPENPETE_STATE_VERSION;
-    build_hash_fill(hdr.build_hash);
+    ident_fill(hdr.ident);
     hdr.frame         = (uint32_t)frame;
     hdr.cpu_bytes     = CPU_REG_BYTES;
     hdr.ram_bytes     = OPENPETE_PSX_RAM_SIZE;
@@ -242,19 +321,39 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
      * restoring it, the first post-load wait loop sees a wild delta and
      * exits early — a one-VBL timeline skew (measured: post-load hash
      * timeline leads the post-save one by exactly one row). */
-    hdr.reserved[0]   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
-    hdr.reserved[1]   = 1u;   /* reserved[0] is present */
+    hdr.vbl              = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    hdr.spu_state_bytes  = PsyX_SPUAL_StateSize();
+    hdr.spu_mem_bytes    = PsyX_SPUAL_MemSize();
+    hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
+    hdr.game_extra_bytes = game_state_extra_size();
+    hdr.modset_tag_bytes = (uint32_t)strlen(modset_tag);
 
-    /* Snapshot VRAM into a heap buffer before writing — keeps the host-
-     * side `vram` array stable across the (potentially slow) disk I/O
-     * even though the game fiber is yielded right now. */
-    void* vram_snap = malloc(hdr.vram_bytes);
-    if (!vram_snap || PsyX_VRAM_Snapshot(vram_snap, hdr.vram_bytes) != 0) {
-        free(vram_snap);
+    /* Snapshot the host-side mirrors into heap buffers before writing —
+     * keeps them stable across the (potentially slow) disk I/O even
+     * though the game fiber is yielded right now. */
+    void* vram_snap  = malloc(hdr.vram_bytes);
+    void* spu_snap   = malloc(hdr.spu_state_bytes);
+    void* spumem_snap= malloc(hdr.spu_mem_bytes);
+    void* extra_snap = hdr.game_extra_bytes ? malloc(hdr.game_extra_bytes) : NULL;
+    if (!vram_snap || !spu_snap || !spumem_snap ||
+        (hdr.game_extra_bytes && !extra_snap) ||
+        PsyX_VRAM_Snapshot(vram_snap, hdr.vram_bytes) != 0 ||
+        PsyX_SPUAL_SnapshotState(spu_snap, hdr.spu_state_bytes) != 0 ||
+        PsyX_SPUAL_SnapshotMem(spumem_snap, hdr.spu_mem_bytes) != 0) {
+        free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
         fclose(fp);
-        OPL_ERROR_F("savestate", "%s: VRAM snapshot failed", path);
+        OPL_ERROR_F("savestate", "%s: host-mirror snapshot failed", path);
         return -1;
     }
+    if (hdr.game_extra_bytes) game_state_extra_save(extra_snap);
+
+    state_cd_t cd;
+    cd.cur_sector  = g_cdCurrentSector;
+    cd.sector_size = g_cdSectorSize;
+    cd.cur_track   = g_cdCurrentTrack;
+    cd.num_frames  = g_cdNumFrames;
+    cd.cd_com      = g_CD_com;
+    cd.read_done   = g_cdReadDoneFlag;
 
     int rc = 0;
     if (rc == 0) rc = write_section(fp, path, "header",  &hdr, sizeof(hdr));
@@ -264,11 +363,18 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     if (rc == 0) rc = write_section(fp, path, "scratch", openpete_psx_get_scratch(),
                                     OPENPETE_PSX_SCRATCH_SIZE);
     if (rc == 0) rc = write_section(fp, path, "vram",    vram_snap, hdr.vram_bytes);
+    if (rc == 0) rc = write_section(fp, path, "spu",     spu_snap, hdr.spu_state_bytes);
+    if (rc == 0) rc = write_section(fp, path, "spumem",  spumem_snap, hdr.spu_mem_bytes);
+    if (rc == 0) rc = write_section(fp, path, "cd",      &cd, sizeof(cd));
+    if (rc == 0 && hdr.game_extra_bytes)
+        rc = write_section(fp, path, "game-extra", extra_snap, hdr.game_extra_bytes);
+    if (rc == 0 && hdr.modset_tag_bytes)
+        rc = write_section(fp, path, "modset-tag", modset_tag, hdr.modset_tag_bytes);
     /* Trailing mods section: per-mod participation blobs (rewinds rewind
      * the mods too). Optional on read — pre-mods files still load. */
     if (rc == 0) rc = openpete_mods_state_write_section(fp);
 
-    free(vram_snap);
+    free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
     fclose(fp);
     if (rc != 0) return -1;
     OPL_INFO_F("savestate", "saved %s (frame=%u)", path, frame);
@@ -310,15 +416,18 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         return -1;
     }
 
-    char want_hash[OPENPETE_STATE_HASH_LEN];
-    build_hash_fill(want_hash);
-    if (memcmp(hdr.build_hash, want_hash, OPENPETE_STATE_HASH_LEN) != 0) {
+    char want_ident[OPENPETE_STATE_HASH_LEN];
+    ident_fill(want_ident);
+    if (memcmp(hdr.ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0) {
         fclose(fp);
         char hh[OPENPETE_STATE_HASH_LEN + 1];
         char wh[OPENPETE_STATE_HASH_LEN + 1];
-        memcpy(hh, hdr.build_hash, OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
-        memcpy(wh, want_hash,      OPENPETE_STATE_HASH_LEN); wh[OPENPETE_STATE_HASH_LEN] = '\0';
-        OPL_ERROR_F("savestate", "%s: build_hash mismatch (slot=%s, binary=%s)",
+        memcpy(hh, hdr.ident,  OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
+        memcpy(wh, want_ident, OPENPETE_STATE_HASH_LEN); wh[OPENPETE_STATE_HASH_LEN] = '\0';
+        OPL_ERROR_F("savestate",
+                    "%s: identity mismatch (file=%s, this build=%s) — "
+                    "state was made against a different ROM / recomp module "
+                    "/ state ABI",
                     path, hh, wh);
         return -1;
     }
@@ -326,16 +435,22 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (hdr.cpu_bytes != CPU_REG_BYTES ||
         hdr.ram_bytes != OPENPETE_PSX_RAM_SIZE ||
         hdr.scratch_bytes != OPENPETE_PSX_SCRATCH_SIZE ||
-        hdr.vram_bytes != PsyX_VRAM_GetSize()) {
+        hdr.vram_bytes != PsyX_VRAM_GetSize() ||
+        hdr.spu_state_bytes != PsyX_SPUAL_StateSize() ||
+        hdr.spu_mem_bytes != PsyX_SPUAL_MemSize() ||
+        hdr.cd_state_bytes != (uint32_t)sizeof(state_cd_t)) {
         fclose(fp);
         OPL_ERROR_F("savestate",
                     "%s: section sizes mismatch (cpu=%u/%u ram=%u/%u "
-                    "scratch=%u/%u vram=%u/%u)",
+                    "scratch=%u/%u vram=%u/%u spu=%u/%u spumem=%u/%u cd=%u/%u)",
                     path,
                     hdr.cpu_bytes, CPU_REG_BYTES,
                     hdr.ram_bytes, OPENPETE_PSX_RAM_SIZE,
                     hdr.scratch_bytes, OPENPETE_PSX_SCRATCH_SIZE,
-                    hdr.vram_bytes, PsyX_VRAM_GetSize());
+                    hdr.vram_bytes, PsyX_VRAM_GetSize(),
+                    hdr.spu_state_bytes, PsyX_SPUAL_StateSize(),
+                    hdr.spu_mem_bytes, PsyX_SPUAL_MemSize(),
+                    hdr.cd_state_bytes, (uint32_t)sizeof(state_cd_t));
         return -1;
     }
 
@@ -347,12 +462,19 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     /* Read into temp buffers first so a short read doesn't leave any
      * region half-overwritten and the game fiber wedged. */
     uint8_t  cpu_buf[CPU_REG_BYTES];
-    uint8_t* ram_buf  = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
-    uint8_t* vram_buf = (uint8_t*)malloc(hdr.vram_bytes);
+    uint8_t* ram_buf    = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
+    uint8_t* vram_buf   = (uint8_t*)malloc(hdr.vram_bytes);
+    uint8_t* spu_buf    = (uint8_t*)malloc(hdr.spu_state_bytes);
+    uint8_t* spumem_buf = (uint8_t*)malloc(hdr.spu_mem_bytes);
+    uint8_t* extra_buf  = hdr.game_extra_bytes ? (uint8_t*)malloc(hdr.game_extra_bytes) : NULL;
+    char*    tag_buf    = (char*)malloc((size_t)hdr.modset_tag_bytes + 1);
     uint8_t  scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
+    state_cd_t cd;
 
-    if (!ram_buf || !vram_buf) {
-        free(ram_buf); free(vram_buf);
+    if (!ram_buf || !vram_buf || !spu_buf || !spumem_buf || !tag_buf ||
+        (hdr.game_extra_bytes && !extra_buf)) {
+        free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
+        free(extra_buf); free(tag_buf);
         fclose(fp);
         OPL_ERROR_F("savestate", "%s: out of memory", path);
         return -1;
@@ -363,12 +485,38 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (rc == 0) rc = read_section(fp, path, "ram",     ram_buf,     OPENPETE_PSX_RAM_SIZE);
     if (rc == 0) rc = read_section(fp, path, "scratch", scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
     if (rc == 0) rc = read_section(fp, path, "vram",    vram_buf,    hdr.vram_bytes);
+    if (rc == 0) rc = read_section(fp, path, "spu",     spu_buf,     hdr.spu_state_bytes);
+    if (rc == 0) rc = read_section(fp, path, "spumem",  spumem_buf,  hdr.spu_mem_bytes);
+    if (rc == 0) rc = read_section(fp, path, "cd",      &cd,         sizeof(cd));
+    if (rc == 0 && hdr.game_extra_bytes)
+        rc = read_section(fp, path, "game-extra", extra_buf, hdr.game_extra_bytes);
+    if (rc == 0 && hdr.modset_tag_bytes)
+        rc = read_section(fp, path, "modset-tag", tag_buf, hdr.modset_tag_bytes);
+    tag_buf[hdr.modset_tag_bytes] = '\0';
     if (rc == 0) (void)openpete_mods_state_read_section(fp); /* buffers only */
     fclose(fp);
 
     if (rc != 0) {
-        free(ram_buf); free(vram_buf);
+        free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
+        free(extra_buf); free(tag_buf);
         return -1;
+    }
+
+    /* Modset check: guest RAM carries mod-parked payloads and pointers
+     * into them, so loading under a DIFFERENT enabled-modset can corrupt
+     * silently (arena bump-cursor reuse). Warn loudly for now; the P2b
+     * per-mod ABI verdict ladder turns this into verified/refused/degraded. */
+    {
+        const char* now_tag = openpete_mods_modset_tag();
+        if (!now_tag) now_tag = "";
+        if (strcmp(now_tag, tag_buf) != 0) {
+            OPL_ERROR_F("savestate",
+                        "%s: MODSET MISMATCH — state saved under [%s], "
+                        "running [%s]. Mod-parked guest data may be "
+                        "inconsistent; proceed at your own risk (P2b will "
+                        "gate this properly).",
+                        path, tag_buf, now_tag);
+        }
     }
 
     /* Commit. Only the register file is overwritten on cpu — the
@@ -378,17 +526,30 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     memcpy(openpete_psx_get_ram(),     ram_buf,     OPENPETE_PSX_RAM_SIZE);
     memcpy(openpete_psx_get_scratch(), scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
     (void)PsyX_VRAM_Restore(vram_buf, hdr.vram_bytes);
-    free(ram_buf); free(vram_buf);
+    (void)PsyX_SPUAL_RestoreMem(spumem_buf, hdr.spu_mem_bytes);
+    (void)PsyX_SPUAL_RestoreState(spu_buf, hdr.spu_state_bytes);
+    g_cdCurrentSector = cd.cur_sector;
+    g_cdSectorSize    = cd.sector_size;
+    g_cdCurrentTrack  = cd.cur_track;
+    g_cdNumFrames     = cd.num_frames;
+    g_CD_com          = cd.cd_com;
+    g_cdReadDoneFlag  = cd.read_done;
+    free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf); free(tag_buf);
 
     /* Re-anchor the guest-visible VBL counter to the saved value (see the
-     * save-side comment). Older files carry zeros here → leave the counter
-     * running and let the guest's wait loops self-heal as before. */
-    if (hdr.reserved[1])
-        SDL_SetAtomicInt(&openpete_vbl, (int)hdr.reserved[0]);
+     * save-side comment): without this the first post-load wait loop sees
+     * a wild delta and the timeline leads by one VBL. */
+    SDL_SetAtomicInt(&openpete_vbl, (int)hdr.vbl);
 
     /* Per-game post-load resync — restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
     game_on_state_loaded(cpu);
+
+    /* Game-side extra host state (e.g. Spyro's WAD-overlay append cursor).
+     * The impl validates its own version/size and ignores foreign blobs. */
+    if (hdr.game_extra_bytes)
+        game_state_extra_load(extra_buf, hdr.game_extra_bytes);
+    free(extra_buf);
 
     /* Mod participation blobs — after commit so load_fns that peek at
      * guest state see the restored world. */

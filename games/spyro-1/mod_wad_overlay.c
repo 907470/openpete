@@ -56,6 +56,14 @@ static FILE*       s_bin = NULL;
 static int         s_raw = 0;       /* 1 = 2352-byte raw sectors */
 static uint32_t    s_next_sector = 0;
 
+/* Savestate participation (game_state_extra): the append cursor is host
+ * state the guest depends on — TOC entries written into restored guest RAM
+ * point at sectors this cursor allocated. Restoring RAM without the cursor
+ * would let the next mod-asset append reuse sectors the restored TOC still
+ * references. */
+uint32_t spyro1_mod_wad_cursor_get(void)        { return s_next_sector; }
+void     spyro1_mod_wad_cursor_set(uint32_t s)  { s_next_sector = s; }
+
 void spyro1_mod_wad_configure(const char* disc_path) {
     if (!disc_path || !disc_path[0]) return;
     if (s_state == 2 && strcmp(s_disc_path, disc_path) == 0) return;

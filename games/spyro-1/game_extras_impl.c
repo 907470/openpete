@@ -724,6 +724,31 @@ void game_on_state_loaded(CPUState* cpu) {
     spyro_set_active_overlay_by_magic(magic);
 }
 
+/* Game-side extra savestate payload (savestate plan P2a). v1: just the
+ * WAD-overlay append cursor (see mod_wad_overlay.c for why it must travel
+ * with the state). Bump the version byte when fields are added — core
+ * treats the blob as opaque, so layout discipline lives HERE. */
+extern uint32_t spyro1_mod_wad_cursor_get(void);
+extern void     spyro1_mod_wad_cursor_set(uint32_t s);
+
+uint32_t game_state_extra_size(void) { return 8u; }
+
+void game_state_extra_save(void* dst) {
+    uint8_t* p = (uint8_t*)dst;
+    uint32_t ver = 1u, cur = spyro1_mod_wad_cursor_get();
+    memcpy(p + 0, &ver, 4);
+    memcpy(p + 4, &cur, 4);
+}
+
+void game_state_extra_load(const void* src, uint32_t size) {
+    if (size < 8u) return;   /* older/foreign blob — leave live state alone */
+    const uint8_t* p = (const uint8_t*)src;
+    uint32_t ver, cur;
+    memcpy(&ver, p + 0, 4);
+    memcpy(&cur, p + 4, 4);
+    if (ver >= 1u) spyro1_mod_wad_cursor_set(cur);
+}
+
 /* g_Spyro: 0x80078A58, first field is m_Position (Vector3D x/y/z, 3×i32).
  * The fixed addr is fine because all Spyro 1 versions share the linker
  * map; if we ever support a second exe revision this'll need a per-rev
