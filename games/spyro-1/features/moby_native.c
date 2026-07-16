@@ -748,7 +748,7 @@ static int project_all_records_inner(CPUState* cpu) {
             s_recs[nrec].zsf4_raw = zsf4_raw;
             s_recs[nrec].heat = (uint8_t)moby_heat_scalar(cpu->read_word(s_recs[nrec].moby + 0x4Cu));
             fade_snap_put2(s_recs[nrec].moby, zsf4, zsf4_raw);
-            if (s_recs[nrec].moby == moby_trace_target())
+            if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
                         s_cur_mat ? s_cur_mat : "?");
