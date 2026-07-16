@@ -106,6 +106,11 @@ static int16_t s16(uint32_t v) { return (int16_t)(uint16_t)v; }
  * past the 4:3 edges — the warp over-covers). A 0xE1 draw-mode prim updates the
  * current ABR (semi-transparency) mode; quads split into two tris. */
 static void crossfade_capture(CPUState* cpu, uint32_t start, uint32_t end) {
+    /* Runahead lookahead: a speculative tick crossing a level-exit trigger
+     * would capture led OT tris into these host buffers; the rollback does
+     * not revert them. The committed re-run recaptures for real. */
+    extern int openpete_speculative;
+    if (openpete_speculative) return;
     s_cross_n = 0;
     int cur_abr = 0;                         /* ABR mode from the last 0xE1 prim */
     uint32_t p = cpu->read_word(start);      /* head link -> first prim tag */

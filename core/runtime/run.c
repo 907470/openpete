@@ -2114,9 +2114,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * state or it would pair backward. */
                 int ra_want = (runahead_n > 0 && ra_snap &&
                                game_is_gameplay_live(&g_game.cpu));
+                if (!ra_want) openpete_ra_input_edge = 0;
                 if (ra_want && openpete_present_pending &&
                     openpete_state_mem_save(ra_snap, &g_game.cpu,
                                             openpete_frame) == 0) {
+                    /* Input-edge detection: the led branch changes exactly
+                     * when the input we speculate with differs from last
+                     * tick's. Flag the tick so presentation consumers can
+                     * rebase their interp at the last SHOWN state instead
+                     * of snapping to the corrected branch (measured: R2
+                     * release at N=2 showed a -88u/present camera
+                     * reversal; N ticks of mispredicted pan un-shown). */
+                    {
+                        static uint16_t s_ra_pbits;
+                        static unsigned char s_ra_pax[4];
+                        static int s_ra_have = 0;
+                        uint16_t rb = PsyX_Pad_GetLastP1Bits();
+                        unsigned char rax[4];
+                        PsyX_Pad_GetLastP1Analog(rax);
+                        openpete_ra_input_edge =
+                            (s_ra_have && (rb != s_ra_pbits ||
+                             memcmp(rax, s_ra_pax, 4) != 0)) ? 1 : 0;
+                        s_ra_pbits = rb;
+                        memcpy(s_ra_pax, rax, 4);
+                        s_ra_have = 1;
+                    }
                     /* Host flags the guest's draw thunks mutate are part
                      * of the rolled-back state: a speculative DrawOTag
                      * leaking present_pending fired EXTRA canonical

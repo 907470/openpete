@@ -1227,6 +1227,10 @@ static int spyro_current_music_track(void) {
  * current track, else to the XA decoder. Exactly one of the two owns
  * playback; starting either stops the other. */
 static void start_music_stream(int sector) {
+    /* Runahead lookahead: starting host audio (WAV override or XA) from a
+     * speculative tick would be audible and then re-fired by the committed
+     * re-run. Guest-side effects of the read roll back regardless. */
+    if (openpete_speculative) return;
     if (music_override_try_start(spyro_current_music_track(), sector)) {
         if (PsyX_XA_IsActive()) PsyX_XA_Stop();
         return;
@@ -1253,8 +1257,10 @@ static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
         g_CD_com = com;
         return 1;
     } else if (com == CdlPause || com == CdlStop) {
-        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-        music_override_stop();
+        if (!openpete_speculative) {           /* see start_music_stream */
+            if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+            music_override_stop();
+        }
     }
     return CdControl(com, param, result);
 }
@@ -1322,8 +1328,10 @@ void psyq_CdControlB(CPUState* cpu) {
         case CdlPause:
         case CdlStop:
         case CdlReadN:
-            if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-            music_override_stop();
+            if (!openpete_speculative) {       /* see start_music_stream */
+                if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+                music_override_stop();
+            }
             break;
         default: break;
     }

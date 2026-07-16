@@ -59,6 +59,14 @@ extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed b
  * host-thread thunk code reads it. */
 extern int openpete_speculative;
 
+/* 1 for the duration of a runahead tick whose speculation input DIFFERS
+ * from the previous tick's — the led pair crosses prediction branches, so
+ * presentation-side consumers may REBASE their interpolation at the last
+ * SHOWN state instead of the stale mispredicted prev (converts the
+ * correction snap into a one-tick glide). Written by the runahead driver;
+ * read by the sub-tick feeders. Always 0 with runahead off. */
+extern int openpete_ra_input_edge;
+
 /* Fast-boot gate. While set, psyq_VSync(0) bumps `openpete_vbl` without
  * yielding to the host fiber, so the game's Initialize() busy-waits run as
  * fast as the CPU allows (nothing is rendered during them anyway — the

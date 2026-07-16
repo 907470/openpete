@@ -264,6 +264,25 @@ int openpete_mods_sfx_on_key(uint32_t spu_addr, uint16_t stock_pitch,
     for (int i = 0; i < s_repl_count; i++)
         if (strcmp(s_repl[i].name, name) == 0) { r = &s_repl[i]; break; }
 
+    /* Runahead lookahead: the guest-side outcome of this key-on rolls back,
+     * but host effects would not — per-sound stats would inflate x(1+N),
+     * and mod hooks may host-play audio (mod_sound OpenAL sources are NOT
+     * covered by the driver's SPU mute). Return the pure-replacement
+     * verdict with NO stats, NO hooks, NO staging; the committed re-run
+     * does the real work one tick later. */
+    {
+        extern int openpete_speculative;
+        if (openpete_speculative) {
+            if (r && r->staged_addr) {
+                *out_addr = r->staged_addr;
+                *out_pitch = r->pitch ? r->pitch : stock_pitch;
+                *out_suppress = 0;
+                return 1;
+            }
+            return 0;
+        }
+    }
+
     openpete_sfx_event_t ev;
     memset(&ev, 0, sizeof ev);
     ev.name = name;

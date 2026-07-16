@@ -264,7 +264,14 @@ static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
  * bracket applies all pass (spyro_native_reextract.c pool loop) — a slot whose
  * position SNAPPED (spawn / reuse / teleport) must not lerp its other channels,
  * or spin/size would sweep across two different particles. */
-typedef struct { uint32_t A, B, C; double alpha; } part_prev_t;
+typedef struct { uint32_t A, B, C;      /* table-PREV words */
+                 uint32_t cA, cB, cC;   /* table-CURR words — the forward
+                                          * endpoint. NEVER live RAM: under
+                                          * runahead live = committed tick ≈
+                                          * table-prev, degenerating every
+                                          * channel lerp back to 30 Hz (the
+                                          * original sparkle complaint). */
+                 double alpha; } part_prev_t;
 static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if (!s_phase_now) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(pp);
@@ -275,10 +282,11 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) return 0;    /* m_Class/sel changed → reuse */
     uint8_t plife = (uint8_t)(ph >> 16), clife = (uint8_t)(ch >> 16);
     if (clife < plife) return 0;                       /* life reset → reuse */
-    uint32_t pA, pB, pC, cA, cB;
+    uint32_t pA, pB, pC, cA, cB, cC;
     memcpy(&pA, o->prev + 0x04, 4); memcpy(&pB, o->prev + 0x08, 4);
     memcpy(&pC, o->prev + 0x0C, 4);
     memcpy(&cA, o->curr + 0x04, 4); memcpy(&cB, o->curr + 0x08, 4);
+    memcpy(&cC, o->curr + 0x0C, 4);
     double dX = (double)(int16_t)(cA & 0xFFFF) - (double)(int16_t)(pA & 0xFFFF);
     double dY = (double)(int16_t)(cA >> 16)    - (double)(int16_t)(pA >> 16);
     double dZ = (double)(int16_t)(cB & 0xFFFF) - (double)(int16_t)(pB & 0xFFFF);
@@ -290,7 +298,9 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if (per <= 0) return 0;
     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
     if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
-    out->A = pA; out->B = pB; out->C = pC; out->alpha = a;
+    out->A = pA; out->B = pB; out->C = pC;
+    out->cA = cA; out->cB = cB; out->cC = cC;
+    out->alpha = a;
     return 1;
 }
 
@@ -509,8 +519,8 @@ static void particle_build(CPUState* cpu) {
             double szf = (double)sizeB, alf = (double)alphaB;
             part_prev_t pv;                              /* sub-tick half-extent sweep */
             if (part_phase_prev(pp, &pv)) {
-                szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
-                alf = lerp_b((int)((pv.B >> 24) & 0xFF), alphaB, pv.alpha);
+                szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+                alf = lerp_b((int)((pv.B >> 24) & 0xFF), (int)((pv.cB >> 24) & 0xFF), pv.alpha);
                 if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
                     fprintf(stderr, "[part-phase f=%u] slot=%d sel=3 lerp sz=%.2f al=%.2f (raw %d/%d)\n",
                             openpete_frame, i, szf, alf, sizeB, alphaB); }
@@ -537,8 +547,8 @@ static void particle_build(CPUState* cpu) {
                 /* angle channel = B byte3 (angIdx == (byte3+32 entries) — the
                  * bit-23 term is cleared by the &0x1FE); wrap-lerp it, then
                  * float sin/cos. Identical to the integer path at alpha=1. */
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha) + 32.0;
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
                 double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
                 a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
                 if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
@@ -571,8 +581,8 @@ static void particle_build(CPUState* cpu) {
             if (part_phase_prev(pp, &pv)) {
                 /* angle channel = B byte3 (angIdx == byte3 entries — bit 23 is
                  * cleared by the &0x1FE); wrap-lerp + float sin/cos. */
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha);
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha);
                 double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
                 eS = szf * sf / 4096.0; eC = szf * cf / 4096.0;
                 if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
@@ -630,9 +640,9 @@ static void particle_build(CPUState* cpu) {
             part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
                                           * position bracket; EP1 was stepping) */
             if (part_phase_prev(pp, &pv)) {
-                X1 = (double)(pv.B >> 16)    + ((double)(B >> 16)    - (double)(pv.B >> 16))    * pv.alpha;
-                Y1 = (double)(pv.C & 0xFFFF) + ((double)(C & 0xFFFF) - (double)(pv.C & 0xFFFF)) * pv.alpha;
-                Z1 = (double)(pv.C >> 16)    + ((double)(C >> 16)    - (double)(pv.C >> 16))    * pv.alpha;
+                X1 = (double)(pv.B >> 16)    + ((double)(pv.cB >> 16)    - (double)(pv.B >> 16))    * pv.alpha;
+                Y1 = (double)(pv.C & 0xFFFF) + ((double)(pv.cC & 0xFFFF) - (double)(pv.C & 0xFFFF)) * pv.alpha;
+                Z1 = (double)(pv.C >> 16)    + ((double)(pv.cC >> 16)    - (double)(pv.C >> 16))    * pv.alpha;
             }
             projres e0, e1;
             proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
@@ -662,9 +672,9 @@ static void particle_build(CPUState* cpu) {
             part_prev_t pv;              /* sub-tick FAR-endpoint sweep (EP0 rides the
                                           * position bracket; EP1 was stepping) */
             if (part_phase_prev(pp, &pv)) {
-                X1f = (double)(int16_t)(pv.B >> 16)    + ((double)X1 - (double)(int16_t)(pv.B >> 16))    * pv.alpha;
-                Y1f = (double)(int16_t)(pv.C & 0xFFFF) + ((double)Y1 - (double)(int16_t)(pv.C & 0xFFFF)) * pv.alpha;
-                Z1f = (double)(int16_t)(pv.C >> 16)    + ((double)Z1 - (double)(int16_t)(pv.C >> 16))    * pv.alpha;
+                X1f = (double)(int16_t)(pv.B >> 16)    + ((double)(int16_t)(pv.cB >> 16)    - (double)(int16_t)(pv.B >> 16))    * pv.alpha;
+                Y1f = (double)(int16_t)(pv.C & 0xFFFF) + ((double)(int16_t)(pv.cC & 0xFFFF) - (double)(int16_t)(pv.C & 0xFFFF)) * pv.alpha;
+                Z1f = (double)(int16_t)(pv.C >> 16)    + ((double)(int16_t)(pv.cC >> 16)    - (double)(int16_t)(pv.C >> 16))    * pv.alpha;
             }
             projres e0, e1;
             proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
@@ -702,8 +712,8 @@ static void particle_build(CPUState* cpu) {
             double a2, a3;                               /* corner extents (sub-pixel) */
             part_prev_t pv;                              /* sub-tick spin/size sweep */
             if (part_phase_prev(pp, &pv)) {
-                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), sizeB, pv.alpha);
-                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(B >> 24), pv.alpha) + 32.0;
+                double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
+                double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
                 double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
                 a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
             } else {
@@ -1013,22 +1023,35 @@ static void glow_build(CPUState* cpu) {
                 memcpy(&pmpp,  o->prev + 0x08, 4);
                 op_time_t per = o->curr_ns - o->prev_ns;
                 if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
-                if ((int32_t)pcnt == count && ptmpl == tmpl && pmpp == mpp && per > 0) {
+                uint32_t ccnt2, ctmpl2, cmpp2;
+                memcpy(&ccnt2,  o->curr + 0x00, 4);
+                memcpy(&ctmpl2, o->curr + 0x04, 4);
+                memcpy(&cmpp2,  o->curr + 0x08, 4);
+                /* Guards + forward endpoints from the TABLE pair (see the
+                 * sparkle note): prev→table-curr, never prev→live. */
+                if (pcnt == ccnt2 && (int32_t)ccnt2 > 0 && ptmpl == ctmpl2 &&
+                    pmpp == cmpp2 && per > 0) {
                     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
                     if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
                     uint32_t pcol, psz, po14, po18, po1c;
+                    uint32_t ccol, csz, co14, co18, co1c;
                     memcpy(&pcol, o->prev + 0x0C, 4);
                     memcpy(&psz,  o->prev + 0x10, 4);
                     memcpy(&po14, o->prev + 0x14, 4);
                     memcpy(&po18, o->prev + 0x18, 4);
                     memcpy(&po1c, o->prev + 0x1C, 4);
-                    sizef = (double)(int32_t)psz  + ((double)size - (double)(int32_t)psz)  * a;
-                    offxf = (double)(int32_t)po14 + ((double)offx - (double)(int32_t)po14) * a;
-                    offyf = (double)(int32_t)po18 + ((double)offy - (double)(int32_t)po18) * a;
-                    offzf = (double)(int32_t)po1c + ((double)offz - (double)(int32_t)po1c) * a;
-                    double cr = lerp_b((int)(pcol & 0xFF),         (int)(color & 0xFF),         a);
-                    double cg = lerp_b((int)((pcol >> 8) & 0xFF),  (int)((color >> 8) & 0xFF),  a);
-                    double cb = lerp_b((int)((pcol >> 16) & 0xFF), (int)((color >> 16) & 0xFF), a);
+                    memcpy(&ccol, o->curr + 0x0C, 4);
+                    memcpy(&csz,  o->curr + 0x10, 4);
+                    memcpy(&co14, o->curr + 0x14, 4);
+                    memcpy(&co18, o->curr + 0x18, 4);
+                    memcpy(&co1c, o->curr + 0x1C, 4);
+                    sizef = (double)(int32_t)psz  + ((double)(int32_t)csz  - (double)(int32_t)psz)  * a;
+                    offxf = (double)(int32_t)po14 + ((double)(int32_t)co14 - (double)(int32_t)po14) * a;
+                    offyf = (double)(int32_t)po18 + ((double)(int32_t)co18 - (double)(int32_t)po18) * a;
+                    offzf = (double)(int32_t)po1c + ((double)(int32_t)co1c - (double)(int32_t)po1c) * a;
+                    double cr = lerp_b((int)(pcol & 0xFF),         (int)(ccol & 0xFF),         a);
+                    double cg = lerp_b((int)((pcol >> 8) & 0xFF),  (int)((ccol >> 8) & 0xFF),  a);
+                    double cb = lerp_b((int)((pcol >> 16) & 0xFF), (int)((ccol >> 16) & 0xFF), a);
                     colorL = (uint32_t)(cr + 0.5) | ((uint32_t)(cg + 0.5) << 8)
                            | ((uint32_t)(cb + 0.5) << 16);
                     if (glow_anim_dbg() && !gdbg_done) { gdbg_done = 1;
@@ -1272,21 +1295,32 @@ static void sparkle_build(CPUState* cpu) {
         if (s_phase_now) {
             const openpete_interp_obj_t* o = openpete_interp_objs_find(sp);
             if (o && o->have_prev) {
-                uint32_t pw3, pp0, pp1, pp2;
+                /* Endpoints + identity guards from the TABLE pair (prev AND
+                 * curr) — live RAM is the committed tick under runahead
+                 * (≈ table-prev): lerping prev→live degenerated the twinkle
+                 * back to 30 Hz, and prev-vs-LIVE-pos identity would
+                 * false-snap at N>=2. */
+                uint32_t pw3, pp0, pp1, pp2, cw3, cp0, cp1, cp2;
                 memcpy(&pw3, o->prev + 0x0C, 4);
                 memcpy(&pp0, o->prev + 0x00, 4);
                 memcpy(&pp1, o->prev + 0x04, 4);
                 memcpy(&pp2, o->prev + 0x08, 4);
+                memcpy(&cw3, o->curr + 0x0C, 4);
+                memcpy(&cp0, o->curr + 0x00, 4);
+                memcpy(&cp1, o->curr + 0x04, 4);
+                memcpy(&cp2, o->curr + 0x08, 4);
                 int pLife = (int)(pw3 & 0xFF), pSpeed = (int)((pw3 >> 8) & 0xFF);
                 int pAng  = (int)((pw3 >> 16) & 0xFF);
+                int cLife = (int)(cw3 & 0xFF), cSpeed = (int)((cw3 >> 8) & 0xFF);
+                int cAng  = (int)((cw3 >> 16) & 0xFF);
                 op_time_t per = o->curr_ns - o->prev_ns;
                 if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
-                if (pLife >= newLife && pSpeed == speed && per > 0 &&
-                    pp0 == (uint32_t)px && pp1 == (uint32_t)py && pp2 == (uint32_t)pz) {
+                if (pLife >= cLife && cLife > 0 && pSpeed == cSpeed && per > 0 &&
+                    pp0 == cp0 && pp1 == cp1 && pp2 == cp2) {
                     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
                     if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
-                    lifef = (double)pLife + ((double)newLife - (double)pLife) * a;
-                    angf = lerp_wrap_b(pAng, angIdx, a);
+                    lifef = (double)pLife + ((double)cLife - (double)pLife) * a;
+                    angf = lerp_wrap_b(pAng, cAng, a);
                     phase_interp = 1;
                 }
             }

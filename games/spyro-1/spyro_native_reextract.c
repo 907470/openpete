@@ -16,6 +16,21 @@
 #include <string.h>
 
 extern int openpete_speculative;   /* openpete_fiber.h — runahead lookahead */
+extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
+
+/* Runahead correction rebase (default ON; OPENPETE_RA_REBASE=0 disables):
+ * on an input-edge tick the led pair jumps prediction branches — lerping
+ * table-prev (old branch) → table-curr (new branch) yanks the camera
+ * backward (measured: -36u/-88u per present at N=1/2 on an R2 release).
+ * Rebasing prev at the LAST SHOWN bytes glides from where the eye already
+ * is to the corrected branch over one tick; backward motion never reaches
+ * the screen. */
+static int ra_rebase_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_RA_REBASE"); v = !(e && *e == '0'); }
+    return v;
+}
+/* shown-state buffers live below the region defines (CAM_BYTES) */
 #include "spyro1_symbols.gen.h"
 
 extern unsigned openpete_frame;
@@ -27,6 +42,12 @@ extern unsigned openpete_frame;
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
 #define SPYRO_REGION  1u            /* index in s_spyro_interp_regions (after g_Camera) */
 #define SPYRO_SAVE    0x28u         /* g_Spyro bytes bracketed: pos(0x00) + per-seg anim(..0x26) */
+
+/* Runahead rebase shown-state stores (see ra_rebase_on above). */
+static uint8_t  s_shown_cam[CAM_BYTES];
+static int      s_shown_cam_ok = 0;
+static uint8_t  s_shown_sp[12];          /* Spyro m_Position as last shown */
+static int      s_shown_sp_ok = 0;
 #define FLAME_REGION  2u            /* index in s_spyro_interp_regions (after g_Spyro) */
 #define FLAME_SAVE    0xD0u         /* flame bytes bracketed (covers pos + attach @ 0xB8..0xCC) */
 #define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
@@ -1032,6 +1053,12 @@ static void spyro_native_reextract(void* cpu_v) {
          * via the objs table, only the DIRECT regions snapped back). */
         const uint8_t* pcam = prev->data + prev->region_offsets[0];
         const uint8_t* ccam = curr->data + curr->region_offsets[0];
+        int ra_rebased = 0;
+        if (openpete_ra_input_edge && ra_rebase_on() && s_shown_cam_ok) {
+            pcam = s_shown_cam;      /* glide from the shown state (see above) */
+            use_herm = 0;            /* linear only — no tangent across branches */
+            ra_rebased = 1;
+        }
         memcpy(cam_saved, cam, CAM_BYTES);        /* live (bracket restore) */
         if (use_herm) {
             herm_matrix(cam, pcam2, pcam, ccam, CAM_OFF_PROJ, alpha);
@@ -1052,6 +1079,9 @@ static void spyro_native_reextract(void* cpu_v) {
                      (const int32_t*)(ccam + CAM_OFF_POS), alpha);
         }
         cam_bracketed = 1;
+        memcpy(s_shown_cam, cam, CAM_BYTES);      /* what the eye sees now */
+        s_shown_cam_ok = 1;
+        (void)ra_rebased;
 
         /* Per-present trace (OPENPETE_LAG_TRACE): the interpolated camera pos
          * presented THIS frame. Across the present sequence it must progress
@@ -1072,6 +1102,14 @@ static void spyro_native_reextract(void* cpu_v) {
         if (sp) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
             const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION];
+            static uint8_t s_psp_rb[SPYRO_SAVE];
+            if (openpete_ra_input_edge && ra_rebase_on() && s_shown_sp_ok) {
+                /* Rebase POSITION only (the shown pos is mid-lerp, valid);
+                 * anim clocks/rot keep the table pair. */
+                memcpy(s_psp_rb, psp, SPYRO_SAVE);
+                memcpy(s_psp_rb, s_shown_sp, 12);
+                psp = s_psp_rb;
+            }
             memcpy(sp_saved, sp, SPYRO_SAVE);          /* live (bracket restore) */
             /* pred1 for Spyro's m_Position, gated on the camera's prev2 continuity
              * PLUS a Spyro-specific position-step check (Spyro can warp while the
@@ -1127,6 +1165,8 @@ static void spyro_native_reextract(void* cpu_v) {
                 sp_rot_active[s] = 1;
             }
             sp_bracketed = 1;
+            memcpy(s_shown_sp, sp, 12);            /* shown m_Position */
+            s_shown_sp_ok = 1;
         }
 
         /* (c) Flame breath pose (singleton, region FLAME_REGION). The ribbon is
