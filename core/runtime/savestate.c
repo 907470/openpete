@@ -70,6 +70,9 @@
 
 /* PsyX SPU state-export (PsyX_SPUAL.h is a PsyCross-internal header; the
  * thunks extern these the same way). */
+extern int  PsyX_CD_QueueStateSize(void);
+extern void PsyX_CD_QueueSnapshot(void* dst);
+extern void PsyX_CD_QueueRestore(const void* src);
 extern unsigned int PsyX_SPUAL_StateSize(void);
 extern int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
@@ -631,16 +634,43 @@ struct openpete_state_mem {
     uint8_t*   spu;        /* PsyX_SPUAL_StateSize() */
     uint32_t   spu_bytes;
     state_cd_t cd;
+    /* CD transport (command queue + drain-mode flags) and the game's
+     * extra host-state blob. A speculative/rewound tick can run
+     * load-transition code — CD commands enqueued, the WAD cursor moved,
+     * the overlay dispatcher flipped — and restoring guest RAM without
+     * these leaves the host machinery on the abandoned timeline: phantom
+     * queued commands detonate the next CdSync drain, and a flipped
+     * dispatcher routes overlay calls into the wrong level's functions.
+     * cdq holds host pointers → in-memory snapshots only, never disk. */
+    uint8_t*   cdq;        /* PsyX_CD_QueueStateSize() */
+    uint32_t   cdq_bytes;
+    uint8_t*   gx;         /* game_state_extra_size() (may be 0) */
+    uint32_t   gx_bytes;
+    /* VRAM: a speculative tick that crosses into a transition uploads
+     * fade/loading graphics (LoadImage) into VRAM, and the committed
+     * entry then reads VRAM back into gameplay RAM (the framebuffer-
+     * capture StoreImage the crossfade uses) — so VRAM is gameplay-
+     * READABLE state at transitions and must roll back with guest RAM.
+     * Restored via the row-delta path: a tick whose speculation never
+     * touched VRAM costs one compare, no GPU traffic. */
+    uint8_t*   vram;       /* PsyX_VRAM_GetSize() */
+    uint32_t   vram_bytes;
 };
 
 openpete_state_mem_t* openpete_state_mem_new(void) {
     openpete_state_mem_t* m =
         (openpete_state_mem_t*)calloc(1, sizeof(*m));
     if (!m) return NULL;
-    m->spu_bytes = PsyX_SPUAL_StateSize();
-    m->ram = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
-    m->spu = (uint8_t*)malloc(m->spu_bytes);
-    if (!m->ram || !m->spu) {
+    m->spu_bytes  = PsyX_SPUAL_StateSize();
+    m->cdq_bytes  = (uint32_t)PsyX_CD_QueueStateSize();
+    m->gx_bytes   = game_state_extra_size();
+    m->vram_bytes = PsyX_VRAM_GetSize();
+    m->ram  = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
+    m->spu  = (uint8_t*)malloc(m->spu_bytes);
+    m->cdq  = (uint8_t*)malloc(m->cdq_bytes);
+    m->gx   = m->gx_bytes ? (uint8_t*)malloc(m->gx_bytes) : NULL;
+    m->vram = (uint8_t*)malloc(m->vram_bytes);
+    if (!m->ram || !m->spu || !m->cdq || (m->gx_bytes && !m->gx) || !m->vram) {
         openpete_state_mem_free(m);
         return NULL;
     }
@@ -651,6 +681,9 @@ void openpete_state_mem_free(openpete_state_mem_t* m) {
     if (!m) return;
     free(m->ram);
     free(m->spu);
+    free(m->cdq);
+    free(m->gx);
+    free(m->vram);
     free(m);
 }
 
@@ -671,6 +704,9 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     m->cd.read_done    = g_cdReadDoneFlag;
     m->cd.xa_start_lba = g_cdXaStartLBA;
     m->cd.xa_start_vbl = g_cdXaStartVBL;
+    PsyX_CD_QueueSnapshot(m->cdq);
+    if (m->gx_bytes) game_state_extra_save(m->gx);
+    if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
     m->valid = 1;
     return 0;
 }
@@ -691,6 +727,14 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     g_cdReadDoneFlag  = m->cd.read_done;
     g_cdXaStartLBA    = m->cd.xa_start_lba;
     g_cdXaStartVBL    = m->cd.xa_start_vbl;
+    PsyX_CD_QueueRestore(m->cdq);
+    /* Runs on the QUIET path too (runahead's per-tick rollback): a
+     * speculative tick that crossed into a load moved the WAD cursor or
+     * flipped the overlay dispatcher — host state the committed timeline
+     * must never inherit from an abandoned branch. Cheap and change-only
+     * (the dispatcher setter no-ops when the id already matches). */
+    if (m->gx_bytes) game_state_extra_load(m->gx, m->gx_bytes);
+    (void)PsyX_VRAM_RestoreDelta(m->vram, m->vram_bytes);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     if (!quiet) {
         game_on_state_loaded(cpu);

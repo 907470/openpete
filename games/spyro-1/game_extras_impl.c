@@ -92,6 +92,7 @@ static struct {
     void (*orig_b)(uint32_t, uint8_t);
     CPUState* cpu;
     uint32_t lo, hi;
+    int frame_min;
     int frame_max;
     int active;
 } g_watch = {0};
@@ -99,13 +100,17 @@ static struct {
 static int watch_should_log(uint32_t addr) {
     if (!g_watch.active) return 0;
     if (addr < g_watch.lo || addr >= g_watch.hi) return 0;
+    if (g_watch.frame_min > 0
+        && (int)openpete_frame < g_watch.frame_min) return 0;
     if (g_watch.frame_max > 0
         && (int)openpete_frame > g_watch.frame_max) return 0;
     return 1;
 }
 static void watch_log(uint32_t addr, uint32_t val, int size) {
+    extern int openpete_speculative;
     fprintf(stderr,
-            "WATCH frame=%u pc=0x%08x ra=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
+            "WATCH%s frame=%u pc=0x%08x ra=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
+            openpete_speculative ? "-SPEC" : "",
             openpete_frame, g_watch.cpu->pc, g_watch.cpu->ra,
             addr, size, size * 2, val);
 }
@@ -134,6 +139,8 @@ static void install_watch_from_env(CPUState* cpu) {
     g_watch.hi        = (uint32_t)strtoul(hi_s, NULL, 0);
     const char* fm_s  = getenv("OPENPETE_WATCH_FRAME_MAX");
     g_watch.frame_max = fm_s ? atoi(fm_s) : 0;
+    const char* fn_s  = getenv("OPENPETE_WATCH_FRAME_MIN");
+    g_watch.frame_min = fn_s ? atoi(fn_s) : 0;
     g_watch.orig_w    = cpu->write_word;
     g_watch.orig_h    = cpu->write_half;
     g_watch.orig_b    = cpu->write_byte;
@@ -733,20 +740,42 @@ int game_is_gameplay_live(CPUState* cpu) {
     return cpu->read_word(0x8007596Cu) != 0u;        /* g_LevelId */
 }
 
-/* Game-side extra savestate payload (savestate plan P2a). v1: just the
- * WAD-overlay append cursor (see mod_wad_overlay.c for why it must travel
- * with the state). Bump the version byte when fields are added — core
- * treats the blob as opaque, so layout discipline lives HERE. */
+/* Game-side extra savestate payload. Host-side state that mirrors or
+ * gates guest execution and must travel with every snapshot — including
+ * the per-tick runahead/rewind mem snapshots, whose speculative ticks can
+ * run load/transition code (CdlSetloc moves the WAD cursor, an overlay
+ * CdRead flips the dispatcher) that the rollback must undo. Bump the
+ * version word when fields are added — core treats the blob as opaque,
+ * so layout discipline lives HERE.
+ *   v1: WAD-overlay disc cursor (mod_wad_overlay.c).
+ *   v2: + active-overlay magic — restoring by saved id instead of the RAM
+ *       marker word survives cutscene-style loads that clobber the marker.
+ *   v3: + guest-mutated thunk latches (CD-ready / VSync callback vaddrs,
+ *       XA arm + filter): CdlSetmode flips the XA route and load code
+ *       re-registers callbacks, so a rolled-back tick that ran transition
+ *       code otherwise leaves them on the abandoned branch. */
 extern uint32_t spyro1_mod_wad_cursor_get(void);
 extern void     spyro1_mod_wad_cursor_set(uint32_t s);
+extern uint32_t spyro_get_active_overlay_magic(void);
+extern void     spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
+                                        uint32_t* xa_word);
+extern void     spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
+                                        uint32_t xa_word);
 
-uint32_t game_state_extra_size(void) { return 8u; }
+uint32_t game_state_extra_size(void) { return 24u; }
 
 void game_state_extra_save(void* dst) {
     uint8_t* p = (uint8_t*)dst;
-    uint32_t ver = 1u, cur = spyro1_mod_wad_cursor_get();
-    memcpy(p + 0, &ver, 4);
-    memcpy(p + 4, &cur, 4);
+    uint32_t ver = 3u, cur = spyro1_mod_wad_cursor_get();
+    uint32_t ovl = spyro_get_active_overlay_magic();
+    uint32_t cd_cb, vs_cb, xa;
+    spyro1_thunk_state_save(&cd_cb, &vs_cb, &xa);
+    memcpy(p +  0, &ver, 4);
+    memcpy(p +  4, &cur, 4);
+    memcpy(p +  8, &ovl, 4);
+    memcpy(p + 12, &cd_cb, 4);
+    memcpy(p + 16, &vs_cb, 4);
+    memcpy(p + 20, &xa, 4);
 }
 
 void game_state_extra_load(const void* src, uint32_t size) {
@@ -756,6 +785,18 @@ void game_state_extra_load(const void* src, uint32_t size) {
     memcpy(&ver, p + 0, 4);
     memcpy(&cur, p + 4, 4);
     if (ver >= 1u) spyro1_mod_wad_cursor_set(cur);
+    if (ver >= 2u && size >= 12u) {
+        uint32_t ovl;
+        memcpy(&ovl, p + 8, 4);
+        if (ovl) spyro_set_active_overlay_by_magic(ovl);
+    }
+    if (ver >= 3u && size >= 24u) {
+        uint32_t cd_cb, vs_cb, xa;
+        memcpy(&cd_cb, p + 12, 4);
+        memcpy(&vs_cb, p + 16, 4);
+        memcpy(&xa,    p + 20, 4);
+        spyro1_thunk_state_load(cd_cb, vs_cb, xa);
+    }
 }
 
 /* g_Spyro: 0x80078A58, first field is m_Position (Vector3D x/y/z, 3×i32).

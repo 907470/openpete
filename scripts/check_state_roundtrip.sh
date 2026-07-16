@@ -115,6 +115,36 @@ else
     echo "  predict-check: ${pc:-no summary emitted} FAIL"; fail=1
 fi
 
+# Runahead × transitions. Speculation that crosses out of gameplay-live
+# is ADOPTED, not rolled back: the fiber parks at a transition-code yield
+# whose host stack differs structurally from the gameplay yield the
+# snapshot was taken at (the fiber stack is not snapshottable), and
+# restoring under that continuation collapses the game's VSync pacing —
+# the failure mode was a full tick's work every VBL and a level load that
+# never completes. Gate both directions:
+#   - portal entry (walk-in, speculation crosses mid-tick → adoption):
+#     the level MUST still load under --runahead 2;
+#   - level exit (crossing lands between ticks, no adoption): committed
+#     timeline MUST stay byte-identical to clean.
+echo "== runahead-transitions (town-square portal, exit-level)"
+timeout 600 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+    --bk2 games/spyro-1/bk2/town-square-portal-entry.bk2 --frame-limit 12000 \
+    --unlock-frames 0-12000 --runahead 2 \
+    --gameplay-hash-log "$OUT/tsq-ra.csv" >"$OUT/tsq-ra.log" 2>&1 \
+    || { echo "  portal runahead run FAILED"; fail=1; }
+if grep -q "level_10 -> level_13" "$OUT/tsq-ra.log"; then
+    echo "  portal entry under runahead(2): level loaded PASS"
+else
+    echo "  portal entry under runahead(2): LEVEL NEVER LOADED FAIL"; fail=1
+fi
+run games/spyro-1/bk2/exit-level.bk2 "$OUT/xl-ra.csv" --runahead 2 \
+    || { echo "  exit runahead run FAILED"; fail=1; }
+if cmp -s "$OUT/exit-level-clean.csv" "$OUT/xl-ra.csv"; then
+    echo "  exit-level under runahead(2): byte-identical PASS"
+else
+    echo "  exit-level under runahead(2): DIVERGED FAIL"; fail=1
+fi
+
 # P4 driver gate: hold rewind for 40 iterations mid-gameplay via
 # --rewind-hold; the scrub must be a single backward jump and the
 # post-release timeline must match the clean run bit-for-bit (movie

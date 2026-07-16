@@ -46,6 +46,14 @@ void spyro_set_active_overlay_by_magic(uint32_t magic) {
     s_active = e;
 }
 
+/* The active overlay's magic id (0 = none). The savestate extra payload
+ * carries this so a restore re-points the dispatcher directly instead of
+ * re-deriving it from the RAM marker word — which a cutscene-style load
+ * to the shared vaddr can legitimately clobber. */
+uint32_t spyro_get_active_overlay_magic(void) {
+    return s_active ? s_active->magic : 0u;
+}
+
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
     if (psx_dispatch_main_exe(cpu, addr)) return 1;
     if (s_active) return s_active->fn(cpu, addr);

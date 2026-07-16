@@ -312,16 +312,16 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     double d2 = dX*dX + dY*dY + dZ*dZ;
     /* Teleport/reuse ceiling, particle-physics scale (was 1250 == 5000
      * full-world, with a tighter 300 only for the stalled-life class):
-     * under LIVE runahead the pair spans two prediction BRANCHES, whose
-     * pool churn differs — slot reuse across branches can pass the class
-     * + life-increase tests (no same-timeline ordering to reset the life
-     * byte), and anything under the old ceiling lerped as a screen-
-     * crossing streak (user report 2026-07-16, analog play; not
-     * reproducible under bk2, where speculation reads the true future
-     * inputs and branches never diverge). 300 world/4 per tick == 1200
-     * full-world == ~20x Spyro's run speed: a REAL particle faster than
-     * that crosses the screen in a couple of ticks, so snapping it loses
-     * nothing visible — beyond this, lerping only ever paints streaks. */
+     * under runahead the pair can span two prediction BRANCHES (the led
+     * timeline re-forks whenever the held input differs from what the
+     * committed tick latches), and pool churn differs between branches —
+     * slot reuse across branches passes the class + life-increase tests
+     * (no same-timeline ordering to reset the life byte), and anything
+     * under the old ceiling lerped as a screen-crossing streak. 300
+     * world/4 per tick == 1200 full-world == ~20x Spyro's run speed: a
+     * REAL particle faster than that crosses the screen in a couple of
+     * ticks, so snapping it loses nothing visible — beyond this, lerping
+     * only ever paints streaks. */
     if (d2 > 300.0*300.0) return 0;
     op_time_t per = o->curr_ns - o->prev_ns;
     if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
@@ -675,11 +675,9 @@ static void particle_build(CPUState* cpu) {
                  * position (A word), so a cross-branch pair with a stable
                  * base but divergent far endpoint still lerped — and this
                  * class decodes UNSIGNED, so a pair straddling any wrap
-                 * sweeps the LONG way across the coordinate space, painting
-                 * a line to a consistent screen side (user report
-                 * 2026-07-16: Sparx glints streaking left, live analog
-                 * play). Over the ceiling: snap to table-CURR (never live —
-                 * rule 2). */
+                 * sweeps the LONG way across the coordinate space,
+                 * painting a line to a consistent screen side. Over the
+                 * ceiling: snap to table-CURR, never live RAM. */
                 double pX1 = (double)(pv.B >> 16),    cX1f = (double)(pv.cB >> 16);
                 double pY1 = (double)(pv.C & 0xFFFF), cY1f = (double)(pv.cC & 0xFFFF);
                 double pZ1 = (double)(pv.C >> 16),    cZ1f = (double)(pv.cC >> 16);

@@ -107,6 +107,18 @@ extern "C" int g_cdXaStartVBL;
 static bool s_xa_armed       = false;
 static int  s_xa_filter_file = 1;
 static int  s_xa_filter_chan = 0;
+
+/* Guest-mutated thunk latches for the savestate extra payload
+ * (game_extras_impl.c). CdlSetmode flips s_xa_armed (RT|SF arms the XA
+ * music route, the loader's data mode disarms it) and callback
+ * registrations swap guest vaddrs — a rolled-back speculative tick that
+ * ran transition code leaves them on the abandoned branch otherwise,
+ * and the committed timeline's next CdlReadS routes down the wrong
+ * path. Declared early; definitions live after the statics they pack. */
+extern "C" void spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
+                                        uint32_t* xa_word);
+extern "C" void spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
+                                        uint32_t xa_word);
 #include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
@@ -143,6 +155,24 @@ static uint32_t g_cd_read_cb     = 0;
 typedef void (*native_cd_read_cb_t)(unsigned char intr, unsigned char* result);
 static native_cd_read_cb_t g_native_cd_read_cb = nullptr;
 static uint32_t g_vsync_cb       = 0;
+
+extern "C" void spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
+                                        uint32_t* xa_word) {
+    *cd_cb = g_cd_read_cb;
+    *vs_cb = g_vsync_cb;
+    *xa_word = (s_xa_armed ? 1u : 0u)
+             | ((uint32_t)(s_xa_filter_file & 0xFF) << 8)
+             | ((uint32_t)(s_xa_filter_chan & 0xFF) << 16);
+}
+
+extern "C" void spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
+                                        uint32_t xa_word) {
+    g_cd_read_cb     = cd_cb;
+    g_vsync_cb       = vs_cb;
+    s_xa_armed       = (xa_word & 1u) != 0;
+    s_xa_filter_file = (int)((xa_word >> 8) & 0xFF);
+    s_xa_filter_chan = (int)((xa_word >> 16) & 0xFF);
+}
 
 static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
                                 uint32_t a0, uint32_t a1) {
@@ -1497,10 +1527,10 @@ void psyq_CdSync(CPUState* cpu) {
      * NOT the host decoder's real playhead: that advances on the AUDIO
      * clock (up to kPumpBatch=8 sectors per pump — ~3x faster than a
      * real drive — and frozen during runahead speculation, where wall
-     * time doesn't pass). Feeding it to the guest made m_TrackPosition
-     * a stealth host-state read: track ends fired early vs PSX, and the
-     * ra-predict oracle flagged led/committed divergence the moment
-     * music started. The virtual head advances at exactly 75 sectors
+     * time doesn't pass). Feeding it to the guest makes m_TrackPosition
+     * a stealth host-state read: track ends fire early vs PSX, and
+     * runahead's led/committed predictions diverge the moment music
+     * starts. The virtual head advances at exactly 75 sectors
      * per wall-second of GUEST time (75/59.94 = 1001/800 per VBL) from
      * the ReadS anchor — deterministic, snapshotted, hardware-rate. */
     if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {

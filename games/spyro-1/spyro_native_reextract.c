@@ -27,16 +27,15 @@ extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
  *
  * LED-CAMERA A/B CONFIG ONLY (OPENPETE_RA_CAM_COMMIT=0) in BOTH arms:
  * with the default committed-timeline camera the camera pair never
- * crosses a branch (a rebase would only kink it), and the Spyro arm
- * proved actively harmful under analog input — the stick differs almost
- * every tick, so the edge fires continuously and the standing re-anchor
- * bunches motion into the late presents + steps backward at negative
- * alpha (user: "Spyro very jittery in motion, especially with analog").
- * Spyro's cross-branch error at N=1-2 is a few units of physics; the
- * plain led table pair absorbs it invisibly, like the mobys. In the
- * led-camera A/B the rebase remains the measured snap mitigation
- * (-36u/-88u per present raw at N=1/2 on an R2 release, -20/-70
- * rebased). */
+ * crosses a branch (a rebase would only kink it), and the Spyro arm is
+ * actively harmful under analog input — the stick differs almost every
+ * tick, so the edge fires continuously and the standing re-anchor
+ * bunches motion into the late presents and steps backward at negative
+ * alpha (visible jitter in motion). Spyro's cross-branch error at N=1-2
+ * is a few units of physics; the plain led table pair absorbs it
+ * invisibly, like the mobys. In the led-camera A/B the rebase remains
+ * the measured snap mitigation (-36u/-88u per present raw at N=1/2 on
+ * an R2 release, -20/-70 rebased). */
 static int ra_rebase_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_RA_REBASE"); v = !(e && *e == '0'); }
@@ -1131,10 +1130,9 @@ static void spyro_native_reextract(void* cpu_v) {
                  * standing rebase re-anchors the lerp at the shown pos
                  * every tick — motion bunches into the late presents and
                  * the negative-alpha presents extrapolate BACKWARD from
-                 * the shown point ("Spyro very jittery in motion,
-                 * especially with analog", 2026-07-16). The plain table
-                 * pair absorbs the few-unit branch error invisibly, like
-                 * the (rebase-free, smooth) mobys. */
+                 * the shown point (visible jitter). The plain table pair
+                 * absorbs the few-unit branch error invisibly, like the
+                 * (rebase-free, smooth) mobys. */
                 memcpy(s_psp_rb, psp, SPYRO_SAVE);
                 memcpy(s_psp_rb, s_shown_sp, 12);
                 psp = s_psp_rb;
@@ -1583,16 +1581,14 @@ static void spyro_native_reextract(void* cpu_v) {
                 }
                 /* Teleport/reuse ceiling at particle-physics scale (was 1250
                  * == 5000 full-world, stalled-life class already at 300):
-                 * under LIVE runahead the pair spans two prediction BRANCHES
-                 * — pool churn differs between them, so slot reuse can pass
-                 * the class + life-increase tests (no same-timeline ordering
-                 * to reset the life byte) and lerped as a screen-crossing
-                 * streak (user report 2026-07-16, analog play; bk2 harnesses
-                 * can't reproduce it — speculation reads the true future
-                 * movie inputs, so branches never diverge). 300 world/4 per
-                 * tick == 1200 full-world == ~20x Spyro's run speed: a real
-                 * particle faster than that crosses the screen in a couple
-                 * of ticks, so snapping it loses nothing visible. */
+                 * under runahead the pair can span two prediction BRANCHES,
+                 * whose pool churn differs — slot reuse across branches can
+                 * pass the class + life-increase tests (no same-timeline
+                 * ordering to reset the life byte) and lerp as a screen-
+                 * crossing streak. 300 world/4 per tick == 1200 full-world
+                 * == ~20x Spyro's run speed: a real particle faster than
+                 * that crosses the screen in a couple of ticks, so snapping
+                 * it loses nothing visible. */
                 if (dX*dX + dY*dY + dZ*dZ > 300.0 * 300.0) { s_pi[4]++; continue; }
                 uint32_t live1, live2;
                 memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);

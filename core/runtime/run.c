@@ -2156,6 +2156,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * state or it would pair backward. */
                 int ra_want = (runahead_n > 0 && ra_snap &&
                                game_is_gameplay_live(&g_game.cpu));
+                int ra_live_lost = 0;
                 if (!ra_want) openpete_ra_input_edge = 0;
                 if (ra_want && openpete_present_pending &&
                     openpete_state_mem_save(ra_snap, &g_game.cpu,
@@ -2249,16 +2250,41 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                         game_on_frame_pre(&g_game.cpu, openpete_frame);
                         co_switch((cothread_t)openpete_game_fiber);
                         if (openpete_frame == bf) break;   /* safety */
+                        /* Speculation crossed into a load/cutscene. The
+                         * rollback contract is void here: the game fiber
+                         * is now parked at a TRANSITION-code yield whose
+                         * host call stack differs structurally from the
+                         * gameplay yield the snapshot was taken at, and
+                         * the fiber stack is not snapshottable (Windows
+                         * libco = opaque OS fibers). Restoring guest
+                         * state under the mismatched continuation
+                         * corrupts the game's own VSync pacing — the
+                         * committed timeline then runs a full tick's
+                         * work every VBL and the load never completes.
+                         * So the speculation is ADOPTED instead: these
+                         * VBLs become the real timeline (their held
+                         * input is exactly what the input log records
+                         * for them — the per-VBL append below covers
+                         * every VBL this iteration consumed), and
+                         * runahead disengages until gameplay is live
+                         * again. Costs at most 2N VBLs of held-input
+                         * substitution at the moment a fade begins. */
+                        if (!game_is_gameplay_live(&g_game.cpu)) {
+                            ra_live_lost = 1;
+                            break;
+                        }
                     }
                     openpete_speculative = 0;
                     (void)PsyX_SPUAL_SetMute(prev_mute);
-                    openpete_present_pending  = ra_pp;
-                    openpete_primitives_drawn = ra_prims;
+                    if (!ra_live_lost) {
+                        openpete_present_pending  = ra_pp;
+                        openpete_primitives_drawn = ra_prims;
+                    }
                     /* Record the led prediction while RAM is still the
                      * speculation head (the rollback happens below, after
                      * the interp captures); openpete_frame is the led
                      * frame here. */
-                    if (ra_pc_on()) {
+                    if (ra_pc_on() && !ra_live_lost) {
                         for (int i = 0; i < RA_PC_PENDING; i++) {
                             if (s_ra_pc[i].valid) continue;
                             s_ra_pc[i].target = openpete_frame;
@@ -2281,7 +2307,29 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     }
                     ra_speculated = true;
                 }
-                ra_skip_capture = (ra_want && !ra_speculated);
+                ra_skip_capture = (ra_want && !ra_speculated) || ra_live_lost;
+                if (ra_live_lost) {
+                    /* Adoption (see the spec-loop comment): the led VBLs
+                     * are the real timeline now. No rollback; predictions
+                     * pending against the abandoned branch die; the
+                     * presentation drops its pre-adoption pairs and snaps
+                     * (invisible — a fade is starting). */
+                    ra_speculated = false;             /* skip the rollback below */
+                    ra_pc_invalidate_all();
+                    openpete_ra_input_edge = 0;
+                    /* Presentation-only reset (NOT the guest-discontinuity
+                     * broadcast — the timeline is continuous forward, and
+                     * the broadcast would finalize an in-progress bk2
+                     * recording): drop the pre-adoption interp pairs so
+                     * the next present snaps instead of sweeping a lerp
+                     * across the adopted VBLs. */
+                    openpete_interp_reset();
+                    openpete_interp_objs_reset();
+                    OPL_INFO_F("runahead",
+                               "speculation crossed into a transition; adopted "
+                               "the led timeline through f=%u (runahead idle "
+                               "until gameplay resumes)", openpete_frame);
+                }
 
                 /* fps-unlock Phase 2: snapshot the transform-bearing
                  * regions into the interp ring while the game fiber
