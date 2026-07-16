@@ -97,6 +97,8 @@ extern "C" {
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
 extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
+extern "C" int g_cdXaStartLBA;   /* virtual music head anchor — LIBCD.C */
+extern "C" int g_cdXaStartVBL;
 
 /* Spyro music streaming state. CdControlB(CdlSetmode) with RT|SF arms XA;
  * CdControlB(CdlSetfilter) records file/chan; CdControlB(CdlReadS) starts
@@ -1227,6 +1229,13 @@ static int spyro_current_music_track(void) {
  * current track, else to the XA decoder. Exactly one of the two owns
  * playback; starting either stops the other. */
 static void start_music_stream(int sector) {
+    /* Anchor the VIRTUAL streaming head first — guest-deterministic and
+     * snapshotted, so it runs during speculation too (the game's ReadS
+     * command is guest code; only the host-audio half below is
+     * speculation-suppressed). The GetlocP override in psyq_CdSync
+     * synthesizes the position the game reads from this anchor. */
+    g_cdXaStartLBA = sector;
+    g_cdXaStartVBL = SDL_GetAtomicInt(&openpete_vbl);
     /* Runahead lookahead: starting host audio (WAV override or XA) from a
      * speculative tick would be audible and then re-fired by the committed
      * re-run. Guest-side effects of the read roll back regardless. */
@@ -1480,16 +1489,26 @@ void psyq_CdSync(CPUState* cpu) {
         }
     }
 
-    /* Override PsyCross's GetlocP fake-position with the real XA (or
-     * WAV-override synthetic) playhead so Spyro's track-end detection
-     * (compares position to m_MusicTable.end) actually fires.
-     * result[5..7] = absolute MSF. */
-    if ((PsyX_XA_IsActive() || music_override_is_active())
-        && g_CD_com == CdlGetlocP && mode == 1) {
+    /* Override PsyCross's GetlocP fake-position with the VIRTUAL music
+     * head so Spyro's track-end detection (compares position to
+     * m_MusicTable.end) fires at hardware rate. result[5..7] = absolute
+     * MSF.
+     *
+     * NOT the host decoder's real playhead: that advances on the AUDIO
+     * clock (up to kPumpBatch=8 sectors per pump — ~3x faster than a
+     * real drive — and frozen during runahead speculation, where wall
+     * time doesn't pass). Feeding it to the guest made m_TrackPosition
+     * a stealth host-state read: track ends fired early vs PSX, and the
+     * ra-predict oracle flagged led/committed divergence the moment
+     * music started. The virtual head advances at exactly 75 sectors
+     * per wall-second of GUEST time (75/59.94 = 1001/800 per VBL) from
+     * the ReadS anchor — deterministic, snapshotted, hardware-rate. */
+    if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
+        int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
+        if (vd < 0) vd = 0;
+        int cur = g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 800);
         CdlLOC abs;
-        CdIntToPos(music_override_is_active() ? music_override_get_sector()
-                                              : PsyX_XA_GetCurrentSector(),
-                   &abs);
+        CdIntToPos(cur, &abs);
         result[5] = abs.minute;
         result[6] = abs.second;
         result[7] = abs.sector;

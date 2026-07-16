@@ -92,6 +92,8 @@ extern int g_cdCurrentTrack;
 extern int g_cdNumFrames;
 extern int g_CD_com;
 extern int g_cdReadDoneFlag;
+extern int g_cdXaStartLBA;
+extern int g_cdXaStartVBL;
 
 #include <errno.h>
 #include <stddef.h>
@@ -117,8 +119,9 @@ extern int g_cdReadDoneFlag;
 /* Curated state-layout ABI. Bump on ANY change to a section's layout
  * (header fields, SPUALVoiceState packing, cd_state_t, mods-section
  * framing, arena ledger, ...). Part of the ident hash, so a bump cleanly
- * orphans older files. 4 = P2b (arena section, MSv2 mods framing). */
-#define OPENPETE_STATE_ABI 4u
+ * orphans older files. 4 = P2b (arena section, MSv2 mods framing).
+ * 5 = virtual XA music-head anchor joined the CD section. */
+#define OPENPETE_STATE_ABI 5u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -151,6 +154,8 @@ typedef struct {
     int32_t num_frames;
     int32_t cd_com;
     int32_t read_done;
+    int32_t xa_start_lba;   /* virtual music-head anchor (LIBCD.C) — the */
+    int32_t xa_start_vbl;   /* GetlocP reply is a pure function of these */
 } state_cd_t;
 
 /* Chunked fwrite/fread. Some Windows stdio configurations short-write
@@ -359,12 +364,14 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     if (hdr.arena_bytes)      openpete_mods_arena_state_save(arena_snap);
 
     state_cd_t cd;
-    cd.cur_sector  = g_cdCurrentSector;
-    cd.sector_size = g_cdSectorSize;
-    cd.cur_track   = g_cdCurrentTrack;
-    cd.num_frames  = g_cdNumFrames;
-    cd.cd_com      = g_CD_com;
-    cd.read_done   = g_cdReadDoneFlag;
+    cd.cur_sector   = g_cdCurrentSector;
+    cd.sector_size  = g_cdSectorSize;
+    cd.cur_track    = g_cdCurrentTrack;
+    cd.num_frames   = g_cdNumFrames;
+    cd.cd_com       = g_CD_com;
+    cd.read_done    = g_cdReadDoneFlag;
+    cd.xa_start_lba = g_cdXaStartLBA;
+    cd.xa_start_vbl = g_cdXaStartVBL;
 
     int rc = 0;
     if (rc == 0) rc = write_section(fp, path, "header",  &hdr, sizeof(hdr));
@@ -562,6 +569,8 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     g_cdNumFrames     = cd.num_frames;
     g_CD_com          = cd.cd_com;
     g_cdReadDoneFlag  = cd.read_done;
+    g_cdXaStartLBA    = cd.xa_start_lba;
+    g_cdXaStartVBL    = cd.xa_start_vbl;
     free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf); free(tag_buf);
 
     /* Re-anchor the guest-visible VBL counter to the saved value (see the
@@ -654,12 +663,14 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     memcpy(m->ram,         openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE);
     memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
     if (PsyX_SPUAL_SnapshotState(m->spu, m->spu_bytes) != 0) return -1;
-    m->cd.cur_sector  = g_cdCurrentSector;
-    m->cd.sector_size = g_cdSectorSize;
-    m->cd.cur_track   = g_cdCurrentTrack;
-    m->cd.num_frames  = g_cdNumFrames;
-    m->cd.cd_com      = g_CD_com;
-    m->cd.read_done   = g_cdReadDoneFlag;
+    m->cd.cur_sector   = g_cdCurrentSector;
+    m->cd.sector_size  = g_cdSectorSize;
+    m->cd.cur_track    = g_cdCurrentTrack;
+    m->cd.num_frames   = g_cdNumFrames;
+    m->cd.cd_com       = g_CD_com;
+    m->cd.read_done    = g_cdReadDoneFlag;
+    m->cd.xa_start_lba = g_cdXaStartLBA;
+    m->cd.xa_start_vbl = g_cdXaStartVBL;
     m->valid = 1;
     return 0;
 }
@@ -678,6 +689,8 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     g_cdNumFrames     = m->cd.num_frames;
     g_CD_com          = m->cd.cd_com;
     g_cdReadDoneFlag  = m->cd.read_done;
+    g_cdXaStartLBA    = m->cd.xa_start_lba;
+    g_cdXaStartVBL    = m->cd.xa_start_vbl;
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     if (!quiet) {
         game_on_state_loaded(cpu);

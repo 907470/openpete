@@ -83,15 +83,36 @@ done
 # P5 runahead determinism gate: with --runahead 2 the presented timeline
 # leads, but the COMMITTED timeline must be byte-identical to clean —
 # gameplay state is never allowed to feel the speculation.
+#
+# The same run carries the PREDICTION-EXACTNESS oracle
+# (OPENPETE_RA_PREDICT_CHECK=1, read-only): the led RAM+scratch hash
+# recorded at each speculation must byte-match the committed state when
+# the real timeline reaches that frame (edge-crossing predictions are
+# invalidated — the branch legitimately changed). This is the
+# anti-stealth-rand() gate: a thunk reading host state that behaves
+# differently under speculation than in the real future corrupts
+# predictions while every determinism gate stays green. A nonzero check
+# count also proves speculation actually engaged (a driver regression
+# that never speculates would pass the cmp trivially).
 echo "== runahead (beast_makers_wall, --runahead 2)"
 run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-clean.csv" \
     || { echo "  clean run FAILED"; fail=1; }
+OPENPETE_RA_PREDICT_CHECK=1 \
 run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-on.csv" --runahead 2 \
     || { echo "  runahead run FAILED"; fail=1; }
 if cmp -s "$OUT/ra-clean.csv" "$OUT/ra-on.csv"; then
     echo "  runahead(2): real timeline byte-identical PASS"
 else
     echo "  runahead(2): real timeline DIVERGED FAIL"; fail=1
+fi
+pc=$(grep -o '\[ra-predict\] checked=[0-9]* mismatch=[0-9]* invalidated=[0-9]*' \
+     "$OUT/ra-on.csv.log" | tail -1)
+pc_checked=${pc#*checked=}; pc_checked=${pc_checked%% *}
+pc_mism=${pc#*mismatch=};   pc_mism=${pc_mism%% *}
+if [ -n "$pc" ] && [ "${pc_checked:-0}" -ge 50 ] && [ "${pc_mism:-1}" -eq 0 ]; then
+    echo "  predict-check: $pc PASS"
+else
+    echo "  predict-check: ${pc:-no summary emitted} FAIL"; fail=1
 fi
 
 # P4 driver gate: hold rewind for 40 iterations mid-gameplay via

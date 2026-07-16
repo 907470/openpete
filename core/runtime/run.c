@@ -9,6 +9,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
+#include "openpete_discontinuity.h"
 #include "openpete_recomp_module.h"
 #include "openpete_ticker.h"
 #include "openpete_time.h"
@@ -396,6 +397,43 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
 }
 
 #define OPENPETE_HASH_LOG_MAX_REGIONS 128
+
+/* --- OPENPETE_RA_PREDICT_CHECK: prediction-exactness oracle --------------
+ * Runahead's correctness argument has two halves. The committed-timeline
+ * half is gated (state-roundtrip determinism). The PREDICTION half — "with
+ * unchanged input the led state IS the future committed state, bit for
+ * bit" — was only an argument: a thunk reading host state that behaves
+ * differently under speculation than in the real future (a stealth
+ * rand()-alike — wall clock, an unsnapshotted host static) corrupts
+ * predictions while leaving every determinism gate green, surfacing only
+ * as unexplained presentation snaps. This check closes the gap: after each
+ * speculation, hash the led guest RAM+scratch keyed by the led frame; when
+ * the committed timeline reaches that frame the bytes must match.
+ * Predictions crossing an input edge are invalidated (the branch
+ * legitimately changed), as are all pending ones on a guest discontinuity
+ * (rewind/state-load replays run under LIVE input, not the predicted
+ * branch). Zero cost unless the env is set. */
+static int ra_pc_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_RA_PREDICT_CHECK");
+        v = (e && *e && *e != '0') ? atoi(e) : 0;
+        if (v < 0) v = 0;
+    }
+    return v;   /* 1 = hash check; 2 = + full led copy, dump diff ranges */
+}
+#define RA_PC_PENDING 8
+static struct { uint32_t target; uint64_t hash; int valid; uint8_t* led; } s_ra_pc[RA_PC_PENDING];
+static unsigned s_ra_pc_checked = 0, s_ra_pc_mismatches = 0, s_ra_pc_invalidated = 0;
+static void ra_pc_invalidate_all(void) {
+    for (int i = 0; i < RA_PC_PENDING; i++)
+        if (s_ra_pc[i].valid) { s_ra_pc[i].valid = 0; s_ra_pc_invalidated++; }
+}
+static uint64_t ra_pc_hash(void) {
+    uint64_t h = openpete_fnv1a64_init();
+    h = openpete_fnv1a64_update(h, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
+    return openpete_fnv1a64_update(h, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
+}
 
 static void gameplay_hash_log_emit_header(FILE* fp) {
     fputs("frame,vbl,fnv1a64", fp);
@@ -1286,6 +1324,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (!ra_snap) runahead_n = 0;
             else OPL_INFO_F("runahead", "armed: leading presentation by "
                             "%d tick(s)", runahead_n);
+            if (ra_snap && ra_pc_on()) {
+                (void)openpete_on_guest_discontinuity(ra_pc_invalidate_all);
+                OPL_INFO_F("runahead", "prediction-exactness check armed");
+            }
         }
     }
 
@@ -2139,6 +2181,59 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                         memcpy(s_ra_pax, rax, 4);
                         s_ra_have = 1;
                     }
+                    /* Prediction-exactness oracle (env-gated, see ra_pc_*
+                     * above): an input edge invalidates every pending
+                     * prediction (the led branch legitimately changed);
+                     * then any prediction targeting THIS committed tick
+                     * must match the committed bytes exactly. RAM here is
+                     * the completed committed tick at its yield — the same
+                     * phase the led hash was taken at. */
+                    if (ra_pc_on()) {
+                        if (openpete_ra_input_edge) ra_pc_invalidate_all();
+                        for (int i = 0; i < RA_PC_PENDING; i++) {
+                            if (!s_ra_pc[i].valid) continue;
+                            if (s_ra_pc[i].target < openpete_frame) {
+                                s_ra_pc[i].valid = 0;   /* missed (mode transition) */
+                                continue;
+                            }
+                            if (s_ra_pc[i].target != openpete_frame) continue;
+                            s_ra_pc[i].valid = 0;
+                            s_ra_pc_checked++;
+                            if (s_ra_pc[i].hash != ra_pc_hash()) {
+                                s_ra_pc_mismatches++;
+                                fprintf(stderr, "[ra-predict] MISMATCH f=%u: led "
+                                        "prediction != committed state (stealth "
+                                        "host-state read during speculation?)\n",
+                                        openpete_frame);
+                                if (ra_pc_on() >= 2 && s_ra_pc[i].led) {
+                                    /* Dump differing ranges as PSX vaddrs. */
+                                    const uint8_t* a = s_ra_pc[i].led;
+                                    const uint8_t* b = openpete_psx_get_ram();
+                                    unsigned ranges = 0;
+                                    for (uint32_t off = 0; off < OPENPETE_PSX_RAM_SIZE && ranges < 16;) {
+                                        if (a[off] == b[off]) { off++; continue; }
+                                        uint32_t end = off;
+                                        while (end < OPENPETE_PSX_RAM_SIZE && end - off < 4096 &&
+                                               (a[end] != b[end] || (end + 16 < OPENPETE_PSX_RAM_SIZE &&
+                                                memcmp(a + end, b + end, 16) != 0)))
+                                            end++;
+                                        fprintf(stderr, "[ra-predict]   diff 0x%08X..0x%08X "
+                                                "led=%02X%02X%02X%02X comm=%02X%02X%02X%02X\n",
+                                                OPENPETE_PSX_KSEG0_BASE + off,
+                                                OPENPETE_PSX_KSEG0_BASE + end,
+                                                a[off], a[off+1], a[off+2], a[off+3],
+                                                b[off], b[off+1], b[off+2], b[off+3]);
+                                        ranges++;
+                                        off = end + 1;
+                                    }
+                                    const uint8_t* sa = s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE;
+                                    const uint8_t* sb = openpete_psx_get_scratch();
+                                    if (memcmp(sa, sb, OPENPETE_PSX_SCRATCH_SIZE) != 0)
+                                        fprintf(stderr, "[ra-predict]   diff in SCRATCHPAD\n");
+                                }
+                            }
+                        }
+                    }
                     /* Host flags the guest's draw thunks mutate are part
                      * of the rolled-back state: a speculative DrawOTag
                      * leaking present_pending fired EXTRA canonical
@@ -2159,6 +2254,31 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     (void)PsyX_SPUAL_SetMute(prev_mute);
                     openpete_present_pending  = ra_pp;
                     openpete_primitives_drawn = ra_prims;
+                    /* Record the led prediction while RAM is still the
+                     * speculation head (the rollback happens below, after
+                     * the interp captures); openpete_frame is the led
+                     * frame here. */
+                    if (ra_pc_on()) {
+                        for (int i = 0; i < RA_PC_PENDING; i++) {
+                            if (s_ra_pc[i].valid) continue;
+                            s_ra_pc[i].target = openpete_frame;
+                            s_ra_pc[i].hash   = ra_pc_hash();
+                            s_ra_pc[i].valid  = 1;
+                            if (ra_pc_on() >= 2) {
+                                if (!s_ra_pc[i].led)
+                                    s_ra_pc[i].led = (uint8_t*)malloc(
+                                        OPENPETE_PSX_RAM_SIZE + OPENPETE_PSX_SCRATCH_SIZE);
+                                if (s_ra_pc[i].led) {
+                                    memcpy(s_ra_pc[i].led, openpete_psx_get_ram(),
+                                           OPENPETE_PSX_RAM_SIZE);
+                                    memcpy(s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE,
+                                           openpete_psx_get_scratch(),
+                                           OPENPETE_PSX_SCRATCH_SIZE);
+                                }
+                            }
+                            break;
+                        }
+                    }
                     ra_speculated = true;
                 }
                 ra_skip_capture = (ra_want && !ra_speculated);
@@ -2972,6 +3092,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                    "captured=%llu, dedupe-skipped=%llu",
                    (unsigned long long)openpete_interp_total_captures(),
                    (unsigned long long)openpete_interp_total_dedupe_skips());
+    }
+    if (ra_pc_on() && (s_ra_pc_checked || s_ra_pc_mismatches || s_ra_pc_invalidated)) {
+        /* stderr, not the log: the roundtrip gate greps this summary. */
+        fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
+                s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
     }
     openpete_interp_shutdown();
 
