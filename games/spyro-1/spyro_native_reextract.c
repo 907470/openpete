@@ -1546,12 +1546,11 @@ static void spyro_native_reextract(void* cpu_v) {
                 memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
                 int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
                 int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
-                /* teleport guard: a slot reused by a new particle mid-flight jumps
-                 * far in one tick — snap. Particle positions are world/4 (int16), so
-                 * the threshold is in world/4 too: 1250 world/4 == 5000 full-world,
-                 * matching the moby/camera/shadow guards. (The old 8000 was 32000
-                 * full-world — ~6.5× looser — so a slot reused within ~32k units
-                 * streaked across two different particles instead of snapping.) */
+                /* Positions are world/4 (int16) — the identity + teleport guards
+                 * below are in world/4 too. History of the ceiling: 8000 (32000
+                 * full-world, streaked visibly) → 1250 (matched the moby guards,
+                 * still far above screen scale) → 300 (particle-physics scale;
+                 * see the ceiling comment below). */
                 double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
                 /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
                  * ADDRESS, so a slot a NEW particle respawns into within one tick — a
@@ -1580,11 +1579,21 @@ static void spyro_native_reextract(void* cpu_v) {
                      * TIGHT radius (300 world/4 per tick — orbiting stars move
                      * ~50-100; burst reuses jump farther or reset life). */
                     if (clife < plife) { s_pi[3]++; if (moving) s_pi[7]++; continue; }
-                    if (clife == plife && dX*dX + dY*dY + dZ*dZ > 300.0*300.0)
-                        { s_pi[3]++; if (moving) s_pi[7]++; continue; }
                     s_pi[0]++; if (moving) s_pi[5]++;
                 }
-                if (dX*dX + dY*dY + dZ*dZ > 1250.0 * 1250.0) { s_pi[4]++; continue; }
+                /* Teleport/reuse ceiling at particle-physics scale (was 1250
+                 * == 5000 full-world, stalled-life class already at 300):
+                 * under LIVE runahead the pair spans two prediction BRANCHES
+                 * — pool churn differs between them, so slot reuse can pass
+                 * the class + life-increase tests (no same-timeline ordering
+                 * to reset the life byte) and lerped as a screen-crossing
+                 * streak (user report 2026-07-16, analog play; bk2 harnesses
+                 * can't reproduce it — speculation reads the true future
+                 * movie inputs, so branches never diverge). 300 world/4 per
+                 * tick == 1200 full-world == ~20x Spyro's run speed: a real
+                 * particle faster than that crosses the screen in a couple
+                 * of ticks, so snapping it loses nothing visible. */
+                if (dX*dX + dY*dY + dZ*dZ > 300.0 * 300.0) { s_pi[4]++; continue; }
                 uint32_t live1, live2;
                 memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
                 s_part_save[part_save_n].addr = pa;

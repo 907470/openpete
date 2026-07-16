@@ -291,8 +291,19 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     double dY = (double)(int16_t)(cA >> 16)    - (double)(int16_t)(pA >> 16);
     double dZ = (double)(int16_t)(cB & 0xFFFF) - (double)(int16_t)(pB & 0xFFFF);
     double d2 = dX*dX + dY*dY + dZ*dZ;
-    if (clife == plife && d2 > 300.0*300.0) return 0;  /* stalled-life far reuse */
-    if (d2 > 1250.0*1250.0) return 0;                  /* teleport guard */
+    /* Teleport/reuse ceiling, particle-physics scale (was 1250 == 5000
+     * full-world, with a tighter 300 only for the stalled-life class):
+     * under LIVE runahead the pair spans two prediction BRANCHES, whose
+     * pool churn differs — slot reuse across branches can pass the class
+     * + life-increase tests (no same-timeline ordering to reset the life
+     * byte), and anything under the old ceiling lerped as a screen-
+     * crossing streak (user report 2026-07-16, analog play; not
+     * reproducible under bk2, where speculation reads the true future
+     * inputs and branches never diverge). 300 world/4 per tick == 1200
+     * full-world == ~20x Spyro's run speed: a REAL particle faster than
+     * that crosses the screen in a couple of ticks, so snapping it loses
+     * nothing visible — beyond this, lerping only ever paints streaks. */
+    if (d2 > 300.0*300.0) return 0;
     op_time_t per = o->curr_ns - o->prev_ns;
     if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
     if (per <= 0) return 0;
