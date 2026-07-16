@@ -92,6 +92,12 @@ static uint8_t s_canon_spec[SPEC_SCR_LEN];
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
+    /* Runahead: speculative fires must not stamp/overwrite the canonical
+     * SPEC capture (same rule as scratch_row_capture — the stamp would be
+     * the uncommitted epoch and the SPEC pass would skip on every
+     * intermediate present, strobing specular mobys). */
+    extern int openpete_speculative;
+    if (openpete_speculative) return;
     const void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
              s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
@@ -2928,20 +2934,32 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * for the re-extract's SPEC pass — else those mobys vanish on sub-ticks. */
         /* colour row is [0x1100,0x1600); the old 0x800 over-capture spilled
          * into the records, which capture_recs covers in full anyway. */
-        if (!is_spec) { spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
-                        spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
-                        /* Invalidate the SPECULAR capture at the START of each canonical
-                         * moby render (REGULAR runs first every frame). The game only calls
-                         * func_80020F34 when there ARE specular mobys to draw; once the last
-                         * one goes (e.g. the rescue-dragon CRYSTAL statue, cls 0xFA, whose
-                         * moby flips to state 0xFD when the dragon breaks out), the SPEC pass
-                         * stops firing and never re-captures — so without this clear the
-                         * re-extract would replay the last frozen s_canon_spec FOREVER,
-                         * leaving the crystal statue drawn on every sub-tick present after the
-                         * dragon is freed. The SPEC pass below re-validates it iff it runs
-                         * this frame; if it doesn't, the re-extract correctly skips SPEC. */
-                        s_canon_spec_valid = 0; }
-        else          moby_native_capture_spec_scratch(cpu);
+        {
+            /* Runahead: the whole capture/invalidate tail is canonical-only.
+             * A speculative REGULAR pass clearing s_canon_spec_valid (with
+             * the guarded spec capture unable to re-validate) skipped the
+             * SPEC replay on every intermediate — specular mobys strobed. */
+            extern int openpete_speculative;
+            if (!openpete_speculative) {
+                if (!is_spec) {
+                    spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
+                    spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
+                    /* Invalidate the SPECULAR capture at the START of each canonical
+                     * moby render (REGULAR runs first every frame). The game only calls
+                     * func_80020F34 when there ARE specular mobys to draw; once the last
+                     * one goes (e.g. the rescue-dragon CRYSTAL statue, cls 0xFA, whose
+                     * moby flips to state 0xFD when the dragon breaks out), the SPEC pass
+                     * stops firing and never re-captures — so without this clear the
+                     * re-extract would replay the last frozen s_canon_spec FOREVER,
+                     * leaving the crystal statue drawn on every sub-tick present after the
+                     * dragon is freed. The SPEC pass below re-validates it iff it runs
+                     * this frame; if it doesn't, the re-extract correctly skips SPEC. */
+                    s_canon_spec_valid = 0;
+                } else {
+                    moby_native_capture_spec_scratch(cpu);
+                }
+            }
+        }
     }
 
     if (verify) {

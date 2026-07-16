@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+extern int openpete_speculative;   /* openpete_fiber.h — runahead lookahead */
 #include "spyro1_symbols.gen.h"
 
 extern unsigned openpete_frame;
@@ -719,6 +721,13 @@ static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
 }
 
 static void scratch_row_capture(scratch_region_t* r) {
+    /* Runahead lookahead: producer hooks fire during SPECULATIVE ticks
+     * too, but those fires must not stamp epochs or overwrite the canon
+     * buffers — the stamp would be the NEXT (uncommitted) epoch, so on
+     * update-VBL presents nothing was "fresh" and the whole moby replay
+     * dropped (measured: SCENE act tris strobing ~1050/0 per present
+     * under --runahead). The REAL tick's fire is the canonical capture. */
+    if (openpete_speculative) return;
     const void* h = openpete_psx_to_host_ptr(r->psx_base);
     if (!h) return;
     memcpy(r->canon, h, r->len);

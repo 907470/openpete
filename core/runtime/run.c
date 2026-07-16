@@ -1785,6 +1785,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * instead of lerping — the full discontinuity broadcast
              * (texture-pack rescan = 1 MiB copy) is deliberately NOT
              * fired per held iteration. */
+            if (!openpete_rewind_enabled()) {
+                /* Backspace with no --rewind window: say so once instead
+                 * of silently doing nothing. */
+                static bool hinted = false;
+                if (!hinted && kbd_pre && kbd_pre[SDL_SCANCODE_BACKSPACE]) {
+                    hinted = true;
+                    OPL_WARN_F("rewind", "Backspace pressed but rewind is "
+                               "disabled — launch with --rewind 30 to "
+                               "enable a 30 s window");
+                }
+            }
             if (openpete_rewind_enabled()) {
                 int rw_live = game_is_gameplay_live(&g_game.cpu);
                 openpete_rewind_on_iter(&g_game.cpu, openpete_frame, rw_live);
