@@ -73,6 +73,8 @@
 extern unsigned int PsyX_SPUAL_StateSize(void);
 extern int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
+extern int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
+                                     int quiet_al);
 extern unsigned int PsyX_SPUAL_MemSize(void);
 extern int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);
@@ -606,4 +608,81 @@ int openpete_state_load(unsigned slot, CPUState* cpu,
 
 int openpete_state_resolve_dir(char* out, unsigned long out_size) {
     return resolve_state_dir(out, (size_t)out_size);
+}
+
+/* ── In-memory snapshot (see openpete_state.h for the contract) ──────── */
+
+struct openpete_state_mem {
+    int        valid;
+    unsigned   frame;
+    uint32_t   vbl;
+    uint8_t    cpu_buf[CPU_REG_BYTES];
+    uint8_t    scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
+    uint8_t*   ram;        /* 2 MiB */
+    uint8_t*   spu;        /* PsyX_SPUAL_StateSize() */
+    uint32_t   spu_bytes;
+    state_cd_t cd;
+};
+
+openpete_state_mem_t* openpete_state_mem_new(void) {
+    openpete_state_mem_t* m =
+        (openpete_state_mem_t*)calloc(1, sizeof(*m));
+    if (!m) return NULL;
+    m->spu_bytes = PsyX_SPUAL_StateSize();
+    m->ram = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
+    m->spu = (uint8_t*)malloc(m->spu_bytes);
+    if (!m->ram || !m->spu) {
+        openpete_state_mem_free(m);
+        return NULL;
+    }
+    return m;
+}
+
+void openpete_state_mem_free(openpete_state_mem_t* m) {
+    if (!m) return;
+    free(m->ram);
+    free(m->spu);
+    free(m);
+}
+
+int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
+                            unsigned frame) {
+    if (!m) return -1;
+    m->frame = frame;
+    m->vbl   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    memcpy(m->cpu_buf,     cpu,                        CPU_REG_BYTES);
+    memcpy(m->ram,         openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE);
+    memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
+    if (PsyX_SPUAL_SnapshotState(m->spu, m->spu_bytes) != 0) return -1;
+    m->cd.cur_sector  = g_cdCurrentSector;
+    m->cd.sector_size = g_cdSectorSize;
+    m->cd.cur_track   = g_cdCurrentTrack;
+    m->cd.num_frames  = g_cdNumFrames;
+    m->cd.cd_com      = g_CD_com;
+    m->cd.read_done   = g_cdReadDoneFlag;
+    m->valid = 1;
+    return 0;
+}
+
+int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
+                            unsigned* out_frame, int quiet) {
+    if (!m || !m->valid) return -1;
+    memcpy(cpu,                        m->cpu_buf,     CPU_REG_BYTES);
+    memcpy(openpete_psx_get_ram(),     m->ram,         OPENPETE_PSX_RAM_SIZE);
+    memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
+    if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0)
+        return -1;
+    g_cdCurrentSector = m->cd.cur_sector;
+    g_cdSectorSize    = m->cd.sector_size;
+    g_cdCurrentTrack  = m->cd.cur_track;
+    g_cdNumFrames     = m->cd.num_frames;
+    g_CD_com          = m->cd.cd_com;
+    g_cdReadDoneFlag  = m->cd.read_done;
+    SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
+    if (!quiet) {
+        game_on_state_loaded(cpu);
+        openpete_guest_discontinuity_notify();
+    }
+    if (out_frame) *out_frame = m->frame;
+    return 0;
 }

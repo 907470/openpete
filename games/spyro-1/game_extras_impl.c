@@ -724,6 +724,15 @@ void game_on_state_loaded(CPUState* cpu) {
     spyro_set_active_overlay_by_magic(magic);
 }
 
+/* Gameplay-live gate for the in-memory snapshot users (savestate P3).
+ * Mirrors ops_level_id's pattern: g_Gamestate == GS_Playing AND a
+ * non-zero level id — g_Gamestate reads 0 during early boot too (BSS
+ * zero), so the level-id check is what actually excludes boot. */
+int game_is_gameplay_live(CPUState* cpu) {
+    if (cpu->read_word(0x800757D8u) != 0u) return 0; /* g_Gamestate != GS_Playing */
+    return cpu->read_word(0x8007596Cu) != 0u;        /* g_LevelId */
+}
+
 /* Game-side extra savestate payload (savestate plan P2a). v1: just the
  * WAD-overlay append cursor (see mod_wad_overlay.c for why it must travel
  * with the state). Bump the version byte when fields are added — core

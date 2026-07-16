@@ -22,6 +22,7 @@
 #include "bk2_movie.h"
 #include "bk2_record.h"
 #include "openpete_input_log.h"
+#include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
@@ -1248,6 +1249,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
     }
 
+    /* --rewind: allocate the keyframe ring (savestate P4). Driver lives
+     * at the quiescent point below (Backspace / --rewind-hold). */
+    openpete_rewind_configure(opts->rewind_window);
+
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
      * naturally pacing the host loop at ~60 Hz. The previous fractional
@@ -1481,6 +1486,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Out-of-range frames (before the offset, or past the movie's end)
          * fall back to 0xFFFF — i.e. no override — so live keyboard /
          * gamepad input takes over once the movie ends. */
+        unsigned bk2_stamped_frame = openpete_frame;  /* see restamp below */
         if (sim_due && bk2_active) {
             int bk2_frame = (int)openpete_frame - bk2_offset;
             unsigned short bits = 0xFFFF;
@@ -1614,6 +1620,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
         }
 
+        bool rewound_this_iter = false;   /* rewind driver stepped: skip
+                                           * this iteration's forward tick */
         /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
          * Edge-triggered (one action per keypress). The game fiber is
          * yielded right now, so g_game.cpu and g_ram are quiescent — we can
@@ -1675,6 +1683,153 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 }
             }
 
+            /* Savestate stress harnesses (P3 restore-at-yield gates).
+             * --state-stress N: every N ticked iterations, in-memory save
+             * + immediate quiet restore — a stressed run must be hash-
+             * identical to a clean one. --state-stress-rewind K: save,
+             * run K iterations, restore (the runahead rollback shape) —
+             * the repeated window must self-match. */
+            if (opts->state_stress > 0 || opts->state_stress_rewind > 0) {
+                static openpete_state_mem_t* sm = NULL;
+                static unsigned it = 0, ops = 0;
+                static int armed = 0;   /* rewind mode: snapshot taken */
+                if (!sm) sm = openpete_state_mem_new();
+                it++;
+                if (sm && opts->state_stress > 0 &&
+                    it % (unsigned)opts->state_stress == 0) {
+                    if (openpete_state_mem_save(sm, &g_game.cpu,
+                                                openpete_frame) == 0 &&
+                        openpete_state_mem_load(sm, &g_game.cpu,
+                                                NULL, 1) == 0) {
+                        ops++;
+                        if ((ops & 0x3FFu) == 1u)
+                            OPL_INFO_F("savestate",
+                                       "stress: %u roundtrips (f=%u)",
+                                       ops, openpete_frame);
+                    }
+                }
+                if (sm && opts->state_stress_rewind > 0) {
+                    /* 3-phase cycle so the timeline still advances:
+                     * armed=0 ARM (save@F) -> armed=1 run K -> ROLLBACK
+                     * to F -> armed=2 REPLAY K (must reproduce pass 1
+                     * bit-for-bit; the hash-log self-match check) ->
+                     * re-arm at F+K. Armed only in steady-state gameplay:
+                     * the mem snapshot excludes boot/load-window sections
+                     * (VRAM, SPU sample RAM) BY CONTRACT — rolling back
+                     * across boot is undefined (measured: segfault). */
+                    if (armed == 1 && !game_is_gameplay_live(&g_game.cpu)) {
+                        /* The window crossed into a transition/load: the
+                         * mem snapshot excludes the sections mutating
+                         * there — ABANDON the pending rollback (exactly
+                         * how runahead hard-gates OFF around loads). */
+                        armed = 0;
+                        it = 0;
+                    }
+                    if (armed == 0 && !game_is_gameplay_live(&g_game.cpu)) {
+                        it = 0;
+                    } else if (armed == 0) {
+                        if (openpete_state_mem_save(sm, &g_game.cpu,
+                                                    openpete_frame) == 0)
+                            armed = 1;
+                        it = 0;
+                    } else if (armed == 1 &&
+                               it >= (unsigned)opts->state_stress_rewind) {
+                        unsigned lf = openpete_frame;
+                        if (openpete_state_mem_load(sm, &g_game.cpu,
+                                                    &lf, 1) == 0) {
+                            openpete_frame = lf;
+                            ops++;
+                            if ((ops & 0xFFu) == 1u)
+                                OPL_INFO_F("savestate",
+                                           "stress-rewind: %u rollbacks "
+                                           "(back to f=%u)", ops, lf);
+                        }
+                        armed = 2;
+                        it = 0;
+                    } else if (armed == 2 &&
+                               it >= (unsigned)opts->state_stress_rewind) {
+                        armed = 0;   /* replay done — re-arm here */
+                    }
+                }
+            }
+
+            /* Rewind (savestate P4): keyframe cadence + the Backspace
+             * driver. Each held iteration steps the timeline back one
+             * tick: quiet-load the covering keyframe, replay forward to
+             * target with the recorded per-VBL inputs, truncate the
+             * future (input log + newer keyframes). Interp stores are
+             * reset manually (cheap memsets) so presents SNAP backward
+             * instead of lerping — the full discontinuity broadcast
+             * (texture-pack rescan = 1 MiB copy) is deliberately NOT
+             * fired per held iteration. */
+            if (openpete_rewind_enabled()) {
+                int rw_live = game_is_gameplay_live(&g_game.cpu);
+                openpete_rewind_on_iter(&g_game.cpu, openpete_frame, rw_live);
+                bool rw_k = kbd_pre && kbd_pre[SDL_SCANCODE_BACKSPACE];
+                /* --rewind-hold A:N — headless driver harness: simulate
+                 * holding Backspace for N iterations once frame A is
+                 * reached (the P4 determinism gate). */
+                static int rw_held = 0, rw_armed_hold = 0;
+                if (opts->rewind_hold_frame >= 0 && !rw_armed_hold &&
+                    (int)openpete_frame >= opts->rewind_hold_frame)
+                    rw_armed_hold = 1;   /* latch: a real held key doesn't
+                                          * release when the frame drops
+                                          * below the trigger */
+                if (rw_armed_hold && rw_held < opts->rewind_hold_iters) {
+                    rw_k = true;
+                    rw_held++;
+                    OPL_INFO_F("rewind", "hold %d/%d at f=%u (live=%d paused=%d)",
+                               rw_held, opts->rewind_hold_iters,
+                               openpete_frame, rw_live, (int)g_paused);
+                }
+                if (rw_k && rw_live && !g_paused) {
+                    unsigned step = 2;   /* one tick back per held iter */
+                    unsigned target = openpete_frame > step
+                                    ? openpete_frame - step : 0;
+                    const openpete_rewind_kf_t* kf =
+                        openpete_rewind_pick(target);
+                    if (!kf)
+                        OPL_WARN_F("rewind", "no keyframe covers f=%u "
+                                   "(window exhausted or none captured)",
+                                   target);
+                    unsigned lf = openpete_frame;
+                    if (kf && openpete_state_mem_load(kf->mem, &g_game.cpu,
+                                                      &lf, 1) == 0) {
+                        openpete_frame = lf;
+                        openpete_interp_reset();
+                        openpete_interp_objs_reset();
+                        while (openpete_frame < target) {
+                            int idx = kf->log_idx +
+                                      (int)(openpete_frame - kf->frame);
+                            const openpete_input_rec_t* r = input_log_get(idx);
+                            if (r) {
+                                g_PsyX_Pad_InputOverride = r->bits;
+                                g_PsyX_Pad_AnalogOverride[0] = r->axes[2];
+                                g_PsyX_Pad_AnalogOverride[1] = r->axes[3];
+                                g_PsyX_Pad_AnalogOverride[2] = r->axes[0];
+                                g_PsyX_Pad_AnalogOverride[3] = r->axes[1];
+                                g_PsyX_Pad_OverrideActive = 1;
+                            }
+                            unsigned before = openpete_frame;
+                            /* Same pre-yield hook as the main loop —
+                             * per-frame guest mutations (demo-mode clamp,
+                             * quirk pokes) are part of the timeline;
+                             * skipping them made replay diverge
+                             * (measured: psyq_rand_seed at the first
+                             * replayed tick). */
+                            game_on_frame_pre(&g_game.cpu, openpete_frame);
+                            co_switch((cothread_t)openpete_game_fiber);
+                            if (openpete_frame == before) break; /* safety */
+                        }
+                        input_log_truncate(kf->log_idx +
+                                           (int)(target - kf->frame));
+                        openpete_rewind_drop_after(openpete_frame);
+                        if (!bk2_active) g_PsyX_Pad_OverrideActive = 0;
+                        rewound_this_iter = true;
+                    }
+                }
+            }
+
             /* Scheduled savestate ops (--state-save-on-frame /
              * --state-load-on-frame): the autonomous test vehicle for the
              * savestate plan's restore gates. One-shot each, same quiescent
@@ -1709,6 +1864,30 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * (OPENPETE_HANDOFF_AT / openpete_handoff_request). Same
              * quiescence guarantees as the savestate ops above. */
             openpete_handoff_poll(&g_game.cpu);
+
+            /* Any op above may have RE-ANCHORED openpete_frame (savestate
+             * load, stress rollback, handoff resume). The bk2 override was
+             * stamped for the PRE-jump frame — re-derive it for the new
+             * one or the very next tick runs with the future frame's
+             * input (measured: rollback+replay self-mismatch on movies
+             * with an input edge inside the window). Silent twin of the
+             * stamp block above; logging/status stay main-site-only. */
+            if (bk2_active && openpete_frame != bk2_stamped_frame) {
+                int bf = (int)openpete_frame - bk2_offset;
+                unsigned short bits = 0xFFFF;
+                int ovr = 0;
+                if (bf >= 0 && bf < bk2.frame_count) {
+                    const bk2_frame_t* fr = &bk2.frames[bf];
+                    bits = fr->buttons;
+                    g_PsyX_Pad_AnalogOverride[0] = fr->axes[2];
+                    g_PsyX_Pad_AnalogOverride[1] = fr->axes[3];
+                    g_PsyX_Pad_AnalogOverride[2] = fr->axes[0];
+                    g_PsyX_Pad_AnalogOverride[3] = fr->axes[1];
+                    ovr = 1;
+                }
+                g_PsyX_Pad_InputOverride = bits;
+                g_PsyX_Pad_OverrideActive = ovr;
+            }
 
             /* Frame-step hotkeys. F7 edge-triggered toggle; F8 sets
              * g_step_one whenever held while paused, so the natural
@@ -1846,7 +2025,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * F8 — one tick per held-iter. */
         unsigned frame_before_yield = openpete_frame;
         bool ticked_this_iter = false;
-        bool yield_now = sim_due && (!g_paused || g_step_one);
+        bool yield_now = sim_due && (!g_paused || g_step_one)
+                                 && !rewound_this_iter;
         if (yield_now) {
             g_step_one = false;
             game_on_frame_pre(&g_game.cpu, openpete_frame);

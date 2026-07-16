@@ -39,6 +39,10 @@ add_library(openpete_core STATIC
     # rewind restore). See openpete_discontinuity.h.
     runtime/discontinuity.c
 
+    # Rewind keyframe ring (--rewind N seconds; Backspace scrubs back).
+    # Driver lives in run.c. See openpete_rewind.h (savestate plan P4).
+    runtime/rewind.c
+
     # Phase 1b: slim PSX runtime
     runtime/cpu.c
     runtime/boot.c

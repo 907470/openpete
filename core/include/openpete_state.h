@@ -34,6 +34,31 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
 int openpete_state_load_file(const char* path, CPUState* cpu,
                              unsigned* out_frame);
 
+/* ── In-memory snapshot (rewind keyframes / runahead speculation) ──────
+ * Same-process only: no header, no identity gating, no file I/O — pure
+ * memcpy of the volatile state (CPU regs + RAM + scratch + SPU
+ * deterministic mirror + CD cursors + frame/vbl counters).
+ *
+ * Deliberately EXCLUDED (callers must gate accordingly):
+ *   - VRAM + SPU sample RAM: mutate only inside load windows; users run
+ *     at gameplay steady-state (runahead is hard-gated OFF during loads;
+ *     rewind keyframes may add VRAM dirty-rect capture later, P4).
+ *   - mods section + verdicts (same process, same mods).
+ *   - game_extra (WAD cursor only moves during loads).
+ *
+ * load(quiet=1): speculative restore — deterministic mirrors only; no
+ * discontinuity broadcast, no game/mod resync, no OpenAL perturbation.
+ * The caller is re-running the SAME timeline (runahead rollback, stress).
+ * load(quiet=0): user-visible restore — full resync semantics (interp
+ * flush via the discontinuity broadcast, overlay re-sync, AL stops). */
+typedef struct openpete_state_mem openpete_state_mem_t;
+openpete_state_mem_t* openpete_state_mem_new(void);
+void openpete_state_mem_free(openpete_state_mem_t* m);
+int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
+                             unsigned frame);
+int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
+                             unsigned* out_frame, int quiet);
+
 /* Resolve the per-user state directory (created as needed). */
 int openpete_state_resolve_dir(char* out, unsigned long out_size);
 

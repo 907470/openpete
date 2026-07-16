@@ -85,6 +85,12 @@ uint32_t game_state_extra_size(void);
 void     game_state_extra_save(void* dst);            /* dst has extra_size bytes */
 void     game_state_extra_load(const void* src, uint32_t size);
 
+/* 1 iff gameplay is live and steady-state (in-level, not booting/loading/
+ * title): the gate for the in-memory snapshot users (rewind keyframes,
+ * runahead, the --state-stress harnesses) — the mem snapshot excludes
+ * sections that only mutate outside this state (VRAM, SPU sample RAM). */
+int game_is_gameplay_live(CPUState* cpu);
+
 /* --- Position probe (for the BK2 determinism harness) ---
  * Returns 0 and writes the player's world position into [out_x, out_y,
  * out_z] (engine units, signed) when game state is meaningful. Returns

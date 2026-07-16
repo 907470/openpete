@@ -219,6 +219,24 @@ typedef struct {
     int         state_load_on_frame;   /* -1 = disabled */
     const char* state_load_input;      /* path; required when load armed */
 
+    /* Savestate stress harnesses (P3 restore-at-yield gates; headless):
+     * state_stress N       — every N ticked iterations: in-memory save +
+     *                        immediate quiet restore. A clean run and a
+     *                        stressed run must produce identical
+     *                        --gameplay-hash-log timelines.
+     * state_stress_rewind K— save, run K more iterations, restore, repeat
+     *                        (the runahead rollback shape). The repeated
+     *                        window's hash rows must self-match pass 1. */
+    int         state_stress;          /* 0 = disabled */
+    int         state_stress_rewind;   /* 0 = disabled */
+
+    /* Rewind (savestate P4). rewind_window: seconds of keyframe ring
+     * (0 = off). rewind_hold_frame/iters: headless harness — simulate
+     * holding the rewind key for N iterations at frame A. */
+    int         rewind_window;         /* 0 = disabled */
+    int         rewind_hold_frame;     /* -1 = disabled */
+    int         rewind_hold_iters;
+
     /* Seed g_ram from a 2 MB file before the recomp dispatches. Used to
      * pin-prime openpete with PCSX-Redux's RAM at the same instant — gives
      * the recompiler a byte-identical starting state, so any subsequent

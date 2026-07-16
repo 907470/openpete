@@ -376,6 +376,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             on|off also accepted). Alt+Enter / double-click / the O-menu\n"
         "                             DISPLAY row toggle it live. Display-only.\n"
         "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
+        "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
+        "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --render-fps N             target render Hz (default: the display's refresh rate; 0=match\n"
         "                             sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)\n"
         "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
@@ -469,6 +471,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --state-save-output PATH   scheduled-save path (default ./frameN.state)\n"
         "  --state-load-on-frame N    load --state-load-input once openpete_frame reaches N (re-anchors the frame counter)\n"
         "  --state-load-input PATH    state file for the scheduled load\n"
+        "  --state-stress N           every N ticks: in-memory save + immediate quiet restore (restore-at-yield gate)\n"
+        "  --state-stress-rewind K    save, run K iterations, restore, repeat (runahead rollback shape)\n"
+        "  --rewind-hold A:N          headless: simulate holding the rewind key for N iterations at frame A\n"
         "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
         "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
         "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
@@ -516,6 +521,11 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->state_save_output   = "./frameN.state";
     opts->state_load_on_frame = -1;
     opts->state_load_input    = NULL;
+    opts->state_stress        = 0;
+    opts->state_stress_rewind = 0;
+    opts->rewind_window       = 0;
+    opts->rewind_hold_frame   = -1;
+    opts->rewind_hold_iters   = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
@@ -795,6 +805,23 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--state-load-input") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->state_load_input = v; i++;
+        } else if (strcmp(a, "--state-stress") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_stress = atoi(v); i++;
+        } else if (strcmp(a, "--state-stress-rewind") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_stress_rewind = atoi(v); i++;
+        } else if (strcmp(a, "--rewind") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->rewind_window = atoi(v); i++;
+        } else if (strcmp(a, "--rewind-hold") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (sscanf(v, "%d:%d", &opts->rewind_hold_frame,
+                       &opts->rewind_hold_iters) != 2) {
+                fprintf(stderr, "openpete: --rewind-hold expects A:N, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--seed-ram") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->seed_ram_path = v; i++;
