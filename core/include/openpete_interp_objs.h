@@ -106,6 +106,13 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len);
  * a later slot reuse pairs as a fresh spawn rather than across the gap. */
 void openpete_interp_objs_end_tick(void);
 
+/* Drop every tracked object (guest-state discontinuity: savestate load,
+ * rewind restore). Every entry describes the pre-jump timeline; after this,
+ * the next capture tick re-registers everything as a spawn (have_prev=0) so
+ * feeders snap instead of lerping across the discontinuity. Fired via the
+ * openpete_discontinuity broadcast — see openpete_discontinuity.h. */
+void openpete_interp_objs_reset(void);
+
 /* Look up an object by identity. Returns NULL if not tracked. The returned
  * pointer is valid until the next end_tick(). */
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);

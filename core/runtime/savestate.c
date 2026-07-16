@@ -12,7 +12,11 @@
 //   uint32_t  ram_bytes
 //   uint32_t  scratch_bytes
 //   uint32_t  vram_bytes    (1 MiB — VRAM_WIDTH * VRAM_HEIGHT * 2)
-//   uint32_t  reserved[7]   = 0  (room for DRAWENV/DISPENV/SPU offsets later)
+//   uint32_t  reserved[7]   — [0] = openpete_vbl at save, [1] = 1 iff [0]
+//                             is present (older files: both 0 → vbl not
+//                             restored, guest wait-loops self-heal with one
+//                             wild delta). [2..6] = 0 (room for DRAWENV/
+//                             DISPENV/SPU offsets later).
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -39,6 +43,8 @@
 // that as long as the user does a fresh build between sessions.)
 
 #include "openpete_state.h"
+#include "openpete_discontinuity.h"
+#include "openpete_fiber.h"  /* openpete_vbl — saved/restored via reserved[0] */
 #include "openpete_log.h"
 #include "openpete_mods.h"   /* per-mod state participation */
 #include "openpete_psx.h"
@@ -231,6 +237,13 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     hdr.ram_bytes     = OPENPETE_PSX_RAM_SIZE;
     hdr.scratch_bytes = OPENPETE_PSX_SCRATCH_SIZE;
     hdr.vram_bytes    = PsyX_VRAM_GetSize();
+    /* Guest-visible VBL counter (VSync(-1) reads it; Spyro's wait loops
+     * compare it against counters stored in the SAVED guest RAM). Without
+     * restoring it, the first post-load wait loop sees a wild delta and
+     * exits early — a one-VBL timeline skew (measured: post-load hash
+     * timeline leads the post-save one by exactly one row). */
+    hdr.reserved[0]   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    hdr.reserved[1]   = 1u;   /* reserved[0] is present */
 
     /* Snapshot VRAM into a heap buffer before writing — keeps the host-
      * side `vram` array stable across the (potentially slow) disk I/O
@@ -367,6 +380,12 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     (void)PsyX_VRAM_Restore(vram_buf, hdr.vram_bytes);
     free(ram_buf); free(vram_buf);
 
+    /* Re-anchor the guest-visible VBL counter to the saved value (see the
+     * save-side comment). Older files carry zeros here → leave the counter
+     * running and let the guest's wait loops self-heal as before. */
+    if (hdr.reserved[1])
+        SDL_SetAtomicInt(&openpete_vbl, (int)hdr.reserved[0]);
+
     /* Per-game post-load resync — restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
     game_on_state_loaded(cpu);
@@ -374,6 +393,12 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     /* Mod participation blobs — after commit so load_fns that peek at
      * guest state see the restored world. */
     openpete_mods_state_dispatch();
+
+    /* Broadcast the discontinuity LAST, once engine + game + mod state is
+     * fully committed: host caches derived from guest RAM (interp prev/curr
+     * tables, texture-pack registry, bk2 recording, ...) resync here so
+     * nothing carries a pre-load snapshot across the jump. */
+    openpete_guest_discontinuity_notify();
 
     if (out_frame) *out_frame = hdr.frame;
     OPL_INFO_F("savestate", "loaded %s (frame=%u)", path, hdr.frame);

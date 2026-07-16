@@ -91,6 +91,14 @@ typedef struct {
 int  openpete_interp_init(void);
 void openpete_interp_shutdown(void);
 
+/* Invalidate the snapshot ring (keeps the region config). Guest-state
+ * discontinuity (savestate load, rewind restore): the ring's snapshots
+ * describe the pre-jump timeline; dropping them makes the next present
+ * snap to the restored state instead of sweeping a full-scene lerp across
+ * the jump. init() self-registers this (plus the objs-table reset) with
+ * the openpete_discontinuity broadcast. */
+void openpete_interp_reset(void);
+
 /* Active iff init() succeeded AND the game supplied a non-empty region
  * table AND `--render-fps` is set above the sim rate (caller's choice).
  * Defaults to "off"; flip on via openpete_interp_set_enabled. */

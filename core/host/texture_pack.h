@@ -40,6 +40,15 @@ void texture_pack_on_move(int src_x, int src_y, int w, int h,
 /* Record a ClearImage: entries covered by the rect are invalidated. */
 void texture_pack_on_clear(int x, int y, int w, int h);
 
+/* Guest-state discontinuity (savestate load): VRAM was wholesale-replaced
+ * WITHOUT flowing through the op seam above, so live entries may describe
+ * pre-load uploads. Re-hashes every live entry's rect against the restored
+ * VRAM: matching content keeps its identity (same-level load = everything
+ * survives), mismatches are killed (never serve a wrong replacement; the
+ * asset returns on the next real upload). Registered with the
+ * openpete_discontinuity broadcast by texture_pack_init(). */
+void texture_pack_on_restore(void);
+
 /* ---- draw-time query (the material seam, Phase 4) ----------------------- */
 
 /* Resolved identity for one draw-time material + UV box. `thash` is the

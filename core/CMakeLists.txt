@@ -29,6 +29,11 @@ add_library(openpete_core STATIC
     runtime/savestate.c
     runtime/handoff.c
 
+    # Guest-state discontinuity broadcast: host caches derived from guest
+    # RAM register resync actions fired after a savestate load (later:
+    # rewind restore). See openpete_discontinuity.h.
+    runtime/discontinuity.c
+
     # Phase 1b: slim PSX runtime
     runtime/cpu.c
     runtime/boot.c

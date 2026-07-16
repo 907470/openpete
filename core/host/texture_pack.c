@@ -14,8 +14,11 @@
  * resolved id (openpete-texture-replacement plan: hash exactly what was
  * uploaded, never a guessed VRAM region). */
 #include "texture_pack.h"
+#include "openpete_discontinuity.h"
 #include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_native_vram.h"
+
+#include "PsyX/PsyX_public.h"  /* PsyX_VRAM_Snapshot — restore-time rescan */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -219,7 +222,59 @@ void texture_pack_init(void)
 {
     if (s_inited) return;
     s_inited = 1;
+    (void)openpete_on_guest_discontinuity(texture_pack_on_restore);
     tp_repl_scan();
+}
+
+void texture_pack_on_restore(void)
+{
+    if (!s_inited) return;
+    unsigned bytes = PsyX_VRAM_GetSize();
+    uint16_t *snap = (uint16_t *)malloc(bytes);
+    if (!snap || PsyX_VRAM_Snapshot(snap, bytes) != 0) {
+        /* Can't verify — kill everything rather than risk serving a stale
+         * replacement over restored content. */
+        free(snap);
+        int killed = 0;
+        for (int i = 0; i < s_ent_n; i++)
+            if (s_ent[i].alive) { s_ent[i].alive = 0; killed++; }
+        if (killed) s_gen++;
+        fprintf(stderr, "[texpack] guest restore: VRAM snapshot failed; "
+                "%d entries killed unverified\n", killed);
+        return;
+    }
+
+    /* The PsyX mirror is the authoritative post-restore content (the native
+     * model refreshes lazily at the next present). Re-hash each live rect;
+     * identity survives iff the content still matches. Note: thash covers
+     * the FULL pre-clamp upload source while the rect is post-clamp, so a
+     * clamped upload re-hashes differently and dies here — a safe false
+     * negative (no wrong replacement; returns on the next real upload). */
+    const int vw = OPENPETE_VRAM_W;
+    const int vh = (int)(bytes / ((unsigned)vw * 2u));
+    int kept = 0, killed = 0;
+    for (int i = 0; i < s_ent_n; i++) {
+        tp_entry *e = &s_ent[i];
+        if (!e->alive) continue;
+        if (e->x < 0 || e->y < 0 || e->x + e->w > vw || e->y + e->h > vh) {
+            e->alive = 0; killed++;
+            continue;
+        }
+        XXH3_state_t st;
+        XXH3_64bits_reset(&st);
+        for (int r = 0; r < e->h; r++)
+            XXH3_64bits_update(&st, snap + (size_t)(e->y + r) * (size_t)vw + e->x,
+                               (size_t)e->w * 2);
+        if (XXH3_64bits_digest(&st) == e->thash) {
+            kept++;
+        } else {
+            e->alive = 0; killed++;
+        }
+    }
+    free(snap);
+    if (killed) s_gen++;
+    fprintf(stderr, "[texpack] guest restore: %d entries verified live, "
+            "%d stale (killed)\n", kept, killed);
 }
 void texture_pack_shutdown(void)
 {

@@ -18,6 +18,7 @@
  */
 #include "bk2_record.h"
 #include "bk2_movie.h"   /* bk2_frame_t */
+#include "openpete_discontinuity.h"
 #include "openpete_log.h"
 
 #include "miniz.h"
@@ -48,11 +49,27 @@ static struct {
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
 
+/* A savestate load replaces guest state mid-recording. Frames appended
+ * after the jump would splice two timelines into one non-replayable movie
+ * (the replay can't reproduce the load), so finalize NOW: the .bk2 on disk
+ * stays valid up to the load point, and appends after this no-op. Proper
+ * truncate-to-loaded-frame support arrives with the input_log lift-out
+ * (savestate plan P1). */
+static void bk2_record_on_guest_discontinuity(void) {
+    if (!s_rec.active) return;
+    OPL_ERROR_F("bk2-record",
+                "guest state replaced (savestate load) at frame %d — "
+                "finalizing movie here; frames after the load are NOT recorded",
+                s_rec.count);
+    (void)bk2_record_finalize();
+}
+
 int bk2_record_begin(const char* path, const char* args_sidecar) {
     if (s_rec.active) {
         OPL_ERROR_F("bk2-record", "begin called twice");
         return -1;
     }
+    (void)openpete_on_guest_discontinuity(bk2_record_on_guest_discontinuity);
     s_rec.path = strdup(path);
     s_rec.capacity = 16 * 1024;
     s_rec.frames = (bk2_frame_t*)malloc((size_t)s_rec.capacity * sizeof(bk2_frame_t));

@@ -149,6 +149,12 @@ void openpete_interp_objs_end_tick(void) {
     s_stat_despawned = despawned;
 }
 
+void openpete_interp_objs_reset(void) {
+    memset(s_tab, 0, sizeof(s_tab));
+    s_count = 0;
+    s_stat_tracked = s_stat_paired = s_stat_spawned = s_stat_despawned = 0;
+}
+
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key) {
     if (key == 0) return NULL;
     int found;

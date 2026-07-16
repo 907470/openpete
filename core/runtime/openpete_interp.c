@@ -14,6 +14,8 @@
  */
 
 #include "openpete_interp.h"
+#include "openpete_interp_objs.h"     /* reset on guest discontinuity */
+#include "openpete_discontinuity.h"
 #include "openpete_psx.h"
 #include "openpete_log.h"
 
@@ -51,8 +53,21 @@ void openpete_interp_register_regions(const openpete_interp_region_t* regions,
     s_region_count = (regions ? count : 0);
 }
 
+/* Guest state was replaced (savestate load / rewind restore): every snapshot
+ * in both interp stores describes the OLD timeline. Drop them so the next
+ * present snaps to the restored state instead of lerping a full-scene smear
+ * across the discontinuity (prev = pre-load, curr = post-load). */
+static void interp_on_guest_discontinuity(void) {
+    openpete_interp_reset();
+    openpete_interp_objs_reset();
+}
+
 int openpete_interp_init(void) {
     if (s_initialized) return 0;
+
+    /* Register even when capture stays disabled (no regions): the objs
+     * table can still be driven by a registered capture callback. */
+    (void)openpete_on_guest_discontinuity(interp_on_guest_discontinuity);
 
     if (!s_regions || s_region_count == 0) {
         OPL_INFO_F("interp", "no game regions registered; capture disabled");
@@ -102,6 +117,13 @@ int openpete_interp_init(void) {
 void openpete_interp_shutdown(void) {
     s_initialized = 0;
     s_enabled = 0;
+}
+
+void openpete_interp_reset(void) {
+    /* Invalidate the ring but keep the region-table config (total_bytes,
+     * region_offsets) computed at init — only the SNAPSHOTS are stale. */
+    for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
+    s_head = 0;
 }
 
 void openpete_interp_set_enabled(int on) {

@@ -1674,6 +1674,35 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 }
             }
 
+            /* Scheduled savestate ops (--state-save-on-frame /
+             * --state-load-on-frame): the autonomous test vehicle for the
+             * savestate plan's restore gates. One-shot each, same quiescent
+             * point + post-load frame re-anchor as the hotkeys. Save is
+             * checked BEFORE load so save@N + load@N in one run captures
+             * then immediately restores (a same-frame roundtrip probe). */
+            static bool sched_saved = false, sched_loaded = false;
+            if (!sched_saved && opts->state_save_on_frame >= 0 &&
+                (int)openpete_frame >= opts->state_save_on_frame) {
+                sched_saved = true;
+                (void)openpete_state_save_file(opts->state_save_output,
+                                               &g_game.cpu, openpete_frame);
+            }
+            if (!sched_loaded && opts->state_load_on_frame >= 0 &&
+                (int)openpete_frame >= opts->state_load_on_frame) {
+                sched_loaded = true;
+                if (!opts->state_load_input) {
+                    OPL_ERROR_F("savestate",
+                                "--state-load-on-frame armed but no --state-load-input");
+                } else {
+                    unsigned loaded_frame = openpete_frame;
+                    if (openpete_state_load_file(opts->state_load_input,
+                                                 &g_game.cpu,
+                                                 &loaded_frame) == 0) {
+                        openpete_frame = loaded_frame;
+                    }
+                }
+            }
+
             /* Process handoff (modding P2): resume on the first pass of
              * a --resume-handoff process; checkpoint+exec when armed
              * (OPENPETE_HANDOFF_AT / openpete_handoff_request). Same

@@ -465,6 +465,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
         "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
         "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
+        "  --state-save-on-frame N    savestate to --state-save-output once openpete_frame (VBL) reaches N\n"
+        "  --state-save-output PATH   scheduled-save path (default ./frameN.state)\n"
+        "  --state-load-on-frame N    load --state-load-input once openpete_frame reaches N (re-anchors the frame counter)\n"
+        "  --state-load-input PATH    state file for the scheduled load\n"
         "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
         "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
         "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
@@ -508,6 +512,10 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->screenshot_presents_count = 1;
     opts->ram_dump_on_frame   = -1;
     opts->ram_dump_output     = "./ram.bin";
+    opts->state_save_on_frame = -1;
+    opts->state_save_output   = "./frameN.state";
+    opts->state_load_on_frame = -1;
+    opts->state_load_input    = NULL;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
@@ -775,6 +783,18 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--ram-dump-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->ram_dump_output = v; i++;
+        } else if (strcmp(a, "--state-save-on-frame") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_save_on_frame = atoi(v); i++;
+        } else if (strcmp(a, "--state-save-output") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_save_output = v; i++;
+        } else if (strcmp(a, "--state-load-on-frame") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_load_on_frame = atoi(v); i++;
+        } else if (strcmp(a, "--state-load-input") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->state_load_input = v; i++;
         } else if (strcmp(a, "--seed-ram") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->seed_ram_path = v; i++;

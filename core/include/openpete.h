@@ -208,6 +208,17 @@ typedef struct {
     int         ram_dump_on_frame;     /* -1 = disabled */
     const char* ram_dump_output;       /* path; default ./ram.bin */
 
+    /* Scheduled savestate ops — fire once at the savestate quiescent point
+     * (game fiber yielded) when openpete_frame (a VBL counter) reaches N.
+     * Headless-friendly: this is the autonomous test vehicle for the
+     * savestate plan's restore-correctness gates (save→tick→restore→tick
+     * hash A/B) — see plans/openpete-savestate-frame-step-rewind.md P0/P3.
+     * Load re-anchors openpete_frame exactly like the hotkey path. */
+    int         state_save_on_frame;   /* -1 = disabled */
+    const char* state_save_output;     /* path; default ./frameN.state */
+    int         state_load_on_frame;   /* -1 = disabled */
+    const char* state_load_input;      /* path; required when load armed */
+
     /* Seed g_ram from a 2 MB file before the recomp dispatches. Used to
      * pin-prime openpete with PCSX-Redux's RAM at the same instant — gives
      * the recompiler a byte-identical starting state, so any subsequent
