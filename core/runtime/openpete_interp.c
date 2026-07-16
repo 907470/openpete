@@ -202,6 +202,38 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     slot->valid = 1;
 }
 
+static int ra_commit_env_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_RA_CAM_COMMIT"); v = !(e && *e == '0'); }
+    return v;
+}
+
+int openpete_interp_ra_commit_active(void) {
+    if (!s_initialized || !s_enabled || !s_regions) return 0;
+    if (!ra_commit_env_on()) return 0;
+    for (size_t r = 0; r < s_region_count; ++r)
+        if (s_regions[r].ra_commit) return 1;
+    return 0;
+}
+
+void openpete_interp_recapture_committed(void) {
+    if (!openpete_interp_ra_commit_active()) return;
+    openpete_interp_snapshot_t* curr = &s_snap[s_head];
+    if (!curr->valid) return;
+    /* Overwrite flagged regions of the NEWEST slot in place — even when this
+     * tick's capture deduped (no roll): the slot then still holds the last
+     * distinct state, and refreshing its committed regions keeps them the
+     * freshest committed bytes known. tick/tick_ns stay untouched; the
+     * committed region shares the led regions' alpha mapping, it just pairs
+     * one branch-free timeline instead of the led one. */
+    for (size_t r = 0; r < s_region_count; ++r) {
+        if (!s_regions[r].ra_commit) continue;
+        void* host = openpete_psx_to_host_ptr(s_regions[r].psx_addr);
+        if (host) memcpy(curr->data + curr->region_offsets[r], host,
+                         s_regions[r].length);
+    }
+}
+
 int openpete_interp_query(op_time_t now_ns,
                           op_time_t sim_period_ns,
                           double*   out_alpha,

@@ -56,7 +56,16 @@
  *                     lerp + animation-clock feeders. Singleton, so it lives
  *                     here rather than in the per-object (indirect) table. */
 static const openpete_interp_region_t s_spyro_interp_regions[] = {
-    { "g_Camera", 0x80076DD0, 0x110 },
+    /* ra_commit=1: the camera PRESENTS from the committed timeline under
+     * runahead (driver recaptures this region post-rollback). The follow-
+     * camera is where misprediction is catastrophic — it's the view
+     * transform, so an R2 release un-showed N ticks of mispredicted pan
+     * across every pixel (the release snap) — and where the extra N ticks
+     * of latency are invisible (it trails by design). Spyro/mobys/
+     * particles stay led, keeping the input-lag win where it's felt. The
+     * game's own g_Camera state is untouched — this only picks which
+     * timeline the presentation lerps. */
+    { "g_Camera", 0x80076DD0, 0x110, 1 },
     { "g_Spyro",  0x80078A58, 0x2A4 },
     /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
      * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the

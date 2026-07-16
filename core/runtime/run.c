@@ -2237,8 +2237,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 if (ra_speculated) {
                     unsigned ra_lf = openpete_frame;
                     if (openpete_state_mem_load(ra_snap, &g_game.cpu,
-                                                &ra_lf, 1) == 0)
+                                                &ra_lf, 1) == 0) {
                         openpete_frame = ra_lf;
+                        /* Committed-timeline regions (g_Camera): replace
+                         * their led bytes in the ring's newest slot with
+                         * the just-restored committed state, so those
+                         * regions pair a branch-free timeline and can
+                         * never show (or snap back from) a misprediction. */
+                        openpete_interp_recapture_committed();
+                    }
                 }
 
                 /* Spine health probe (OPENPETE_INTERP_QUERYTEST): confirm the

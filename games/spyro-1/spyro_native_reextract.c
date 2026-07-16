@@ -20,11 +20,17 @@ extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
 
 /* Runahead correction rebase (default ON; OPENPETE_RA_REBASE=0 disables):
  * on an input-edge tick the led pair jumps prediction branches — lerping
- * table-prev (old branch) → table-curr (new branch) yanks the camera
- * backward (measured: -36u/-88u per present at N=1/2 on an R2 release).
- * Rebasing prev at the LAST SHOWN bytes glides from where the eye already
- * is to the corrected branch over one tick; backward motion never reaches
- * the screen. */
+ * table-prev (old branch) → table-curr (new branch) yanks the object
+ * backward. Rebasing prev at the LAST SHOWN bytes glides from where the
+ * eye already is to the corrected branch over one tick; backward motion
+ * never reaches the screen.
+ *
+ * SPYRO ONLY in the default configuration: the camera region is
+ * ra_commit (presented from the committed timeline — see
+ * spyro_interp_regions.c), so its pair never crosses a branch and a
+ * rebase would only kink it. The camera arm below stays as the fallback
+ * for OPENPETE_RA_CAM_COMMIT=0 A/Bs (where the led camera DID measure
+ * -36u/-88u per present at N=1/2 on an R2 release, -20/-70 rebased). */
 static int ra_rebase_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_RA_REBASE"); v = !(e && *e == '0'); }
@@ -1050,11 +1056,18 @@ static void spyro_native_reextract(void* cpu_v) {
          * while ring-curr is the LED tick — using live RAM collapsed the
          * pair to one tick (prev==curr) and the camera stepped at 30 Hz
          * (the "whole world jittery" report; every other feeder was led
-         * via the objs table, only the DIRECT regions snapped back). */
+         * via the objs table, only the DIRECT regions snapped back).
+         *
+         * Under runahead the camera region is COMMITTED-timeline
+         * (ra_commit recapture, spyro_interp_regions.c): the pair is
+         * branch-free, so no input-edge rebase — it would only kink a
+         * timeline that cannot mispredict. The rebase arm survives solely
+         * for the OPENPETE_RA_CAM_COMMIT=0 (led-camera) A/B config. */
         const uint8_t* pcam = prev->data + prev->region_offsets[0];
         const uint8_t* ccam = curr->data + curr->region_offsets[0];
         int ra_rebased = 0;
-        if (openpete_ra_input_edge && ra_rebase_on() && s_shown_cam_ok) {
+        if (openpete_ra_input_edge && ra_rebase_on() && s_shown_cam_ok &&
+            !openpete_interp_ra_commit_active()) {
             pcam = s_shown_cam;      /* glide from the shown state (see above) */
             use_herm = 0;            /* linear only — no tangent across branches */
             ra_rebased = 1;

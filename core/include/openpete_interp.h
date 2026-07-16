@@ -58,6 +58,16 @@ typedef struct {
     const char* name;       /* diagnostic */
     uint32_t    psx_addr;   /* KSEG0 PSX vaddr */
     uint32_t    length;     /* bytes to capture */
+    /* Present this region from the COMMITTED timeline under runahead:
+     * after the driver rolls guest RAM back from the led speculation head,
+     * openpete_interp_recapture_committed() re-reads flagged regions into
+     * the ring's newest slot, replacing the led bytes. Use for regions
+     * where a misprediction is catastrophic and latency is cheap — the
+     * follow-camera is the canonical case: showing it led means every
+     * input-edge un-shows N ticks of mispredicted pan (the R2 release
+     * snap), while showing it committed merely adds N ticks of follow-lag
+     * to an object that trails by design. 0 = led (default). */
+    int         ra_commit;
 } openpete_interp_region_t;
 
 /* Game registers its region table via this call before openpete_interp_init.
@@ -147,6 +157,22 @@ int openpete_interp_query3(op_time_t now_ns,
                            const openpete_interp_snapshot_t** out_prev2,
                            const openpete_interp_snapshot_t** out_prev,
                            const openpete_interp_snapshot_t** out_curr);
+
+/* Runahead committed-region recapture. The driver calls this AFTER rolling
+ * guest RAM back to the committed tick (the ring was captured at the led
+ * speculation head): every region flagged `ra_commit` is re-read from the
+ * now-committed guest RAM into the ring's newest slot. Flagged regions
+ * thus always pair committed(T-1)→committed(T) — a branch-free timeline
+ * identical to runahead-off, so they can never show a misprediction (and
+ * never need the correction rebase). No-op when disabled, when no region
+ * is flagged, or under OPENPETE_RA_CAM_COMMIT=0 (A/B kill switch). */
+void openpete_interp_recapture_committed(void);
+
+/* 1 iff the committed-region recapture is live (capture enabled + at least
+ * one ra_commit region + not killed by OPENPETE_RA_CAM_COMMIT=0). Game-side
+ * brackets use this to suppress input-edge handling (the correction rebase)
+ * for regions that are committed-timeline by construction. */
+int openpete_interp_ra_commit_active(void);
 
 /* Diagnostics. */
 uint64_t openpete_interp_total_captures(void);
