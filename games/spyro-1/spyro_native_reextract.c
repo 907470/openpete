@@ -917,7 +917,7 @@ static void spyro_native_reextract(void* cpu_v) {
     int cam_cut = 0;
     if (paired && cam && prev && curr) {
         const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
-        const int32_t* cp = (const int32_t*)(cam + CAM_OFF_POS);
+        const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_POS);
         double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
         if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
         /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
@@ -933,7 +933,7 @@ static void spyro_native_reextract(void* cpu_v) {
          * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
         if (!cam_cut) {
             const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
-            const int16_t* cm = (const int16_t*)(cam + CAM_OFF_PROJ);
+            const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_PROJ);
             double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
             if (frob < 4096.0 * 4096.0) cam_cut = 1;   /* angle > 90° per tick */
         }
@@ -1022,27 +1022,34 @@ static void spyro_native_reextract(void* cpu_v) {
             }
         }
 
-        /* (a) Camera: Q12 matrices + position (singleton, region 0). */
+        /* (a) Camera: Q12 matrices + position (singleton, region 0).
+         * FORWARD ENDPOINT = the RING's curr, not live RAM: identical when
+         * runahead is off (curr was captured from this very RAM at the
+         * tick), but under runahead live RAM is the restored REAL tick
+         * while ring-curr is the LED tick — using live RAM collapsed the
+         * pair to one tick (prev==curr) and the camera stepped at 30 Hz
+         * (the "whole world jittery" report; every other feeder was led
+         * via the objs table, only the DIRECT regions snapped back). */
         const uint8_t* pcam = prev->data + prev->region_offsets[0];
-        memcpy(cam_saved, cam, CAM_BYTES);        /* curr (live) */
+        const uint8_t* ccam = curr->data + curr->region_offsets[0];
+        memcpy(cam_saved, cam, CAM_BYTES);        /* live (bracket restore) */
         if (use_herm) {
-            herm_matrix(cam, pcam2, pcam, cam_saved, CAM_OFF_PROJ, alpha);
-            herm_matrix(cam, pcam2, pcam, cam_saved, CAM_OFF_VIEW, alpha);
-            herm_vec3  (cam, pcam2, pcam, cam_saved, CAM_OFF_POS,  alpha);
+            herm_matrix(cam, pcam2, pcam, ccam, CAM_OFF_PROJ, alpha);
+            herm_matrix(cam, pcam2, pcam, ccam, CAM_OFF_VIEW, alpha);
+            herm_vec3  (cam, pcam2, pcam, ccam, CAM_OFF_POS,  alpha);
             fpos_set_h(G_CAMERA,
-                       (const int32_t*)(pcam2     + CAM_OFF_POS),
-                       (const int32_t*)(pcam      + CAM_OFF_POS),
-                       (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
+                       (const int32_t*)(pcam2 + CAM_OFF_POS),
+                       (const int32_t*)(pcam  + CAM_OFF_POS),
+                       (const int32_t*)(ccam  + CAM_OFF_POS), alpha);
         } else {
-            lerp_matrix(cam, pcam, cam_saved, CAM_OFF_PROJ, alpha);
-            lerp_matrix(cam, pcam, cam_saved, CAM_OFF_VIEW, alpha);
-            lerp_vec3  (cam, pcam, cam_saved, CAM_OFF_POS,  alpha);
+            lerp_matrix(cam, pcam, ccam, CAM_OFF_PROJ, alpha);
+            lerp_matrix(cam, pcam, ccam, CAM_OFF_VIEW, alpha);
+            lerp_vec3  (cam, pcam, ccam, CAM_OFF_POS,  alpha);
             /* Fractional camera position (un-rounded) for the floor fix — same lerp,
-             * double precision. prev = pcam+POS, curr = cam_saved (the live curr we
-             * saved before the lerp overwrote RAM). */
+             * double precision. */
             fpos_set(G_CAMERA,
-                     (const int32_t*)(pcam      + CAM_OFF_POS),
-                     (const int32_t*)(cam_saved + CAM_OFF_POS), alpha);
+                     (const int32_t*)(pcam + CAM_OFF_POS),
+                     (const int32_t*)(ccam + CAM_OFF_POS), alpha);
         }
         cam_bracketed = 1;
 
@@ -1054,15 +1061,18 @@ static void spyro_native_reextract(void* cpu_v) {
         if (lt < 0) { const char* e = getenv("OPENPETE_LAG_TRACE"); lt = (e && *e && *e != '0'); }
         if (lt) {
             const int32_t* ip = (const int32_t*)(cam + CAM_OFF_POS);
-            fprintf(stderr, "[lag-trace f=%u] a=%.3f camX=%d camZ=%d\n",
-                    openpete_frame, alpha, ip[0], ip[2]);
+            const int32_t* pp = (const int32_t*)(pcam + CAM_OFF_POS);
+            const int32_t* cp = (const int32_t*)(ccam + CAM_OFF_POS);
+            fprintf(stderr, "[lag-trace f=%u] a=%.3f camX=%d camZ=%d prevX=%d currX=%d\n",
+                    openpete_frame, alpha, ip[0], ip[2], pp[0], cp[0]);
         }
 
         /* (b) Spyro position (singleton, region SPYRO_REGION). */
         sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
         if (sp) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
-            memcpy(sp_saved, sp, SPYRO_SAVE);          /* curr (live) */
+            const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION];
+            memcpy(sp_saved, sp, SPYRO_SAVE);          /* live (bracket restore) */
             /* pred1 for Spyro's m_Position, gated on the camera's prev2 continuity
              * PLUS a Spyro-specific position-step check (Spyro can warp while the
              * camera holds). Falls back to the linear lerp otherwise. */
@@ -1076,13 +1086,13 @@ static void spyro_native_reextract(void* cpu_v) {
                 sp_herm = (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0);
             }
             if (sp_herm) {
-                herm_vec3(sp, psp2, psp, sp_saved, 0, alpha);   /* +0x00 m_Position */
+                herm_vec3(sp, psp2, psp, csp, 0, alpha);   /* +0x00 m_Position */
                 fpos_set_h(G_SPYRO, (const int32_t*)psp2,
-                           (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
+                           (const int32_t*)psp, (const int32_t*)csp, alpha);
             } else {
-                lerp_vec3(sp, psp, sp_saved, 0, alpha);    /* +0x00 m_Position */
+                lerp_vec3(sp, psp, csp, 0, alpha);    /* +0x00 m_Position */
                 /* Fractional Spyro position (un-rounded) for the floor fix. */
-                fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)sp_saved, alpha);
+                fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)csp, alpha);
             }
             /* Per-segment (body/head/tail) animation clock: lerp each
              * m_FrameProgress (0x24/0x25/0x26) when its keyframe pair
@@ -1091,8 +1101,8 @@ static void spyro_native_reextract(void* cpu_v) {
             static const int frA[3] = {0x1E,0x20,0x22}, frB[3] = {0x1F,0x21,0x23},
                              prog[3] = {0x24,0x25,0x26};
             for (int s = 0; s < 3; s++) {
-                if (psp[frA[s]] == sp_saved[frA[s]] && psp[frB[s]] == sp_saved[frB[s]]) {
-                    int pa = psp[prog[s]], ca = sp_saved[prog[s]];
+                if (psp[frA[s]] == csp[frA[s]] && psp[frB[s]] == csp[frB[s]]) {
+                    int pa = psp[prog[s]], ca = csp[prog[s]];
                     int la = (int)((double)pa + ((double)ca - pa) * alpha + 0.5);
                     if (la < 0) la = 0; else if (la > 255) la = 255;
                     sp[prog[s]] = (uint8_t)la;
@@ -1107,7 +1117,7 @@ static void spyro_native_reextract(void* cpu_v) {
              * real — else leave that segment on the byte-exact path (snap). */
             for (int s = 0; s < 3; s++) {
                 uint32_t off = 0x0Cu + (uint32_t)s * 4u;
-                uint32_t pr, cr; memcpy(&pr, psp + off, 4); memcpy(&cr, sp_saved + off, 4);
+                uint32_t pr, cr; memcpy(&pr, psp + off, 4); memcpy(&cr, csp + off, 4);
                 if (s != 0 && (pr == 0 || cr == 0)) continue;   /* sticky / transition → byte path */
                 for (int k = 0; k < 3; k++) {
                     int pbk = (int)((pr >> (k*8)) & 0xFFu), cbk = (int)((cr >> (k*8)) & 0xFFu);
@@ -1141,13 +1151,14 @@ static void spyro_native_reextract(void* cpu_v) {
         fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
         if (fl) {
             const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION];
+            const uint8_t* cfl = curr->data + curr->region_offsets[FLAME_REGION];
             const int32_t* pp = (const int32_t*)(pfl + FLAME_POS_OFF);
-            const int32_t* cp = (const int32_t*)(fl  + FLAME_POS_OFF);
+            const int32_t* cp = (const int32_t*)(cfl + FLAME_POS_OFF);
             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
             if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
-                memcpy(fl_saved, fl, FLAME_SAVE);                 /* curr (live) */
-                lerp_vec3  (fl, pfl, fl_saved, FLAME_POS_OFF, alpha);
-                lerp_matrix(fl, pfl, fl_saved, FLAME_ATT_OFF, alpha);
+                memcpy(fl_saved, fl, FLAME_SAVE);                 /* live (bracket restore) */
+                lerp_vec3  (fl, pfl, cfl, FLAME_POS_OFF, alpha);
+                lerp_matrix(fl, pfl, cfl, FLAME_ATT_OFF, alpha);
                 /* Per-strand keyframe counter: advance fractionally so the ribbon
                  * extends/scrolls at the present rate. The counter selects the
                  * ribbon's window into the static cross-section spine (one 8-byte
@@ -1163,7 +1174,7 @@ static void spyro_native_reextract(void* cpu_v) {
                  * strand (all += g_DeltaTime from an integer prev), so the frac is
                  * shared; take it from the first advancing strand. */
                 for (int s = 0; s < 8; s++) {
-                    int pcnt = pfl[FLAME_CNT_OFF + s], ccnt = fl_saved[FLAME_CNT_OFF + s];
+                    int pcnt = pfl[FLAME_CNT_OFF + s], ccnt = cfl[FLAME_CNT_OFF + s];
                     int d = ccnt - pcnt;
                     if (d > -8 && d < 8) {
                         double fadv = (double)pcnt + (double)d * alpha;
@@ -1188,12 +1199,13 @@ static void spyro_native_reextract(void* cpu_v) {
         sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
         if (sh) {
             const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION];
+            const uint8_t* csh = curr->data + curr->region_offsets[SHADOW_REGION];
             const int32_t* pp = (const int32_t*)(psh + SHADOW_POS_OFF);
-            const int32_t* cp = (const int32_t*)(sh  + SHADOW_POS_OFF);
+            const int32_t* cp = (const int32_t*)(csh + SHADOW_POS_OFF);
             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
             if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
-                memcpy(sh_saved, sh, SHADOW_SAVE);            /* curr (live) */
-                lerp_vec3(sh, psh, sh_saved, SHADOW_POS_OFF, alpha);
+                memcpy(sh_saved, sh, SHADOW_SAVE);            /* live (bracket restore) */
+                lerp_vec3(sh, psh, csh, SHADOW_POS_OFF, alpha);
                 sh_bracketed = 1;
             }
         }

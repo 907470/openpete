@@ -102,6 +102,19 @@ static void vp_set_present_target(void) {
     } else {
         s_clk += (op_time_t)s_sp;         /* even step at the measured cadence */
         s_clk += (now - s_clk) / 16;      /* bounded pull toward reality */
+        /* HARD drift bound (±6 ms): the capture stamps live on their own
+         * PLL-smoothed grid anchored to wall time; this clock smooths the
+         * present cadence — two independent oscillators. When the present
+         * cadence shifts under load (runahead's speculation inside tick
+         * iterations was the trigger; measured drift to ~10 ms), the 1/16
+         * pull is too weak and the standing offset shows up directly as an
+         * interp-alpha bias: presents clamp at the interval's start and the
+         * tail is never shown — motion arrives as 30 Hz roll-jumps ("whole
+         * world jittery"). Smoothing within ±6 ms keeps the jitter
+         * rejection; beyond that, reality wins. */
+        const op_time_t cap = 6 * OP_NS_PER_MS;
+        if (s_clk < now - cap) s_clk = now - cap;
+        else if (s_clk > now + cap) s_clk = now + cap;
     }
     openpete_interp_set_present_target(s_clk);
 }
@@ -2072,6 +2085,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             ticked_this_iter = (openpete_frame != frame_before_yield);
 
             bool ra_speculated = false;
+            bool ra_skip_capture = false;
             if (ticked_this_iter) {
                 game_on_frame(&g_game.cpu, openpete_frame);
 
@@ -2084,9 +2098,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * (hash/position logs, input log, recorders, pacer,
                  * canonical state) sees the real timeline while every
                  * present interpolates one led by ~N ticks. Measured
-                 * L_submit = 2 ticks; N=2 collapses it. */
-                if (runahead_n > 0 && ra_snap &&
-                    game_is_gameplay_live(&g_game.cpu) &&
+                 * L_submit = 2 ticks; N=2 collapses it.
+                 *
+                 * ONCE PER TICK, on the tick's DRAW VBL only (the real
+                 * yield produced a present): the led state only advances
+                 * once per game tick, so speculating on the update VBL
+                 * too costs a full extra speculation for a capture that
+                 * dedupes away — and that cost lands INSIDE the present-
+                 * critical iteration, dragging the virtual present clock
+                 * behind the capture stamps (measured: alpha drifting to
+                 * -0.27, motion delivered as 30 Hz steps = the "whole
+                 * world jittery" report). Non-speculated ticked
+                 * iterations skip the interp captures entirely — the
+                 * ring must never see a real-timeline (led-minus-N)
+                 * state or it would pair backward. */
+                int ra_want = (runahead_n > 0 && ra_snap &&
+                               game_is_gameplay_live(&g_game.cpu));
+                if (ra_want && openpete_present_pending &&
                     openpete_state_mem_save(ra_snap, &g_game.cpu,
                                             openpete_frame) == 0) {
                     /* Host flags the guest's draw thunks mutate are part
@@ -2111,6 +2139,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     openpete_primitives_drawn = ra_prims;
                     ra_speculated = true;
                 }
+                ra_skip_capture = (ra_want && !ra_speculated);
 
                 /* fps-unlock Phase 2: snapshot the transform-bearing
                  * regions into the interp ring while the game fiber
@@ -2128,7 +2157,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * (proportional 1/32 nudge tracks real cadence; full resync on
                  * a stall/jump, e.g. CD loads) keeps the present-time → shown-
                  * time mapping continuous across rolls. */
-                {
+                if (!ra_skip_capture) {
                     static op_time_t s_vclk = 0;
                     static unsigned  s_vclk_f = 0;
                     const op_time_t vT = (op_time_t)((OP_NS_PER_SEC * 1001ull) / 60000ull);
@@ -2179,7 +2208,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * the game's object pools (g_LevelMobys) into the keyed
                  * prev/curr table for sub-tick lerp. Same read-only, same
                  * --render-fps>sim gate. No-op if no game callback. */
-                openpete_interp_objs_run_capture();
+                if (!ra_skip_capture) openpete_interp_objs_run_capture();
 
                 /* Runahead: captures done at the led head — roll back to
                  * the committed tick before anything else observes RAM. */

@@ -20,6 +20,7 @@
 #include "openpete_log.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -173,6 +174,22 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     if (curr->valid && total > 0 && memcmp(s_cap_scratch, curr->data, total) == 0) {
         s_total_dedupe_skips++;
         return;
+    }
+
+    /* OPENPETE_CAP_ROLL_DBG: one line per ROLL — which frame, and the first
+     * words of region 0 (the game's camera) before/after. Forensics for
+     * degenerate pairs (prev==curr in one region while another rolled). */
+    {
+        static int s_crd = -1;
+        if (s_crd < 0) { const char* e = getenv("OPENPETE_CAP_ROLL_DBG"); s_crd = (e && *e && *e != '0'); }
+        if (s_crd) {
+            uint32_t oldw = 0, neww = 0;
+            memcpy(&oldw, curr->data + 0x28, 4);      /* region0 + CAM pos.x (Spyro 1) */
+            memcpy(&neww, s_cap_scratch + 0x28, 4);
+            fprintf(stderr, "[cap-roll f=%u tick=%u] r0X %d -> %d%s\n",
+                    tick, tick, (int32_t)oldw, (int32_t)neww,
+                    (int32_t)oldw == (int32_t)neww ? "  (CAM-DEGENERATE)" : "");
+        }
     }
 
     /* State advanced — commit to the next ring slot. snap[s_head] becomes the
