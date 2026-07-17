@@ -1318,6 +1318,20 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
         static int s_on = -1;
         if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
         if (s_on) sp_pull = 128.0 * (double)(int8_t)cpu->read_byte(G_SPYRO + 0x27u);
+        /* Cap the pull per FRAME so the nearest vertex lands ON the near
+         * floor instead of clamping each vertex at it: a per-vertex clamp
+         * flattens everything the pull pushes past 1.0 to ONE depth and
+         * kills self-occlusion (the transition-flyby Spyro, close to the
+         * camera, showed his teeth through the back of his head). A capped
+         * UNIFORM pull keeps per-vertex depth strictly monotonic. */
+        if (sp_pull > 0.0) {
+            double minvz = 1e30;
+            for (int i = 0; i < s_swtri_n; i++)
+                for (int k = 0; k < 3; k++)
+                    if (s_swtri[i].v[k].vz > 0.0f && (double)s_swtri[i].v[k].vz < minvz)
+                        minvz = (double)s_swtri[i].v[k].vz;
+            if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
+        }
     }
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
     for (int i = 0; i < s_swtri_n; i++) {
@@ -1326,7 +1340,6 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
             double fvz = (double)w->v[k].vz - sp_pull;
-            if (w->v[k].vz > 0.0f && fvz < 1.0) fvz = 1.0;
             st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full((float)fvz));
             st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
             st.v[k].rgba = w->v[k].rgb | 0xFF000000u;

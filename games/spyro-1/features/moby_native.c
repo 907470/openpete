@@ -490,6 +490,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     int do_blend_p = two && (blend_p > 0 && frameB_p >= 0x80000000u);
     double tp = (double)blend_p / 4096.0;
 
+    double rec_minfvz = 1e30;   /* nearest in-front vertex after the pulls (near-floor lift) */
     vstream A, B, Ap, Bp;
     vstream_init(cpu, &A, frameA, s5);
     if (do_blend) vstream_init(cpu, &B, frameB, s5);
@@ -544,12 +545,20 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * ground it touches. 127 world units < one OT slot: it can flip only
          * pairs og calls a tie. */
         if (ot_slot_end > 0.0) fvz -= 127.0;
-        if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
+        if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
         out[i].vz = (float)fvz; out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
         out[i].ez = (float)((M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0);
+    }
+    /* Near-floor: if the pulls pushed this record past the near plane, lift
+     * the WHOLE record uniformly so its nearest vertex sits on the floor —
+     * a per-vertex clamp here flattened close-up mobys to one depth and
+     * killed their self-occlusion. Uniform lift keeps depth monotonic. */
+    if (rec_minfvz < 1.0 && rec_minfvz > -1e29) {
+        float lift = (float)(1.0 - rec_minfvz);
+        for (int i = 0; i < count; i++) out[i].vz += lift;
     }
     return count;
 }
@@ -1708,7 +1717,25 @@ static int build_walk_tris_inner(CPUState* cpu) {
         s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
-                   : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0; }
+                   : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0;
+          /* Regular-walk twin of the shaded HUD3D promotion: a UI-range moby
+           * that is a real 3D MODEL self-occludes and needs its own Z pass —
+           * the flat HUD layer's per-tri painter can't sort interpenetrating
+           * faces (the level-transition fly-in Spyro showed his teeth through
+           * the back of his head). Promote by PROJECTED view-Z extent of this
+           * record's verts (full-world units; a text glyph spans a few units,
+           * a body model hundreds). Thin glyphs stay flat HUD, under the
+           * player, like the shaded walk's falsified-promotion note demands. */
+          if (s_cur_ui == 1 && R->proj_n > 1) {
+              float lo = 1e30f, hi = -1e30f;
+              for (int pv = 0; pv < R->proj_n; pv++) {
+                  float pz = s_proj[R->proj_off + pv].vz;
+                  if (pz <= 0.0f) continue;
+                  if (pz < lo) lo = pz;
+                  if (pz > hi) hi = pz;
+              }
+              if (hi > lo && hi - lo >= 96.0f) s_cur_ui = 2;
+          } }
         /* Front-pass eligibility: this moby is one of the dragon-rescue cutscene
          * actors (g_DragonCutscene). Only for real actors (ui==0). */
         s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, mob);
@@ -3914,6 +3941,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
         int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
+        double rec_minfvz = 1e30;          /* nearest in-front vertex after pulls (near-floor lift) */
         double pvzmin=1e30, pvzmax=-1e30;  /* projected view-Z extent (rotation-aware half) */
         /* .s OT bias, SHADED path: the walk subtracts the SIGNED m_Rotation>>24
          * byte from the moby's OT index (0x80022D9C: t9 -= s4>>24; OT slots are
@@ -3972,10 +4000,16 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             /* One-slot tie pull — see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
             if (ot_slot_end > 0.0) fvz -= 127.0;
-            if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
+            if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
+        }
+        /* Near-floor lift, per moby (see moby_decode_project's twin): uniform,
+         * never a per-vertex flatten. Positive-vz verts only set the floor. */
+        if (rec_minfvz < 1.0 && rec_minfvz > -1e29) {
+            float lift = (float)(1.0 - rec_minfvz);
+            for (int vi = sv_off; vi < n; vi++) out[vi].vz += lift;
         }
         if (s_nshrecs < 256) {
             uint32_t scolor = cpu->read_word(m + 0x4Cu);   /* m_SpecularMetalColor */
