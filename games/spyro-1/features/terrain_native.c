@@ -943,6 +943,7 @@ typedef struct {
     tsvert_t* lpVprev; tsvert_t* hpVprev;
     float* lpVf; float* hpVf;
     uint32_t vrollPres, vfracPres;
+    int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
 } tscache_t;
 #define TSC_SLOTS 512
 static tscache_t s_tsc[TSC_SLOTS];
@@ -1491,6 +1492,33 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
     }
 }
 
+/* A sector named by an env poly-anim descriptor animates its packed verts in
+ * RAM — but the .s Phase-1 walk only re-packs the bank of the TIER it draws,
+ * so the LP bank of a sector the .s always bins HP (near) can hold an
+ * arbitrarily old pose (the Sunny-Flight wall's LP stays RAISED in RAM after
+ * the puzzle lowers the HP). Static LP-vs-HP coverage classification is
+ * meaningless for such sectors (it's a function of animation time — a stale
+ * raised LP wall reads as "uncovered by HP" and gets admitted as a gap
+ * filler), and native-only LP passes must never draw the stale bank. LP the
+ * .s itself draws is safe: the walk re-packs LP verts before drawing them. */
+static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
+                               uint32_t sectorPtr, uint32_t sectorCnt) {
+    for (int list = 0; list < 2; list++) {
+        uint32_t off  = list ? ENVANIM_HPPOLY_CNT : ENVANIM_LPPOLY_CNT;
+        uint32_t cnt  = rd(cpu, G_ENVANIM + off);
+        uint32_t base = rd(cpu, G_ENVANIM + off + 4);
+        if (!base || cnt == 0 || cnt > 1024) continue;
+        for (uint32_t k = 0; k < cnt; k++) {
+            uint32_t desc = rd(cpu, base + k * 4);
+            if (!desc) continue;
+            uint32_t idx = cpu->read_half(desc + 4);
+            if (idx >= sectorCnt) continue;
+            if (rd(cpu, sectorPtr + idx * 4) == s) return 1;
+        }
+    }
+    return 0;
+}
+
 static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                                 uint32_t lqTable, uint32_t hqTable,
                                 int texTblMode, int hiDetail,
@@ -1560,6 +1588,11 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
         tsc_classify_gapfill(cpu, C, sectorPtr, sectorCnt);
+        C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
+        if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
+            for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
+            C->nGapfill = 0;
+        }
     }
     return C;
 }
@@ -2455,6 +2488,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (pass == 0 && !drawLP) continue;
         if (pass == 1 && !drawHP) continue;
         if (passFill && !fillLP && !fillNearLP) continue;
+        if (passFill && SC->polyanim) continue;   /* stale LP bank — never backstop-fill */
 
         uint32_t faces; int nv, nf, faceStride;
         const tsvert_t* cverts; const tsface_t* cfaces;
