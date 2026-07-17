@@ -24,6 +24,11 @@ static op_time_t objs_tick_stamp(void) {
     return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now();
 }
 
+/* One sim tick in wall time (see the header note). Default NTSC; run.c
+ * rescales by 1/tick_scale so --tick-scale stretches every consumer's
+ * alpha denominator with the real cadence. */
+op_time_t g_openpete_tick_period_ns = (op_time_t)((OP_NS_PER_SEC * 1001) / 30000);
+
 #include <stdint.h>
 #include <string.h>
 

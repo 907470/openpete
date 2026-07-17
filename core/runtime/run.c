@@ -1265,6 +1265,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     s_render_fps       = render_fps;
     s_render_period_ns = render_period_ns;
     s_render_fps_dirty = 0;
+    /* One WALL-time tick for every sub-tick alpha denominator (ring +
+     * per-object phase lerps). Must stretch with --tick-scale: interp alphas
+     * are wall-clock-derived, so an unscaled (NTSC) cap makes every sweep run
+     * 1/tick_scale× too fast and pin at the clamp for the rest of the tick. */
+    g_openpete_tick_period_ns = 2 * sim_period_ns;   /* tick = 2 VBLs, scaled */
     const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
@@ -2350,7 +2355,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 if (!ra_skip_capture) {
                     static op_time_t s_vclk = 0;
                     static unsigned  s_vclk_f = 0;
-                    const op_time_t vT = (op_time_t)((OP_NS_PER_SEC * 1001ull) / 60000ull);
+                    /* Ideal VBL step in WALL time — scaled so --tick-scale keeps
+                     * the stamps on the (stretched) grid; an unscaled step makes
+                     * the pred err exceed the resync bound every tick and stamps
+                     * degrade to raw jittery completion times. */
+                    const op_time_t vT = sim_period_ns;
                     op_time_t raw = op_now();
                     unsigned df = openpete_frame - s_vclk_f;
                     s_vclk_f = openpete_frame;
@@ -2758,7 +2767,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * static but world animating" states (idle-homeworld dragons,
              * cutscenes) keep canonical presents flowing every tick, so the
              * per-object animation path is untouched by this gate. */
-            const op_time_t vbl_ns = (op_time_t)((OP_NS_PER_SEC * 1001) / 60000);
+            const op_time_t vbl_ns = sim_period_ns;   /* scaled VBL: the gate is
+                                                       * "~3 sim ticks" in WALL
+                                                       * time under --tick-scale */
             const bool world_live = s_last_canon_present_ns != 0 &&
                 (op_now() - s_last_canon_present_ns) <= 6 * vbl_ns; /* ~3 sim ticks */
             if (world_live) {

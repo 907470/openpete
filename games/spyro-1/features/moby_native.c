@@ -3201,12 +3201,13 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
-/* One NTSC game-logic tick in ns: 1001/30000 s = 33.3667 ms = the 59.94 Hz
- * (60000/1001) NTSC VBL halved = 29.97 Hz (the 1001 is the NTSC 1.001 factor —
- * NOT a plain 30 Hz / 33.3333 ms). The interp denominator cap; same constant as
- * TICK_PERIOD_NS in spyro_native_reextract.c. (The measured per-object gap the
- * alpha actually divides by tracks the real VBL cadence; this only caps it.) */
-#define MOBY_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+/* One game-logic tick in WALL time (nominally NTSC 1001/30000 s = 33.3667 ms;
+ * run.c rescales the global by 1/tick_scale so --tick-scale slow-motion keeps
+ * every gap-vs-tick comparison honest). The interp denominator cap; same
+ * global as TICK_PERIOD_NS in spyro_native_reextract.c. (The measured
+ * per-object gap the alpha actually divides by tracks the real VBL cadence;
+ * this only caps it.) */
+#define MOBY_TICK_PERIOD_NS g_openpete_tick_period_ns
 
 /* OPENPETE_MOBY_SNAP_STALE=0 restores the pre-fix behaviour (interpolate across
  * a stale-prev pair) for same-window A/B. Default on. */

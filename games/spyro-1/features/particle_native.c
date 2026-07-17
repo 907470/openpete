@@ -255,9 +255,22 @@ static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 
  * for the A/B harnesses. Render-side only: particle RAM is never written here. */
 static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
                                      * (latched in particle_native_reextract) */
-/* One NTSC sim tick (29.97 Hz) — the per-slot alpha denominator cap, same
- * constant as TICK_PERIOD_NS in spyro_native_reextract.c. */
-#define PART_TICK_PERIOD_NS ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+/* One sim tick in WALL time — the per-slot alpha denominator cap, same global
+ * as TICK_PERIOD_NS in spyro_native_reextract.c (--tick-scale aware: run.c
+ * rescales it, else slow-motion sweeps the phase in tick_scale of a tick and
+ * freezes the rest). */
+#define PART_TICK_PERIOD_NS g_openpete_tick_period_ns
+/* Phase-alpha floor — the SAME slightly-negative allowance the spine's
+ * position/rotation alpha uses (spyro_native_reextract.c: alpha >= -0.35).
+ * The canonical present + first intermediates of a tick fire a few ms BEFORE
+ * that tick's PLL grid stamp, so their raw alpha is slightly negative;
+ * clamping the phase at 0 while positions extrapolate backward freezes the
+ * twinkle for those presents and delivers the clipped tail as a jump at
+ * every roll — a 29.97 Hz hitch riding an otherwise smooth sweep, sized by
+ * the (machine-dependent) present-clock-vs-stamp skew. Backward
+ * extrapolation on the pair's slope is continuous across the roll by
+ * construction. Never above 1 (the future is unsimulated). */
+#define PART_ALPHA_MIN (-0.35)
 
 /* OPENPETE_STREAK_DBG: rate-limited log of any emitted line / fan leg
  * longer than 300 px on screen — when a streak is visible, one run with
@@ -327,7 +340,7 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if (per > PART_TICK_PERIOD_NS) per = PART_TICK_PERIOD_NS;
     if (per <= 0) return 0;
     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
     out->A = pA; out->B = pB; out->C = pC;
     out->cA = cA; out->cB = cB; out->cC = cC;
     out->alpha = a;
@@ -335,8 +348,13 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
 }
 
 /* channel lerp helpers: plain byte, wrapping byte angle (256/circle shortest
- * arc), and int16 (line endpoints) */
-static double lerp_b(int p, int c, double a) { return (double)p + ((double)c - (double)p) * a; }
+ * arc), and int16 (line endpoints). lerp_b clamps to the byte range: the
+ * negative-alpha presents extrapolate BACKWARD past prev, which must not
+ * push a size/colour byte channel out of range. */
+static double lerp_b(int p, int c, double a) {
+    double v = (double)p + ((double)c - (double)p) * a;
+    return v < 0.0 ? 0.0 : (v > 255.0 ? 255.0 : v);
+}
 static double lerp_wrap_b(int p, int c, double a) {
     int d = (c - p) & 0xFF; if (d >= 128) d -= 256;
     return (double)p + (double)d * a;
@@ -1091,7 +1109,7 @@ static void glow_build(CPUState* cpu) {
                 if (pcnt == ccnt2 && (int32_t)ccnt2 > 0 && ptmpl == ctmpl2 &&
                     pmpp == cmpp2 && per > 0) {
                     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-                    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+                    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
                     uint32_t pcol, psz, po14, po18, po1c;
                     uint32_t ccol, csz, co14, co18, co1c;
                     memcpy(&pcol, o->prev + 0x0C, 4);
@@ -1105,6 +1123,7 @@ static void glow_build(CPUState* cpu) {
                     memcpy(&co18, o->curr + 0x18, 4);
                     memcpy(&co1c, o->curr + 0x1C, 4);
                     sizef = (double)(int32_t)psz  + ((double)(int32_t)csz  - (double)(int32_t)psz)  * a;
+                    if (sizef < 0.0) sizef = 0.0;   /* backward extrapolation on a spawn ramp */
                     offxf = (double)(int32_t)po14 + ((double)(int32_t)co14 - (double)(int32_t)po14) * a;
                     offyf = (double)(int32_t)po18 + ((double)(int32_t)co18 - (double)(int32_t)po18) * a;
                     offzf = (double)(int32_t)po1c + ((double)(int32_t)co1c - (double)(int32_t)po1c) * a;
@@ -1384,7 +1403,7 @@ static void sparkle_build(CPUState* cpu) {
                 if (pLife >= cLife && cLife > 0 && pSpeed == cSpeed && per > 0 &&
                     pp0 == cp0 && pp1 == cp1 && pp2 == cp2) {
                     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
-                    if (a < 0.0) a = 0.0; else if (a > 1.0) a = 1.0;
+                    if (a < PART_ALPHA_MIN) a = PART_ALPHA_MIN; else if (a > 1.0) a = 1.0;
                     lifef = (double)pLife + ((double)cLife - (double)pLife) * a;
                     angf = lerp_wrap_b(pAng, cAng, a);
                     phase_interp = 1;

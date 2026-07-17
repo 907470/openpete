@@ -97,7 +97,8 @@ typedef struct { uint32_t addr, w1, w2; } part_save_t;  /* +0x04, +0x08 */
  * snapshots' measured timestamps, with the denominator capped at one tick
  * (interp_period_ns) so a stale prev after a static stretch can't stretch a
  * resume. */
-#define TICK_PERIOD_NS  ((op_time_t)((OP_NS_PER_SEC * 1001) / 30000))
+/* One WALL-time tick (--tick-scale aware; run.c rescales the global). */
+#define TICK_PERIOD_NS  g_openpete_tick_period_ns
 
 /* W0.6 — interp denominator, capped at ONE nominal tick. The measured
  * distinct-state gap (curr_ns - prev_ns) balloons to K ticks when an object (or
@@ -117,7 +118,10 @@ static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
     static int s_uncap = -1;
     if (s_uncap < 0) { const char* e = getenv("OPENPETE_INTERP_PERIOD_UNCAP"); s_uncap = (e && *e && *e != '0'); }
     if (s_uncap) return (double)p;
-    return (double)(p > TICK_PERIOD_NS ? TICK_PERIOD_NS : p);
+    /* Cap at one WALL-time tick (g_openpete_tick_period_ns, --tick-scale
+     * aware) — the hardcoded NTSC constant made every sweep run
+     * 1/tick_scale× too fast under slow-motion and pin at the clamp. */
+    return (double)(p > g_openpete_tick_period_ns ? g_openpete_tick_period_ns : p);
 }
 
 static int16_t lerp16(int16_t a, int16_t b, double t) {
