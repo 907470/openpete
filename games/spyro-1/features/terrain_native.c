@@ -2656,17 +2656,33 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * edge-on is visible through one half only (the ice_cavern
              * waterfall sheet s101/f15), while a genuine back-to-back wall
              * pair (the magic_crafters room/waterfall) fails both. */
-            double nx0 = GTE_SAT(sv[i0].sx), ny0 = GTE_SAT(sv[i0].sy);
-            double nx1 = GTE_SAT(sv[i1].sx), ny1 = GTE_SAT(sv[i1].sy);
+            /* GTE UNR divide-overflow regime: RTPS saturates the quotient when
+             * SZ3 <= H/2 (SZ = 4·m3, so m3 <= H/8) — the .s's own SXY for such
+             * a corner is pinned garbage, and the saturated cross sign is
+             * chaotic noise (the toasty floor tri at m3~19: saturation
+             * collapses a 1275px span to 217px and the sign flips with a
+             * 6-yaw-unit pan while the true cross is a stable ~+380k). The .s
+             * verdict is not mirrorable there — use the TRUE facing
+             * (unsaturated float cross), which still culls genuine
+             * back-to-back near wall pairs. */
+            int unrOvf = 0;
+            {   const int ci[4] = { i0, i1, i2, i3 };
+                int nc2 = quad ? 4 : 3;
+                for (int q2 = 0; q2 < nc2; q2++)
+                    if (sv[ci[q2]].m3 < s_H / 8.0) { unrOvf = 1; break; }
+            }
+            #define NSAT(v) (unrOvf ? (double)(v) : GTE_SAT(v))
+            double nx0 = NSAT(sv[i0].sx), ny0 = NSAT(sv[i0].sy);
+            double nx1 = NSAT(sv[i1].sx), ny1 = NSAT(sv[i1].sy);
             int h1 = quad ? i3 : i2;
-            double nxA = GTE_SAT(sv[h1].sx), nyA = GTE_SAT(sv[h1].sy);
+            double nxA = NSAT(sv[h1].sx), nyA = NSAT(sv[h1].sy);
             double nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
             if (flip) nclip = -nclip;
             int front = (nclip >= 0.0);
             int front2 = 0;
             if (quad) {
-                double nx2 = GTE_SAT(sv[i2].sx), ny2 = GTE_SAT(sv[i2].sy);
-                double nx3 = GTE_SAT(sv[i3].sx), ny3 = GTE_SAT(sv[i3].sy);
+                double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
+                double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
                 double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
                 int dside = (faceStride == 16) && (F->w3 & 0x4) != 0;
                 front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
