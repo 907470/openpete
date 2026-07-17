@@ -1306,13 +1306,28 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
           }
       } }
     if (s_swtri_n <= 0) return;
+    /* .s OT bias, Spyro walk: r_pete keys every segment at
+     * (viewZ>>7) − g_Spyro.sortDepth (lbu 0x27($ra) @80023F8C, $ra=&g_Spyro;
+     * one OT slot = 128 full-world view-Z units) — the same authored
+     * "draw over what shares my depth" pull the mobys carry. Without it a
+     * moby's own pull (dofs + the one-slot tie) buries Spyro's contact
+     * pixels in whatever he stands on (hind foot on a pedestal disc).
+     * Depth-only; OPENPETE_MOBY_OTBIAS=0 disables together with the rest. */
+    double sp_pull = 0.0;
+    {
+        static int s_on = -1;
+        if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
+        if (s_on) sp_pull = 128.0 * (double)(int8_t)cpu->read_byte(G_SPYRO + 0x27u);
+    }
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
         openpete_scene_tri st;
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
-            st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(w->v[k].vz));
+            double fvz = (double)w->v[k].vz - sp_pull;
+            if (w->v[k].vz > 0.0f && fvz < 1.0) fvz = 1.0;
+            st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full((float)fvz));
             st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
             st.v[k].rgba = w->v[k].rgb | 0xFF000000u;
         }

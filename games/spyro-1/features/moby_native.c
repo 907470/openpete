@@ -529,8 +529,21 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
         double fvz = (vzz + vz_bias) * (double)(1 << ds);
-        if (ot_slot_end > 0.0 && fvz > ot_slot_end) fvz = ot_slot_end;
+        /* COMPRESS (not clamp) beyond the centre: a hard clamp flattened the
+         * far half of every moby to one depth, killing SELF-occlusion there
+         * (far faces z-tie and resolve by draw order). /16 keeps per-vertex
+         * depth strictly monotonic — self- and inter-moby sorting intact —
+         * while the far tail still sorts within ~radius/16 of the centre, so
+         * a buried pedestal lip keeps beating the ground face it sits in. */
+        if (ot_slot_end > 0.0 && fvz > ot_slot_end)
+            fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
         fvz -= ot_pull;
+        /* One-slot tie pull: the .s resolves same-slot moby-vs-terrain ties to
+         * the MOBY (moby prims insert before the environment, and the near
+         * band is deferred behind the OT entirely), so a moby's surface wins
+         * ground it touches. 127 world units < one OT slot: it can flip only
+         * pairs og calls a tie. */
+        if (ot_slot_end > 0.0) fvz -= 127.0;
         if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
         out[i].vz = (float)fvz; out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
@@ -3951,8 +3964,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
-            if (ot_slot_end > 0.0 && fvz > ot_slot_end) fvz = ot_slot_end;
+            /* Compress beyond the centre (see the regular walk's twin) —
+             * self-occlusion needs monotonic per-vertex depth. */
+            if (ot_slot_end > 0.0 && fvz > ot_slot_end)
+                fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
             fvz -= ot_pull;
+            /* One-slot tie pull — see the regular walk's twin above. The
+             * pedestal discs (dofs 0) rely on it for the ground they touch. */
+            if (ot_slot_end > 0.0) fvz -= 127.0;
             if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
