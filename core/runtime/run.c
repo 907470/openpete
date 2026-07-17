@@ -1491,6 +1491,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * stick movement is level-held (latched each iteration while engaged). */
     bool prev_f_key = false;
     bool prev_freecam_pad_toggle = false;
+    bool prev_t_key = false;
     bool prev_freecam_lb = false, prev_freecam_rb = false;
     bool prev_freecam_l2 = false, prev_freecam_r2 = false;
 
@@ -2027,7 +2028,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
             /* Debug free camera. Toggle with F or a left-stick click. While
              * engaged: WASD / left stick move, arrows / right stick look,
-             * Space+LShift / R1+L1 raise+lower, [ ] / L2 R2 step the speed. We
+             * Space+LShift / R1+L1 raise+lower, [ ] / L2 R2 step the speed,
+             * T teleports Spyro here and hands the camera back. We
              * own only the toggle + input latch here; the camera write and the
              * CameraFollowSpyro / UpdateSpyro freeze are game-side
              * (games/spyro-1/features/freecam_native.c). Latched as level-held
@@ -2043,6 +2045,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (pad_tog && !prev_freecam_pad_toggle) openpete_freecam_toggle();
             prev_f_key = f_k;
             prev_freecam_pad_toggle = pad_tog;
+
+            /* T: drop Spyro at the camera and hand the camera back to the game.
+             * Latched as a one-shot request — the move needs the game fiber, so
+             * freecam_native applies it (and disengages) on the next tick; the
+             * request is dropped if the camera isn't engaged. Edge-tracked out
+             * here rather than under the engaged branch so a T already held
+             * when the camera engages doesn't count as a press. */
+            bool t_k = kbd_pre && kbd_pre[SDL_SCANCODE_T];
+            if (t_k && !prev_t_key) openpete_freecam_request_teleport();
+            prev_t_key = t_k;
 
             if (openpete_freecam_active()) {
                 /* Normalise a signed SDL stick axis to [-1, 1] past a small

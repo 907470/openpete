@@ -11,16 +11,20 @@
 static bool                  s_active      = false;
 static openpete_freecam_axes s_axes        = {0};
 static int                   s_speed_index = 2;   /* "normal" (middle step) */
+static bool                  s_teleport_req = false;
 
 bool openpete_freecam_active(void) { return s_active; }
 
 void openpete_freecam_toggle(void) {
     s_active = !s_active;
     memset(&s_axes, 0, sizeof s_axes);
+    /* A request only makes sense against the pose that was on screen when it
+     * was made, so it never survives a toggle in either direction. */
+    s_teleport_req = false;
     if (s_active) {
         OPL_INFO_F("freecam",
                    "ON — WASD move, arrows look, Space/LShift up/down, "
-                   "[ ] speed (step %d/%d)",
+                   "[ ] speed (step %d/%d), T teleport Spyro here",
                    s_speed_index, OPENPETE_FREECAM_SPEED_STEPS - 1);
     } else {
         OPL_INFO_F("freecam", "OFF — camera returned to the game");
@@ -33,6 +37,16 @@ void openpete_freecam_set_axes(const openpete_freecam_axes* ax) {
 
 void openpete_freecam_get_axes(openpete_freecam_axes* out) {
     if (out) *out = s_axes;
+}
+
+void openpete_freecam_request_teleport(void) {
+    if (s_active) s_teleport_req = true;
+}
+
+bool openpete_freecam_take_teleport_request(void) {
+    bool req = s_teleport_req;
+    s_teleport_req = false;
+    return req;
 }
 
 int openpete_freecam_speed_index(void) {

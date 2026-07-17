@@ -57,6 +57,15 @@
 #define CAM_PITCH    (G_CAMERA + 0x4Eu)
 #define CAM_YAW      (G_CAMERA + 0x50u)
 
+/* g_Spyro @ 0x80078A58 (spyro.h). Fields the teleport writes; both offsets are
+ * confirmed against the original code, which forms them as g_Spyro + literal
+ * (m_Position at 0x8003DF70, m_previousPosition at 0x8003DF7C).
+ *   m_Position         @ +0x00 : Vector3D int32 x, y, z   (camera's world space)
+ *   m_previousPosition @ +0x8C : where the physics thinks he was last tick */
+#define G_SPYRO             0x80078A58u
+#define SPYRO_POS_X         (G_SPYRO + 0x00u)
+#define SPYRO_PREV_POS_X    (G_SPYRO + 0x8Cu)
+
 /* Functions frozen while engaged (== the practice ROM's StopCameraFollowSpyro
  * / StopUpdateSpyro byte-patch targets). CameraFollowSpyro stops re-deriving
  * the camera from Spyro; UpdateSpyro freezes Spyro so the scene holds still. */
@@ -208,6 +217,48 @@ static void freecam_drive(CPUState* cpu) {
     freecam_force_draw_all_sectors(cpu);
 }
 
+/* Move Spyro to wherever the free camera is floating. Camera and player share
+ * one world space, so the position copies straight across.
+ *
+ * m_previousPosition is written to match: the physics derives this tick's
+ * movement from it, so leaving it at the pre-teleport spot would present the
+ * whole jump as one tick of travel — a sweep across the level that collides
+ * with whatever lies between the two points.
+ *
+ * Momentum is cancelled through the game's own routine rather than by zeroing
+ * fields here: whatever Spyro carried when the camera was engaged belongs to
+ * the place he left, not the one he lands in. func_8003DFA4 is what the game
+ * itself calls to "reset all velocity/momentum" (pete.c, on charge damage) —
+ * it nulls m_TrueVelocity, m_TrueSpeed, m_Acceleration and, crucially,
+ * m_Physics.m_SpeedAngle.m_Speed. That last one is the root of the momentum
+ * chain (m_Speed drives m_Acceleration, which drives m_Velocity), so clearing
+ * only the vectors would let the old speed regenerate on the next tick.
+ *
+ * Everything else — state, animation, health, facing — is deliberately
+ * untouched: Spyro carries on falling / gliding / standing as he was, from
+ * the new spot. UpdateSpyro resumes next tick, once the camera is
+ * disengaged, and re-derives the floor and wall queries from the new
+ * position. */
+extern void func_8003DFA4(CPUState* cpu);   /* "Reset all velocity/momentum" */
+
+static void freecam_teleport_player_to_camera(CPUState* cpu) {
+    const int32_t x = (int32_t)cpu->read_word(CAM_POS_X);
+    const int32_t y = (int32_t)cpu->read_word(CAM_POS_Y);
+    const int32_t z = (int32_t)cpu->read_word(CAM_POS_Z);
+
+    cpu->write_word(SPYRO_POS_X + 0, (uint32_t)x);
+    cpu->write_word(SPYRO_POS_X + 4, (uint32_t)y);
+    cpu->write_word(SPYRO_POS_X + 8, (uint32_t)z);
+
+    cpu->write_word(SPYRO_PREV_POS_X + 0, (uint32_t)x);
+    cpu->write_word(SPYRO_PREV_POS_X + 4, (uint32_t)y);
+    cpu->write_word(SPYRO_PREV_POS_X + 8, (uint32_t)z);
+
+    func_8003DFA4(cpu);
+
+    OPL_INFO_F("freecam", "teleported Spyro to (%d, %d, %d)", x, y, z);
+}
+
 /* Pull up to `max` signed integers out of arbitrary text, skipping any
  * non-numeric runs. Lenient on purpose so a whole freecam log line can be
  * pasted verbatim — "pos=(84992, 45582, 9948) yaw=1024 pitch=160" yields all
@@ -277,6 +328,18 @@ int freecam_native_should_freeze(CPUState* cpu, uint32_t addr) {
     /* The camera follow: replace it with our drive (same fiber, same frame
      * point), then suppress the original so it can't overwrite the camera. */
     if (addr == ADDR_CAMERA_FOLLOW_SPYRO) {
+        /* A pending T: move Spyro up to the camera and hand the camera back.
+         * Disengaging here rather than on the host loop keeps the two halves
+         * atomic — the same tick that moves the player is the one that stops
+         * freezing UpdateSpyro. Returning 0 then lets the real
+         * CameraFollowSpyro run immediately, so it re-derives the follow
+         * camera from Spyro's new position on this very tick and there's no
+         * frame of stale free-camera view before it snaps back. */
+        if (openpete_freecam_take_teleport_request()) {
+            freecam_teleport_player_to_camera(cpu);
+            openpete_freecam_toggle();
+            return 0;
+        }
         freecam_drive(cpu);
         return 1;
     }

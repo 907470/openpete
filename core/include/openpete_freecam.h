@@ -34,6 +34,9 @@
  *   move_up      Space / LShift    R1 / L1
  *   look_yaw     → / ←             right stick X
  *   look_pitch   ↑ / ↓             right stick Y
+ *
+ * T (teleport the player to the camera) is not an axis — it's a one-shot
+ * request; see openpete_freecam_request_teleport below.
  */
 typedef struct openpete_freecam_axes {
     float move_fwd;     /* + forward,   - back   */
@@ -55,6 +58,17 @@ void openpete_freecam_set_axes(const openpete_freecam_axes* ax);
 
 /* Read the latched input intent (module → game drive). */
 void openpete_freecam_get_axes(openpete_freecam_axes* out);
+
+/* Request that the player be moved to the free camera's position (the T-key
+ * edge). Only meaningful while engaged. The host loop latches the request;
+ * the game side consumes it on the next tick — it needs the game fiber to
+ * read the camera and write the player, and it disengages the free camera as
+ * part of applying it. Ignored (and dropped) if the camera is disengaged
+ * before the request is taken. */
+void openpete_freecam_request_teleport(void);
+
+/* Consume a pending teleport request: true once per request (game → drive). */
+bool openpete_freecam_take_teleport_request(void);
 
 /* Current speed step, clamped to [0, OPENPETE_FREECAM_SPEED_STEPS). */
 int openpete_freecam_speed_index(void);
