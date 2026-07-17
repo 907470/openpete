@@ -743,11 +743,34 @@ void openpete_native_scene_apply_overlay(double alpha) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
         if (pairable) {
             const scene_tri_t *p = &s_overlay_prev[t];
-            /* Same sprite? A rigid screen translation (the slide) keeps the texture
-             * region, so category + textured + the first vertex's UV identify it; a
-             * glyph swap at the same slot differs in UV and snaps to curr. */
+            /* Same sprite? Two identities, either suffices:
+             *   (a) same texture region (first vertex's UV) — a rigid or scaling
+             *       element with a constant texture (the title-logo slide);
+             *   (b) same SHAPE (edge vectors within a rasterisation epsilon) with
+             *       a bounded per-tick move — an ANIMATED sprite advances its
+             *       UV/CLUT every tick while translating rigidly (the
+             *       collected-egg pickup slides down-and-out while its wobble
+             *       frames cycle), so UV identity alone left its slide stepping
+             *       at the tick rate. The texture frame still snaps to curr
+             *       (frames are discrete); only the position lerps. A glyph swap
+             *       at the same slot keeps shape+position, where the position
+             *       lerp is a no-op — harmless. */
+            int same_tex = p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v;
+            int same_shape_near = 1;
+            for (int k = 1; k < 3 && same_shape_near; k++) {
+                float dex = (tri.v[k].sx - tri.v[0].sx) - (p->v[k].sx - p->v[0].sx);
+                float dey = (tri.v[k].sy - tri.v[0].sy) - (p->v[k].sy - p->v[0].sy);
+                if (dex > 0.5f || dex < -0.5f || dey > 0.5f || dey < -0.5f)
+                    same_shape_near = 0;
+            }
+            {   /* bounded move: same guard value as the billboard interp (64 px/tick
+                 * ≈ 4× the fastest observed 2D slide) — a relayout jump snaps. */
+                float dx0 = tri.v[0].sx - p->v[0].sx, dy0 = tri.v[0].sy - p->v[0].sy;
+                if (dx0 > 64.0f || dx0 < -64.0f || dy0 > 64.0f || dy0 < -64.0f)
+                    same_shape_near = 0;
+            }
             if (p->category == tri.category && p->textured == tri.textured &&
-                p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v) {
+                (same_tex || same_shape_near)) {
                 for (int k = 0; k < 3; k++) {
                     tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * oalpha);
                     tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * oalpha);
