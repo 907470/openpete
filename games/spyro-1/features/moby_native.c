@@ -4201,6 +4201,30 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                 }
             }
+            { /* OPENPETE_SHADED_FACEDBG="cls,frameLo": per-face NCLIP forensics for
+               * one class over 2 VBLs — float ncl vs the GTE's integer NCLIP (which
+               * runs on truncated SXY), to catch sign flips on near-edge-on faces. */
+                static long s_fd_cls = -2, s_fd_f0 = -1;
+                if (s_fd_cls == -2) {
+                    const char* e = getenv("OPENPETE_SHADED_FACEDBG");
+                    s_fd_cls = -1;
+                    if (e && *e) { char* c = NULL; s_fd_cls = strtol(e, &c, 0);
+                                   if (c && *c == ',') s_fd_f0 = strtol(c+1, NULL, 0); }
+                }
+                if (s_fd_cls >= 0 && (int)s_cur_moby_cls == (int)s_fd_cls &&
+                    (int)openpete_frame >= s_fd_f0 && (int)openpete_frame < s_fd_f0 + 2) {
+                    long i0i = (long)((int)p1->sx - (int)p0->sx) * ((int)p2->sy - (int)p0->sy)
+                             - (long)((int)p2->sx - (int)p0->sx) * ((int)p1->sy - (int)p0->sy);
+                    fprintf(stderr, "[shface f=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
+                            "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f)%s ncl1=%.3f ncl2=%.3f int1=%ld emit=%d\n",
+                            openpete_frame, R->moby, s_cur_moby_cls, f, i0, i1, i2, i3,
+                            (double)p0->sx, (double)p0->sy, (double)p1->sx, (double)p1->sy,
+                            (double)p2->sx, (double)p2->sy, i2==i3?" TRI":" QUAD",
+                            ncl1, i2==i3 ? 0.0 :
+                                (i3<vc ? tri_nclip(base[i3].sx,base[i3].sy,p1->sx,p1->sy,p2->sx,p2->sy) : -999.0),
+                            i0i, s_wtri_n - mt0);
+                }
+            }
             for (int t = mt0; t < s_wtri_n; t++) s_wtri_mode[t] = mode;
         }
         /* ABR-CARVE-OUT (audit 2026-06-30): the game builds metal SimpleModel faces

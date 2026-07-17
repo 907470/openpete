@@ -3189,6 +3189,18 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
         draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
                       s_nr.hd_tex_pipe, 0);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
     }
+    {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
+         * depth-tested pipe after a depth clear — isolates gouraud_hud_pipe state. */
+        static int s_zp = -1;
+        if (s_zp < 0) { const char* e = getenv("OPENPETE_HUD6_ZPIPE"); s_zp = (e && *e && *e != '0'); }
+        if (s_zp && s_nr.gouraud_pipe && ut_count[6] > 0) {
+            rhi_clear_depth(s_nr.dev);
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
+            return;
+        }
+    }
     if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
         /* The slot-6 VB range is depth-sorted back-to-front at build time (see
          * the bucket-6 build in render_scene) so rotating near-OT mobys — the
@@ -3505,9 +3517,38 @@ static bool draw_native_scene(bool full_extent)
             ho[hn].z = (scene[t].v[0].z + scene[t].v[1].z + scene[t].v[2].z) * (1.0f/3.0f);
             ho[hn].t = t; hn++;
         }
-        qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
+        static int s_h6sort = -1;   /* OPENPETE_HUD6_NOSORT=1: A/B — submission order */
+        if (s_h6sort < 0) { const char* e = getenv("OPENPETE_HUD6_NOSORT"); s_h6sort = !(e && *e && *e != '0'); }
+        if (s_h6sort)
+            qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
+        /* OPENPETE_HUD6_DBG=frameLo: paint-order forensics — every bucket-6 tri
+         * whose v0 lands in a fixed probe box, in SORTED (drawn) order. */
+        static int s_h6 = -2;
+        if (s_h6 == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6 = (e && *e) ? atoi(e) : -1; }
+        int h6_live = s_h6 >= 0 && (int)s_scene_frame >= s_h6 && (int)s_scene_frame < s_h6 + 2;
         for (int i = 0; i < hn && n + 3 <= SCENE_VB_VERTS; i++) {
             int t = ho[i].t;
+            if (h6_live) {
+                float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0;
+                for (int k = 1; k < 3; k++) {
+                    float sx2 = scene[t].v[k].sx, sy2 = scene[t].v[k].sy;
+                    if (sx2 < x0) x0 = sx2; if (sx2 > x1) x1 = sx2;
+                    if (sy2 < y0) y0 = sy2; if (sy2 > y1) y1 = sy2;
+                }
+                if (i >= hn - 12 || (x1 >= 308.0f && x0 <= 336.0f && y1 >= 183.0f && y0 <= 214.0f)) {
+                    float c[3][2];
+                    for (int k = 0; k < 3; k++)
+                        scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &c[k][0], &c[k][1]);
+                    fprintf(stderr, "[hud6] f=%u i=%d/%d t=%d z=%.4f rgba=%08X "
+                            "v0=%.1f,%.1f v1=%.1f,%.1f v2=%.1f,%.1f clip=(%.4f,%.4f)(%.4f,%.4f)(%.4f,%.4f)\n",
+                            s_scene_frame, i, hn, t, (double)ho[i].z, scene[t].v[0].rgba,
+                            (double)scene[t].v[0].sx, (double)scene[t].v[0].sy,
+                            (double)scene[t].v[1].sx, (double)scene[t].v[1].sy,
+                            (double)scene[t].v[2].sx, (double)scene[t].v[2].sy,
+                            (double)c[0][0], (double)c[0][1], (double)c[1][0], (double)c[1][1],
+                            (double)c[2][0], (double)c[2][1]);
+                }
+            }
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -3840,6 +3881,31 @@ static bool draw_native_scene(bool full_extent)
         n += 6;
     }
 
+    {   /* OPENPETE_HUD6_DBG companion: verify the bucket-6 VB range still holds
+         * the glyph verts at upload time (catches a later build overwriting it). */
+        static int s_h6b = -2;
+        if (s_h6b == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6b = (e && *e) ? atoi(e) : -1; }
+        if (s_h6b >= 0 && (int)s_scene_frame >= s_h6b && (int)s_scene_frame < s_h6b + 2) {
+            int hits = 0;
+            for (int v = ut_first[6]; v < ut_first[6] + ut_count[6]; v++)
+                if (buf[v].x > 0.20f && buf[v].x < 0.31f && buf[v].y > -0.82f && buf[v].y < -0.60f) hits++;
+            fprintf(stderr, "[hud6vb] f=%u ut6=[%d+%d] n=%d glyph-verts-in-Vwindow=%d\n",
+                    s_scene_frame, ut_first[6], ut_count[6], n, hits);
+            /* the cap tris: any bucket-6 tri whose first vert x is ~0.2529 (f8a),
+             * ~0.2695 (f8b) or ~0.2359 (f10) with y in the V band — dump the whole tri */
+            for (int v = ut_first[6]; v + 2 < ut_first[6] + ut_count[6]; v += 3) {
+                float x0 = buf[v].x, y0 = buf[v].y;
+                if (y0 < -0.75f || y0 > -0.60f) continue;
+                if ((x0 > 0.2515f && x0 < 0.2545f) || (x0 > 0.2345f && x0 < 0.2375f))
+                    fprintf(stderr, "[hud6cap] f=%u vslot=%d (%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f) rgba=%08X,%08X,%08X\n",
+                            s_scene_frame, v,
+                            (double)buf[v].x, (double)buf[v].y, (double)buf[v].z,
+                            (double)buf[v+1].x, (double)buf[v+1].y, (double)buf[v+1].z,
+                            (double)buf[v+2].x, (double)buf[v+2].y, (double)buf[v+2].z,
+                            buf[v].rgba, buf[v+1].rgba, buf[v+2].rgba);
+            }
+        }
+    }
     rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
