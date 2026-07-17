@@ -349,12 +349,18 @@ mode  = "terrain"
 # native now mirrors exactly: two-half quad acceptance, w3&4
 # draw-anyway, straddle bypass).  CULL on-vs-off must differ by the
 # column (feature active) inside its bbox and nowhere else.
+# pin_env: the face-mean depth flatten (OPENPETE_TERRAIN_OTFLAT) resolves the
+# column-vs-wall z-fight this case's 4000-px calibration rode on (uncalled
+# column pixels now lose deterministically), shrinking the on/off footprint to
+# ~1400 px. Pin it off so the guard keeps its original calibration and stays a
+# sensitive detector of the CULL feature dying.
 [[case]]
 name   = "magiccrafters-waterfall-room-culled"
 level  = "magic_crafters"
 pose   = "69519,93695,26535,619,26"
 mode   = "terrain"
 ab_env = "OPENPETE_TERRAIN_CULL"
+pin_env = { OPENPETE_TERRAIN_OTFLAT = "0" }
   [[case.check]]
   kind   = "ab-active"
   min_px = 4000

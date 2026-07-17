@@ -442,6 +442,23 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables (A/B) */
     if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
     double ot_pull = s_otbias_on ? 128.0 * (double)(((int32_t)(w0 << 8)) >> 24) : 0.0;
+    /* .s OT-slot FLATTEN: the walk sorts the WHOLE moby at its centre's slot —
+     * per-vertex depth never enters the OT key — so the far tail of a moby
+     * lying in terrain (a pedestal disc's up-slope lip, buried a few hundred
+     * units along a grazing ray) still sorts AT the centre and paints over the
+     * ground; per-pixel Z buried it. Mirror the flatten only where it differs
+     * from true depth: clamp each vertex's fed depth to the END of the
+     * centre's 128-world-unit slot. Depth can only DECREASE toward slot end
+     * (>= centre), so nothing nearer than the moby's centre is ever newly
+     * occluded — contact pixels (Spyro's feet on the disc) keep true-Z. */
+    double ot_slot_end = 0.0;      /* 0 = disabled */
+    if (s_otbias_on) {
+        double centre_full = TR_frac
+            ? TR_frac[2] * 4.0                       /* full-world = stored x4 */
+            : (double)TR_raw[2] * 4.0;
+        if (centre_full > 0.0)
+            ot_slot_end = centre_full;
+    }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -511,7 +528,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
-        double fvz = (vzz + vz_bias) * (double)(1 << ds) - ot_pull;
+        double fvz = (vzz + vz_bias) * (double)(1 << ds);
+        if (ot_slot_end > 0.0 && fvz > ot_slot_end) fvz = ot_slot_end;
+        fvz -= ot_pull;
         if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
         out[i].vz = (float)fvz; out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
@@ -3894,6 +3913,20 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         static int s_otbias_on = -1;   /* OPENPETE_SHADED_OTBIAS=0 disables (A/B) */
         if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
         double ot_pull = (billboard || !s_otbias_on) ? 0.0 : 128.0 * (double)((int32_t)rot >> 24);
+        /* .s OT-slot FLATTEN (shaded twin of moby_decode_project's): the walk
+         * keys the WHOLE moby at (centre>>6)−bias — per-vertex depth never
+         * enters the sort — so a flat pedestal disc's up-slope lip, buried in
+         * the ground it sits on, still paints over that ground (dofs is 0 on
+         * the disc classes; the tie goes to the moby because the moby passes
+         * insert before the environment). Clamp each vertex's fed depth to the
+         * END of the centre's 128-world-unit slot: only the far tail moves,
+         * nothing nearer than the centre is ever newly occluded. */
+        double ot_slot_end = 0.0;
+        if (!billboard && s_otbias_on) {
+            double centre_full = TR[2] * vz_scale;
+            if (centre_full > 0.0)
+                ot_slot_end = centre_full;
+        }
         {
             static int s_obd = -1;
             if (s_obd < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS_DBG"); s_obd = (e && *e && *e != '0'); }
@@ -3917,7 +3950,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
-            double fvz = vzz*vz_scale - ot_pull;
+            double fvz = vzz*vz_scale;
+            if (ot_slot_end > 0.0 && fvz > ot_slot_end) fvz = ot_slot_end;
+            fvz -= ot_pull;
             if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */

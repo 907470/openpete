@@ -3191,8 +3191,30 @@ static void terrain_feed_native(CPUState* cpu) {
              * which a distance-PROPORTIONAL pull models correctly. Retained,
              * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
              * LP, where it is inert — nothing shares its surface.) */
-            openpete_worldvz wz = openpete_worldvz_scaled(
-                pclamp ? pcvz[k] : (float)t->vz[k], 16.0f);
+            float fvz = pclamp ? pcvz[k] : (float)t->vz[k];
+            /* .s OT-key FLATTEN (face-avg sort mirror): the .s buckets every
+             * terrain face at the MEAN of its corners' view-Z (Σ4·SZ>>5,
+             * r_environment block_80026424..80026454) — per-pixel depth never
+             * enters the sort. A grazing ground face's NEAR half therefore
+             * yields, on PSX, to any moby whose own key is nearer than the
+             * face MEAN (a pedestal disc paints whole over the hill crest in
+             * front of it). Mirror it exactly: clamp each corner's fed depth
+             * to no nearer than the face mean (t->otkey, full-world) — the
+             * far half keeps true depth (same sort verdict either way), and
+             * terrain-vs-terrain silhouettes keep their relative order (a
+             * nearer face's mean is nearer). HP tier only: LP shares depth
+             * with its stencil-fill twin, which must keep the exact tie.
+             * Skipped for portal-conform faces (their sink is already the
+             * .s verdict) and FILL copies. OPENPETE_TERRAIN_OTFLAT=0 = A/B. */
+            {
+                static int s_otflat = -1;
+                if (s_otflat < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_OTFLAT"); s_otflat = (e2 && *e2) ? (*e2 != '0') : 1; }
+                if (s_otflat && !pclamp && !t->fill && !t->tier && t->otkey > 0.0f) {
+                    float mvz = t->otkey / 16.0f;    /* full-world → the feeder's world/16 */
+                    if (fvz < mvz) fvz = mvz;
+                }
+            }
+            openpete_worldvz wz = openpete_worldvz_scaled(fvz, 16.0f);
             /* FILL depth = the SAME ×1.03 as its canonical LP twin, so the two
              * copies TIE exactly (fill drawn later wins where quantize+grow
              * differ) instead of the fill sitting 3% NEARER — which let a

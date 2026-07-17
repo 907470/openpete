@@ -3360,7 +3360,13 @@ static bool draw_native_scene(bool full_extent)
               holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
               holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
         { 3, -1,                    s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
-        { 0, OPENPETE_SCENE_ACTOR,  s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        /* ACTOR opaques also MARK coverage (like WORLD): authored HP ground
+         * holes under static decor (pedestal discs) must read as covered so
+         * the LP hole-fill — drawn after this group — never paints over the
+         * moby that hides them. */
+        { 0, OPENPETE_SCENE_ACTOR,
+              holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
+              holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
         { 0, OPENPETE_SCENE_PLAYER, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
         { 1, -1,                    s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
         { 2, -1,                    s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
@@ -4037,25 +4043,39 @@ static bool draw_native_scene(bool full_extent)
          * above (gi==3), so skip them here then. Same pipelines as the ACTOR
          * group: outside a cutscene this is pixel-identical to leaving them ACTOR. */
         if (gi == 2 && !actor_front) {
-            if (s_nr.gouraud_pipe && ut_count[14] > 0) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+            /* ACTOR opaques also stencil-MARK their coverage when hole-fill is
+             * on: the level authors cut HP ground holes under static decor
+             * (dragon pedestal discs) — og never draws ground there, the moby
+             * always covers it. Without the mark the FILL below reads those
+             * pixels as uncovered and paints the coarse LP backing OVER the
+             * moby (the LP surface sits nearer than the buried disc rim, so
+             * depth can't save it). Mark pipes are raster-identical twins. */
+            rhi_pipeline* apipe = holefill_on ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe;
+            rhi_pipeline* atex  = holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe;
+            rhi_pipeline* acut  = holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe;
+            if (apipe && ut_count[14] > 0) {
+                rhi_bind_pipeline(s_nr.dev, apipe);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
             }
-            if (txg_count[9] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
+            if (txg_count[9] > 0 && s_nr.vram_tex && atex) {
+                rhi_bind_pipeline(s_nr.dev, atex);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 1);
+                              atex, acut, 1);
             }
         }
-        /* WORLD_FILL — terrain LP hole-fill (W2.6-c), right after the WORLD
-         * group: depth-tested at TRUE LP depth, gated on stencil==0 so it can
-         * only paint pixels the WORLD group's coverage MARK left empty (the
-         * LP↔HP T-junction seams — where the sky currently shows through).
-         * Must run before the portal sequence (gi==2), which clears stencil. */
-        if (gi == 0 && holefill_on && ut_count[12] > 0) {
+        /* WORLD_FILL — terrain LP hole-fill (W2.6-c): depth-tested at TRUE LP
+         * depth, gated on stencil==0 so it can only paint pixels no opaque
+         * coverage MARK claimed (LP↔HP T-junction seams — where the sky shows
+         * through). Runs at gi==2 AFTER the ACTOR opaques so authored HP holes
+         * hidden under static mobys (pedestal discs) stay covered by the moby,
+         * not repainted with LP; still before the portal sequence below, which
+         * clears stencil. (Under the dragon-rescue actor_front reorder the
+         * actors draw at gi==3 and don't mark — cutscene draw lists carry no
+         * fill-backed decor, so the seam fill stays correct there.) */
+        if (gi == 2 && holefill_on && ut_count[12] > 0) {
             rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
