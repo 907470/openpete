@@ -2666,6 +2666,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     lag_re(&g_game.cpu);
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
+                } else {
+                    /* Spine off (unlock / paused / interp disabled): the carry is
+                     * never applied, so drop this tick's feed-time accumulation —
+                     * a long spine-off stretch must not pool stale 2D-UI tris
+                     * that would flash when the spine re-engages. */
+                    openpete_native_scene_overlay_accum_reset();
                 }
             }
 

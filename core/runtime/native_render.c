@@ -193,6 +193,29 @@ typedef char nr_assert_scene_tri_prefix[
 static scene_tri_t s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 
+/* Feed-time accumulation for the 2D-overlay carry (committed by
+ * capture_overlay — see the carry block further down). The live scene is
+ * wiped by EVERY sub-tick re-extract, so scavenging s_scene at capture time
+ * raced those wipes: a 2D feed that landed mid-VBL with any intermediate
+ * present between it and the canonical capture was wiped unseen, and that
+ * tick's carry lost the sprite (the collected-egg HUD sprite froze/vanished
+ * at high --render-fps — the deterministic egg.bk2 f3603 blink).
+ * Carry-eligible tris are instead copied here AT ADD TIME (apply_overlay's
+ * re-applies bypass add_tri, so re-applied carry never re-accumulates). */
+#define OVERLAY_CARRY_MAX 1024
+static scene_tri_t s_overlay_accum[OVERLAY_CARRY_MAX];
+static int                s_overlay_accum_n;
+static int                s_overlay_accum_dropped;
+static void (*s_overlay_precapture)(void);
+
+void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
+    s_overlay_precapture = fn;
+}
+void openpete_native_scene_overlay_accum_reset(void) {
+    s_overlay_accum_n = 0;
+    s_overlay_accum_dropped = 0;
+}
+
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
@@ -475,6 +498,17 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                 sv[k].sy = floorf(sv[k].sy + 0.5f);
             }
         }
+        /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
+         * overlay tri joins this tick's carry set NOW, so it survives however
+         * many sub-tick scene wipes land before the canonical capture. carry==2
+         * (a re-applied carry tri routed through a feeder) never re-accumulates. */
+        if ((category == OPENPETE_SCENE_OVERLAY || category == OPENPETE_SCENE_HUD_PANEL ||
+             carry == 1) && carry != 2) {
+            if (s_overlay_accum_n < OVERLAY_CARRY_MAX)
+                s_overlay_accum[s_overlay_accum_n++] = s_scene[s_scene_n];
+            else
+                s_overlay_accum_dropped++;
+        }
         s_scene_n++;
     } else {
         s_scene_dropped++;   /* cap hit — this tri (and the rest of the feed) is lost */
@@ -567,8 +601,8 @@ void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = fr
  * carried by category — they'd double. The 2D-UI HUD SPRITES/LINES (title logo,
  * "PRESS START", HUD glyph text, UI separators) live in OPENPETE_SCENE_HUD too,
  * but the 3D feeders never re-derive THEM, so they carry by an explicit per-tri
- * flag (set_carry, stamped by add_tri) that the moby near-OT billboards leave 0. */
-#define OVERLAY_CARRY_MAX 1024
+ * flag (set_carry, stamped by add_tri) that the moby near-OT billboards leave 0.
+ * (OVERLAY_CARRY_MAX + the feed-time accumulation buffer live up by s_scene.) */
 static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
 static uint32_t           s_overlay_carry_freeze;
@@ -646,6 +680,12 @@ static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
 }
 
 void openpete_native_scene_capture_overlay(void) {
+    /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
+     * tick's accumulation first — by the canonical present every post-link prim
+     * mutation is done, so the flush is exact. Without it, a gameplay frame
+     * whose LAST 2D prim is an FT4 (the collected-egg sprite is the ONLY 2D
+     * prim then) defers that sprite a whole tick and misses this capture. */
+    if (s_overlay_precapture) s_overlay_precapture();
     /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
      * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
      * prev/curr are consecutive canonical captures (one sim tick apart). */
@@ -654,33 +694,25 @@ void openpete_native_scene_capture_overlay(void) {
     s_overlay_prev_n = s_overlay_carry_n;
     s_overlay_prev_ns = s_overlay_curr_ns;   /* roll the capture timestamp too */
     s_overlay_curr_ns = op_now();
-    s_overlay_carry_n = 0;
-    int s_overlay_dropped = 0;
-    for (int t = 0; t < s_scene_n; t++) {
-        int c = s_scene[t].category, cy = s_scene[t].carry;
-        /* carry==2 = a tri RE-APPLIED by apply_overlay last present. The canonical
-         * game render appends to the prior sub-tick's (un-wiped) scene, so those
-         * re-applied tris are still here — skip them or the carry set accumulates
-         * unbounded (the 2D-UI logo cloning). Only the GAME RENDER's fresh emission
-         * is captured: OVERLAY/HUD_PANEL by category, 2D-UI sprites/lines by carry==1
-         * (see the carry arg to add_tri). Capture runs on the CANONICAL present
-         * only (run.c), so a clear here is correct (sub-ticks hold the set). */
-        if (cy == 2) continue;
-        if (c == OPENPETE_SCENE_OVERLAY || c == OPENPETE_SCENE_HUD_PANEL || cy == 1) {
-            if (s_overlay_carry_n < OVERLAY_CARRY_MAX) s_overlay_carry[s_overlay_carry_n++] = s_scene[t];
-            else s_overlay_dropped++;
-        }
-    }
+    /* Commit the feed-time accumulation as this tick's carry set. Only the GAME
+     * RENDER's fresh emission ever accumulates: OVERLAY/HUD_PANEL by category,
+     * 2D-UI sprites/lines by carry==1, and apply_overlay's re-applied (carry==2)
+     * copies bypass add_tri entirely — so no dedup pass is needed here, and a
+     * sub-tick scene wipe between the feed and this capture can't lose a sprite. */
+    memcpy(s_overlay_carry, s_overlay_accum, (size_t)s_overlay_accum_n * sizeof(s_overlay_accum[0]));
+    s_overlay_carry_n = s_overlay_accum_n;
+    s_overlay_accum_n = 0;
     /* Mirror the scene-cap warn-once: a busy title/menu that overruns the carry
      * buffer silently loses 2D-UI sprites sub-tick with no signal — warn so the
      * cap can be raised rather than leaving a view-dependent dropout in the wild. */
-    if (s_overlay_dropped > 0) {
+    if (s_overlay_accum_dropped > 0) {
         static int s_ov_warned = 0;
         if (!s_ov_warned) { s_ov_warned = 1;
             fprintf(stderr, "native: WARNING OVERLAY_CARRY_MAX %d exceeded (frame=%u, %d 2D-UI carry "
                     "tris dropped) — sprites will vanish sub-tick; raise OVERLAY_CARRY_MAX\n",
-                    OVERLAY_CARRY_MAX, s_scene_frame, s_overlay_dropped);
+                    OVERLAY_CARRY_MAX, s_scene_frame, s_overlay_accum_dropped);
         }
+        s_overlay_accum_dropped = 0;
     }
     /* NOTE: the freeze backdrop carry is committed in commit_fade (the per-tick
      * overlay-signal commit), NOT here — capturing it from s_scene_freeze created a

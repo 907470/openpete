@@ -201,6 +201,7 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
  * serves (title/menu re-emit identical 2D every frame). */
 static uint32_t s_pending = 0;        /* prim awaiting its (post-link) mirror swap */
 static unsigned s_pending_frame = 0;  /* openpete_frame the pending prim was recorded */
+static CPUState* s_cpu = NULL;        /* the game CPU (stable) — for the precapture flush */
 static int      s_in_fade = 0;        /* set across func_800190D4's real-func call so the
                                        * on_800168DC hook can tell the fade's 0x2A F4 from a
                                        * menu dark panel's 0x2A F4 (both go via func_800168DC) */
@@ -277,11 +278,46 @@ static int is_line_g2(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 4;              /* tag length >= 4 (full LINE_G2) */
 }
 
+/* Flush the deferred FT4 (feed-previous) into the current scene/carry. Two
+ * callers: the next func_800168DC call (the original feed point — the caller's
+ * post-link mirror swap has run by then), and the canonical capture_overlay
+ * (via the registered precapture hook) — when the FT4 is the frame's LAST 2D
+ * prim there IS no next call within the frame, and without this boundary flush
+ * the sprite misses its own tick's carry: in gameplay the collected-egg HUD
+ * sprite is the ONLY 2D prim, so every one of its animation frames arrived a
+ * tick late and vanished whenever the deferral crossed a capture (egg.bk2
+ * ~f3603 at --render-fps > 30). By either flush point the prim's words are
+ * final, so both are exact. */
+static void flush_pending(CPUState* cpu) {
+    if (!s_pending) return;
+    /* Stale guard: feed only if the pending prim is recent (<= one game
+     * frame ≈ 2 host ticks). On a screen that STOPS emitting 2D, a
+     * lingering pending must not flash into a later unrelated frame. */
+    int fresh = openpete_frame - s_pending_frame <= 2u;
+    { static int s_tr = -1;
+      if (s_tr < 0) { const char* e = getenv("OPENPETE_UISPRITE_TRACE"); s_tr = (e && *e && *e != '0'); }
+      if (s_tr) fprintf(stderr, "[uifeed f=%u] pending from f=%u %s uv0=%u,%u\n",
+                        openpete_frame, s_pending_frame, fresh ? "FEED" : "DROP-stale",
+                        cpu->read_word(s_pending + 0x0C) & 0xFFu,
+                        (cpu->read_word(s_pending + 0x0C) >> 8) & 0xFFu); }
+    if (fresh)
+        feed_ft4(cpu, s_pending, cpu->read_word(s_pending + 4));
+    s_pending = 0;
+}
+
+static void on_overlay_precapture(void) {
+    if (s_cpu && openpete_native_render_enabled()) flush_pending(s_cpu);
+}
+
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_render_enabled();
     int dump = dump_enabled();
     if (!feed && !dump) return 0;               /* inert: normal dispatch runs it */
+    if (!s_cpu) {                               /* one-time: arm the capture-boundary flush */
+        s_cpu = cpu;
+        openpete_native_scene_register_overlay_precapture(on_overlay_precapture);
+    }
     /* First symbolic texture asset (texture-replacement plan Phase 7): name
      * the title-screen UI upload (logo + PRESS START + banner glyphs — one
      * 512x256 block at VRAM (512,256), measured via the registry dump). A
@@ -300,14 +336,7 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
     uint32_t prim = cpu->a0;                     /* a0 = prim pointer being linked */
     if (dump) dump_prim(cpu, prim);
     if (feed) {
-        if (s_pending) {                         /* previous FT4 — its mirror swap is done now */
-            /* Stale guard: feed only if the pending prim is recent (<= one game
-             * frame ≈ 2 host ticks). On a screen that STOPS emitting 2D, a
-             * lingering pending must not flash into a later unrelated frame. */
-            if (openpete_frame - s_pending_frame <= 2u)
-                feed_ft4(cpu, s_pending, cpu->read_word(s_pending + 4));
-            s_pending = 0;
-        }
+        flush_pending(cpu);                      /* previous FT4 — its mirror swap is done now */
         if (is_freeze_backdrop(cpu, prim)) {
             /* Pause / inventory / flight-results green overlay: drive the native
              * freeze backdrop from our own last world frame and DROP this FT4 (it

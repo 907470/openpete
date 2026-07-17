@@ -722,11 +722,25 @@ void     openpete_phase_set_count(int which, int n);
 
 /* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +
  * menu-panel overlays are produced by the 2D-UI feeder during the game render
- * and can't be re-derived sub-tick. capture_overlay() snapshots them from the
- * live scene (call before scene_begin); apply_overlay() re-applies them after
- * the 3D feeders (call at the end of the re-extract). See native_render.c. */
+ * and can't be re-derived sub-tick. Carried tris are ACCUMULATED at add_tri
+ * time (feed-time capture — the live scene is wiped by every sub-tick
+ * re-extract, so scanning it at capture time raced the wipes and dropped any
+ * 2D feed an intermediate present landed between; the collected-egg HUD sprite
+ * froze/vanished at high --render-fps). capture_overlay() commits the
+ * accumulated set as the carry (call on the CANONICAL present, before the
+ * re-extract); apply_overlay() re-applies it after the 3D feeders (call at the
+ * end of every re-extract). See native_render.c. */
 void openpete_native_scene_capture_overlay(void);
 void openpete_native_scene_apply_overlay(double alpha);
+/* Pre-capture hook: called at the top of capture_overlay so the 2D-UI feeder
+ * can flush a deferred ("feed-previous") prim into this tick's accumulation
+ * before the carry commits — by the canonical present every post-link prim
+ * mutation is done, so the flush is exact. */
+void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
+/* Drop the pending accumulation without committing it. Call on canonical
+ * presents that SKIP capture_overlay (spine off / unlock) so a long spine-off
+ * stretch doesn't pool stale 2D-UI tris that would flash when it re-engages. */
+void openpete_native_scene_overlay_accum_reset(void);
 /* Roll the fade ramp's prev/curr — call on each CANONICAL present (before the
  * re-extract) so apply_overlay can interpolate the fade sub-tick. */
 void openpete_native_scene_commit_fade(void);
