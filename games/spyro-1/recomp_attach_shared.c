@@ -59,6 +59,7 @@ SPYRO1_MODULE_FUNCS(DECL_PTR)
 #undef DECL_PTR
 
 static void (*p_set_overlay)(uint32_t);
+static uint32_t (*p_get_overlay_magic)(void);
 
 #define DEF_FWD(n) \
     void n(CPUState* cpu) { p_##n(cpu); }
@@ -66,6 +67,7 @@ SPYRO1_MODULE_FUNCS(DEF_FWD)
 #undef DEF_FWD
 
 void spyro_set_active_overlay_by_magic(uint32_t magic) { p_set_overlay(magic); }
+uint32_t spyro_get_active_overlay_magic(void) { return p_get_overlay_magic(); }
 
 static void* g_module;
 static int s_missing;
@@ -155,6 +157,7 @@ int spyro1_recomp_attach(const char* module_path_override,
     SPYRO1_MODULE_FUNCS(LOAD_PTR)
 #undef LOAD_PTR
     p_set_overlay = (void (*)(uint32_t))need("spyro_set_active_overlay_by_magic");
+    p_get_overlay_magic = (uint32_t (*)(void))need("spyro_get_active_overlay_magic");
     if (s_missing) {
         fprintf(stderr,
                 "openpete: recomp module '%s' is missing %d symbols "
