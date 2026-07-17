@@ -395,6 +395,24 @@ pin_env = { OPENPETE_MOBY_OTBIAS = "0" }
   min_px = 1000
   bbox   = [120, 150, 300, 260]
 
+# Delbin pedestal disc (user repro, 2026-07-17): the flat platform moby sits
+# interpenetrating a grazing ground face; the .s sorts that face at its corner
+# MEAN so the disc paints whole over it. The face-mean depth clamp
+# (OPENPETE_TERRAIN_OTFLAT) is what renders the disc's left rim here; toggling
+# it must flip those pixels. (The ab renderer's comparison pane draws the
+# native scene through a lagged path and still shows the strip — this case
+# renders plain vk, the path players see.)
+[[case]]
+name   = "artisans-delbin-pedestal-otflat"
+level  = "artisans"
+pose   = "73189,44026,7159,2465,160"
+mode   = "full"
+ab_env = "OPENPETE_TERRAIN_OTFLAT"
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 600
+  bbox   = [400, 190, 640, 340]
+
 # Moby OT-bias pull (m_DepthOffset, record w0 bits 16-23): the .s keys every
 # regular/specular moby prim into the world OT at (TR.z_raw>>5) − offset —
 # one slot = 128 full-world view-Z units, default offset 4 — so a moby paints
