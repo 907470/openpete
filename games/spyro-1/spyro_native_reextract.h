@@ -101,7 +101,10 @@ void cyclorama_native_env_clear_commit(void);
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */
 void portal_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
-void terrain_native_reextract(struct CPUState* cpu);
+/* Terrain: mostly camera-driven (the bracket moves it for free), but poly-anim
+ * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks
+ * prev→cur by `alpha`; `interp_on` = camera bracketed (else snap to curr). */
+void terrain_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
 void moby_native_reextract(struct CPUState* cpu);
 void shadow_native_reextract(struct CPUState* cpu);
 void spyro_player_native_reextract(struct CPUState* cpu);

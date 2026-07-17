@@ -1727,7 +1727,7 @@ static void spyro_native_reextract(void* cpu_v) {
     cyclorama_native_reextract(cpu);      /* sky dome + background */
     portal_native_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev→curr) */
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    terrain_native_reextract(cpu);        /* interpolated camera → smooth terrain */
+    terrain_native_reextract(cpu, alpha, cam_bracketed); /* interpolated camera + poly-anim vert lerp */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     moby_native_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_MOBY, pt_t1 - pt_t0); pt_t0 = pt_t1; }

@@ -935,6 +935,14 @@ typedef struct {
     uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
     tsvert_t* lpV; tsface_t* lpF;
     tsvert_t* hpV; tsface_t* hpF;
+    /* Poly-anim sectors only (lazy): the previous canonical tick's decoded verts
+     * + the sub-tick fractional lerp banks (x,y,z triples). vrollPres/vfracPres
+     * stamp which terrain_build filled them (dedupes sectors named by BOTH the
+     * LP and HP descriptor lists, and invalidates lerp banks the moment a
+     * sector leaves the anim registry — a stale stamp never matches). */
+    tsvert_t* lpVprev; tsvert_t* hpVprev;
+    float* lpVf; float* hpVf;
+    uint32_t vrollPres, vfracPres;
 } tscache_t;
 #define TSC_SLOTS 512
 static tscache_t s_tsc[TSC_SLOTS];
@@ -1515,6 +1523,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
             if (!C || W->lastUse < C->lastUse) C = W;
         }
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
+        free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
         C->lastUse = s_tsc_stamp;
@@ -1627,11 +1636,44 @@ static void md_dump_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
  * was first decoded in (user repro: moving-terrain.bk2, the Sunny Flight wall).
  * Mirror the game's own registry instead of hashing vertex RAM: any sector named
  * by an LP/HP poly-anim descriptor (u16 sector index at desc+4) gets its cached
- * verts re-decoded once per present. A handful of descriptors per level, ≤256
- * words per sector — negligible next to the walk itself. Colours already read
- * live; texmats are covered by tsc_tile_gens/tsc_refresh_anim above. */
+ * verts re-decoded once per canonical tick (rolling the old decode into a prev
+ * bank), and on sub-tick presents lerped prev→cur at the spine's alpha so the
+ * geometry moves at present rate, not 29.97 Hz. A handful of descriptors per
+ * level, ≤256 words per sector — negligible next to the walk itself. Colours
+ * already read live; texmats are covered by tsc_tile_gens/tsc_refresh_anim. */
+/* Sub-tick vert interp state (set around terrain_build by terrain_native_reextract;
+ * zero on the canonical path so the 30 Hz render stays byte-exact int verts). */
+static int    s_vanim_sub;     /* this build is a sub-tick re-extract (never roll banks) */
+static int    s_vanim_on;      /* ...with a paired camera bracket (alpha valid) */
+static double s_vanim_alpha;   /* the spine's 1-tick-lag present alpha (prev→cur) */
+static uint32_t s_vanim_pres;  /* per-terrain_build counter — validity stamp for the banks */
+
+/* Teleport guard: continuous env vert anim (the Sunny-Flight wall) moves a few
+ * local units per tick; a keyframe-bank reset (loop restart, level event) jumps
+ * hundreds. 64 local units/tick splits the two by an order of magnitude each
+ * way — above it, snap to cur instead of sweeping the sector across the map. */
+#define VANIM_JUMP_LOCAL 64
+static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
+    for (int k = 0; k < n; k++) {
+        if (abs((int)c[k].x - p[k].x) > VANIM_JUMP_LOCAL ||
+            abs((int)c[k].y - p[k].y) > VANIM_JUMP_LOCAL ||
+            abs((int)c[k].z - p[k].z) > VANIM_JUMP_LOCAL) return 1;
+    }
+    return 0;
+}
+static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
+                           double a, float* out) {
+    for (int k = 0; k < n; k++) {
+        out[k*3+0] = (float)(p[k].x + ((double)c[k].x - p[k].x) * a);
+        out[k*3+1] = (float)(p[k].y + ((double)c[k].y - p[k].y) * a);
+        out[k*3+2] = (float)(p[k].z + ((double)c[k].z - p[k].z) * a);
+    }
+}
 static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     if (!sectorPtr) return;
+    static int s_vdbg = -1;
+    if (s_vdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIMDBG"); s_vdbg = (e && *e && *e != '0'); }
+    int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
     for (int list = 0; list < 2; list++) {
         uint32_t off  = list ? ENVANIM_HPPOLY_CNT : ENVANIM_LPPOLY_CNT;
         uint32_t cnt  = rd(cpu, G_ENVANIM + off);
@@ -1644,6 +1686,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
             if (idx >= sectorCnt) continue;
             uint32_t s = rd(cpu, sectorPtr + idx * 4);
             if (!s) continue;
+            dbg_desc++;
             uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
             tscache_t* C = NULL;
             for (uint32_t w = 0; w < 8u; w++) {   /* same probe window as tsc_get */
@@ -1651,11 +1694,74 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                 if (W->s == s) { C = W; break; }
             }
             if (!C) continue;
-            if (C->lpV) tsc_decode_verts(cpu, C->s + 0x1C, C->nLpV, C->lpV);
-            if (C->hpV) tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
-                                         C->nHpV, C->hpV);
+            dbg_cached++;
+            if (C->lpVprev) dbg_prev++;
+            int nLp = C->lpV ? C->nLpV : 0, nHp = C->hpV ? C->nHpV : 0;
+            if (!s_vanim_sub) {
+                /* Canonical build (once per tick, AFTER the .s ran its INTPL vert
+                 * rewrite): roll prev = last tick's decode, re-decode cur from RAM.
+                 * The roll pairs cur with the tick-N snapshot the interp spine
+                 * committed, so the sub-tick lerp below rides the same 1-tick-lag
+                 * timeline as the camera/mobys. */
+                if (C->vrollPres == s_vanim_pres) continue;   /* named by both lists */
+                C->vrollPres = s_vanim_pres;
+                if (nLp) {
+                    if (!C->lpVprev) C->lpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nLp);
+                    if (C->lpVprev) memcpy(C->lpVprev, C->lpV, sizeof(tsvert_t) * (size_t)nLp);
+                    tsc_decode_verts(cpu, C->s + 0x1C, nLp, C->lpV);
+                }
+                if (nHp) {
+                    if (!C->hpVprev) C->hpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nHp);
+                    if (C->hpVprev) memcpy(C->hpVprev, C->hpV, sizeof(tsvert_t) * (size_t)nHp);
+                    tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
+                                     nHp, C->hpV);
+                }
+            } else if (s_vanim_on) {
+                /* Sub-tick present: fill the fractional lerp banks prev→cur at the
+                 * spine's alpha. Fractional floats on purpose — 1 LP local unit is
+                 * 16 world units, so an int16 lerp would step the wall on the same
+                 * 16-unit grid the fractional-camera fix removed. The walk consumes
+                 * the banks only when vfracPres matches this build. */
+                if (C->vfracPres == s_vanim_pres) continue;
+                if ((nLp && C->lpVprev && tsc_vanim_jump(C->lpVprev, C->lpV, nLp)) ||
+                    (nHp && C->hpVprev && tsc_vanim_jump(C->hpVprev, C->hpV, nHp)))
+                    continue;                        /* teleport/keyframe reset: snap to cur */
+                int filled = 0;
+                if (nLp && C->lpVprev) {
+                    if (!C->lpVf) C->lpVf = (float*)malloc(sizeof(float) * 3u * (size_t)nLp);
+                    if (C->lpVf) { tsc_vanim_lerp(C->lpVprev, C->lpV, nLp, s_vanim_alpha, C->lpVf); filled = 1; }
+                }
+                if (nHp && C->hpVprev) {
+                    if (!C->hpVf) C->hpVf = (float*)malloc(sizeof(float) * 3u * (size_t)nHp);
+                    if (C->hpVf) { tsc_vanim_lerp(C->hpVprev, C->hpV, nHp, s_vanim_alpha, C->hpVf); filled = 1; }
+                }
+                if (filled) { C->vfracPres = s_vanim_pres; dbg_filled++; }
+                if (filled && s_vdbg) {
+                    /* first vert (either bank) that actually moved this tick */
+                    for (int bank = 0; bank < 2; bank++) {
+                        const tsvert_t* P = bank ? C->hpVprev : C->lpVprev;
+                        const tsvert_t* V = bank ? C->hpV : C->lpV;
+                        const float* F = bank ? C->hpVf : C->lpVf;
+                        int n = bank ? nHp : nLp;
+                        if (!P || !V || !F) continue;
+                        for (int v = 0; v < n; v++) {
+                            if (P[v].x != V[v].x || P[v].y != V[v].y || P[v].z != V[v].z) {
+                                fprintf(stderr, "[vanim f=%u pres=%u] s=%u a=%.3f %sV[%d] (%d,%d,%d)->(%d,%d,%d) lerp=(%.2f,%.2f,%.2f)\n",
+                                        openpete_frame, s_vanim_pres, idx, s_vanim_alpha,
+                                        bank ? "hp" : "lp", v,
+                                        P[v].x, P[v].y, P[v].z, V[v].x, V[v].y, V[v].z,
+                                        F[v*3], F[v*3+1], F[v*3+2]);
+                                bank = 2; break;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+    if (s_vdbg && dbg_desc)
+        fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d desc=%d cached=%d prev=%d filled=%d]\n",
+                openpete_frame, s_vanim_sub, s_vanim_on, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
 }
 
 /* Re-decode cached texmats whose tile content changed (env texture anim).
@@ -1914,6 +2020,7 @@ static void terrain_animdbg(CPUState* cpu) {
 }
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
+    s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
     terrain_animdbg(cpu);
     terrain_abr_scan(cpu);
     tsc_census();
@@ -2351,16 +2458,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
 
         uint32_t faces; int nv, nf, faceStride;
         const tsvert_t* cverts; const tsface_t* cfaces;
+        const float* cvF = NULL;   /* sub-tick fractional verts (poly-anim sectors only) */
         uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* §9/§10 colour arrays */
         if (passLP) {
             cverts = SC->lpV; cfaces = SC->lpF; nv = nLpV; nf = nLpF;
             faces = SC->lpFaces; faceStride = 8;
             lpColBase = SC->lpColBase;                     /* LP colours (4B, no fog) */
+            if (SC->vfracPres == s_vanim_pres) cvF = SC->lpVf;
         } else {
             cverts = SC->hpV; cfaces = SC->hpF; nv = nHpV; nf = nHpF;
             faces = SC->hpFaces; faceStride = 16;
             nearBase = SC->nearBase;                       /* HP near colours (4B) */
             farBase  = SC->farBase;                        /* HP far  colours (4B) */
+            if (SC->vfracPres == s_vanim_pres) cvF = SC->hpVf;
         }
         if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
         /* Colour bases → host pointers (fallback: the cpu read path). */
@@ -2373,7 +2483,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         sd_nv += nv; sd_nf += nf;
 
         for (int k = 0; k < nv; k++) {
-            int Xf = cverts[k].x, Yf = cverts[k].y, Zf = cverts[k].z;
+            double Xf, Yf, Zf;
+            if (cvF) { Xf = cvF[k*3]; Yf = cvF[k*3+1]; Zf = cvF[k*3+2]; }
+            else     { Xf = cverts[k].x; Yf = cverts[k].y; Zf = cverts[k].z; }
             double m1, m2, m3;
             ngte_mac(M, s5 - Yf, s6 - Zf, Xf + s4, &m1, &m2, &m3);
             sv[k].m1 = m1; sv[k].m2 = m2; sv[k].m3 = m3; sv[k].vz = m3; sv[k].ok = (m3 > 0.0);
@@ -3669,9 +3781,14 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
 
 /* Sub-tick re-extract (high-FPS spine): reproduce the terrain scene from the
  * current gamestate + the interpolated g_Camera the orchestrator has written
- * — extract-only (no func_800258F0 call, no verdict writes). Terrain is static
- * world geometry, so an interpolated camera alone makes it move smoothly. */
-void terrain_native_reextract(CPUState* cpu) {
+ * — extract-only (no func_800258F0 call, no verdict writes). Terrain is mostly
+ * static world geometry (the interpolated camera alone moves it smoothly), but
+ * poly-anim sectors (the Sunny-Flight wall) have their verts INTPL-rewritten in
+ * RAM once per canonical tick — those lerp prev→cur decoded banks at the
+ * spine's `alpha` (tsc_vert_anim_refresh) so they move every present instead
+ * of stepping at 29.97 Hz. `interp_on` = camera bracketed (else snap to cur,
+ * matching the rest of the scene on unpaired/camera-cut presents). */
+void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_render_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
     /* Reproduce terrain ONLY if the canonical frame drew it. During a level
@@ -3680,8 +3797,12 @@ void terrain_native_reextract(CPUState* cpu) {
      * them paints the old level's geometry over the cyclorama. The canon-drawn
      * mask is clear for RP_TERRAIN on those frames, so we skip. */
     if (!render_path_canon_drawn(RP_TERRAIN)) return;
+    static int s_vanim_en = -1;   /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B) */
+    if (s_vanim_en < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIM"); s_vanim_en = (e && *e) ? (*e != '0') : 1; }
+    s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
+    s_vanim_sub = 0; s_vanim_on = 0;
 }
 
 static const feature_dispatch_entry_t terrain_dispatch[] = {
