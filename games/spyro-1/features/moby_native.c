@@ -430,6 +430,18 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                   : (double)((TR_raw[2] << 2) >> m_scale);
         vz_bias = tr2_true - TR[2];
     }
+    /* .s OT bias, REGULAR/SPECULAR walks: the render loop keys the OT as
+     * (TR.z_raw>>5) − signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0];
+     * the cull packs m_DepthOffset (top byte of the moby+0x44 word, +0x47) into
+     * record w0 bits 16-23 [@8001F464..F46C]. One OT slot = 32 raw = 128
+     * full-world view-Z units, so the authored "draw over what shares my depth"
+     * pull (default 4 slots — how a flat pedestal disc paints over the terrain
+     * it sits on) mirrors as a world-unit depth-only bias — the regular twin of
+     * the shaded walk's ot_pull. Host-built w0 carries the same byte
+     * (build_moby_record_fields); sx/sy/fog are untouched. */
+    static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables (A/B) */
+    if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
+    double ot_pull = s_otbias_on ? 128.0 * (double)(((int32_t)(w0 << 8)) >> 24) : 0.0;
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -499,7 +511,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
-        out[i].vz = (float)((vzz + vz_bias) * (double)(1 << ds)); out[i].sat = sat;
+        double fvz = (vzz + vz_bias) * (double)(1 << ds) - ot_pull;
+        if (vzz > 0.0 && fvz < 1.0) fvz = 1.0;    /* pulled through the near plane */
+        out[i].vz = (float)fvz; out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
@@ -826,6 +840,10 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
      * model + cloned prim the cutscene mobys flash once per animation cycle.
      * Mirror the game: collapse to a single keyframe at the seam. */
     if (nfrm == 0) { f->frameB = f->frameA; f->w0 = 0; }
+    /* m_DepthOffset (top byte of the +0x44 word) -> w0 bits 16-23, like the .s
+     * cull [@8001F464..F46C] — the render walk's OT near-pull reads it there.
+     * Packed after the loop-seam collapse so the bias survives held keyframes. */
+    f->w0 |= (cpu->read_word(moby + 0x44) >> 24) << 16;
     f->mscol = cpu->read_word(moby + 0x4Cu);                 /* m_SpecularMetalColor */
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
@@ -4646,6 +4664,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                     f.frameB = hdr_c + 0x24u + nfrm_c * 8u;
                     f.w0     = (prog_c << 8) & 0xFF00u;
                     if (nfrm_c == 0) { f.frameB = f.frameA; f.w0 = 0; }
+                    /* keep the snapshot's m_DepthOffset in bits 16-23 (OT pull) */
+                    f.w0 |= (uint32_t)(oc->curr[0x47] & 0xFFu) << 16;
                 }
             }
         }

@@ -33,6 +33,11 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
     # ab_env: which feature toggle the on/off pair flips (default: the gapfill
     # classifier; e.g. "OPENPETE_TERRAIN_HOLEFILL" for fill-neutrality cases).
     env[case.get("ab_env", "OPENPETE_TERRAIN_GAPFILL")] = "1" if gapfill else "0"
+    # pin_env: fixed KEY=VALUE pairs applied to BOTH runs of the pair — for
+    # isolating one mechanism when two independently produce the same pixels
+    # (e.g. the actor-front pass vs the moby OT-bias pull).
+    for k, v in case.get("pin_env", {}).items():
+        env[str(k)] = str(v)
     if os.path.exists(LVP_ICD):          # deterministic software raster
         env["VK_ICD_FILENAMES"] = LVP_ICD
         env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"

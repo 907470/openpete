@@ -370,6 +370,12 @@ ab_env = "OPENPETE_TERRAIN_CULL"
 # the clipped wing region (calibrated 2171 px at the live frame, 2210 px
 # after screenshots became reference-aligned 2026-07-10 -- ALL inside the
 # bbox; the full-frame ON/OFF diff equals the bbox diff).
+# NOTE (moby OT-bias): the game's own m_DepthOffset OT pull (mirrored as a
+# 128-world-unit-per-slot depth bias, OPENPETE_MOBY_OTBIAS) now paints the wing
+# over the tower on its own — in the default config the actor-front pass is
+# redundant at this frame and its ON/OFF delta collapses to ~0.  Pin the pull
+# OFF here so this case keeps guarding the actor-front MACHINERY in isolation;
+# the sibling case below guards the pull itself.
 [[case]]
 name   = "townsquare-delvin-wing-front"
 level  = "town_square"
@@ -377,6 +383,26 @@ bk2    = "games/spyro-1/bk2/town-square-delvin-rescue.bk2"
 frame  = 2621
 mode   = "full"
 ab_env = "OPENPETE_ACTOR_FRONT"
+pin_env = { OPENPETE_MOBY_OTBIAS = "0" }
+  [[case.check]]
+  kind   = "ab-active"
+  min_px = 1000
+  bbox   = [120, 150, 300, 260]
+
+# Moby OT-bias pull (m_DepthOffset, record w0 bits 16-23): the .s keys every
+# regular/specular moby prim into the world OT at (TR.z_raw>>5) − offset —
+# one slot = 128 full-world view-Z units, default offset 4 — so a moby paints
+# over terrain up to ~512 units nearer (flat pedestal discs on the ground, the
+# rescue dragon's wing in the tower).  With the actor-front pass pinned OFF,
+# toggling the pull must flip the wing-vs-tower verdict in the same bbox.
+[[case]]
+name   = "townsquare-delvin-wing-otbias"
+level  = "town_square"
+bk2    = "games/spyro-1/bk2/town-square-delvin-rescue.bk2"
+frame  = 2621
+mode   = "full"
+ab_env = "OPENPETE_MOBY_OTBIAS"
+pin_env = { OPENPETE_ACTOR_FRONT = "0" }
   [[case.check]]
   kind   = "ab-active"
   min_px = 1000
