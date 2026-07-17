@@ -498,13 +498,13 @@ static double s_nearz = -1.0;
 /* near/HQ subdivide pass enable (Route 2; OPENPETE_TERRAIN_NEARHQ, default ON). */
 static int s_nearhq = -1;
 
-static cvert cv_lerp(cvert a, cvert b) {     /* crossing point at m3 == s_nearz */
-    double t = (s_nearz - a.m3) / (b.m3 - a.m3);
+static cvert cv_lerp(cvert a, cvert b, double zc) {  /* crossing point at m3 == zc */
+    double t = (zc - a.m3) / (b.m3 - a.m3);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
     cvert r;
     r.m1 = a.m1 + t * (b.m1 - a.m1);
     r.m2 = a.m2 + t * (b.m2 - a.m2);
-    r.m3 = s_nearz;
+    r.m3 = zc;
     r.u  = a.u + (float)t * (b.u - a.u);
     r.v  = a.v + (float)t * (b.v - a.v);
     int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
@@ -538,22 +538,116 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     if (m->textured) s_tex_tris++;
 }
 
-/* Near-plane clip (Sutherland-Hodgman against the single plane m3 >= s_nearz) of
- * a camera-space triangle given as 3 cverts, then push. 0 clipped → 1 tri; 1 →
- * quad (2 tris); 2 → 1 tri; 3 → dropped. */
+/* Camera-space midpoint of two cverts with ALL attributes halved (position,
+ * colour, UV) — the general-purpose sibling of cv_mid below (which leaves UVs
+ * for the near-HQ caller to fill). Used by the near-depth bisection below. */
+static cvert cv_half(cvert a, cvert b) {
+    cvert r;
+    r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
+    r.u = (a.u + b.u) * 0.5f; r.v = (a.v + b.v) * 0.5f;
+    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
+    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
+    r.rgb = (uint32_t)((ar+br)>>1) | ((uint32_t)((ag+bg)>>1)<<8) | ((uint32_t)((ab+bb)>>1)<<16);
+    return r;
+}
+
+/* Depth-faithful push: bisect NEAR triangles until every piece's corner
+ * view-Z ratio is bounded, then push.
+ *
+ * The GPU interpolates NDC depth LINEARLY IN SCREEN SPACE (spec), but our
+ * depth curve z = vz/(vz+4096) is hyperbolic in vz — for a planar face only
+ * 1/vz is screen-affine. A single huge near face (corner vz ratio 8x+, e.g.
+ * the peace_keepers ridge-top tri: vz 563..4674 across thousands of px) gets
+ * its mid-pixel depth inflated by the linear interp, while the finely
+ * subdivided neighbour (the near-HQ 2x2 ramp sub-quads) interpolates almost
+ * true — the big face loses the z-test where it is geometrically NEARER, and
+ * the neighbour paints over it (the f3238 ridge notch). The .s sidesteps the
+ * same class of problem by subdividing near cells (the 2x2 grid + detail-path
+ * GT3s); near QUADS already go through terrain_near_emit, but near TRIANGLES
+ * fall through as one piece. Bisecting the longest-ratio edge until
+ * max/min <= 2 caps the interp error at a few % of local depth — far below
+ * any real surface separation. Far faces (min vz >= 512 = the .s foreground
+ * band) span little depth on screen and are left whole. */
+static void push_tri_subdiv(cvert a, cvert b, cvert c, const tmat* m, int depth) {
+    double mn = a.m3, mx = a.m3;
+    if (b.m3 < mn) mn = b.m3; if (b.m3 > mx) mx = b.m3;
+    if (c.m3 < mn) mn = c.m3; if (c.m3 > mx) mx = c.m3;
+    if (depth >= 6 || mn <= 0.0 || mn >= 512.0 || mx <= mn * 2.0) {
+        push_tri(a, b, c, m);
+        return;
+    }
+    double rab = (a.m3 > b.m3) ? a.m3 / b.m3 : b.m3 / a.m3;
+    double rbc = (b.m3 > c.m3) ? b.m3 / c.m3 : c.m3 / b.m3;
+    double rca = (c.m3 > a.m3) ? c.m3 / a.m3 : a.m3 / c.m3;
+    if (rab >= rbc && rab >= rca) {
+        cvert h = cv_half(a, b);
+        push_tri_subdiv(a, h, c, m, depth + 1);
+        push_tri_subdiv(h, b, c, m, depth + 1);
+    } else if (rbc >= rca) {
+        cvert h = cv_half(b, c);
+        push_tri_subdiv(a, b, h, m, depth + 1);
+        push_tri_subdiv(a, h, c, m, depth + 1);
+    } else {
+        cvert h = cv_half(c, a);
+        push_tri_subdiv(a, b, h, m, depth + 1);
+        push_tri_subdiv(h, b, c, m, depth + 1);
+    }
+}
+
+/* Max distance (PSX px) a near-clip CROSSING vertex may project from the screen
+ * centre. A face straddling the eye plane clipped at s_nearz (16 world units)
+ * puts its crossing verts essentially AT the eye — they project 20k+ px
+ * offscreen, and rasterizers (llvmpipe AND hardware) drop the resulting sliver
+ * even though its on-screen wedge is large (peace_keepers ridge tri s113/f10:
+ * the terrain popped out whenever the camera crossed its plane). Everything
+ * beyond this bound is far outside any visible frame (±~600 PSX px at 32:9),
+ * so re-clipping until crossing verts land inside it trims only invisible
+ * geometry: the wedge's bounding EDGES are the projections of the same 3D
+ * lines regardless of where the cut lands along them. The doubling loop also
+ * bounds the accepted radius from BELOW (~0.4×LIMIT, the crossing slides
+ * ~half the distance per doubling), so the closing cut can never enter the
+ * frame: 0.4×2048 = 819 px > the widest supported visible half-extent
+ * (32:9 ≈ 683 PSX px). llvmpipe still under-rasters slivers this long (a
+ * software-raster artifact — hardware draws them exactly); don't judge the
+ * wedge's full extent on a WSLg screenshot. */
+#define CLIP_PROJ_LIMIT 2048.0f
+
+/* Near-plane clip (Sutherland-Hodgman against the plane m3 >= zc) of a
+ * camera-space triangle given as 3 cverts, then push. 0 clipped → 1 tri; 1 →
+ * quad (2 tris); 2 → 1 tri; 3 → dropped. Starts at zc = s_nearz; when a
+ * crossing vertex still projects beyond CLIP_PROJ_LIMIT the whole face is
+ * re-clipped at a doubled zc (crossing projections shrink ~1/zc, so this
+ * terminates fast; faces that end fully behind the raised plane were entirely
+ * inside the invisible band). Faces that never clip are pushed on round 0 —
+ * identical to the old single-plane behaviour. */
 static void clip_push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     cvert in[3] = { a, b, c };
-    cvert out[4]; int nout = 0; int clipped = 0;
-    for (int i = 0; i < 3; i++) {
-        cvert cur = in[i], nxt = in[(i + 1) % 3];
-        int curIn = cur.m3 >= s_nearz, nxtIn = nxt.m3 >= s_nearz;
-        if (curIn) out[nout++] = cur;
-        if (curIn != nxtIn && nout < 4) { out[nout++] = cv_lerp(cur, nxt); clipped = 1; }
+    double zc = s_nearz;
+    for (int round = 0; ; round++) {
+        cvert out[4]; int nout = 0; int clipped = 0;
+        for (int i = 0; i < 3; i++) {
+            cvert cur = in[i], nxt = in[(i + 1) % 3];
+            int curIn = cur.m3 >= zc, nxtIn = nxt.m3 >= zc;
+            if (curIn) out[nout++] = cur;
+            if (curIn != nxtIn && nout < 4) { out[nout++] = cv_lerp(cur, nxt, zc); clipped = 1; }
+        }
+        if (nout < 3) { s_dbg_behind++; return; } /* fully behind the near plane */
+        if (clipped && round < 16) {
+            int sane = 1;
+            for (int i = 0; i < nout && sane; i++) {
+                if (out[i].m3 != zc) continue;    /* only crossing verts move with zc */
+                float sx, sy;
+                proj_screen(out[i].m1, out[i].m2, out[i].m3, &sx, &sy);
+                if (fabsf(sx - (float)s_ofx) > CLIP_PROJ_LIMIT ||
+                    fabsf(sy - (float)s_ofy) > CLIP_PROJ_LIMIT) sane = 0;
+            }
+            if (!sane) { zc *= 2.0; continue; }
+        }
+        if (clipped) s_dbg_clipped++;
+        push_tri_subdiv(out[0], out[1], out[2], m, 0);  /* fan the clipped polygon */
+        if (nout == 4) push_tri_subdiv(out[0], out[2], out[3], m, 0);
+        return;
     }
-    if (nout < 3) { s_dbg_behind++; return; }     /* fully behind the near plane */
-    if (clipped) s_dbg_clipped++;
-    push_tri(out[0], out[1], out[2], m);          /* fan the clipped polygon */
-    if (nout == 4) push_tri(out[0], out[2], out[3], m);
 }
 
 /* Emit a triangle (sv[] index form) with near-plane clipping. Replaces the old
