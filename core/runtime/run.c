@@ -2765,7 +2765,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     openpete_screenshot_format_path(opts->screenshot_output,
                                                     opts->screenshot_intermediate_frames[si],
                                                     0, base, sizeof(base));
+                    /* The re-extract built the interpolated scene into the CURRENT
+                     * scene (never pushed to frame history), so compose depth 0 —
+                     * the normal shot-compose delay reads an empty lagged slot. */
+                    openpete_native_render_set_capture_nodelay(1);
                     openpete_native_render_screenshot_all(base);
+                    openpete_native_render_set_capture_nodelay(0);
                     OPL_INFO_F("screenshot",
                                "wrote intermediate alpha=0.5 native -vk on frame %u (target=%d, paired=%d)",
                                openpete_frame, opts->screenshot_intermediate_frames[si], paired);

@@ -767,6 +767,14 @@ void openpete_native_render_record_flush(void);
  * (including when the native path is disabled). */
 int openpete_native_render_screenshot_all(const char *base);
 
+/* Intermediate (sub-tick alpha=0.5) capture: make the next
+ * openpete_native_render_screenshot_all compose the CURRENT scene (depth 0)
+ * instead of the lagged frame-history slot. The re-extract builds the
+ * interpolated scene into the current scene and never pushes it to history, so
+ * the normal shot-compose delay would read an empty history frame. Set on before
+ * the dump, off after. No effect on the canonical dump (leave it 0). */
+void openpete_native_render_set_capture_nodelay(int on);
+
 /* Tear down the device + window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 

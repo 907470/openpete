@@ -300,6 +300,14 @@ static int                s_scene_ref_compare = 1; /* set by init: 1 = ab/diff (
  * reference-aligned depth even when the LIVE mode is vk-only (whose on-screen
  * present keeps running ahead at depth 0). */
 static int s_scene_shot_compose = 0;
+/* Intermediate (sub-tick alpha=0.5) capture: the re-extract builds the
+ * interpolated scene into the CURRENT s_scene and never pushes it to the frame
+ * history, so the compose must read depth 0 — the normal shot_compose delay
+ * would read a lagged history slot (an empty one, since the re-extract's
+ * scene_begin pushes nothing). Set only around openpete_native_render_screenshot_all
+ * for an intermediate dump. */
+static int s_scene_shot_nodelay = 0;
+void openpete_native_render_set_capture_nodelay(int on) { s_scene_shot_nodelay = on ? 1 : 0; }
 
 static int scene_delay_depth(void) {
     if (s_scene_delay < -1) {
@@ -311,6 +319,8 @@ static int scene_delay_depth(void) {
         else         s_scene_delay = -1;
     }
     if (s_scene_delay >= 0) return s_scene_delay;
+    /* Intermediate capture reads the freshly-built current scene (see the flag). */
+    if (s_scene_shot_nodelay) return 0;
     /* Mode default: reference-compare modes and the screenshot compose align
      * with the lagged PsyCross reference; the live vk-only present has no
      * reference → depth 0 (live frame, runs ahead). */
