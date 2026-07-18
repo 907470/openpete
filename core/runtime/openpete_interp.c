@@ -142,6 +142,27 @@ op_time_t openpete_interp_present_now(void) {
     return s_present_target ? s_present_target : op_now();
 }
 
+/* Deterministic capture — see the header note. */
+static int       s_det_mode    = 0;
+static op_time_t s_det_period  = 0;
+static uint64_t  s_det_index   = 0;
+void openpete_interp_set_deterministic(int on, op_time_t period_ns) {
+    s_det_mode = on ? 1 : 0;
+    s_det_period = period_ns;
+    if (on) s_det_index = 0;
+}
+op_time_t openpete_interp_curr_tick_ns(void) {
+    return (s_initialized && s_snap[s_head].valid) ? s_snap[s_head].tick_ns : 0;
+}
+int openpete_interp_paired(void) {
+    if (!s_initialized || !s_enabled) return 0;
+    const openpete_interp_snapshot_t* curr = &s_snap[s_head];
+    const openpete_interp_snapshot_t* prev = &s_snap[(s_head + 2) % 3];
+    if (!curr->valid || !prev->valid || curr->total_bytes != prev->total_bytes)
+        return 0;
+    return memcmp(curr->data, prev->data, curr->total_bytes) != 0;
+}
+
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     if (!s_initialized || !s_enabled) return;
     if (!s_regions || s_region_count == 0) return;
@@ -191,6 +212,12 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
                     (int32_t)oldw == (int32_t)neww ? "  (CAM-DEGENERATE)" : "");
         }
     }
+
+    /* Deterministic capture: override the wall-clock stamp with a fixed grid
+     * point (0, P, 2P, …) advanced only on an actual store, so consecutive
+     * distinct ticks are exactly `period` apart (see the header note). */
+    if (s_det_mode && s_det_period > 0)
+        tick_ns = (op_time_t)(s_det_index++) * s_det_period;
 
     /* State advanced — commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */

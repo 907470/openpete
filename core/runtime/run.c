@@ -1305,6 +1305,21 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                        "capture enabled (render-fps=%d > sim ~30 Hz)",
                        render_fps);
         }
+        /* Presentation-golden intermediate corpus: capture the ring headless so
+         * --screenshot-intermediate-on-frame can re-extract a deterministic
+         * alpha=0.5 sub-tick frame. DETERMINISTIC stamps (fixed grid, one tick
+         * apart) make the forced present target land alpha exactly at 0.5 with no
+         * host-pacing dependency. The live sub-tick present stays headless-blocked
+         * and the canonical lag leg is gated !headless (below), so enabling capture
+         * here does NOT alter the canonical dump — it only feeds the explicit
+         * intermediate capture. */
+        if (opts->screenshot_intermediate_count > 0) {
+            openpete_interp_set_enabled(1);
+            openpete_interp_set_deterministic(1, g_openpete_tick_period_ns);
+            OPL_INFO_F("interp",
+                       "deterministic capture enabled (%d intermediate screenshot target(s), tick=%lld ns)",
+                       opts->screenshot_intermediate_count, (long long)g_openpete_tick_period_ns);
+        }
     }
 
     /* --rewind: allocate the keyframe ring (savestate P4). Driver lives
@@ -2655,7 +2670,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * re-engages. The raw (spine-off) present path doesn't read what this
                  * writes, so an unconditional commit is harmless there. */
                 openpete_native_scene_commit_fade();
-                if (lag_re && openpete_native_render_enabled() && !openpete_unlock_fps &&
+                /* !headless: headless has no live present stream, so the canonical
+                 * dump must stay the PURE canonical frame. The presentation-golden
+                 * intermediate corpus enables interp capture headless (for the
+                 * ring), which would otherwise arm this lag leg and lag the
+                 * canonical -vk; the explicit alpha=0.5 capture below owns the
+                 * sub-tick leg instead. */
+                if (lag_re && !opts->headless &&
+                    openpete_native_render_enabled() && !openpete_unlock_fps &&
                     g_openpete_interp_enabled && openpete_interp_enabled() &&
                     !(g_paused && !g_step_one)) {
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
@@ -2710,6 +2732,43 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                                     opts->screenshot_frames[si],
                                                     0, base, sizeof(base));
                     openpete_native_render_screenshot_all(base);
+                }
+            }
+
+            /* Presentation-golden intermediate leg: deterministic sub-tick
+             * (alpha 0.5) native capture. Force the present clock to the tick
+             * midpoint (curr_tick_ns + period/2) so the re-extract callback
+             * interpolates exactly halfway between the two most-recent DISTINCT
+             * ticks, then dump the native -vk. Headless-capable — this drives an
+             * explicit re-extract; the live sub-tick present path is headless-
+             * blocked. Keyed on openpete_frame (VBL): fires on the first present
+             * at/after each target. Deterministic capture (enabled above) pins the
+             * ring stamps to a fixed grid so alpha lands at exactly 0.5. */
+            if (openpete_native_render_enabled() && opts->screenshot_intermediate_count > 0) {
+                openpete_native_reextract_fn ire = openpete_native_get_reextract();
+                static bool s_int_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
+                for (int si = 0; ire && si < opts->screenshot_intermediate_count; ++si) {
+                    if (s_int_shot[si]) continue;
+                    if ((int)openpete_frame < opts->screenshot_intermediate_frames[si]) continue;
+                    s_int_shot[si] = true;
+                    int paired = openpete_interp_paired();
+                    if (!paired)
+                        OPL_WARN_F("screenshot",
+                                   "intermediate frame %d: no interp bracket "
+                                   "(spawn/load/static) — capturing canonical pose",
+                                   opts->screenshot_intermediate_frames[si]);
+                    op_time_t curr_ns = openpete_interp_curr_tick_ns();
+                    openpete_interp_set_present_target(curr_ns + g_openpete_tick_period_ns / 2);
+                    ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
+                    openpete_interp_set_present_target(0); /* restore op_now() fallback */
+                    char base[1024];
+                    openpete_screenshot_format_path(opts->screenshot_output,
+                                                    opts->screenshot_intermediate_frames[si],
+                                                    0, base, sizeof(base));
+                    openpete_native_render_screenshot_all(base);
+                    OPL_INFO_F("screenshot",
+                               "wrote intermediate alpha=0.5 native -vk on frame %u (target=%d, paired=%d)",
+                               openpete_frame, opts->screenshot_intermediate_frames[si], paired);
                 }
             }
 

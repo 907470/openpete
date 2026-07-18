@@ -132,6 +132,26 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns);
 void      openpete_interp_set_present_target(op_time_t t);
 op_time_t openpete_interp_present_now(void);
 
+/* Deterministic capture (presentation-golden intermediate corpus). When on,
+ * openpete_interp_capture IGNORES the wall-clock stamp it is passed and stamps
+ * each STORED (post-dedupe) snapshot on a fixed grid: 0, P, 2P, … exactly
+ * `period_ns` apart. This makes curr->tick_ns - prev->tick_ns == period_ns
+ * always, so a caller that sets the present target to curr_tick_ns + period_ns/2
+ * gets alpha == 0.5 EXACTLY, reproducibly, with no dependency on host pacing.
+ * Enabling resets the grid counter to 0. Off in normal play (wall-clock stamps
+ * drive the display pacer). */
+void      openpete_interp_set_deterministic(int on, op_time_t period_ns);
+
+/* The newest stored snapshot's timestamp (curr->tick_ns), or 0 if the ring holds
+ * no valid slot yet. With deterministic capture on, this is a fixed grid point;
+ * add period_ns/2 to target the sub-tick midpoint. */
+op_time_t openpete_interp_curr_tick_ns(void);
+
+/* 1 iff the ring holds two valid, byte-DISTINCT most-recent slots (prev != curr)
+ * — i.e. a sub-tick interpolation bracket is available right now. 0 during
+ * spawn/load/pause (nothing to interpolate between). */
+int       openpete_interp_paired(void);
+
 /* Returns the most recent two snapshots (prev = tick N-1, curr = tick N)
  * via out params. Returns 1 if both are valid AND their data buffers
  * differ (byte-identical → state is stuck → caller should re-present
