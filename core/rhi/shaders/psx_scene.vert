@@ -25,12 +25,21 @@ layout(location = 2) in vec4 inColor; /* R8G8B8A8_UNORM -> 0..1 modulate */
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
 
+/* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0):
+ * false = legacy z=vz/(vz+4096) (hyperbolic in vz, interpolated screen-linearly
+ * => ordering flips at near-coplanar faces); true = z_ndc=(W-1)/W=1-1/vz, which
+ * IS affine in 1/vz => screen-affine => exact interpolation. W (=vz) is unchanged
+ * either way, so perspective-correct UV is identical. Same monotonic near->far
+ * mapping, so compare op / clear value are unchanged. */
+layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+
 void main()
 {
     float z = clamp(inPos.z, 0.0, 0.9999);          /* bound W (z->1 => W->inf) */
     float W = 4096.0 * z / max(1.0 - z, 1e-6);       /* view-Z == clip-space W   */
     W = max(W, 1.0);                                  /* near-plane / z==0 guard  */
-    gl_Position = vec4(inPos.xy * W, z * W, W);
+    float zc = DEPTH_AFFINE ? (W - 1.0) : (z * W);   /* z_ndc = zc/W */
+    gl_Position = vec4(inPos.xy * W, zc, W);
     vUV = inUV;
     vColor = inColor;
 }

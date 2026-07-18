@@ -2783,6 +2783,14 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
  * return). desc->postfx selects the mod-postfx layout — no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
+/* Vertex-stage specialization constant 0 (`DEPTH_AFFINE`): selects the scene
+ * shaders' depth encoding at pipeline creation — 0 = legacy z=vz/(vz+4096),
+ * 1 = screen-affine z_ndc=1-1/vz. Set once from OPENPETE_DEPTH_AFFINE before the
+ * pipelines are built; only psx_scene.vert / quad.vert declare constant_id 0, so
+ * attaching the entry to every pipeline's vertex stage is a no-op elsewhere. */
+static VkBool32 s_vs_depth_affine = VK_FALSE;
+void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE; }
+
 static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
                                                   const rhi_pipeline_desc *desc,
                                                   VkShaderModule vs,
@@ -2795,9 +2803,15 @@ static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
         return NULL;
     }
 
+    VkSpecializationMapEntry vsSpecMap = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+    VkSpecializationInfo vsSpec = {
+        .mapEntryCount = 1, .pMapEntries = &vsSpecMap,
+        .dataSize = sizeof(s_vs_depth_affine), .pData = &s_vs_depth_affine,
+    };
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main" },
+          .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
+          .pSpecializationInfo = &vsSpec },
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main" },
     };

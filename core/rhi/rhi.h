@@ -255,6 +255,12 @@ void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 
+/* Select the scene shaders' depth encoding (vertex spec-constant 0), applied to
+ * pipelines created AFTER this call: 0 = legacy z=vz/(vz+4096), 1 = screen-affine
+ * z_ndc=1-1/vz. Call once at bring-up (from OPENPETE_DEPTH_AFFINE) before the
+ * scene pipelines are built. Default 0. */
+void          rhi_set_depth_affine(int on);
+
 /* Pipeline from IN-MEMORY SPIR-V (mod shaders — S2 of
  * plans/openpete-mod-shaders.md). Words are copied into driver objects
  * during the call; the caller keeps ownership. Either side may be NULL
