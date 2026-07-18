@@ -1,0 +1,24 @@
+# Presentation-golden corpus manifest.
+#
+# One row per bk2 sample set. presentation-corpus.sh captures, for each bk2,
+# a canonical leg (tick-keyed) and an intermediate leg (deterministic alpha=0.5,
+# VBL-keyed) on the native -vk path under llvmpipe. See
+# notes/plans/openpete-presentation-golden.md.
+#
+# Fields (pipe-separated):
+#   name         bk2 basename under games/spyro-1/bk2/ (its .args sidecar is
+#                auto-spliced by the binary, so --skip-to-level etc. need not
+#                be repeated here)
+#   frame_limit  --frame-limit (VBLs); pick with margin over the last sample
+#   canon_ticks  comma list of canonical draw-ticks (--screenshot-on-tick)
+#   inter_frames comma list of VBL frames for the alpha=0.5 intermediate leg
+#                (--screenshot-intermediate-on-frame); each must fall in a
+#                stretch with a live interp bracket (paired) — verify with the
+#                "paired=1" log line before adding a point
+#
+# Bring-up is a single bk2 (cliff-town-vista, a far-terrain vista that exercises
+# the depth fix's far-precision risk). Widen the set only once the pipeline is
+# trusted end-to-end (see the plan's fan-out checklist item).
+#
+# name              | frame_limit | canon_ticks   | inter_frames
+cliff-town-vista    | 8000        | 300,450,600   | 2000,3000
