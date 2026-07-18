@@ -1015,7 +1015,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     openpete_psycross_renders =
         (!openpete_native_render_enabled()                 /* headless / psycross / bring-up failed */
          || opts->renderer != OPENPETE_RENDERER_VK         /* ab/diff need the PsyCross reference */
-         || opts->screenshot_frame_count > 0               /* -og + native -ab/-diff variants */
+         /* --screenshot-native-only discards the PsyCross reference, so don't pay
+          * the GL OT walk to build it — the native -vk dump reads gamestate. */
+         || (opts->screenshot_frame_count > 0 && !opts->screenshot_native_only) /* -og + native -ab/-diff */
          || opts->screenshot_presents_start >= 0)          /* present-sequence capture (-og leg) */
         /* null-GPU hard override: no GL context exists, so PsyCross MUST NOT
          * rasterize regardless of the terms above (the reachable case is a
@@ -2556,7 +2558,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             int shot_key = opts->screenshot_ticks_keyed ? (int)openpete_canon_tick
                                                         : (int)openpete_frame;
             static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-            for (int si = 0; si < opts->screenshot_frame_count; ++si) {
+            /* --screenshot-native-only skips the -og leg: PsyCross isn't rasterizing
+             * (openpete_psycross_renders == 0), so the present FBO this reads is
+             * stale. The native -vk dump below is the sole output. */
+            for (int si = 0; !opts->screenshot_native_only &&
+                             si < opts->screenshot_frame_count; ++si) {
                 if (s_shot_fired[si]) continue;
                 if (shot_key < opts->screenshot_frames[si]) continue;
                 s_shot_fired[si] = true;

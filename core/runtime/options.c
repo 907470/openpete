@@ -468,6 +468,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
         "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
         "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
+        "  --screenshot-native-only   capture the native -vk variant alone: skip PsyCross OT rasterization and -og/-ab/-diff (presentation-golden corpus path)\n"
+        "  --screenshot-intermediate-on-frame N[,...]  deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only\n"
         "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
         "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
         "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
@@ -785,6 +787,33 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 p = end;
             }
             i++;
+        } else if (strcmp(a, "--screenshot-intermediate-on-frame") == 0) {
+            /* Deterministic sub-tick (alpha 0.5) native capture targets, VBL-keyed.
+             * Fills a separate list from --screenshot-on-frame; implies native-only. */
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->screenshot_intermediate_count = 0;
+            const char* p = v;
+            while (*p) {
+                while (*p == ',' || *p == ' ') p++;
+                if (!*p) break;
+                if (opts->screenshot_intermediate_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
+                    fprintf(stderr, "openpete: %s supports up to %d frames\n",
+                            a, OPENPETE_MAX_SCREENSHOT_FRAMES);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                char* end = NULL;
+                long n = strtol(p, &end, 10);
+                if (end == p || n < 0) {
+                    fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
+                    return OPENPETE_EXIT_SETUP_ERROR;
+                }
+                opts->screenshot_intermediate_frames[opts->screenshot_intermediate_count++] = (int)n;
+                p = end;
+            }
+            opts->screenshot_native_only = true;   /* intermediate capture is vk-only */
+            i++;
+        } else if (strcmp(a, "--screenshot-native-only") == 0) {
+            opts->screenshot_native_only = true;
         } else if (strcmp(a, "--screenshot-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;

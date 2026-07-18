@@ -202,6 +202,28 @@ typedef struct {
     int         screenshot_presents_start;  /* -1 = disabled */
     int         screenshot_presents_count;  /* default 1 */
 
+    /* `--screenshot-native-only`: capture the native `-vk` variant ALONE —
+     * skip the PsyCross OT rasterization (`openpete_psycross_renders`, which a
+     * screenshot request otherwise forces on for the `-og` reference) and the
+     * `-og`/`-ab`/`-diff` composition. Gameplay-neutral (the render→gameplay
+     * channel writes come from the recompiled render funcs, upstream of OT
+     * rasterization; this is also the normal windowed pure-vk play path). The
+     * presentation-golden corpus's default capture path — its single biggest
+     * speedup, since the discarded reference otherwise costs a full GL OT walk
+     * per screenshot frame. */
+    bool        screenshot_native_only;
+
+    /* `--screenshot-intermediate-on-frame N[,...]`: deterministic sub-tick
+     * (alpha = 0.5) native captures, headless-capable. At each listed VBL the
+     * present clock is forced to the tick midpoint (curr_tick_ns + period/2) and
+     * the re-extract callback is invoked once, so the shot lands on the exact
+     * interpolated pose the sub-tick spine would present — reproducibly, with no
+     * wall-clock pacing. VBL-keyed (openpete_frame), like --screenshot-on-frame.
+     * Implies --screenshot-native-only capture. Fills a SEPARATE target list so a
+     * run can carry canonical and intermediate legs together. */
+    int         screenshot_intermediate_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    int         screenshot_intermediate_count;   /* 0 = disabled */
+
     /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */

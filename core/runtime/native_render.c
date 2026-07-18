@@ -1132,7 +1132,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * native OFF, so those gates are unaffected. The live present loop never runs
      * headless; only openpete_native_render_screenshot_all is driven (run.c). */
     const bool headless = opts->headless;
-    if (headless && opts->screenshot_frame_count <= 0) {
+    if (headless && opts->screenshot_frame_count <= 0 &&
+                    opts->screenshot_intermediate_count <= 0) {
         OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no screenshots requested)");
         return 0;
     }
@@ -5838,6 +5839,20 @@ static int native_render_screenshot_all_impl(const char *base)
     /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
+    /* Without a PsyCross reference (pure-vk / --screenshot-native-only, and
+     * always under --headless where openpete_native_render_frame — which would
+     * otherwise derive this — early-returns), ref_w/ref_h stay 0 and the dump
+     * silently bails below. Derive the display shape from GAMESTATE exactly as
+     * the live frame path does (4:3 corrected for vertical overscan, ~2x
+     * internal). vk-only: ab/diff genuinely need the reference and wait for it. */
+    if (!have_ref && !s_scene_ref_compare) {
+        int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
+        int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+        int rh = ch * 2;
+        int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
+        if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
+    }
+    update_layout();
     ensure_native_rtt(true);
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
     /* -ab/-diff need the PsyCross reference readback; without one (pure vk with
