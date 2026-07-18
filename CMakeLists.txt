@@ -225,6 +225,25 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Presentation-golden image gate (the image-side counterpart to the psx
+    # oracle). Captures the native -vk corpus (canonical tick-keyed +
+    # deterministic alpha=0.5 intermediate) headless under llvmpipe and diffs it
+    # against the committed golden (tests/golden/spyro-1/presentation). A clean
+    # tree is pixel-identical, so any divergence is a presentation regression the
+    # gameplay oracle can't see. Single-bk2 bring-up (cliff-town-vista); re-bless
+    # an intended change with scripts/check_presentation_golden.sh --bless. Skips
+    # (exit 64) if the binary / disc / Vulkan loader / PIL are absent. See
+    # notes/plans/openpete-presentation-golden.md.
+    add_test(NAME presentation_golden
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(presentation_golden PROPERTIES
+        LABELS "slow;presentation"
+        # Headroom over the per-run --max-runtime-seconds 280 x 2 legs.
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # --record video-capture smoke test. Boots the headless demo with
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,
