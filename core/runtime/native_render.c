@@ -952,6 +952,18 @@ static struct {
     rhi_texture  *shot_rtt;
     int           shot_w, shot_h;
 
+    /* Capture-time freeze backdrop: the live path snapshots the last world frame
+     * into frozen_tex only when there's a window (win_w>0), so a headless
+     * screenshot of a freeze frame (pause / flight-results / level-exit) has no
+     * backdrop and renders dark. During capture the driver instead renders each
+     * pre-freeze WORLD frame into shot_frozen (at the capture's widescreen extent),
+     * and the freeze overlay prefers it — so the green desaturated frozen-world
+     * effect is captured headless. Holds the most recent world frame; once the
+     * freeze bit is set the snapshot stops updating, freezing that frame. */
+    rhi_texture  *shot_frozen;
+    int           shot_frozen_w, shot_frozen_h;
+    bool          shot_frozen_valid;
+
     /* SSAA (--ssaa N): the live vk scene renders into a supersampled render
      * target (ss_factor× the window per axis), then a fragment resolve pass
      * box-averages it in linear light into the 1× offscreen. ss_factor is the
@@ -3388,6 +3400,21 @@ static void portal_mask_bias(float* c, float* s, float* cl)
  * and its far-sentinel fallback let level mobys reappear once the camera
  * crossed the plane. See the portal draw site in draw_native_scene.) */
 
+/* The freeze backdrop source. Prefer the capture-time shot_frozen (populated by
+ * openpete_native_render_snapshot_frozen during a headless screenshot run) when
+ * it holds a world frame; otherwise the live-present frozen_tex. Lets a headless
+ * freeze-frame dump show the green frozen-world effect that frozen_tex (live-
+ * window only) can't provide. */
+static rhi_texture *active_frozen_tex(int *out_valid)
+{
+    if (s_nr.shot_frozen && s_nr.shot_frozen_valid) {
+        if (out_valid) *out_valid = 1;
+        return s_nr.shot_frozen;
+    }
+    if (out_valid) *out_valid = s_nr.frozen_valid ? 1 : 0;
+    return s_nr.frozen_tex;
+}
+
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
@@ -3912,7 +3939,9 @@ static bool draw_native_scene(bool full_extent)
      * Drawn FIRST (the backdrop) so the menu UI composites on top. Only when a
      * world frame has been captured; else fall through (clear/bg shows). */
     int freeze_first = -1;
-    if ((scene_freeze & (1u << 31)) && s_nr.frozen_valid && s_nr.freeze_overlay_pipe
+    int frozen_ok = 0;
+    (void)active_frozen_tex(&frozen_ok);
+    if ((scene_freeze & (1u << 31)) && frozen_ok && s_nr.freeze_overlay_pipe
         && n + 6 <= SCENE_VB_VERTS) {
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
@@ -4005,11 +4034,14 @@ static bool draw_native_scene(bool full_extent)
      * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
      * a freeze frame the world groups are empty (the game stops rendering the
      * world), so this fills the screen and the menu UI composites over it. */
-    if (freeze_first >= 0 && s_nr.frozen_tex) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
-        rhi_bind_vram(s_nr.dev, s_nr.frozen_tex);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
+    if (freeze_first >= 0) {
+        rhi_texture *frz = active_frozen_tex(NULL);
+        if (frz) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
+            rhi_bind_vram(s_nr.dev, frz);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
+        }
     }
 
     /* SKY (cyclorama dome) — drawn before the layered groups with the PLAIN
@@ -5851,6 +5883,67 @@ static void path_with_suffix(const char *base, const char *suffix,
 
 static int native_render_screenshot_all_impl(const char *base);
 
+/* Capture-time freeze-backdrop maintenance. Render the CURRENT world frame into
+ * shot_frozen so a later freeze-frame dump has the frozen-world backdrop to tint
+ * green (the live path's frozen_tex snapshot is window-only). Called each present
+ * during a headless capture run; a no-op on freeze frames (nothing to snapshot —
+ * the world groups are empty) and on empty scenes, so once the game pauses,
+ * shot_frozen holds the last world frame. cap_wf matches the capture's widen so
+ * the backdrop lines up 1:1 with the widescreen dump. */
+void openpete_native_render_snapshot_frozen(float cap_wf)
+{
+    if (!s_nr.enabled) return;
+    if (cap_wf < 1.0f) cap_wf = 1.0f;
+    /* Only WORLD frames: a freeze frame has no world geometry, and snapshotting it
+     * would overwrite the good backdrop with an empty one. */
+    int scene_n; uint32_t sbg, sfade, sfreeze;
+    (void)scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
+    if (scene_n <= 0 || (sfreeze & (1u << 31))) return;
+
+    /* Derive the reference display shape from gamestate (headless has no live
+     * frame to source it from), same as the screenshot compose fallback. */
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) {
+        int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
+        int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+        int rh = ch * 2;
+        int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
+        if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
+    }
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
+    const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
+    if (!(s_nr.shot_frozen && s_nr.shot_frozen_w == Wc && s_nr.shot_frozen_h == s_nr.ref_h)) {
+        rhi_wait_idle(s_nr.dev);
+        if (s_nr.shot_frozen) rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen);
+        s_nr.shot_frozen = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)s_nr.ref_h);
+        s_nr.shot_frozen_w = Wc; s_nr.shot_frozen_h = s_nr.ref_h; s_nr.shot_frozen_valid = false;
+    }
+    if (!s_nr.shot_frozen) return;
+
+    sync_vram_texture();
+    ensure_native_rtt(true);
+    ensure_opaque_depth();
+    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : sbg;
+    const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
+    const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
+    const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+    float prev_wf = s_render_freeze_wf;
+    s_render_freeze_wf = cap_wf;
+    if (rhi_begin_frame(s_nr.dev)) {
+        upload_synced_textures();
+        hd_flush_pending();
+        native_depth_prepass();
+        rhi_begin_render_target(s_nr.dev, s_nr.shot_frozen, br, bgc, bb, 1.0f);
+        draw_native_scene(true);
+        rhi_end_render_target(s_nr.dev, s_nr.shot_frozen);
+        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
+        rhi_end_offscreen(s_nr.dev);
+        rhi_blit_to_swapchain(s_nr.dev);
+        rhi_end_frame(s_nr.dev);
+        s_nr.shot_frozen_valid = true;
+    }
+    s_render_freeze_wf = prev_wf;
+}
+
 /* Widescreen (Hor+) native-only -vk dump. Renders the scene at the widened
  * extent into the dedicated shot_rtt (W*cap_wf × H), matching the extraction-
  * time widen (openpete_native_widescreen_factor now honors --aspect headless),
@@ -6159,6 +6252,8 @@ void openpete_native_render_shutdown(void)
     }
     if (s_nr.ref_tex)      rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
     if (s_nr.native_rtt)   rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
+    if (s_nr.shot_rtt)     rhi_destroy_texture(s_nr.dev, s_nr.shot_rtt);
+    if (s_nr.shot_frozen)  rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen);
     if (s_nr.frozen_tex)   rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
     if (s_nr.ss_rtt)       rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     if (s_nr.opaque_depth) rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);

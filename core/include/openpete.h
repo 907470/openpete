@@ -224,6 +224,14 @@ typedef struct {
     int         screenshot_intermediate_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
     int         screenshot_intermediate_count;   /* 0 = disabled */
 
+    /* `--screenshot-freeze-backdrop`: during a headless capture run, render each
+     * pre-freeze WORLD frame into the capture freeze texture so a freeze-frame
+     * dump (pause / flight-results / level-exit) shows the green frozen-world
+     * backdrop instead of a dark clear (frozen_tex is snapshotted only with a live
+     * window). Off by default — it renders an extra frame per present, so enable
+     * it only for bk2s/poses that reach a freeze state. */
+    bool        screenshot_freeze_backdrop;
+
     /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */

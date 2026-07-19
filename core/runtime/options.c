@@ -470,6 +470,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
         "  --screenshot-native-only   capture the native -vk variant alone: skip PsyCross OT rasterization and -og/-ab/-diff (presentation-golden corpus path)\n"
         "  --screenshot-intermediate-on-frame N[,...]  deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only\n"
+        "  --screenshot-freeze-backdrop  maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)\n"
         "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
         "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
         "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
@@ -814,6 +815,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             i++;
         } else if (strcmp(a, "--screenshot-native-only") == 0) {
             opts->screenshot_native_only = true;
+        } else if (strcmp(a, "--screenshot-freeze-backdrop") == 0) {
+            opts->screenshot_freeze_backdrop = true;
         } else if (strcmp(a, "--screenshot-output") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->screenshot_output = v; i++;

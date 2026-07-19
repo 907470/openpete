@@ -2717,6 +2717,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * native is the display AND recording is active. */
             openpete_native_render_frame((uint64_t)(op_now() / 1000));
 
+            /* Maintain the capture freeze backdrop: render this present's world
+             * frame into the capture freeze texture so a later headless dump of a
+             * freeze frame (pause / flight-results / level-exit) shows the green
+             * frozen-world effect. The live path snapshots frozen_tex only with a
+             * window, so a headless capture must keep it itself. A no-op on
+             * freeze/empty frames, so once the game pauses it holds the last world
+             * frame. Off by default (an extra render per present); enabled only for
+             * bk2s/poses that reach a freeze state. */
+            if (opts->screenshot_freeze_backdrop && openpete_native_render_enabled()
+                && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
+                openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
+
             /* Native screenshots: on the same --screenshot-on-frame targets,
              * dump every native variant — "<out>-vk.png", "<out>-ab.png",
              * "<out>-diff.png" — regardless of the live --renderer mode, so the

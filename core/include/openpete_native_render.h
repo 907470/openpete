@@ -775,6 +775,15 @@ int openpete_native_render_screenshot_all(const char *base);
  * the dump, off after. No effect on the canonical dump (leave it 0). */
 void openpete_native_render_set_capture_nodelay(int on);
 
+/* Capture-time freeze backdrop: render the current world frame into the capture
+ * freeze texture so a later headless dump of a freeze frame (pause / flight-
+ * results / level-exit) shows the green frozen-world backdrop. frozen_tex is
+ * snapshotted only with a live window, so a headless capture must maintain this
+ * itself. No-op on freeze / empty frames, so once the game pauses it holds the
+ * last world frame. Call each present during a freeze-backdrop capture run;
+ * cap_wf is the capture's widescreen factor (openpete_native_widescreen_factor). */
+void openpete_native_render_snapshot_frozen(float cap_wf);
+
 /* Tear down the device + window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 
