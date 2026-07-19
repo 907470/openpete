@@ -60,6 +60,11 @@ run_one() {  # name frame_limit leg flag targets
   local name="$1" flim="$2" leg="$3" flag="$4" targets="$5"
   local out="$OUTDIR/${name}__${leg}__{n}.png"
   local log; log="$(mktemp)"
+  # TODO(16:9): capture at --aspect 16:9 so the golden catches widescreen (Hor+)
+  # artifacts. The headless native-only capture currently renders the 4:3 content
+  # shape only — a single widescreen dump works, but repeated widescreen captures
+  # in one process empty every frame after the first (a render-state persistence
+  # bug in the widescreen RTT path). Ship 4:3 until that's fixed.
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
@@ -78,20 +83,55 @@ run_one() {  # name frame_limit leg flag targets
   return $miss
 }
 
+# Authoritative movie length = the number of input-frame lines ('|'-prefixed) in
+# the bk2's Input Log.txt — matches the binary's own bk2-end frame exactly. The
+# frame-limit is one cycle past that (render the last input's result, then stop),
+# and the sample grid runs up to it, so nothing is hardcoded to a bk2's length.
+bk2_frames() {
+  python3 - "$1" <<'PY'
+import zipfile, sys
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    print(sum(1 for l in z.read('Input Log.txt').decode('latin-1').splitlines()
+              if l.startswith('|')))
+except Exception:
+    print(0)
+PY
+}
+
 fail=0 ran=0
-while IFS='|' read -r name flim canon inter; do
+while IFS='|' read -r name start interval; do
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
-  flim="$(echo "$flim" | tr -d ' \t')"
-  canon="$(echo "$canon" | tr -d ' \t')"
-  inter="$(echo "$inter" | tr -d ' \t')"
-  if [[ ! -f "games/spyro-1/bk2/${name}.bk2" ]]; then
-    echo "  SKIP row: no bk2 games/spyro-1/bk2/${name}.bk2"; continue; fi
+  start="$(echo "$start" | tr -d ' \t')"
+  interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
+  bk2="games/spyro-1/bk2/${name}.bk2"
+  if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
+  fc="$(bk2_frames "$bk2")"
+  if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
+    echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
+  # Extend each grid ONE point PAST the movie end (round the last input frame up
+  # to the next grid point: canonical %interval, intermediate the +half offset),
+  # so the final settled frame after the last input is captured; run to there.
+  half=$((interval / 2))
+  istart=$((start + half))
+  canon_end=$(( start  + interval * ( (fc - start)  / interval + 1 ) ))
+  inter_end=$(( istart + interval * ( (fc - istart) / interval + 1 ) ))
+  flim=$(( (canon_end > inter_end ? canon_end : inter_end) + 1 ))
+  canon="$(seq -s, "$start"  "$interval" "$canon_end")"
+  inter="$(seq -s, "$istart" "$interval" "$inter_end")"
+  ncanon=$(awk -F, '{print NF}' <<<"$canon"); ninter=$(awk -F, '{print NF}' <<<"$inter")
+  # The binary caps ONE --screenshot list at OPENPETE_MAX_SCREENSHOT_FRAMES (64);
+  # a longer movie needs a bigger interval (log it, never silently truncate).
+  if [[ "$ncanon" -gt 64 || "$ninter" -gt 64 ]]; then
+    echo "  FAIL row $name: $ncanon canon / $ninter inter samples exceed the 64-frame"
+    echo "        screenshot cap for a $fc-frame movie — raise this row's interval."
+    fail=1; continue; fi
   ran=$((ran+1))
-  echo "[$name] canon frames=$canon  inter frames=$inter  frame-limit=$flim"
-  [[ -n "$canon" ]] && { run_one "$name" "$flim" canon --screenshot-on-frame "$canon" || fail=1; }
-  [[ -n "$inter" ]] && { run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" || fail=1; }
+  echo "[$name] movie=$fc frame-limit=$flim  canon=${start}/${interval} ($ncanon)  inter=$((start+half))/${interval} ($ninter)"
+  run_one "$name" "$flim" canon --screenshot-on-frame "$canon" || fail=1
+  run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" || fail=1
 done < "$MANIFEST"
 
 if [[ $ran -eq 0 ]]; then echo "[presentation-corpus] SKIP: no manifest rows matched '$FILTER'"; exit 64; fi

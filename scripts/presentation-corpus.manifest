@@ -6,24 +6,29 @@
 # notes/plans/openpete-presentation-golden.md.
 #
 # Fields (pipe-separated):
-#   name         bk2 basename under games/spyro-1/bk2/ (its .args sidecar is
-#                auto-spliced by the binary, so --skip-to-level etc. need not
-#                be repeated here)
-#   frame_limit  --frame-limit (VBLs); pick with margin over the last sample
-#   canon_frames comma list of VBL frames for the canonical leg
-#                (--screenshot-on-frame); start at the first frame %100==0 AFTER
-#                the level finishes loading (g_Gamestate -> GS_Playing plus the
-#                fade-in), then every 100 VBLs
-#   inter_frames comma list of VBL frames for the alpha=0.5 intermediate leg
-#                (--screenshot-intermediate-on-frame), offset +50 from the
-#                canonical grid; each must fall in a stretch with a live interp
-#                bracket (paired) — verify with the "paired=1" log line
+#   name      bk2 basename under games/spyro-1/bk2/ (its .args sidecar is
+#             auto-spliced by the binary, so --skip-to-level etc. need not be
+#             repeated here)
+#   start     first VBL frame to sample: the first frame %interval==0 AFTER the
+#             level finishes loading (g_Gamestate 0x800757D8 -> GS_Playing (0)
+#             PLUS the fade-in settle). Verify the first sample isn't a
+#             fade/transition frame (color-count or eyeball) when adding a bk2.
+#   interval  optional VBL spacing (default 100). The canonical leg samples
+#             start, start+interval, … ; the intermediate (alpha=0.5) leg samples
+#             start+interval/2, … — both up to the movie's last input frame.
+#
+# The frame-limit and both sample grids are DERIVED from the bk2's own length
+# (the input-frame count in its Input Log.txt): each grid extends to the first
+# point PAST the last input frame (canonical %interval, intermediate the +half
+# offset), so the final settled frame after the movie is captured, and the run
+# goes to there. Nothing here is tied to a bk2's duration except its load-aligned
+# start. (cliff-town-vista: movie 4911 → canonical …4900,5000 / intermediate
+# …4850,4950; frame-limit 5001.)
 #
 # Bring-up is a single bk2 (cliff-town-vista, a far-terrain vista that exercises
-# the depth fix's far-precision risk). It loads at f1197, goes GS_Playing at
-# f1584, and the fade-in settles by ~f1650, so the corpus starts at f1700; the
-# bk2 movie plays to ~f3990. Widen the set only once the pipeline is trusted
-# end-to-end (see the plan's fan-out checklist item).
+# the depth fix's far-precision risk): loads at f1197, GS_Playing at f1584,
+# fade settles ~f1650 → start f1700; the movie is 4911 input frames. Widen the
+# set only once the pipeline is trusted end-to-end (plan fan-out item).
 #
-# name              | frame_limit | canon_frames (1700..3900 /100)                                                           | inter_frames (1750..3950 /100)
-cliff-town-vista    | 4200        | 1700,1800,1900,2000,2100,2200,2300,2400,2500,2600,2700,2800,2900,3000,3100,3200,3300,3400,3500,3600,3700,3800,3900 | 1750,1850,1950,2050,2150,2250,2350,2450,2550,2650,2750,2850,2950,3050,3150,3250,3350,3450,3550,3650,3750,3850,3950
+# name              | start | interval
+cliff-town-vista    | 1700  | 100
