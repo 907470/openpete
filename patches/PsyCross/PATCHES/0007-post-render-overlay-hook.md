@@ -39,10 +39,9 @@ already exposes).
 
 Spyro 1, NTSC, openpete linux-release.
 
-- Boot via `scripts/run-windows-mingw.sh` defaults; observe "FPS:60" in
-  the top-left of the GL window in yellow. Screenshot at frame 893
-  (Insomniac splash) confirms the overlay is rendered into the presented
-  backbuffer.
+- Observe "FPS:60" in the top-left of the GL window in yellow.
+  Screenshot at frame 893 (Insomniac splash) confirms the overlay
+  is rendered into the presented backbuffer.
 - Disable hook (set `g_psyx_postRenderOverlay = NULL`) and rebuild —
   game renders identically to pre-patch behaviour, no overlay drawn.
   Confirmed bit-identical render path when callback is unset.

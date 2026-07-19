@@ -82,8 +82,7 @@ exactly. One-line change.
 ## Verification
 
 Spyro 1, NTSC, openpete linux-release. Boot via the standard
-`scripts/run-windows-mingw.sh` defaults (or the equivalent direct
-linux invocation):
+defaults (or the equivalent direct linux invocation):
 
 - Frame 1250 (boot intro / level-load animation, `isbg=1` per the
   init at `spyro-1/src/initialization.c:67-68`): single Spyro
