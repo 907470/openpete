@@ -33,6 +33,10 @@ FILTER="${3:-cliff-town-vista}"
 # the 4:3 view can't show; override for a 4:3 spot-check if ever needed.
 CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
 
+# LOD modes swept per bk2/leg — both by default (original = authentic PSX band,
+# extended = --no-lod full detail). Override to one mode for a faster spot-check.
+CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
+
 # --build-dir=DIR override (ctest passes this); else the default release tree.
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
@@ -60,9 +64,17 @@ export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"
 mkdir -p "$OUTDIR"
 echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
-run_one() {  # name frame_limit leg flag targets
-  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5"
-  local out="$OUTDIR/${name}__${leg}__{n}.png"
+# The golden filename encodes the LOD mode: `original` (the authentic PSX band)
+# stays UNTAGGED so its golden is unchanged, `extended` (--no-lod, full detail at
+# any distance) gets a `lodext__` tag between the bk2 name and the leg. Extended
+# LOD pulls in far terrain / moby tiers the original band culls — an
+# independently-regressable surface the depth work is most likely to disturb.
+lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
+
+run_one() {  # name frame_limit leg flag targets lodmode
+  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6"
+  local tag; tag="$(lod_tag "$lod")"
+  local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
@@ -70,7 +82,7 @@ run_one() {  # name frame_limit leg flag targets
   # surfaces the fixed aspect when there is no window) and renders the widened
   # view into a dedicated capture target, so both legs are true Hor+ (853x448).
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
-    --aspect "$CAP_ASPECT" \
+    --aspect "$CAP_ASPECT" --lod "$lod" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
@@ -80,8 +92,8 @@ run_one() {  # name frame_limit leg flag targets
   local miss=0 t
   IFS=',' read -ra TS <<<"$targets"
   for t in "${TS[@]}"; do
-    if [[ ! -f "$OUTDIR/${name}__${leg}__${t}-vk.png" ]]; then
-      echo "  MISSING ${name}__${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
+    if [[ ! -f "$OUTDIR/${name}__${tag}${leg}__${t}-vk.png" ]]; then
+      echo "  MISSING ${name}__${tag}${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
   done
   if [[ $miss -ne 0 ]]; then echo "  --- last log lines ---"; tail -5 "$log" | sed 's/^/  /'; fi
   rm -f "$log"
@@ -134,9 +146,12 @@ while IFS='|' read -r name start interval; do
     echo "        screenshot cap for a $fc-frame movie — raise this row's interval."
     fail=1; continue; fi
   ran=$((ran+1))
-  echo "[$name] movie=$fc frame-limit=$flim  canon=${start}/${interval} ($ncanon)  inter=$((start+half))/${interval} ($ninter)"
-  run_one "$name" "$flim" canon --screenshot-on-frame "$canon" || fail=1
-  run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" || fail=1
+  echo "[$name] movie=$fc frame-limit=$flim  canon=${start}/${interval} ($ncanon)  inter=$((start+half))/${interval} ($ninter)  lods=[$CAP_LODS]"
+  # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
+  for lod in $CAP_LODS; do
+    run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" || fail=1
+    run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" || fail=1
+  done
 done < "$MANIFEST"
 
 if [[ $ran -eq 0 ]]; then echo "[presentation-corpus] SKIP: no manifest rows matched '$FILTER'"; exit 64; fi
