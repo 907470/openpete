@@ -151,6 +151,8 @@ void openpete_interp_set_deterministic(int on, op_time_t period_ns) {
     s_det_period = period_ns;
     if (on) s_det_index = 0;
 }
+int openpete_interp_deterministic(void) { return s_det_mode; }
+op_time_t openpete_interp_det_period(void) { return s_det_period; }
 op_time_t openpete_interp_curr_tick_ns(void) {
     return (s_initialized && s_snap[s_head].valid) ? s_snap[s_head].tick_ns : 0;
 }

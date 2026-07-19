@@ -27,6 +27,7 @@
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
+#include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -594,15 +595,6 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
 
-/* Whether the current present is a freeze-backdrop (pause / flight-results /
- * level-exit) frame. The headless intermediate capture uses this to fall back to
- * the canonical pose: a paused frame has no meaningful sub-tick WORLD motion, and
- * interpolating its animating menu overlay (e.g. the swimming text moby) is
- * non-deterministic. Valid throughout the host-loop's screenshot dumps — the
- * game fiber (which would call scene_begin and clear this) does not run then. */
-int openpete_native_scene_is_frozen(void) {
-    return (s_scene_freeze & (1u << 31)) ? 1 : 0;
-}
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
 
 void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = front ? 1 : 0; }
@@ -750,7 +742,22 @@ void openpete_native_scene_apply_overlay(double alpha) {
      * overlay's timestamps. Falls back to the camera alpha if the timestamps
      * aren't primed yet (first frames). */
     double oalpha = alpha;
-    if (s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0) {
+    if (openpete_interp_deterministic()) {
+        /* Deterministic capture: op_now() is not reproducible run-to-run, so the
+         * wall-clock cadence below would make an animating overlay (a swimming
+         * text moby) flicker between captures. Derive the sub-tick phase from the
+         * PINNED present clock and the tick grid instead — the overlay captures
+         * roll one canonical tick apart, so this yields the same phase the camera
+         * bracket uses (0.5 at the forced midpoint) AND still advances when the
+         * camera/world is static, because ticks don't stop just because nothing
+         * moved. */
+        op_time_t curr = openpete_interp_curr_tick_ns();
+        op_time_t period = openpete_interp_det_period();
+        if (curr > 0 && period > 0) {
+            oalpha = (double)(openpete_interp_present_now() - curr) / (double)period;
+            if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
+        }
+    } else if (s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0) {
         double period = (double)(s_overlay_curr_ns - s_overlay_prev_ns);
         oalpha = (double)(op_now() - s_overlay_curr_ns) / period;
         if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;

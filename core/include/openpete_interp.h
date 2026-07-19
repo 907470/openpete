@@ -141,6 +141,13 @@ op_time_t openpete_interp_present_now(void);
  * Enabling resets the grid counter to 0. Off in normal play (wall-clock stamps
  * drive the display pacer). */
 void      openpete_interp_set_deterministic(int on, op_time_t period_ns);
+/* 1 while deterministic capture is armed. Sub-tick consumers that would otherwise
+ * read wall-clock (op_now) — e.g. the 2D-UI overlay's own animation alpha — must
+ * switch to the pinned present clock + tick grid here so captures reproduce. */
+int       openpete_interp_deterministic(void);
+/* The deterministic-capture tick period (0 when not armed); the fixed grid spacing
+ * passed to openpete_interp_set_deterministic. */
+op_time_t openpete_interp_det_period(void);
 
 /* The newest stored snapshot's timestamp (curr->tick_ns), or 0 if the ring holds
  * no valid slot yet. With deterministic capture on, this is a fixed grid point;
