@@ -538,62 +538,6 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     if (m->textured) s_tex_tris++;
 }
 
-/* Camera-space midpoint of two cverts with ALL attributes halved (position,
- * colour, UV) — the general-purpose sibling of cv_mid below (which leaves UVs
- * for the near-HQ caller to fill). Used by the near-depth bisection below. */
-static cvert cv_half(cvert a, cvert b) {
-    cvert r;
-    r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
-    r.u = (a.u + b.u) * 0.5f; r.v = (a.v + b.v) * 0.5f;
-    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
-    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
-    r.rgb = (uint32_t)((ar+br)>>1) | ((uint32_t)((ag+bg)>>1)<<8) | ((uint32_t)((ab+bb)>>1)<<16);
-    return r;
-}
-
-/* Depth-faithful push: bisect NEAR triangles until every piece's corner
- * view-Z ratio is bounded, then push.
- *
- * The GPU interpolates NDC depth LINEARLY IN SCREEN SPACE (spec), but our
- * depth curve z = vz/(vz+4096) is hyperbolic in vz — for a planar face only
- * 1/vz is screen-affine. A single huge near face (corner vz ratio 8x+, e.g.
- * the peace_keepers ridge-top tri: vz 563..4674 across thousands of px) gets
- * its mid-pixel depth inflated by the linear interp, while the finely
- * subdivided neighbour (the near-HQ 2x2 ramp sub-quads) interpolates almost
- * true — the big face loses the z-test where it is geometrically NEARER, and
- * the neighbour paints over it (the f3238 ridge notch). The .s sidesteps the
- * same class of problem by subdividing near cells (the 2x2 grid + detail-path
- * GT3s); near QUADS already go through terrain_near_emit, but near TRIANGLES
- * fall through as one piece. Bisecting the longest-ratio edge until
- * max/min <= 2 caps the interp error at a few % of local depth — far below
- * any real surface separation. Far faces (min vz >= 512 = the .s foreground
- * band) span little depth on screen and are left whole. */
-static void push_tri_subdiv(cvert a, cvert b, cvert c, const tmat* m, int depth) {
-    double mn = a.m3, mx = a.m3;
-    if (b.m3 < mn) mn = b.m3; if (b.m3 > mx) mx = b.m3;
-    if (c.m3 < mn) mn = c.m3; if (c.m3 > mx) mx = c.m3;
-    if (depth >= 6 || mn <= 0.0 || mn >= 512.0 || mx <= mn * 2.0) {
-        push_tri(a, b, c, m);
-        return;
-    }
-    double rab = (a.m3 > b.m3) ? a.m3 / b.m3 : b.m3 / a.m3;
-    double rbc = (b.m3 > c.m3) ? b.m3 / c.m3 : c.m3 / b.m3;
-    double rca = (c.m3 > a.m3) ? c.m3 / a.m3 : a.m3 / c.m3;
-    if (rab >= rbc && rab >= rca) {
-        cvert h = cv_half(a, b);
-        push_tri_subdiv(a, h, c, m, depth + 1);
-        push_tri_subdiv(h, b, c, m, depth + 1);
-    } else if (rbc >= rca) {
-        cvert h = cv_half(b, c);
-        push_tri_subdiv(a, b, h, m, depth + 1);
-        push_tri_subdiv(a, h, c, m, depth + 1);
-    } else {
-        cvert h = cv_half(c, a);
-        push_tri_subdiv(a, b, h, m, depth + 1);
-        push_tri_subdiv(h, b, c, m, depth + 1);
-    }
-}
-
 /* Max distance (PSX px) a near-clip CROSSING vertex may project from the screen
  * centre. A face straddling the eye plane clipped at s_nearz (16 world units)
  * puts its crossing verts essentially AT the eye — they project 20k+ px
@@ -644,8 +588,8 @@ static void clip_push_tri(cvert a, cvert b, cvert c, const tmat* m) {
             if (!sane) { zc *= 2.0; continue; }
         }
         if (clipped) s_dbg_clipped++;
-        push_tri_subdiv(out[0], out[1], out[2], m, 0);  /* fan the clipped polygon */
-        if (nout == 4) push_tri_subdiv(out[0], out[2], out[3], m, 0);
+        push_tri(out[0], out[1], out[2], m);            /* fan the clipped polygon */
+        if (nout == 4) push_tri(out[0], out[2], out[3], m);
         return;
     }
 }
