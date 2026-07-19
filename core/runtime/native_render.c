@@ -1286,14 +1286,19 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * integer-grid vertex snap in add_tri_grouped. Default smooth (subpixel). */
     s_vertex_snap = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER) ? 1 : 0;
 
-    /* Scene depth encoding (OPENPETE_DEPTH_AFFINE, default off): drives the scene
-     * shaders' vertex spec-constant 0. Must be set BEFORE the scene pipelines are
-     * built below. 1 = screen-affine z_ndc=1-1/vz (exact depth interpolation, no
-     * near-coplanar ordering flips); 0 = legacy z=vz/(vz+4096). */
+    /* Scene depth encoding (OPENPETE_DEPTH_AFFINE): drives the scene shaders'
+     * vertex spec-constant 0. Must be set BEFORE the scene pipelines are built
+     * below. 1 = screen-affine z_ndc=1-1/vz (exact depth interpolation, no near-
+     * coplanar ordering flips) — the DEFAULT; 0 = legacy z=vz/(vz+4096). Screen-
+     * affine is the correct depth curve (the shadow/occlusion pre-pass already
+     * uses it) and it fixes real z-fighting on coplanar terrain/portal/cyclorama
+     * surfaces; the env forces the legacy encoding as an A/B escape hatch. */
     { const char* e = getenv("OPENPETE_DEPTH_AFFINE");
-      int affine = (e && *e && *e != '0');
+      int affine = (e && *e) ? (*e != '0') : 1;   /* default ON; =0 reverts to legacy */
       rhi_set_depth_affine(affine);
-      if (affine) OPL_INFO_F("native", "depth: screen-affine z_ndc=1-1/vz (OPENPETE_DEPTH_AFFINE)"); }
+      OPL_INFO_F("native", "depth: %s",
+                 affine ? "screen-affine z_ndc=1-1/vz (default)"
+                        : "legacy z=vz/(vz+4096) (OPENPETE_DEPTH_AFFINE=0)"); }
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */

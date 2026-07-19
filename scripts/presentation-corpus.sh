@@ -50,9 +50,15 @@ BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="scripts/presentation-corpus.manifest"
 
-if [[ -z "$OUTDIR" ]]; then echo "usage: $0 <off|on> <outdir> [bk2-filter]" >&2; exit 64; fi
-case "$AFFINE" in off|0) AFFINE_ENV=0;; on|1) AFFINE_ENV=1;; *)
-  echo "presentation-corpus: first arg must be off|on (got '$AFFINE')" >&2; exit 64;; esac
+if [[ -z "$OUTDIR" ]]; then echo "usage: $0 <off|on|default> <outdir> [bk2-filter]" >&2; exit 64; fi
+# The golden is captured at `default` (the compiled OPENPETE_DEPTH_AFFINE default,
+# now screen-affine), so it tracks whatever ships. off/on force the env for the
+# manual depth A/B (off = legacy encoding, the kill switch).
+case "$AFFINE" in
+  off|0)        AFFINE_ENV=0;;
+  on|1)         AFFINE_ENV=1;;
+  default|def)  AFFINE_ENV=default;;
+  *) echo "presentation-corpus: first arg must be off|on|default (got '$AFFINE')" >&2; exit 64;; esac
 
 if [[ ! -x "$BIN" ]]; then echo "[presentation-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[presentation-corpus] SKIP: no disc at $DISC"; exit 64; fi
@@ -64,7 +70,9 @@ if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
 LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
 if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
 export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
-export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"
+# `default` leaves OPENPETE_DEPTH_AFFINE unset so the binary's compiled default
+# applies (the golden basis); off/on force the A/B legs.
+if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
 echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
