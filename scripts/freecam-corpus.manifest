@@ -1,0 +1,14 @@
+# freecam-corpus.manifest — (level, pose) tuples for the debug-freecam golden.
+#
+# One row per pose:  <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
+#   level  a --skip-to-level name (artisans, cliff_town, gnorc_cove, ...)
+#   pose   a freecam pose string (the exact per-tick freecam log format;
+#          the game extracts the 5 integers, so paste it verbatim)
+#   start  optional pinned canonical frame (default 1900; +50 = intermediate).
+#          Raise it for a level that loads slower than the default post-load frame.
+#
+# Each pose is captured native-only at 16:9, both LOD modes, on two legs
+# (canonical + alpha-0.5 intermediate). Gathered from chat history; see
+# notes/plans/openpete-presentation-golden.md. Verify each first sample
+# renders real geometry (not a load/transition frame) before blessing.
+artisans | pos=(84992, 45582, 9948) yaw=1024 pitch=160
