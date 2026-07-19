@@ -22,7 +22,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-FILTER="cliff-town-vista"
+FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
 BLESS=0
 BUILD_ARG=""

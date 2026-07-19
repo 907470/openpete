@@ -230,17 +230,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # deterministic alpha=0.5 intermediate) headless under llvmpipe and diffs it
     # against the committed golden (tests/golden/spyro-1/presentation). A clean
     # tree is pixel-identical, so any divergence is a presentation regression the
-    # gameplay oracle can't see. Single-bk2 bring-up (cliff-town-vista); re-bless
-    # an intended change with scripts/check_presentation_golden.sh --bless. Skips
-    # (exit 64) if the binary / disc / Vulkan loader / PIL are absent. See
-    # notes/plans/openpete-presentation-golden.md.
+    # gameplay oracle can't see. Covers the fanned-out corpus: the 53 skip-to-level
+    # bk2s (capped to a few evenly-spaced samples each, 16:9, both LOD modes) plus
+    # the debug-freecam poses. Re-bless an intended change with
+    # scripts/check_presentation_golden.sh --bless; scope a fast subset with
+    # --filter=<bk2-substr>. Skips (exit 64) if the binary / disc / Vulkan loader /
+    # PIL are absent. See notes/plans/openpete-presentation-golden.md.
     add_test(NAME presentation_golden
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden PROPERTIES
         LABELS "slow;presentation"
-        # Headroom over the per-run --max-runtime-seconds 280 x 2 legs.
-        TIMEOUT 900
+        # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min);
+        # generous headroom so a loaded host doesn't spuriously time out.
+        TIMEOUT 3600
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

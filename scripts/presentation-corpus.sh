@@ -27,7 +27,12 @@ cd "$(dirname "$0")/.."
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
-FILTER="${3:-cliff-town-vista}"
+FILTER="${3:-}"   # bk2-name substring; empty = the whole manifest (the fanned-out corpus)
+
+# Cap the canonical samples per bk2 to this many evenly-spaced frames (0 = the
+# full every-`interval` grid). Keeps the golden broad across bk2s without a dense
+# per-bk2 grid; the intermediate leg mirrors the kept canonical frames.
+MAX_SAMPLES="${OPENPETE_MAX_SAMPLES:-5}"
 
 # Capture aspect. The golden is ALWAYS widescreen so it catches Hor+ artifacts
 # the 4:3 view can't show; override for a 4:3 spot-check if ever needed.
@@ -71,18 +76,23 @@ echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filte
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
-run_one() {  # name frame_limit leg flag targets lodmode
-  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6"
+run_one() {  # name frame_limit leg flag targets lodmode freeze
+  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
+  # A freeze-marked row (a bk2 that reaches a pause / flight-results / level-exit
+  # state) needs the green freeze backdrop maintained during capture, else the
+  # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
+  # elsewhere — it renders an extra frame per present.
+  local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
   # surfaces the fixed aspect when there is no window) and renders the widened
   # view into a dedicated capture target, so both legs are true Hor+ (853x448).
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
-    --aspect "$CAP_ASPECT" --lod "$lod" \
+    --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
@@ -116,41 +126,56 @@ except Exception:
 PY
 }
 
+# Emit the sample grid for one bk2 as "<canon_csv>|<inter_csv>|<flim>". The base
+# grid steps by `interval` from `start`, extended one point PAST the movie end so
+# the final settled frame is captured. With MAX_SAMPLES>0 the canonical points are
+# then subsampled to at most MAX_SAMPLES EVENLY-SPACED frames (first and last kept)
+# — broad within-movie coverage without one dense golden per bk2. The intermediate
+# leg is each kept canonical frame + interval/2 (the +half offset that lands the
+# deterministic alpha=0.5 present between snapshot stamps). args: start fc interval maxs
+compute_grid() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import sys
+start, fc, interval, maxs = (int(x) for x in sys.argv[1:5])
+end = start + interval * ((fc - start) // interval + 1)
+canon = list(range(start, end + 1, interval))
+if maxs > 0 and len(canon) > maxs:
+    idx = sorted(set(round(i * (len(canon) - 1) / (maxs - 1)) for i in range(maxs)))
+    canon = [canon[j] for j in idx]
+inter = [p + interval // 2 for p in canon]
+flim = max(canon[-1], inter[-1]) + 1
+print(",".join(map(str, canon)) + "|" + ",".join(map(str, inter)) + "|" + str(flim))
+PY
+}
+
 fail=0 ran=0
-while IFS='|' read -r name start interval; do
+while IFS='|' read -r name start interval freeze; do
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
   start="$(echo "$start" | tr -d ' \t')"
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
+  freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
   bk2="games/spyro-1/bk2/${name}.bk2"
   if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
   fc="$(bk2_frames "$bk2")"
   if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
     echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
-  # Extend each grid ONE point PAST the movie end (round the last input frame up
-  # to the next grid point: canonical %interval, intermediate the +half offset),
-  # so the final settled frame after the last input is captured; run to there.
-  half=$((interval / 2))
-  istart=$((start + half))
-  canon_end=$(( start  + interval * ( (fc - start)  / interval + 1 ) ))
-  inter_end=$(( istart + interval * ( (fc - istart) / interval + 1 ) ))
-  flim=$(( (canon_end > inter_end ? canon_end : inter_end) + 1 ))
-  canon="$(seq -s, "$start"  "$interval" "$canon_end")"
-  inter="$(seq -s, "$istart" "$interval" "$inter_end")"
+  grid="$(compute_grid "$start" "$fc" "$interval" "$MAX_SAMPLES")"
+  canon="${grid%%|*}"; rest="${grid#*|}"; inter="${rest%%|*}"; flim="${rest##*|}"
   ncanon=$(awk -F, '{print NF}' <<<"$canon"); ninter=$(awk -F, '{print NF}' <<<"$inter")
   # The binary caps ONE --screenshot list at OPENPETE_MAX_SCREENSHOT_FRAMES (64);
-  # a longer movie needs a bigger interval (log it, never silently truncate).
+  # MAX_SAMPLES keeps us well under that, but guard anyway (never silently truncate).
   if [[ "$ncanon" -gt 64 || "$ninter" -gt 64 ]]; then
     echo "  FAIL row $name: $ncanon canon / $ninter inter samples exceed the 64-frame"
-    echo "        screenshot cap for a $fc-frame movie — raise this row's interval."
+    echo "        screenshot cap — lower OPENPETE_MAX_SAMPLES or raise this row's interval."
     fail=1; continue; fi
   ran=$((ran+1))
-  echo "[$name] movie=$fc frame-limit=$flim  canon=${start}/${interval} ($ncanon)  inter=$((start+half))/${interval} ($ninter)  lods=[$CAP_LODS]"
+  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}"
   # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
   for lod in $CAP_LODS; do
-    run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" || fail=1
-    run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" || fail=1
+    run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" || fail=1
+    run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" || fail=1
   done
 done < "$MANIFEST"
 
