@@ -3259,7 +3259,20 @@ static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only
  * feet on the sill, actors, the step's front face) still wins vs the sunken
  * face; the geometry that newly loses to it sits inside the portal throat —
  * behind the opening, where the sky covers everything anyway. */
-#define PORTAL_CLAMP_EPS_VZ 48.0   /* full-world; 2x the sky's PORTAL_SKY_EPS_VZ margin */
+/* full-world; 2x the sky's PORTAL_SKY_EPS_VZ margin, so a straddling terrain face
+ * always loses to the sky and a coincident band always wins to it. Derived from
+ * OPENPETE_PORTAL_SKY_EPS (default 24) so re-tuning the sky margin moves this in
+ * lockstep; 0 disables both. */
+static double portal_clamp_eps_vz(void) {
+    static double v = -1.0;
+    if (v < 0.0) {
+        const char* e = getenv("OPENPETE_PORTAL_SKY_EPS");
+        double s = (e && *e) ? atof(e) : 24.0;
+        if (s < 0.0) s = 0.0;
+        v = 2.0 * s;
+    }
+    return v;
+}
 static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
 static openpete_portal_skyplane s_pplane[6];
 static int s_pplane_n = 0;
@@ -3328,7 +3341,7 @@ static int portal_conform_vz(const ttri* t, float ovz[3]) {
                 ovz[k] = (float)t->vz[k];
                 double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
                 if (inv <= 1e-9) continue;       /* plane behind camera on this ray */
-                float sunk = (float)((1.0 / inv + PORTAL_CLAMP_EPS_VZ) / 16.0);
+                float sunk = (float)((1.0 / inv + portal_clamp_eps_vz()) / 16.0);
                 if (ovz[k] < sunk) { ovz[k] = sunk; changed = 1; }
             }
             if (changed) return 1;

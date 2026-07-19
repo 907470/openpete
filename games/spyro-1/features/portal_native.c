@@ -404,9 +404,22 @@ static int portal_plane_invz(CPUState* cpu, uint32_t p,
  * 16 -> 24 (2026-07-06): at 16 a residual z-fight sparkled on the inner
  * edge of some arches (seen live) — the decorative band evidently sits a
  * few units in FRONT of the opening plane, not exactly on it. */
-#define PORTAL_SKY_EPS_VZ 24.0
+#define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
+/* Runtime-tunable so the margin can be re-calibrated against the depth encoding
+ * (OPENPETE_DEPTH_AFFINE) without a rebuild: the affine curve resolves the inner-
+ * frame z-fight this margin was inflated to overpower, so it wants a smaller pull.
+ * OPENPETE_PORTAL_SKY_EPS=0 disables the forward bias entirely. */
+static double portal_sky_eps_vz(void) {
+    static double v = -1.0;
+    if (v < 0.0) {
+        const char* e = getenv("OPENPETE_PORTAL_SKY_EPS");
+        v = (e && *e) ? atof(e) : PORTAL_SKY_EPS_VZ_DEFAULT;
+        if (v < 0.0) v = 0.0;
+    }
+    return v;
+}
 static float portal_cyclorama_depth(double vz) {
-    double v = vz - PORTAL_SKY_EPS_VZ;
+    double v = vz - portal_sky_eps_vz();
     if (v < 1.0) v = 1.0;
     return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
 }
@@ -442,7 +455,7 @@ static float ring_depth(void) {
     /* +EPS (not −): the ring construction wants the sky BEHIND the outline
      * it was measured from — the same margin, opposite direction. */
     float z = openpete_native_depth_from_viewz(
-                  openpete_worldvz_full((float)(s_ring_vz + PORTAL_SKY_EPS_VZ)));
+                  openpete_worldvz_full((float)(s_ring_vz + portal_sky_eps_vz())));
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
@@ -821,7 +834,7 @@ static void register_skyout(const ppt* poly, int pn) {
     s_ring_vz = maxvz;
     s_sky_fed_frame = openpete_frame;
     s_skyout_back = openpete_native_depth_from_viewz(
-                        openpete_worldvz_full((float)(maxvz + PORTAL_SKY_EPS_VZ)));
+                        openpete_worldvz_full((float)(maxvz + portal_sky_eps_vz())));
     /* behind the ring, same world-unit margin as ring_depth */
     if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
 }
