@@ -2763,29 +2763,43 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     if (s_int_shot[si]) continue;
                     if ((int)openpete_frame < opts->screenshot_intermediate_frames[si]) continue;
                     s_int_shot[si] = true;
-                    int paired = openpete_interp_paired();
-                    if (!paired)
-                        OPL_WARN_F("screenshot",
-                                   "intermediate frame %d: no interp bracket "
-                                   "(spawn/load/static) — capturing canonical pose",
-                                   opts->screenshot_intermediate_frames[si]);
-                    op_time_t curr_ns = openpete_interp_curr_tick_ns();
-                    openpete_interp_set_present_target(curr_ns + g_openpete_tick_period_ns / 2);
-                    ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
-                    openpete_interp_set_present_target(0); /* restore op_now() fallback */
                     char base[1024];
                     openpete_screenshot_format_path(opts->screenshot_output,
                                                     opts->screenshot_intermediate_frames[si],
                                                     0, base, sizeof(base));
-                    /* The re-extract built the interpolated scene into the CURRENT
-                     * scene (never pushed to frame history), so compose depth 0 —
-                     * the normal shot-compose delay reads an empty lagged slot. */
-                    openpete_native_render_set_capture_nodelay(1);
-                    openpete_native_render_screenshot_all(base);
-                    openpete_native_render_set_capture_nodelay(0);
-                    OPL_INFO_F("screenshot",
-                               "wrote intermediate alpha=0.5 native -vk on frame %u (target=%d, paired=%d)",
-                               openpete_frame, opts->screenshot_intermediate_frames[si], paired);
+                    /* Freeze frames (pause / flight-results / level-exit) have no
+                     * sub-tick WORLD motion, and interpolating the animating menu
+                     * overlay (e.g. the swimming text moby) is NON-DETERMINISTIC —
+                     * its interp-ring bracket varies run-to-run. Fall back to the
+                     * canonical pose (skip the re-extract, default compose) so the
+                     * tile is reproducible; the sub-tick menu animation is not worth
+                     * a flaky gate. */
+                    if (openpete_native_scene_is_frozen()) {
+                        openpete_native_render_screenshot_all(base);
+                        OPL_INFO_F("screenshot",
+                                   "wrote intermediate native -vk on frame %u (target=%d, FROZEN -> canonical pose)",
+                                   openpete_frame, opts->screenshot_intermediate_frames[si]);
+                    } else {
+                        int paired = openpete_interp_paired();
+                        if (!paired)
+                            OPL_WARN_F("screenshot",
+                                       "intermediate frame %d: no interp bracket "
+                                       "(spawn/load/static) — capturing canonical pose",
+                                       opts->screenshot_intermediate_frames[si]);
+                        op_time_t curr_ns = openpete_interp_curr_tick_ns();
+                        openpete_interp_set_present_target(curr_ns + g_openpete_tick_period_ns / 2);
+                        ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
+                        openpete_interp_set_present_target(0); /* restore op_now() fallback */
+                        /* The re-extract built the interpolated scene into the CURRENT
+                         * scene (never pushed to frame history), so compose depth 0 —
+                         * the normal shot-compose delay reads an empty lagged slot. */
+                        openpete_native_render_set_capture_nodelay(1);
+                        openpete_native_render_screenshot_all(base);
+                        openpete_native_render_set_capture_nodelay(0);
+                        OPL_INFO_F("screenshot",
+                                   "wrote intermediate alpha=0.5 native -vk on frame %u (target=%d, paired=%d)",
+                                   openpete_frame, opts->screenshot_intermediate_frames[si], paired);
+                    }
                 }
             }
 

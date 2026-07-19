@@ -569,6 +569,12 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b);
  * Pass 0 for the static pause / inventory / flight-results backdrop. */
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade);
 
+/* 1 if the current present is a freeze-backdrop frame (pause / flight-results /
+ * level-exit). The headless intermediate capture falls back to the canonical pose
+ * on freeze frames — a paused frame has no sub-tick world motion, and
+ * interpolating its animating menu overlay is non-deterministic. */
+int openpete_native_scene_is_frozen(void);
+
 /* Flat 2D HUD/text draw order vs the player for this frame. Default (0) draws the
  * flat HUD/text OVER the player (Spyro behind the HUD/text) — the normal case. Pass
  * 1 ONLY during the GS_LevelTransition flyby ("THE ADVENTURE BEGINS"/"ENTERING

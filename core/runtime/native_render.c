@@ -593,6 +593,16 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
                    | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
+
+/* Whether the current present is a freeze-backdrop (pause / flight-results /
+ * level-exit) frame. The headless intermediate capture uses this to fall back to
+ * the canonical pose: a paused frame has no meaningful sub-tick WORLD motion, and
+ * interpolating its animating menu overlay (e.g. the swimming text moby) is
+ * non-deterministic. Valid throughout the host-loop's screenshot dumps — the
+ * game fiber (which would call scene_begin and clear this) does not run then. */
+int openpete_native_scene_is_frozen(void) {
+    return (s_scene_freeze & (1u << 31)) ? 1 : 0;
+}
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
 
 void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = front ? 1 : 0; }
