@@ -5,7 +5,7 @@
 # For every bk2 in the manifest (filtered), boot the game headless under
 # software Vulkan (llvmpipe, deterministic) and capture two legs on the
 # native-only path:
-#   canonical   tick-keyed frames               -> <name>__canon__<tick>-vk.png
+#   canonical   VBL-keyed frames                -> <name>__canon__<frame>-vk.png
 #   intermediate deterministic alpha=0.5 frames  -> <name>__inter__<frame>-vk.png
 # Both legs are gameplay-neutral display captures; the same-binary depth kill
 # switch (OPENPETE_DEPTH_AFFINE) selects legacy vs candidate depth so golden and
@@ -89,8 +89,8 @@ while IFS='|' read -r name flim canon inter; do
   if [[ ! -f "games/spyro-1/bk2/${name}.bk2" ]]; then
     echo "  SKIP row: no bk2 games/spyro-1/bk2/${name}.bk2"; continue; fi
   ran=$((ran+1))
-  echo "[$name] canon ticks=$canon  inter frames=$inter  frame-limit=$flim"
-  [[ -n "$canon" ]] && { run_one "$name" "$flim" canon --screenshot-on-tick "$canon" || fail=1; }
+  echo "[$name] canon frames=$canon  inter frames=$inter  frame-limit=$flim"
+  [[ -n "$canon" ]] && { run_one "$name" "$flim" canon --screenshot-on-frame "$canon" || fail=1; }
   [[ -n "$inter" ]] && { run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" || fail=1; }
 done < "$MANIFEST"
 

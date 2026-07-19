@@ -10,15 +10,20 @@
 #                auto-spliced by the binary, so --skip-to-level etc. need not
 #                be repeated here)
 #   frame_limit  --frame-limit (VBLs); pick with margin over the last sample
-#   canon_ticks  comma list of canonical draw-ticks (--screenshot-on-tick)
+#   canon_frames comma list of VBL frames for the canonical leg
+#                (--screenshot-on-frame); start at the first frame %100==0 AFTER
+#                the level finishes loading (g_Gamestate -> GS_Playing plus the
+#                fade-in), then every 100 VBLs
 #   inter_frames comma list of VBL frames for the alpha=0.5 intermediate leg
-#                (--screenshot-intermediate-on-frame); each must fall in a
-#                stretch with a live interp bracket (paired) — verify with the
-#                "paired=1" log line before adding a point
+#                (--screenshot-intermediate-on-frame), offset +50 from the
+#                canonical grid; each must fall in a stretch with a live interp
+#                bracket (paired) — verify with the "paired=1" log line
 #
 # Bring-up is a single bk2 (cliff-town-vista, a far-terrain vista that exercises
-# the depth fix's far-precision risk). Widen the set only once the pipeline is
-# trusted end-to-end (see the plan's fan-out checklist item).
+# the depth fix's far-precision risk). It loads at f1197, goes GS_Playing at
+# f1584, and the fade-in settles by ~f1650, so the corpus starts at f1700; the
+# bk2 movie plays to ~f3990. Widen the set only once the pipeline is trusted
+# end-to-end (see the plan's fan-out checklist item).
 #
-# name              | frame_limit | canon_ticks   | inter_frames
-cliff-town-vista    | 8000        | 300,450,600   | 2000,3000
+# name              | frame_limit | canon_frames (1700..3900 /100)                                                           | inter_frames (1750..3950 /100)
+cliff-town-vista    | 4200        | 1700,1800,1900,2000,2100,2200,2300,2400,2500,2600,2700,2800,2900,3000,3100,3200,3300,3400,3500,3600,3700,3800,3900 | 1750,1850,1950,2050,2150,2250,2350,2450,2550,2650,2750,2850,2950,3050,3150,3250,3350,3450,3550,3650,3750,3850,3950
