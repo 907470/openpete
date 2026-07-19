@@ -29,6 +29,10 @@ AFFINE="${1:-off}"
 OUTDIR="${2:-}"
 FILTER="${3:-cliff-town-vista}"
 
+# Capture aspect. The golden is ALWAYS widescreen so it catches Hor+ artifacts
+# the 4:3 view can't show; override for a 4:3 spot-check if ever needed.
+CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
+
 # --build-dir=DIR override (ctest passes this); else the default release tree.
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
@@ -54,18 +58,19 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"
 
 mkdir -p "$OUTDIR"
-echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV filter='$FILTER' -> $OUTDIR"
+echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
 run_one() {  # name frame_limit leg flag targets
   local name="$1" flim="$2" leg="$3" flag="$4" targets="$5"
   local out="$OUTDIR/${name}__${leg}__{n}.png"
   local log; log="$(mktemp)"
-  # TODO(16:9): capture at --aspect 16:9 so the golden catches widescreen (Hor+)
-  # artifacts. The headless native-only capture currently renders the 4:3 content
-  # shape only — a single widescreen dump works, but repeated widescreen captures
-  # in one process empty every frame after the first (a render-state persistence
-  # bug in the widescreen RTT path). Ship 4:3 until that's fixed.
+  # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
+  # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
+  # headless native-only capture honors --aspect (openpete_native_widescreen_factor
+  # surfaces the fixed aspect when there is no window) and renders the widened
+  # view into a dedicated capture target, so both legs are true Hor+ (853x448).
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
+    --aspect "$CAP_ASPECT" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1

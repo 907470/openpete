@@ -942,6 +942,16 @@ static struct {
     int           rtt_w, rtt_h;
     rhi_buffer   *diff_quad_vb;
 
+    /* Dedicated WIDESCREEN screenshot target: the native-only capture path
+     * renders the Hor+ view into this (ref_w*cap_wf × ref_h) instead of the
+     * ref-sized native_rtt, so the committed golden shows the widened content
+     * at true 16:9 with no horizontal squish. Kept separate from native_rtt
+     * (which the live/diff path keys on ref_w) so repeated captures don't churn
+     * the shared target's allocation. Only allocated when a widescreen capture
+     * runs; 4:3 captures use native_rtt as before. */
+    rhi_texture  *shot_rtt;
+    int           shot_w, shot_h;
+
     /* SSAA (--ssaa N): the live vk scene renders into a supersampled render
      * target (ss_factor× the window per axis), then a fragment resolve pass
      * box-averages it in linear light into the 1× offscreen. ss_factor is the
@@ -2102,6 +2112,24 @@ static void ensure_native_rtt(bool want)
         OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
 }
 
+/* (Re)create the dedicated widescreen screenshot target at w×h. Grows only when
+ * the requested size changes, so a fixed-cadence widescreen capture allocates
+ * once and every subsequent dump reuses it (unlike native_rtt, whose ref_w
+ * keying would fight a widened width). Must run OUTSIDE a frame. Returns the
+ * target or NULL. */
+static rhi_texture *ensure_shot_rtt(int w, int h)
+{
+    if (w <= 0 || h <= 0) return NULL;
+    if (s_nr.shot_rtt && s_nr.shot_w == w && s_nr.shot_h == h) return s_nr.shot_rtt;
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.shot_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.shot_rtt); s_nr.shot_rtt = NULL; }
+    s_nr.shot_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    s_nr.shot_w = w; s_nr.shot_h = h;
+    if (s_nr.shot_rtt)
+        OPL_INFO_F("native", "widescreen screenshot target %dx%d", w, h);
+    return s_nr.shot_rtt;
+}
+
 /* (Re)create ss_rtt — the SSAA supersampled scene target — at the EFFECTIVE
  * factor × the window. The requested --ssaa factor is capped to the GPU's max
  * 2D image dimension and stepped down on an allocation failure (to 1 = SSAA
@@ -2782,7 +2810,18 @@ void openpete_native_occl_suspend(int presents)
  * unless vk-only with a wider-than-4:3 window (set in update_layout). */
 float openpete_native_widescreen_factor(void)
 {
-    return s_nr.ws_factor > 1.0f ? s_nr.ws_factor : 1.0f;
+    if (s_nr.ws_factor > 1.0f) return s_nr.ws_factor;
+    /* Headless has no window, so update_layout never derives ws_factor from a
+     * fixed --aspect. Honor the aspect here so native-only screenshot captures
+     * extract the true Hor+ reveal (the edge geometry the feeders would
+     * otherwise trivial-reject) rather than a stretched 4:3 frame. Windowed
+     * runs always have ws_factor set by update_layout, so this never fires
+     * there. */
+    if (!s_nr.window && s_nr.aspect_wh > 0.0f) {
+        float wf = s_nr.aspect_wh / (4.0f / 3.0f);
+        return wf > 1.0f ? wf : 1.0f;
+    }
+    return 1.0f;
 }
 /* Visible PSX screen-X range under the active widen factor: [0,512] at 4:3,
  * widened symmetrically about the screen centre (256). */
@@ -5812,6 +5851,67 @@ static void path_with_suffix(const char *base, const char *suffix,
 
 static int native_render_screenshot_all_impl(const char *base);
 
+/* Widescreen (Hor+) native-only -vk dump. Renders the scene at the widened
+ * extent into the dedicated shot_rtt (W*cap_wf × H), matching the extraction-
+ * time widen (openpete_native_widescreen_factor now honors --aspect headless),
+ * and writes the single -vk PNG. Content-sized (no window letterbox); the ab/
+ * diff variants are not produced (there is no PsyCross reference in native-only
+ * mode). Returns 0 on success. base is the caller's screenshot path stem. */
+static int native_shot_widescreen(const char *base, int H, float cap_wf)
+{
+    const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
+    rhi_texture *rt = ensure_shot_rtt(Wc, H);
+    if (!rt) return 1;
+
+    /* Background = the gamestate draw-env clear (matching the 4:3 compose). */
+    int scene_n; uint32_t scene_bg, scene_fade;
+    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
+    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
+    if (bg == 0) bg = bg_from_ref_corner();
+    const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
+    const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
+    const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
+
+    /* The full-extent scene map divides clip-x by s_render_freeze_wf, so the 4:3
+     * content lands centred and the Hor+ reveal fills the widened sides — the
+     * same divide the depth pre-pass already applies (it reads the widen from
+     * openpete_native_widescreen_factor). Set it around the whole compose so the
+     * pre-pass affine and the scene draw agree. */
+    float prev_wf = s_render_freeze_wf;
+    s_render_freeze_wf = cap_wf;
+    for (int attempt = 0; ; attempt++) {
+        if (!rhi_begin_frame(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
+        upload_synced_textures();
+        hd_flush_pending();
+        native_depth_prepass();
+        rhi_begin_render_target(s_nr.dev, rt, br, bgc, bb, 1.0f);
+        draw_native_scene(true);
+        rhi_end_render_target(s_nr.dev, rt);
+        native_postfx_run(0 /* COMPOSITE */, rt, Wc, H);
+        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
+        rhi_end_offscreen(s_nr.dev);
+        rhi_blit_to_swapchain(s_nr.dev);
+        rhi_end_frame(s_nr.dev);
+        if (attempt > 0 || s_hd_pending_n == 0) break;
+    }
+    s_render_freeze_wf = prev_wf;
+
+    const size_t px = (size_t)Wc * (size_t)H;
+    unsigned char *nat = malloc(px * 4);
+    if (!nat) return 1;
+    int nw = 0, nh = 0;
+    if (!rhi_read_render_target(s_nr.dev, rt, nat, px * 4, &nw, &nh)) { free(nat); return 1; }
+
+    int rc = 0;
+    char path[1100];
+    path_with_suffix(base, "-vk", path, sizeof(path));
+    if (openpete_write_png_rgba(path, nat, Wc, H) == 0)
+        OPL_INFO_F("native", "vk screenshot %dx%d (widescreen wf=%.3f) -> %s", Wc, H, (double)cap_wf, path);
+    else rc = 1;
+    free(nat);
+    return rc;
+}
+
 /* Wrapper: the screenshot compose uses the reference-aligned scene depth (see
  * s_scene_shot_compose) so -vk/-ab/-diff show the SAME game frame as the -og
  * PsyCross capture beside them. Flag set/cleared here so the impl's early
@@ -5827,24 +5927,6 @@ int openpete_native_render_screenshot_all(const char *base)
 static int native_render_screenshot_all_impl(const char *base)
 {
     if (!s_nr.enabled || !base) return 1;
-
-    /* vk-only widescreen: the RTT path below renders the 4:3 CONTENT shape (the
-     * RTT is ref-sized), which doesn't show the Hor+ widening. The just-presented
-     * LIVE offscreen, however, already holds the full widescreen frame at window
-     * size — grab it now, before this function opens a new frame, and use it for
-     * the -vk image so the dump matches what the window shows. Only in vk-only
-     * (ab/diff stay 4:3 to compare against the reference). */
-    unsigned char *live = NULL; int live_w = 0, live_h = 0;
-    if (!s_scene_ref_compare && s_nr.ws_factor > 1.0001f &&
-        s_nr.win_w > 0 && s_nr.win_h > 0) {
-        size_t lcap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
-        live = malloc(lcap);
-        if (live && !rhi_read_offscreen(s_nr.dev, live, lcap, &live_w, &live_h)) {
-            free(live); live = NULL;
-            OPL_WARN_F("native", "%s", "widescreen -vk live-grab failed "
-                       "(rhi_read_offscreen); falling back to the 4:3 RTT dump");
-        }
-    }
 
     /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
     sync_vram_texture();
@@ -5873,6 +5955,16 @@ static int native_render_screenshot_all_impl(const char *base)
     bool with_ref = have_ref && s_nr.readback != NULL;
     if (!s_nr.native_rtt || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return 1;
+
+    /* Widescreen (Hor+) native-only capture: render the widened view into the
+     * dedicated shot_rtt and write the single -vk image. Only in vk-only mode
+     * (ab/diff stay 4:3 to line up with the PsyCross reference); the widen comes
+     * from a fixed --aspect, surfaced headless by openpete_native_widescreen_factor. */
+    if (!with_ref && !s_scene_ref_compare) {
+        float cap_wf = openpete_native_widescreen_factor();
+        if (cap_wf > 1.0001f)
+            return native_shot_widescreen(base, s_nr.ref_h, cap_wf);
+    }
 
     /* Compose every variant at the REFERENCE resolution rather than the window
      * size, so the images are the true content size with no window letterbox:
@@ -5987,11 +6079,7 @@ static int native_render_screenshot_all_impl(const char *base)
     int rc = 0;
     char path[1100];
     path_with_suffix(base, "-vk", path, sizeof(path));
-    if (live) {   /* vk-only widescreen: the live offscreen (window-sized, Hor+) */
-        if (openpete_write_png_rgba(path, live, live_w, live_h) == 0)
-            OPL_INFO_F("native", "vk screenshot %dx%d (widescreen) -> %s", live_w, live_h, path);
-        else rc = 1;
-    } else if (openpete_write_png_rgba(path, nat, W, H) == 0)
+    if (openpete_write_png_rgba(path, nat, W, H) == 0)
         OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
     else rc = 1;
     if (with_ref) {
@@ -6008,7 +6096,7 @@ static int native_render_screenshot_all_impl(const char *base)
                    "reference — null-GPU library mode)");
     }
 
-    free(nat); free(ref); free(ab); free(dif); free(live);
+    free(nat); free(ref); free(ab); free(dif);
     return rc;
 }
 
