@@ -2974,7 +2974,11 @@ static struct { uint64_t key; rhi_texture *tex; } s_hd_cache[HD_CACHE_SLOTS];
 /* GPU uploads cannot record inside the offscreen render pass, so a first
  * sighting at draw time only QUEUES the image; hd_flush_pending() uploads at
  * the next frame start (one SD frame on first appearance). */
-static struct { uint64_t key; const unsigned char *px; int w, h; } s_hd_pending[64];
+/* box_w/box_h: the texel box this image replaces. An image that is an exact
+ * integer multiple of it samples NEAREST — block edges then coincide with
+ * texel edges, so a dump fed straight back in renders bit-identically.
+ * Anything else (arbitrary-resolution HD art) keeps LINEAR smoothing. */
+static struct { uint64_t key; const unsigned char *px; int w, h, box_w, box_h; } s_hd_pending[64];
 static int s_hd_pending_n = 0;
 
 static rhi_texture *hd_cache_lookup(uint64_t key)
@@ -2988,12 +2992,14 @@ static rhi_texture *hd_cache_lookup(uint64_t key)
     return NULL;
 }
 
-static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h)
+static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
+                           int box_w, int box_h)
 {
     if (s_hd_pending_n >= 64) return;
     for (int i = 0; i < s_hd_pending_n; i++)
         if (s_hd_pending[i].key == key) return;
-    s_hd_pending[s_hd_pending_n++] = (__typeof__(s_hd_pending[0])){ key, px, w, h };
+    s_hd_pending[s_hd_pending_n++] =
+        (__typeof__(s_hd_pending[0])){ key, px, w, h, box_w, box_h };
 }
 
 static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
@@ -3018,7 +3024,23 @@ static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
                                           (uint32_t)s_hd_pending[i].h);
         if (!t) continue;
         rhi_update_rgba8(s_nr.dev, t, s_hd_pending[i].px);
-        rhi_texture_set_filter_linear(s_nr.dev, t);
+        /* Filter choice. An image that is an exact integer multiple of the
+         * texel box it replaces samples NEAREST: its blocks align with texel
+         * boundaries, so every screen pixel resolves to the texel the stock
+         * VRAM sampler would have fetched and a dump dropped straight back in
+         * renders bit-identically (measured: 0 differing pixels at 1x and at
+         * 7x/12x). Everything else — arbitrary-resolution HD art, mod-
+         * registered textures — keeps LINEAR, which is what it has always had.
+         * Linear cannot reproduce stock at ANY scale: its error comes from
+         * sample points straddling block edges, and that fraction is scale-
+         * invariant (7x/12x and 14x/24x measured pixel-for-pixel identical). */
+        {
+            int bw = s_hd_pending[i].box_w, bh = s_hd_pending[i].box_h;
+            int w  = s_hd_pending[i].w,     h  = s_hd_pending[i].h;
+            int exact = bw > 0 && bh > 0 &&
+                        w % bw == 0 && h % bh == 0 && w / bw > 0 && h / bh > 0;
+            if (!exact) rhi_texture_set_filter_linear(s_nr.dev, t);
+        }
         s_hd_cache[idx].key = key;
         s_hd_cache[idx].tex = t;
     }
@@ -3046,6 +3068,41 @@ static void hd_cache_shutdown(void)
  * passed here), so the dynamic-bias-invalidation-on-restore gap is
  * unreachable today — a depth_bias caller would have to re-apply its
  * bias after this function returns. */
+/* Per-axis texel replication that writes a dumped texture at square pixels.
+ *
+ * Screen-space 2D draws (the HUD categories) map 1 texel to 1 framebuffer
+ * pixel. Spyro's framebuffer is 512 wide with clip_h visible lines, shown at
+ * 4:3, so a texel is 4*clip_h : 3*disp_w as wide as it is tall — 7:12 at
+ * 512x224, i.e. ~1.71x taller than wide. Their VRAM data is horizontally
+ * pre-squashed to land on that grid, which is why a raw dump reads stretched
+ * in an image viewer.
+ *
+ * The ratio is reduced to lowest terms and applied as INTEGER factors rather
+ * than a rounded stretch: only then do the replicated blocks stay aligned to
+ * texel boundaries, which is what lets a dump be fed straight back in as a
+ * replacement and render bit-identically (measured: 7x/12x exact, a 1.71x
+ * float stretch 3.6% off). A ratio that will not reduce to small factors is
+ * dropped rather than emitting an enormous image.
+ *
+ * World geometry is projected through a matrix that already carries the same
+ * aspect, so its textures are authored square and must be dumped untouched. */
+static void tp_dump_scale(int category, int *sx, int *sy)
+{
+    *sx = *sy = 1;
+    if (category != OPENPETE_SCENE_HUD && category != OPENPETE_SCENE_OVERLAY)
+        return;
+    int disp_w = s_nr.disp_w > 0 ? s_nr.disp_w : 512;
+    int clip_h = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+    int num = 4 * clip_h, den = 3 * disp_w;     /* texel width : texel height */
+    if (num <= 0 || den <= 0 || num >= den) return;   /* already square or wider */
+    int a = num, b = den;
+    while (b) { int t = a % b; a = b; b = t; }  /* gcd */
+    if (a <= 0) return;
+    num /= a; den /= a;
+    if (num > 64 || den > 64) return;           /* refuses to reduce sanely */
+    *sx = num; *sy = den;
+}
+
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe, int allow_override) {
@@ -3124,7 +3181,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 uint64_t key = (uint64_t)(uintptr_t)px;   /* stable per registration */
                 rhi_texture* tex = hd_cache_lookup(key);
                 if (!tex) {
-                    hd_pending_add(key, px, mw, mh);
+                    hd_pending_add(key, px, mw, mh, 0, 0);
                 } else {
                     const float rect[4] = { 0.f, 0.f, (float)mw, (float)mh };
                     rhi_bind_pipeline(s_nr.dev, hd_pipe);
@@ -3143,13 +3200,14 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
          * box varies with per-frame clipping and tile composition); adjacent
          * tris matching the same pack file coalesce into HD sub-runs, the
          * rest draw SD in material-coalesced groups as before. */
-        static int s_resolve_log = -1, s_dump_on = -1;
+        static int s_resolve_log = -1, s_dump_on = -1, s_census_on = -1;
         if (s_resolve_log < 0) {
             s_resolve_log = getenv("OPENPETE_TEXPACK_RESOLVE_LOG") ? 1 : 0;
             s_dump_on     = getenv("OPENPETE_TEXPACK_DUMP_DIR") ? 1 : 0;
+            s_census_on   = getenv("OPENPETE_TEXPACK_CATCENSUS") ? 1 : 0;
         }
         const int want_replace = hd_pipe && texture_pack_replacements_active();
-        if (!(s_resolve_log || s_dump_on || want_replace)) {
+        if (!(s_resolve_log || s_dump_on || s_census_on || want_replace)) {
             rhi_push_constants(s_nr.dev, &m, sizeof m);
             rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
             i += run;
@@ -3172,9 +3230,14 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             int hit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
                                            m.bpp, (int)u0, (int)v0, (int)u1, (int)v1, &id);
             int matched = hit && want_replace && texture_pack_match(&id, &repl);
-            if (hit && s_dump_on)
+            if (hit) texture_pack_cat_census(&id, st->category, st->tag);
+            if (hit && s_dump_on) {
+                int dsx, dsy;
+                tp_dump_scale(st->category, &dsx, &dsy);
                 texture_pack_dump_draw(&id, m.tpage_x, m.tpage_y,
-                                       m.clut_x, m.clut_y, (int)u0, (int)v0);
+                                       m.clut_x, m.clut_y, (int)u0, (int)v0,
+                                       st->category, dsx, dsy);
+            }
             static int s_logged = 0;
             if (s_resolve_log && s_logged < 256) {
                 s_logged++;
@@ -3199,9 +3262,14 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 int nhit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
                                                 m.bpp, (int)nu0, (int)nv0, (int)nu1, (int)nv1, &nid);
                 int nmatched = nhit && want_replace && texture_pack_match(&nid, &nrepl);
-                if (nhit && s_dump_on)
+                if (nhit) texture_pack_cat_census(&nid, sn->category, sn->tag);
+                if (nhit && s_dump_on) {
+                    int nsx, nsy;
+                    tp_dump_scale(sn->category, &nsx, &nsy);
                     texture_pack_dump_draw(&nid, m.tpage_x, m.tpage_y,
-                                           m.clut_x, m.clut_y, (int)nu0, (int)nv0);
+                                           m.clut_x, m.clut_y, (int)nu0, (int)nv0,
+                                           sn->category, nsx, nsy);
+                }
                 if (nmatched != matched) break;
                 if (matched && nrepl.pixels != repl.pixels) break;
                 g++;
@@ -3222,7 +3290,8 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                                 hd_pipe == s_nr.hd_cutout_pipe ? "cutout" : "hud");
                 }
                 if (!tex) {
-                    hd_pending_add(key, repl.pixels, repl.w, repl.h);   /* next frame */
+                    hd_pending_add(key, repl.pixels, repl.w, repl.h,
+                                   repl.box_w, repl.box_h);   /* next frame */
                 } else {
                     /* Shader rect = the FILE's box in page-texel coords: the
                      * query box (u0 page-relative <-> id.box upload-relative)
@@ -5486,7 +5555,7 @@ static void draw_mod_meshes(void)
                 if (px) {
                     uint64_t key = (uint64_t)(uintptr_t)px;
                     rhi_texture* mt = hd_cache_lookup(key);
-                    if (!mt) hd_pending_add(key, px, mw, mh);
+                    if (!mt) hd_pending_add(key, px, mw, mh, 0, 0);
                     else t0 = mt;
                 }
             }

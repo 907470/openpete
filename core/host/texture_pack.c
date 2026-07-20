@@ -20,6 +20,7 @@
 
 #include "PsyX/PsyX_public.h"  /* PsyX_VRAM_Snapshot — restore-time rescan */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,7 +127,18 @@ static int tp_scan_dir(int src)
         unsigned long long th, ph;
         int bx, by, bw, bh, bpp;
         memset(&tmp, 0, sizeof tmp);
-        if (sscanf(de->d_name, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
+        /* Hash-named files may carry a leading `<label>-` (the draw's scene
+         * category, written by the dumper purely to make a pack browsable).
+         * The label is organisational only — identity is the hash fields —
+         * so skip it and parse from the thash. */
+        const char *idpart = de->d_name;
+        {
+            const char *dash = strchr(de->d_name, '-');
+            int hexrun = 0;
+            while (isxdigit((unsigned char)de->d_name[hexrun])) hexrun++;
+            if (dash && hexrun < 16) idpart = dash + 1;
+        }
+        if (sscanf(idpart, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
                    &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
             tmp.thash = th; tmp.phash = ph; tmp.bpp = bpp;
             tmp.bx = bx; tmp.by = by; tmp.bw = bw; tmp.bh = bh;
@@ -540,27 +552,205 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     return 1;
 }
 
+/* ---- identity/provenance census (temporary instrument) -------------------- */
+
+#define TP_CENSUS_SLOTS 16384
+
+typedef struct {
+    uint64_t key;          /* full identity (tp_id_key) */
+    uint64_t thash, phash;
+    int      bx, by, bw, bh, bpp;
+    uint32_t cat_mask;     /* bit per OPENPETE_SCENE_* category */
+    uint32_t tag;          /* first provenance tag seen */
+    int      tag_mixed;    /* a second distinct tag was seen */
+    uint64_t draws;
+} tp_census_ent;
+
+static tp_census_ent *s_census;
+static int s_census_on = -1;
+static int s_census_full;
+
+static const char *tp_cat_name(int c)
+{
+    static const char *n[] = { "WORLD", "ACTOR", "HUD", "PLAYER", "OVERLAY",
+                               "HUD_PANEL", "HUD3D", "PORTAL_CYCLORAMA",
+                               "PORTAL_MASK", "PORTAL_GUARD", "SKY",
+                               "WORLD_FILL", "SHADOW", "ACTOR_FRONT" };
+    return (c >= 0 && c < (int)(sizeof n / sizeof *n)) ? n[c] : "?";
+}
+
+/* Group identities by texel box (thash+box+bpp, ignoring the CLUT) so the
+ * report can show how many distinct palettes — fog ladder rows — share one
+ * texture, alongside the per-identity category spread. */
+static uint64_t tp_box_key(const tp_census_ent *e)
+{
+    return e->thash ^ ((uint64_t)(uint32_t)((e->bx << 20) ^ (e->by << 8) ^
+                                            (e->bw << 26) ^ e->bh ^ e->bpp) << 1);
+}
+
+static void tp_census_report(void)
+{
+    if (!s_census) return;
+    int n = 0, multi_cat = 0, multi_tag = 0;
+    for (int i = 0; i < TP_CENSUS_SLOTS; i++) if (s_census[i].key) n++;
+    fprintf(stderr, "\n[texpack/census] %d distinct identities%s\n",
+            n, s_census_full ? " (TABLE FULL — counts truncated)" : "");
+
+    /* Per-category coverage. Without this a "0 multi-category" result is
+     * ambiguous: it can mean no overlap, or that only one category ever ran. */
+    {
+        int cat_ids[32] = {0};
+        uint64_t cat_draws[32] = {0};
+        for (int i = 0; i < TP_CENSUS_SLOTS; i++) {
+            tp_census_ent *e = &s_census[i];
+            if (!e->key) continue;
+            for (int c = 0; c < 32; c++)
+                if (e->cat_mask & (1u << c)) { cat_ids[c]++; cat_draws[c] += e->draws; }
+        }
+        fprintf(stderr, "[texpack/census] category coverage:\n");
+        for (int c = 0; c < 32; c++)
+            if (cat_ids[c])
+                fprintf(stderr, "    %-18s %4d identities, %llu draws\n",
+                        tp_cat_name(c), cat_ids[c], (unsigned long long)cat_draws[c]);
+    }
+
+    /* Q1: is any single identity drawn under more than one category? */
+    for (int i = 0; i < TP_CENSUS_SLOTS; i++) {
+        tp_census_ent *e = &s_census[i];
+        if (!e->key) continue;
+        int bits = 0;
+        for (int c = 0; c < 32; c++) if (e->cat_mask & (1u << c)) bits++;
+        if (bits > 1) {
+            multi_cat++;
+            if (multi_cat <= 20) {
+                fprintf(stderr, "  MULTI-CAT %016llx %dx%d+%dx%d %dbpp draws=%llu cats:",
+                        (unsigned long long)e->thash, e->bx, e->by, e->bw, e->bh,
+                        e->bpp, (unsigned long long)e->draws);
+                for (int c = 0; c < 32; c++)
+                    if (e->cat_mask & (1u << c)) fprintf(stderr, " %s", tp_cat_name(c));
+                fprintf(stderr, "\n");
+            }
+        }
+        if (e->tag_mixed) multi_tag++;
+    }
+    fprintf(stderr, "[texpack/census] identities drawn under >1 category: %d\n", multi_cat);
+    fprintf(stderr, "[texpack/census] identities drawn under >1 tag:      %d\n", multi_tag);
+
+    /* Q2: CLUT fan-out — distinct palettes per texel box, and whether the
+     * variants of one box ever span categories. */
+    int boxes = 0, worst = 0, fan_total = 0;
+    for (int i = 0; i < TP_CENSUS_SLOTS; i++) {
+        if (!s_census[i].key) continue;
+        uint64_t bk = tp_box_key(&s_census[i]);
+        int seen_earlier = 0, fan = 0;
+        uint32_t union_cat = 0;
+        for (int j = 0; j < TP_CENSUS_SLOTS; j++) {
+            if (!s_census[j].key || tp_box_key(&s_census[j]) != bk) continue;
+            if (j < i) { seen_earlier = 1; break; }
+            fan++; union_cat |= s_census[j].cat_mask;
+        }
+        if (seen_earlier) continue;
+        boxes++; fan_total += fan;
+        if (fan > worst) worst = fan;
+        if (fan > 1 && boxes <= 20) {
+            fprintf(stderr, "  CLUT-FANOUT %016llx %dx%d+%dx%d %dbpp -> %d palettes cats:",
+                    (unsigned long long)s_census[i].thash, s_census[i].bx, s_census[i].by,
+                    s_census[i].bw, s_census[i].bh, s_census[i].bpp, fan);
+            for (int c = 0; c < 32; c++)
+                if (union_cat & (1u << c)) fprintf(stderr, " %s", tp_cat_name(c));
+            fprintf(stderr, "\n");
+        }
+    }
+    fprintf(stderr, "[texpack/census] %d distinct texel boxes, %d identities "
+                    "(avg %.2f palettes/box, worst %d)\n",
+            boxes, n, boxes ? (double)fan_total / boxes : 0.0, worst);
+}
+
+void texture_pack_cat_census(const texture_pack_id *id, int category, unsigned tag)
+{
+    if (s_census_on < 0) {
+        const char *e = getenv("OPENPETE_TEXPACK_CATCENSUS");
+        s_census_on = (e && *e && *e != '0');
+        if (s_census_on) {
+            s_census = calloc(TP_CENSUS_SLOTS, sizeof *s_census);
+            if (!s_census) s_census_on = 0;
+            else atexit(tp_census_report);
+        }
+    }
+    if (!s_census_on || !id) return;
+
+    uint64_t key = tp_id_key(id);
+    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    for (int p = 0; p < 32; p++) {
+        tp_census_ent *e = &s_census[(base + (uint64_t)p) & (TP_CENSUS_SLOTS - 1)];
+        if (e->key == 0) {
+            e->key = key; e->thash = id->thash; e->phash = id->phash;
+            e->bx = id->box_x; e->by = id->box_y;
+            e->bw = id->box_w; e->bh = id->box_h; e->bpp = id->bpp;
+            e->tag = tag;
+        } else if (e->key != key) {
+            continue;
+        }
+        if (category >= 0 && category < 32) e->cat_mask |= 1u << category;
+        if (tag != e->tag) e->tag_mixed = 1;
+        e->draws++;
+        return;
+    }
+    s_census_full = 1;
+}
+
 /* ---- dump tool (Phase 2) -------------------------------------------------- */
 
 int stbi_write_png(const char *filename, int w, int h, int comp,
                    const void *data, int stride_in_bytes);   /* impl: screenshot.c TU */
 
 /* Dump granularity: per-tri query boxes explode into clipped variants
- * (11k files/run measured), so the dump accumulates a BOX UNION per
- * (thash, phash, bpp) — converging to the full tile / glyph-strip / sprite
- * box — and (re)writes that union's file whenever it grows. Containment
- * matching consumes the union naturally. */
+ * (11k files/run measured), so boxes accumulate rather than dumping per draw.
+ * Accumulation is per CLUSTER, not per (thash, phash, bpp): a single bounding
+ * box over everything sharing a palette spans DISJOINT tiles and swallows
+ * whatever page content lies between them (a 160x64 dump holding grass +
+ * foliage + rock). Boxes therefore merge only on strict OVERLAP, transitively
+ * as new ones arrive, and each connected component writes its own file.
+ * Clipped fragments of one tile still coalesce — they all overlap the eventual
+ * full-tile draw — and the LP full-tile box still absorbs its HP 2x2 sub-quad
+ * boxes, which containment matching depends on. Adjacent-but-disjoint tiles
+ * stay separate. */
 #define TP_UNION_SLOTS 16384   /* power of 2 */
+#define TP_UNION_PROBE 32      /* clusters sharing a key live within this window */
 typedef struct {
     uint64_t key;
-    int bx, by, bw, bh;        /* union box, upload-relative texels */
+    int bx, by, bw, bh;        /* cluster box, upload-relative texels */
     char name[96];             /* last written filename (unlinked on growth) */
 } tp_union;
 static tp_union s_union[TP_UNION_SLOTS];
 
+/* Slots are never freed by probe-chain rules — every lookup scans the whole
+ * window rather than stopping at the first empty — so a merged-away cluster
+ * can safely release its slot. */
+static void tp_union_drop(tp_union *c, const char *dir)
+{
+    if (c->name[0]) {
+        char old[640];
+        snprintf(old, sizeof old, "%s/%s", dir, c->name);
+        remove(old);
+    }
+    c->key = 0; c->name[0] = 0;
+}
+
+/* Filename label for a scene category — organisational only (the parser skips
+ * it). Kept lowercase and hyphen-free so the name stays one shell-glob token. */
+static const char *tp_cat_slug(int c)
+{
+    static const char *n[] = { "world", "actor", "hud", "player", "overlay",
+                               "hudpanel", "hud3d", "cyclorama", "portalmask",
+                               "portalguard", "sky", "worldfill", "shadow",
+                               "actorfront" };
+    return (c >= 0 && c < (int)(sizeof n / sizeof *n)) ? n[c] : "other";
+}
+
 void texture_pack_dump_draw(const texture_pack_id *id,
                             int tpage_x, int tpage_y, int clut_x, int clut_y,
-                            int u0, int v0)
+                            int u0, int v0, int category, int sx, int sy)
 {
     static const char *dir = NULL;
     static int checked = 0;
@@ -570,25 +760,51 @@ void texture_pack_dump_draw(const texture_pack_id *id,
     uint64_t key = id->thash ^ (id->phash * 0x9E3779B97F4A7C15ull) ^ (uint64_t)id->bpp;
     if (!key) key = 1;
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
-    tp_union *u = NULL;
-    for (int p = 0; p < 16; p++) {
+
+    const int qx0 = id->box_x, qy0 = id->box_y;
+    const int qx1 = qx0 + id->box_w, qy1 = qy0 + id->box_h;
+
+    /* Collect every same-key cluster the query box strictly overlaps. More
+     * than one means this draw bridges them: they become one component. */
+    tp_union *hit[TP_UNION_PROBE];
+    int nhit = 0;
+    tp_union *freeslot = NULL;
+    for (int p = 0; p < TP_UNION_PROBE; p++) {
         tp_union *c = &s_union[(base + (uint64_t)p) & (TP_UNION_SLOTS - 1)];
-        if (c->key == key || c->key == 0) { u = c; break; }
+        if (c->key == 0) { if (!freeslot) freeslot = c; continue; }
+        if (c->key != key) continue;
+        int cx1 = c->bx + c->bw, cy1 = c->by + c->bh;
+        if (qx0 < cx1 && c->bx < qx1 && qy0 < cy1 && c->by < qy1)
+            hit[nhit++] = c;
     }
-    if (!u) return;                             /* neighbourhood full */
+
+    tp_union *u;
     int grew = 0;
-    if (u->key != key) {                        /* first sighting */
+    if (nhit == 0) {
+        if (!freeslot) return;                  /* neighbourhood full */
+        u = freeslot;
         u->key = key; u->name[0] = 0;
-        u->bx = id->box_x; u->by = id->box_y; u->bw = id->box_w; u->bh = id->box_h;
+        u->bx = qx0; u->by = qy0; u->bw = id->box_w; u->bh = id->box_h;
         grew = 1;
     } else {
-        int x1 = u->bx + u->bw, y1 = u->by + u->bh;
-        int qx1 = id->box_x + id->box_w, qy1 = id->box_y + id->box_h;
-        if (id->box_x < u->bx) { u->bx = id->box_x; grew = 1; }
-        if (id->box_y < u->by) { u->by = id->box_y; grew = 1; }
-        if (qx1 > x1) { x1 = qx1; grew = 1; }
-        if (qy1 > y1) { y1 = qy1; grew = 1; }
-        u->bw = x1 - u->bx; u->bh = y1 - u->by;
+        u = hit[0];
+        int x0 = u->bx, y0 = u->by, x1 = u->bx + u->bw, y1 = u->by + u->bh;
+        if (qx0 < x0) x0 = qx0;
+        if (qy0 < y0) y0 = qy0;
+        if (qx1 > x1) x1 = qx1;
+        if (qy1 > y1) y1 = qy1;
+        for (int k = 1; k < nhit; k++) {        /* absorb the bridged clusters */
+            tp_union *c = hit[k];
+            if (c->bx < x0) x0 = c->bx;
+            if (c->by < y0) y0 = c->by;
+            if (c->bx + c->bw > x1) x1 = c->bx + c->bw;
+            if (c->by + c->bh > y1) y1 = c->by + c->bh;
+            tp_union_drop(c, dir);
+            grew = 1;
+        }
+        if (x0 != u->bx || y0 != u->by || x1 - x0 != u->bw || y1 - y0 != u->bh)
+            grew = 1;
+        u->bx = x0; u->by = y0; u->bw = x1 - x0; u->bh = y1 - y0;
     }
     if (!grew) return;
 
@@ -629,17 +845,40 @@ void texture_pack_dump_draw(const texture_pack_id *id,
             o[3] = (p == 0) ? 0 : ((p & 0x8000u) ? 128 : 255);
         }
     }
+    /* Pixel-aspect correction (screen-space 2D only; see the header). Whole
+     * texels replicated into sx-by-sy blocks: no source texel is lost and the
+     * block edges stay aligned to texel edges, which is what preserves the
+     * bit-identical round-trip. */
+    int Wout = W, Hout = H;
+    if (sx > 1 || sy > 1) {
+        Wout = W * sx; Hout = H * sy;
+        unsigned char *sp = malloc((size_t)Wout * Hout * 4);
+        if (sp) {
+            for (int y = 0; y < Hout; y++) {
+                const unsigned char *srow = px + (size_t)(y / sy) * W * 4;
+                unsigned char *drow = sp + (size_t)y * Wout * 4;
+                for (int x = 0; x < Wout; x++)
+                    memcpy(drow + (size_t)x * 4, srow + (size_t)(x / sx) * 4, 4);
+            }
+            free(px);
+            px = sp;
+        } else {
+            Wout = W; Hout = H;                 /* out of memory: write raw */
+        }
+    }
+
     if (u->name[0]) {                           /* superseded smaller union */
         char old[640];
         snprintf(old, sizeof old, "%s/%s", dir, u->name);
         remove(old);
     }
-    snprintf(u->name, sizeof u->name, "%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
+    snprintf(u->name, sizeof u->name, "%s-%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
+             tp_cat_slug(category),
              (unsigned long long)id->thash, u->bx, u->by, u->bw, u->bh,
              (unsigned long long)id->phash, id->bpp);
     char path[740];
     snprintf(path, sizeof path, "%s/%s", dir, u->name);
-    stbi_write_png(path, W, H, 4, px, W * 4);
+    stbi_write_png(path, Wout, Hout, 4, px, Wout * 4);
     free(px);
 }
 

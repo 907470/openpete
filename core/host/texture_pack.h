@@ -117,12 +117,41 @@ uint64_t texture_pack_id_hashkey(const texture_pack_id *id);
 
 /* If OPENPETE_TEXPACK_DUMP_DIR is set, decode the draw's texel box from the
  * live VRAM model and write it as a baked RGBA PNG named by its identity:
- *   <thash>-<bx>x<by>+<bw>x<bh>-<phash>-<bpp>bpp.png
+ *   <label>-<thash>-<bx>x<by>+<bw>x<bh>-<phash>-<bpp>bpp.png
  * (box coords are upload-relative, so the name is stable across per-level
- * VRAM repacks). Deduped per identity; call freely per drawn run. */
+ * VRAM repacks). `label` is the draw's scene category, lowercased — purely
+ * organisational, so a pack author can filter a dump to just the terrain or
+ * just Spyro; identity is the hash fields, and the parser skips the label.
+ *
+ * `sx`/`sy` replicate each texel into an sx-by-sy block. Screen-space 2D draws
+ * map 1 texel to 1 framebuffer pixel, and Spyro's framebuffer has non-square
+ * pixels — 512x240 with 224 visible shown at 4:3 — so their texels are ~1.71x
+ * taller than wide and the raw decode reads horizontally stretched in any
+ * image viewer. Correcting that makes dumps editable at square pixels. World
+ * textures are mapped onto geometry the projection already aspect-corrects,
+ * so they pass 1,1 — stretching those would INTRODUCE distortion.
+ *
+ * The factors must be INTEGERS (the caller reduces the aspect to lowest
+ * terms) so that block boundaries land exactly on texel boundaries. That is
+ * what lets a dump be dropped straight back in as a replacement and render
+ * bit-identically: an integer-multiple image is sampled NEAREST, and each
+ * screen pixel then resolves to the very texel stock would have fetched. A
+ * non-integer stretch breaks that alignment and cannot round-trip exactly.
+ *
+ * Deduped per identity; call freely per drawn run. */
 void texture_pack_dump_draw(const texture_pack_id *id,
                             int tpage_x, int tpage_y, int clut_x, int clut_y,
-                            int u0, int v0);
+                            int u0, int v0, int category, int sx, int sy);
+
+/* ---- identity/provenance census (temporary instrument) ------------------ */
+
+/* OPENPETE_TEXPACK_CATCENSUS=1: record which scene categories and provenance
+ * tags each resolved identity is drawn under, and how many distinct CLUTs
+ * (fog ladder rows) share one texel box. Answers two design questions:
+ * whether an identity is ever drawn by more than one category (i.e. whether
+ * the renderer path belongs in the match key), and how far the fog ladder
+ * fans one texture out. Reports to stderr at exit. */
+void texture_pack_cat_census(const texture_pack_id *id, int category, unsigned tag);
 
 /* ---- lifecycle / diagnostics -------------------------------------------- */
 
