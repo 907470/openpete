@@ -125,6 +125,11 @@ typedef struct {
     int32_t bpp;                   /* 4 / 8 / 16 */
 } shadow_decal_tex_pc;
 
+/* Push constants for the HD texture-replacement pipes: the replaced texel box,
+ * plus the per-channel fog transform applied to the sampled replacement
+ * (see tp_fog_affine). a/b are vec4-aligned; the shaders read .rgb. */
+typedef struct { float u0, v0, uw, vh; float a[4]; float b[4]; } hd_pc;
+
 /* How many panels the window shows (1c.3a: VRAM + reference). */
 #define NR_PANELS 2
 
@@ -186,6 +191,8 @@ typedef struct {
     int group;      /* per-portal grouping id (add_tri_grouped; plain add_tri: 0) */
     uint32_t tag;   /* provenance (mod-shaders S6): sticky set_tag value; joins
                      * the material key ONLY when tag_split_on() (else inert) */
+    int fog_delta;  /* sticky set_fog_delta value — the CLUT-ladder row this
+                     * tri's palette was shifted to (0 = unfogged base row) */
 } scene_tri_t;
 /* C99 compile-time prefix check: if a field is added to openpete_scene_tri
  * without mirroring it here (or vice versa), this array gets a negative size. */
@@ -220,11 +227,24 @@ void openpete_native_scene_overlay_accum_reset(void) {
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
+/* The terrain fog ladder is exactly 16 rows (delta 0..15); anything outside
+ * that is not a ladder row and must never reach the CLUT arithmetic, which
+ * would index VRAM out of bounds. */
+#define TP_FOG_DELTA_MAX 15
+static int s_cur_fog_delta;       /* sticky, stamped by add_tri */
 static int      s_tag_tint = -1;  /* OPENPETE_TAG_TINT: tint colours by tag */
 static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
 static int      s_tag_split_ext = 0;    /* armed by registered selectors (S8) */
 
 void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
+/* Sticky CLUT-ladder row (see openpete_native_scene_set_fog_delta). Ambient
+ * state rather than a scene-tri field on purpose: the feeder-facing tri is
+ * filled field-by-field by a dozen feeders that never memset it, so a new
+ * struct member would read as garbage everywhere except the one feeder that
+ * sets it — the layout assert catches a missing MIRROR, not a missing init. */
+void openpete_native_scene_set_fog_delta(int delta) {
+    s_cur_fog_delta = (delta > 0 && delta <= TP_FOG_DELTA_MAX) ? delta : 0;
+}
 /* S8 arms this when material selectors register (0 selectors ⇒ inert key). */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
 
@@ -482,6 +502,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
         s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
+        s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
              * the vertex colours — "which source produced this pixel". */
@@ -1594,7 +1615,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex.frag.spv",
         .blend = RHI_BLEND_ALPHA, .depth_test = false,
-        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     /* Opaque-scene HD replacement: depth-tested cutout (true blending on
      * opaque groups would break Z ordering); the MARK twin keeps the W2.6-c
@@ -1603,14 +1624,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     rhi_pipeline_desc hd_cutout_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
@@ -1623,13 +1644,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex.frag.spv",
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     rhi_pipeline_desc hd_scene_add_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex.frag.spv",
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = 4 * sizeof(float),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     /* Diff pipeline (--renderer diff): samples two textures — native render at
      * set 0, reference at set 1 — and outputs |native - ref| (diff.frag). No
@@ -3103,6 +3124,64 @@ static void tp_dump_scale(int category, int *sx, int *sy)
     *sx = num; *sy = den;
 }
 
+/* Terrain fog for a REPLACED texture.
+ *
+ * Unreplaced terrain fogs for free: the material simply points at a greyer,
+ * pre-baked palette row further down the CLUT (base_y + delta). A replacement
+ * has no palette — it is host RGBA — so that mechanism cannot reach it, and a
+ * replaced tile would otherwise render at full saturation while the terrain
+ * around it fades into the distance.
+ *
+ * The two palette rows ARE the fog specification for this texture, so derive
+ * the transform from them instead of assuming a global fog colour: fit
+ * out = a*in + b per channel by least squares over the palette entries. The
+ * ladder turns out to be very close to affine (measured over 390 ladder steps
+ * on 26 base CLUTs: mean error 2.7/255, p95 3.3, versus 34.0 for applying no
+ * fog at all). Fitting per channel rather than as a blend-toward-one-colour
+ * matters — the blend rate varies widely between textures (t at delta 15
+ * measured 0.825 +- 0.326), so a single global fog constant would be wrong
+ * for most of them.
+ *
+ * Entries that are the 0x0000 transparency sentinel in the base row carry no
+ * colour and are excluded. A base row with no spread gives the slope no
+ * signal, so fall back to a pure offset, which preserves the replacement's
+ * own detail rather than flattening it to a constant. */
+typedef struct { float a[3], b[3]; } tp_fog_xform;
+
+static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
+                          tp_fog_xform *out)
+{
+    for (int c = 0; c < 3; c++) { out->a[c] = 1.0f; out->b[c] = 0.0f; }
+    const uint16_t *vr = openpete_vram_data();
+    if (!vr || delta <= 0 || delta > TP_FOG_DELTA_MAX) return;
+    int fog_y = (base_y + delta) & 0x1FF;
+    if (clut_x < 0 || base_y < 0 || base_y > 511) return;
+    int n = (bpp == 8) ? 256 : 16;
+    if (clut_x + n > OPENPETE_VRAM_W) return;
+    const uint16_t *src = vr + (size_t)base_y * OPENPETE_VRAM_W + clut_x;
+    const uint16_t *dst = vr + (size_t)fog_y  * OPENPETE_VRAM_W + clut_x;
+    for (int c = 0; c < 3; c++) {
+        int shift = c * 5;
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        int cnt = 0;
+        for (int e = 0; e < n; e++) {
+            if (src[e] == 0) continue;                 /* transparency sentinel */
+            double x = (double)((src[e] >> shift) & 0x1F);
+            double y = (double)((dst[e] >> shift) & 0x1F);
+            sx += x; sy += y; sxx += x * x; sxy += x * y; cnt++;
+        }
+        if (cnt == 0) continue;
+        double den = cnt * sxx - sx * sx;
+        if (den > 1e-6) {
+            double a = (cnt * sxy - sx * sy) / den;
+            out->a[c] = (float)a;
+            out->b[c] = (float)((sy - a * sx) / cnt / 31.0);
+        } else {
+            out->b[c] = (float)((sy - sx) / cnt / 31.0);   /* offset only */
+        }
+    }
+}
+
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe, int allow_override) {
@@ -3183,10 +3262,13 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 if (!tex) {
                     hd_pending_add(key, px, mw, mh, 0, 0);
                 } else {
-                    const float rect[4] = { 0.f, 0.f, (float)mw, (float)mh };
+                    /* Mod-registered textures are not palette-laddered, so
+                     * they push the identity fog transform. */
+                    const hd_pc pc = { 0.f, 0.f, (float)mw, (float)mh,
+                                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
                     rhi_bind_pipeline(s_nr.dev, hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
-                    rhi_push_constants(s_nr.dev, rect, sizeof rect);
+                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                     rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
                     rhi_bind_pipeline(s_nr.dev, self);
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -3227,7 +3309,12 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             }
             texture_pack_id id;
             texture_pack_repl repl;
-            int hit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
+            /* Base ladder row. The forward shift decodes as
+             * (base + delta) & 0x1FF, so the inverse must mask identically —
+             * an unmasked subtract goes NEGATIVE on a wrapped row and indexes
+             * VRAM out of bounds. */
+            const int cly = (m.clut_y - st->fog_delta) & 0x1FF;
+            int hit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, cly,
                                            m.bpp, (int)u0, (int)v0, (int)u1, (int)v1, &id);
             int matched = hit && want_replace && texture_pack_match(&id, &repl);
             if (hit) texture_pack_cat_census(&id, st->category, st->tag);
@@ -3235,7 +3322,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 int dsx, dsy;
                 tp_dump_scale(st->category, &dsx, &dsy);
                 texture_pack_dump_draw(&id, m.tpage_x, m.tpage_y,
-                                       m.clut_x, m.clut_y, (int)u0, (int)v0,
+                                       m.clut_x, cly, (int)u0, (int)v0,
                                        st->category, dsx, dsy);
             }
             static int s_logged = 0;
@@ -3259,7 +3346,8 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 }
                 texture_pack_id nid;
                 texture_pack_repl nrepl;
-                int nhit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, m.clut_y,
+                const int ncly = (m.clut_y - sn->fog_delta) & 0x1FF;
+                int nhit = texture_pack_resolve(m.tpage_x, m.tpage_y, m.clut_x, ncly,
                                                 m.bpp, (int)nu0, (int)nv0, (int)nu1, (int)nv1, &nid);
                 int nmatched = nhit && want_replace && texture_pack_match(&nid, &nrepl);
                 if (nhit) texture_pack_cat_census(&nid, sn->category, sn->tag);
@@ -3267,11 +3355,17 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     int nsx, nsy;
                     tp_dump_scale(sn->category, &nsx, &nsy);
                     texture_pack_dump_draw(&nid, m.tpage_x, m.tpage_y,
-                                           m.clut_x, m.clut_y, (int)nu0, (int)nv0,
+                                           m.clut_x, ncly, (int)nu0, (int)nv0,
                                            sn->category, nsx, nsy);
                 }
                 if (nmatched != matched) break;
                 if (matched && nrepl.pixels != repl.pixels) break;
+                /* A replaced run carries ONE fog transform in its push
+                 * constants, and canonicalising the CLUT means tris at
+                 * different fog distances now resolve to the SAME pack file —
+                 * so they must not coalesce, or the whole run would draw at
+                 * the leading tri's fog depth. */
+                if (matched && sn->fog_delta != st->fog_delta) break;
                 g++;
             }
             /* OPENPETE_TEXPACK_STATS=1: sub-run disposition counters. */
@@ -3296,14 +3390,20 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     /* Shader rect = the FILE's box in page-texel coords: the
                      * query box (u0 page-relative <-> id.box upload-relative)
                      * anchors the conversion. */
-                    const float rect[4] = {
+                    hd_pc pc = {
                         u0 - (float)(id.box_x - repl.box_x),
                         v0 - (float)(id.box_y - repl.box_y),
                         (float)repl.box_w, (float)repl.box_h,
+                        { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f },
                     };
+                    if (st->fog_delta > 0) {
+                        tp_fog_xform fx;
+                        tp_fog_affine(m.clut_x, cly, st->fog_delta, m.bpp, &fx);
+                        for (int c = 0; c < 3; c++) { pc.a[c] = fx.a[c]; pc.b[c] = fx.b[c]; }
+                    }
                     rhi_bind_pipeline(s_nr.dev, hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
-                    rhi_push_constants(s_nr.dev, rect, sizeof rect);
+                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                     rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
                     rhi_bind_pipeline(s_nr.dev, self);
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);

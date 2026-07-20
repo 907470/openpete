@@ -488,6 +488,23 @@ void openpete_native_set_player_suppress(int on);
  * title logo / "PRESS START" / HUD glyph FT4 sprites + UI separator lines the
  * re-extract can't re-derive) so the overlay-carry snapshot preserves them
  * across the sub-tick rebuild instead of strobing at 30 Hz; 0 otherwise. */
+/* Sticky CLUT-ladder row for subsequent add_tri calls (0 = unfogged base row;
+ * out-of-range values are clamped to 0). Spyro's terrain fogs by SELECTING a
+ * pre-baked, progressively-greyer palette row — clut_y + delta — rather than
+ * blending at raster time, so identical texels reach the screen through up to
+ * 16 different palettes depending on distance.
+ *
+ * Declaring the row lets a consumer recover the BASE palette, which is the
+ * texture's stable identity: the replacement registry resolves against that
+ * base so one pack file covers a texture at every fog distance, and re-applies
+ * the ladder's colour transform at draw time. Purely descriptive — it does not
+ * affect the material batch key (clut_y already carries the distinction) and
+ * does not change how unreplaced terrain rasterizes.
+ *
+ * Sticky like set_tag: set it per emit, and reset to 0 when leaving a laddered
+ * emit loop so the value cannot leak into another feeder's tris. */
+void openpete_native_scene_set_fog_delta(int delta);
+
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
 /* add_tri with an explicit grouping id (stored on the renderer's internal
  * tri — plain add_tri stores 0). Used by the portal feeder to associate each

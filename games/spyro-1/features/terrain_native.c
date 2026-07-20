@@ -269,6 +269,7 @@ typedef struct {
     float sx[3], sy[3]; double vz[3]; uint32_t rgb[3];
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
+    int fog_delta;                                 /* CLUT ladder row (see tmat) */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
@@ -429,7 +430,12 @@ typedef struct { uint32_t rgb; float u, v; } lcorner;
 /* A face's texture material (decoded from the Tiledef; VRAM-pixel units).
  * clut_raw keeps the undecoded CLUT halfword: the .s HP walk ADDS a per-face
  * fog row offset to it per frame (Δ<<6 → cly += Δ) before decoding. */
-typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw; } tmat;
+/* fog_delta is the ladder row offset applied to clut_raw (0 = unfogged base
+ * row). Carried alongside the decoded CLUT so consumers can recover the base
+ * palette the texture was authored against: the texture-replacement registry
+ * keys identity on the BASE row, so one pack file covers a texture at every
+ * fog distance instead of the ladder fanning it into 15 near-duplicates. */
+typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta; } tmat;
 
 /* Decode a terrain face's texture material + its 4 corner UVs from the
  * m_LQTexturePointer Tiledef table (§8). texByte (int8 of HP face word2):
@@ -467,6 +473,7 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     int mode = (tpage >> 7) & 3; m->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
     m->clx = (clut & 0x3F) * 16; m->cly = (clut >> 6) & 0x1FF;
     m->clut_raw = clut;
+    m->fog_delta = 0;              /* base row; the HP walk ladders it per face */
     /* blend: opaque unless ABE; then the tpage ABR mode (0..3) → scene blend
      * 1..4 ((B+F)/2, +, −, B+F/4). */
     m->blend = abe ? (((tpage >> 5) & 3) + 1) : 0;
@@ -529,6 +536,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     }
     t->textured=m->textured; t->tpx=m->tpx; t->tpy=m->tpy;
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
+    t->fog_delta=m->fog_delta;
     t->tier = s_emit_noHP;
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
@@ -2567,6 +2575,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         uint16_t hw = (uint16_t)((uint32_t)matSel.clut_raw + ((uint32_t)delta << 6));
                         matSel.clx = (int)(hw & 0x3F) * 16;
                         matSel.cly = (int)(hw >> 6) & 0x1FF;
+                        matSel.fog_delta = delta;
                         mat = &matSel;
                     }
                 }
@@ -3436,6 +3445,7 @@ static void terrain_feed_native(CPUState* cpu) {
         }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec));
+        openpete_native_scene_set_fog_delta(t->fog_delta);
         openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);
         openpete_native_scene_set_tag(0);
@@ -3456,6 +3466,7 @@ static void terrain_feed_native(CPUState* cpu) {
             if (gen && t->guard && tri.blend == 0 && openpete_portal_sky_recent())
                 openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_PORTAL_GUARD, 0);
         }
+        openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
     }
     {   /* guard census (debug, stderr-throttled) */
         static int cen = -1; static int lines;
