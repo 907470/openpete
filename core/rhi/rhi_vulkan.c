@@ -1184,15 +1184,24 @@ static bool create_descriptor_infra(rhi_device *dev)
         if (dev->ubo_align == 0) dev->ubo_align = 256;
     }
 
+    /* Every rhi_texture (the VRAM display texture, RTT targets, AND every HD
+     * texture-pack replacement) permanently holds one COMBINED_IMAGE_SAMPLER
+     * set for its lifetime. A whole-level HD pack loads one texture per unique
+     * replacement image as surfaces come into view — hundreds for a level like
+     * Artisans — so the old 32/48 cap exhausted the pool after ~32 textures,
+     * and the failed per-frame re-allocation retries collapsed the frame rate.
+     * Sized for a large per-level pack; sets are a few hundred bytes each, so
+     * the headroom is cheap. (A growable multi-pool would remove the ceiling
+     * entirely — future work if a pack ever exceeds this.) */
     VkDescriptorPoolSize ps[2] = {
-        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 32 },
+        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096 },
         /* S2: off_image sampled sets (per frame slot) + rhi_ubo pairs. */
-        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 32 },
+        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 48, .poolSizeCount = 2, .pPoolSizes = ps,
+        .maxSets = 4160, .poolSizeCount = 2, .pPoolSizes = ps,
     };
     if (vkCreateDescriptorPool(dev->device, &pi, NULL, &dev->desc_pool) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorPool failed\n"); return false;
