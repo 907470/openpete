@@ -242,3 +242,30 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
         }
     }
 }
+
+/* Read a level's raw Data WAD entry host-side from the user's own disc image
+ * (the same TOC the overlay uses). buf=NULL just probes the length. Returns the
+ * entry byte length (>=0) or -1 if unavailable / buffer too small. Used by mods
+ * that borrow another level's data (e.g. its cyclorama) at runtime, so no
+ * derived game data is shipped. */
+int spyro1_mod_wad_read_level_data(int level_id, void* buf, uint32_t cap) {
+    if (s_state == 1) wad_init();
+    if (s_state != 2) return -1;
+    int idx = (level_id / 10 - 1) * 6 + level_id % 10;
+    if (idx < 0 || idx >= WAD_LEVELS) return -1;
+    wad_level_t* L = &s_levels[idx];
+    if (!L->present) return -1;
+    uint32_t len = L->length;
+    if (buf) {
+        if (cap < len) return -1;
+        uint8_t sec[SEC_DATA];
+        uint32_t done = 0;
+        for (uint32_t i = 0; i < L->n_sectors && done < len; i++) {
+            if (read_sector(L->start_sector + i, sec) != 0) return -1;
+            uint32_t n = len - done < SEC_DATA ? len - done : SEC_DATA;
+            memcpy((uint8_t*)buf + done, sec, n);
+            done += n;
+        }
+    }
+    return (int)len;
+}

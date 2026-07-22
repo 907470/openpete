@@ -834,6 +834,13 @@ static int api_enter_level(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_level_enter(cpu, level_id);
 }
 
+static int api_read_level_data(openpete_mod_t* self, int level_id,
+                               void* buf, uint32_t cap) {
+    if (!self) return -1;
+    if (purity_violation("read_level_data")) return -1;
+    return openpete_mods_read_level_data(level_id, buf, cap);
+}
+
 /* Declared-binding resolve: name → this mod's [[binding]] key →
  * host_key_down. Same tick-context caveats as host_key_down itself. */
 static int api_binding_down(openpete_mod_t* self, const char* name) {
@@ -1008,6 +1015,7 @@ static const openpete_mod_api_t s_api = {
     .pipeline_register   = openpete_mods_pipeline_register,
     .draw_mesh           = openpete_mods_draw_mesh,
     .material_register   = openpete_mods_material_register,
+    .read_level_data     = api_read_level_data,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

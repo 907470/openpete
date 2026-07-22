@@ -30,6 +30,7 @@
 #include "openpete_mods.h"
 
 #include "psx_runtime.h" /* CPUState */
+#include "mod_wad_overlay.h" /* spyro1_mod_wad_read_level_data */
 
 #define ADDR_G_WADHEADER   0x8007A6D0u
 #define WAD_LEVELENTRY_OFF 72u
@@ -110,9 +111,14 @@ static int ops_enter_level(CPUState* cpu, int level_id) {
     return 0;
 }
 
+static int ops_read_level_data(int level_id, void* buf, uint32_t cap) {
+    return spyro1_mod_wad_read_level_data(level_id, buf, cap);
+}
+
 static const openpete_level_ops_t s_spyro1_level_ops = {
-    .claim_slot  = ops_claim_slot,
-    .enter_level = ops_enter_level,
+    .claim_slot      = ops_claim_slot,
+    .enter_level     = ops_enter_level,
+    .read_level_data = ops_read_level_data,
 };
 
 void spyro1_level_ops_register(void) {

@@ -318,6 +318,9 @@ typedef struct {
     /* Trigger a transition into level_id from live gameplay (the
      * level-select cheat's writes). 0 = queued, -1 = not in gameplay. */
     int (*enter_level)(CPUState* cpu, int level_id);
+    /* Read a level's raw Data WAD entry host-side from the user's disc.
+     * buf=NULL probes length. Returns byte length or -1. */
+    int (*read_level_data)(int level_id, void* buf, uint32_t cap);
 } openpete_level_ops_t;
 
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
@@ -326,6 +329,7 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag);
 int openpete_mods_level_slot_id(const char* mod_id, const char* name);
 int openpete_mods_level_enter(CPUState* cpu, int level_id);
+int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
 
 /* Level-ready event (mod_registry.c): hooks fire once per level on the
  * first master-update tick with gameplay live; also drives

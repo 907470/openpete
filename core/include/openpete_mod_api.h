@@ -702,6 +702,15 @@ typedef struct openpete_mod_api {
                              const openpete_mod_material_selector_t* sel,
                              int vert_shader, int frag_shader,
                              openpete_mod_material_fn per_instance);
+
+    /* ── Read another level's raw Data WAD entry (host-side) ──────────
+     * Copies the level's Data blob from the user's own disc image into
+     * buf (buf=NULL just probes the length). Returns the entry byte
+     * length, or -1 if unavailable / cap too small. Lets a mod borrow
+     * another level's authored data (e.g. its cyclorama) at runtime
+     * without shipping derived game data. Entry/tick context. */
+    int (*read_level_data)(openpete_mod_t* self, int level_id,
+                           void* buf, uint32_t cap);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

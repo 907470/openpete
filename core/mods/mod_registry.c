@@ -331,3 +331,8 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
     if (!s_level_ops || !cpu || level_id <= 0) return -1;
     return s_level_ops->enter_level(cpu, level_id);
 }
+
+int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap) {
+    if (!s_level_ops || !s_level_ops->read_level_data || level_id <= 0) return -1;
+    return s_level_ops->read_level_data(level_id, buf, cap);
+}
