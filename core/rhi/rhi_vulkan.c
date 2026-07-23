@@ -1690,6 +1690,26 @@ void rhi_set_vsync(rhi_device *dev, int vsync)
     if (!dev->headless) dev->needs_recreate = true;  /* rebuild swapchain next begin_frame */
 }
 
+bool rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out)
+{
+    if (!dev || !out || dev->headless) return false;
+    out->instance        = (void *)dev->instance;
+    out->physical_device = (void *)dev->phys;
+    out->device          = (void *)dev->device;
+    out->queue_family    = dev->gfx_family;
+    out->queue           = (void *)dev->gfx_queue;
+    out->render_pass     = (uint64_t)dev->off_rp;
+    out->image_count     = dev->sc_count >= 2 ? dev->sc_count : 2;
+    out->api_version     = VK_API_VERSION_1_2;   /* matches create_instance */
+    return true;
+}
+
+void *rhi_current_command_buffer(rhi_device *dev)
+{
+    if (!dev || !dev->frame_active) return NULL;
+    return (void *)dev->cmd[dev->frame];
+}
+
 uint32_t rhi_max_image_dimension(const rhi_device *dev)
 {
     if (!dev) return 0;

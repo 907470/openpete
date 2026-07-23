@@ -23,6 +23,7 @@
 #include "openpete_native_render.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
+#include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 
 #include "openpete_log.h"
@@ -1340,6 +1341,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             SDL_DestroyWindow(win);
             return 1;
         }
+        /* M-key dev config overlay: imgui context + SDL3/Vulkan backends bound
+         * to this window/device. Failure just leaves the overlay unavailable
+         * (logged inside); never fatal to the renderer. */
+        openpete_devui_init(dev, win, opts);
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever (W0.6 RHI robustness). */
@@ -5788,6 +5793,7 @@ static bool compose_variant(int variant, bool have_ref)
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
+        if (s_overlay_live) openpete_devui_render(s_nr.dev);  /* dev overlay topmost */
         rhi_end_offscreen(s_nr.dev);
         /* The freeze snapshot lives in the fall-through path below, which this SSAA
          * branch skips — so capture it here too, from the box-resolved 1× offscreen
@@ -5841,6 +5847,7 @@ static bool compose_variant(int variant, bool have_ref)
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
     if (variant == NRV_VK && s_overlay_live) draw_menu_overlay();
+    if (variant == NRV_VK && s_overlay_live) openpete_devui_render(s_nr.dev);
 
     rhi_end_offscreen(s_nr.dev);
 
@@ -6949,6 +6956,7 @@ void openpete_native_render_shutdown(void)
     if (!s_nr.enabled)
         return;
     rhi_wait_idle(s_nr.dev);
+    openpete_devui_shutdown();   /* imgui backend objects die before the device */
     /* Mod postfx chain objects (S3): ping pool, UBO, cached pipelines
      * (both live registrations and the retirement list). */
     for (int i = 0; i < 2; i++)

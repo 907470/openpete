@@ -27,6 +27,7 @@
 #include "openpete_record.h"
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
+#include "openpete_devui.h"
 #include "openpete_freecam.h"
 #include "feature_registry.h"
 #include "openpete_mods.h"
@@ -183,13 +184,19 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
 
 static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
     (void)userdata;
+    /* Dev overlay sees every event (imgui io bookkeeping; frames only run
+     * while it is open). The filter runs during the main-thread event pump —
+     * same thread as the host loop — so this is race-free. */
+    openpete_devui_process_event(ev);
     if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
         return false;  /* drop so PsyX_Sys_DoPollEvent never sees it */
     }
-    /* Double-click toggles native-window fullscreen (see the host loop). */
+    /* Double-click toggles native-window fullscreen (see the host loop) —
+     * unless the click landed on the dev overlay. */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-        ev->button.button == SDL_BUTTON_LEFT && ev->button.clicks == 2) {
+        ev->button.button == SDL_BUTTON_LEFT && ev->button.clicks == 2 &&
+        !openpete_devui_wants_mouse()) {
         g_native_fs_toggle_request = 1;
     }
     if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
@@ -203,9 +210,10 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
      * window-close path above quits too. */
     if (ev->type == SDL_EVENT_KEY_DOWN &&
         ev->key.scancode == SDL_SCANCODE_ESCAPE) {
-        /* While the settings menu is open, Escape closes it instead of quitting.
+        /* While an overlay is open, Escape closes it instead of quitting.
          * (The filter runs during the main-thread event pump, same thread as the
-         * host loop, so reading the menu-open flag here is race-free.) */
+         * host loop, so reading the open flags here is race-free.) */
+        if (openpete_devui_is_open()) { openpete_devui_close(); return false; }
         if (openpete_menu_is_open()) { openpete_menu_toggle(); return false; }
         g_shutdown_requested = 1;
         return false;
@@ -1520,6 +1528,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_menu_close = false;   /* controller Start/Circle → close menu */
     bool prev_menu_open = false;
 
+    /* Dev config overlay (M). Edge state for the toggle + a latch to clear the
+     * pad override exactly once when imgui releases the keyboard. */
+    bool prev_m_key = false;
+    bool prev_devui_kb = false;
+
     /* Seed the in-game settings menu from the launch flags, and build its FPS
      * ladder from the monitor refresh queried above (60 if unknown/headless).
      * Applies nothing — it only makes the menu reflect what the game launched
@@ -1648,6 +1661,29 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         prev_menu_open = openpete_menu_is_open();
 
+        /* Dev overlay typing: neutralise the pad only while imgui owns the
+         * keyboard (a text field / nav focus), so typed characters can't reach
+         * the PSX pad through PsyCross's keyboard->pad map. Mouse-only
+         * interaction leaves the game fully playable behind the panel — this
+         * is a dev tool; watching the live scene while flipping knobs is the
+         * point. Same bk2 override channel + clear-once latch as the menu. */
+        {
+            bool devui_kb = openpete_devui_wants_keyboard() != 0;
+            if (devui_kb && !openpete_menu_is_open()) {
+                g_PsyX_Pad_InputOverride  = 0xFFFF;
+                g_PsyX_Pad_OverrideActive = 1;
+                g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+                g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
+            } else if (prev_devui_kb && !devui_kb && !bk2_active &&
+                       !openpete_menu_is_open()) {
+                g_PsyX_Pad_InputOverride  = 0xFFFF;
+                g_PsyX_Pad_OverrideActive = 0;
+                g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+                g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
+            }
+            prev_devui_kb = devui_kb;
+        }
+
         /* Drain SDL events + refresh pad state before the game runs. PsyCross's
          * libpad reads keyboard via SDL_GetKeyboardState (pumped here) and
          * writes the bitfield into the buffer registered by PadInitDirect, so
@@ -1660,13 +1696,34 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * the Tab-release transition gets seen and we can drop back to 60Hz. */
         const bool* kbd_pre = openpete_keyboard_state();
 
+        /* While imgui owns the keyboard, every polled host hotkey goes inert
+         * in one stroke — they all null-check kbd_pre. Esc-close and the M
+         * toggle-off still work: Esc via the event filter, M again once the
+         * text field loses focus (or via the panel's close button). */
+        if (openpete_devui_wants_keyboard()) kbd_pre = NULL;
+
+        /* M: toggle the dev config overlay. Mutually exclusive with the O
+         * menu — two input-owning overlays with different capture models is
+         * complexity with no payoff. */
+        {
+            bool m_k = kbd_pre && kbd_pre[SDL_SCANCODE_M];
+            if (m_k && !prev_m_key) {
+                if (openpete_devui_toggle() && openpete_menu_is_open())
+                    openpete_menu_toggle();   /* close the O menu underneath */
+            }
+            prev_m_key = m_k;
+        }
+
         /* O: toggle the in-game settings menu. While open it captures the arrow
          * keys (Up/Down move the cursor, Left/Right change the value) and the
          * game pad is neutralised below, so the other hotkeys and gameplay input
          * stay inert. Esc-closes is handled in the SDL event filter. */
         {
             bool o_k = kbd_pre && kbd_pre[SDL_SCANCODE_O];
-            if (o_k && !prev_o_key) openpete_menu_toggle();
+            if (o_k && !prev_o_key) {
+                openpete_menu_toggle();
+                if (openpete_menu_is_open()) openpete_devui_close();
+            }
             prev_o_key = o_k;
 
             if (openpete_menu_is_open()) {

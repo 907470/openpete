@@ -518,4 +518,35 @@ int  rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap);
 void rhi_gpu_frame_token(rhi_device *dev, uint64_t token);
 uint64_t rhi_gpu_results_token(const rhi_device *dev);
 
+/* ---- dev-UI (imgui) integration seam -------------------------------------
+ *
+ * The ONE deliberate hole in the opaque-handle abstraction: the Dear ImGui
+ * Vulkan backend must be initialized against the real device + the offscreen
+ * render pass. Handles are typed as void pointers / uint64_t so rhi.h stays
+ * Vulkan-free; the sole consumer (core/runtime/devui.cpp) casts them back.
+ *
+ * render_pass is the offscreen pass (off_rp). It IS destroyed+recreated on a
+ * swapchain rebuild, but always with identical attachment formats — and a
+ * VkPipeline only uses its creation render pass for compatibility, so a
+ * pipeline built against the old pass stays valid under the new one (the
+ * renderer's own pipelines rely on the same rule). No re-init needed on
+ * resize/vsync changes.
+ *
+ * command_buffer() is the frame's open command buffer, valid only between
+ * rhi_begin_frame and rhi_end_frame — the dev UI records its draw data into
+ * the offscreen pass, alongside the other overlays. */
+typedef struct {
+    void    *instance;         /* VkInstance */
+    void    *physical_device;  /* VkPhysicalDevice */
+    void    *device;           /* VkDevice */
+    uint32_t queue_family;
+    void    *queue;            /* VkQueue (graphics) */
+    uint64_t render_pass;      /* VkRenderPass (offscreen color+depth pass) */
+    uint32_t image_count;      /* swapchain image count (>= 2) */
+    uint32_t api_version;      /* VK_API_VERSION the instance was created with */
+} rhi_imgui_info;
+/* False on a headless device (no window — the dev UI never initializes). */
+bool  rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out);
+void *rhi_current_command_buffer(rhi_device *dev);
+
 #endif /* OPENPETE_RHI_H */

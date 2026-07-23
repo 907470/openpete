@@ -78,8 +78,9 @@ typedef enum {
 } openpete_lod_mode_t;
 
 /* All command-line options live here. Per-game main.cpp may override
- * `display_name` before passing to `openpete_run`. */
-typedef struct {
+ * `display_name` before passing to `openpete_run`. The struct tag exists so
+ * headers can forward-declare it without pulling this whole file in. */
+typedef struct openpete_options {
     /* Identity (filled by per-game main; rest from CLI) */
     const char* display_name;     /* window title etc. */
 

@@ -49,6 +49,13 @@ add_library(openpete_core STATIC
     runtime/dispatch.c
     runtime/openpete_ui_moby.c
     runtime/openpete_menu.c
+
+    # M-key dev config overlay: table-driven knob registry (C) + Dear ImGui
+    # panel (C++ TU, flat C API in openpete_devui.h). Native-vk-only, live
+    # presents only. See notes/plans/openpete-imgui-config-overlay.md.
+    runtime/knob_registry.c
+    runtime/devui.cpp
+
     runtime/freecam.c
     runtime/feature_registry.c
 
@@ -229,6 +236,39 @@ endif()
 # --native-ab is passed. PUBLIC so the RHI's headers (and its embedded SPIR-V)
 # reach any downstream renderer TUs. See openpete-native-renderer.md.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
+
+# Dear ImGui (third_party/imgui, pinned release tag) — the M-key dev config
+# overlay's UI library (runtime/devui.cpp). SDL3 + Vulkan backends; the Vulkan
+# backend rides volk's already-loaded function pointers
+# (IMGUI_IMPL_VULKAN_USE_VOLK — openpete_rhi runs volkInitialize/volkLoadInstance
+# at rhi_create, and volk.c is compiled ONLY there, so no duplicate symbols).
+# See notes/plans/openpete-imgui-config-overlay.md.
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
+add_library(openpete_imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+)
+# volk + vulkan headers are PUBLIC: imgui_impl_vulkan.h #includes volk.h under
+# IMGUI_IMPL_VULKAN_USE_VOLK, so any TU that includes the backend header (the
+# dev UI) needs the same include paths and defines.
+target_include_directories(openpete_imgui PUBLIC
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include
+    ${CMAKE_SOURCE_DIR}/third_party/volk)
+target_compile_definitions(openpete_imgui PUBLIC
+    IMGUI_IMPL_VULKAN_USE_VOLK
+    VK_NO_PROTOTYPES
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+target_link_libraries(openpete_imgui PUBLIC SDL3::SDL3-static)
+set_target_properties(openpete_imgui PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON)
+target_link_libraries(openpete_core PUBLIC openpete_imgui)
 
 # Hide the debug/diagnostic CLI flags from `--help` (options.c only splits the
 # text; every flag still PARSES and works — this is display-only). Enabled by
