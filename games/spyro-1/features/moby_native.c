@@ -4633,7 +4633,9 @@ static ntri_t   s_hold_tri[HOLD_TRI_MAX];
 static uint32_t s_hold_fkey[HOLD_TRI_MAX];
 static uint8_t  s_hold_mode[HOLD_TRI_MAX];
 typedef struct { uint32_t moby; unsigned epoch; int off, n, spec;
-                 double sx, sy, trz; } hold_t;    /* captured origin projection + view-Z */
+                 double sx, sy, trz;              /* captured origin projection + view-Z */
+                 uint16_t cls;                    /* m_Class at capture (provenance tag) */
+                 uint8_t front, fogsup; } hold_t; /* per-moby emit flags at capture */
 static hold_t   s_hold[HOLD_MOBY_MAX];
 static int      s_hold_n, s_hold_tri_n;
 static unsigned s_hold_epoch;
@@ -4986,8 +4988,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             double sx, sy;
             if (!hold_project_origin(cpu, s_rec_tr[r], &sx, &sy)) continue;
             int off = s_hold_tri_n, n = 0;
+            uint16_t hcls = 0; uint8_t hfront = 0, hfogsup = 0;
             for (int wi = 0; wi < s_wtri_n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
                 if (s_wtri_moby[wi] != mob) continue;
+                if (n == 0) { hcls = s_wtri_cls[wi]; hfront = s_wtri_front[wi];
+                              hfogsup = s_wtri_fogsup[wi]; }
                 s_hold_tri[s_hold_tri_n]  = s_wtri[wi];
                 s_hold_fkey[s_hold_tri_n] = s_wtri_fkey[wi];
                 s_hold_mode[s_hold_tri_n] = s_wtri_mode[wi];
@@ -4996,6 +5001,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             hold_t* h = &s_hold[s_hold_n++];
             h->moby = mob; h->epoch = s_hold_epoch; h->off = off; h->n = n;
             h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = s_rec_tr[r][2];
+            h->cls = hcls; h->front = hfront; h->fogsup = hfogsup;
         }
     }
     /* Tier-2 hold replay: append the banked tris, translated by the origin
@@ -5005,12 +5011,24 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         const hold_t* h = replays[k].h;
         float dx = (float)replays[k].dx, dy = (float)replays[k].dy;
         float vzs = (float)replays[k].vzs;
+        /* Material slots are interned per PRESENT (frame_reset in scene_begin),
+         * so the capture present's slot is meaningless here — re-resolve from
+         * the banked class. Without this (and cls/front/fogsup below) the
+         * replayed tris kept whatever stale values these arrays held at their
+         * indices, so a held moby lost its mod material on every intermediate
+         * present (distant decor flickering stock-bright at high FPS). */
+        uint16_t hslot = openpete_mods_material_has_instance()
+            ? (uint16_t)openpete_mods_material_moby_slot(cpu, h->cls, h->moby) : 0;
         s_hold_replayed++;
         for (int t = 0; t < h->n && s_wtri_n < MAX_NTRI; t++) {
-            s_wtri_ui[s_wtri_n]   = 0;
-            s_wtri_moby[s_wtri_n] = h->moby;
-            s_wtri_fkey[s_wtri_n] = s_hold_fkey[h->off + t];
-            s_wtri_mode[s_wtri_n] = s_hold_mode[h->off + t];
+            s_wtri_ui[s_wtri_n]      = 0;
+            s_wtri_front[s_wtri_n]   = h->front;
+            s_wtri_fogsup[s_wtri_n]  = h->fogsup;
+            s_wtri_cls[s_wtri_n]     = h->cls;
+            s_wtri_matslot[s_wtri_n] = hslot;
+            s_wtri_moby[s_wtri_n]    = h->moby;
+            s_wtri_fkey[s_wtri_n]    = s_hold_fkey[h->off + t];
+            s_wtri_mode[s_wtri_n]    = s_hold_mode[h->off + t];
             ntri_t* o = &s_wtri[s_wtri_n];
             *o = s_hold_tri[h->off + t];
             for (int vv = 0; vv < 3; vv++) { o->v[vv].sx += dx; o->v[vv].sy += dy; o->v[vv].vz *= vzs; }
