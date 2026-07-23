@@ -72,6 +72,7 @@ run_one() {
     local hash="$OUT_DIR/hash-$label.csv"
     local log="$OUT_DIR/log-$label.txt"
     local args=(--headless --disc "$DISC" --run-recomp 0x80012204
+                --mute 1
                 --frame-limit "$FRAMES"
                 --position-log "$pos"
                 --gameplay-hash-log "$hash"

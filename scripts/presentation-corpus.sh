@@ -99,8 +99,10 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
   # surfaces the fixed aspect when there is no window) and renders the widened
   # view into a dedicated capture target, so both legs are true Hor+ (853x448).
+  # --mute 1: harness runs still open the host audio device; keep them
+  # silent (a fanned-out corpus otherwise plays dozens of instances).
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
-    --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1

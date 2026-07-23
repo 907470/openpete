@@ -88,7 +88,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
   timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
-    --aspect "$CAP_ASPECT" --lod "$lod" --skip-to-level "$level" --freecam-pose "$pose" \
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
   local rc=$?

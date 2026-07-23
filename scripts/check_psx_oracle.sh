@@ -107,9 +107,12 @@ BK2="${TRACE}.bk2"
 LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
 
 set +e
+# --mute 1 sits before PASSTHRU so a forwarded `-- --mute 0` still wins
+# (the options parser takes the last occurrence).
 "$BIN" --headless \
     --disc "$DISC" \
     --run-recomp 0x80012204 \
+    --mute 1 \
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \
     "${EXTRA[@]}" \
