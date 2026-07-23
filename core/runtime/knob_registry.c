@@ -121,8 +121,21 @@ static int renderfps_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-static double tickscale_get(const knob_desc_t *k) { (void)k; return g_opts ? g_opts->tick_scale : 1.0; }
-static double runahead_get(const knob_desc_t *k)  { (void)k; return g_opts ? (double)g_opts->runahead : 0.0; }
+static double tickscale_get(const knob_desc_t *k) { (void)k; return openpete_get_tick_scale(); }
+static int tickscale_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (v <= 0.0) return -1;
+    openpete_set_tick_scale(v);
+    return 0;
+}
+
+static double runahead_get(const knob_desc_t *k) { (void)k; return (double)openpete_runahead_get(); }
+static int runahead_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (v < 0) return -1;
+    openpete_runahead_set((int)v);
+    return 0;
+}
 
 static int fov_set(knob_desc_t *k, double v) {
     if (v < 0.0) return -1;
@@ -345,15 +358,17 @@ static knob_desc_t g_knobs[] = {
 
     { "tick_scale", "Tick scale", "Pacing", "--tick-scale", NULL,
       "Engine speed multiplier (slow-mo / speed-up; sim and presents "
-      "together). Boot-latched into the pacer today.",
-      KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.05f, 8.0f,
-      tickscale_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "together). Applies on the next host iteration; pacing only, the sim "
+      "runs identical ticks on a stretched wall clock.",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.05f, 8.0f,
+      tickscale_get, tickscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "runahead", "Runahead", "Pacing", "--runahead", NULL,
       "Present-timeline lead of N sim ticks (latency cut, ~N extra ticks of "
-      "CPU). Boot-latched (snapshot buffers + mod-capability gate).",
-      KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 3,
-      runahead_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "CPU). Applies next host iteration; the mod-capability gate can "
+      "refuse (row falls back to 0). Presents snap for one tick on change.",
+      KNOB_INT, KNOB_LIVE, NULL, 0, 0, 3,
+      runahead_get, runahead_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "rewind", "Rewind window", "Pacing", "--rewind", NULL,
       "Backspace-rewind window in seconds (0 = off). APPLYING CLEARS the "
@@ -880,10 +895,13 @@ void knob_registry_late_stamp(void) {
     size_t n;
     knob_desc_t *ks = knob_registry(&n);
     for (size_t i = 0; i < n; i++) {
-        if (!strcmp(ks[i].id, "render_fps")) {
-            /* The pacer resolved the launch target (unset -> display refresh)
-             * after knob_registry_init ran; adopt it as the boot value so the
-             * row doesn't read as "edited" on first open. */
+        if (!strcmp(ks[i].id, "render_fps") ||
+            !strcmp(ks[i].id, "tick_scale") ||
+            !strcmp(ks[i].id, "runahead")) {
+            /* The pacer seeds its live state (resolved render-fps target,
+             * tick scale, gated runahead depth) at host-loop start, after
+             * knob_registry_init ran; adopt the settled value as the boot
+             * value so the row doesn't read as "edited" on first open. */
             ks[i].boot_num   = ks[i].get_num(&ks[i]);
             ks[i].stored_num = ks[i].boot_num;
         }

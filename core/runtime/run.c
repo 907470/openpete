@@ -773,6 +773,43 @@ void openpete_set_render_fps(int fps) {
     s_render_fps_dirty = 1;   /* the host loop recomputes the period + re-anchors */
 }
 
+/* Live tick-scale (dev overlay). Same dirty-flag shape as render-fps: the
+ * host loop re-derives every scaled period (sim, render, tick, slip) at its
+ * top-of-iteration quiescent point and re-anchors the deadlines. Pacing
+ * only — the sim executes identical ticks, just on a stretched wall clock
+ * (headless/unlock ignores the deadlines entirely). */
+static double s_tick_scale       = 1.0;
+static int    s_tick_scale_dirty = 0;
+
+void openpete_set_tick_scale(double scale) {
+    if (scale < 0.05) scale = 0.05;
+    if (scale > 8.0)  scale = 8.0;
+    if (scale == s_tick_scale) return;
+    s_tick_scale = scale;
+    s_tick_scale_dirty = 1;
+}
+
+double openpete_get_tick_scale(void) { return s_tick_scale; }
+
+/* Live runahead depth (dev overlay). Same dirty-flag shape: the host loop
+ * re-arms at its top-of-iteration quiescent point — speculation is fully
+ * contained inside one ticked iteration (save → speculate → restore), so
+ * there is never in-flight state to tear. s_runahead_live is the applied
+ * depth after the mod-capability gate (may be forced 0). */
+static int s_runahead_req   = 0;
+static int s_runahead_dirty = 0;
+static int s_runahead_live  = 0;
+
+void openpete_runahead_set(int n) {
+    if (n < 0) n = 0;
+    if (n > 3) n = 3;
+    if (n == s_runahead_req) return;
+    s_runahead_req = n;
+    s_runahead_dirty = 1;
+}
+
+int openpete_runahead_get(void) { return s_runahead_live; }
+
 /* Live engine-level mute (dev overlay). Same three gain clamps the boot
  * apply uses; s_mute replaces opts->mute as the baseline the F7 pause
  * exit restores, so a live toggle survives a pause/resume cycle. Host
@@ -1279,23 +1316,26 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * sim still executes identical ticks (the interp alpha is wall-clock-derived
      * from the actual tick timestamps, so it auto-stretches), and the deadlines
      * are reset to now under unlock/headless, so this is inert in the oracle. */
-    const double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
-    const op_time_t sim_period_ns    =
+    double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
+    op_time_t sim_period_ns    =
         (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
     const op_time_t render_period_ns = (render_fps > 0)
         ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)render_fps) / tick_scale)
         : sim_period_ns;   /* sim_period_ns is already tick-scaled */
-    /* Seed the live pacer state (openpete_set_render_fps mutates it; the loop
-     * reads s_render_fps / s_render_period_ns instead of the consts above). */
+    /* Seed the live pacer state (openpete_set_render_fps /
+     * openpete_set_tick_scale mutate it; the loop reads s_render_fps /
+     * s_render_period_ns / s_tick_scale instead of the values above). */
     s_render_fps       = render_fps;
     s_render_period_ns = render_period_ns;
     s_render_fps_dirty = 0;
+    s_tick_scale       = tick_scale;
+    s_tick_scale_dirty = 0;
     /* One WALL-time tick for every sub-tick alpha denominator (ring +
      * per-object phase lerps). Must stretch with --tick-scale: interp alphas
      * are wall-clock-derived, so an unscaled (NTSC) cap makes every sweep run
      * 1/tick_scale× too fast and pin at the clamp for the rest of the tick. */
     g_openpete_tick_period_ns = 2 * sim_period_ns;   /* tick = 2 VBLs, scaled */
-    const op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
+    op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
     op_time_t next_render_ns = start_ns;
@@ -1349,32 +1389,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * at the quiescent point below (Backspace / --rewind-hold). */
     openpete_rewind_configure(opts->rewind_window);
 
-    /* --runahead: arm only when every enabled mod declares a runahead
-     * capability (OP_MOD_RA_PURE / OP_MOD_RA_HOST_FX) — speculative
-     * re-execution of tick hooks with undeclared host side effects would
-     * double-fire them. */
-    int runahead_n = opts->runahead;
+    /* --runahead: seeded into the live-depth request; the in-loop apply
+     * block arms it on the first iteration — the identical path a live
+     * dev-overlay change takes (capability gate + snapshot alloc there). */
+    int runahead_n = 0;
     openpete_state_mem_t* ra_snap = NULL;
-    if (runahead_n > 0) {
-        const char* ra_offender = NULL;
-        if (!openpete_mods_runahead_capable(&ra_offender)) {
-            OPL_ERROR_F("runahead",
-                        "disabled: mod \"%s\" declares no runahead "
-                        "capability (add OPENPETE_MOD_STATE flags or "
-                        "OPENPETE_MOD_RA_CAPS)",
-                        ra_offender ? ra_offender : "?");
-            runahead_n = 0;
-        } else {
-            ra_snap = openpete_state_mem_new();
-            if (!ra_snap) runahead_n = 0;
-            else OPL_INFO_F("runahead", "armed: leading presentation by "
-                            "%d tick(s)", runahead_n);
-            if (ra_snap && ra_pc_on()) {
-                (void)openpete_on_guest_discontinuity(ra_pc_invalidate_all);
-                OPL_INFO_F("runahead", "prediction-exactness check armed");
-            }
-        }
-    }
+    s_runahead_req   = (opts->runahead > 0) ? opts->runahead : 0;
+    s_runahead_live  = 0;
+    s_runahead_dirty = (s_runahead_req > 0);
 
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
@@ -1591,6 +1613,62 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * the deadlines to now so a lower→higher switch doesn't fire a burst of
          * catch-up presents. Also keep interp capture in sync (enabled only when
          * the render rate exceeds the sim rate), matching the startup gate. */
+        /* Live tick-scale change: re-derive every scaled period, then fall
+         * through the render-fps dirty path below for the render period +
+         * deadline re-anchor + interp-gate re-sync. */
+        if (s_tick_scale_dirty) {
+            s_tick_scale_dirty = 0;
+            tick_scale = s_tick_scale;
+            sim_period_ns =
+                (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
+            g_openpete_tick_period_ns = 2 * sim_period_ns;
+            slip_threshold_ns = 4 * sim_period_ns;
+            s_render_fps_dirty = 1;
+            OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.4f ms)",
+                       tick_scale, (double)sim_period_ns / 1e6);
+        }
+        /* Live runahead re-arm. Arm only when every enabled mod declares a
+         * runahead capability (OP_MOD_RA_PURE / OP_MOD_RA_HOST_FX) —
+         * speculative re-execution of tick hooks with undeclared host side
+         * effects would double-fire them. The mod set is fixed at boot, so
+         * one successful arm (ra_snap held) never re-checks. */
+        if (s_runahead_dirty) {
+            s_runahead_dirty = 0;
+            int ra_depth = s_runahead_req;
+            if (ra_depth > 0 && !ra_snap) {
+                const char* ra_offender = NULL;
+                if (!openpete_mods_runahead_capable(&ra_offender)) {
+                    OPL_ERROR_F("runahead",
+                                "disabled: mod \"%s\" declares no runahead "
+                                "capability (add OPENPETE_MOD_STATE flags or "
+                                "OPENPETE_MOD_RA_CAPS)",
+                                ra_offender ? ra_offender : "?");
+                    ra_depth = s_runahead_req = 0;
+                } else {
+                    ra_snap = openpete_state_mem_new();
+                    if (!ra_snap) ra_depth = s_runahead_req = 0;
+                    else if (ra_pc_on()) {
+                        (void)openpete_on_guest_discontinuity(ra_pc_invalidate_all);
+                        OPL_INFO_F("runahead",
+                                   "prediction-exactness check armed");
+                    }
+                }
+            }
+            if (ra_depth != runahead_n) {
+                runahead_n = ra_depth;
+                /* The interp ring must never pair a led-timeline state with
+                 * a real-timeline one across the depth switch: reset it so
+                 * the next presents snap instead of lerping backward. */
+                openpete_interp_reset();
+                openpete_interp_objs_reset();
+                if (runahead_n > 0)
+                    OPL_INFO_F("runahead", "armed: leading presentation by "
+                               "%d tick(s)", runahead_n);
+                else
+                    OPL_INFO_F("runahead", "disarmed");
+            }
+            s_runahead_live = runahead_n;
+        }
         if (s_render_fps_dirty) {
             s_render_fps_dirty = 0;
             s_render_period_ns = (s_render_fps > 0)

@@ -625,6 +625,21 @@ void openpete_set_render_fps(int fps);
  * match-sim pacer. The settings menu seeds its FPS row from this. */
 int openpete_get_render_fps(void);
 
+/* Live tick-scale (engine slow-mo/speed-up; sim and presents together).
+ * Clamped to [0.05, 8]. The host loop re-derives every scaled period and
+ * re-anchors its deadlines on the next iteration. Pacing only — the sim
+ * executes identical ticks on a stretched wall clock. */
+void   openpete_set_tick_scale(double scale);
+double openpete_get_tick_scale(void);
+
+/* Live runahead depth (0 = off, clamped 0..3). The host loop re-arms on its
+ * next iteration: the mod-capability gate re-runs on first arm and the
+ * ~2 MiB speculation snapshot allocates lazily; the getter returns the
+ * APPLIED depth (0 when the gate refused). Presents snap for one tick on a
+ * depth change (interp ring reset across the timeline swap). */
+void openpete_runahead_set(int n);
+int  openpete_runahead_get(void);
+
 /* Live engine-level mute (SPU AL + XA gain + music WAV override) — the same
  * clamps --mute applies at boot, callable at runtime. Host audio only; the
  * F7 pause exit restores this baseline. */
