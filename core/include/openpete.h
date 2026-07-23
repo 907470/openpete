@@ -625,6 +625,12 @@ void openpete_set_render_fps(int fps);
  * match-sim pacer. The settings menu seeds its FPS row from this. */
 int openpete_get_render_fps(void);
 
+/* Live engine-level mute (SPU AL + XA gain + music WAV override) — the same
+ * clamps --mute applies at boot, callable at runtime. Host audio only; the
+ * F7 pause exit restores this baseline. */
+void openpete_set_mute(int on);
+int  openpete_get_mute(void);
+
 #ifdef __cplusplus
 }
 #endif

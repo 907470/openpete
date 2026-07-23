@@ -84,6 +84,17 @@ int openpete_fog_enabled(void) {
     return openpete_fog_scale < FOG_OFF_SCALE;
 }
 
+void openpete_fog_scale_set(float scale) {
+    if (scale < 0.25f) scale = 0.25f;
+    if (scale > FOG_OFF_SCALE) scale = FOG_OFF_SCALE;
+    /* A manual value takes fog off autopilot, same as openpete_fog_set —
+     * a later LOD switch must not clobber it. Terrain re-resolves the
+     * scale every walk, so this is live with no latch to poke. */
+    s_fog_touched = 1;
+    openpete_fog_scale = scale;
+    OPL_INFO_F("no-lod", "fog scale -> x%.2f", openpete_fog_scale);
+}
+
 void openpete_fog_set(int on) {
     s_fog_touched = 1;
     /* ON restores the user's own curve when they chose one (an explicit

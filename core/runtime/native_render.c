@@ -5185,7 +5185,11 @@ static int      s_fps_frames    = 0;
 static int      s_fps_value     = 0;
 
 static int s_fps_in_record_pref = -1;  /* --record-fps-overlay: -1 unset, 0/1 explicit */
-void openpete_native_set_fps_in_record(int pref) { s_fps_in_record_pref = pref; }
+static int s_fps_in_record = -1;       /* resolved lazily (pref, else env); setter resets */
+void openpete_native_set_fps_in_record(int pref) {
+    s_fps_in_record_pref = pref;
+    s_fps_in_record = -1;   /* re-resolve on the next recorded frame (live toggle) */
+}
 
 void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
 int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
@@ -5365,16 +5369,15 @@ static void draw_mod_overlay(void) {
 static bool fps_overlay_should_draw(void) {
     if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
     if (openpete_record_active()) {
-        static int s_in_rec = -1;
-        if (s_in_rec < 0) {
+        if (s_fps_in_record < 0) {
             if (s_fps_in_record_pref >= 0) {
-                s_in_rec = s_fps_in_record_pref;             /* --record-fps-overlay wins */
+                s_fps_in_record = s_fps_in_record_pref;      /* --record-fps-overlay wins */
             } else {
                 const char *e = getenv("OPENPETE_FPS_IN_RECORD");  /* env fallback */
-                s_in_rec = (e && *e && *e != '0') ? 1 : 0;
+                s_fps_in_record = (e && *e && *e != '0') ? 1 : 0;
             }
         }
-        if (!s_in_rec) return false;
+        if (!s_fps_in_record) return false;
     }
     return true;
 }

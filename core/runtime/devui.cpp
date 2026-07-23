@@ -378,6 +378,10 @@ void openpete_devui_render(struct rhi_device *dev)
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return;
 
+    /* First open: adopt late-settling boot values (render-fps pacer). */
+    static bool s_late_stamped = false;
+    if (!s_late_stamped) { knob_registry_late_stamp(); s_late_stamped = true; }
+
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();

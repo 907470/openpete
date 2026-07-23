@@ -18,6 +18,7 @@
 #include "openpete_freecam.h"
 #include "openpete_rewind.h"
 #include "features/no_lod.h"
+#include "features/widescreen.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -94,6 +95,11 @@ static double fog_get(const knob_desc_t *k) { (void)k; return openpete_fog_enabl
 static int fog_set(knob_desc_t *k, double v) { (void)k; openpete_fog_set(v != 0.0); return 0; }
 
 static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale; }
+static int fogscale_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_fog_scale_set((float)v);
+    return 0;
+}
 
 static const char *const k_renderer_names[] = { "psycross", "vk", "ab", "diff" };
 static double renderer_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->renderer : 1.0; }
@@ -108,15 +114,22 @@ static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /* ---- Pacing ---- */
 
+static double renderfps_get(const knob_desc_t *k) { (void)k; return openpete_get_render_fps(); }
 static int renderfps_set(knob_desc_t *k, double v) {
+    (void)k;
     openpete_set_render_fps((int)v);
-    k->stored_num = (int)v;
     return 0;
 }
 
 static double tickscale_get(const knob_desc_t *k) { (void)k; return g_opts ? g_opts->tick_scale : 1.0; }
 static double runahead_get(const knob_desc_t *k)  { (void)k; return g_opts ? (double)g_opts->runahead : 0.0; }
-static double fov_get(const knob_desc_t *k)       { (void)k; return g_opts ? g_opts->fov_deg : 0.0; }
+
+static int fov_set(knob_desc_t *k, double v) {
+    if (v < 0.0) return -1;
+    widescreen_set_fov((float)v);
+    k->stored_num = v;
+    return 0;
+}
 
 static int rewind_set(knob_desc_t *k, double v) {
     if (v < 0) return -1;
@@ -127,7 +140,14 @@ static int rewind_set(knob_desc_t *k, double v) {
 
 /* ---- Audio ---- */
 
-static double mute_get(const knob_desc_t *k) { (void)k; return (g_opts && g_opts->mute) ? 1.0 : 0.0; }
+static double mute_get(const knob_desc_t *k) { (void)k; return openpete_get_mute() ? 1.0 : 0.0; }
+static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 0.0); return 0; }
+
+static int recfps_set(knob_desc_t *k, double v) {
+    openpete_native_set_fps_in_record(v != 0.0);
+    k->stored_num = (v != 0.0);
+    return 0;
+}
 
 /* ---- Paths (boot-resolved; display the same precedence the consumer used) */
 
@@ -282,10 +302,10 @@ static knob_desc_t g_knobs[] = {
 
     { "fog_scale", "Fog scale", "Display", "--fog-scale", NULL,
       "Fog-distance multiplier (1 = authentic curve, 100 = effectively off). "
-      "Live-read by the terrain every walk; editing here needs a setter that "
-      "also updates the LOD/fog autopilot bookkeeping - restart-only for now.",
-      KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.25f, 128.0f,
-      fogscale_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "Terrain re-resolves it every walk; a manual value takes fog off the "
+      "LOD autopilot.",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.25f, 128.0f,
+      fogscale_get, fogscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "renderer", "Renderer", "Display", "--renderer", NULL,
       "Display mode: native Vulkan (vk, default), legacy GL (psycross), "
@@ -301,11 +321,11 @@ static knob_desc_t g_knobs[] = {
 
     /* -------- Pacing -------- */
     { "render_fps", "Render FPS", "Pacing", "--render-fps", NULL,
-      "Target present rate. -1 = display refresh, 0 = legacy match-sim "
-      "pacer. Above ~30 arms sub-tick interpolation; vsync clamps to "
-      "refresh.",
-      KNOB_INT, KNOB_LIVE, NULL, 0, -1, 1000,
-      get_stored, renderfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "Target present rate (0 = legacy match-sim pacer). Above ~30 arms "
+      "sub-tick interpolation; vsync clamps to refresh. Shows the live "
+      "pacer target (an unset launch value resolves to display refresh).",
+      KNOB_INT, KNOB_LIVE, NULL, 0, 0, 1000,
+      renderfps_get, renderfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "tick_scale", "Tick scale", "Pacing", "--tick-scale", NULL,
       "Engine speed multiplier (slow-mo / speed-up; sim and presents "
@@ -326,17 +346,18 @@ static knob_desc_t g_knobs[] = {
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "fov", "FOV override", "Pacing", "--fov", NULL,
-      "Horizontal FOV in degrees (0 = game default). PsyCross reference "
-      "renderer only; applied once at boot today.",
-      KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0, 170,
-      fov_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "Horizontal FOV in degrees (0 = game default; native 4:3 is ~50.4). "
+      "The GTE re-reads the override per projection, so it applies "
+      "immediately - PsyCross reference renderer only (inert in vk).",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0, 170,
+      get_stored, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Audio -------- */
     { "mute", "Mute", "Audio", "--mute", NULL,
       "Mute all audio at the OpenAL layer (SPU SFX + XA music + WAV "
-      "override). Applied once at boot today.",
-      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      mute_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "override). Live; the F7 pause exit restores this baseline.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      mute_get, mute_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Paths -------- */
     { "disc", "Disc image", "Paths", "--disc", NULL,
@@ -382,6 +403,14 @@ static knob_desc_t g_knobs[] = {
       "Replay a BizHawk movie into the pad (loaded at loop start).",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "record_fps_overlay", "FPS overlay in recording", "Recording",
+      "--record-fps-overlay", "OPENPETE_FPS_IN_RECORD",
+      "Burn the FPS overlay into --record video output. Live: re-resolved "
+      "on the next recorded frame. Only meaningful while a recording is "
+      "active.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      get_stored, recfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
 #ifndef OPENPETE_HIDE_DEBUG_FLAGS
     /* -------- Debug (toggles / tunables) -------- */
@@ -759,6 +788,15 @@ void knob_registry_init(const struct openpete_options *opts) {
         } else if (!strcmp(k->id, "mute")) {
             k->stored_num = opts->mute ? 1 : 0;
             if (opts->mute) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "record_fps_overlay")) {
+            if (opts->record_fps_overlay >= 0) {
+                k->stored_num = opts->record_fps_overlay ? 1 : 0;
+                k->boot_src = KNOB_SRC_CLI;
+            } else {
+                const char *e = getenv("OPENPETE_FPS_IN_RECORD");
+                k->stored_num = (e && *e && *e != '0') ? 1 : 0;
+                if (e) k->boot_src = KNOB_SRC_ENV;
+            }
         } else if (!strcmp(k->id, "renderer")) {
             k->stored_num = opts->renderer;
             if (opts->renderer != OPENPETE_RENDERER_VK) k->boot_src = KNOB_SRC_CLI;
@@ -789,6 +827,20 @@ void knob_registry_init(const struct openpete_options *opts) {
             if (k->get_str) k->get_str(k, k->boot_str, sizeof k->boot_str);
         } else {
             k->boot_num = k->get_num ? k->get_num(k) : k->stored_num;
+        }
+    }
+}
+
+void knob_registry_late_stamp(void) {
+    size_t n;
+    knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (!strcmp(ks[i].id, "render_fps")) {
+            /* The pacer resolved the launch target (unset -> display refresh)
+             * after knob_registry_init ran; adopt it as the boot value so the
+             * row doesn't read as "edited" on first open. */
+            ks[i].boot_num   = ks[i].get_num(&ks[i]);
+            ks[i].stored_num = ks[i].boot_num;
         }
     }
 }

@@ -57,6 +57,10 @@ int openpete_fog_enabled(void);
  * as user-set, so later LOD toggles leave the fog scale alone. */
 void openpete_fog_set(int on);
 
+/* Set the fog-distance multiplier directly (clamped to [0.25, off-sentinel]).
+ * Marks fog as manually touched, so LOD switches stop moving it. */
+void openpete_fog_scale_set(float scale);
+
 #ifdef __cplusplus
 }
 #endif

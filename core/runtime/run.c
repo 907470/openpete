@@ -773,6 +773,24 @@ void openpete_set_render_fps(int fps) {
     s_render_fps_dirty = 1;   /* the host loop recomputes the period + re-anchors */
 }
 
+/* Live engine-level mute (dev overlay). Same three gain clamps the boot
+ * apply uses; s_mute replaces opts->mute as the baseline the F7 pause
+ * exit restores, so a live toggle survives a pause/resume cycle. Host
+ * audio only — never gameplay state. (Toggling OFF while paused unmutes
+ * the pause silence until resume; harmless dev-tool edge.) */
+static int s_mute = 0;
+
+void openpete_set_mute(int on) {
+    extern int  PsyX_SPUAL_SetMute(int on_off);
+    extern void PsyX_XA_ForceGain(float linear_gain);
+    s_mute = on ? 1 : 0;
+    PsyX_SPUAL_SetMute(s_mute);
+    PsyX_XA_ForceGain(s_mute ? 0.0f : -1.0f);
+    music_override_set_forced_gain(s_mute ? 0.0f : -1.0f);
+}
+
+int openpete_get_mute(void) { return s_mute; }
+
 int openpete_get_render_fps(void) {
     return s_render_fps;
 }
@@ -1124,13 +1142,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
     /* Engine-level mute: clamp the SPU AL sources and the XA stream's AL
      * gain. Bypasses the game's volume sliders entirely. The music WAV
-     * override mirrors the XA forced gain so --mute covers it too. */
-    extern int  PsyX_SPUAL_SetMute(int on_off);
-    extern void PsyX_XA_ForceGain(float linear_gain);
-    PsyX_SPUAL_SetMute(opts->mute ? 1 : 0);
-    PsyX_XA_ForceGain(opts->mute ? 0.0f : -1.0f);
+     * override mirrors the XA forced gain so --mute covers it too.
+     * Routed through the live setter (dev overlay toggles it too). */
     music_override_init();  /* logs the assets/music/ search path */
-    music_override_set_forced_gain(opts->mute ? 0.0f : -1.0f);
+    openpete_set_mute(opts->mute ? 1 : 0);
 
     /* Host-backed memory card: apply CLI/env config before the game's
      * MemCardInit thunk fires (during the game's Initialize()). */
@@ -2066,9 +2081,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             bool step_k  = kbd_pre && kbd_pre[SDL_SCANCODE_F8];
             if (pause_k && !prev_pause_key) {
                 g_paused = !g_paused;
-                /* Enter: mute. Exit: restore the user's --mute baseline
-                 * (false by default = audio on; --mute 1 keeps it silent). */
-                PsyX_SPUAL_SetMute(g_paused ? 1 : (opts->mute ? 1 : 0));
+                /* Enter: mute. Exit: restore the live mute baseline (boot
+                 * --mute, possibly toggled since via the dev overlay). */
+                {
+                    extern int PsyX_SPUAL_SetMute(int on_off);
+                    PsyX_SPUAL_SetMute(g_paused ? 1 : openpete_get_mute());
+                }
                 OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
                            g_paused ? "paused" : "resumed", openpete_frame);
             }

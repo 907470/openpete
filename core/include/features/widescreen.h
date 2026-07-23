@@ -25,6 +25,10 @@ extern "C" {
  * FOV policy is Phase-7 work). */
 void widescreen_apply_fov(const openpete_options_t* opts);
 
+/* Live FOV override in degrees (0 = clear back to the game default). The GTE
+ * consumer re-reads the override per RTPS. PsyCross reference mode only. */
+void widescreen_set_fov(float fov_deg);
+
 #ifdef __cplusplus
 }
 #endif

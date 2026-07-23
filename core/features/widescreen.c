@@ -36,20 +36,28 @@ int64_t openpete_canonical_sx0_q16 = 0;
 int64_t openpete_canonical_sx1_q16 = 0;
 int64_t openpete_canonical_sx2_q16 = 0;
 
-void widescreen_apply_fov(const openpete_options_t* opts) {
-    /* --fov: override the GTE H register to the user's explicit
-     * horizontal FOV at the PSX 320-wide visible plane. Spyro's native
-     * horizontal FOV at 4:3 is 2*atan(160/341) ≈ 50.4° (PSX visible
-     * half-width 160 / GTE H 341). Consumed by widescreen_eff_h in
-     * gte_rtps_internal. 0 = no-override sentinel. */
-    if (opts->fov_deg > 0.0f) {
-        double half = (double)opts->fov_deg * 0.5 * (M_PI / 180.0);
+void widescreen_set_fov(float fov_deg) {
+    /* Override the GTE H register to an explicit horizontal FOV at the PSX
+     * 320-wide visible plane. Spyro's native horizontal FOV at 4:3 is
+     * 2*atan(160/341) ≈ 50.4° (PSX visible half-width 160 / GTE H 341).
+     * Consumed by widescreen_eff_h in gte_rtps_internal, which re-reads the
+     * override on every RTPS — so this is live, no latch. 0 clears. */
+    if (fov_deg > 0.0f) {
+        double half = (double)fov_deg * 0.5 * (M_PI / 180.0);
         double h = 160.0 / tan(half);
         if (h < 1.0) h = 1.0;
         if (h > 65535.0) h = 65535.0;
         openpete_fov_h_override = (int)(h + 0.5);
-        OPL_INFO_F("fov", "override active: --fov=%.2f° -> GTE H=%d "
+        OPL_INFO_F("fov", "override active: fov=%.2f° -> GTE H=%d "
                    "(native h_fov ~50.4° at H=341)",
-                   (double)opts->fov_deg, openpete_fov_h_override);
+                   (double)fov_deg, openpete_fov_h_override);
+    } else if (openpete_fov_h_override) {
+        openpete_fov_h_override = 0;
+        OPL_INFO_F("fov", "%s", "override cleared (game default)");
     }
+}
+
+void widescreen_apply_fov(const openpete_options_t* opts) {
+    if (opts->fov_deg > 0.0f)
+        widescreen_set_fov(opts->fov_deg);
 }

@@ -101,6 +101,11 @@ void knob_registry_init(const struct openpete_options *opts);
 /* Convenience for the UI: current value of any row as a display string. */
 void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
+/* Re-stamp boot values that only settle after init (the render-fps pacer
+ * resolves its launch target at host-loop start, after the registry seeds).
+ * The overlay calls this once, on its first open. */
+void knob_registry_late_stamp(void);
+
 #ifdef __cplusplus
 }
 #endif
