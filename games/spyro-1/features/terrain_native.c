@@ -309,6 +309,22 @@ static secrec s_sd[1024]; static int s_sd_n;
 static int s_sectordump = -1;
 static int s_sd_active = 0;
 static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
+
+/* Per-VBL env resolve for the policy toggles: the dev overlay's setenv is
+ * their live channel, but the walks read them per face/sector — too hot for
+ * getenv. Each site keeps a parse cache and re-resolves once per VBL. */
+typedef struct { int v; unsigned f; int have; } tn_envvbl_t;
+static int tn_env_vbl(tn_envvbl_t* c, const char* name, int def, int boolean) {
+    extern unsigned openpete_frame;
+    if (!c->have || c->f != openpete_frame) {
+        const char* e = getenv(name);
+        c->v = (e && *e) ? (boolean ? (*e != '0') : atoi(e)) : def;
+        c->f = openpete_frame;
+        c->have = 1;
+    }
+    return c->v;
+}
+
 static void terrain_dbg_init(void) {
     /* NCLIP back-face cull, default ON for the HP tier (bit0). A Z-buffer
      * hides *occluded* back-faces but not back-faces that sit NEARER than the
@@ -324,8 +340,9 @@ static void terrain_dbg_init(void) {
      * regress at default cameras; needs the LP walk's own two-NCLIP rule read
      * from the .s before enabling), bit2 = invert LP sign (probe). "0"
      * disables everything. */
-    if (s_cull < 0) { const char* e = getenv("OPENPETE_TERRAIN_CULL"); s_cull = (e && *e) ? atoi(e) : 1; }
-    if (s_flat < 0) { const char* e = getenv("OPENPETE_TERRAIN_FLAT"); s_flat = (e && *e && *e != '0'); }
+    static tn_envvbl_t cc, fc;
+    s_cull = tn_env_vbl(&cc, "OPENPETE_TERRAIN_CULL", 1, 0);
+    s_flat = tn_env_vbl(&fc, "OPENPETE_TERRAIN_FLAT", 0, 1);
 }
 
 /* Captured prim corner colours = the .s DPCS-fogged output, used as the ORACLE
@@ -2294,14 +2311,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * is the one place a tier swap is invisible by construction). The W2.3
      * "recovered only ~0.9/4.0" verdict predates exact verts + the ladder.
      * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere (A/B). */
-    if (s_lod_handoff < 0) {
-        const char* e = getenv("OPENPETE_TERRAIN_LOD_HANDOFF");
+    {
+        static tn_envvbl_t hc, gc;
         /* Rides the --fog-scale curve via s_fogscale (the per-face beyond
          * test below uses it), so under a stretched curve the handoff fires
          * only at the stretched saturation distance. */
-        s_lod_handoff = (e && *e) ? (*e != '0') : 1;
-        e = getenv("OPENPETE_TERRAIN_GAPFILL");   /* =0 disables the near-LP-gap fill (A/B) */
-        s_gapfill_en = (e && *e) ? (*e != '0') : 1;
+        s_lod_handoff = tn_env_vbl(&hc, "OPENPETE_TERRAIN_LOD_HANDOFF", 1, 1);
+        /* =0 disables the near-LP-gap fill (A/B) */
+        s_gapfill_en  = tn_env_vbl(&gc, "OPENPETE_TERRAIN_GAPFILL", 1, 1);
     }
     /* Effective handoff for THIS walk. Under --no-lod the near/far LOD handoff
      * must NOT run: it keys off the RAW-RAM lodDist (no-lod saturates only the
@@ -2448,8 +2465,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * is a separate pass, untouched (and the native feed is inert headless,
          * so the oracle/determinism gates are unaffected). Bit-identical off vs
          * on, verified at 4:3 and 21:9. OPENPETE_TERRAIN_OCCL=0 disables (A/B). */
-        static int s_tocc = -1;
-        if (s_tocc < 0) { const char* e = getenv("OPENPETE_TERRAIN_OCCL"); s_tocc = (e && *e) ? (*e != '0') : 1; }
+        static tn_envvbl_t tocc_c;
+        int s_tocc = tn_env_vbl(&tocc_c, "OPENPETE_TERRAIN_OCCL", 1, 1);
         if (s_tocc) {
             double oc1, oc2, oc3;
             ngte_mac(M, camy - SC->centreY, camz - SC->centreZ,
@@ -2557,8 +2574,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * confined to sub-pixel seam slivers, so no visible pop-in. NB: reads
          * the RAW RAM lodDist — --no-lod's INT32_MAX saturation substitutes at
          * the .s READ sites only, so this stays the real LOD band marker. */
-        static int s_holefill = -1;   /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
-        if (s_holefill < 0) { const char* e = getenv("OPENPETE_TERRAIN_HOLEFILL"); s_holefill = (e && *e) ? (*e != '0') : 1; }
+        /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
+        static tn_envvbl_t hole_c;
+        int s_holefill = tn_env_vbl(&hole_c, "OPENPETE_TERRAIN_HOLEFILL", 1, 1);
         /* The fill runs for EVERY far-band sector with LP — including sectors
          * whose LP already draws in WORLD (LP-only 0x4000 / force-LP). For
          * those the fill is a screen-DILATED duplicate (see the feed): the PSX
@@ -3490,9 +3508,12 @@ static int portal_conform_vz(const ttri* t, float ovz[3]) {
 }
 
 static void terrain_feed_native(CPUState* cpu) {
-    if (s_notex < 0) { const char* e = getenv("OPENPETE_TERRAIN_NOTEX"); s_notex = (e && *e && *e != '0'); }
-    if (s_tiercolor < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIERCOLOR"); s_tiercolor = (e && *e && *e != '0'); }
-    if (s_tieronly == -2) { const char* e = getenv("OPENPETE_TERRAIN_TIERONLY"); s_tieronly = e ? atoi(e) : 0; }
+    {
+        static tn_envvbl_t nt_c, tc_c, to_c;
+        s_notex     = tn_env_vbl(&nt_c, "OPENPETE_TERRAIN_NOTEX", 0, 1);
+        s_tiercolor = tn_env_vbl(&tc_c, "OPENPETE_TERRAIN_TIERCOLOR", 0, 1);
+        s_tieronly  = tn_env_vbl(&to_c, "OPENPETE_TERRAIN_TIERONLY", 0, 0);
+    }
     if (s_pconform < 0) { const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM"); s_pconform = (e && *e) ? (*e != '0') : 1; }
     if (s_pconform_dbg < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM_DBG");
@@ -4042,8 +4063,9 @@ void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
      * them paints the old level's geometry over the cyclorama. The canon-drawn
      * mask is clear for RP_TERRAIN on those frames, so we skip. */
     if (!render_path_canon_drawn(RP_TERRAIN)) return;
-    static int s_vanim_en = -1;   /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B) */
-    if (s_vanim_en < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIM"); s_vanim_en = (e && *e) ? (*e != '0') : 1; }
+    /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B) */
+    static tn_envvbl_t vanim_c;
+    int s_vanim_en = tn_env_vbl(&vanim_c, "OPENPETE_TERRAIN_VANIM", 1, 1);
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);

@@ -2445,8 +2445,16 @@ static int moby_shadow_decal_enabled(void)
  * cull pass (and every gameplay-readable byte it writes) is untouched. */
 static int occl_cull_enabled(void)
 {
+    /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
+     * and this is called per moby per present — too hot for getenv. */
+    extern unsigned openpete_frame;
     static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_OCCLUSION"); on = !(e && *e == '0'); }
+    static unsigned resolved_f = ~0u;
+    if (on < 0 || resolved_f != openpete_frame) {
+        const char* e = getenv("OPENPETE_MOBY_OCCLUSION");
+        on = !(e && *e == '0');
+        resolved_f = openpete_frame;
+    }
     return on;
 }
 /* Culling usable this run (enabled + the optional grid resources came up). */
@@ -5876,8 +5884,16 @@ static uint64_t s_pt_last_report = 0;
  * from openpete_phase_timers_on() so a --profile-out-only run measures the
  * phases (and forwards them to the trace) without spamming stderr. */
 static int pt_report_on(void) {
+    /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
+     * and this runs at every phase-scope site per present. */
+    extern unsigned openpete_frame;
     static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_PHASE_TIMERS"); on = (e && *e && *e != '0'); }
+    static unsigned resolved_f = ~0u;
+    if (on < 0 || resolved_f != openpete_frame) {
+        const char* e = getenv("OPENPETE_PHASE_TIMERS");
+        on = (e && *e && *e != '0');
+        resolved_f = openpete_frame;
+    }
     return on;
 }
 int openpete_phase_timers_on(void) {
