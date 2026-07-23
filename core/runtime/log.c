@@ -22,6 +22,7 @@ typedef struct level_rule {
 static openpete_log_format_t g_fmt = OPENPETE_LOG_PLAIN;
 static level_rule_t* g_rules = NULL;
 static openpete_log_level_t g_default = OPL_INFO;
+static char g_spec[128];   /* last applied level spec, for display */
 
 #if defined(_WIN32)
 # include <sys/time.h>
@@ -147,7 +148,26 @@ void openpete_log_init(openpete_log_format_t fmt, const char* level_spec) {
     const char* env = getenv("OPENPETE_LOG");
     if (env) parse_spec(env);
     if (level_spec) parse_spec(level_spec);
+    {
+        const char* eff = level_spec ? level_spec : env;
+        snprintf(g_spec, sizeof g_spec, "%s", eff ? eff : "");
+    }
 }
+
+/* Live re-configuration (dev overlay). set_spec REPLACES every level rule
+ * with the given spec (empty/NULL = back to plain *:info) — it does not
+ * layer on top of the boot env/CLI rules the way init does. */
+void openpete_log_set_format(openpete_log_format_t fmt) { g_fmt = fmt; }
+openpete_log_format_t openpete_log_get_format(void) { return g_fmt; }
+
+void openpete_log_set_spec(const char* spec) {
+    clear_rules();
+    g_default = OPL_INFO;
+    parse_spec(spec);
+    snprintf(g_spec, sizeof g_spec, "%s", spec ? spec : "");
+}
+
+const char* openpete_log_get_spec(void) { return g_spec; }
 
 /* Emit a JSON string literal, escaping control chars + " + \. */
 static void emit_json_string(FILE* f, const char* s) {

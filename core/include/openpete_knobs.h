@@ -106,6 +106,17 @@ void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
  * The overlay calls this once, on its first open. */
 void knob_registry_late_stamp(void);
 
+/* Late-bind a live string channel onto an existing row. Some knobs' setters
+ * live in game feature modules the core library cannot link against; the
+ * module attaches them here (apply-options time) and the row flips to
+ * KNOB_LIVE. Either pointer may be NULL to keep the row's own. Returns 0 if
+ * the id was found (it won't be when the row is compiled out, e.g. Debug
+ * rows under OPENPETE_HIDE_DEBUG_FLAGS — callers just ignore that). */
+int openpete_knob_bind_str(const char *id,
+                           void (*get_str)(const struct knob_desc *k,
+                                           char *buf, size_t cap),
+                           int (*set_str)(struct knob_desc *k, const char *v));
+
 #ifdef __cplusplus
 }
 #endif

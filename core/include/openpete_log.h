@@ -30,6 +30,14 @@ typedef enum {
 
 void openpete_log_init(openpete_log_format_t fmt, const char* level_spec);
 
+/* Live re-configuration. set_spec replaces ALL level rules with the given
+ * spec (NULL/empty = plain *:info); get_spec returns the last applied spec
+ * ("" when none). Format switches take effect on the next line. */
+void openpete_log_set_format(openpete_log_format_t fmt);
+openpete_log_format_t openpete_log_get_format(void);
+void openpete_log_set_spec(const char* spec);
+const char* openpete_log_get_spec(void);
+
 /* Log a message. `extra` is an optional NUL-terminated key=value sequence,
  * one pair per line, used for structured fields. May be NULL. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem,

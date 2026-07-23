@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +46,15 @@ typedef enum {
 /* Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
  * filtering off). Unknown names are warned and ignored. */
 void render_paths_init(const char* spec);
+
+/* Live re-selection (dev overlay): re-parse the CSV and re-sync the native
+ * renderer's isolation background. Safe mid-session — the selection only
+ * gates prim submission, never game RAM. */
+void render_paths_set(const char* spec);
+
+/* Current selection as a CSV ("(all)" when no selection is active,
+ * "(none)" when a selection matched nothing). */
+void render_paths_current(char* buf, size_t cap);
 
 /* Is a selection in effect? false = render everything (the default; callers can
  * fast-path out). */

@@ -180,9 +180,25 @@ static double renderstats_get(const knob_desc_t *k) {
 
 static void loglevel_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
-    const char *v = (g_opts && g_opts->log_level_spec) ? g_opts->log_level_spec
-                                                       : getenv("OPENPETE_LOG");
+    const char *v = openpete_log_get_spec();
     snprintf(buf, cap, "%s", (v && *v) ? v : "(default: info)");
+}
+
+static int loglevel_set_str(knob_desc_t *k, const char *v) {
+    (void)k;
+    if (v && *v == '(') v = "";   /* "(default: info)" placeholder = clear */
+    openpete_log_set_spec(v);
+    return 0;
+}
+
+static const char *const k_logfmt_names[] = { "plain", "json" };
+static double logfmt_get(const knob_desc_t *k) {
+    (void)k; return (double)openpete_log_get_format();
+}
+static int logfmt_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_log_set_format((int)v == 1 ? OPENPETE_LOG_JSON : OPENPETE_LOG_PLAIN);
+    return 0;
 }
 
 /* ---- Debug env rows ----
@@ -416,7 +432,9 @@ static knob_desc_t g_knobs[] = {
     /* -------- Debug (toggles / tunables) -------- */
     { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
       "Render only the named paths in isolation (cyclorama,spyro,moby,"
-      "terrain,shadow,flame,particles,tracer,transition,portal).",
+      "terrain,shadow,flame,particles,tracer,transition,portal). Empty or "
+      "\"(all)\" clears the selection. Live once the game module binds its "
+      "setter.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
@@ -426,9 +444,16 @@ static knob_desc_t g_knobs[] = {
       renderstats_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",
-      "Per-subsystem stderr log levels, e.g. cd:debug,*:info.",
-      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, loglevel_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "Per-subsystem stderr log levels, e.g. cd:debug,*:info. Applying "
+      "REPLACES all boot rules with the typed spec (empty = *:info).",
+      KNOB_STRING, KNOB_LIVE, NULL, 0, 0, 0,
+      NULL, NULL, loglevel_get_str, loglevel_set_str, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "log_format", "Log format", "Debug", "--log-format", NULL,
+      "stderr log shape: plain text vs one JSON object per line. Takes "
+      "effect on the next line.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
+      logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
         "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
@@ -803,6 +828,9 @@ void knob_registry_init(const struct openpete_options *opts) {
         } else if (!strcmp(k->id, "skip_to_level")) {
             k->stored_num = opts->skip_to_level;
             if (opts->skip_to_level > 0) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "log_format")) {
+            k->stored_num = opts->log_format;
+            if (opts->log_format != OPENPETE_LOG_PLAIN) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "freecam")) {
             k->stored_num = 0;
             { const char *e = getenv("OPENPETE_FREECAM");
@@ -818,6 +846,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             else if (!strcmp(k->id, "card_dir"))    cli = opts->card_dir;
             else if (!strcmp(k->id, "record"))      cli = opts->record_path;
             else if (!strcmp(k->id, "bk2"))         cli = opts->bk2_path;
+            else if (!strcmp(k->id, "log_level"))   cli = opts->log_level_spec;
+            else if (!strcmp(k->id, "render_paths")) cli = opts->render_paths;
             if (cli)                          k->boot_src = KNOB_SRC_CLI;
             else if (k->env && getenv(k->env)) k->boot_src = KNOB_SRC_ENV;
         }
@@ -829,6 +859,21 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->boot_num = k->get_num ? k->get_num(k) : k->stored_num;
         }
     }
+}
+
+int openpete_knob_bind_str(const char *id,
+                           void (*get_str)(const knob_desc_t *k,
+                                           char *buf, size_t cap),
+                           int (*set_str)(knob_desc_t *k, const char *v)) {
+    size_t n;
+    knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(ks[i].id, id) != 0) continue;
+        if (get_str) ks[i].get_str = get_str;
+        if (set_str) { ks[i].set_str = set_str; ks[i].mut = KNOB_LIVE; }
+        return 0;
+    }
+    return -1;   /* row absent (compiled out) — nothing to bind */
 }
 
 void knob_registry_late_stamp(void) {

@@ -4,6 +4,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
+#include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
 #include "spyro_native_reextract.h"  /* canonical-render epoch commit */
 
@@ -50,6 +51,25 @@ void render_paths_init(const char* spec) {
 }
 
 bool render_paths_active(void) { return s_active; }
+
+void render_paths_set(const char* spec) {
+    render_paths_init(spec);
+    /* In isolation an empty native scene must show the background, not the
+     * unfiltered PSX VRAM framebuffer — same sync as boot. */
+    openpete_native_set_isolation(render_paths_active());
+}
+
+void render_paths_current(char* buf, size_t cap) {
+    if (!s_active) { snprintf(buf, cap, "(all)"); return; }
+    if (!s_mask)   { snprintf(buf, cap, "(none)"); return; }
+    size_t off = 0;
+    if (cap) buf[0] = '\0';
+    for (int i = 0; i < RP_COUNT; i++) {
+        if (!(s_mask & (1u << i))) continue;
+        off += (size_t)snprintf(buf + off, cap > off ? cap - off : 0,
+                                "%s%s", off ? "," : "", k_names[i]);
+    }
+}
 
 bool render_path_enabled(render_path_t p) {
     if (!s_active) return true;                 /* no selection = all on */
@@ -160,6 +180,19 @@ static const feature_dispatch_entry_t render_paths_dispatch[] = {
     { 0u, NULL },
 };
 
+/* Dev-overlay adapters: the registry row lives in core, which cannot link
+ * against this game module — bind the live channel at apply-options time. */
+static void rp_knob_get(const knob_desc_t* k, char* buf, size_t cap) {
+    (void)k;
+    render_paths_current(buf, cap);
+}
+static int rp_knob_set(knob_desc_t* k, const char* v) {
+    (void)k;
+    if (v && *v == '(') v = NULL;   /* "(all)" / "(none)" placeholder = clear */
+    render_paths_set(v);
+    return 0;
+}
+
 /* Feature module: parse --render-paths at startup + bracket the
  * presentation-only paths (above). cyclorama/spyro/moby bracket from their own
  * native modules. */
@@ -171,6 +204,9 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
     /* Drive the per-frame canon-mask latch + interval reset from the host present
      * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
     openpete_native_register_commit(render_paths_commit);
+    /* Attach the live channel to the dev overlay's row (absent in dist
+     * builds — ignore the miss). */
+    (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);
 }
 
 const feature_module_t render_paths_module = {
