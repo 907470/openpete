@@ -72,7 +72,10 @@ void spyro1_mod_wad_configure(const char* disc_path) {
 }
 
 /* cue -> first BINARY file, resolved relative to the cue's directory.
- * A .bin/.img/.iso path is used as-is. */
+ * A .bin/.img/.iso path is used as-is. When the cue's FILE entry names a
+ * bin that isn't on disk (renamed bin, stale cue), fall back to the
+ * sibling same-basename .bin — the same tolerance the runtime's own
+ * disc loader applies, so a disc that boots also serves WAD reads. */
 static int resolve_bin(char* out, size_t cap) {
     const char* dot = strrchr(s_disc_path, '.');
     if (dot && (strcasecmp(dot, ".cue") == 0)) {
@@ -88,14 +91,25 @@ static int resolve_bin(char* out, size_t cap) {
             break;
         }
         fclose(f);
-        if (!name[0]) return -1;
-        const char* slash = strrchr(s_disc_path, '/');
-        if (slash && name[0] != '/')
-            snprintf(out, cap, "%.*s%s", (int)(slash - s_disc_path + 1),
-                     s_disc_path, name);
-        else
-            snprintf(out, cap, "%s", name);
-        return 0;
+        if (name[0]) {
+            const char* slash = strrchr(s_disc_path, '/');
+            if (slash && name[0] != '/')
+                snprintf(out, cap, "%.*s%s", (int)(slash - s_disc_path + 1),
+                         s_disc_path, name);
+            else
+                snprintf(out, cap, "%s", name);
+            FILE* b = fopen(out, "rb");
+            if (b) { fclose(b); return 0; }
+        }
+        char sib[1200];
+        size_t n = strlen(s_disc_path);
+        if (n >= 4 && n + 1 <= sizeof sib) {
+            memcpy(sib, s_disc_path, n + 1);
+            memcpy(sib + n - 4, ".bin", 4);
+            FILE* b = fopen(sib, "rb");
+            if (b) { fclose(b); snprintf(out, cap, "%s", sib); return 0; }
+        }
+        return name[0] ? 0 : -1;   /* neither exists: report the cue-named path */
     }
     snprintf(out, cap, "%s", s_disc_path);
     return 0;
