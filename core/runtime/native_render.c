@@ -3182,6 +3182,96 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
     }
 }
 
+/* Deferred untextured material spans (S8c). The untextured buckets are one
+ * bulk gouraud draw each; a tri whose provenance tag resolves to a registered
+ * material (an untextured moby with a per-instance slot, or the terrain
+ * beyond-LOD gouraud band) is deferred during the bucket fill, appended
+ * AFTER the plain span grouped by resolve-relevant tag, and drawn with the
+ * mod pipeline (psx_scene stages, push-constant bpp 0 = untextured). Inert
+ * without an armed selector (tag_split_on). */
+#define UT_MAT_SPANS 96
+static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
+static int s_utmat_n;
+static int s_utdef_idx[MAX_SCENE_TRIS];
+
+/* Resolve-relevant tag bits: terrain resolve ignores the sector id, so mask
+ * it out — one span (and one memo entry) per material outcome, not per
+ * sector. Moby tags resolve on all bits. */
+static uint32_t ut_mask_tag(uint32_t tag) {
+    return (tag >> 28) == 2u ? (tag & 0xFFFF0000u) : tag;
+}
+
+static const scene_tri_t* s_utsort_scene;
+static int utdef_cmp(const void* a, const void* b) {
+    int x = *(const int*)a, y = *(const int*)b;
+    uint32_t tx = ut_mask_tag(s_utsort_scene[x].tag);
+    uint32_t ty = ut_mask_tag(s_utsort_scene[y].tag);
+    if (tx != ty) return tx < ty ? -1 : 1;
+    return x - y;                                   /* stable within a tag */
+}
+
+/* Per-flush memo of "does this (masked) tag resolve to a material". */
+static uint32_t s_utmemo_tag[32]; static int8_t s_utmemo_hit[32]; static int s_utmemo_n;
+static int ut_tag_resolves(uint32_t tag) {
+    uint32_t mt = ut_mask_tag(tag);
+    for (int i = 0; i < s_utmemo_n; i++)
+        if (s_utmemo_tag[i] == mt) return s_utmemo_hit[i];
+    openpete_mod_material_gpu_t mg;
+    int hit = openpete_mods_material_resolve(mt, &mg) >= 0;
+    if (s_utmemo_n < 32) { s_utmemo_tag[s_utmemo_n] = mt; s_utmemo_hit[s_utmemo_n++] = (int8_t)hit; }
+    return hit;
+}
+
+/* Draw one bucket's deferred untextured material spans (S8c). Builds the
+ * material's pipeline on first use — psx_scene stages as stock fallbacks
+ * (their vertex interface, vUV loc 0 / vColor loc 1, is the mod-material
+ * frag contract for textured AND untextured draws), with a stencil-MARK
+ * twin for the hole-fill WORLD/ACTOR groups so overridden coverage still
+ * masks the LP fill. A span that fails to resolve or build draws with the
+ * stock pipe — never invisible. */
+static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark) {
+    int bound = 0;
+    for (int si = 0; si < s_utmat_n; si++) {
+        if (s_utmat[si].gi != gi || s_utmat[si].count <= 0) continue;
+        if (!bound) { rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb); bound = 1; }
+        rhi_pipeline* pipe = NULL;
+        openpete_mod_material_gpu_t mg;
+        if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, &mg) >= 0) {
+            void** slot = want_mark ? mg.pipeline_mark_slot : mg.pipeline_slot;
+            if (*slot == NULL) {
+                rhi_pipeline_desc md = {
+                    .vert_spv = "psx_scene.vert.spv",
+                    .frag_spv = "psx_scene.frag.spv",
+                    .blend = RHI_BLEND_NONE,
+                    .depth_test = true,
+                    .stencil = want_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
+                    .mod_pipeline = true,
+                    .push_const_size = sizeof(psx_material),
+                };
+                rhi_pipeline* np = rhi_create_pipeline_spv(
+                    s_nr.dev, &md, mg.vert_spv, mg.vert_words,
+                    mg.frag_spv, mg.frag_words);
+                *slot = np ? (void*)np : PFX_PIPE_FAILED;
+                if (!np)
+                    fprintf(stderr, "[native] material: untextured pipeline "
+                                    "build FAILED for %s\n", mg.owner);
+            }
+            if (*slot != PFX_PIPE_FAILED) {
+                pipe = (rhi_pipeline*)*slot;
+                rhi_bind_pipeline(s_nr.dev, pipe);
+                rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
+                if (s_mat_ubo)
+                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
+                                 mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+                psx_material zm = { 0, 0, 0, 0, 0 };   /* bpp 0 = untextured */
+                rhi_push_constants(s_nr.dev, &zm, sizeof zm);
+            }
+        }
+        if (!pipe) rhi_bind_pipeline(s_nr.dev, stock);
+        rhi_draw(s_nr.dev, (uint32_t)s_utmat[si].count, (uint32_t)s_utmat[si].first);
+    }
+}
+
 /* Deferred HD sub-runs (opaque depth-tested groups). Emitting each matched
  * sub-run inline costs two pipeline binds + two texture binds (draw, then
  * restore self/vram) PER SUB-RUN — a full pack under --lod extended produces
@@ -3452,6 +3542,15 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         tp_fog_xform fx;
                         tp_fog_affine(m.clut_x, cly, st->fog_delta, m.bpp, &fx);
                         for (int c = 0; c < 3; c++) { pc.a[c] = fx.a[c]; pc.b[c] = fx.b[c]; }
+                        /* Pack fog shift: retarget the ladder's offset at the
+                         * pack's own ambience (b' = s*b + (1-a)*o) so a
+                         * re-graded pack fogs toward colours it actually
+                         * contains (see texture_pack_fog_shift_set). */
+                        float fs[3], fo[3];
+                        if (texture_pack_fog_shift_get(fs, fo))
+                            for (int c = 0; c < 3; c++)   /* o is 0..255; b is 0..1 */
+                                pc.b[c] = fs[c] * pc.b[c] +
+                                          (1.0f - pc.a[c]) * (fo[c] / 255.0f);
                     }
                     if (hd_defer_ok) {
                         hd_defer_push(tex, &pc, (uint32_t)(g * 3),
@@ -3785,9 +3884,15 @@ static bool draw_native_scene(bool full_extent)
      * dragon-rescue front pass. Accumulated across the ut[14]/txg[9] builds. */
     float af_x0 = 1e30f, af_y0 = 1e30f, af_x1 = -1e30f, af_y1 = -1e30f;
     int   af_n = 0;
+    s_utmat_n = 0; s_utmemo_n = 0;
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
+        /* Untextured material deferral (S8c): opaque WORLD/ACTOR buckets only
+         * (mirrors the textured override's plain-opaque scoping). */
+        const int defer_ok = tag_split_on() && gb == 0 &&
+                             (gc == OPENPETE_SCENE_WORLD || gc == OPENPETE_SCENE_ACTOR);
+        int dn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
             if (scene[t].category == OPENPETE_SCENE_HUD ||
@@ -3819,6 +3924,10 @@ static bool draw_native_scene(bool full_extent)
                               t, scene[t].v[0].sx, scene[t].v[0].sy,
                               scene[t].v[0].z, scene[t].v[1].z, scene[t].v[2].z);
               } }
+            if (defer_ok && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
+                s_utdef_idx[dn++] = t;             /* appended after the plain span */
+                continue;
+            }
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -3830,7 +3939,46 @@ static bool draw_native_scene(bool full_extent)
             }
             n += 3;
         }
-        ut_count[gi] = n - ut_first[gi];
+        ut_count[gi] = n - ut_first[gi];           /* the PLAIN (stock-drawn) span */
+        if (dn) {
+            /* Deferred tris: group by resolve-relevant tag into contiguous
+             * spans after the plain span. A span-table overflow records tag 0
+             * (drawn with the stock pipe — never invisible). */
+            s_utsort_scene = scene;
+            qsort(s_utdef_idx, (size_t)dn, sizeof(int), utdef_cmp);
+            uint32_t cur = 0; int span_first = 0, open = 0;
+            for (int d = 0; d < dn; d++) {
+                int t = s_utdef_idx[d];
+                if (n + 3 > SCENE_VB_VERTS) break;
+                uint32_t mt = ut_mask_tag(scene[t].tag);
+                if (!open || mt != cur) {
+                    if (open) {
+                        if (s_utmat_n < UT_MAT_SPANS)
+                            s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+                                { gi, cur, span_first, n - span_first };
+                        else if (s_utmat_n)
+                            s_utmat[UT_MAT_SPANS - 1].tag = 0;   /* overflow → stock */
+                    }
+                    cur = mt; span_first = n; open = 1;
+                }
+                for (int k = 0; k < 3; k++) {
+                    float cx, cy;
+                    scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                    rhi_vertex *o = &buf[n + k];
+                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+                    o->u = 0.0f; o->v = 0.0f;
+                    o->rgba = scene[t].v[k].rgba; o->tex = 0;
+                }
+                n += 3;
+            }
+            if (open) {
+                if (s_utmat_n < UT_MAT_SPANS)
+                    s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+                        { gi, cur, span_first, n - span_first };
+                else if (s_utmat_n)
+                    s_utmat[UT_MAT_SPANS - 1].tag = 0;
+            }
+        }
     }
     /* HUD untextured: every HUD-category untextured tri (any blend). The pipe is
      * depth-test OFF by design (the layer must paint over the world uncondition-
@@ -4417,6 +4565,8 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
+        if (s_utmat_n && gi != 1 && g->utex)
+            draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2));
         if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
             /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
              * shared WORLD-opaque depth pre-pass is available this present — the

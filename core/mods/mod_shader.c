@@ -227,6 +227,9 @@ static void interface_hash(char out_hex[65]) {
     snprintf(p, sizeof p, "%s/shaders/openpete_shader_api.glsl",
              openpete_mods_sdk_dir());
     (void)key_update_file(&hc, p);   /* absent = stable no-op */
+    snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
+             openpete_mods_sdk_dir());
+    (void)key_update_file(&hc, p);   /* material-tier contract */
     uint8_t digest[32];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, out_hex);
@@ -253,6 +256,9 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
     {
         char p[MOD_SHADER_PATH_MAX * 2];
         snprintf(p, sizeof p, "%s/shaders/openpete_shader_api.glsl",
+                 openpete_mods_sdk_dir());
+        (void)key_update_file(&hc, p);
+        snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
                  openpete_mods_sdk_dir());
         (void)key_update_file(&hc, p);
     }
@@ -908,6 +914,7 @@ typedef struct {
     openpete_mod_material_fn per_instance;   /* NULL = declarative (S8a) */
     int  load_index;
     void* pipeline;        /* executor-cached rhi_pipeline* */
+    void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
     int  live;
 } mod_material_t;
 
@@ -1005,7 +1012,8 @@ static int material_moby_winner(int cls) {
         if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
         if (m->sel.path != -1 && m->sel.path != 0 /*OP_RP_MOBY*/) continue;
         if (m->sel.moby_class != -1 && m->sel.moby_class != cls) continue;
-        if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER))
+        if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
+                            OP_SEL_UNTEXTURED))
             continue;   /* terrain-only refinements never match a moby */
         if (best < 0 || m->load_index > s_mats[best].load_index)
             best = i;
@@ -1048,6 +1056,47 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
     return s;
 }
 
+/* Winner among per-instance TERRAIN selectors carrying OP_SEL_UNTEXTURED —
+ * the untextured (beyond-LOD gouraud) band resolve. */
+static int material_terrain_untex_winner(void) {
+    int best = -1;
+    for (int i = 0; i < s_mat_count; i++) {
+        mod_material_t* m = &s_mats[i];
+        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (!m->per_instance) continue;
+        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (!(m->sel.flags & OP_SEL_UNTEXTURED)) continue;
+        if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
+    }
+    return best;
+}
+
+/* Resolve the untextured-terrain material once per extraction (terrain has
+ * no instances — the whole band shares one outcome). The callback receives
+ * moby_vaddr 0. Returns the interned slot for OPENPETE_TAG_TERRAIN_UNTEX
+ * (0 = no per-instance winner -> declarative resolve;
+ * OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
+int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
+    if (!s_mat_has_instance) return 0;
+    int w = material_terrain_untex_winner();
+    if (w < 0) return 0;
+    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    int rc = s_mats[w].per_instance(cpu, 0u, buf, sizeof buf);
+    if (rc < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
+    if (rc > (int)sizeof buf) rc = (int)sizeof buf;
+    for (int s = 1; s < s_mat_slot_n; s++)
+        if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
+            memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
+            return s;
+    if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
+        return OPENPETE_MATERIAL_TERRAIN_STOCK;   /* table full → graceful stock */
+    int s = s_mat_slot_n++;
+    s_mat_slots[s].mat = w;
+    s_mat_slots[s].len = (uint32_t)rc;
+    memcpy(s_mat_slots[s].bytes, buf, (size_t)rc);
+    return s;
+}
+
 /* Fill `out` from selector index `best` + per-instance uniform slot. */
 static int material_fill_gpu(int best, int uniform_slot,
                              openpete_mod_material_gpu_t* out) {
@@ -1059,6 +1108,7 @@ static int material_fill_gpu(int best, int uniform_slot,
     if (m->vert < 0) out->vert_words = 0;
     if (m->frag < 0) out->frag_words = 0;
     out->pipeline_slot = &m->pipeline;
+    out->pipeline_mark_slot = &m->pipeline_mark;
     out->owner = m->owner;
     out->uniform_slot = uniform_slot;
     return best;
@@ -1083,6 +1133,17 @@ int openpete_mods_material_resolve(uint32_t tag,
         /* slot 0 → fall through to declarative class resolve */
     }
 
+    int untex = (path == 1) && (tag & 0x02000000u);
+    if (untex) {   /* terrain untextured band: per-extraction slot (S8c) */
+        int slot = (int)((tag >> 16) & 0x1FFu);
+        if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1;   /* declined */
+        if (slot != 0) {
+            if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
+        }
+        /* slot 0 → fall through to declarative resolve */
+    }
+
     int cls  = (path == 0) ? (int)(tag & 0xFFFFu) : -1;
     int env  = (path == 1) && (tag & 0x08000000u);
     int lp   = (path == 1) && (tag & 0x04000000u);
@@ -1097,6 +1158,9 @@ int openpete_mods_material_resolve(uint32_t tag,
         if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
         if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
         if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
+        /* Untextured refinement is two-way: flagged selectors never match
+         * textured runs, unflagged ones never match the untextured band. */
+        if (((m->sel.flags & OP_SEL_UNTEXTURED) != 0) != (untex != 0)) continue;
         if (best < 0 ||
             m->load_index > s_mats[best].load_index)  /* later = higher prio */
             best = i;
@@ -1112,7 +1176,12 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
             s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        if (s_mats[i].pipeline_mark &&
+            s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
         s_mats[i].pipeline = NULL;
+        s_mats[i].pipeline_mark = NULL;
         s_mats[i].live = 0;
     }
     material_rearm_split();
@@ -1125,6 +1194,11 @@ void openpete_mods_material_retire_all(void) {
             s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        if (s_mats[i].pipeline_mark &&
+            s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
+            s_retired_n < MOD_POSTFX_MAX)
+            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
         s_mats[i].pipeline = NULL;
+        s_mats[i].pipeline_mark = NULL;
     }
 }

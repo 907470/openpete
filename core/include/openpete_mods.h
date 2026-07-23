@@ -440,6 +440,7 @@ typedef struct {
     const uint32_t* vert_spv; size_t vert_words;
     const uint32_t* frag_spv; size_t frag_words;
     void** pipeline_slot;
+    void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
     const char* owner;
     int   uniform_slot;
 } openpete_mod_material_gpu_t;
@@ -460,8 +461,16 @@ int  openpete_mods_material_has_instance(void);
  * winner), OPENPETE_MATERIAL_SLOT_STOCK = the callback declined (force
  * stock), else an interned per-instance slot (1..). */
 #define OPENPETE_MATERIAL_SLOT_STOCK 0xFFF
+/* Terrain-untextured twin of SLOT_STOCK: the terrain tag's slot field is
+ * 9 bits ([24:16]), so its "declined -> stock" sentinel is 0x1FF. */
+#define OPENPETE_MATERIAL_TERRAIN_STOCK 0x1FF
 int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                       uint32_t moby_vaddr);
+/* Untextured-terrain twin (S8c): resolve the beyond-LOD gouraud band's
+ * per-instance material once per extraction (callback gets moby_vaddr 0).
+ * Returns the slot for OPENPETE_TAG_TERRAIN_UNTEX (0 = declarative,
+ * OPENPETE_MATERIAL_TERRAIN_STOCK = declined). */
+int  openpete_mods_material_terrain_untex_slot(CPUState* cpu);
 /* Per-present interned-slot table lifecycle + readout for the material
  * UBO (native_render): reset at scene-begin, then the extractor interns
  * during the walk, then native_render writes each slot's bytes into the

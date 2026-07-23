@@ -449,6 +449,7 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/core/include/openpete_shader_api.glsl
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_material.glsl
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.vert
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.frag
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/quad.vert

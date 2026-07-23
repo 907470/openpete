@@ -32,6 +32,7 @@
 // before openpete_mods_init() loads them from the warmed cache.
 
 #include "openpete_mods.h"
+#include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "../host/sha256.h"     /* content-hash build cache key */
@@ -841,6 +842,15 @@ static int api_read_level_data(openpete_mod_t* self, int level_id,
     return openpete_mods_read_level_data(level_id, buf, cap);
 }
 
+static int api_texpack_fog_shift(openpete_mod_t* self,
+                                 const float scale_rgb[3],
+                                 const float offset_rgb[3]) {
+    if (!self) return -1;
+    if (purity_violation("texpack_fog_shift")) return -1;
+    texture_pack_fog_shift_set(scale_rgb, offset_rgb);
+    return 0;
+}
+
 /* Declared-binding resolve: name → this mod's [[binding]] key →
  * host_key_down. Same tick-context caveats as host_key_down itself. */
 static int api_binding_down(openpete_mod_t* self, const char* name) {
@@ -1016,6 +1026,7 @@ static const openpete_mod_api_t s_api = {
     .draw_mesh           = openpete_mods_draw_mesh,
     .material_register   = openpete_mods_material_register,
     .read_level_data     = api_read_level_data,
+    .texpack_fog_shift   = api_texpack_fog_shift,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

@@ -215,6 +215,11 @@ enum {
     OP_SEL_ENV_ANIM = 1u << 0,  /* env-animated tile set (water/lava/portals) */
     OP_SEL_HP_TIER  = 1u << 1,  /* high-poly terrain tier only */
     OP_SEL_LP_TIER  = 1u << 2,  /* low-poly terrain tier only */
+    OP_SEL_UNTEXTURED = 1u << 3, /* terrain: the untextured (beyond-LOD
+                                  * gouraud) band only; a per-instance
+                                  * callback here receives moby_vaddr 0 —
+                                  * decline (-1) for stock, or return the
+                                  * band's uniform block */
 };
 
 /* Declarative subset selector: which of the engine's own draws a
@@ -711,6 +716,18 @@ typedef struct openpete_mod_api {
      * without shipping derived game data. Entry/tick context. */
     int (*read_level_data)(openpete_mod_t* self, int level_id,
                            void* buf, uint32_t cap);
+
+    /* ── Pack fog shift ───────────────────────────────────────────────
+     * A full-coverage texture pack that re-grades the scene (per-channel
+     * v' = scale*v + offset, 0..255 units) leaves the terrain fog ladder
+     * blending replaced texels toward the STOCK ambience. Registering the
+     * pack's own transform retargets every fog affine at the pack's
+     * ambience instead (offset corrected, slope untouched). scale NULL
+     * clears. One global slot (last caller wins) — set it on level entry,
+     * clear it on exit. Display-only. Entry/tick context. */
+    int (*texpack_fog_shift)(openpete_mod_t* self,
+                             const float scale_rgb[3],
+                             const float offset_rgb[3]);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

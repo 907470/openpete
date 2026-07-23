@@ -540,6 +540,12 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 #define OPENPETE_TAG_TERRAIN(lp, env, sec) \
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))
+/* Untextured terrain band (S8c): bit 25 marks the flat/gouraud tris, and
+ * [24:16] carries the per-extraction material slot (0 = declarative resolve,
+ * 0x1FF = the callback declined -> stock). */
+#define OPENPETE_TAG_TERRAIN_UNTEX(lp, env, sec, slot) \
+    (OPENPETE_TAG_TERRAIN(lp, env, sec) | 0x02000000u | \
+     (((uint32_t)(slot) & 0x1FFu) << 16))
 void openpete_native_scene_set_tag(uint32_t tag);
 /* Arm/disarm the tag as a batch-split key (material-selector registry). */
 void openpete_native_set_tag_split(int on);

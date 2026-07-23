@@ -153,6 +153,19 @@ void texture_pack_dump_draw(const texture_pack_id *id,
  * fans one texture out. Reports to stderr at exit. */
 void texture_pack_cat_census(const texture_pack_id *id, int category, unsigned tag);
 
+/* ---- pack fog shift (mod-supplied scene transform) ----------------------- */
+
+/* A full-coverage replacement pack that re-grades the scene (v' = s*v + o
+ * per channel) leaves the CLUT-ladder fog affine pointing at the STOCK
+ * ambience: replaced texels are fogged toward colours the pack no longer
+ * matches (dark near terrain blending to bright pastel at distance). With a
+ * shift registered, every fog affine's offset is corrected to the pack's
+ * ambience — b' = s*b + (1-a)*o, slope unchanged — which is exactly
+ * M(a*x + b) for pack pixels p ~= M(x). scale NULL clears. Display-only. */
+void texture_pack_fog_shift_set(const float scale_rgb[3], const float offset_rgb[3]);
+/* Returns 1 (and fills s/o) when a shift is active. */
+int  texture_pack_fog_shift_get(float scale_rgb[3], float offset_rgb[3]);
+
 /* ---- lifecycle / diagnostics -------------------------------------------- */
 
 void texture_pack_init(void);      /* idempotent; reads env gates */

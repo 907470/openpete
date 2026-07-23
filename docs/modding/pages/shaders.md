@@ -40,9 +40,14 @@ Include the binding contract from any shader:
 
 The engine resolves it to `sdk/shaders/openpete_shader_api.glsl` and
 hashes those bytes into every shader's build key — an interface change
-auto-invalidates your cache. `sdk/shaders/` also carries the **stock
-material shaders** (`psx_scene.vert/.frag`, `quad.vert/.frag`) to fork
-for material overrides.
+auto-invalidates your cache. **Material** fragment shaders include
+`openpete_psx_material.glsl` instead (never both — they claim the same
+descriptor set differently): it carries the material-tier interface plus
+the stock PSX decode as functions (`op_psx_shade()` = faithful stock
+result), so a material builds ON the faithful base rather than forking
+it. Forks of `sdk/shaders/psx_scene.frag` still work but freeze the
+decode they copied; include-based materials are rebuilt by the engine
+whenever the contract evolves.
 
 Shipping without source: a prebuilt `<path>.spv` loads when no source
 sits beside it, but requires a `<path>.spv.ihash` sidecar matching the
@@ -109,12 +114,30 @@ api->material_register(self, &sel, /*vert*/-1, frag, /*per_instance*/NULL);
 
 Overrides the **shading** of matching engine draws; scheduling (pass
 position, depth, stencil, category) stays engine-owned. `-1` on a
-shader handle keeps the stock stage — fork
-`sdk/shaders/psx_scene.frag` as your starting point (it samples PSX
-VRAM through the material push constants; keep that interface).
-Applies to plain opaque textured runs (moby class, terrain
-env-anim/tier); conflicts resolve by enabled-list priority, first
-match wins.
+shader handle keeps the stock stage. Write the fragment stage on
+`openpete_psx_material.glsl` and start from `op_psx_shade()` — the
+faithful stock result for textured AND untextured draws (`op_pc.bpp`
+is `0` on untextured ones, where it returns the gouraud vertex
+colour):
+
+```glsl
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "openpete_psx_material.glsl"
+layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 c = op_psx_shade();
+    if (c.a == 0.0) discard;              /* PSX transparent sentinel */
+    outColor = vec4(c.rgb * tint.rgb, c.a);
+}
+```
+
+Applies to plain opaque runs — textured and untextured (flat/gouraud)
+alike — for moby classes and terrain (env-anim/tier refinements;
+`OP_SEL_UNTEXTURED` scopes a terrain selector to the beyond-LOD
+gouraud band, whose per-instance callback receives `moby_vaddr` 0).
+Conflicts resolve by enabled-list priority, first match wins.
 
 ### Per-instance callback (state-aware)
 

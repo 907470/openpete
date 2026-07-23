@@ -36,6 +36,7 @@
 
 #include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
+#include "openpete_mods.h"          /* untextured-band material resolve (S8c) */
 #include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
 
 #include <math.h>
@@ -392,6 +393,22 @@ static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int 
     return out;
 }
 static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3, int fogRef) {
+    /* Pack fog shift (texture_pack_fog_shift_set): a full-coverage re-graded
+     * pack needs the DPCS vertex-fog TARGET re-graded with it — the authored
+     * FAR colours are the stock ambience, and modulating dark pack texels
+     * toward them re-brightens the distance the pack darkened. Near colours
+     * (lighting) stay stock; only the fog destination moves. 0x00BBGGRR. */
+    {
+        float fs[3], fo[3];
+        if (texture_pack_fog_shift_get(fs, fo)) {
+            int r = (int)(fs[0] * (float)(farC & 0xFF)         + fo[0] + 0.5f);
+            int g = (int)(fs[1] * (float)((farC >> 8) & 0xFF)  + fo[1] + 0.5f);
+            int b = (int)(fs[2] * (float)((farC >> 16) & 0xFF) + fo[2] + 0.5f);
+            if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+            if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+            farC = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+        }
+    }
     if (s_fogdpcs) {                      /* GTE-exact path (proven; not yet default) */
         int ir0 = fogRef - (int)(m3 * s_fogscale);
         if (ir0 >= 4096) return nearC;
@@ -3501,6 +3518,9 @@ static void terrain_feed_native(CPUState* cpu) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
         s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* v4.1: quantize/grow OFF by default (v2/v3 machinery caused silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
+    /* Untextured-band material (S8c): one resolve per feed — the whole
+     * beyond-LOD gouraud band shares a single per-instance outcome. */
+    const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -3607,8 +3627,10 @@ static void terrain_feed_native(CPUState* cpu) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
-        openpete_native_scene_set_tag(
-            OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec));
+        openpete_native_scene_set_tag(tex
+            ? OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec)
+            : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
+                                         t->sec < 0 ? 0 : t->sec, untex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
         openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);

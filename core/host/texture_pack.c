@@ -552,6 +552,31 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     return 1;
 }
 
+/* ---- pack fog shift (see header) ------------------------------------------ */
+
+static int   s_fogshift_on;
+static float s_fogshift_s[3], s_fogshift_o[3];
+
+void texture_pack_fog_shift_set(const float scale_rgb[3], const float offset_rgb[3])
+{
+    if (!scale_rgb || !offset_rgb) { s_fogshift_on = 0; return; }
+    for (int c = 0; c < 3; c++) {
+        s_fogshift_s[c] = scale_rgb[c];
+        s_fogshift_o[c] = offset_rgb[c];
+    }
+    s_fogshift_on = 1;
+}
+
+int texture_pack_fog_shift_get(float scale_rgb[3], float offset_rgb[3])
+{
+    if (!s_fogshift_on) return 0;
+    for (int c = 0; c < 3; c++) {
+        scale_rgb[c] = s_fogshift_s[c];
+        offset_rgb[c] = s_fogshift_o[c];
+    }
+    return 1;
+}
+
 /* ---- identity/provenance census (temporary instrument) -------------------- */
 
 #define TP_CENSUS_SLOTS 16384
