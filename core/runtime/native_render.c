@@ -3022,6 +3022,79 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
         return a->tag < b->tag ? -1 : 1;
     return 0;
 }
+
+/* Material sort, counting-sort form. Comparison-sorting ~15k tri indices per
+ * present costs ~750us of every compose; the key space is actually a few
+ * dozen distinct materials, so this interns each tri's material to a bucket
+ * (one hash probe per tri), orders the UNIQUE materials with the comparator
+ * semantics above (tpage_y, tpage_x, clut_y, clut_x, bpp[, tag] — the packed
+ * key preserves exactly that priority), and scatters — O(n + m log m).
+ * Stable within a material (submission order), which qsort never guaranteed;
+ * grouping and cross-material order match tex_mat_cmp exactly. Falls back to
+ * qsort if the bucket table overflows (pathological material count). */
+#define TXMAT_BUCKETS 1024   /* power of two; distinct materials per scene ~dozens */
+typedef struct { uint64_t key; uint32_t tag; int count, offset, used; } txmat_bucket_t;
+static txmat_bucket_t s_txmat_b[TXMAT_BUCKETS];
+static uint16_t       s_txmat_of[MAX_SCENE_TRIS];   /* tri -> bucket slot */
+static int            s_txmat_out[MAX_SCENE_TRIS];  /* scatter target */
+
+static int txmat_bucket_cmp(const void* pa, const void* pb) {
+    const txmat_bucket_t* a = &s_txmat_b[*(const uint16_t*)pa];
+    const txmat_bucket_t* b = &s_txmat_b[*(const uint16_t*)pb];
+    if (a->key != b->key) return a->key < b->key ? -1 : 1;
+    if (a->tag != b->tag) return a->tag < b->tag ? -1 : 1;
+    return 0;
+}
+
+static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
+{
+    if (n <= 1) return;
+    const int with_tag = tag_split_on();
+    static uint16_t slots[TXMAT_BUCKETS];   /* used slot list */
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const scene_tri_t* t = &scene[idx[i]];
+        /* Field priority == tex_mat_cmp: tpage_y | tpage_x | clut_y | clut_x
+         * | bpp, high to low. Widths cover VRAM extents (x<=1024, y<=512). */
+        uint64_t key = ((uint64_t)(uint32_t)t->tpage_y << 43) |
+                       ((uint64_t)(uint32_t)t->tpage_x << 32) |
+                       ((uint64_t)(uint32_t)t->clut_y  << 22) |
+                       ((uint64_t)(uint32_t)t->clut_x  << 11) |
+                        (uint64_t)(uint32_t)t->bpp;
+        uint32_t tag = with_tag ? t->tag : 0;
+        uint64_t h = (key ^ ((uint64_t)tag * 0x9E3779B97F4A7C15ull)) *
+                     0x9E3779B97F4A7C15ull >> 48;
+        int s = (int)(h & (TXMAT_BUCKETS - 1));
+        for (;;) {
+            txmat_bucket_t* b = &s_txmat_b[s];
+            if (b->used && b->key == key && b->tag == tag) break;
+            if (!b->used) {
+                if (m >= TXMAT_BUCKETS - 1) {   /* table full: comparison sort */
+                    for (int j = 0; j < m; j++) s_txmat_b[slots[j]].used = 0;
+                    s_txsort_scene = scene;
+                    qsort(idx, (size_t)n, sizeof(int), tex_mat_cmp);
+                    return;
+                }
+                b->used = 1; b->key = key; b->tag = tag; b->count = 0;
+                slots[m++] = (uint16_t)s;
+                break;
+            }
+            s = (s + 1) & (TXMAT_BUCKETS - 1);
+        }
+        s_txmat_of[i] = (uint16_t)s;
+        s_txmat_b[s].count++;
+    }
+    qsort(slots, (size_t)m, sizeof(uint16_t), txmat_bucket_cmp);
+    int off = 0;
+    for (int j = 0; j < m; j++) {
+        s_txmat_b[slots[j]].offset = off;
+        off += s_txmat_b[slots[j]].count;
+    }
+    for (int i = 0; i < n; i++)
+        s_txmat_out[s_txmat_b[s_txmat_of[i]].offset++] = idx[i];
+    memcpy(idx, s_txmat_out, (size_t)n * sizeof(int));
+    for (int j = 0; j < m; j++) s_txmat_b[slots[j]].used = 0;
+}
 /* ---- HD texture replacement (openpete-texture-replacement Phases 3+4) -----
  * Identity comes from the upload-time registry (texture_pack_resolve, per
  * TRI — run-union boxes vary with per-frame clipping); the pack match is
@@ -4068,6 +4141,16 @@ static bool draw_native_scene(bool full_extent)
      * dragon-rescue front pass. Accumulated across the ut[14]/txg[9] builds. */
     float af_x0 = 1e30f, af_y0 = 1e30f, af_x1 = -1e30f, af_y1 = -1e30f;
     int   af_n = 0;
+    /* CPU attribution (--profile-out): the compose phase splits into
+     * build_ut (untextured bucketing incl. portal-run collection),
+     * build_tex (textured bucketing + material sort), vb_tex (textured
+     * vertex pack), upload (VB update) and record (draw recording). */
+#define NR_PROF_BEGIN(lit) do { static int op_id_ = -1; \
+        if (op_prof_on()) { if (op_id_ < 0) op_id_ = op_prof_intern(lit); \
+                            op_prof_begin(op_id_); } } while (0)
+#define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
+
+    NR_PROF_BEGIN("cmp.build_ut");
     s_utmat_n = 0; s_utmemo_n = 0;
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
@@ -4415,6 +4498,8 @@ static bool draw_native_scene(bool full_extent)
      * is exact. Transparent buckets (1,4,5) and HUD (6) keep submission order
      * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
      * backdrops want painter's order) and only coalesce already-adjacent runs. */
+    NR_PROF_END();   /* cmp.build_ut */
+    NR_PROF_BEGIN("cmp.build_tex");
     int tx_start = n;
     int txg_first[10], txg_count[10], txtri = 0;
     for (int b = 0; b < 10; b++) {
@@ -4465,11 +4550,14 @@ static bool draw_native_scene(bool full_extent)
             if (belongs) s_txscene[txtri++] = t;
         }
         if (b == 0 || b == 2 || b == 3 || b == 9) {   /* opaque: material-sort (depth-correct) */
-            s_txsort_scene = scene;
-            qsort(&s_txscene[run_start], (size_t)(txtri - run_start), sizeof(int), tex_mat_cmp);
+            NR_PROF_BEGIN("cmp.sort");
+            tex_mat_sort(scene, &s_txscene[run_start], txtri - run_start);
+            NR_PROF_END();
         }
         txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
     }
+    NR_PROF_END();   /* cmp.build_tex */
+    NR_PROF_BEGIN("cmp.vb_tex");
     for (int i = 0; i < txtri; i++) {
         const scene_tri_t *st = &scene[s_txscene[i]];
         for (int k = 0; k < 3; k++) {
@@ -4492,6 +4580,7 @@ static bool draw_native_scene(bool full_extent)
      * it tints the WHOLE composited frame — world, actors, HUD and 2D UI — exactly
      * as the PSX's semi-transparent full-screen POLY_F4 does. The vertex colour is
      * the fade colour; the blend mode (set below) reproduces the PSX ABR. */
+    NR_PROF_END();   /* cmp.vb_tex */
     int fade_first = -1, fade_mode = -1;
     if ((scene_fade & (1u << 31)) && n + 6 <= SCENE_VB_VERTS) {
         fade_mode  = (int)((scene_fade >> 24) & 3u);
@@ -4575,7 +4664,10 @@ static bool draw_native_scene(bool full_extent)
             }
         }
     }
+    NR_PROF_BEGIN("cmp.upload");
     rhi_update_buffer(s_nr.scene_vb, buf, sizeof(rhi_vertex) * (size_t)(n > 0 ? n : 1));
+    NR_PROF_END();
+    NR_PROF_BEGIN("cmp.record");
 
     /* Confine the scene to panel 0's pixel rect so triangles that extend off
      * the PSX screen (legitimately, after near-plane culling) are clipped to
@@ -5065,6 +5157,7 @@ static bool draw_native_scene(bool full_extent)
         }
     }
     rhi_gpu_zone_end(s_nr.dev);   /* sc.hud */
+    NR_PROF_END();   /* cmp.record */
 
     if (!full_extent) rhi_reset_scissor(s_nr.dev);
     s_render_full_extent = 0;
