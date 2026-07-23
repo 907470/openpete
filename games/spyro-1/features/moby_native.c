@@ -1710,6 +1710,24 @@ static int build_walk_tris_inner(CPUState* cpu) {
         }
         s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
+        /* OPENPETE_MOBY_CLASSDBG=1: one line per drawn moby (class + vaddr +
+         * world position) — names the producer when a scene object needs a
+         * class-keyed treatment (e.g. a mod material selector). */
+        {
+            static int clsdbg = -1;
+            if (clsdbg < 0) { const char* e = getenv("OPENPETE_MOBY_CLASSDBG"); clsdbg = (e && *e && *e != '0'); }
+            if (clsdbg && mob) {
+                static unsigned last_f = 0xFFFFFFFFu; static int printed;
+                if (openpete_frame != last_f) { last_f = openpete_frame; printed = 0; }
+                if (printed < 128) {
+                    printed++;
+                    fprintf(stderr, "[moby-class f=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n",
+                            openpete_frame, s_cur_moby_cls, mob,
+                            (int)cpu->read_word(mob + 0x0C), (int)cpu->read_word(mob + 0x10),
+                            (int)cpu->read_word(mob + 0x14));
+                }
+            }
+        }
         /* S8b: per-instance material resolve at extraction (cpu here);
          * gated on a per-instance selector existing (single bool). */
         s_cur_moby_matslot = openpete_mods_material_has_instance()
