@@ -260,7 +260,18 @@ static void draw_row(knob_desc_t *k)
     case KNOB_STRING: {
         char buf[KNOB_STR_MAX];
         knob_value_str(k, buf, sizeof buf);
-        ImGui::InputText("##v", buf, sizeof buf, ImGuiInputTextFlags_ReadOnly);
+        if (k->set_str && k->mut == KNOB_LIVE) {
+            /* imgui keeps its own edit state while the field is active and
+             * writes back into buf each frame, so a per-frame buffer seeded
+             * from the live value is safe; commit on deactivate. */
+            ImGui::InputText("##v", buf, sizeof buf);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                if (k->set_str(k, buf) == 0)
+                    OPL_INFO_F("devui", "%s = %s", k->id, buf);
+            }
+        } else {
+            ImGui::InputText("##v", buf, sizeof buf, ImGuiInputTextFlags_ReadOnly);
+        }
         break;
     }
     }
@@ -299,6 +310,9 @@ static void draw_panel(void)
     }
 
     static ImGuiTextFilter s_filter;
+    static bool s_live_only = true;
+    ImGui::Checkbox("live editable only", &s_live_only);
+    ImGui::SameLine();
     s_filter.Draw("filter", ImGui::GetContentRegionAvail().x - 60.0f);
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
@@ -309,40 +323,49 @@ static void draw_panel(void)
 
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);
-    const char *section = nullptr;
-    bool section_open = false, table_open = false;
 
-    for (size_t i = 0; i < n; i++) {
-        knob_desc_t *k = &ks[i];
-        if (!section || strcmp(section, k->section) != 0) {
-            if (table_open) { ImGui::EndTable(); table_open = false; }
-            section = k->section;
-            /* Debug starts collapsed; when the filter is active, force every
-             * section open so matches are never hidden behind a header. */
-            ImGuiTreeNodeFlags fl = strcmp(section, "Debug") == 0
-                                        ? 0 : ImGuiTreeNodeFlags_DefaultOpen;
-            if (s_filter.IsActive()) ImGui::SetNextItemOpen(true);
-            section_open = ImGui::CollapsingHeader(section, fl);
-            if (section_open) {
-                char tid[64];
-                snprintf(tid, sizeof tid, "##t_%s", section);
-                table_open = ImGui::BeginTable(tid, 3,
-                                               ImGuiTableFlags_RowBg |
-                                               ImGuiTableFlags_SizingStretchProp);
-                if (table_open) {
-                    ImGui::TableSetupColumn("name",   ImGuiTableColumnFlags_WidthStretch, 0.42f);
-                    ImGui::TableSetupColumn("value",  ImGuiTableColumnFlags_WidthStretch, 0.42f);
-                    ImGui::TableSetupColumn("source", ImGuiTableColumnFlags_WidthStretch, 0.16f);
+    /* Rows are grouped contiguously by section; emit a header only when the
+     * section has at least one row passing the filter + live-only toggle, so
+     * a filtered view never shows empty headers. */
+    size_t i = 0;
+    while (i < n) {
+        const char *section = ks[i].section;
+        size_t end = i;
+        bool any = false;
+        while (end < n && strcmp(ks[end].section, section) == 0) {
+            if (row_matches(s_filter, &ks[end]) &&
+                (!s_live_only || ks[end].mut == KNOB_LIVE))
+                any = true;
+            end++;
+        }
+        if (!any) { i = end; continue; }
+
+        /* Debug* sections start collapsed; when the filter is active, force
+         * every section open so matches never hide behind a header. */
+        ImGuiTreeNodeFlags fl = strncmp(section, "Debug", 5) == 0
+                                    ? 0 : ImGuiTreeNodeFlags_DefaultOpen;
+        if (s_filter.IsActive()) ImGui::SetNextItemOpen(true);
+        if (ImGui::CollapsingHeader(section, fl)) {
+            char tid[64];
+            snprintf(tid, sizeof tid, "##t_%s", section);
+            if (ImGui::BeginTable(tid, 3, ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("name",   ImGuiTableColumnFlags_WidthStretch, 0.42f);
+                ImGui::TableSetupColumn("value",  ImGuiTableColumnFlags_WidthStretch, 0.42f);
+                ImGui::TableSetupColumn("source", ImGuiTableColumnFlags_WidthStretch, 0.16f);
+                for (size_t j = i; j < end; j++) {
+                    knob_desc_t *k = &ks[j];
+                    if (!row_matches(s_filter, k)) continue;
+                    if (s_live_only && k->mut != KNOB_LIVE) continue;
+                    ImGui::PushID(k->id);
+                    draw_row(k);
+                    ImGui::PopID();
                 }
+                ImGui::EndTable();
             }
         }
-        if (!section_open || !table_open) continue;
-        if (!row_matches(s_filter, k)) continue;
-        ImGui::PushID(k->id);
-        draw_row(k);
-        ImGui::PopID();
+        i = end;
     }
-    if (table_open) ImGui::EndTable();
 
     ImGui::End();
     s_open = open;

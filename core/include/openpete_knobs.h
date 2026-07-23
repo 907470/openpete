@@ -84,6 +84,10 @@ typedef struct knob_desc {
 
     /* Registry-owned current value for rows without a live getter. */
     double stored_num;
+
+    /* Built-in default as a display string (env rows: what an unset var
+     * resolves to — shown as "(unset - <def>)"). NULL/empty = unknown. */
+    const char *def_str;
 } knob_desc_t;
 
 /* The table (mutable: boot stamps + stored values live in the rows). */

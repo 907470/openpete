@@ -145,6 +145,74 @@ static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     snprintf(buf, cap, "%s", cli ? cli : (env ? env : "(default)"));
 }
 
+/* ---- CLI debug rows (boot-parsed; display-only) ---- */
+
+static void renderpaths_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    const char *v = (g_opts && g_opts->render_paths && *g_opts->render_paths)
+                        ? g_opts->render_paths : NULL;
+    snprintf(buf, cap, "%s", v ? v : "(all)");
+}
+
+static double renderstats_get(const knob_desc_t *k) {
+    (void)k; return (g_opts && g_opts->render_stats) ? 1.0 : 0.0;
+}
+
+static void loglevel_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    const char *v = (g_opts && g_opts->log_level_spec) ? g_opts->log_level_spec
+                                                       : getenv("OPENPETE_LOG");
+    snprintf(buf, cap, "%s", (v && *v) ? v : "(default: info)");
+}
+
+/* ---- Debug env rows ----
+ *
+ * Generic rows over raw OPENPETE_* env strings: display is the live env
+ * value ("(unset)" when absent). Editability follows the consumer pattern,
+ * proven by grep per var:
+ *  - FRESH consumers call getenv per use, so setenv IS their live channel
+ *    (editable, KNOB_LIVE);
+ *  - CACHED consumers latch the value into a function-local static on first
+ *    use — setenv would silently do nothing, so those rows stay display-only
+ *    (KNOB_RESTART_ONLY) until the latch is converted to an accessor.
+ *    Promoting one is a per-knob audited change, not an overlay tweak. */
+
+static int portable_setenv(const char *name, const char *val) {
+#ifdef _WIN32
+    return _putenv_s(name, val ? val : "");
+#else
+    if (!val || !*val) return unsetenv(name);
+    return setenv(name, val, 1);
+#endif
+}
+
+static void env_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    const char *v = k->env ? getenv(k->env) : NULL;
+    if (v)
+        snprintf(buf, cap, "%s", v);
+    else if (k->def_str && *k->def_str)
+        snprintf(buf, cap, "(unset - %s)", k->def_str);
+    else
+        snprintf(buf, cap, "(unset)");
+}
+
+static int env_set_str(knob_desc_t *k, const char *v) {
+    if (!k->env) return -1;
+    /* Editing back to the "(unset...)" placeholder (or clearing) unsets. */
+    if (v && !strncmp(v, "(unset", 6)) v = "";
+    return portable_setenv(k->env, v);
+}
+
+/* Compact row builders for the Debug sections. LIVE = FRESH consumer. */
+#define ENVROW_LIVE(name, sect, def, helptext) \
+    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
+      KNOB_LIVE, NULL, 0, 0, 0, NULL, NULL, env_get_str, env_set_str, \
+      KNOB_SRC_DEFAULT, 0, {0}, 0, def }
+#define ENVROW_LATCHED(name, sect, def, helptext) \
+    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
+      KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
+      KNOB_SRC_DEFAULT, 0, {0}, 0, def }
+
 /* ---- Gameplay / debug ---- */
 
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
@@ -314,6 +382,288 @@ static knob_desc_t g_knobs[] = {
       "Replay a BizHawk movie into the pad (loaded at loop start).",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+#ifndef OPENPETE_HIDE_DEBUG_FLAGS
+    /* -------- Debug (toggles / tunables) -------- */
+    { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
+      "Render only the named paths in isolation (cyclorama,spyro,moby,"
+      "terrain,shadow,flame,particles,tracer,transition,portal).",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "render_stats", "Render stats", "Debug", "--render-stats", NULL,
+      "Per-frame colour-diff statistics (diff renderer only).",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      renderstats_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",
+      "Per-subsystem stderr log levels, e.g. cd:debug,*:info.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, loglevel_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
+        "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
+    ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
+        "Per-pass GPU timestamp zones (query pools created at device init)."),
+    ENVROW_LATCHED("PHASE_TIMERS", "Debug", "0",
+        "Once-per-second per-phase CPU us report."),
+    ENVROW_LATCHED("MOD_TIMERS", "Debug", "0",
+        "Per-mod tick/present ms report."),
+    ENVROW_LATCHED("MATERIAL_STATS", "Debug", "0",
+        "Print new peaks of interned material slots."),
+    ENVROW_LATCHED("TEXPACK_STATS", "Debug", "0",
+        "HD-texpack sub-run disposition counters."),
+    ENVROW_LATCHED("MOBY_OCCLUSION", "Debug", "1",
+        "Moby occlusion culling on/off (default 1)."),
+    ENVROW_LATCHED("MOBY_OCCL_SLACK", "Debug", "1500",
+        "Occlusion-grid depth slack before a rect counts hidden (default 1500)."),
+    ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
+        "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
+    ENVROW_LATCHED("SHADOW_BAND", "Debug", "256",
+        "Fallback view-Z band for shadow decal mode 0 (default 256)."),
+    ENVROW_LATCHED("SHADOW_HW_BIAS", "Debug", "-64,-2,-0.002",
+        "Hardware depth bias c,s,clamp on subtractive shadow pipes."),
+    ENVROW_LIVE("SHADOW_DECAL_MODE", "Debug", "",
+        "Force shadow-decal shader mode (calibration override)."),
+    ENVROW_LATCHED("PORTAL_MASK_BIAS", "Debug", "0,0,0",
+        "Portal-mask camera-ward depth pull (3 floats)."),
+    ENVROW_LATCHED("HUD6_ZPIPE", "Debug", "0",
+        "A/B: HUD glyph bucket via opaque depth-tested pipe."),
+    ENVROW_LATCHED("HUD6_NOSORT", "Debug", "0",
+        "A/B: keep bucket-6 submission order (skip z sort)."),
+    ENVROW_LATCHED("NATIVE_SCENE_DELAY", "Debug", "0",
+        "Force scene-history depth for compose (alignment sweeps)."),
+    ENVROW_LATCHED("TAG_SPLIT", "Debug", "0",
+        "Force batch split by mod scene-tag."),
+    ENVROW_LATCHED("TAG_TINT", "Debug", "0",
+        "Visual tint by scene tag."),
+    ENVROW_LIVE("SHADOW_WALL_HEIGHT", "Debug", "400",
+        "Decal wall-occlusion height threshold (default 400)."),
+    ENVROW_LIVE("SHADOW_STEEP_NY", "Debug", "0.5",
+        "Up-normal below which a surface counts as wall (default 0.5)."),
+    ENVROW_LIVE("SHADOW_PLAT_EPS", "Debug", "150",
+        "Raised-occluder clause epsilon (default 150; 0 disables)."),
+    ENVROW_LIVE("SHADOW_PLAT_SLACK", "Debug", "48",
+        "Platform-clause slack (default 48)."),
+    ENVROW_LATCHED("SHADOW_BIAS_SPYRO", "Debug", "1.0",
+        "Spyro-shadow depth-bias multiplier."),
+    ENVROW_LATCHED("SHADOW_BIAS_MOBY", "Debug", "1.0",
+        "Moby-shadow depth-bias multiplier."),
+    ENVROW_LIVE("SHADOW_SCAFFOLD", "Debug", "0",
+        "Feed shadows from captured .s prims instead of native walk."),
+    ENVROW_LIVE("FLAME_SCAFFOLD", "Debug", "0",
+        "Same scaffold fallback for the flame feeder."),
+    ENVROW_LATCHED("PORTAL_SKY_EPS", "Debug", "24",
+        "Portal-sky forward depth margin (default 24; two independent latches)."),
+    ENVROW_LATCHED("PORTAL_SKY_DEPTH", "Debug", "plane",
+        "Portal sky depth model: ot|plane|ring."),
+    ENVROW_LATCHED("NOLOD_PORTAL_DOME", "Debug", "1",
+        "Kill switch for extended-LOD always-render dome (default 1)."),
+    ENVROW_LATCHED("PORTAL_GUARD", "Debug", "0",
+        "Experiment: re-feed .s near-band tris as portal guard."),
+    ENVROW_LATCHED("TERRAIN_CULL", "Debug", "1",
+        "bit0 HP NCLIP cull, bit1 LP cull, bit2 invert LP sign (default 1)."),
+    ENVROW_LATCHED("TERRAIN_FLAT", "Debug", "0",
+        "Draw terrain untextured."),
+    ENVROW_LATCHED("TERRAIN_HQSCALE", "Debug", "4.0",
+        "Near/HQ classification scale (default 4.0)."),
+    ENVROW_LATCHED("TERRAIN_NEARZ", "Debug", "1.0",
+        "Near clip plane in world/16 view-Z (default 1.0)."),
+    ENVROW_LATCHED("TERRAIN_NEARHQ", "Debug", "1",
+        "Near/HQ subdivide pass enable (default 1)."),
+    ENVROW_LIVE("TERRAIN_TEXTBL", "Debug", "0",
+        "0 auto; 1 force LQ; 2 force HQ tiledefs."),
+    ENVROW_LATCHED("TERRAIN_HIDETAIL", "Debug", "-1",
+        "Force hi-detail flag into sector decode cache."),
+    ENVROW_LATCHED("TERRAIN_OCCL", "Debug", "1",
+        "Sector occlusion cull via occlusion grid (default 1)."),
+    ENVROW_LATCHED("TERRAIN_HOLEFILL", "Debug", "1",
+        "Stencil-gated LP hole fill at LOD boundary (default 1)."),
+    ENVROW_LATCHED("TERRAIN_FILLNEAR", "Debug", "0",
+        "Opt-in near-LP fill (crest strips vs rim slivers)."),
+    ENVROW_LATCHED("TERRAIN_LPKEEP", "Debug", "0",
+        "Keep ALL near-LP faces (probe)."),
+    ENVROW_LATCHED("TERRAIN_FILL_FOGSLACK", "Debug", "0",
+        "ir0 slack admitting not-fully-fogged faces to fill."),
+    ENVROW_LATCHED("TERRAIN_FILL_THINPX", "Debug", "16",
+        "Screen-thin bbox cap for slack-admitted fill faces (default 16)."),
+    ENVROW_LATCHED("TERRAIN_FILL_DILATE", "Debug", "0",
+        "Fill-tri screen dilation px."),
+    ENVROW_LATCHED("TERRAIN_FILL_UP", "Debug", "0.7",
+        "Fill upward growth px (default 0.7)."),
+    ENVROW_LATCHED("TERRAIN_FILL_QUANT", "Debug", "1",
+        "Floor-quantize fill verts (default 1)."),
+    ENVROW_LATCHED("TERRAIN_FILL_TIERPULL", "Debug", "1",
+        "Apply LP depth pull to fill copies (default 1)."),
+    ENVROW_LATCHED("TERRAIN_GAPFILL", "Debug", "1",
+        "Near-LP-gap classifier fill (default 1)."),
+    ENVROW_LATCHED("TERRAIN_GAPFILL_TUNE", "Debug", "96,0.9,192,0.8,1200,0.97",
+        "Classifier thresholds tol,cov,dgap,nz,nohp[,covhi]."),
+    ENVROW_LATCHED("TERRAIN_GAPFILL_SKIP", "Debug", "34",
+        "CSV level ids where gapfill disabled (default 34)."),
+    ENVROW_LATCHED("TERRAIN_GAPFILL_EXCL", "Debug", "",
+        "Per-face gapfill kill switch sector:face."),
+    ENVROW_LATCHED("TERRAIN_LOD_FAITHFUL", "Debug", "0",
+        "Faithful .s tier swap at fog saturation."),
+    ENVROW_LATCHED("TERRAIN_FOGSCALE", "Debug", "1.0",
+        "Debug force-override of the fog curve (wins over --fog-scale)."),
+    ENVROW_LATCHED("TERRAIN_FOGDPCS", "Debug", "1",
+        "Exact per-corner DPCS vertex fog decode (default 1)."),
+    ENVROW_LATCHED("TERRAIN_CLUTFOG", "Debug", "1",
+        "CLUT-row texel fog ladder (default 1)."),
+    ENVROW_LATCHED("TERRAIN_LOD_HANDOFF", "Debug", "1",
+        "Drop HP beyond fog saturation, substitute LP (default 1)."),
+    ENVROW_LATCHED("TERRAIN_PORTAL_CONFORM", "Debug", "1",
+        "Terrain-vs-portal-sky depth conformance clamp (default 1)."),
+    ENVROW_LATCHED("TERRAIN_VANIM", "Debug", "1",
+        "Sub-tick lerp of moving-terrain verts (default 1)."),
+    ENVROW_LATCHED("TERRAIN_ALLVIS", "Debug", "0",
+        "Walk ALL sectors, bypass visibility groups (probe)."),
+    ENVROW_LATCHED("TERRAIN_NEARQ", "Debug", "0",
+        "Read the .s deferred near queue as debug oracle route."),
+    ENVROW_LATCHED("TERRAIN_NOTEX", "Debug", "0",
+        "Feed terrain untextured."),
+    ENVROW_LATCHED("TERRAIN_TIERCOLOR", "Debug", "0",
+        "Colour terrain by LOD tier."),
+    ENVROW_LATCHED("TERRAIN_TIERONLY", "Debug", "0",
+        "Draw only LP (1) or only HP (2) tier."),
+    ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
+        "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
+    ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",
+        "Same pull for the SHADED walk."),
+    ENVROW_LATCHED("MOBY_SNAP_STALE", "Debug", "1",
+        "Snap instead of lerp across stale interp pairs (default 1)."),
+    ENVROW_LATCHED("MOBY_IDLE", "Debug", "0",
+        "Display-only idle animation for frozen mobys."),
+    ENVROW_LATCHED("MOBY_HOLD_PX", "Debug", "10",
+        "Max screen motion for tier-2 moby hold replay (default 10)."),
+    ENVROW_LATCHED("SHADED_NOHL", "Debug", "0",
+        "Disable shaded-walk highlight."),
+    ENVROW_LATCHED("ACTOR_FRONT", "Debug", "1",
+        "Dragon-rescue actor front pass (default 1)."),
+    ENVROW_LATCHED("ENV_C2", "Debug", "14.5",
+        "Metal env-reflection calibration constant (default 14.5)."),
+    ENVROW_LATCHED("ENV_AZSIGN", "Debug", "1.0",
+        "Metal env-reflection azimuth sign."),
+    ENVROW_LATCHED("SPYRO_SCRATCH_MAT", "Debug", "0",
+        "Force old scratch-block matrix read."),
+    ENVROW_LATCHED("SPYRO_UNTEX", "Debug", "0",
+        "Draw Spyro feed untextured (bisect)."),
+    ENVROW_LATCHED("GEM_FLYOUT_KEY", "Debug", "1",
+        "Rotation-fingerprint keying of HUD gem-flyout interp (default 1)."),
+    ENVROW_LATCHED("RA_REBASE", "Debug", "1",
+        "Runahead camera rebase (default 1)."),
+    ENVROW_LATCHED("RA_CAM_COMMIT", "Debug", "1",
+        "Committed-timeline camera regions under runahead (default 1)."),
+    ENVROW_LATCHED("INTERP_LINEAR", "Debug", "0",
+        "Force linear lerp instead of pred1 Hermite."),
+    ENVROW_LATCHED("INTERP_PERIOD_UNCAP", "Debug", "0",
+        "Diagnostic: uncap interp period."),
+    ENVROW_LATCHED("CUTSCENE_PATH_SMOOTH", "Debug", "0",
+        "Re-enable cutscene B-spline path smoothing (A/B)."),
+    ENVROW_LATCHED("INTERP_PHASE_MS", "Debug", "0",
+        "Capture-stamp phase bias vs present grid (0-16)."),
+    ENVROW_LATCHED("BRACKET_CHECK", "Debug", "0",
+        "Hash gameplay RAM around sub-tick brackets, log leaks."),
+    ENVROW_LATCHED("FREECAM_SPIN", "Debug", "0",
+        "Scripted continuous yaw sweep (units/tick)."),
+    ENVROW_LATCHED("FREECAM_DRIFT", "Debug", "",
+        "Scripted per-tick camera drift dx,dy,dz."),
+    ENVROW_LATCHED("S3_SCALE", "Debug", "1.0",
+        "S3 model-units to S1 world-units scale (default 1.0)."),
+    ENVROW_LATCHED("S3_ACTOR_TEST", "Debug", "0",
+        "Draw the S3 hover-cycle test actor near the player."),
+    ENVROW_LIVE("S3_ACTOR_ANIM", "Debug", "",
+        "Anim id for the S3 test actor."),
+    ENVROW_LATCHED("OT_TRUNCATE", "Debug", "",
+        "Submit only first N OT slots (paint-order bisection)."),
+    ENVROW_LATCHED("TRANSITION_PROBE", "Debug", "0",
+        "One line per (func,frame) during level transitions."),
+
+    /* -------- Debug diagnostics (stderr censuses; flip on, watch, flip off) -------- */
+    ENVROW_LATCHED("REEXTRACT_DBG", "Debug diagnostics", "0",
+        "Per-present alpha/bracket summary of the re-extract spine."),
+    ENVROW_LATCHED("REEXTRACT_FEEDDBG", "Debug diagnostics", "0",
+        "Per-frame feeder freshness/counts (spyro + moby)."),
+    ENVROW_LATCHED("CANON_CAPDBG", "Debug diagnostics", "0",
+        "1/200-frame canonical-capture row prints."),
+    ENVROW_LATCHED("CUTPATH_DBG", "Debug diagnostics", "0",
+        "1/s cutscene-path engage/reject census."),
+    ENVROW_LATCHED("CAP_ROLL_DBG", "Debug diagnostics", "0",
+        "One line per interp ring roll."),
+    ENVROW_LATCHED("ALPHA_MAP_DBG", "Debug diagnostics", "0",
+        "Per-present present-time to interp-time mapping."),
+    ENVROW_LATCHED("PART_INTERP_DBG", "Debug diagnostics", "0",
+        "1/s particle pool-interp verdict census."),
+    ENVROW_LATCHED("ANIMDBG", "Debug diagnostics", "0",
+        "Spyro anim segment/blend + sub-tick vertex probe."),
+    ENVROW_LATCHED("ACTORDBG", "Debug diagnostics", "0",
+        "1/100-frame actor-emit projection stats."),
+    ENVROW_LATCHED("S3_DBG", "Debug diagnostics", "0",
+        "1/100-frame S3 decode/projection stats."),
+    ENVROW_LATCHED("MOBY_TIER_DBG", "Debug diagnostics", "0",
+        "Extraction-tier census (proj/walk us, cache hits)."),
+    ENVROW_LATCHED("MOBY_OCCL_DBG", "Debug diagnostics", "0",
+        "1/s occlusion cull/seen breakdown."),
+    ENVROW_LATCHED("MOBY_ANIMSW_DBG", "Debug diagnostics", "0",
+        "Animation-switch cross/snap counters."),
+    ENVROW_LATCHED("MOBY_GPF_DBG", "Debug diagnostics", "0",
+        "One line per GPF re-extract."),
+    ENVROW_LATCHED("MOBY_CLERP_DBG", "Debug diagnostics", "0",
+        "Face-0 colour-lerp ramp per present."),
+    ENVROW_LATCHED("MOBY_INTERP_MISS", "Debug diagnostics", "0",
+        "Record mobys with no interp snapshot."),
+    ENVROW_LATCHED("SHADED_INTERP_MISS", "Debug diagnostics", "0",
+        "Same for shaded mobys."),
+    ENVROW_LATCHED("MOBY_TRIDBG", "Debug diagnostics", "",
+        "Log moby walk tris in a screen box x0,y0,x1,y1,fA,fB."),
+    ENVROW_LATCHED("SCENE_BOXDBG", "Debug diagnostics", "",
+        "Log scene tris with centroid in a PSX-screen box over a frame window."),
+    ENVROW_LATCHED("SCENE_CAPDBG", "Debug diagnostics", "0",
+        "Print new peaks of scene-tri demand vs caps."),
+    ENVROW_LATCHED("TERRAIN_CACHE_DBG", "Debug diagnostics", "0",
+        "~1/s sector-cache hit/miss census."),
+    ENVROW_LATCHED("TERRAIN_OCCL_DBG", "Debug diagnostics", "0",
+        "Sector occlusion-cull census."),
+    ENVROW_LATCHED("TERRAIN_TIMERS", "Debug diagnostics", "0",
+        "~1/s per-sector walk-cost census."),
+    ENVROW_LATCHED("TERRAIN_VISDBG", "Debug diagnostics", "0",
+        "Visible-sector list diagnostics."),
+    ENVROW_LATCHED("TERRAIN_ANIMDBG", "Debug diagnostics", "0",
+        "Per-present env-anim change census."),
+    ENVROW_LATCHED("TERRAIN_VANIMDBG", "Debug diagnostics", "0",
+        "Vert-anim refresh census."),
+    ENVROW_LIVE("TERRAIN_FOGDBG", "Debug diagnostics", "0",
+        "Fog decode debug prints."),
+    ENVROW_LATCHED("TERRAIN_CALDBG", "Debug diagnostics", "0",
+        "Near-classification calibration stats vs .s queue."),
+    ENVROW_LATCHED("TERRAIN_NEARDBG", "Debug diagnostics", "0",
+        "Census of straddling foreground quads by route."),
+    ENVROW_LIVE("TERRAIN_UVDBG", "Debug diagnostics", "0",
+        "UV/tile A/B vs captured .s prims."),
+    ENVROW_LIVE("TERRAIN_UVBOX", "Debug diagnostics", "",
+        "Box filter x0,y0,x1,y1 for UVDBG."),
+    ENVROW_LIVE("TERRAIN_UVALL", "Debug diagnostics", "0",
+        "UVDBG print-all modifier."),
+    ENVROW_LIVE("TERRAIN_POINT", "Debug diagnostics", "",
+        "Frontmost native tri + .s prim under screen points x,y;x,y."),
+    ENVROW_LIVE("PARTICLE_DEBUG", "Debug diagnostics", "0",
+        "Native-vs-.s particle selector counts per present."),
+    ENVROW_LATCHED("STREAK_DBG", "Debug diagnostics", "0",
+        "Log emitted line/fan legs over 300 px."),
+    ENVROW_LATCHED("PART_PHASE_DBG", "Debug diagnostics", "0",
+        "Per-present phase-lerp trace of first particle."),
+    ENVROW_LATCHED("GLOW_ANIM_DBG", "Debug diagnostics", "0",
+        "Glow raw-change census + phase trace."),
+    ENVROW_LATCHED("SPARKLE_INTERP_DBG", "Debug diagnostics", "0",
+        "Per-present sparkle slot-0 phase trace."),
+    ENVROW_LATCHED("PORTAL_MAT_DBG", "Debug diagnostics", "0",
+        "Per-dome derived-vs-GTE matrix validation print."),
+    ENVROW_LATCHED("PORTAL_REEXTRACT_DBG", "Debug diagnostics", "0",
+        "1/20-frame portal replay-state print."),
+    ENVROW_LATCHED("NOLOD_DOME_DBG", "Debug diagnostics", "0",
+        "Per-event forced-dome feed print under extended LOD."),
+#endif /* OPENPETE_HIDE_DEBUG_FLAGS */
 };
 
 knob_desc_t *knob_registry(size_t *count) {
