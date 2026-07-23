@@ -2305,12 +2305,15 @@ static void update_layout(void)
          * world; a narrower target just renders 4:3 and the window
          * letterboxes. */
         float wf = 1.0f;
+        int wf_auto_fill = 0;   /* AUTO derived from the cell → rect == cell */
         if (!s_scene_ref_compare) {
             if (s_nr.aspect_wh > 0.0f)
                 wf = s_nr.aspect_wh / (4.0f / 3.0f);
-            else if (fit_w > 0 && fit_h > 0)
+            else if (fit_w > 0 && fit_h > 0) {
                 wf = ((float)s_nr.win_w * (float)fit_h * chx) /
                      ((float)s_nr.win_h * (float)fit_w);
+                wf_auto_fill = (wf >= 1.0f);
+            }
             if (wf < 1.0f) wf = 1.0f;
         }
         s_nr.ws_factor = wf;
@@ -2322,8 +2325,15 @@ static void update_layout(void)
          * 512-wide screen onto, unstretched) is 1/wf of that width and
          * centred; the Hor+ reveal fills the rest of the render rect. */
         float cx = -1.0f + chx, hx, hy;
-        fit_cell(cx, 0.0f, chx, 1.0f, (int)((float)fit_w * wf + 0.5f), fit_h,
-                 s_nr.win_w, s_nr.win_h, &hx, &hy);
+        if (wf_auto_fill) {
+            /* AUTO: wf was derived so the render rect IS the cell — set it
+             * exactly instead of round-tripping through fit_cell's integer
+             * target aspect, whose rounding left ~1px pillar slivers. */
+            hx = chx; hy = 1.0f;
+        } else {
+            fit_cell(cx, 0.0f, chx, 1.0f, (int)((float)fit_w * wf + 0.5f), fit_h,
+                     s_nr.win_w, s_nr.win_h, &hx, &hy);
+        }
         s_nr.p0_cx = cx; s_nr.p0_hx = hx / wf; s_nr.p0_hy = hy; /* 4:3 sub-rect for the scene map */
         /* VRAM fallback panel (loading screens / OT-empty): the canonical 4:3
          * framebuffer, shown at the 4:3 sub-rect (unstretched, pillarboxed within
@@ -3911,6 +3921,32 @@ static rhi_texture *active_frozen_tex(int *out_valid)
     return s_nr.frozen_tex;
 }
 
+/* Backdrop pair: the far-plane bg fill (VB slot 0, built by the caller) and
+ * the SKY (cyclorama dome, untextured bucket 11). Both z=1.0 through the
+ * PLAIN opaque pipe (the dome never stencil-MARKs, so the W2.6-c hole-fill
+ * can repaint sky showing through terrain seams); bg must precede the dome —
+ * LESS_OR_EQUAL gives the later draw the z=1.0 ties, and the dome wins over
+ * the fill. Called either before the group loop (draw-first order) or right
+ * after the WORLD-opaque group (deferred: early-Z rejects covered pixels). */
+static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
+                                const int* ut_count, int sky_ok)
+{
+    if (bg != 0 && s_nr.gouraud_pipe) {
+        rhi_gpu_zone_begin(s_nr.dev, "sc.bg");
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, 6, 0);
+        rhi_gpu_zone_end(s_nr.dev);
+    }
+    if (sky_ok && s_nr.gouraud_pipe && ut_count[11] > 0) {
+        rhi_gpu_zone_begin(s_nr.dev, "sc.sky");
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
+        rhi_gpu_zone_end(s_nr.dev);
+    }
+}
+
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
@@ -4569,11 +4605,25 @@ static bool draw_native_scene(bool full_extent)
      * gap, even though screenshots (which read native_rtt) look correct. z=1.0
      * (far) + depth-write: the dome (also z=1) overdraws it via LESS_OR_EQUAL,
      * nearer geometry over that. */
-    if (bg != 0 && s_nr.gouraud_pipe) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, 6, 0);
+    /* Backdrop deferral: the bg fill and the cyclorama dome are far-plane
+     * (z=1.0) full-coverage fills that nearer opaque terrain almost entirely
+     * overdraws — drawn first (the PSX painter order) every one of their
+     * pixels is shaded and then repainted. Deferring the pair until after
+     * the WORLD-opaque group lets early-Z reject every covered pixel, so
+     * they shade only the gaps — identical output (both write z=1.0 and
+     * everything nearer beats them; their bg -> dome relative order is kept,
+     * LESS_OR_EQUAL gives the later dome the z=1.0 ties exactly as before).
+     * A large win at SSAA/high-res scene targets. OPENPETE_BACKDROP_DEFER=0
+     * restores draw-first; freeze frames skip the group loop, so they keep
+     * the up-front order (bg under the freeze overlay, no dome). */
+    static int s_backdrop_defer = -1;
+    if (s_backdrop_defer < 0) {
+        const char* e = getenv("OPENPETE_BACKDROP_DEFER");
+        s_backdrop_defer = !(e && *e && *e == '0');
     }
+    if (!s_backdrop_defer || freeze_first >= 0)
+        draw_backdrop_fills(bg, ut_first, ut_count,
+                            /*sky*/ freeze_first < 0 && !s_backdrop_defer);
 
     /* Freeze backdrop FIRST (behind world/UI): the frozen native frame sampled
      * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
@@ -4589,16 +4639,10 @@ static bool draw_native_scene(bool full_extent)
         }
     }
 
-    /* SKY (cyclorama dome) — drawn before the layered groups with the PLAIN
-     * opaque pipe: same depth behaviour as its old WORLD membership (z=1.0
-     * backdrop, everything nearer wins), but it never stencil-MARKs, so the
-     * hole-fill layer can repaint the sky showing through terrain seams
-     * (W2.6-c). Skipped on freeze frames like the other gameplay groups. */
-    if (freeze_first < 0 && s_nr.gouraud_pipe && ut_count[11] > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
-    }
+    /* GPU attribution (OPENPETE_GPU_TIMERS=1): one nested zone per layered
+     * group below, so the [gpu-pass]/trace "compose" cost splits by layer. */
+    static const char* const k_scene_zone[6] =
+        { "sc.world", "sc.shadow", "sc.actor", "sc.player", "sc.alpha", "sc.add" };
 
     /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
      * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE). For each: the batched
@@ -4624,6 +4668,7 @@ static bool draw_native_scene(bool full_extent)
          * backdrop (a ghost double-image). Skip the gameplay groups; the HUD layers
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
+        rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
         const struct scene_group *g = &groups[gi];
         /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
          * depth-isolate the cutscene actors to their own screen bbox and draw
@@ -4963,11 +5008,18 @@ static bool draw_native_scene(bool full_extent)
         /* (Dragon-rescue front pass now runs at the TOP of gi==3, before PLAYER —
          * bbox-scissored so it never wipes terrain depth for the transparent
          * groups below, and so Spyro sorts against the dragon by real Z.) */
+        rhi_gpu_zone_end(s_nr.dev);
+        /* Deferred backdrops: right after the WORLD opaques so early-Z spares
+         * every covered pixel; still before the shadow/actor/portal layers,
+         * which depth-test against the z=1.0 they write, exactly as before. */
+        if (gi == 0 && s_backdrop_defer)
+            draw_backdrop_fills(bg, ut_first, ut_count, 1);
     }
 
     /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player
      * (Spyro behind the HUD/text). Only the GS_LevelTransition flyby puts it under
      * the player (handled at gi==2 above). */
+    rhi_gpu_zone_begin(s_nr.dev, "sc.hud");
     if (!hud_under)
         draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
 
@@ -5012,6 +5064,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
     }
+    rhi_gpu_zone_end(s_nr.dev);   /* sc.hud */
 
     if (!full_extent) rhi_reset_scissor(s_nr.dev);
     s_render_full_extent = 0;
@@ -5600,18 +5653,29 @@ static bool compose_variant(int variant, bool have_ref)
      * present blit's single bilinear tap. Scoped to vk (ab/diff stay reference-
      * resolution for the 1:1 PsyCross comparison). */
     if (variant == NRV_VK && s_nr.ss_rtt && s_nr.ss_factor > 1 && s_nr.layout_ref_w > 0) {
+        /* NB the black clear is deliberate: clearing to the scene bg colour
+         * and skipping the bg fill quad measured as a WASH on NVIDIA — an
+         * arbitrary clear colour defeats the fast-clear/compression path and
+         * taxes every later colour write (~+130us on both the clear and the
+         * WORLD group at 4K SSAA4), cancelling the saved quad. */
+        rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
+        rhi_gpu_zone_begin(s_nr.dev, "sc.rtbegin");
         rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_gpu_zone_end(s_nr.dev);
         bool drew = draw_native_scene(false);   /* scene at ss_factor× (scissor auto-scaled) */
         rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
+        rhi_gpu_zone_end(s_nr.dev);
 
         rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
         if (drew) {
             int n = s_nr.ss_factor;
+            rhi_gpu_zone_begin(s_nr.dev, "sc.resolve");
             rhi_bind_pipeline(s_nr.dev, s_nr.resolve_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.ss_rtt);
             rhi_push_constants(s_nr.dev, &n, sizeof(n));
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
             rhi_draw(s_nr.dev, 6, 0);
+            rhi_gpu_zone_end(s_nr.dev);
         } else {
             /* Empty scene → PSX VRAM framebuffer fallback (1× direct, no SSAA). */
             int tx = 0, ty = 0;
@@ -5657,7 +5721,10 @@ static bool compose_variant(int variant, bool have_ref)
             tx = s_nr.disp_x;
             ty = s_nr.disp_y + dy;
         }
-        if (!draw_native_scene(false)) {
+        rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
+        bool scene_drew = draw_native_scene(false);
+        rhi_gpu_zone_end(s_nr.dev);
+        if (!scene_drew) {
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
             rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
