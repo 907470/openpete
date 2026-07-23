@@ -22,6 +22,11 @@ static void rewind_on_guest_discontinuity(void) {
 
 void openpete_rewind_configure(int window_seconds) {
     openpete_rewind_clear();
+    /* Keyframes own their snapshot blobs (~2.1 MiB each, lazily allocated);
+     * clear() only invalidates them, so a reconfigure must free them before
+     * dropping the ring or every live resize leaks the whole window. */
+    for (int i = 0; i < s_ring_n; i++)
+        if (s_ring[i].mem) openpete_state_mem_free(s_ring[i].mem);
     free(s_ring);
     s_ring = NULL;
     s_ring_n = 0;
