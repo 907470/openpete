@@ -6329,7 +6329,7 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
  * brackets pass literals), with strcmp as the collision fallback. WSLg /
  * lavapipe numbers measure the CPU rasterizer, not a GPU — real numbers come
  * from the Windows build (see plans/openpete-gpu-pass-timers.md). */
-#define GPUZ_MAX 16
+#define GPUZ_MAX 40   /* pass skeleton + nested sc.* (verbose) + per-mod postfx */
 static struct { const char *name; double ema; } s_gpuz[GPUZ_MAX];
 static int      s_gpuz_n = 0;
 static uint64_t s_gpuz_last = 0;
@@ -6352,7 +6352,17 @@ static void gpu_zone_report(void)
         }
     }
 
+    /* The once-per-second stderr line folds DEPTH-0 zones only (the pass
+     * skeleton + per-mod postfx attribution) — nested sub-zones (sc.*) would
+     * double its length and their audience is the --profile-out trace, which
+     * got every depth above. OPENPETE_GPU_TIMERS_VERBOSE=1 shows all depths. */
+    static int s_gpuz_verbose = -1;
+    if (s_gpuz_verbose < 0) {
+        const char* e = getenv("OPENPETE_GPU_TIMERS_VERBOSE");
+        s_gpuz_verbose = (e && *e && *e != '0');
+    }
     for (int i = 0; i < n; i++) {
+        if (!s_gpuz_verbose && res[i].depth > 0) continue;
         int k = -1;
         for (int j = 0; j < s_gpuz_n; j++) {
             if (s_gpuz[j].name == res[i].name || strcmp(s_gpuz[j].name, res[i].name) == 0) {
@@ -6371,7 +6381,7 @@ static void gpu_zone_report(void)
     uint64_t now = openpete_phase_now_us();
     if (s_gpuz_last == 0) s_gpuz_last = now;
     if (s_gpuz_n == 0 || now - s_gpuz_last < 1000000u) return;
-    char line[512]; int off = 0;
+    char line[1024]; int off = 0;
     off += snprintf(line + off, sizeof(line) - (size_t)off, "[gpu-pass f=%u]", s_scene_frame);
     for (int j = 0; j < s_gpuz_n && off < (int)sizeof(line); j++)
         off += snprintf(line + off, sizeof(line) - (size_t)off,
