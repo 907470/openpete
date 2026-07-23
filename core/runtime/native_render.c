@@ -2999,7 +2999,7 @@ static struct { uint64_t key; rhi_texture *tex; } s_hd_cache[HD_CACHE_SLOTS];
  * integer multiple of it samples NEAREST — block edges then coincide with
  * texel edges, so a dump fed straight back in renders bit-identically.
  * Anything else (arbitrary-resolution HD art) keeps LINEAR smoothing. */
-static struct { uint64_t key; const unsigned char *px; int w, h, box_w, box_h; } s_hd_pending[64];
+static struct { uint64_t key; const unsigned char *px; int w, h, box_w, box_h; } s_hd_pending[512];
 static int s_hd_pending_n = 0;
 
 static rhi_texture *hd_cache_lookup(uint64_t key)
@@ -3016,7 +3016,7 @@ static rhi_texture *hd_cache_lookup(uint64_t key)
 static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
                            int box_w, int box_h)
 {
-    if (s_hd_pending_n >= 64) return;
+    if (s_hd_pending_n >= 512) return;
     for (int i = 0; i < s_hd_pending_n; i++)
         if (s_hd_pending[i].key == key) return;
     s_hd_pending[s_hd_pending_n++] =
@@ -6176,7 +6176,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
-        if (attempt > 0 || s_hd_pending_n == 0) break;
+        if (attempt >= 8 || s_hd_pending_n == 0) break;
     }
     s_render_freeze_wf = prev_wf;
 
@@ -6295,8 +6295,9 @@ static int native_render_screenshot_all_impl(const char *base)
          * but in a headless run the only frames ARE these dumps — a single
          * screenshot bakes the gap into the PNG (mod-textured faces
          * invisible; cost a "chests don't render" ghost hunt, 2026-07-11).
-         * If this draw queued anything new, flush-and-redraw once. */
-        if (attempt > 0 || s_hd_pending_n == 0) break;
+         * Flush-and-redraw until nothing new is queued: a full HD pack can
+         * put hundreds of files in view at once, so one retry isn't enough. */
+        if (attempt >= 8 || s_hd_pending_n == 0) break;
     }
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */

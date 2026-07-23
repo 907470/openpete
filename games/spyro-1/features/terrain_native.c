@@ -35,6 +35,8 @@
 #include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 
 #include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
+#include "texture_pack.h"           /* identity resolve for the record dumper */
+#include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
 
 #include <math.h>
 #include <stdint.h>
@@ -656,6 +658,34 @@ static void emit_quad_cv(cvert tl, cvert tr, cvert bl, cvert br,
  * the original quad's raw NEAR colours. (The minority per-cell detail-bit finer
  * subdivision — the D_8006CF98 pattern path — is NOT replicated here; the 2×2 is
  * the dominant geometry and fixes the medallion's affine warp.) */
+/* HQ sub-quad UV ORIENTATION (rotation/flip), mirroring func_800276A0
+ * block_80027EA8: the HQ Tiledef carries an orientation index in `word1 >> 25`;
+ * when nonzero it selects an 8-byte entry in the offset table D_8006D058
+ * (`base + ori`) of per-corner packed (du | dv<<8) deltas added to the base
+ * UVs — TL/BL/BR relative to (u0,v0) [word0], TR relative to (u1,v1) [word1] —
+ * then masked to the u/v bytes (carry between u,v is faithful). Entry 0/64 are
+ * the identity transform (≡ decode_tiledef's default), so cells already drawn
+ * correctly are untouched. Without this, rotated/flipped HQ tiles render
+ * unrotated (~0.4% of near sub-quads in the attract demo: e.g. Artisans tiles
+ * 6/23 ori=104, the right-column sub-quads of a cell). The 16px (0x0F) table
+ * half is unused in practice. Returns the ori index (0 = identity, u/v kept). */
+static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) {
+    uint32_t ori = rd(cpu, e + 4) >> 25;
+    if (!ori) return 0;
+    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
+    uint32_t te = 0x8006D058u + ori;     /* D_8006D058: per-orientation UV-offset table */
+    uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
+    uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;  /* TL rel (u0,v0) */
+    uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;  /* TR rel (u1,v1) */
+    uint32_t bl = ((w0 & 0xFFFF) + (ew1 & 0xFFFF)) & 0xFFFF;  /* BL rel (u0,v0) */
+    uint32_t br = ((w0 & 0xFFFF) + (ew1 >> 16))    & 0xFFFF;  /* BR rel (u0,v0) */
+    u[0]=(float)(tl & 0xFF); v[0]=(float)((tl >> 8) & 0xFF);
+    u[1]=(float)(tr & 0xFF); v[1]=(float)((tr >> 8) & 0xFF);
+    u[2]=(float)(bl & 0xFF); v[2]=(float)((bl >> 8) & 0xFF);
+    u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
+    return (int)ori;
+}
+
 static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
                               cvert TL, cvert TR, cvert BL, cvert BR) {
     cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
@@ -677,31 +707,7 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
          * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
         uint32_t e = hqBase + (uint32_t)(i + 1) * 8u;
         decode_tiledef(cpu, e, abe, &mat, u, v);
-        /* HQ sub-quad UV ORIENTATION (rotation/flip), mirroring func_800276A0
-         * block_80027EA8: the HQ Tiledef carries an orientation index in
-         * `word1 >> 25`; when nonzero it selects an 8-byte entry in the offset
-         * table D_8006D058 (`base + ori`) of per-corner packed (du | dv<<8) deltas
-         * added to the base UVs — TL/BL/BR relative to (u0,v0) [word0], TR relative
-         * to (u1,v1) [word1] — then masked to the u/v bytes (carry between u,v is
-         * faithful). Entry 0/64 are the identity transform (≡ decode_tiledef's
-         * default), so cells already drawn correctly are untouched. Without this,
-         * rotated/flipped HQ tiles render unrotated (~0.4% of near sub-quads in the
-         * attract demo: e.g. Artisans tiles 6/23 ori=104, the right-column sub-quads
-         * of a cell). The 16px (0x0F) table half is unused in practice. */
-        uint32_t ori = rd(cpu, e + 4) >> 25;
-        if (ori) {
-            uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
-            uint32_t te = 0x8006D058u + ori;     /* D_8006D058: per-orientation UV-offset table */
-            uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
-            uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;  /* TL rel (u0,v0) */
-            uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;  /* TR rel (u1,v1) */
-            uint32_t bl = ((w0 & 0xFFFF) + (ew1 & 0xFFFF)) & 0xFFFF;  /* BL rel (u0,v0) */
-            uint32_t br = ((w0 & 0xFFFF) + (ew1 >> 16))    & 0xFFFF;  /* BR rel (u0,v0) */
-            u[0]=(float)(tl & 0xFF); v[0]=(float)((tl >> 8) & 0xFF);
-            u[1]=(float)(tr & 0xFF); v[1]=(float)((tr >> 8) & 0xFF);
-            u[2]=(float)(bl & 0xFF); v[2]=(float)((bl >> 8) & 0xFF);
-            u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
-        }
+        tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
         emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
 }
@@ -1954,9 +1960,166 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
  * per sector: the +0x18 anim word, vert regions, colour regions. Prints indices
  * that changed since the previous present. Proved the waterfall freeze (only
  * lq/hq tile 23 churns in artisans; secV/secC never → verts safe to cache). */
+/* ---- texture-record dumper (HD-pack matcher input) ------------------------ */
+
+int stbi_write_png(const char *filename, int w, int h, int comp,
+                   const void *data, int stride_in_bytes);   /* impl: screenshot.c TU */
+
+/* Sample one 32x32 tile out of the native VRAM model (base-row CLUT) into an
+ * RGBA8 canvas at (dx,dy). Texel decode + alpha encoding are identical to
+ * texture_pack_dump_draw (0x0000 sentinel -> transparent, STP -> 128). */
+static void texrec_blit32(const uint16_t* vr, const tmat* m, int u0, int v0,
+                          unsigned char* dst, int dst_w, int dx, int dy) {
+    const uint16_t* clut = vr + (size_t)m->cly * OPENPETE_VRAM_W + m->clx;
+    for (int y = 0; y < 32; y++) {
+        const uint16_t* row = vr + (size_t)(m->tpy + v0 + y) * OPENPETE_VRAM_W;
+        for (int x = 0; x < 32; x++) {
+            int uu = u0 + x;
+            uint16_t p;
+            if (m->bpp == 16)     p = row[m->tpx + uu];
+            else if (m->bpp == 8) p = clut[(row[m->tpx + (uu >> 1)] >> (8 * (uu & 1))) & 0xFFu];
+            else                  p = clut[(row[m->tpx + (uu >> 2)] >> (4 * (uu & 3))) & 0xFu];
+            unsigned char* o = dst + ((size_t)(dy + y) * dst_w + (size_t)(dx + x)) * 4;
+            unsigned r5 = p & 31u, g5 = (p >> 5) & 31u, b5 = (p >> 10) & 31u;
+            o[0] = (unsigned char)((r5 << 3) | (r5 >> 2));
+            o[1] = (unsigned char)((g5 << 3) | (g5 >> 2));
+            o[2] = (unsigned char)((b5 << 3) | (b5 >> 2));
+            o[3] = (p == 0) ? 0 : ((p & 0x8000u) ? 128 : 255);
+        }
+    }
+}
+
+/* Decode one record Tiledef entry, apply orientation, and reduce to the tile's
+ * stored VRAM box origin (min corner over the effective UVs — a rotated tile
+ * still occupies one 32x32 box; the ori deltas only permute which corner each
+ * spatial vertex samples). Returns the ori index. */
+static int texrec_entry(CPUState* cpu, uint32_t e, tmat* m, int* bu, int* bv) {
+    float u[4], v[4];
+    memset(m, 0, sizeof(*m)); m->bpp = 16;
+    decode_tiledef(cpu, e, 0, m, u, v);
+    int ori = tiledef_apply_ori(cpu, e, u, v);
+    float mu = u[0], mv = v[0];
+    for (int k = 1; k < 4; k++) {
+        if (u[k] < mu) mu = u[k];
+        if (v[k] < mv) mv = v[k];
+    }
+    *bu = (int)mu; *bv = (int)mv;
+    return ori;
+}
+
+/* Emit one entry's JSON: page/uv material + the resolved pack identity (the
+ * same (thash, box, phash) the replacement lookup keys on, so the offline
+ * pack builder can name files without any manifest join). */
+static void texrec_json(CPUState* cpu, FILE* f, const char* key, uint32_t e) {
+    tmat m; int bu, bv;
+    int ori = texrec_entry(cpu, e, &m, &bu, &bv);
+    fprintf(f, ",\"%s\":{\"tpx\":%d,\"tpy\":%d,\"u\":%d,\"v\":%d,\"bpp\":%d,\"clut\":%d,\"ori\":%d",
+            key, m.tpx, m.tpy, bu, bv, m.bpp, m.clut_raw, ori);
+    texture_pack_id id;
+    if (texture_pack_resolve(m.tpx, m.tpy, m.clx, m.cly, m.bpp,
+                             bu, bv, bu + 31, bv + 31, &id))
+        fprintf(f, ",\"id\":{\"thash\":\"%016llx\",\"phash\":\"%016llx\","
+                   "\"bx\":%d,\"by\":%d,\"bw\":%d,\"bh\":%d}",
+                (unsigned long long)id.thash, (unsigned long long)id.phash,
+                id.box_x, id.box_y, id.box_w, id.box_h);
+    else
+        fprintf(f, ",\"id\":null");
+    fprintf(f, "}");
+}
+
+/* OPENPETE_TEXPACK_RECORDS=<path>: dump the level's texture table as LOGICAL
+ * textures for the HD-pack matcher. Per tile index N (LQ tile index == HQ record
+ * index == a face's word2 & 0x7F), emit its LQ far/near Tiledef and the 4 HQ-record
+ * quadrant Tiledefs (m_HQTexturePointer + N*168, entries (i+1)*8 = TL,TR,BL,BR),
+ * each decoded to its VRAM page box + within-page (u,v) + bpp + clut + the
+ * resolved replacement identity. With OPENPETE_TEXPACK_RECORDS_DIR also set,
+ * each record's PIXELS are sampled straight from the native VRAM model — the
+ * same texels the renderer binds, so no offline join can skew them — as
+ * recNN-hq.png (64x64, the 4 quadrants composited), recNN-lq.png (32x32 near)
+ * and recNN-lqfar.png (32x32 far). Re-dumps (overwriting) whenever the table
+ * POINTERS change — every level load (titlescreen included) bump-allocates
+ * fresh tables, so the last dump always describes the level currently loaded,
+ * not whichever scene rendered first. */
+static void terrain_texrecords(CPUState* cpu) {
+    static int off = 0;
+    static uint32_t sig = 0;
+    if (off) return;
+    const char* path = getenv("OPENPETE_TEXPACK_RECORDS");
+    if (!path || !*path) { off = 1; return; }
+    const char* dir = getenv("OPENPETE_TEXPACK_RECORDS_DIR");
+    uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
+    uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
+    uint32_t texCnt  = rd(cpu, G_ENVIRONMENT + ENV_TEXCNT);
+    if (!lqTable || !hqTable || !texCnt) return;   /* not loaded yet — retry next frame */
+    uint32_t s = lqTable ^ (hqTable * 2654435761u) ^ (texCnt << 24);
+    if (s == sig) return;                          /* this level already dumped */
+    sig = s;
+    if (texCnt > 128) texCnt = 128;
+    FILE* f = fopen(path, "w");
+    if (!f) { off = 1; return; }
+    const uint16_t* vr = openpete_vram_data();
+    fprintf(f, "{\"texCnt\":%u,\"tiles\":[", texCnt);
+    for (uint32_t N = 0; N < texCnt; N++) {
+        fprintf(f, "%s{\"n\":%u", N ? "," : "", N);
+        texrec_json(cpu, f, "lq_far",  lqTable + N*16u);
+        texrec_json(cpu, f, "lq_near", lqTable + N*16u + 8u);
+        fprintf(f, ",\"hq\":[");
+        for (int i = 0; i < 4; i++) {
+            fprintf(f, "%s{\"q\":%d", i ? "," : "", i);
+            texrec_json(cpu, f, "t", hqTable + N*168u + (uint32_t)(i+1)*8u);
+            fprintf(f, "}");
+        }
+        fprintf(f, "]}");
+        if (dir && *dir && vr) {
+            static unsigned char px[64 * 64 * 4];
+            char fn[640];
+            tmat m; int bu, bv;
+            /* 64x64 HQ composite: quadrant i -> (i&1)*32, (i>>1)*32. */
+            for (int i = 0; i < 4; i++) {
+                texrec_entry(cpu, hqTable + N*168u + (uint32_t)(i+1)*8u, &m, &bu, &bv);
+                texrec_blit32(vr, &m, bu, bv, px, 64, (i & 1) * 32, (i >> 1) * 32);
+            }
+            snprintf(fn, sizeof fn, "%s/rec%02u-hq.png", dir, N);
+            stbi_write_png(fn, 64, 64, 4, px, 64 * 4);
+            /* LQ near + far 32x32 tiles. */
+            texrec_entry(cpu, lqTable + N*16u + 8u, &m, &bu, &bv);
+            texrec_blit32(vr, &m, bu, bv, px, 32, 0, 0);
+            snprintf(fn, sizeof fn, "%s/rec%02u-lq.png", dir, N);
+            stbi_write_png(fn, 32, 32, 4, px, 32 * 4);
+            texrec_entry(cpu, lqTable + N*16u, &m, &bu, &bv);
+            texrec_blit32(vr, &m, bu, bv, px, 32, 0, 0);
+            snprintf(fn, sizeof fn, "%s/rec%02u-lqfar.png", dir, N);
+            stbi_write_png(fn, 32, 32, 4, px, 32 * 4);
+        }
+    }
+    fprintf(f, "]}\n");
+    fclose(f);
+    fprintf(stderr, "[texpack-records] wrote %u logical tiles -> %s%s%s\n",
+            texCnt, path, (dir && *dir) ? ", pixels -> " : "",
+            (dir && *dir) ? dir : "");
+}
+
 static void terrain_animdbg(CPUState* cpu) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ANIMDBG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    /* OPENPETE_TEXPACK_ANIMPROBE=<N>: raw Tiledef words of record N each
+     * present — shows HOW env anim (func_8002A6FC) rewrites an animated tile
+     * (UV scroll vs CLUT swap), which decides the shape of its replacement
+     * file (a box covering the full swept range). */
+    static int probeN = -2;
+    if (probeN == -2) { const char* e = getenv("OPENPETE_TEXPACK_ANIMPROBE"); probeN = (e && *e) ? atoi(e) : -1; }
+    if (probeN >= 0) {
+        uint32_t lt = rd(cpu, G_ENVIRONMENT + ENV_LQTEX), ht = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
+        if (lt && ht) {
+            fprintf(stderr, "[animprobe f=%u] lq %08x %08x | %08x %08x | hq",
+                    openpete_frame, rd(cpu, lt + (uint32_t)probeN*16u), rd(cpu, lt + (uint32_t)probeN*16u + 4),
+                    rd(cpu, lt + (uint32_t)probeN*16u + 8), rd(cpu, lt + (uint32_t)probeN*16u + 12));
+            for (int i = 0; i < 5; i++)
+                fprintf(stderr, " %08x %08x", rd(cpu, ht + (uint32_t)probeN*168u + (uint32_t)i*8u),
+                        rd(cpu, ht + (uint32_t)probeN*168u + (uint32_t)i*8u + 4));
+            fprintf(stderr, "\n");
+        }
+    }
     if (!on) return;
     uint32_t lqTable   = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
     uint32_t hqTable   = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
@@ -2006,6 +2169,7 @@ static void terrain_animdbg(CPUState* cpu) {
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
+    terrain_texrecords(cpu);
     terrain_animdbg(cpu);
     terrain_abr_scan(cpu);
     tsc_census();
