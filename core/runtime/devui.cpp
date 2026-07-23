@@ -201,6 +201,14 @@ static void row_tooltip(const knob_desc_t *k)
     ImGui::EndTooltip();
 }
 
+/* In-progress edit shadow. Numeric widgets are re-seeded from the live
+ * getter every frame, so without this a +/- click or a drag is overwritten
+ * by the getter on the next frame before the deactivate-commit ever fires
+ * (the value visibly "reverts"). While a row's widget is active its edited
+ * value lives here; the commit on release reads the shadow. */
+static const knob_desc_t *s_edit_row = nullptr;
+static double             s_edit_val = 0.0;
+
 static void draw_row(knob_desc_t *k)
 {
     ImGui::TableNextRow();
@@ -225,10 +233,12 @@ static void draw_row(knob_desc_t *k)
         break;
     }
     case KNOB_INT: {
-        int v = (int)(k->get_num ? k->get_num(k) : k->stored_num);
+        double live = k->get_num ? k->get_num(k) : k->stored_num;
+        int v = (int)((s_edit_row == k) ? s_edit_val : live);
         /* Commit on deactivate, not per keystroke — a half-typed value must
          * not hit a setter with an apply cost (rewind clears its history). */
         ImGui::InputInt("##v", &v);
+        if (ImGui::IsItemActive()) { s_edit_row = k; s_edit_val = v; }
         if (ImGui::IsItemDeactivatedAfterEdit() && k->set_num) {
             if (k->num_max > k->num_min) {
                 if (v < (int)k->num_min) v = (int)k->num_min;
@@ -237,15 +247,19 @@ static void draw_row(knob_desc_t *k)
             if (k->set_num(k, v) == 0)
                 OPL_INFO_F("devui", "%s = %d", k->id, v);
         }
+        if (ImGui::IsItemDeactivated() && s_edit_row == k) s_edit_row = nullptr;
         break;
     }
     case KNOB_FLOAT: {
-        float v = (float)(k->get_num ? k->get_num(k) : k->stored_num);
+        double live = k->get_num ? k->get_num(k) : k->stored_num;
+        float v = (float)((s_edit_row == k) ? s_edit_val : live);
         ImGui::DragFloat("##v", &v, 0.05f, k->num_min, k->num_max, "%.3f");
+        if (ImGui::IsItemActive()) { s_edit_row = k; s_edit_val = v; }
         if (ImGui::IsItemDeactivatedAfterEdit() && k->set_num) {
             if (k->set_num(k, v) == 0)
                 OPL_INFO_F("devui", "%s = %.3f", k->id, v);
         }
+        if (ImGui::IsItemDeactivated() && s_edit_row == k) s_edit_row = nullptr;
         break;
     }
     case KNOB_ENUM: {
