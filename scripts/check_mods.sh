@@ -808,15 +808,20 @@ fi
 # would be sepia'd or the scene black. Assert the marker is yellow
 # (under-HUD) AND a scene sample is sepia (SCENE ran). Windowed + a
 # real level (--skip-to-level 10) so the frame has 3D content.
+# NB --skip-to-level fast-forwards presents until the level is playable
+# (~f1700 for the induced Artisans demo), so the recording only spans
+# the in-level tail — size the frame limit past the load and sample
+# near the END of the video, never at a fixed offset from its start.
 say "mod shaders: SCENE point processes the scene under the HUD"
 if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
     fixture "$WORK/sepia" scene-sepia
     timeout 300 "$BIN" --disc "$DISC" --run-recomp 0x80012204 \
-        --skip-to-level 10 --frame-limit 1400 --mods-dir "$WORK/sepia" \
+        --skip-to-level 10 --frame-limit 2600 --mods-dir "$WORK/sepia" \
         --record "$WORK/sepia/probe.mkv" > "$WORK/sepia.log" 2>&1 || true
     if [ -s "$WORK/sepia/probe.mkv" ] &&
-       ffmpeg -y -loglevel error -ss 18 -i "$WORK/sepia/probe.mkv" \
-              -frames:v 1 "$WORK/sepia/frame.png" 2>/dev/null; then
+       ffmpeg -y -loglevel error -sseof -2 -i "$WORK/sepia/probe.mkv" \
+              -frames:v 1 "$WORK/sepia/frame.png" 2>/dev/null &&
+       [ -s "$WORK/sepia/frame.png" ]; then
         sepia_v=$(python3 - "$WORK/sepia/frame.png" <<'PYEOF'
 import sys
 from PIL import Image
