@@ -273,6 +273,7 @@ typedef struct {
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
     int fog_delta;                                 /* CLUT ladder row (see tmat) */
+    int16_t texid;                                 /* Tiledef/record id, -1 untex (S9) */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
@@ -454,7 +455,8 @@ typedef struct { uint32_t rgb; float u, v; } lcorner;
  * palette the texture was authored against: the texture-replacement registry
  * keys identity on the BASE row, so one pack file covers a texture at every
  * fog distance instead of the ladder fanning it into 15 near-duplicates. */
-typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta; } tmat;
+typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta;
+                 int texid; /* Tiledef/record id (word2 & 0x7F), -1 = untextured */ } tmat;
 
 /* Decode a terrain face's texture material + its 4 corner UVs from the
  * m_LQTexturePointer Tiledef table (§8). texByte (int8 of HP face word2):
@@ -500,10 +502,11 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
 
 static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDetail,
                            tmat* m, float u[4], float v[4]) {
-    memset(m, 0, sizeof(*m)); m->bpp = 16;
+    memset(m, 0, sizeof(*m)); m->bpp = 16; m->texid = -1;
     if (texByte == -1) { m->textured = 0; return; }      /* 0xFF: untextured */
     uint32_t e = table + (uint32_t)(texByte & 0x7F) * 16u + (hiDetail ? 8u : 0u);  /* LOD half */
     decode_tiledef(cpu, e, (texByte < 0), m, u, v);      /* high bit = semi-transparent */
+    m->texid = texByte & 0x7F;                           /* texture-selector key (S9) */
 }
 
 /* Native colour-verts (per emitted tri corner) for the colour A/B. */
@@ -556,6 +559,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->textured=m->textured; t->tpx=m->tpx; t->tpy=m->tpy;
     t->clx=m->clx; t->cly=m->cly; t->bpp=m->bpp; t->blend=m->blend;
     t->fog_delta=m->fog_delta;
+    t->texid=(int16_t)(m->textured ? m->texid : -1);
     t->tier = s_emit_noHP;
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
@@ -703,7 +707,7 @@ static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) 
     return (int)ori;
 }
 
-static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
+static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int texid, int abe,
                               cvert TL, cvert TR, cvert BL, cvert BR) {
     cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
     cvert mL = cv_mid(TL, BL), mR = cv_mid(TR, BR);
@@ -724,6 +728,7 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int abe,
          * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
         uint32_t e = hqBase + (uint32_t)(i + 1) * 8u;
         decode_tiledef(cpu, e, abe, &mat, u, v);
+        mat.texid = texid;                /* HQ quadrants share the record's id */
         tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
         emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
@@ -3036,8 +3041,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
                 cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
                 cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
-                terrain_near_emit(cpu, hqTable + (uint32_t)F->hq_idx * 168u, abe,
-                                  TL, TR, BL, BR);
+                terrain_near_emit(cpu, hqTable + (uint32_t)F->hq_idx * 168u,
+                                  F->hq_idx, abe, TL, TR, BL, BR);
                 s_dbg_spike++;   /* near/HQ cells subdivided */
                 continue;
             }
@@ -3521,6 +3526,10 @@ static void terrain_feed_native(CPUState* cpu) {
     /* Untextured-band material (S8c): one resolve per feed — the whole
      * beyond-LOD gouraud band shares a single per-instance outcome. */
     const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
+    /* Texture-keyed materials (S9): one resolve per (feed, Tiledef id),
+     * memoized — -1 = unresolved. */
+    int16_t tex_slot[128];
+    memset(tex_slot, 0xFF, sizeof tex_slot);
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -3627,8 +3636,40 @@ static void terrain_feed_native(CPUState* cpu) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
+        int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;
+        if (tid >= 0 && tex_slot[tid] < 0) {
+            tex_slot[tid] = (int16_t)openpete_mods_material_terrain_tex_slot(cpu, tid);
+            static int s_tsr = -2;
+            if (s_tsr == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG");
+                               s_tsr = e2 ? atoi(e2) : -1; }
+            if (s_tsr == tid && openpete_frame > 2000u) { static int pr2;
+                if (pr2++ < 12) fprintf(stderr, "[texsel-resolve f=%u] tid=%d -> slot=%d\n",
+                                        openpete_frame, tid, tex_slot[tid]); }
+        }
+        {   /* OPENPETE_TEXSEL_DBG=<tid>: once per present, count that id's
+             * textured tris + missing-texid textured tris + its slot. */
+            static int s_tsdbg = -2;
+            if (s_tsdbg == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG");
+                                 s_tsdbg = e2 ? atoi(e2) : -1; }
+            if (s_tsdbg >= 0) {
+                static unsigned lf = 0xFFFFFFFFu; static int nt, nm;
+                if (openpete_frame != lf) {
+                    if (lf != 0xFFFFFFFFu)
+                        fprintf(stderr, "[texsel f=%u] tid=%d tris=%d slot=%d "
+                                "textured-missing-texid=%d\n", lf, s_tsdbg, nt,
+                                tex_slot[s_tsdbg], nm);
+                    lf = openpete_frame; nt = 0; nm = 0;
+                }
+                if (tid == s_tsdbg) nt++;
+                if (tex && tid < 0) nm++;
+            }
+        }
         openpete_native_scene_set_tag(tex
-            ? OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec)
+            ? (tid >= 0
+                   ? OPENPETE_TAG_TERRAIN_TEX(t->tier, t->env,
+                                              t->sec < 0 ? 0 : t->sec,
+                                              tid, tex_slot[tid])
+                   : OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec))
             : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
                                          t->sec < 0 ? 0 : t->sec, untex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);

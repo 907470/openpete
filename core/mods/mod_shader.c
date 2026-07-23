@@ -956,9 +956,13 @@ int openpete_mods_material_register(openpete_mod_t* self,
                     "hook (register at entry)", id);
         return -1;
     }
-    if (sel->texture != -1) {
-        OPL_WARN_F("mods", "%s: material selector texture ids are not "
-                   "available yet — use texture = -1", id);
+    if (sel->texture != -1 &&
+        (sel->texture < 0 || sel->texture > 0x7F ||
+         (sel->path != -1 && sel->path != 1 /*OP_RP_TERRAIN*/) ||
+         (sel->flags & 0x8u /*OP_SEL_UNTEXTURED*/))) {
+        OPL_ERROR_F("mods", "%s: material texture selector must be a terrain "
+                    "Tiledef id 0..127 on a textured path (got %d)", id,
+                    sel->texture);
         return -1;
     }
     if (frag_shader >= 0) {
@@ -1012,6 +1016,7 @@ static int material_moby_winner(int cls) {
         if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
         if (m->sel.path != -1 && m->sel.path != 0 /*OP_RP_MOBY*/) continue;
         if (m->sel.moby_class != -1 && m->sel.moby_class != cls) continue;
+        if (m->sel.texture != -1) continue;   /* texture keys are terrain-only */
         if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
                             OP_SEL_UNTEXTURED))
             continue;   /* terrain-only refinements never match a moby */
@@ -1065,10 +1070,64 @@ static int material_terrain_untex_winner(void) {
         if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
         if (!m->per_instance) continue;
         if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (m->sel.texture != -1) continue;   /* untex band has no texture */
         if (!(m->sel.flags & OP_SEL_UNTEXTURED)) continue;
         if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
     }
     return best;
+}
+
+/* Winner among per-instance TERRAIN selectors keyed on a textured face's
+ * Tiledef id (S9). */
+static int material_terrain_tex_winner(int texid) {
+    int best = -1;
+    for (int i = 0; i < s_mat_count; i++) {
+        mod_material_t* m = &s_mats[i];
+        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (!m->per_instance) continue;
+        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (m->sel.flags & OP_SEL_UNTEXTURED) continue;
+        /* Per-instance terrain selectors are texture-keyed: texture=-1
+         * per-instance stays the untex band's business (S8c), never a
+         * blanket all-textured-terrain override. */
+        if (m->sel.texture == -1 || m->sel.texture != texid) continue;
+        if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
+    }
+    return best;
+}
+
+/* Resolve the texture-keyed material for one textured terrain face id, once
+ * per (present, texid) — the feeder memoizes per texid. The callback receives
+ * the Tiledef id in the moby_vaddr argument. Returns the interned slot for
+ * OPENPETE_TAG_TERRAIN_TEX (0 = no per-instance winner -> declarative
+ * resolve; OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
+int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
+    static int s_dbg = -2;
+    if (s_dbg == -2) { const char* e = getenv("OPENPETE_TEXSEL_DBG3");
+                       s_dbg = e ? atoi(e) : -1; }
+    if (!s_mat_has_instance) return 0;
+    int w = material_terrain_tex_winner(texid);
+    if (w < 0) { if (s_dbg == texid) { static int p1; if (p1++ < 8)
+                     fprintf(stderr, "[texslot] tid=%d NO-WINNER\n", texid); }
+                 return 0; }
+    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    int rc = s_mats[w].per_instance(cpu, (uint32_t)texid, buf, sizeof buf);
+    if (s_dbg == texid) { static int p2; if (p2++ < 30)
+        fprintf(stderr, "[texslot] tid=%d w=%d rc=%d slot_n=%d\n",
+                texid, w, rc, s_mat_slot_n); }
+    if (rc < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
+    if (rc > (int)sizeof buf) rc = (int)sizeof buf;
+    for (int s = 1; s < s_mat_slot_n; s++)
+        if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
+            memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
+            return s;
+    if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
+        return OPENPETE_MATERIAL_TERRAIN_STOCK;   /* table full → graceful stock */
+    int s = s_mat_slot_n++;
+    s_mat_slots[s].mat = w;
+    s_mat_slots[s].len = (uint32_t)rc;
+    memcpy(s_mat_slots[s].bytes, buf, (size_t)rc);
+    return s;
 }
 
 /* Resolve the untextured-terrain material once per extraction (terrain has
@@ -1134,7 +1193,7 @@ int openpete_mods_material_resolve(uint32_t tag,
     }
 
     int untex = (path == 1) && (tag & 0x02000000u);
-    if (untex) {   /* terrain untextured band: per-extraction slot (S8c) */
+    if (path == 1) {   /* terrain: per-present slot (S8c untex / S9 texture) */
         int slot = (int)((tag >> 16) & 0x1FFu);
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1;   /* declined */
         if (slot != 0) {
@@ -1147,6 +1206,7 @@ int openpete_mods_material_resolve(uint32_t tag,
     int cls  = (path == 0) ? (int)(tag & 0xFFFFu) : -1;
     int env  = (path == 1) && (tag & 0x08000000u);
     int lp   = (path == 1) && (tag & 0x04000000u);
+    int tex  = (path == 1 && !untex) ? (int)((tag >> 9) & 0x7Fu) : -1;
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
@@ -1154,6 +1214,9 @@ int openpete_mods_material_resolve(uint32_t tag,
         if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
         if (m->sel.path != -1 && m->sel.path != path) continue;
         if (path == 0 && m->sel.moby_class != -1 && m->sel.moby_class != cls)
+            continue;
+        /* Texture key (S9): terrain textured faces only. */
+        if (m->sel.texture != -1 && (tex < 0 || m->sel.texture != tex))
             continue;
         if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
         if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;

@@ -44,8 +44,9 @@ auto-invalidates your cache. **Material** fragment shaders include
 `openpete_psx_material.glsl` instead (never both — they claim the same
 descriptor set differently): it carries the material-tier interface plus
 the stock PSX decode as functions (`op_psx_shade()` = faithful stock
-result), so a material builds ON the faithful base rather than forking
-it. Forks of `sdk/shaders/psx_scene.frag` still work but freeze the
+result) and HD texture-pack access (`op_pack_shade()` = the scene with
+the installed pack applied), so a material builds ON the faithful base
+rather than forking it. Forks of `sdk/shaders/psx_scene.frag` still work but freeze the
 decode they copied; include-based materials are rebuilt by the engine
 whenever the contract evolves.
 
@@ -168,7 +169,51 @@ cost. Uniforms are recomputed every present (the callback reads
 tick-stable guest RAM, so results don't strobe across sub-tick
 frames). See `mods/moby-instance-tint` for a working example.
 
-Texture-id selectors (`sel.texture`) are not yet available — use `-1`.
+### Texture-keyed terrain materials
+
+`sel.texture` keys a terrain material to ONE texture record — the
+Tiledef id `0..127` (a face's `word2 & 0x7F`, the same record index the
+texture-dump tooling names files by). This is how you re-light a single
+piece of level art — a sign, a medallion, a lamp face — without
+touching the rest of the level:
+
+```c
+openpete_mod_material_selector_t sel = { OP_RP_TERRAIN, -1, /*record*/10, 0 };
+api->material_register(self, &sel, -1, frag, my_instance);
+```
+
+Terrain textured faces only (it never matches mobys or the untextured
+band). A per-instance callback here receives the texture id in the
+`moby_vaddr` argument and is resolved once per present per id — return
+time-varying uniforms for animated effects (a pulse, a flicker); the
+per-present re-intern keeps them smooth at any present rate.
+
+### Materials and HD texture packs
+
+A material takes its draws away from the engine's replacement path, so
+`op_psx_shade()` only ever sees the stock VRAM decode — on its own, an
+installed HD file for the same texture would go dark on the overridden
+faces and they'd seam against their unoverridden neighbours. The
+contract's pack functions close that gap:
+
+- `op_pack_active()` — true when the active pack replaces this draw's
+  texture (false: no pack, no matching file, or the file's one-present
+  GPU upload latency on first sighting).
+- `op_pack_shade()` — the scene as the player would see it *without*
+  your material: the pack's art with the CLUT-ladder fog and vertex
+  modulate applied (opaque-scene cutout alpha, same `a == 0.0` discard
+  convention). Falls back to `op_psx_shade()` when nothing matched, so
+  it is always safe as the base layer.
+- `op_pack_texel(vec2 page_uv)` — the raw replacement sample (true
+  per-texel alpha, no fog/modulate) for effects that want the art
+  itself.
+
+Build effects on `op_pack_shade()` instead of `op_psx_shade()` whenever
+the material should respect installed texture packs (your own pack
+included — a re-graded pack plus a material re-lighting one record
+composes exactly this way). The engine matches pack files per triangle
+under a material override just like the stock path, so a run spanning
+replaced and unreplaced faces renders each correctly.
 
 ## Verifying your effect (read this before debugging "it doesn't draw")
 

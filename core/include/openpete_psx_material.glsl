@@ -29,7 +29,7 @@
  * the previous-pass image in the postfx tier (openpete_shader_api.glsl).
  * A shader includes one contract or the other, never both.
  *
- * Reserved for the engine: push constants, set 0, and input locations
+ * Reserved for the engine: push constants, sets 0-1, and input locations
  * 0-1. A material's own uniform block is set 3 binding 1 (std140). */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
@@ -37,10 +37,19 @@
 
 layout(set = 0, binding = 0) uniform usampler2D op_vram; /* R16_UINT 1024x512 */
 
+/* The active HD texture-pack replacement covering this draw (RGBA8), when
+ * op_pc.hd != 0; a 1x1 placeholder otherwise. Sample through op_pack_*. */
+layout(set = 1, binding = 0) uniform sampler2D op_pack_tex;
+
 layout(push_constant) uniform op_psx_material {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
     int clut_x,  clut_y;    /* CLUT origin (VRAM pixel units; paletted only) */
     int bpp;                /* 4, 8, or 16 */
+    int hd;                 /* 1 = op_pack_tex holds this draw's replacement  */
+    vec2 hd_org;            /* the pack FILE's texel box within the texture   */
+    vec2 hd_size;           /*   page (origin / size, page texel coords)      */
+    vec4 hd_fog_a;          /* CLUT-ladder fog affine for the replacement:    */
+    vec4 hd_fog_b;          /*   c' = c*a + b (identity when unfogged); .rgb  */
 } op_pc;
 
 layout(location = 0) in vec2 vUV;     /* texel coords within the texture page */
@@ -94,6 +103,41 @@ vec4 op_psx_shade()
     if (op_pc.bpp == 0) return vec4(vColor.rgb, 1.0);
     vec4 c = op_psx_texel(ivec2(vUV));
     return vec4(op_psx_modulate(c.rgb, vColor.rgb), c.a);
+}
+
+/* ---- HD texture-pack access ------------------------------------------
+ * A material override takes the draw away from the engine's replacement
+ * path, so without these the shader only ever sees the stock VRAM decode
+ * and any HD art the player installed for the same texture goes dark.
+ * op_pack_shade() restores it: build the effect ON the pack's art the
+ * same way op_psx_shade() builds on stock. */
+
+/* True when the active texture pack replaces this draw's texture (and
+ * op_pack_tex holds it). False: no pack, no matching file, or the file's
+ * GPU upload hasn't completed (first sighting — one present of stock). */
+bool op_pack_active() { return op_pc.hd != 0; }
+
+/* Raw replacement texel at page-texel coords (vUV space). The pack file's
+ * own resolution and filter; true per-texel alpha; NO fog or modulation. */
+vec4 op_pack_texel(vec2 page_uv)
+{
+    vec2 t = (page_uv - op_pc.hd_org) / op_pc.hd_size;
+    return texture(op_pack_tex, clamp(t, 0.0, 1.0));
+}
+
+/* The scene result WITH the active texture pack: what the player would
+ * see if this material weren't installed. Replacement sample + the
+ * CLUT-ladder fog affine + the vertex modulate, with the opaque-scene
+ * cutout rule (alpha < 0.5 -> a == 0.0, caller discards) — mirroring the
+ * engine's own replacement pipe. Falls back to op_psx_shade() when no
+ * replacement covers the draw, so it is always safe as the base layer. */
+vec4 op_pack_shade()
+{
+    if (op_pc.hd == 0) return op_psx_shade();
+    vec4 c = op_pack_texel(vUV);
+    if (c.a < 0.5) return vec4(0.0);
+    c.rgb = clamp(c.rgb * op_pc.hd_fog_a.rgb + op_pc.hd_fog_b.rgb, 0.0, 1.0);
+    return vec4(op_psx_modulate(c.rgb, vColor.rgb), 1.0);
 }
 
 #endif /* OPENPETE_PSX_MATERIAL_GLSL */

@@ -227,7 +227,11 @@ enum {
 typedef struct openpete_mod_material_selector {
     int      path;        /* OP_RP_* ; -1 = any path */
     int      moby_class;  /* Moby m_Class; -1 = any (terrain: ignored) */
-    int      texture;     /* tiledef/texture id; -1 = any */
+    int      texture;     /* terrain Tiledef/texture-record id 0..127 (a face's
+                           * word2 & 0x7F — the record index the texture-dump
+                           * tooling reports); -1 = any. Terrain textured faces
+                           * only; a per-instance callback here receives the
+                           * texture id in the moby_vaddr argument. */
     unsigned flags;       /* OP_SEL_* refinements, 0 = none */
 } openpete_mod_material_selector_t;
 

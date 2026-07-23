@@ -471,6 +471,10 @@ int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
  * Returns the slot for OPENPETE_TAG_TERRAIN_UNTEX (0 = declarative,
  * OPENPETE_MATERIAL_TERRAIN_STOCK = declined). */
 int  openpete_mods_material_terrain_untex_slot(CPUState* cpu);
+/* Texture-keyed twin (S9): resolve the per-instance material for one textured
+ * terrain face's Tiledef id. Same slot semantics as the untex resolve; the
+ * feeder memoizes per (present, texid). */
+int  openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid);
 /* Per-present interned-slot table lifecycle + readout for the material
  * UBO (native_render): reset at scene-begin, then the extractor interns
  * during the walk, then native_render writes each slot's bytes into the

@@ -524,7 +524,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
  *   bits 31:28  path (0 = untagged, 1 = moby, 2 = terrain)
  *   moby:       bits 15:0  m_Class
  *   terrain:    bit 27 env-anim member (func_8002A6FC rewrite set),
- *               bit 26 LP tier, bits 8:0 sector id
+ *               bit 26 LP tier, bits 8:0 sector id; textured faces add
+ *               the Tiledef/texture-record id in [15:9] (word2 & 0x7F —
+ *               the texture-selector key, S9) and a per-present material
+ *               slot in [24:16] (texture-keyed per-instance resolve)
  *
  * INERT BY DEFAULT: the tag joins the material sort/coalesce key ONLY
  * when a split consumer is armed (a registered material selector — S8 —
@@ -540,6 +543,13 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 #define OPENPETE_TAG_TERRAIN(lp, env, sec) \
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))
+/* Textured terrain face (S9): [15:9] = the face's Tiledef/texture-record id
+ * (word2 & 0x7F — the id texture selectors key on), [24:16] = the
+ * per-present material slot from the texture-keyed per-instance resolve
+ * (0 = declarative resolve, 0x1FF = the callback declined -> stock). */
+#define OPENPETE_TAG_TERRAIN_TEX(lp, env, sec, tex, slot) \
+    (OPENPETE_TAG_TERRAIN(lp, env, sec) | \
+     (((uint32_t)(slot) & 0x1FFu) << 16) | (((uint32_t)(tex) & 0x7Fu) << 9))
 /* Untextured terrain band (S8c): bit 25 marks the flat/gouraud tris, and
  * [24:16] carries the per-extraction material slot (0 = declarative resolve,
  * 0x1FF = the callback declined -> stock). */
