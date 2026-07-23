@@ -3182,9 +3182,61 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
     }
 }
 
+/* Deferred HD sub-runs (opaque depth-tested groups). Emitting each matched
+ * sub-run inline costs two pipeline binds + two texture binds (draw, then
+ * restore self/vram) PER SUB-RUN — a full pack under --lod extended produces
+ * thousands of sub-runs per present and the rebind storm dominates frame
+ * time. Depth testing makes opaque draw order irrelevant, so the cutout
+ * groups batch instead: collect sub-runs during the walk, then draw them
+ * sorted by texture — one pipeline bind for the whole batch, one texture
+ * bind per file, and the SD walk never leaves `self`. Blend/HUD HD draws
+ * stay inline: their order is meaningful and they are few. */
+typedef struct { rhi_texture *tex; uint32_t count, first; hd_pc pc; } hd_defer_ent;
+static hd_defer_ent *s_hd_defer;
+static int s_hd_defer_n, s_hd_defer_cap;
+
+static int hd_defer_cmp(const void *a, const void *b)
+{
+    const hd_defer_ent *x = a, *y = b;
+    if (x->tex != y->tex) return x->tex < y->tex ? -1 : 1;
+    return x->first < y->first ? -1 : (x->first > y->first);   /* deterministic */
+}
+
+static void hd_defer_push(rhi_texture *tex, const hd_pc *pc,
+                          uint32_t count, uint32_t first)
+{
+    if (s_hd_defer_n == s_hd_defer_cap) {
+        int cap = s_hd_defer_cap ? s_hd_defer_cap * 2 : 1024;
+        void *p = realloc(s_hd_defer, (size_t)cap * sizeof *s_hd_defer);
+        if (!p) return;                        /* sub-run drops for this present */
+        s_hd_defer = p; s_hd_defer_cap = cap;
+    }
+    hd_defer_ent *e = &s_hd_defer[s_hd_defer_n++];
+    e->tex = tex; e->pc = *pc; e->count = count; e->first = first;
+}
+
+static void hd_defer_flush(rhi_pipeline *hd_pipe, rhi_pipeline *self)
+{
+    if (!s_hd_defer_n) return;
+    qsort(s_hd_defer, (size_t)s_hd_defer_n, sizeof *s_hd_defer, hd_defer_cmp);
+    rhi_bind_pipeline(s_nr.dev, hd_pipe);
+    rhi_texture *cur = NULL;
+    for (int i = 0; i < s_hd_defer_n; i++) {
+        hd_defer_ent *e = &s_hd_defer[i];
+        if (e->tex != cur) { rhi_bind_vram(s_nr.dev, e->tex); cur = e->tex; }
+        rhi_push_constants(s_nr.dev, &e->pc, sizeof e->pc);
+        rhi_draw(s_nr.dev, e->count, e->first);
+    }
+    s_hd_defer_n = 0;
+    rhi_bind_pipeline(s_nr.dev, self);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+}
+
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe, int allow_override) {
+    const int hd_defer_ok = hd_pipe == s_nr.hd_cutout_pipe ||
+                            hd_pipe == s_nr.hd_cutout_mark_pipe;
     int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
     while (i < ntri) {
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
@@ -3401,13 +3453,18 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         tp_fog_affine(m.clut_x, cly, st->fog_delta, m.bpp, &fx);
                         for (int c = 0; c < 3; c++) { pc.a[c] = fx.a[c]; pc.b[c] = fx.b[c]; }
                     }
-                    rhi_bind_pipeline(s_nr.dev, hd_pipe);
-                    rhi_bind_vram(s_nr.dev, tex);
-                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                    rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
-                    rhi_bind_pipeline(s_nr.dev, self);
-                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                    m_pushed = 0;               /* push constants were overwritten */
+                    if (hd_defer_ok) {
+                        hd_defer_push(tex, &pc, (uint32_t)(g * 3),
+                                      (uint32_t)(first_vert + (i + t) * 3));
+                    } else {
+                        rhi_bind_pipeline(s_nr.dev, hd_pipe);
+                        rhi_bind_vram(s_nr.dev, tex);
+                        rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+                        rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
+                        rhi_bind_pipeline(s_nr.dev, self);
+                        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                        m_pushed = 0;           /* push constants were overwritten */
+                    }
                     t += g;
                     continue;
                 }
@@ -3422,6 +3479,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
         }
         i += run;
     }
+    if (hd_defer_ok) hd_defer_flush(hd_pipe, self);
 }
 
 static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
