@@ -4721,10 +4721,14 @@ static bool draw_native_scene(bool full_extent)
      * A large win at SSAA/high-res scene targets. OPENPETE_BACKDROP_DEFER=0
      * restores draw-first; freeze frames skip the group loop, so they keep
      * the up-front order (bg under the freeze overlay, no dome). */
+    /* Re-resolved once per VBL: setenv is the live channel (dev overlay). */
+    extern unsigned openpete_frame;
     static int s_backdrop_defer = -1;
-    if (s_backdrop_defer < 0) {
+    static unsigned s_bd_resolved_f = ~0u;
+    if (s_backdrop_defer < 0 || s_bd_resolved_f != openpete_frame) {
         const char* e = getenv("OPENPETE_BACKDROP_DEFER");
         s_backdrop_defer = !(e && *e && *e == '0');
+        s_bd_resolved_f = openpete_frame;
     }
     if (!s_backdrop_defer || freeze_first >= 0)
         draw_backdrop_fills(bg, ut_first, ut_count,
@@ -6382,11 +6386,9 @@ static void gpu_zone_report(void)
      * skeleton + per-mod postfx attribution) — nested sub-zones (sc.*) would
      * double its length and their audience is the --profile-out trace, which
      * got every depth above. OPENPETE_GPU_TIMERS_VERBOSE=1 shows all depths. */
-    static int s_gpuz_verbose = -1;
-    if (s_gpuz_verbose < 0) {
-        const char* e = getenv("OPENPETE_GPU_TIMERS_VERBOSE");
-        s_gpuz_verbose = (e && *e && *e != '0');
-    }
+    /* Re-read per report (~1/s — cheap): setenv is the live channel. */
+    const char* gpuz_env = getenv("OPENPETE_GPU_TIMERS_VERBOSE");
+    int s_gpuz_verbose = (gpuz_env && *gpuz_env && *gpuz_env != '0');
     for (int i = 0; i < n; i++) {
         if (!s_gpuz_verbose && res[i].depth > 0) continue;
         int k = -1;
