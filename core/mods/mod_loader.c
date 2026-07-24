@@ -1824,8 +1824,18 @@ static int mods_discover(const openpete_options_t* opts,
         for (int j = 0; j < n_ids; j++)
             if (strcmp(order[i], ids[j]) == 0) known = 1;
         if (!known) {
-            OPL_WARN_F("mods", "enabled.txt names \"%s\" but mods/%s/ has "
-                       "no mod.toml — skipped", order[i], order[i]);
+            /* Say which case it is: a folder missing its manifest, or no
+             * folder at all (typical after enabling a mod the deployed
+             * mods dir doesn't have yet — rebuild/stage or copy it in). */
+            char d[MOD_PATH_MAX];
+            snprintf(d, sizeof d, "%s/%s", mods_dir, order[i]);
+            if (file_mtime(d) == (time_t)-1)
+                OPL_WARN_F("mods", "enabled.txt names \"%s\" but there is "
+                           "no mods/%s/ folder (or <id>.zip) here — skipped "
+                           "(mods dir: %s)", order[i], order[i], mods_dir);
+            else
+                OPL_WARN_F("mods", "enabled.txt names \"%s\" but mods/%s/ has "
+                           "no mod.toml — skipped", order[i], order[i]);
             continue;
         }
         mod_ref_resolve(mods_dir, order[i], &out[n_out]);
