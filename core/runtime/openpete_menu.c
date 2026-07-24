@@ -22,7 +22,7 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
-       ROW_LOD, ROW_FREECAM, ROW_COUNT,
+       ROW_WOBBLE, ROW_LOD, ROW_FREECAM, ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
         * compiled — the case labels below, the mod enumeration, s_fog_idx,
@@ -32,7 +32,8 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "LOD", "FREECAM",
+    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE", "LOD",
+    "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
@@ -49,6 +50,17 @@ static const struct { const char* label; float wh; } s_aspect[] = {
 static const int   s_ssaa_vals[]   = { 1, 2, 4, 8, 16 };
 static const char* s_ssaa_labels[] = { "1X", "2X", "4X", "8X", "16X" };
 #define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
+
+/* WOBBLE ladder: one row drives the PS1-look PAIR — the integer vertex snap
+ * plus the raster quantize whose grid it snaps to. Every ON step is
+ * snap + quantize at the given multiplier of the 512x240 PSX raster: the
+ * snap's residual cracks are bounded/absorbed by the quantize cells, so the
+ * menu never offers the sharp-wobble combo whose hairlines pulled this row
+ * the first time. (The independent CLI knobs --vertex-precision /
+ * --raster-quantize keep the full space, e.g. quantize-only or 16x.) */
+static const int   s_wob_vals[]   = { 0, 1, 2, 4, 8 };
+static const char* s_wob_labels[] = { "OFF", "1X", "2X", "4X", "8X" };
+#define N_WOB ((int)(sizeof(s_wob_vals) / sizeof(s_wob_vals[0])))
 
 /* FPS ladder, built from the monitor refresh at init. The final entry is an
  * UNLIMITED sentinel: a render-fps so high the wall-clock pacer never sleeps on
@@ -67,6 +79,7 @@ static int s_fps_idx    = 0;   /* first ladder entry (30) */
 static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
+static int s_wobble_idx = 0;   /* OFF — re-synced from the live pair on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
 static int s_fog_idx    = 1;   /* ON — re-seeded from the resolved scale at init */
 static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open */
@@ -88,6 +101,16 @@ static int nearest_idx(const int* vals, int n, int want) {
         if (bestd < 0 || d < bestd) { bestd = d; best = i; }
     }
     return best;
+}
+
+/* Map the live snap+quantize pair onto the WOBBLE ladder: OFF unless the
+ * vertex snap is integer, else the ON step nearest the live multiplier. A
+ * custom CLI/M-overlay pair (quantize-only, sharp wobble, 16x) shows its
+ * nearest rung and is only rewritten when the user cycles the row. */
+static int wobble_idx_from_live(void) {
+    if (!openpete_native_vertex_snap_active()) return 0;
+    return 1 + nearest_idx(s_wob_vals + 1, N_WOB - 1,
+                           openpete_native_get_raster_quantize());
 }
 
 static void build_fps_list(int refresh) {
@@ -129,6 +152,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_SHOWFPS:  return s_showfps_idx ? "ON" : "OFF";
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
+    case ROW_WOBBLE:   return s_wob_labels[s_wobble_idx];
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
     case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
@@ -159,6 +183,12 @@ static void apply_row(int row) {
     case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
+    case ROW_WOBBLE: {
+        int m = s_wob_vals[s_wobble_idx];
+        openpete_native_set_vertex_precision(m > 0);
+        openpete_native_set_raster_quantize(m);
+        break;
+    }
     case ROW_LOD:
         openpete_no_lod_set(s_lod_idx, -1.0f);
         /* Fog follows the LOD mode unless the user owns it (explicit
@@ -218,6 +248,10 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* SSAA: nearest supported factor. */
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
 
+    /* WOBBLE: the native renderer has already resolved --vertex-precision and
+     * the --raster-quantize auto default — read the live pair. */
+    s_wobble_idx = wobble_idx_from_live();
+
     /* LOD (draw distance / detail policy). */
     s_lod_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
@@ -240,6 +274,7 @@ int openpete_menu_toggle(void) {
         s_lod_idx     = openpete_no_lod ? 1 : 0;
         s_fog_idx     = openpete_fog_enabled();
         s_freecam_idx = openpete_freecam_active() ? 1 : 0;
+        s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knobs move the pair */
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
@@ -321,6 +356,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
+    case ROW_WOBBLE:   s_wobble_idx = wrap_idx(s_wobble_idx + step, N_WOB);       break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;

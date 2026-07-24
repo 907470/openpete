@@ -45,7 +45,7 @@ int  openpete_menu_cursor(void);
 typedef struct {
     float panel_x0, panel_y0, panel_x1, panel_y1;  /* panel rect */
     int   row_count;
-    float row_y[8];        /* per-row center y */
+    float row_y[12];       /* per-row center y (capacity >= ROW_COUNT) */
     float row_h;           /* selection-bar height */
     float title_y, title_cap_h;
     float row_cap_h;       /* glyph cap height for a row */

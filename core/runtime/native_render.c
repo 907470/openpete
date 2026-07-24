@@ -5336,6 +5336,8 @@ void openpete_native_set_raster_quantize(int mult) {
         OPL_INFO_F("native", "raster-quantize -> off");
 }
 
+int openpete_native_get_raster_quantize(void) { return s_raster_mult; }
+
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
  * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
  * triangle list each frame; draw_fps_overlay draws it on the live present, or

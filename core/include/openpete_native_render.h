@@ -120,6 +120,8 @@ void openpete_native_scene_set_presnap(int on);
  * at every setting and the snap's seams shrink to <=1-cell tints.
  * Display-only: touches only renderer state, never gameplay RAM. */
 void openpete_native_set_raster_quantize(int mult);
+/* Current multiplier as resolved/last set (0 = off). */
+int  openpete_native_get_raster_quantize(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
