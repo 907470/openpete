@@ -21,6 +21,7 @@ extern const feature_module_t terrain_native_module;
 extern const feature_module_t ui_sprite_native_module;
 extern const feature_module_t portal_native_module;
 extern const feature_module_t transition_native_module;
+extern const feature_module_t cheats_native_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: parse the path-isolation selection at startup (apply_options
@@ -94,6 +95,10 @@ const feature_module_t* const openpete_features[] = {
      * screen (func_8001C694), opt-in via OPENPETE_TRANSITION_PROBE=1. Chains a
      * present-commit (after portal's) for the sub-tick staleness latch. */
     &transition_native_module,
+    /* --cheats: parse the selection at startup (apply_options only; the
+     * effects are written from game_on_frame_pre once a level is live —
+     * see features/cheats_native.c). Inert without the flag. */
+    &cheats_native_module,
 };
 
 const size_t openpete_feature_count =

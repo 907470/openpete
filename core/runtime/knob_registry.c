@@ -286,6 +286,13 @@ static int env_set_str(knob_desc_t *k, const char *v) {
 
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
 
+static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    snprintf(buf, cap, "%s",
+             (g_opts && g_opts->cheats && g_opts->cheats[0]) ? g_opts->cheats
+                                                             : "(none)");
+}
+
 static double freecam_get(const knob_desc_t *k) { (void)k; return openpete_freecam_active() ? 1.0 : 0.0; }
 static int freecam_set(knob_desc_t *k, double v) {
     (void)k;
@@ -300,7 +307,9 @@ static int freecam_set(knob_desc_t *k, double v) {
 
 #define ENUM_ROW(vals) vals, (int)(sizeof(vals)/sizeof((vals)[0]))
 
-static knob_desc_t g_knobs[] = {
+/* Built-in rows. The registry hands out g_rows (this table plus whatever game
+ * modules contributed through openpete_knob_add), never this array directly. */
+static const knob_desc_t g_builtin[] = {
     /* -------- Display -------- */
     { "fullscreen", "Fullscreen", "Display", "--fullscreen", NULL,
       "Borderless-desktop fullscreen (same toggle as Alt+Enter / double-click).",
@@ -458,6 +467,16 @@ static knob_desc_t g_knobs[] = {
       "Intentionally divergent debug tool - the one non-presentation row.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    /* Last row of the section on purpose: the game module contributes one
+     * button row per cheat through openpete_knob_add, and those land after
+     * the section's last built-in — directly under this launch summary. */
+    { "cheats", "Cheats at launch", "Gameplay", "--cheats", NULL,
+      "Built-in cheat codes this run starts each session with. The rows below "
+      "fire the same cheats on demand; this one only shows the launch "
+      "selection. Intentionally divergent gameplay state.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, cheats_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Recording -------- */
     { "record", "Record video", "Recording", "--record", NULL,
@@ -788,9 +807,50 @@ static knob_desc_t g_knobs[] = {
 #endif /* OPENPETE_HIDE_DEBUG_FLAGS */
 };
 
+/* Working table: the built-ins, copied once, plus room for module-contributed
+ * rows. One flat array because the UI walks a single {ptr, count} and groups by
+ * section; adds happen at feature apply-options time, long before the overlay
+ * exists, so no row pointer the UI holds can be invalidated by an insertion. */
+#define KNOB_BUILTIN_COUNT (sizeof(g_builtin) / sizeof(g_builtin[0]))
+#define KNOB_EXTRA_MAX     16
+
+static knob_desc_t g_rows[KNOB_BUILTIN_COUNT + KNOB_EXTRA_MAX];
+static size_t      g_row_count;
+
+static void rows_init(void) {
+    if (g_row_count) return;
+    memcpy(g_rows, g_builtin, sizeof g_builtin);
+    g_row_count = KNOB_BUILTIN_COUNT;
+}
+
 knob_desc_t *knob_registry(size_t *count) {
-    if (count) *count = sizeof(g_knobs) / sizeof(g_knobs[0]);
-    return g_knobs;
+    rows_init();
+    if (count) *count = g_row_count;
+    return g_rows;
+}
+
+int openpete_knob_add(const knob_desc_t *row) {
+    if (!row) return -1;
+    rows_init();
+    if (g_row_count >= KNOB_BUILTIN_COUNT + KNOB_EXTRA_MAX) {
+        OPL_WARN_F("knobs", "no room for row \"%s\" (extra capacity %d)",
+                   row->id ? row->id : "?", KNOB_EXTRA_MAX);
+        return -1;
+    }
+
+    /* Sections are rendered as contiguous runs, so a row joins its section by
+     * landing right after that section's last row; an unknown section starts
+     * its own run at the end. */
+    size_t at = g_row_count;
+    for (size_t i = 0; i < g_row_count; i++)
+        if (row->section && !strcmp(g_rows[i].section, row->section))
+            at = i + 1;
+
+    memmove(&g_rows[at + 1], &g_rows[at],
+            (g_row_count - at) * sizeof g_rows[0]);
+    g_rows[at] = *row;
+    g_row_count++;
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -928,8 +988,11 @@ void knob_registry_init(const struct openpete_options *opts) {
             else if (k->env && getenv(k->env)) k->boot_src = KNOB_SRC_ENV;
         }
 
-        /* Stamp the boot value for the "reset to boot" affordance. */
-        if (k->type == KNOB_STRING) {
+        /* Stamp the boot value for the "reset to boot" affordance. Actions
+         * carry no value to reset to. */
+        if (k->type == KNOB_ACTION) {
+            continue;
+        } else if (k->type == KNOB_STRING) {
             if (k->get_str) k->get_str(k, k->boot_str, sizeof k->boot_str);
         } else {
             k->boot_num = k->get_num ? k->get_num(k) : k->stored_num;
@@ -970,6 +1033,11 @@ void knob_registry_late_stamp(void) {
 }
 
 void knob_value_str(const knob_desc_t *k, char *buf, size_t cap) {
+    if (k->type == KNOB_ACTION) {
+        if (k->get_str) k->get_str(k, buf, cap);
+        else snprintf(buf, cap, "%s", k->action_label ? k->action_label : "Apply");
+        return;
+    }
     if (k->type == KNOB_STRING) {
         if (k->get_str) k->get_str(k, buf, cap);
         else snprintf(buf, cap, "?");

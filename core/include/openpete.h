@@ -626,6 +626,15 @@ typedef struct openpete_options {
      * lair. Splash sequence is auto-skipped (host-yield is bypassed until
      * the first DrawOTag), so this loads as fast as the EXE allows. */
     int skip_to_level;
+
+    /* --cheats a,b,...: comma-separated names of the game's OWN built-in
+     * cheat codes to apply automatically, so the pad code never has to be
+     * entered. The per-game feature module owns the name table and applies
+     * the effects once gameplay is live (the globals they write don't exist
+     * before a level loads, and New Game / save-load rewrite them). NULL =
+     * none. Deliberately gameplay-affecting — the same class as the debug
+     * free camera, not a presentation flag. */
+    const char* cheats;
 } openpete_options_t;
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */

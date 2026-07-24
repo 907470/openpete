@@ -74,6 +74,19 @@ target_include_directories(psx_region_test PRIVATE
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
 add_test(NAME psx_region_test COMMAND psx_region_test)
 
+# knob_registry_test — the M-overlay knob table: module-contributed rows
+# (openpete_knob_add) landing inside their section, capacity refusal, and
+# KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the
+# renderer/host setters it writes through, so no SDL in a console test.
+add_executable(knob_registry_test
+    knob_registry_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/knob_registry.c)
+target_include_directories(knob_registry_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
+add_test(NAME knob_registry_test COMMAND knob_registry_test)
+
 # record_encode_bench — encode-throughput validation for --record (plan
 # openpete-record-video.md Phase 7). Drives the swscale RGBA->yuv420p ->
 # libx264 path with synthetic frames as fast as the encoder allows and

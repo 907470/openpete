@@ -159,6 +159,7 @@ static void format_value_token(const knob_desc_t *k, char *buf, size_t cap)
 static bool row_edited(const knob_desc_t *k)
 {
     if (k->type == KNOB_STRING) return false;   /* strings are read-only v1 */
+    if (k->type == KNOB_ACTION) return false;   /* fires; holds no value */
     double v = k->get_num ? k->get_num(k) : k->stored_num;
     return v != k->boot_num;
 }
@@ -167,7 +168,8 @@ static void row_context_menu(knob_desc_t *k)
 {
     if (!ImGui::BeginPopupContextItem("##ctx")) return;
     char val[KNOB_STR_MAX];
-    if (k->mut == KNOB_LIVE && k->set_num && ImGui::MenuItem("Reset to boot value")) {
+    if (k->mut == KNOB_LIVE && k->set_num && k->type != KNOB_ACTION &&
+        ImGui::MenuItem("Reset to boot value")) {
         k->set_num(k, k->boot_num);
         OPL_INFO_F("devui", "%s reset to boot value", k->id);
     }
@@ -268,6 +270,28 @@ static void draw_row(knob_desc_t *k)
             if (k->set_num(k, idx) == 0)
                 OPL_INFO_F("devui", "%s = %s", k->id,
                            (idx >= 0 && idx < k->enum_count) ? k->enum_values[idx] : "?");
+        }
+        break;
+    }
+    case KNOB_ACTION: {
+        /* Button + status, not a value widget: the row fires once per click.
+         * get_num gates availability (grayed when the action can't run yet). */
+        const bool ready = !k->get_num || k->get_num(k) != 0.0;
+        if (!ready) ImGui::BeginDisabled();
+        if (ImGui::Button(k->action_label ? k->action_label : "Apply") &&
+            k->set_num) {
+            if (k->set_num(k, 1.0) == 0)
+                OPL_INFO_F("devui", "%s fired", k->id);
+        }
+        if (!ready) ImGui::EndDisabled();
+        if (k->get_str) {
+            char status[KNOB_STR_MAX];
+            k->get_str(k, status, sizeof status);
+            if (status[0]) {
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("%s", status);
+            }
         }
         break;
     }

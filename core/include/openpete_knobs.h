@@ -36,8 +36,21 @@ typedef enum {
     KNOB_INT,      /* value_num integral */
     KNOB_FLOAT,    /* value_num */
     KNOB_ENUM,     /* value_num = index into enum_values */
-    KNOB_STRING    /* get_str/set_str */
+    KNOB_STRING,   /* get_str/set_str */
+    KNOB_ACTION    /* one-shot: a button, not a value (see below) */
 } knob_type_t;
+
+/* KNOB_ACTION rows carry no value — they fire something once (apply a cheat,
+ * reset a counter). The row renders as a button captioned `action_label`
+ * ("Apply" when NULL), and:
+ *   set_num(k, 1)  fires it; returns 0 when the request was accepted.
+ *   get_num        optional gate: 0 => the action can't run right now and the
+ *                  button renders disabled (e.g. "not in a level yet").
+ *   get_str        optional short status shown beside the button.
+ * An action that touches gameplay state must not write it from here — the UI
+ * runs outside the sim. Queue a request and let the game's own per-tick hook
+ * perform the write at a tick boundary (north-star: gameplay state changes
+ * only on the sim's schedule). */
 
 typedef enum {
     KNOB_LIVE,          /* editable; writes go through the row's setter */
@@ -88,6 +101,9 @@ typedef struct knob_desc {
     /* Built-in default as a display string (env rows: what an unset var
      * resolves to — shown as "(unset - <def>)"). NULL/empty = unknown. */
     const char *def_str;
+
+    /* KNOB_ACTION only: button caption ("Apply" when NULL). */
+    const char *action_label;
 } knob_desc_t;
 
 /* The table (mutable: boot stamps + stored values live in the rows). */
@@ -112,6 +128,18 @@ void knob_registry_late_stamp(void);
  * KNOB_LIVE. Either pointer may be NULL to keep the row's own. Returns 0 if
  * the id was found (it won't be when the row is compiled out, e.g. Debug
  * rows under OPENPETE_HIDE_DEBUG_FLAGS — callers just ignore that). */
+/* Contribute a row the core table cannot name — a game module's own knobs
+ * (per-game cheats, per-game toggles). The row is COPIED, so the caller's
+ * knob_desc_t may be a stack temporary, but every string it points at must
+ * outlive the process (literals or module statics). Rows land after the last
+ * existing row of their `section` (so they join that collapsing header), or
+ * start a new section at the end.
+ *
+ * Call at feature apply-options time — before the overlay first draws and
+ * before knob_registry_init stamps boot values. Returns 0 on success, -1 when
+ * the extra-row capacity is exhausted. */
+int openpete_knob_add(const knob_desc_t *row);
+
 int openpete_knob_bind_str(const char *id,
                            void (*get_str)(const struct knob_desc *k,
                                            char *buf, size_t cap),

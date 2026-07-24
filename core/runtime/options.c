@@ -5,7 +5,8 @@
 
 #include "openpete.h"
 #include "openpete_log.h"
-#include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names) */
+#include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
+                           * game_validate_cheats_arg (--cheats names) */
 
 #include <SDL3/SDL.h>     /* SDL_GetBasePath — locate openpete.opts next to the exe */
 
@@ -427,6 +428,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
         "                             an unknown name prints the full list. Windowed runs fast-forward the\n"
         "                             logos/title/loading (black window) until the level is playable\n"
+        "  --cheats A,B,...           apply the game's own built-in cheat codes without entering them on\n"
+        "                             the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
+        "                             list). Applied once a level is live, and again for each new session\n"
+        "                             started from the title screen. Changes gameplay state by design\n"
         "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
         "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
         "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
@@ -984,6 +989,10 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
+        } else if (strcmp(a, "--cheats") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (game_validate_cheats_arg(v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->cheats = v; i++;
         } else if (strcmp(a, "--bk2") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->bk2_path = v; i++;

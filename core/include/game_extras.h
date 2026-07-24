@@ -112,6 +112,13 @@ void game_set_skip_to_level(int level_id); /* 0 = disabled */
  * CLI-parse context). */
 int game_resolve_level_arg(const char* arg);
 
+/* Validate a --cheats spec ("99_lives,unlock_all_levels") against the game's
+ * own built-in cheat codes. Returns 0 when every name is known, -1 otherwise
+ * (impl prints the valid names to stderr — this runs in CLI-parse context, so
+ * a typo fails before the game boots). The cheats themselves are applied by
+ * the per-game feature module from opts->cheats. */
+int game_validate_cheats_arg(const char* spec);
+
 /* --no-lod setup is now a feature module — see
  * core/features/no_lod.h + games/<game>/features/no_lod.c. */
 

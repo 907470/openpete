@@ -16,6 +16,7 @@
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
 #include "features/text_moby_native.h"
+#include "features/cheats_native.h"
 #include "features/freecam_native.h"
 
 #include <ctype.h>
@@ -480,6 +481,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* Optional scripted engage of the debug free camera (OPENPETE_FREECAM=1),
      * once gameplay is live. Interactive F / stick-click use is independent. */
     freecam_native_maybe_autoengage(cpu);
+
+    /* --cheats: apply the game's own built-in cheat effects once a level is
+     * live, re-armed at the title screen so each new session gets them. Inert
+     * without the flag. */
+    spyro1_cheats_on_tick(cpu);
 
 
     /* Build the FPS overlay from Spyro's own 3D HUD text mobys (digits 260-269,
