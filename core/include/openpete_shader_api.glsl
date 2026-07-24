@@ -64,6 +64,18 @@ layout(set = 3, binding = 0, std140) uniform op_engine_ubo {
     float op_aspect;      /* render aspect ratio (width / height)        */
     vec2  op_resolution;  /* current pass resolution, pixels             */
     vec2  op_window;      /* window / swapchain resolution, pixels       */
+    vec4  op_scene_rect;  /* uv rect of the 4:3 content sub-rect within
+                           * the pass image (xy = top-left, zw = size):
+                           * where the canonical 512-wide, overscan-
+                           * cropped PSX screen maps. The Hor+ reveal
+                           * continues the same mapping outside the rect. */
+    vec4  op_scene_grid;  /* the PSX raster that rect spans: x = disp_w
+                           * (512), y = disp_h (240), z = clip_h visible
+                           * rows (224), w = Hor+ widen factor (>= 1).
+                           * Virtual pixel coords of a pass texel:
+                           *   sx = (uv.x - rect.x) / rect.z * x
+                           *   sy = (y - z)/2 + (uv.y - rect.y) / rect.w * z
+                           * — the grid --vertex-precision integer snaps to. */
 };
 
 #ifdef OP_POSTFX_STAGE_FRAGMENT

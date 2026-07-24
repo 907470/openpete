@@ -5997,24 +5997,50 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
     uint32_t tick, present, canonical;
     float    aspect;
     float    res[2], win[2];
+    float    pad_rect[2];               /* std140: vec4 aligns to 16 */
+    float    scene_rect[4], scene_grid[4];
 } pfx_engine_ubo_t;
 
-/* The engine block (op_engine, set 3 binding 0) — shared fill for the
- * postfx and material UBOs. `w`,`h` = the pass/render resolution. */
+/* The engine block (op_engine, set 3 binding 0) — ONE fill for every
+ * consumer (postfx chain, mod meshes, material UBO); a new field added
+ * here reaches all of them. `w`,`h` = the pass/render resolution (0 =
+ * window). */
+static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
+{
+    memset(eng, 0, sizeof *eng);
+    eng->time = (float)((double)openpete_phase_now_us() * 1e-6);
+    eng->present = s_scene_frame;
+    int canonical = 1;
+    openpete_mods_present_ctx(&eng->tick, &eng->alpha, &canonical);
+    eng->canonical = (uint32_t)canonical;
+    int ww = 0, wh = 0;
+    rhi_swapchain_extent(s_nr.dev, &ww, &wh);
+    eng->res[0] = (float)(w > 0 ? w : ww);  eng->res[1] = (float)(h > 0 ? h : wh);
+    eng->win[0] = (float)ww;                eng->win[1] = (float)wh;
+    eng->aspect = eng->res[1] > 0 ? eng->res[0] / eng->res[1] : 1.0f;
+    /* op_scene_rect/op_scene_grid: where the canonical 512-wide PSX screen
+     * maps in the pass image (mirrors scene_to_clip), so a postfx can align
+     * exactly to the virtual raster the vertex snap quantizes to. */
+    if (s_render_full_extent) {
+        float wf = s_render_freeze_wf > 0.0f ? s_render_freeze_wf : 1.0f;
+        eng->scene_rect[0] = 0.5f - 0.5f / wf;  eng->scene_rect[1] = 0.0f;
+        eng->scene_rect[2] = 1.0f / wf;         eng->scene_rect[3] = 1.0f;
+        eng->scene_grid[3] = wf;
+    } else {
+        eng->scene_rect[0] = (s_nr.p0_cx - s_nr.p0_hx + 1.0f) * 0.5f;
+        eng->scene_rect[1] = (1.0f - s_nr.p0_hy) * 0.5f;
+        eng->scene_rect[2] = s_nr.p0_hx;
+        eng->scene_rect[3] = s_nr.p0_hy;
+        eng->scene_grid[3] = s_nr.ws_factor > 0.0f ? s_nr.ws_factor : 1.0f;
+    }
+    eng->scene_grid[0] = s_nr.disp_w > 0 ? (float)s_nr.disp_w : 512.0f;
+    eng->scene_grid[1] = s_nr.disp_h > 0 ? (float)s_nr.disp_h : 240.0f;
+    eng->scene_grid[2] = s_nr.clip_h > 0 ? (float)s_nr.clip_h : 224.0f;
+}
 static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
 {
     pfx_engine_ubo_t eng;
-    memset(&eng, 0, sizeof eng);
-    eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
-    eng.present = s_scene_frame;
-    int canonical = 1;
-    openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
-    eng.canonical = (uint32_t)canonical;
-    int ww = 0, wh = 0;
-    rhi_swapchain_extent(s_nr.dev, &ww, &wh);
-    eng.res[0] = (float)(w > 0 ? w : ww);  eng.res[1] = (float)(h > 0 ? h : wh);
-    eng.win[0] = (float)ww;                eng.win[1] = (float)wh;
-    eng.aspect = eng.res[1] > 0 ? eng.res[0] / eng.res[1] : 1.0f;
+    fill_engine_block(&eng, w, h);
     rhi_ubo_write(u, blk, &eng, sizeof eng);
 }
 
@@ -6121,21 +6147,7 @@ static void draw_mod_meshes(void)
     /* Engine UBO block 0: written here so mesh-only presents (no postfx
      * chain) still see live values; the postfx run rewrites the same
      * frame slot with identical content later in the frame. */
-    {
-        pfx_engine_ubo_t eng;
-        memset(&eng, 0, sizeof eng);
-        eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
-        eng.present = s_scene_frame;
-        int canonical = 1;
-        openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
-        eng.canonical = (uint32_t)canonical;
-        int ww = 0, wh = 0;
-        rhi_swapchain_extent(s_nr.dev, &ww, &wh);
-        eng.res[0] = eng.win[0] = (float)ww;
-        eng.res[1] = eng.win[1] = (float)wh;
-        eng.aspect = wh > 0 ? (float)ww / (float)wh : 1.0f;
-        rhi_ubo_write(s_pfx_ubo, 0, &eng, sizeof eng);
-    }
+    write_engine_block(s_pfx_ubo, 0, 0, 0);
 
     /* Convert + pack every queued draw into the ring VB (one update). */
     int total = 0;
@@ -6248,25 +6260,11 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     rhi_texture** ping = pfx_pings(w, h);
     if (!s_pfx_ubo || !ping) return 0;
 
+    /* Same tick/alpha source as the present-hook ctx (mod_draw.c) —
+     * shaders and mod C code can never disagree on the sub-tick phase. */
     pfx_engine_ubo_t eng;
-    memset(&eng, 0, sizeof eng);
-    eng.time = (float)((double)openpete_phase_now_us() * 1e-6);
-    eng.present = s_scene_frame;
-    {
-        /* Same source as the present-hook ctx (mod_draw.c) — shaders
-         * and mod C code can never disagree on the sub-tick phase. */
-        int canonical = 1;
-        openpete_mods_present_ctx(&eng.tick, &eng.alpha, &canonical);
-        eng.canonical = (uint32_t)canonical;
-        if (target) { eng.alpha = 0.0f; eng.canonical = 1; } /* dump compose */
-    }
-    eng.res[0] = (float)w;   eng.res[1] = (float)h;
-    {
-        int ww = 0, wh = 0;
-        rhi_swapchain_extent(s_nr.dev, &ww, &wh);
-        eng.win[0] = (float)ww; eng.win[1] = (float)wh;
-    }
-    eng.aspect = (h > 0) ? (float)w / (float)h : 1.0f;
+    fill_engine_block(&eng, w, h);
+    if (target) { eng.alpha = 0.0f; eng.canonical = 1; } /* dump compose */
     rhi_ubo_write(s_pfx_ubo, 0, &eng, sizeof eng);
 
     /* Prev-frame RT (live path only): (re)create cleared on size change. */

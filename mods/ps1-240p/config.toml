@@ -1,0 +1,7 @@
+# ps1-240p — user knobs (code defaults are authoritative; see
+# src/ps1_240p.c).
+
+[ps1240]
+point = "scene"   # "scene" = 3D world only (HUD stays crisp);
+                  # "composite" = whole frame, HUD included
+blend = 0.0       # 0 = fully quantized; 0..1 mixes the sharp frame back
