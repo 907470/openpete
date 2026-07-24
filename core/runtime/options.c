@@ -404,6 +404,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             --vertex-precision integer grid). 0 = off. Default: 1 under\n"
         "                             --vertex-precision integer, else off. Live window + --record only\n"
         "                             (screenshot dumps bypass it). Display-only.\n"
+        "  --texture-mapping MODE     texture/colour interpolation: perspective (default = modern\n"
+        "                             perspective-correct) | affine (PSX screen-linear = the original\n"
+        "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
@@ -572,6 +575,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->handoff_argv        = NULL;
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
     opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
+    opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
@@ -749,6 +753,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->raster_quantize = (int)mult;
+            i++;
+        } else if (strcmp(a, "--texture-mapping") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "perspective") == 0) {
+                opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;
+            } else if (strcmp(v, "affine") == 0) {
+                opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_AFFINE;
+            } else {
+                fprintf(stderr, "openpete: --texture-mapping expects perspective|affine, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
             i++;
         } else if (strcmp(a, "--lod") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;

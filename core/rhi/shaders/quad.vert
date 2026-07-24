@@ -29,13 +29,22 @@ layout(location = 2) noperspective out vec2 vScreenPSX;
  * z_ndc=1-1/vz. Must match psx_scene.vert so both scene pipes share one buffer. */
 layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 
+/* PSX-affine interpolation (--texture-mapping affine, spec-constant 1): w=1
+ * makes the gouraud colour interpolate SCREEN-LINEARLY like the PSX GPU
+ * (no perspective divide). Same screen position; the window depth zc/W is
+ * the value the perspective path's divide produces, so depth behaviour is
+ * identical. vScreenPSX is already noperspective — unaffected either way.
+ * Must match psx_scene.vert so both scene pipes stay consistent. */
+layout(constant_id = 1) const bool AFFINE_UV = false;
+
 void main()
 {
     float z = clamp(inPos.z, 0.0, 0.9999);          /* bound W (z->1 => W->inf) */
     float W = 4096.0 * z / max(1.0 - z, 1e-6);       /* view-Z == clip-space W   */
     W = max(W, 1.0);                                  /* near-plane / z==0 guard  */
     float zc = DEPTH_AFFINE ? (W - 1.0) : (z * W);   /* z_ndc = zc/W */
-    gl_Position = vec4(inPos.xy * W, zc, W);
+    gl_Position = AFFINE_UV ? vec4(inPos.xy, zc / W, 1.0)
+                            : vec4(inPos.xy * W, zc, W);
     vColor = inColor;
     vUV = inUV;
     vScreenPSX = inUV;

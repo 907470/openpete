@@ -77,6 +77,7 @@ static int showfps_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_vprec_names[] = { "subpixel", "integer" };
+static const char *const k_texmap_names[] = { "perspective", "affine" };
 static int vprec_set(knob_desc_t *k, double v) {
     openpete_native_set_vertex_precision((int)v == 1);
     k->stored_num = (int)v;
@@ -328,6 +329,14 @@ static knob_desc_t g_knobs[] = {
       "whose seams shrink to faint cell tints. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    /* RESTART_ONLY: every scene pipeline (and any mod material pipeline)
+     * bakes the interpolation mode as a spec constant at creation. */
+    { "texture_mapping", "Texture mapping", "Display", "--texture-mapping", NULL,
+      "perspective = modern perspective-correct interpolation; affine = the "
+      "PSX screen-linear texture swim/warp. Baked into pipelines at boot.",
+      KNOB_ENUM, KNOB_RESTART_ONLY, ENUM_ROW(k_texmap_names), 0, 0,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "lod", "LOD", "Display", "--lod", NULL,
       "original = authentic PSX detail bands; extended = full detail at any "
@@ -837,6 +846,9 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = (opts->raster_quantize >= 0) ? opts->raster_quantize
                           : (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER ? 1 : 0);
             if (opts->raster_quantize >= 0) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "texture_mapping")) {
+            k->stored_num = (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
+            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "lod")) {
             k->stored_num = (opts->lod != OPENPETE_LOD_ORIGINAL);
             if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;

@@ -1421,6 +1421,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
       OPL_INFO_F("native", "depth: %s",
                  affine ? "screen-affine z_ndc=1-1/vz (default)"
                         : "legacy z=vz/(vz+4096) (OPENPETE_DEPTH_AFFINE=0)"); }
+    /* PSX-affine UV/colour interpolation (--texture-mapping affine): vertex
+     * spec-constant 1 (w=1 in the scene vertex stages), captured by every
+     * pipeline built below AND by mod material pipelines created later
+     * against the same global — boot-latched; a live toggle needs a
+     * pipeline-rebuild epoch. Depth values are identical in both modes. */
+    if (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE) {
+        rhi_set_affine_uv(1);
+        OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
+    }
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */

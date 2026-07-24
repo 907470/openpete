@@ -261,6 +261,12 @@ void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
  * scene pipelines are built. Default 0. */
 void          rhi_set_depth_affine(int on);
 
+/* Select PSX-affine UV/colour interpolation (vertex spec-constant 1, w=1 —
+ * the PSX GPU's screen-linear texture/gouraud swim), applied to pipelines
+ * created AFTER this call. Call at bring-up (from --texture-mapping) before
+ * the scene pipelines are built. Default 0 = perspective-correct. */
+void          rhi_set_affine_uv(int on);
+
 /* Pipeline from IN-MEMORY SPIR-V (mod shaders — S2 of
  * plans/openpete-mod-shaders.md). Words are copied into driver objects
  * during the call; the caller keeps ownership. Either side may be NULL

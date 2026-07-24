@@ -63,6 +63,19 @@ typedef enum {
     OPENPETE_VERTEX_PRECISION_INTEGER,       /* PSX integer-grid snap (polygon wobble) */
 } openpete_vertex_precision_t;
 
+/* Texture/colour interpolation mode (`--texture-mapping`). The native renderer
+ * reconstructs the homogeneous W from depth so the rasterizer interpolates
+ * UV + gouraud colour perspective-correct (the modern default). AFFINE emits
+ * w=1 instead (scene vertex spec-constant 1): the rasterizer interpolates
+ * screen-linearly, exactly the PSX GPU's behaviour — the authentic texture
+ * swim/warp on large near polygons (the game's own near-terrain subdivide,
+ * which existed to tame it, still runs). Display-only; depth values are
+ * identical in both modes. Boot-latched (pipelines bake the constant). */
+typedef enum {
+    OPENPETE_TEXTURE_MAPPING_PERSPECTIVE = 0,  /* default: perspective-correct */
+    OPENPETE_TEXTURE_MAPPING_AFFINE,           /* PSX screen-linear interpolation */
+} openpete_texture_mapping_t;
+
 /* Sector level-of-detail policy (`--lod original|extended`). ORIGINAL is the
  * authentic PSX behaviour: distance-based LOD swaps + the stock fog curve.
  * EXTENDED collapses the sector LOD band so every visible sector draws from
@@ -185,6 +198,11 @@ typedef struct openpete_options {
      * vertex_precision is INTEGER, else off); 0 = off. Display-only; native
      * renderer only. */
     int raster_quantize;
+
+    /* Texture/colour interpolation (`--texture-mapping perspective|affine`).
+     * AFFINE = the PSX GPU's screen-linear interpolation (authentic texture
+     * swim). Boot-latched; display-only (see openpete_texture_mapping_t). */
+    openpete_texture_mapping_t texture_mapping;
 
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the

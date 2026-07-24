@@ -2820,6 +2820,13 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
 static VkBool32 s_vs_depth_affine = VK_FALSE;
 void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE; }
 
+/* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
+ * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
+ * at pipeline creation — set it before the pipelines are built; only
+ * psx_scene.vert / quad.vert declare constant_id 1. */
+static VkBool32 s_vs_affine_uv = VK_FALSE;
+void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
+
 static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
                                                   const rhi_pipeline_desc *desc,
                                                   VkShaderModule vs,
@@ -2832,10 +2839,14 @@ static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
         return NULL;
     }
 
-    VkSpecializationMapEntry vsSpecMap = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+    VkSpecializationMapEntry vsSpecMap[2] = {
+        { .constantID = 0, .offset = 0,                .size = sizeof(VkBool32) },
+        { .constantID = 1, .offset = sizeof(VkBool32), .size = sizeof(VkBool32) },
+    };
+    VkBool32 vsSpecData[2] = { s_vs_depth_affine, s_vs_affine_uv };
     VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 1, .pMapEntries = &vsSpecMap,
-        .dataSize = sizeof(s_vs_depth_affine), .pData = &s_vs_depth_affine,
+        .mapEntryCount = 2, .pMapEntries = vsSpecMap,
+        .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
     };
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,

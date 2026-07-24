@@ -33,13 +33,22 @@ layout(location = 1) out vec4 vColor;
  * mapping, so compare op / clear value are unchanged. */
 layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 
+/* PSX-affine interpolation (--texture-mapping affine, spec-constant 1): emit
+ * w=1 so the rasterizer interpolates UV/colour SCREEN-LINEARLY — the PSX GPU
+ * had no perspective divide, and this is its authentic texture swim/warp.
+ * Screen position is inPos.xy either way, and the window depth zc/W is the
+ * same value the perspective path's hardware divide produces, so depth
+ * testing/writing is identical across the two modes. */
+layout(constant_id = 1) const bool AFFINE_UV = false;
+
 void main()
 {
     float z = clamp(inPos.z, 0.0, 0.9999);          /* bound W (z->1 => W->inf) */
     float W = 4096.0 * z / max(1.0 - z, 1e-6);       /* view-Z == clip-space W   */
     W = max(W, 1.0);                                  /* near-plane / z==0 guard  */
     float zc = DEPTH_AFFINE ? (W - 1.0) : (z * W);   /* z_ndc = zc/W */
-    gl_Position = vec4(inPos.xy * W, zc, W);
+    gl_Position = AFFINE_UV ? vec4(inPos.xy, zc / W, 1.0)
+                            : vec4(inPos.xy * W, zc, W);
     vUV = inUV;
     vColor = inColor;
 }
