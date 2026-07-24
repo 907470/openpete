@@ -337,9 +337,10 @@ static knob_desc_t g_knobs[] = {
       get_stored, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
-      "Box-resample the 3D scene to N x the PSX raster (1 = authentic "
-      "512x240; 0 = off). Always aligned with the integer vertex snap, "
-      "whose seams shrink to faint cell tints. Display-only.",
+      "Box-resample the 3D scene to N x the PSX raster (1 = the authentic "
+      "512x240 grid — 224 lines visible on screen, letterbands trimmed; "
+      "0 = off). Always aligned with the integer vertex snap, whose seams "
+      "shrink to faint cell tints. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

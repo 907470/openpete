@@ -5352,8 +5352,9 @@ void openpete_native_set_vertex_precision(int integer_snap) {
 void openpete_native_set_raster_quantize(int mult) {
     s_raster_mult = mult > 0 ? mult : 0;     /* consumed at the next SCENE split */
     if (s_raster_mult)
-        OPL_INFO_F("native", "raster-quantize -> %dx (%dx%d)",
-                   s_raster_mult, 512 * s_raster_mult, 240 * s_raster_mult);
+        OPL_INFO_F("native", "raster-quantize -> %dx (%dx%d grid, %d visible lines)",
+                   s_raster_mult, 512 * s_raster_mult, 240 * s_raster_mult,
+                   224 * s_raster_mult);
     else
         OPL_INFO_F("native", "raster-quantize -> off");
 }
