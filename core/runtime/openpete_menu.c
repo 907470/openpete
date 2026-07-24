@@ -80,7 +80,7 @@ static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
 static int s_wobble_idx = 0;   /* OFF — re-synced from the live pair on open */
-static int s_texmap_idx = 0;   /* PERSP — re-synced from the live mode on open */
+static int s_texmap_idx = 0;   /* CORRECT (perspective) — re-synced from the live mode on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
 static int s_fog_idx    = 1;   /* ON — re-seeded from the resolved scale at init */
 static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open */
@@ -154,7 +154,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
     case ROW_WOBBLE:   return s_wob_labels[s_wobble_idx];
-    case ROW_TEXMAP:   return s_texmap_idx ? "AFFINE" : "PERSP";
+    case ROW_TEXMAP:   return s_texmap_idx ? "AFFINE" : "CORRECT";
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
     case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
