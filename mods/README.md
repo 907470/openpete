@@ -11,7 +11,9 @@ Every subdirectory here with a `mod.toml` is a mod; `<id>.zip` archives
 load identically (unpacked + cached automatically). `enabled.txt` lists
 enabled mods, one id per line — **the order IS the priority**: mods
 later in the list run first on shared overrides, and `base()` descends
-toward earlier mods, then the game's original code.
+toward earlier mods, then the game's original code. `--mods a,b` (env
+`OPENPETE_MODS`) overrides the file for a single run; `--mods ""`
+enables none.
 
 ## Trust posture — read this first
 

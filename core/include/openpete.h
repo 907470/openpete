@@ -592,6 +592,14 @@ typedef struct openpete_options {
      * notes/plans/openpete-modding-framework.md. */
     const char* mods_dir;
 
+    /* --mods ID[,ID...]: enabled modset override — replaces the mods dir's
+     * enabled.txt entirely, same semantics (order IS priority, later =
+     * higher). An empty list ("--mods \"\"") enables nothing, i.e. a
+     * one-flag vanilla run without touching the install. NULL = unset
+     * (defer to env OPENPETE_MODS, else enabled.txt, else all discovered
+     * mods in lexicographic order). */
+    const char* mods_enabled;
+
     /* --compile-mods: utility mode — compile EVERY mod with src/ in the
      * resolved mods dir (ignoring enabled.txt) against <exe>/sdk through
      * the loader's own key/stamp/compile path, then exit (nonzero if any

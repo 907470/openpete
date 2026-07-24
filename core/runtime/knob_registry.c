@@ -190,9 +190,14 @@ static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
         if      (!strcmp(k->id, "disc"))        cli = g_opts->disc_path;
         else if (!strcmp(k->id, "texpack_dir")) cli = g_opts->texpack_dir;
         else if (!strcmp(k->id, "mods_dir"))    cli = g_opts->mods_dir;
+        else if (!strcmp(k->id, "mods"))        cli = g_opts->mods_enabled;
         else if (!strcmp(k->id, "card_dir"))    cli = g_opts->card_dir;
         else if (!strcmp(k->id, "record"))      cli = g_opts->record_path;
         else if (!strcmp(k->id, "bk2"))         cli = g_opts->bk2_path;
+    }
+    if (cli && !*cli) { /* explicit empty value, e.g. --mods "" */
+        snprintf(buf, cap, "(none)");
+        return;
     }
     const char *env = (k->env && !cli) ? getenv(k->env) : NULL;
     snprintf(buf, cap, "%s", cli ? cli : (env ? env : "(default)"));
@@ -447,6 +452,12 @@ static const knob_desc_t g_builtin[] = {
 
     { "mods_dir", "Mods dir", "Paths", "--mods-dir", "OPENPETE_MODS_DIR",
       "Mods root (mod.toml subdirs; load order via enabled.txt).",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "mods", "Enabled mods", "Paths", "--mods", "OPENPETE_MODS",
+      "Enabled modset override (comma-separated ids; order = priority). "
+      "Empty = no mods. Unset = the mods dir's enabled.txt.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

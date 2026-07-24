@@ -48,6 +48,10 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
 /* Discover, build, load, and initialize mods. Called once at boot after
  * options parsing (core/runtime/run.c). Resolution order for the mods
  * directory: opts->mods_dir → env OPENPETE_MODS_DIR → <exe>/mods.
+ * Resolution order for the enabled SET within that directory:
+ * opts->mods_enabled (--mods) → env OPENPETE_MODS → enabled.txt → all
+ * discovered mods lexicographically; in every case the order IS the
+ * priority (later = higher).
  * A missing/empty directory is not an error: zero mods loaded,
  * openpete_mods_active stays 0, and the sim path is byte-identical to a
  * modless build (inertness gate #1/#2). Returns the number of mods

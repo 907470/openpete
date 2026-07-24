@@ -20,7 +20,8 @@ it is unpacked and content-cached automatically.
 `mods/enabled.txt` lists enabled mods, one id per line — **the order IS
 the priority**: mods later in the list run first on shared overrides,
 and `base()` descends toward earlier mods, then the game's original
-code.
+code. To try a different set without editing the install, pass
+`--mods hello,other-mod` (same ordering rule; `--mods ""` runs vanilla).
 
 ## Hello, override chain
 

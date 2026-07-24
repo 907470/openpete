@@ -415,6 +415,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
         "                             enabled.txt fixes order (= priority). Default: env OPENPETE_MODS_DIR,\n"
         "                             else <exe>/mods. No directory = no mods, byte-identical vanilla.\n"
+        "  --mods ID[,ID...]          run exactly these mods, overriding mods/enabled.txt (order IS\n"
+        "                             priority, later = higher). --mods \"\" enables none (vanilla run).\n"
+        "                             Default: env OPENPETE_MODS, else enabled.txt.\n"
         "  --card1 PATH               use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)\n"
         "  --card2 PATH               use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)\n"
         "  --card-dir PATH            directory holding the memory-card .mcr images (default: env OPENPETE_CARD_DIR,\n"
@@ -577,6 +580,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
     opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
+    opts->mods_enabled        = NULL;  /* NULL = unset; env OPENPETE_MODS / mods/enabled.txt */
     opts->compile_mods        = 0;     /* --compile-mods: compile every mod and exit */
     opts->card_dir            = NULL;  /* NULL = default appdir; env OPENPETE_CARD_DIR */
     opts->card1_path          = NULL;
@@ -1051,6 +1055,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--mods-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->mods_dir = v; i++;
+        } else if (strcmp(a, "--mods") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->mods_enabled = v; i++;
         } else if (strcmp(a, "--compile-mods") == 0) {
             opts->compile_mods = 1;
         } else if (strcmp(a, "--card-dir") == 0) {

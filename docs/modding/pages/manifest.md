@@ -99,6 +99,14 @@ shared overrides and `base()` descends toward earlier ones. The
 in-game mod menu (++o++) can toggle loaded mods live at tick
 boundaries; reordering is an `enabled.txt` edit.
 
+`--mods ID[,ID...]` (env `OPENPETE_MODS`) replaces the file for one
+run — same order-is-priority rule, no install to edit:
+
+```
+openpete-spyro1 --mods hello-anchor,spyro-logo-hd   # exactly these two
+openpete-spyro1 --mods ""                           # vanilla, no mods
+```
+
 ## Distribution
 
 Zip the mod folder with `mod.toml` at the archive root; `<id>.zip` in

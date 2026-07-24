@@ -6,7 +6,9 @@
 //   mods/enabled.txt       one mod id per line; order IS priority
 //                          (later lines override earlier — S3AIR
 //                          semantics). Missing file = all discovered
-//                          mods, lexicographic order.
+//                          mods, lexicographic order. --mods (env
+//                          OPENPETE_MODS) overrides the file with a
+//                          comma-separated id list, same semantics.
 //
 // Mods compile against <exe>/sdk/ (openpete_mod_api.h, psx_runtime.h,
 // openpete_sdk_symbols.h — staged there by the build) into
@@ -155,6 +157,11 @@ struct openpete_mod {
 
 static struct openpete_mod s_mods[MODS_MAX];
 static int                 s_mod_count = 0;
+
+/* Where the enabled set came from, so "fix your load order" messages
+ * name the list the user actually controls: the mods dir's enabled.txt,
+ * or the --mods override that replaced it. Set by mods_discover. */
+static const char* s_order_src = "enabled.txt";
 
 /* Resolve + fingerprint a mod's optional state-ABI descriptor (see
  * openpete_mod_api.h "Savestate state-ABI declaration"). Called after a
@@ -1599,11 +1606,16 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     for (int d = 0; d < c->pending[i].n_deps; d++) {
         int j = topo_find(c, c->pending[i].deps[d]);
         if (j < 0) {
+            char where[MOD_PATH_MAX + 16];
+            if (strcmp(s_order_src, "enabled.txt") == 0)
+                snprintf(where, sizeof where, "%s/enabled.txt", c->mods_dir);
+            else
+                snprintf(where, sizeof where, "the --mods list");
             OPL_ERROR_F("mods", "\"%s\" requires \"%s\", which is not "
-                        "enabled — add it to %s/enabled.txt (above "
+                        "enabled — add it to %s (ahead of "
                         "\"%s\") or install it; \"%s\" disabled",
                         c->pending[i].id, c->pending[i].deps[d],
-                        c->mods_dir, c->pending[i].id, c->pending[i].id);
+                        where, c->pending[i].id, c->pending[i].id);
             c->state[i] = TS_FAILED;
             return -1;
         }
@@ -1798,10 +1810,28 @@ static int cmp_id_row(const void* a, const void* b) {
     return strcmp((const char*)a, (const char*)b);
 }
 
+/* Trim leading/trailing blanks in place; ids compare exactly, so an
+ * invisible "crt-beans " would skip as unknown. Returns the start. */
+static char* trim_id(char* s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char* t = s + strlen(s);
+    while (t > s && (t[-1] == ' ' || t[-1] == '\t')) *--t = 0;
+    return s;
+}
+
 static int mods_discover(const openpete_options_t* opts,
                          char* mods_dir, size_t mods_dir_cap,
                          mod_ref_t* out, int max) {
     if (mods_root(opts, mods_dir, mods_dir_cap) != 0) return 0;
+
+    /* --mods (env OPENPETE_MODS) replaces enabled.txt wholesale: a
+     * comma-separated id list, same order-IS-priority semantics. An
+     * empty list is meaningful — "enable nothing" — so it is checked
+     * for presence, not truthiness. */
+    const char* enabled_override =
+        opts && opts->mods_enabled ? opts->mods_enabled
+                                   : getenv("OPENPETE_MODS");
+    s_order_src = enabled_override ? "--mods" : "enabled.txt";
 
     char ids[MODS_MAX][MOD_ID_MAX];
     int n_ids = mods_scan(mods_dir, ids, MODS_MAX);
@@ -1813,18 +1843,48 @@ static int mods_discover(const openpete_options_t* opts,
     int n_order = 0;
     char en_path[MOD_PATH_MAX];
     snprintf(en_path, sizeof en_path, "%s/enabled.txt", mods_dir);
-    FILE* en = fopen(en_path, "r");
-    if (en) {
-        char line[MOD_ID_MAX];
+    FILE* en = enabled_override ? NULL : fopen(en_path, "r");
+    if (enabled_override) {
+        const char* p = enabled_override;
+        while (n_order < MODS_MAX && *p) {
+            const char* comma = strchr(p, ',');
+            size_t len = comma ? (size_t)(comma - p) : strlen(p);
+            char item[MOD_ID_MAX * 2];
+            snprintf(item, sizeof item, "%.*s", (int)len, p);
+            char* s = trim_id(item);
+            if (strlen(s) >= MOD_ID_MAX)
+                OPL_WARN_F("mods", "--mods: id \"%.32s...\" exceeds %d "
+                           "characters — skipped", s, MOD_ID_MAX - 1);
+            else if (*s)
+                snprintf(order[n_order++], MOD_ID_MAX, "%s", s);
+            if (!comma) break;
+            p = comma + 1;
+        }
+        if (n_order == 0) {
+            OPL_INFO_F("mods", "--mods lists no mods — none enabled "
+                       "(mods dir: %s)", mods_dir);
+            return 0;
+        }
+    } else if (en) {
+        /* One WHOLE line per iteration: a comment (or any text) longer
+         * than the buffer must not come back as fragments, or each tail
+         * reads as a bogus id and warns at every boot. */
+        char line[512];
         while (n_order < MODS_MAX && fgets(line, sizeof line, en)) {
+            size_t got = strlen(line);
+            int whole = got == 0 || line[got - 1] == '\n';
+            if (!whole) { /* drain the rest of the over-long line */
+                int c;
+                while ((c = fgetc(en)) != EOF && c != '\n') { }
+            }
             line[strcspn(line, "\r\n")] = 0;
-            char* s = line;
-            while (*s == ' ' || *s == '\t') s++;
+            char* s = trim_id(line);
             if (!*s || *s == '#') continue;
-            /* Trim trailing whitespace too: ids compare exactly, and an
-             * invisible "crt-beans " would skip as unknown. */
-            char* t = s + strlen(s);
-            while (t > s && (t[-1] == ' ' || t[-1] == '\t')) *--t = 0;
+            if (!whole || strlen(s) >= MOD_ID_MAX) {
+                OPL_WARN_F("mods", "enabled.txt: id \"%.32s...\" exceeds "
+                           "%d characters — skipped", s, MOD_ID_MAX - 1);
+                continue;
+            }
             snprintf(order[n_order++], MOD_ID_MAX, "%s", s);
         }
         fclose(en);
@@ -1846,12 +1906,14 @@ static int mods_discover(const openpete_options_t* opts,
             char d[MOD_PATH_MAX];
             snprintf(d, sizeof d, "%s/%s", mods_dir, order[i]);
             if (file_mtime(d) == (time_t)-1)
-                OPL_WARN_F("mods", "enabled.txt names \"%s\" but there is "
+                OPL_WARN_F("mods", "%s names \"%s\" but there is "
                            "no mods/%s/ folder (or <id>.zip) here — skipped "
-                           "(mods dir: %s)", order[i], order[i], mods_dir);
+                           "(mods dir: %s)", s_order_src, order[i], order[i],
+                           mods_dir);
             else
-                OPL_WARN_F("mods", "enabled.txt names \"%s\" but mods/%s/ has "
-                           "no mod.toml — skipped", order[i], order[i]);
+                OPL_WARN_F("mods", "%s names \"%s\" but mods/%s/ has "
+                           "no mod.toml — skipped", s_order_src, order[i],
+                           order[i]);
             continue;
         }
         mod_ref_resolve(mods_dir, order[i], &out[n_out]);
@@ -2035,9 +2097,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
                         OPL_ERROR_F("mods", "\"%s\" declares "
                                     "above=[\"%s\"] (must run first): "
                                     "move \"%s\" AFTER \"%s\" in "
-                                    "enabled.txt — disabled",
+                                    "%s — disabled",
                                     pending[i].id, pending[j].id,
-                                    pending[i].id, pending[j].id);
+                                    pending[i].id, pending[j].id,
+                                    s_order_src);
                         ok_adv = 0;
                     }
                     break;
@@ -2051,9 +2114,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
                         OPL_ERROR_F("mods", "\"%s\" declares "
                                     "below=[\"%s\"] (must run last): "
                                     "move \"%s\" BEFORE \"%s\" in "
-                                    "enabled.txt — disabled",
+                                    "%s — disabled",
                                     pending[i].id, pending[j].id,
-                                    pending[i].id, pending[j].id);
+                                    pending[i].id, pending[j].id,
+                                    s_order_src);
                         ok_adv = 0;
                     }
                     break;

@@ -85,6 +85,26 @@ else
     bad "unexpected nesting: $seq2"
 fi
 
+# ── 2b. --mods overrides enabled.txt (same order-IS-priority rule) ──────
+say "--mods override: file says [a,b], flag says [b,a] — flag wins"
+fixture "$WORK/duo3" chain-duo-a chain-duo-b
+out="$(run_game "$WORK/duo3" 5000 --mods chain-duo-b,chain-duo-a)"
+seq3="$(printf '%s\n' "$out" | grep -oE 'chain (enter|exit)  ?[<>AB]+' | tr -d ' ' | paste -sd, -)"
+if [ "$seq3" = "chainenterA>,chainenterB>,chainexit<B,chainexit<A" ]; then
+    ok "--mods order replaced enabled.txt order ($seq3)"
+else
+    bad "--mods did not override enabled.txt: $seq3"
+fi
+
+say "--mods \"\": empty list disables every mod"
+out="$(run_game "$WORK/duo3" 600 --mods "")"
+if printf '%s\n' "$out" | grep -q "none enabled" &&
+   ! printf '%s\n' "$out" | grep -q "chain enter"; then
+    ok "empty --mods left the run modless"
+else
+    bad "empty --mods still loaded mods"
+fi
+
 # ── 1. observer-neutrality oracle: all log-only mods stacked ────────────
 say "observer-neutrality: hello-anchor + raw-probe + chain-duo vs oracle"
 fixture "$WORK/observers" hello-anchor raw-probe chain-duo-a chain-duo-b
