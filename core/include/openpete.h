@@ -174,6 +174,18 @@ typedef struct openpete_options {
      * the original polygon wobble. Display-only (see openpete_vertex_precision_t). */
     openpete_vertex_precision_t vertex_precision;
 
+    /* Raster output quantize (`--raster-quantize N`). N > 0 resamples the
+     * composed 3D scene (pre-HUD) on the virtual PSX raster at N x scale — each
+     * output pixel becomes the box average of its 512N x 240N cell (N=1 =
+     * authentic 240p). An integer MULTIPLIER of the PSX grid rather than a row
+     * count, so every setting stays aligned with the INTEGER vertex snap's
+     * 512x240 lattice by construction: snapped edges land on cell boundaries,
+     * and the snap's silhouette/T-junction seams (<= ~1 PSX pixel) become faint
+     * cell tints instead of multi-device-pixel tears. -1 = auto (1 when
+     * vertex_precision is INTEGER, else off); 0 = off. Display-only; native
+     * renderer only. */
+    int raster_quantize;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via

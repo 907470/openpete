@@ -535,7 +535,17 @@ static int s_dbg_clipped;                          /* faces that hit the near pl
 
 /* A clip-space corner: camera-space pos (m1,m2,m3) + colour + UV. Near-plane
  * clipping (§near-plane) interpolates all of these along an edge. */
-typedef struct { double m1, m2, m3; uint32_t rgb; float u, v; } cvert;
+/* osx/osy/oflag: optional SCREEN-space override consumed by push_tri instead
+ * of proj_screen. The near/HQ subdivide sets it on its boundary midpoints
+ * under the integer vertex snap: a midpoint projected from camera space lands
+ * sub-pixel OFF the parent's projected edge (perspective), and the snap
+ * amplifies that into a visible T-junction crack against the unsubdivided
+ * neighbour sharing that edge. The override places the midpoint at the EXACT
+ * screen midpoint of the SNAPPED parent corners (integer or exact-.5 — the
+ * renderer's snap preserves exact halves), which is collinear with the
+ * neighbour's snapped edge: watertight by construction. */
+typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
+                 float osx, osy; uint8_t oflag; } cvert;
 
 /* Near plane (camera-space m3, world/16 view-Z). Vertices closer than this are
  * clipped so float H/m3 never blows up and behind-camera (m3<=0) verts don't
@@ -548,6 +558,7 @@ static cvert cv_lerp(cvert a, cvert b, double zc) {  /* crossing point at m3 == 
     double t = (zc - a.m3) / (b.m3 - a.m3);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
     cvert r;
+    r.osx = r.osy = 0.0f; r.oflag = 0;
     r.m1 = a.m1 + t * (b.m1 - a.m1);
     r.m2 = a.m2 + t * (b.m2 - a.m2);
     r.m3 = zc;
@@ -566,8 +577,18 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     if (s_tri_n >= MAX_TTRIS) return;
     cvert cc[3] = { a, b, c };
     ttri* t = &s_tri[s_tri_n++];
+    int fsnap = openpete_native_vertex_snap_active();
     for (int k = 0; k < 3; k++) {
-        proj_screen(cc[k].m1, cc[k].m2, cc[k].m3, &t->sx[k], &t->sy[k]);
+        if (cc[k].oflag) { t->sx[k] = cc[k].osx; t->sy[k] = cc[k].osy; }
+        else {
+            proj_screen(cc[k].m1, cc[k].m2, cc[k].m3, &t->sx[k], &t->sy[k]);
+            /* Integer snap is applied HERE, feeder-side (the renderer skips
+             * this feed — presnap contract): the near/HQ subdivide needs its
+             * boundary midpoints at exact positions ON the snapped parent
+             * edges (oflag above), which no per-vertex renderer snap could
+             * preserve. Same floor as the renderer's (GTE MAC0>>16). */
+            if (fsnap) { t->sx[k] = floorf(t->sx[k]); t->sy[k] = floorf(t->sy[k]); }
+        }
         t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->u[k] = cc[k].u; t->v[k] = cc[k].v;
         if (s_cv_n < MAX_TTRIS * 3) {
             s_cvx[s_cv_n]=t->sx[k]; s_cvy[s_cv_n]=t->sy[k]; s_cvz[s_cv_n]=cc[k].m3; s_cvrgb[s_cv_n]=cc[k].rgb; s_cv_n++;
@@ -657,6 +678,7 @@ static void emit_tri(const lvert* sv, int a, int b, int c,
  * `(a+b)>>1` grid build (§near-HQ). */
 static cvert cv_mid(cvert a, cvert b) {
     cvert r;
+    r.osx = r.osy = 0.0f; r.oflag = 0;
     r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
     r.u = 0; r.v = 0;
     int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
@@ -729,6 +751,56 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int texid, int abe
     cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
     cvert mL = cv_mid(TL, BL), mR = cv_mid(TR, BR);
     cvert C  = cv_mid(mT, mB);                 /* centre = mean of 4 corners */
+    /* Integer vertex snap: pin each boundary midpoint to the SNAPPED parent
+     * edge so the sub-quads stay watertight against the neighbour sharing
+     * that edge (see cvert.oflag) — but at the PERSPECTIVE-CORRECT position
+     * along the edge (the true camera-space midpoint's projection, dropped
+     * onto the snapped segment), NOT the screen midpoint: the quadrant HQ
+     * tiles are attached to these vertices, and a screen-parametric midpoint
+     * re-warps near textures exactly the way the subdivide exists to
+     * prevent.
+     *
+     * The near-plane guard is per-EDGE, not per-family: the neighbouring
+     * cell sharing an edge — often another subdivided family whose OWN far
+     * corners dip inside the near plane — must reach the identical verdict
+     * for the SHARED midpoint, and an edge's safety is a property of its
+     * two shared endpoints alone. (A family-wide bail parted two adjacent
+     * families' copies of the same midpoint — one on-segment, one floored
+     * fresh in push_tri — and drew a hairline across the near ground at the
+     * subdivide-ring distance.) An unsafe edge gets no override: a clipping
+     * child rebuilds its crossings (cv_lerp zeroes oflag) and the segment
+     * projection would lie. */
+    if (openpete_native_vertex_snap_active()) {
+        cvert* P[4] = { &TL, &TR, &BL, &BR };
+        cvert* M[4] = { &mT, &mB, &mL, &mR };
+        const int E[4][2] = { {0,1}, {2,3}, {0,2}, {1,3} };  /* corner pairs */
+        int safe[4];
+        float px[4], py[4];
+        for (int i = 0; i < 4; i++) {
+            safe[i] = P[i]->m3 >= s_nearz;
+            if (!safe[i]) continue;            /* mirrored projection: unusable */
+            proj_screen(P[i]->m1, P[i]->m2, P[i]->m3, &px[i], &py[i]);
+            px[i] = floorf(px[i]); py[i] = floorf(py[i]);
+            P[i]->osx = px[i]; P[i]->osy = py[i]; P[i]->oflag = 1;
+        }
+        for (int i = 0; i < 4; i++) {
+            if (!safe[E[i][0]] || !safe[E[i][1]]) continue;
+            float mx, my;
+            proj_screen(M[i]->m1, M[i]->m2, M[i]->m3, &mx, &my);
+            float ax = px[E[i][0]], ay = py[E[i][0]];
+            float dx = px[E[i][1]] - ax, dy = py[E[i][1]] - ay;
+            float L2 = dx*dx + dy*dy;
+            float tt = L2 > 0.0f ? ((mx-ax)*dx + (my-ay)*dy) / L2 : 0.5f;
+            if (tt < 0.0f) tt = 0.0f; else if (tt > 1.0f) tt = 1.0f;
+            M[i]->osx = ax + tt*dx; M[i]->osy = ay + tt*dy; M[i]->oflag = 1;
+        }
+        /* Centre: interior (shared by all 4 children only) — snapped true
+         * projection keeps it wobble-consistent with the rest of the mesh. */
+        if (safe[0] && safe[1] && safe[2] && safe[3]) {
+            float cx2, cy2; proj_screen(C.m1, C.m2, C.m3, &cx2, &cy2);
+            C.osx = floorf(cx2); C.osy = floorf(cy2); C.oflag = 1;
+        }
+    }
     cvert q[4][4] = {                          /* {TL,TR,BL,BR} per sub-quad */
         { TL, mT, mL, C  },                    /* SQ0: top-left quadrant   → entry 0 */
         { mT, TR, C,  mR },                    /* SQ1: top-right quadrant  → entry 1 */
@@ -964,6 +1036,7 @@ static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, tsvert_t* ou
         out[k].z = (int16_t)(v & 0x3FF);
     }
 }
+
 static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStride,
                              uint32_t lqTable, uint32_t hqTable, int texTblMode,
                              int hiDetail, tsface_t* out) {
@@ -3551,6 +3624,10 @@ static void terrain_feed_native(CPUState* cpu) {
      * memoized — -1 = unresolved. */
     int16_t tex_slot[128];
     memset(tex_slot, 0xFF, sizeof tex_slot);
+    /* Terrain self-snaps (push_tri floors under the integer snap; subdivide
+     * midpoints carry exact on-edge positions) — the renderer chokepoint
+     * must pass these coordinates through untouched. */
+    openpete_native_scene_set_presnap(1);
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -3716,6 +3793,7 @@ static void terrain_feed_native(CPUState* cpu) {
         }
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
     }
+    openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
     {   /* guard census (debug, stderr-throttled) */
         static int cen = -1; static int lines;
         if (cen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD_DBG"); cen = (e && *e && *e != '0'); }

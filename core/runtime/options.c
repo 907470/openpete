@@ -399,6 +399,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
         "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
         "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
+        "  --raster-quantize N        box-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
+        "                             authentic 512x240; 2 = 1024x480; every N stays aligned with the\n"
+        "                             --vertex-precision integer grid). 0 = off. Default: 1 under\n"
+        "                             --vertex-precision integer, else off. Live window + --record only\n"
+        "                             (screenshot dumps bypass it). Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
@@ -566,6 +571,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->handoff_argc        = 0;     /* original argv (exec rebuild) */
     opts->handoff_argv        = NULL;
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
+    opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
@@ -734,6 +740,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 fprintf(stderr, "openpete: --vertex-precision expects subpixel|integer, got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
+            i++;
+        } else if (strcmp(a, "--raster-quantize") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            long mult = strtol(v, NULL, 10);
+            if (mult < 0 || mult > 16) {
+                fprintf(stderr, "openpete: --raster-quantize expects 0 (off) or a grid multiplier in [1,16], got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->raster_quantize = (int)mult;
             i++;
         } else if (strcmp(a, "--lod") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;

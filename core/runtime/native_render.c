@@ -479,6 +479,18 @@ void openpete_native_set_player_suppress(int on) { s_suppress_player = on ? 1 : 
  * A file-static (not an s_nr field) so the feed chokepoint above s_nr can read
  * it; seeded from opts->vertex_precision, mutated live by the setter below. */
 static int s_vertex_snap = 0;
+/* Sticky feed state (set_presnap): the current feeder emits coordinates that
+ * are ALREADY snap-consistent, so the chokepoint snap below must not touch
+ * them. The terrain feeder self-snaps (its near/HQ subdivide places boundary
+ * midpoints at exact off-integer positions ON snapped parent edges — a
+ * per-vertex snap here would break that collinearity and re-open T-junction
+ * cracks); every other feeder leaves this 0 and gets the chokepoint snap. */
+static int s_cur_presnap = 0;
+/* --raster-quantize multiplier (0 = off): engine SCENE-point box-resample of
+ * the composed 3D scene onto the 512Nx240N virtual PSX raster — an integer
+ * multiple of the vertex-snap grid, so snapped edges always land on cell
+ * boundaries (see native_postfx_run). */
+static int s_raster_mult = 0;
 
 /* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
  * snap. The 3D-world-projected layers wobbled on hardware (the GTE stored screen
@@ -543,17 +555,50 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                 s_scene[s_scene_n].v[k].rgba = (c & 0xFF000000u) | (b << 16) | (g << 8) | r;
             }
         }
+        /* OPENPETE_SCENE_TRIDUMP="VBL:path": one-shot text dump of every scene
+         * tri fed during the first present of that VBL — PRE-snap float screen
+         * coords + category/tag, for offline seam-geometry classification. */
+        {
+            static const char* td_env; static int td_init, td_done, td_vbl = -1;
+            static FILE* td_f; static unsigned td_open_frame;
+            extern unsigned openpete_frame;
+            if (!td_init) { td_init = 1; td_env = getenv("OPENPETE_SCENE_TRIDUMP");
+                            if (td_env) td_vbl = atoi(td_env); }
+            if (td_env && !td_done) {
+                if (!td_f && (unsigned)td_vbl == openpete_frame) {
+                    const char* c = strchr(td_env, ':');
+                    if (c && c[1]) td_f = fopen(c + 1, "w");
+                    td_open_frame = openpete_frame;
+                }
+                if (td_f && openpete_frame != td_open_frame) {
+                    fclose(td_f); td_f = NULL; td_done = 1;
+                } else if (td_f) {
+                    const scene_tri_t* st = &s_scene[s_scene_n];
+                    fprintf(td_f, "%d %d %u %u", category, st->blend,
+                            (unsigned)s_cur_tag, (unsigned)st->group);
+                    for (int k = 0; k < 3; k++)
+                        fprintf(td_f, " %.9g %.9g %.9g",
+                                (double)st->v[k].sx, (double)st->v[k].sy,
+                                (double)st->v[k].z);
+                    fputc('\n', td_f);
+                }
+            }
+        }
         /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
-         * the PSX integer pixel grid — the polygon wobble. Round X/Y only; depth
-         * and UVs are untouched (Z-buffer + perspective texturing preserved). The
-         * grid is display-resolution-independent because sx/sy are pre-normalize
-         * (scene_to_clip upscales afterward), so SSAA / widescreen keep the exact
-         * 512x240 jitter the original GTE produced. */
-        if (s_vertex_snap && category_snaps_vertices(category)) {
+         * the PSX integer pixel grid — the polygon wobble. TRUNCATE (floor), not
+         * round: the GTE derives SXY via MAC0 >> 16, an arithmetic shift = floor,
+         * and the choice is load-bearing beyond fidelity — round-half-up measured
+         * 2-3x MORE silhouette holes on real scenes (overlapping unstitched edges
+         * carry correlated fractional parts that a .5 boundary splits apart).
+         * X/Y only; depth and UVs are untouched (Z-buffer + perspective texturing
+         * preserved). The grid is display-resolution-independent because sx/sy are
+         * pre-normalize (scene_to_clip upscales afterward), so SSAA / widescreen
+         * keep the exact 512x240 jitter the original GTE produced. */
+        if (s_vertex_snap && !s_cur_presnap && category_snaps_vertices(category)) {
             openpete_scene_vert *sv = s_scene[s_scene_n].v;
             for (int k = 0; k < 3; k++) {
-                sv[k].sx = floorf(sv[k].sx + 0.5f);
-                sv[k].sy = floorf(sv[k].sy + 0.5f);
+                sv[k].sx = floorf(sv[k].sx);
+                sv[k].sy = floorf(sv[k].sy);
             }
         }
         /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
@@ -1356,6 +1401,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Vertex-precision snap (--vertex-precision integer): re-introduce the PSX
      * integer-grid vertex snap in add_tri_grouped. Default smooth (subpixel). */
     s_vertex_snap = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER) ? 1 : 0;
+    /* Raster output quantize (--raster-quantize): -1 = auto-pair with the snap
+     * (1x = the authentic 512x240 raster iff integer mode), so the wobble ships
+     * with its seam treatment by default and each remains independently
+     * overridable. */
+    s_raster_mult = (opts->raster_quantize >= 0) ? opts->raster_quantize
+                 : (s_vertex_snap ? 1 : 0);
 
     /* Scene depth encoding (OPENPETE_DEPTH_AFFINE): drives the scene shaders'
      * vertex spec-constant 0. Must be set BEFORE the scene pipelines are built
@@ -2528,6 +2579,15 @@ static void native_depth_prepass(void)
     if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
+    if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
+        static int last = -9;
+        int why = scene_n <= 0 ? 1 : (freeze_ & (1u << 31)) ? 2 :
+                  (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) ? 3 : 0;
+        if (why != last) { last = why;
+            extern unsigned openpete_frame;
+            fprintf(stderr, "[depth-prepass] f=%u gate=%d (0=run 1=no-scene 2=freeze 3=no-consumer occl_active=%d)\n",
+                    openpete_frame, why, occl_active()); }
+    }
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
@@ -2615,10 +2675,11 @@ static void native_depth_prepass(void)
     rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
 
     if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
-        static int once = 0;
-        if (!once) { once = 1;
-            fprintf(stderr, "[depth-prepass] WORLD-opaque tris=%d (of %d scene tris) raster %dx%d in %dx%d\n",
-                    m/3, scene_n, vw, vh, s_nr.od_w, s_nr.od_h); }
+        static int last_m = -1;
+        if (m != last_m) { last_m = m;
+            extern unsigned openpete_frame;
+            fprintf(stderr, "[depth-prepass] f=%u WORLD-opaque tris=%d (of %d scene tris) raster %dx%d in %dx%d\n",
+                    openpete_frame, m/3, scene_n, vw, vh, s_nr.od_w, s_nr.od_h); }
     }
     /* OPENPETE_PREPASS_RECON_DEBUG=SX,SY: reconstruct the WORLD-space vertices
      * of terrain tris covering the given PSX screen point through the shadow
@@ -5252,10 +5313,27 @@ void openpete_native_set_vsync(int on) {
     OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
 }
 
+int openpete_native_vertex_snap_active(void) {
+    return s_vertex_snap;   /* feeders branch on this for snap-consistent emits */
+}
+
+void openpete_native_scene_set_presnap(int on) {
+    s_cur_presnap = on ? 1 : 0;   /* sticky, like set_tag — clear after the feed */
+}
+
 void openpete_native_set_vertex_precision(int integer_snap) {
     s_vertex_snap = integer_snap ? 1 : 0;   /* consumed by the next add_tri_grouped feed */
     OPL_INFO_F("native", "vertex-precision -> %s",
                s_vertex_snap ? "integer (PSX wobble)" : "subpixel (smooth)");
+}
+
+void openpete_native_set_raster_quantize(int mult) {
+    s_raster_mult = mult > 0 ? mult : 0;     /* consumed at the next SCENE split */
+    if (s_raster_mult)
+        OPL_INFO_F("native", "raster-quantize -> %dx (%dx%d)",
+                   s_raster_mult, 512 * s_raster_mult, 240 * s_raster_mult);
+    else
+        OPL_INFO_F("native", "raster-quantize -> off");
 }
 
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
@@ -6243,16 +6321,67 @@ static void pfx_drain_retired(void) {
 /* Run the chain. target == NULL → over off_image (live present);
  * else over the given compose RT (screenshot-all). Returns pass count. */
 /* Any enabled postfx pass at `point`? Cheap gate for the SCENE split. */
+/* Engine-owned SCENE pass (--raster-quantize): PSX-raster box-resample of the
+ * composed scene. Rides the postfx executor as pass 0 with a pre-built
+ * pipeline (embedded raster_quantize.frag) so it stacks under any mod chain
+ * (a CRT filter processes the quantized scene, as it should). */
+static void* s_rq_pipe;                        /* rhi_pipeline* / PFX_PIPE_FAILED */
+static struct {                                /* std140 mirror of rq_params */
+    float scale, od_ok;
+    float od_uvmax[2];                         /* last valid alloc uv of the raster */
+    float od_ax, od_bx, od_ay, od_by;          /* PSX screen -> opaque_depth ALLOC uv */
+} s_rq_params;
+
+static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
+{
+    if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
+    if (!s_rq_pipe) {
+        rhi_pipeline_desc pd = {0};
+        pd.vert_spv = "postfx_fs.vert.spv";
+        pd.frag_spv = "raster_quantize.frag.spv";
+        pd.blend    = RHI_BLEND_NONE;
+        pd.postfx   = true;
+        rhi_pipeline* p = rhi_create_pipeline(s_nr.dev, &pd);
+        s_rq_pipe = p ? (void*)p : PFX_PIPE_FAILED;
+        if (!p)
+            fprintf(stderr, "[native] raster-quantize: pipeline build FAILED "
+                            "— quantize disabled\n");
+    }
+    s_rq_params.scale = (float)s_raster_mult;
+    /* Depth-majority vote input: the WORLD-opaque pre-pass depth, addressed
+     * through its PSX-screen->uv affine scaled from the raster extent to the
+     * grow-only allocation (the shadow-decal consumers' mapping — plain
+     * screen uv would read outside the rastered sub-rect: all-far). */
+    int od_ok = s_od_ready && s_nr.opaque_depth && s_nr.od_w > 0 && s_nr.od_h > 0;
+    s_rq_params.od_ok = od_ok ? 1.0f : 0.0f;
+    if (od_ok) {
+        float su = s_od_vw / (float)s_nr.od_w, sv = s_od_vh / (float)s_nr.od_h;
+        s_rq_params.od_ax = s_od_uax * su;  s_rq_params.od_bx = s_od_ubx * su;
+        s_rq_params.od_ay = s_od_vay * sv;  s_rq_params.od_by = s_od_vby * sv;
+        /* clamp taps inside the rastered sub-rect (outside = stale/undefined) */
+        s_rq_params.od_uvmax[0] = (s_od_vw - 0.5f) / (float)s_nr.od_w;
+        s_rq_params.od_uvmax[1] = (s_od_vh - 0.5f) / (float)s_nr.od_h;
+    }
+    memset(&pass[0], 0, sizeof pass[0]);
+    pass[0].uniforms      = &s_rq_params;
+    pass[0].uniforms_len  = (uint32_t)sizeof s_rq_params;
+    pass[0].pipeline_slot = &s_rq_pipe;
+    pass[0].owner         = "raster-quantize";
+    return 1;
+}
+
 static int native_postfx_point_active(int point)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
+    if (point == 1 /* OP_POSTFX_SCENE */ && s_raster_mult > 0) return 1;
     return openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES) > 0;
 }
 
 static int native_postfx_run(int point, rhi_texture* target, int w, int h)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
-    int n = openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES);
+    int n = raster_quantize_prepend(point, pass);
+    n += openpete_mods_postfx_collect(point, pass + n, PFX_MAX_PASSES - n);
     if (n <= 0 || w <= 0 || h <= 0) return 0;
     if (!s_pfx_ubo)
         s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,

@@ -83,6 +83,12 @@ static int vprec_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static int rquant_set(knob_desc_t *k, double v) {
+    openpete_native_set_raster_quantize((int)v);
+    k->stored_num = (int)v;
+    return 0;
+}
+
 static const char *const k_lod_names[] = { "original", "extended" };
 static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod ? 1.0 : 0.0; }
 static int lod_set(knob_desc_t *k, double v) {
@@ -315,6 +321,13 @@ static knob_desc_t g_knobs[] = {
       "subpixel. Display-only.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_vprec_names), 0, 0,
       get_stored, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
+      "Box-resample the 3D scene to N x the PSX raster (1 = authentic "
+      "512x240; 0 = off). Always aligned with the integer vertex snap, "
+      "whose seams shrink to faint cell tints. Display-only.",
+      KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
+      get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "lod", "LOD", "Display", "--lod", NULL,
       "original = authentic PSX detail bands; extended = full detail at any "
@@ -819,6 +832,11 @@ void knob_registry_init(const struct openpete_options *opts) {
         } else if (!strcmp(k->id, "vertex_precision")) {
             k->stored_num = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER);
             if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "raster_quantize")) {
+            /* mirror the renderer's auto-pair resolve (-1 = 1x iff integer snap) */
+            k->stored_num = (opts->raster_quantize >= 0) ? opts->raster_quantize
+                          : (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER ? 1 : 0);
+            if (opts->raster_quantize >= 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "lod")) {
             k->stored_num = (opts->lod != OPENPETE_LOD_ORIGINAL);
             if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;

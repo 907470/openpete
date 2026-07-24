@@ -101,6 +101,26 @@ void openpete_native_set_vsync(int on);
  * Display-only: touches only renderer state, never gameplay RAM. */
 void openpete_native_set_vertex_precision(int integer_snap);
 
+/* Live vertex-snap state (1 = integer snap active). Feeders that synthesize
+ * vertices ON another primitive's edge (the terrain near/HQ subdivide's
+ * boundary midpoints) read this to emit snap-consistent screen coordinates,
+ * keeping their T-vertices watertight against snapped neighbour edges. */
+int openpete_native_vertex_snap_active(void);
+
+/* Sticky feed state: tris added while set are ALREADY snap-consistent — the
+ * renderer's integer-snap chokepoint leaves their coordinates untouched. Set
+ * by feeders that must control vertex placement beyond per-vertex snapping
+ * (terrain: subdivide midpoints live at exact off-integer positions ON
+ * snapped parent edges). Clear after the feed, like set_tag. */
+void openpete_native_scene_set_presnap(int on);
+
+/* Raster output quantize: box-resample the composed 3D scene (pre-HUD) onto
+ * the 512Nx240N virtual PSX raster (N=1 = authentic 240p; 0 = off). An integer
+ * multiplier of the vertex-snap grid, so snapped edges land on cell boundaries
+ * at every setting and the snap's seams shrink to <=1-cell tints.
+ * Display-only: touches only renderer state, never gameplay RAM. */
+void openpete_native_set_raster_quantize(int mult);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth
