@@ -92,7 +92,11 @@ int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
 void openpete_mods_base(CPUState* cpu);
 
-#define MODS_MAX          32
+#define MODS_MAX          64  /* keep <= mod_config.c CFG_SLOTS; the scan
+                               * WARNS when a mods dir exceeds this rather
+                               * than silently dropping readdir-order tail
+                               * entries (which once ate a freshly added
+                               * mod on a 33-mod install) */
 #define MOD_ID_MAX        64
 #define MOD_BINDINGS_MAX  8
 
@@ -1748,14 +1752,15 @@ static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
     DIR* d = opendir(mods_dir);
     if (!d) return 0; /* no mods directory: inert */
 
-    int n_ids = 0;
+    int n_ids = 0, n_over = 0;
     struct dirent* e;
-    while ((e = readdir(d)) != NULL && n_ids < max) {
+    while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
         size_t nl = strlen(e->d_name);
         if (nl > 4 && strcmp(e->d_name + nl - 4, ".zip") == 0) {
             char id[MOD_ID_MAX];
             snprintf(id, sizeof id, "%.*s", (int)(nl - 4), e->d_name);
+            if (n_ids >= max) { n_over++; continue; }
             if (mod_unpack_zip(mods_dir, id) == 0)
                 snprintf(ids[n_ids++], MOD_ID_MAX, "%s", id);
             continue;
@@ -1764,9 +1769,16 @@ static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
         snprintf(manifest, sizeof manifest, "%s/%s/mod.toml", mods_dir,
                  e->d_name);
         if (file_mtime(manifest) == (time_t)-1) continue;
+        if (n_ids >= max) { n_over++; continue; }
         snprintf(ids[n_ids++], MOD_ID_MAX, "%s", e->d_name);
     }
     closedir(d);
+    /* Never truncate silently: which mods fall off a full scan depends on
+     * raw readdir order, so the victim looks random to the user. */
+    if (n_over)
+        OPL_ERROR_F("mods", "mods dir has %d more mod(s) than the %d this "
+                    "build can load — %d skipped in directory order",
+                    n_over, max, n_over);
     return n_ids;
 }
 
@@ -1809,6 +1821,10 @@ static int mods_discover(const openpete_options_t* opts,
             char* s = line;
             while (*s == ' ' || *s == '\t') s++;
             if (!*s || *s == '#') continue;
+            /* Trim trailing whitespace too: ids compare exactly, and an
+             * invisible "crt-beans " would skip as unknown. */
+            char* t = s + strlen(s);
+            while (t > s && (t[-1] == ' ' || t[-1] == '\t')) *--t = 0;
             snprintf(order[n_order++], MOD_ID_MAX, "%s", s);
         }
         fclose(en);
