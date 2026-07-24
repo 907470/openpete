@@ -22,7 +22,7 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
-       ROW_WOBBLE, ROW_LOD, ROW_FREECAM, ROW_COUNT,
+       ROW_WOBBLE, ROW_TEXMAP, ROW_LOD, ROW_FREECAM, ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
         * compiled — the case labels below, the mod enumeration, s_fog_idx,
@@ -32,8 +32,8 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE", "LOD",
-    "FREECAM",
+    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
+    "TEXTURE", "LOD", "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
@@ -80,6 +80,7 @@ static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
 static int s_wobble_idx = 0;   /* OFF — re-synced from the live pair on open */
+static int s_texmap_idx = 0;   /* PERSP — re-synced from the live mode on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
 static int s_fog_idx    = 1;   /* ON — re-seeded from the resolved scale at init */
 static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open */
@@ -153,6 +154,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
     case ROW_WOBBLE:   return s_wob_labels[s_wobble_idx];
+    case ROW_TEXMAP:   return s_texmap_idx ? "AFFINE" : "PERSP";
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
     case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
@@ -189,6 +191,10 @@ static void apply_row(int row) {
         openpete_native_set_raster_quantize(m);
         break;
     }
+    /* Queued: the renderer re-bakes its pipelines at the next present
+     * (a one-time device-idle hitch), so the value string reads the local
+     * index, not the not-yet-applied live getter. */
+    case ROW_TEXMAP:   openpete_native_set_texture_mapping(s_texmap_idx);      break;
     case ROW_LOD:
         openpete_no_lod_set(s_lod_idx, -1.0f);
         /* Fog follows the LOD mode unless the user owns it (explicit
@@ -252,6 +258,9 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
      * the --raster-quantize auto default — read the live pair. */
     s_wobble_idx = wobble_idx_from_live();
 
+    /* TEXTURE: the renderer resolved --texture-mapping at its init. */
+    s_texmap_idx = openpete_native_get_texture_mapping();
+
     /* LOD (draw distance / detail policy). */
     s_lod_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
@@ -275,6 +284,7 @@ int openpete_menu_toggle(void) {
         s_fog_idx     = openpete_fog_enabled();
         s_freecam_idx = openpete_freecam_active() ? 1 : 0;
         s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knobs move the pair */
+        s_texmap_idx  = openpete_native_get_texture_mapping();   /* M-overlay row moves it */
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
@@ -293,8 +303,11 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * (window-relative, not the letterboxed game viewport). */
     out->panel_x0 = 0.0f;  out->panel_x1 = 0.62f;
     out->panel_y0 = 0.0f;  out->panel_y1 = 1.0f;
-    const int N = (ROW_COUNT < 8) ? ROW_COUNT : 8;
-    out->row_count = ROW_COUNT;
+    /* Fill a y for EVERY row the draw loop will visit (row_count), capped only
+     * by the row_y array's real capacity. */
+    const int cap = (int)(sizeof(out->row_y) / sizeof(out->row_y[0]));
+    const int N = (ROW_COUNT < cap) ? ROW_COUNT : cap;
+    out->row_count = N;
     /* Styled after the game's pause menu: a compact block (title + rows) with
      * tight line spacing, TOP-ALIGNED in the panel (a small margin from the top).
      * The title is a bold header, noticeably larger than the rows. Row font is
@@ -357,6 +370,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
     case ROW_WOBBLE:   s_wobble_idx = wrap_idx(s_wobble_idx + step, N_WOB);       break;
+    case ROW_TEXMAP:   s_texmap_idx = wrap_idx(s_texmap_idx + step, 2);           break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;

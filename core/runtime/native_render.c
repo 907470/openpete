@@ -491,6 +491,13 @@ static int s_cur_presnap = 0;
  * multiple of the vertex-snap grid, so snapped edges always land on cell
  * boundaries (see native_postfx_run). */
 static int s_raster_mult = 0;
+/* --texture-mapping (0 = perspective, 1 = affine): the live mode plus the
+ * queued one. The mode is a vertex spec constant baked into every scene
+ * pipeline, so a change cannot apply mid-frame like the knobs above — the
+ * setter queues it and texmap_apply_pending() re-bakes all pipelines at the
+ * next present boundary (rhi_rebuild_pipelines under a device idle). */
+static int s_texmap_affine  = 0;
+static int s_texmap_pending = 0;
 
 /* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
  * snap. The 3D-world-projected layers wobbled on hardware (the GTE stored screen
@@ -1288,6 +1295,18 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * a no-op (falls back to OPENPETE_TEXPACK_DIR env, then the built-in dir). */
     texture_pack_set_dir_override(opts->texpack_dir);
 
+    /* --texture-mapping: PSX-affine UV/colour interpolation (vertex spec-
+     * constant 1, w=1 in the scene vertex stages; depth values identical in
+     * both modes). Resolved here, before the dev-overlay init snapshots knob
+     * boot values and before the pipelines below bake the constant. Live
+     * changes queue via openpete_native_set_texture_mapping and re-bake all
+     * pipelines at the next present. */
+    s_texmap_affine = s_texmap_pending =
+        (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
+    rhi_set_affine_uv(s_texmap_affine);
+    if (s_texmap_affine)
+        OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
+
     /* A/B compare mode shows the PsyCross reference in a second panel and delays
      * the native scene by one frame to align with that lagged reference. vk and
      * diff are single full-window panels with no reference panel and no scene
@@ -1421,15 +1440,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
       OPL_INFO_F("native", "depth: %s",
                  affine ? "screen-affine z_ndc=1-1/vz (default)"
                         : "legacy z=vz/(vz+4096) (OPENPETE_DEPTH_AFFINE=0)"); }
-    /* PSX-affine UV/colour interpolation (--texture-mapping affine): vertex
-     * spec-constant 1 (w=1 in the scene vertex stages), captured by every
-     * pipeline built below AND by mod material pipelines created later
-     * against the same global — boot-latched; a live toggle needs a
-     * pipeline-rebuild epoch. Depth values are identical in both modes. */
-    if (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE) {
-        rhi_set_affine_uv(1);
-        OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
-    }
+    /* (--texture-mapping was resolved near the top of this function — before
+     * the dev overlay snapshotted knob boot values — so every pipeline below
+     * bakes the right AFFINE_UV constant.) */
 
     rhi_pipeline_desc blit_desc = {
         .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
@@ -5347,6 +5360,28 @@ void openpete_native_set_raster_quantize(int mult) {
 
 int openpete_native_get_raster_quantize(void) { return s_raster_mult; }
 
+/* --texture-mapping live toggle: the mode is a vertex spec constant baked
+ * into every scene pipeline, so the setter only QUEUES the change; it takes
+ * effect at the next present boundary via texmap_apply_pending(), which
+ * re-bakes all live pipelines in place (mod material/mesh caches included —
+ * every rhi_pipeline* keeps its identity) under a one-time device idle. */
+void openpete_native_set_texture_mapping(int affine) {
+    s_texmap_pending = affine ? 1 : 0;
+}
+
+int openpete_native_get_texture_mapping(void) { return s_texmap_affine; }
+
+static void texmap_apply_pending(void) {
+    if (s_texmap_pending == s_texmap_affine || !s_nr.dev) return;
+    rhi_set_affine_uv(s_texmap_pending);
+    int fails = rhi_rebuild_pipelines(s_nr.dev);
+    s_texmap_affine = s_texmap_pending;
+    OPL_INFO_F("native", "texture-mapping -> %s (pipelines re-baked)",
+               s_texmap_affine ? "affine (PSX screen-linear)" : "perspective");
+    if (fails)
+        OPL_ERROR_F("native", "texture-mapping: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+}
+
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
  * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
  * triangle list each frame; draw_fps_overlay draws it on the live present, or
@@ -6607,6 +6642,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * scene is composed on demand by openpete_native_render_screenshot_all. */
     if (s_nr.headless)
         return;
+
+    /* Queued --texture-mapping change: re-bake the pipelines OUTSIDE the
+     * frame, before any command buffer records against them. No-op normally. */
+    texmap_apply_pending();
 
     /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
      * + sub-tick intermediates), so it reflects the true on-screen present rate. */

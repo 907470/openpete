@@ -123,6 +123,16 @@ void openpete_native_set_raster_quantize(int mult);
 /* Current multiplier as resolved/last set (0 = off). */
 int  openpete_native_get_raster_quantize(void);
 
+/* Texture/colour interpolation mode (0 = perspective-correct, 1 = PSX affine
+ * = the original screen-linear texture swim). The mode is a vertex spec
+ * constant baked into every scene pipeline, so the setter QUEUES the change
+ * and the renderer re-bakes all pipelines at the next present boundary (a
+ * one-time device-idle hitch). Display-only: never touches gameplay RAM. */
+void openpete_native_set_texture_mapping(int affine);
+/* Live mode (the last APPLIED value; a queued change reads old until the
+ * next present applies it). */
+int  openpete_native_get_texture_mapping(void);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth

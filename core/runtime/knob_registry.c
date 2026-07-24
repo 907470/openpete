@@ -84,6 +84,19 @@ static int vprec_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/* Live getter (not stored_num): the setter only QUEUES the mode — the
+ * renderer applies it (full pipeline re-bake) at the next present — and the
+ * O-menu row moves it too, so the row must read the renderer's state. */
+static double texmap_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_texture_mapping();
+}
+static int texmap_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_texture_mapping((int)v == 1);
+    return 0;
+}
+
 static int rquant_set(knob_desc_t *k, double v) {
     openpete_native_set_raster_quantize((int)v);
     k->stored_num = (int)v;
@@ -330,13 +343,12 @@ static knob_desc_t g_knobs[] = {
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
-    /* RESTART_ONLY: every scene pipeline (and any mod material pipeline)
-     * bakes the interpolation mode as a spec constant at creation. */
     { "texture_mapping", "Texture mapping", "Display", "--texture-mapping", NULL,
       "perspective = modern perspective-correct interpolation; affine = the "
-      "PSX screen-linear texture swim/warp. Baked into pipelines at boot.",
-      KNOB_ENUM, KNOB_RESTART_ONLY, ENUM_ROW(k_texmap_names), 0, 0,
-      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      "PSX screen-linear texture swim/warp. Applying re-bakes every scene "
+      "pipeline at the next present (brief hitch). Display-only.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_texmap_names), 0, 0,
+      texmap_get, texmap_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "lod", "LOD", "Display", "--lod", NULL,
       "original = authentic PSX detail bands; extended = full detail at any "

@@ -264,8 +264,19 @@ void          rhi_set_depth_affine(int on);
 /* Select PSX-affine UV/colour interpolation (vertex spec-constant 1, w=1 —
  * the PSX GPU's screen-linear texture/gouraud swim), applied to pipelines
  * created AFTER this call. Call at bring-up (from --texture-mapping) before
- * the scene pipelines are built. Default 0 = perspective-correct. */
+ * the scene pipelines are built; for a live toggle, follow with
+ * rhi_rebuild_pipelines. Default 0 = perspective-correct. */
 void          rhi_set_affine_uv(int on);
+
+/* Re-bake EVERY live pipeline on the device from its stored desc + shader
+ * sources, capturing the current spec-constant values (rhi_set_depth_affine /
+ * rhi_set_affine_uv) — the live-toggle path for constants that are otherwise
+ * latched at pipeline creation. Waits for device idle (one-time hitch), then
+ * swaps each pipeline's Vulkan objects IN PLACE: every rhi_pipeline* handle
+ * stays valid, so owners (renderer fields, mod material/mesh caches) need no
+ * involvement. A pipeline whose recompile fails keeps its old objects (stale
+ * constants but functional). Returns the number of failures (0 = clean). */
+int           rhi_rebuild_pipelines(rhi_device *dev);
 
 /* Pipeline from IN-MEMORY SPIR-V (mod shaders — S2 of
  * plans/openpete-mod-shaders.md). Words are copied into driver objects

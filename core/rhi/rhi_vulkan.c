@@ -122,6 +122,10 @@ struct rhi_device {
     VkSemaphore     render_done[RHI_MAX_SC_IMAGES];
     VkFence         images_in_flight[RHI_MAX_SC_IMAGES]; /* not owned */
 
+    /* All live pipelines on this device (doubly linked via rhi_pipeline
+     * prev/next): the sweep list for rhi_rebuild_pipelines. */
+    struct rhi_pipeline *pipes_head;
+
     uint32_t frame;        /* 0..RHI_FRAMES_IN_FLIGHT-1 */
     uint32_t image_index;  /* acquired swapchain image this frame */
     bool     needs_recreate;
@@ -217,6 +221,16 @@ struct rhi_buffer {
 struct rhi_pipeline {
     VkPipeline       pipeline;
     VkPipelineLayout layout;
+    /* Rebuild sources (rhi_rebuild_pipelines): the desc plus owned copies of
+     * the shader identities — embedded/loose filenames, or in-memory SPIR-V
+     * for mod shaders — so any pipeline can be re-baked with new vertex
+     * spec-constant values without its owner's involvement. desc.vert_spv /
+     * desc.frag_spv point at the owned name copies (NULL when words given). */
+    rhi_pipeline_desc desc;
+    char            *vert_name, *frag_name;   /* owned filename copies      */
+    uint32_t        *vert_words, *frag_words; /* owned SPIR-V word copies   */
+    size_t           vert_n, frag_n;          /* word counts                */
+    struct rhi_pipeline *prev, *next;         /* device-wide rebuild registry */
 };
 
 struct rhi_texture {
@@ -2807,9 +2821,11 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
     return create_shader_module(dev, spv, n, filename);
 }
 
-/* Shared pipeline builder: both public entry points land here with the
- * shader modules already created (ownership transfers; destroyed before
- * return). desc->postfx selects the mod-postfx layout — no vertex input
+/* Shared pipeline builder: both public entry points store their shader
+ * sources on the rhi_pipeline and land in pipeline_compile, which (re)creates
+ * the Vulkan objects from those stored sources — the same path
+ * rhi_rebuild_pipelines uses to re-bake live pipelines after a spec-constant
+ * change. desc->postfx selects the mod-postfx layout — no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
 /* Vertex-stage specialization constant 0 (`DEPTH_AFFINE`): selects the scene
@@ -2822,22 +2838,32 @@ void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE;
 
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
  * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
- * at pipeline creation — set it before the pipelines are built; only
+ * at pipeline creation — set it before the pipelines are built, or follow a
+ * live change with rhi_rebuild_pipelines to re-bake the existing ones; only
  * psx_scene.vert / quad.vert declare constant_id 1. */
 static VkBool32 s_vs_affine_uv = VK_FALSE;
 void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 
-static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
-                                                  const rhi_pipeline_desc *desc,
-                                                  VkShaderModule vs,
-                                                  VkShaderModule fs)
+/* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
+ * names/words) without touching the rhi_pipeline's live handles: the create
+ * path assigns the result to a fresh pipeline, the rebuild path swaps it into
+ * a live one only on success. Returns 0 on success. */
+static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
+                            VkPipeline *out_pipe, VkPipelineLayout *out_layout)
 {
-    rhi_pipeline *p = calloc(1, sizeof(*p));
-    if (!p) {
-        vkDestroyShaderModule(dev->device, vs, NULL);
-        vkDestroyShaderModule(dev->device, fs, NULL);
-        return NULL;
+    const rhi_pipeline_desc *desc = &p->desc;
+    VkShaderModule vs = p->vert_words
+        ? create_shader_module(dev, p->vert_words, p->vert_n * 4, "(mod vert)")
+        : load_shader_module(dev, desc->vert_spv);
+    VkShaderModule fs = p->frag_words
+        ? create_shader_module(dev, p->frag_words, p->frag_n * 4, "(mod frag)")
+        : load_shader_module(dev, desc->frag_spv);
+    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
+        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
+        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
+        return -1;
     }
+    VkPipelineLayout layout = VK_NULL_HANDLE;
 
     VkSpecializationMapEntry vsSpecMap[2] = {
         { .constantID = 0, .offset = 0,                .size = sizeof(VkBool32) },
@@ -3004,11 +3030,11 @@ static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
         .pushConstantRangeCount = desc->push_const_size ? 1u : 0u,
         .pPushConstantRanges = desc->push_const_size ? &pcr : NULL,
     };
-    if (vkCreatePipelineLayout(dev->device, &plci, NULL, &p->layout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(dev->device, &plci, NULL, &layout) != VK_SUCCESS) {
         RHI_LOG("vkCreatePipelineLayout failed\n");
         vkDestroyShaderModule(dev->device, vs, NULL);
         vkDestroyShaderModule(dev->device, fs, NULL);
-        free(p); return NULL;
+        return -1;
     }
     VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -3021,31 +3047,72 @@ static rhi_pipeline *create_pipeline_with_modules(rhi_device *dev,
         .pDepthStencilState = &dss,
         .pColorBlendState = &cb,
         .pDynamicState = &ds,
-        .layout = p->layout,
+        .layout = layout,
         .renderPass = dev->off_rp,
         .subpass = 0,
     };
-    VkResult r = vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gp, NULL, &p->pipeline);
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkResult r = vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gp, NULL, &pipeline);
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
     if (r != VK_SUCCESS) {
         RHI_LOG("vkCreateGraphicsPipelines failed: %d\n", (int)r);
-        vkDestroyPipelineLayout(dev->device, p->layout, NULL);
-        free(p); return NULL;
+        vkDestroyPipelineLayout(dev->device, layout, NULL);
+        return -1;
     }
+    *out_pipe = pipeline;
+    *out_layout = layout;
+    return 0;
+}
+
+/* Common constructor: store owned copies of the shader sources on the
+ * pipeline (rebuild inputs), compile, and link into the device's rebuild
+ * registry. Word buffers (mod SPIR-V) take precedence over filenames. */
+static rhi_pipeline *create_pipeline_common(rhi_device *dev,
+                                            const rhi_pipeline_desc *desc,
+                                            const uint32_t *vert_words, size_t vert_n,
+                                            const uint32_t *frag_words, size_t frag_n)
+{
+    rhi_pipeline *p = calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    p->desc = *desc;
+    if (vert_words && vert_n) {
+        p->vert_words = malloc(vert_n * 4);
+        if (!p->vert_words) goto fail;
+        memcpy(p->vert_words, vert_words, vert_n * 4);
+        p->vert_n = vert_n;
+        p->desc.vert_spv = NULL;
+    } else if (desc->vert_spv) {
+        p->vert_name = strdup(desc->vert_spv);
+        if (!p->vert_name) goto fail;
+        p->desc.vert_spv = p->vert_name;
+    }
+    if (frag_words && frag_n) {
+        p->frag_words = malloc(frag_n * 4);
+        if (!p->frag_words) goto fail;
+        memcpy(p->frag_words, frag_words, frag_n * 4);
+        p->frag_n = frag_n;
+        p->desc.frag_spv = NULL;
+    } else if (desc->frag_spv) {
+        p->frag_name = strdup(desc->frag_spv);
+        if (!p->frag_name) goto fail;
+        p->desc.frag_spv = p->frag_name;
+    }
+    if (pipeline_compile(dev, p, &p->pipeline, &p->layout) != 0) goto fail;
+    p->next = dev->pipes_head;
+    if (p->next) p->next->prev = p;
+    dev->pipes_head = p;
     return p;
+fail:
+    free(p->vert_name); free(p->frag_name);
+    free(p->vert_words); free(p->frag_words);
+    free(p);
+    return NULL;
 }
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc)
 {
-    VkShaderModule vs = load_shader_module(dev, desc->vert_spv);
-    VkShaderModule fs = load_shader_module(dev, desc->frag_spv);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
-        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
-        return NULL;
-    }
-    return create_pipeline_with_modules(dev, desc, vs, fs);
+    return create_pipeline_common(dev, desc, NULL, 0, NULL, 0);
 }
 
 rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
@@ -3053,18 +3120,30 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
                                       const uint32_t *vert_words, size_t vert_n,
                                       const uint32_t *frag_words, size_t frag_n)
 {
-    VkShaderModule vs = vert_words
-        ? create_shader_module(dev, vert_words, vert_n * 4, "(mod vert)")
-        : load_shader_module(dev, desc->vert_spv);
-    VkShaderModule fs = frag_words
-        ? create_shader_module(dev, frag_words, frag_n * 4, "(mod frag)")
-        : load_shader_module(dev, desc->frag_spv);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
-        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
-        return NULL;
+    return create_pipeline_common(dev, desc, vert_words, vert_n,
+                                  frag_words, frag_n);
+}
+
+int rhi_rebuild_pipelines(rhi_device *dev)
+{
+    if (!dev) return 0;
+    vkDeviceWaitIdle(dev->device);   /* no pipeline may be in flight during the swap */
+    int fails = 0, rebuilt = 0;
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        VkPipeline np = VK_NULL_HANDLE;
+        VkPipelineLayout nl = VK_NULL_HANDLE;
+        if (pipeline_compile(dev, p, &np, &nl) == 0) {
+            if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
+            if (p->layout)   vkDestroyPipelineLayout(dev->device, p->layout, NULL);
+            p->pipeline = np;
+            p->layout = nl;
+            rebuilt++;
+        } else {
+            fails++;   /* keep the old objects: stale spec constants beat a hole */
+        }
     }
-    return create_pipeline_with_modules(dev, desc, vs, fs);
+    RHI_LOG("rebuilt %d pipelines (%d failed)\n", rebuilt, fails);
+    return fails;
 }
 
 /* ---- rhi_ubo: fixed-size uniform blocks × frame ring (S2) ---------- */
@@ -3336,8 +3415,14 @@ void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src)
 void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!pipe) return;
+    /* Unlink from the rebuild registry (a pipeline with no prev is the head). */
+    if (pipe->prev) pipe->prev->next = pipe->next;
+    else            dev->pipes_head = pipe->next;
+    if (pipe->next) pipe->next->prev = pipe->prev;
     if (pipe->pipeline) vkDestroyPipeline(dev->device, pipe->pipeline, NULL);
     if (pipe->layout)   vkDestroyPipelineLayout(dev->device, pipe->layout, NULL);
+    free(pipe->vert_name); free(pipe->frag_name);
+    free(pipe->vert_words); free(pipe->frag_words);
     free(pipe);
 }
 
