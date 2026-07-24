@@ -9,7 +9,7 @@ summarizes each trace via profile-summary.py. A rollup aggregates every movie;
 --baseline compares against a blessed rollup and fails on regressions.
 
 Platform note: on WSL/llvmpipe the CPU scopes are valid but the GPU numbers are
-a software rasterizer — real GPU measurement needs the windows-mingw-opt .exe
+a software rasterizer — real GPU measurement needs the windows-mingw .exe
 (pass it with --exe; path args are wslpath-translated automatically).
 
 Usage:

@@ -75,7 +75,6 @@ to before the distribution work, so the dev loop is unchanged.
 | `linux-debug`           | Linux native, Debug             | static  | decomp-mode dev / bisect |
 | `linux-release`         | Linux native, RelWithDebInfo    | static  | **the default dev build** |
 | `windows-mingw`         | Windows x64 cross (MinGW)       | static  | dev build you run via WSL2 |
-| `windows-mingw-opt`     | Windows x64 cross (MinGW) + LTO | static  | distributable static exe; slow link |
 | `linux-release-shared`  | Linux native                    | shared  | distribution build |
 | `windows-mingw-shared`  | Windows x64 cross (MinGW)       | shared  | distribution build |
 | `windows-msvc`          | Windows native MSVC             | static  | placeholder, unvalidated |
@@ -95,7 +94,7 @@ immutable pointer at a tracked `cmake/presets/<preset>.cmake` file that
 CMake re-executes at the end of `project()` on **every** reconfigure.
 All the real knobs are plain `set()`s /
 `openpete_preset_default()`s in those files (inheritance is an explicit
-`include()`, e.g. `windows-mingw-opt.cmake` includes
+`include()`, e.g. `windows-mingw-shared.cmake` includes
 `windows-mingw.cmake`). This kills the sticky-cache footgun described
 below: the preset files are configure inputs, so editing one
 auto-reconfigures every build dir — every worktree — on its next plain
@@ -112,8 +111,8 @@ What the preset files pin (beyond `CMAKE_BUILD_TYPE`):
 |----------------|-----------|-----|
 | `OPENPETE_SKIP_DECOMP=ON` | `linux-release`, `windows-mingw*`, `wasm` | full-recompilation mode; only `linux-debug` builds the WIP hybrid decomp path |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64-v3` | `windows-mingw*` | portable perf floor for distributable Windows binaries |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `windows-mingw-opt`, `linux-release-shared` | LTO. **Never** LTO the Windows *shared* exe: GNU LTO DCEs the `.def`-exported `psyq_*` thunks (exports are not liveness roots) and ld silently emits absolute-0 exports → DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt` forces it OFF on that target as a guard. |
-| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `windows-mingw-opt` | `--help` shows only the user-facing flag block |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. **No Windows preset enables it** — the shared (distributed) exe cannot: GNU LTO DCEs the `.def`-exported `psyq_*` thunks (exports are not liveness roots) and ld silently emits absolute-0 exports → DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt` forces it OFF on that target as a guard. |
+| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block (display-only — every flag still parses) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis (see above) |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record` (drops the libav dependency) |

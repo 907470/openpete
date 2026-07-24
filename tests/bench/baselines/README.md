@@ -6,7 +6,7 @@ Blessed `rollup.json` files, one per platform tag, for regression detection:
 scripts/bench-corpus.py --exe <exe> --baseline tests/bench/baselines/<platform>.json
 ```
 
-The platform tag is `<build-preset>/<gpu>` (e.g. `windows-mingw-opt/NVIDIA...`,
+The platform tag is `<build-preset>/<gpu>` (e.g. `windows-mingw/NVIDIA...`,
 or `linux-release/SOFTWARE` for llvmpipe). A compare against a baseline from a
 different platform tag refuses (exit 64) — CPU-only llvmpipe numbers are not
 comparable to a real-GPU run.

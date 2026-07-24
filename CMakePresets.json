@@ -35,15 +35,6 @@
       }
     },
     {
-      "name": "windows-mingw-opt",
-      "displayName": "Windows x64 MinGW + LTO, portable -march=x86-64-v3 (distributable release build; slow link)",
-      "inherits": "windows-mingw",
-      "binaryDir": "${sourceDir}/build/windows-mingw-opt",
-      "cacheVariables": {
-        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw-opt.cmake"
-      }
-    },
-    {
       "name": "windows-msvc",
       "displayName": "Windows native MSVC (placeholder; not validated this phase)",
       "generator": "Visual Studio 17 2022",
@@ -106,10 +97,6 @@
     {
       "name": "windows-mingw",
       "configurePreset": "windows-mingw"
-    },
-    {
-      "name": "windows-mingw-opt",
-      "configurePreset": "windows-mingw-opt"
     },
     {
       "name": "windows-msvc",

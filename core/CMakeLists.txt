@@ -272,7 +272,7 @@ target_link_libraries(openpete_core PUBLIC openpete_imgui)
 
 # Hide the debug/diagnostic CLI flags from `--help` (options.c only splits the
 # text; every flag still PARSES and works — this is display-only). Enabled by
-# the windows-mingw-opt preset so the distributed build shows a clean,
+# the *-shared distribution presets so the distributed build shows a clean,
 # user-facing flag list; OFF everywhere else (dev builds list everything).
 option(OPENPETE_HIDE_DEBUG_FLAGS "Hide debug/diagnostic flags from --help output" OFF)
 if(OPENPETE_HIDE_DEBUG_FLAGS)

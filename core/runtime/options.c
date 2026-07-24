@@ -346,7 +346,7 @@ static char* resolve_default_bk2_record_path(void) {
 
 /* Print --help. The RELEASE block (user-facing flags) always prints. The DEBUG
  * block (dev/diagnostic flags) is compiled OUT of --help under
- * OPENPETE_HIDE_DEBUG_FLAGS — set by the windows-mingw-opt preset so the
+ * OPENPETE_HIDE_DEBUG_FLAGS — set by the *-shared distribution presets so the
  * distributed build shows a clean, user-facing flag list; a one-line note
  * replaces it. This is display-only: every flag still PARSES and works in every
  * build regardless of whether it appears here. */
@@ -432,7 +432,14 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
         "  --bk2-record [PATH]        write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie).\n"
         "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
-        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n"
+        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n",
+        display_name, argv0);
+
+    /* The --record family only exists where libav* could be linked. Without
+     * OPENPETE_HAS_LIBAV record.c is the warn-and-ignore stub, so listing these
+     * would advertise a feature this build cannot perform. They still parse. */
+#ifdef OPENPETE_HAS_LIBAV
+    fputs(
         "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
         "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
         "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
@@ -442,7 +449,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
         "  --record-fps-overlay 0|1   burn the native FPS overlay into --record video (default 0 = clean\n"
         "                             capture; on|off also accepted). Display-only.\n",
-        display_name, argv0);
+        stderr);
+#endif
 
 #ifdef OPENPETE_HIDE_DEBUG_FLAGS
     fputs("  (plus dev/diagnostic flags, hidden in this build)\n", stderr);
@@ -521,7 +529,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --profile-out PATH         stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
         "                             keyed per present / canonical tick) for scripts/profile-summary.py\n"
         "                             (text summary) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
-        "                             Windowed only for GPU/intermediate coverage; ~0.1%% CPU overhead.\n",
+        "                             Windowed only for GPU/intermediate coverage; ~0.1% CPU overhead.\n",
         stderr);
 #endif
 }

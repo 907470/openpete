@@ -15,3 +15,6 @@ openpete_preset_default(OPENPETE_RECOMP_LINKAGE shared)
 openpete_preset_default(OPENPETE_STAGE_MOD_DLLS OFF)
 openpete_preset_default(OPENPETE_ROM_FREE_ICON ON)
 openpete_preset_default(OPENPETE_ENABLE_RECORD OFF)
+# Distributed build: --help lists only the user-facing flags. Display-only —
+# every debug flag still parses and works here.
+openpete_preset_default(OPENPETE_HIDE_DEBUG_FLAGS ON)
