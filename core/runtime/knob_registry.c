@@ -657,6 +657,8 @@ static const knob_desc_t g_builtin[] = {
         "Terrain-vs-portal-sky depth conformance clamp (default 1)."),
     ENVROW_LIVE("TERRAIN_VANIM", "Debug", "1",
         "Sub-tick lerp of moving-terrain verts (default 1)."),
+    ENVROW_LIVE("TERRAIN_TANIM", "Debug", "1",
+        "Sub-tick lerp of scrolling terrain textures (default 1)."),
     ENVROW_LATCHED("TERRAIN_ALLVIS", "Debug", "0",
         "Walk ALL sectors, bypass visibility groups (probe)."),
     ENVROW_LATCHED("TERRAIN_NEARQ", "Debug", "0",

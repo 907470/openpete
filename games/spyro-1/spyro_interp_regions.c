@@ -169,6 +169,10 @@ uint32_t spyro_interp_moby_key(uint32_t m) {
 
 extern unsigned openpete_frame;
 
+/* g_EnvironmentAnimations sits 0x48 bytes before g_Environment (environment.h);
+ * +0x08/+0x0C is the {count, ptr-array} of scrolling-texture descriptors. */
+#define G_ENVANIM (G_ENVIRONMENT - 0x48u)
+
 static uint32_t rd32(uint32_t addr) {
     const void* p = openpete_psx_to_host_ptr(addr);
     uint32_t v = 0;
@@ -328,6 +332,32 @@ static void spyro_interp_capture_objs(void) {
         uint32_t gate = 0; if (host) memcpy(&gate, host, 4);
         if (gate != 0)
             openpete_interp_objs_capture(D_DRAGONSTAR, host, 0x2Cu);
+    }
+
+    /* Scrolling-texture env-anim descriptors (m_ScrollingTextures — waterfalls
+     * and flowing water). func_8002A6FC keeps each scroller's ENTIRE animation
+     * state in a 7-bit accumulator at desc+6 and commits it to the tiledef V
+     * bytes as WHOLE TEXELS on a keyframe advance, so a scrolled texture steps
+     * at the sim rate while the world around it interpolates. Capture just the
+     * (tile, accumulator) pair at desc+4 — deliberately NOT the descriptor head,
+     * whose countdown byte at +3 decrements every tick: including it would make
+     * the blob differ every tick and defeat the table's distinct-roll dedupe,
+     * collapsing a slow scroller's real advance interval to a single tick.
+     * terrain_native.c (tsc_scroll_refresh) reads the pair back and interpolates
+     * the accumulator at the slot's own alpha, so the scroll stays smooth even
+     * when the camera is still (the freecam / standing-still case, where the
+     * camera ring dedupes and the shared bracket alpha never engages). */
+    {
+        uint32_t cnt  = rd32(G_ENVANIM + 0x08u);
+        uint32_t base = rd32(G_ENVANIM + 0x0Cu);
+        if (base && cnt && cnt <= 1024u) {
+            for (uint32_t i = 0; i < cnt; ++i) {
+                uint32_t desc = rd32(base + i * 4u);
+                if (!desc) continue;
+                const void* host = openpete_psx_to_host_ptr(desc + 4u);
+                if (host) openpete_interp_objs_capture(desc, host, 4u);
+            }
+        }
     }
 
     openpete_interp_objs_end_tick();

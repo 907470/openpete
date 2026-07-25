@@ -31,6 +31,8 @@
 #include "openpete_psx.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
+#include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 
@@ -66,8 +68,22 @@ extern unsigned openpete_frame;
  * (0x80078560; the generated env-anim func_8002A6FC indexes it as t9+0x10..).
  * Each list is {count, ptr-to-descriptor-pointer-array}. */
 #define G_ENVANIM           (G_ENVIRONMENT - 0x48u)
+#define ENVANIM_SCROLL_CNT  0x08u   /* m_ScrollingTextureCount / +4 ptr */
 #define ENVANIM_LPPOLY_CNT  0x10u   /* m_LowPolyAnimationCount / +4 ptr */
 #define ENVANIM_HPPOLY_CNT  0x20u   /* m_HighPolyAnimationCount / +4 ptr */
+
+/* Sub-tick UV-scroll offsets (see tsc_scroll_refresh). The scrolling-texture
+ * animation writes WHOLE TEXELS into the tiledef V bytes once per canonical
+ * tick, so waterfalls step at 29.97 Hz while the world around them interpolates.
+ * These tables carry the fractional V offset — in texels, relative to the
+ * integer decode the game committed — for the tiles that scrolled this tick.
+ * They are filled only on sub-tick re-extract builds and zeroed on the canonical
+ * path, so the 30 Hz render stays byte-exact. */
+static uint8_t s_tanim_act[128];      /* tile carries a fractional offset this build */
+static float   s_tanim_dvlq[128];     /* LQ per-quad tiledef  (game writes scroll>>2) */
+static float   s_tanim_dvhq[128][2];  /* HQ record entries 1-2 / 3-4 (scroll>>1) */
+static int     s_tanim_have;          /* any tile active — skips the per-face test */
+static int     s_tanim_en;            /* OPENPETE_TERRAIN_TANIM latch (re-extract only) */
 
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
@@ -819,6 +835,18 @@ static void terrain_near_emit(CPUState* cpu, uint32_t hqBase, int texid, int abe
         decode_tiledef(cpu, e, abe, &mat, u, v);
         mat.texid = texid;                /* HQ quadrants share the record's id */
         tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
+        /* Sub-tick UV scroll. Applied AFTER the orientation on purpose: the
+         * offset is a pure V translation in texel space and apply_ori never
+         * moves V into U (its per-corner deltas only carry within the u/v byte
+         * pair), so scrolling here is identical to scrolling the base entry —
+         * a rotated tile scrolls along its rotated axis, exactly as the game's
+         * whole-texel writes do. Sub-quads 0-1 read HQ entries 1-2 and 2-3 read
+         * entries 3-4; the two groups sit half a window apart in the scroll
+         * ring, so they carry separately-wrapped offsets. */
+        if (s_tanim_have && texid >= 0 && texid < 128 && s_tanim_act[texid]) {
+            float dv = s_tanim_dvhq[texid][i >> 1];
+            for (int k = 0; k < 4; k++) v[k] += dv;
+        }
         emit_quad_cv(q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
 }
@@ -1867,6 +1895,137 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                 openpete_frame, s_vanim_sub, s_vanim_on, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
 }
 
+/* Texture (UV-scroll) env-anim sub-tick interpolation — the artisans waterfall
+ * judder. func_8002A6FC's scrolling-texture list (g_EnvironmentAnimations
+ * +0x08/+0x0C) keeps a scroller's ENTIRE animation state in a 7-bit accumulator
+ * at desc+6: on a keyframe advance it adds the keyframe's signed int8 delta,
+ * wraps to 0..127, and writes the accumulator into the tiledef V bytes as whole
+ * texels — scroll>>2 into the LQ entry (+1/+5/+9/+13, i.e. v0/v1 of BOTH LOD
+ * halves) and scroll>>1 into the 21-entry HQ record, whose sub-tile groups sit
+ * at fixed +0x10/+0x20/+0x30 row offsets (mod 64). Those writes land once per
+ * canonical tick, so tsc_tile_gens sees no change in between and the cached
+ * texmats hold still while everything around them interpolates.
+ *
+ * Mirror the game's own registry (as tsc_vert_anim_refresh does for verts)
+ * rather than diffing texture RAM. The prev/cur accumulator pair comes from the
+ * shared per-object snapshot table (spyro_interp_capture_objs captures the
+ * (tile, accumulator) pair at desc+4 once per canonical tick, keyed by the
+ * descriptor address); here each descriptor is turned into a FRACTIONAL V offset
+ * relative to the committed decode, which the two emit sites add to their corner
+ * Vs. Rendered position is exactly lerp(prev,cur,alpha) in accumulator units —
+ * the low bits the game's >>2 / >>1 truncated away are added back, which is why
+ * an interpolating tile can sit up to 0.75 texel off the canonical whole-texel
+ * position (sub-perceptual, and the direction the fractional-camera fix already
+ * took). Everything else about the tiledef — CLUT, tpage, U, the HQ row offsets
+ * — is left exactly as the game wrote it.
+ *
+ * The alpha is the SLOT'S OWN (from the pair's roll timestamps), not the camera
+ * bracket's: a waterfall keeps flowing while the camera holds still, and the
+ * camera ring dedupes a static camera down to no pair at all (freecam, standing
+ * still) — the same reason the HUD icons and gem sparkles carry per-object
+ * alphas. It also means a scroller that advances every N ticks sweeps smoothly
+ * across its real advance interval rather than jumping once and holding.
+ *
+ * NOT handled here, deliberately: the tile-SWAP list (+0x00/+0x04) memcpys whole
+ * 16-byte entries / 168-byte records between texture descriptors. That is a
+ * discrete frame flip (supercharge ramps, portals), not a continuous scroll —
+ * snapping it is faithful, and tsc_tile_gens/tsc_refresh_anim already do. */
+/* A keyframe-table reset (loop restart, level event) moves the accumulator
+ * arbitrarily; a real scroll steps by one keyframe's int8 delta — a few units.
+ * 32 of the 128 accumulator units splits the two by an order of magnitude each
+ * way: above it, snap to the committed decode rather than sweep the texture
+ * across the tile. */
+#define TSCROLL_JUMP 32
+/* Interval ceiling. A scroller's keyframe duration is 6 bits of 1/60 s, so a
+ * legitimate advance interval reaches ~31 ticks; sweeping across all of it is
+ * the smoothest reading of the animation. The cap only bounds the pathological
+ * case — a scroller that PAUSES (descriptor flag bit1) and resumes much later
+ * would otherwise pair across the whole pause and crawl up from a stale pose. */
+#define TSCROLL_PERIOD_MAX (8 * g_openpete_tick_period_ns)
+/* Presents are generated slightly ahead of the tick stamp they belong to, so the
+ * first present of a cycle legitimately lands just before alpha 0 (the spine's
+ * neg-alpha floor). Extrapolate rather than clamp, or ~a quarter of all motion
+ * arrives as a snap. */
+#define TSCROLL_ALPHA_MIN (-0.35)
+static void tsc_scroll_refresh(CPUState* cpu) {
+    static int s_tdbg = -1;
+    if (s_tdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_TANIMDBG"); s_tdbg = (e && *e && *e != '0'); }
+    s_tanim_have = 0;
+    memset(s_tanim_act, 0, sizeof(s_tanim_act));
+    int dbg_desc = 0, dbg_paired = 0;
+    /* Canonical builds render the committed whole-texel decode, byte-exact. */
+    if (!s_vanim_sub || !s_tanim_en) goto scan;
+    {
+    uint32_t cnt  = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT);
+    uint32_t base = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT + 4);
+    if (!base || cnt == 0 || cnt > 1024) goto scan;
+    op_time_t now = openpete_interp_present_now();
+    if (now <= 0) goto scan;
+    for (uint32_t k = 0; k < cnt; k++) {
+        uint32_t desc = rd(cpu, base + k * 4);
+        if (!desc) continue;
+        dbg_desc++;
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
+        /* curr_ns == prev_ns means the snapshot clock stood still between the
+         * two distinct accumulator states — there is no interval to sweep. It
+         * happens under DETERMINISTIC capture with a frozen camera (the headless
+         * freecam legs): the deterministic object stamp is the DIRECT ring's
+         * tick_ns, and a static camera dedupes that ring so it never advances.
+         * Windowed the stamp is the PLL virtual clock, which advances per tick
+         * regardless of camera motion, so a still camera still scrolls. */
+        if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) continue;
+        /* blob = the descriptor's u16 tile at +4 then u16 accumulator at +6 */
+        uint16_t ctile, ptile, cur, prv;
+        memcpy(&ctile, o->curr + 0, 2); memcpy(&cur, o->curr + 2, 2);
+        memcpy(&ptile, o->prev + 0, 2); memcpy(&prv, o->prev + 2, 2);
+        if (ctile >= 128 || ptile != ctile) continue;   /* identity: same tile both ends */
+        cur &= 0x7Fu; prv &= 0x7Fu;
+        /* Shortest path around the 7-bit ring: the accumulator wraps 127→0 mid
+         * animation, and a raw difference there would read as a full-window jump. */
+        int d = ((((int)cur - (int)prv) + 64) & 127) - 64;
+        if (d == 0 || d > TSCROLL_JUMP || d < -TSCROLL_JUMP) continue;
+        op_time_t per = o->curr_ns - o->prev_ns;
+        if (per > TSCROLL_PERIOD_MAX) per = TSCROLL_PERIOD_MAX;
+        double a = (double)(now - o->curr_ns) / (double)per;
+        if (a < TSCROLL_ALPHA_MIN) a = TSCROLL_ALPHA_MIN; else if (a > 1.0) a = 1.0;
+        /* Rendered accumulator = lerp(prev,cur,a) = cur + (a-1)*d. */
+        double off = (a - 1.0) * (double)d;
+        /* Land on the exact fractional position by adding back the low bits the
+         * game's >>2 / >>1 truncated away. The window wrap keeps base+dv inside
+         * the scroll ring: the sampler truncates toward zero (psx_sample.frag),
+         * so a negative V would fetch the wrong row — and the content is
+         * periodic over the window by construction, since the game's own 31→0
+         * accumulator wrap would otherwise be a visible jump every cycle. */
+        double dvq = off * 0.25 + (double)(cur & 3u) * 0.25;
+        double baseQ = (double)(cur >> 2);
+        if (baseQ + dvq < 0.0)        dvq += 32.0;
+        else if (baseQ + dvq >= 32.0) dvq -= 32.0;
+        s_tanim_dvlq[ctile] = (float)dvq;
+        double dvh = off * 0.5 + (double)(cur & 1u) * 0.5;
+        double baseA = (double)(cur >> 1);                  /* HQ entries 1-2 */
+        double baseB = (double)(((cur >> 1) + 32u) & 63u);  /* HQ entries 3-4 (+0x20) */
+        double dvA = dvh, dvB = dvh;
+        if (baseA + dvA < 0.0)        dvA += 64.0;
+        else if (baseA + dvA >= 64.0) dvA -= 64.0;
+        if (baseB + dvB < 0.0)        dvB += 64.0;
+        else if (baseB + dvB >= 64.0) dvB -= 64.0;
+        s_tanim_dvhq[ctile][0] = (float)dvA;
+        s_tanim_dvhq[ctile][1] = (float)dvB;
+        s_tanim_act[ctile] = 1;
+        s_tanim_have = 1;
+        dbg_paired++;
+        if (s_tdbg)
+            fprintf(stderr, "[tanim f=%u pres=%u] tile=%u prev=%u cur=%u d=%d per=%.1fms a=%.3f dvlq=%.3f dvhq=%.3f/%.3f\n",
+                    openpete_frame, s_vanim_pres, ctile, prv, cur, d,
+                    (double)per / 1e6, a, dvq, dvA, dvB);
+    }
+    }
+scan:
+    if (s_tdbg)
+        fprintf(stderr, "[tanim-scan f=%u pres=%u sub=%d en=%d] descs=%d paired=%d\n",
+                openpete_frame, s_vanim_pres, s_vanim_sub, s_tanim_en, dbg_desc, dbg_paired);
+}
+
 /* Re-decode cached texmats whose tile content changed (env texture anim).
  * Epoch-gated: free when no tile changed since this sector's last refresh. */
 static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
@@ -2467,6 +2626,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
     uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
     tsc_tile_gens(cpu, lqTable, rd(cpu, G_ENVIRONMENT + ENV_TEXCNT));  /* env-anim liveness */
+    tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
     int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
     if (s_nearhq < 0) {      /* near/HQ subdivide pass enable (Route 2, default ON) */
@@ -3203,6 +3363,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
                 rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
                 rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            }
+            /* Sub-tick UV scroll (env texture anim): translate every corner V by
+             * the tile's fractional offset. One block covers GT4, GT3 (the
+             * rotation below only permutes which corner feeds which slot, so a
+             * uniform translation is permutation-invariant), both LOD halves
+             * (the game writes the same scroll byte into all four V slots of the
+             * 16-byte entry, so tv and tvN share one offset), and near-plane
+             * clipping (cv_lerp interpolates UV linearly). */
+            float tvScroll[4];
+            if (s_tanim_have && faceStride == 16 && F->tb != -1 && s_tanim_act[F->tb & 0x7F]) {
+                float dv = s_tanim_dvlq[F->tb & 0x7F];
+                for (int k2 = 0; k2 < 4; k2++) tvScroll[k2] = tv[k2] + dv;
+                tv = tvScroll;
             }
             /* UV corners. decode_tiledef gives tu/tv[0..3] = [TL,TR,BL,BR]. A QUAD
              * (GT4) uses them directly via the .s slot reorder (i0→TL, i1→TR,
@@ -4141,13 +4314,15 @@ void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
      * them paints the old level's geometry over the cyclorama. The canon-drawn
      * mask is clear for RP_TERRAIN on those frames, so we skip. */
     if (!render_path_canon_drawn(RP_TERRAIN)) return;
-    /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B) */
-    static tn_envvbl_t vanim_c;
+    /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B)
+     * OPENPETE_TERRAIN_TANIM=0: snap UV-scroll texture anim to cur (A/B) */
+    static tn_envvbl_t vanim_c, tanim_c;
     int s_vanim_en = tn_env_vbl(&vanim_c, "OPENPETE_TERRAIN_VANIM", 1, 1);
+    s_tanim_en = tn_env_vbl(&tanim_c, "OPENPETE_TERRAIN_TANIM", 1, 1);
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
-    s_vanim_sub = 0; s_vanim_on = 0;
+    s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;
 }
 
 static const feature_dispatch_entry_t terrain_dispatch[] = {
