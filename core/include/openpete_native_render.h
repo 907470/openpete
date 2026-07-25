@@ -824,12 +824,16 @@ int openpete_native_render_screenshot(const char *path);
 void openpete_native_render_record_flush(void);
 
 /* Dump every native renderer variant for one --screenshot-on-frame target,
- * regardless of the live --renderer mode: re-renders the scene as vk (single
- * panel), A/B (native|reference), and diff (|native - ref|), writing each to
- * `base` with "-vk"/"-ab"/"-diff" inserted before the extension. The PsyCross
- * reference ("-og") is captured separately by the caller. Restores the live
- * layout afterwards. Returns 0 if all variants were written, nonzero otherwise
- * (including when the native path is disabled). */
+ * regardless of the live --renderer mode, writing each to `base` with
+ * "-vk"/"-ab"/"-diff" inserted before the extension. In a windowed pure-vk run
+ * the -vk variant is a READBACK of the just-presented off_image — ground truth
+ * for what the window showed (sub-tick interp scene, mods, postfx, overlays);
+ * headless / ab / diff runs recompose the canonical lagged scene instead (the
+ * only option without a live present). -ab (native|reference) and -diff
+ * (|native - ref|) are always recomposed, -og-aligned, for the PsyCross
+ * compare. The reference ("-og") is captured separately by the caller.
+ * Restores the live layout afterwards. Returns 0 if all variants were written,
+ * nonzero otherwise (including when the native path is disabled). */
 int openpete_native_render_screenshot_all(const char *base);
 
 /* Intermediate (sub-tick alpha=0.5) capture: make the next

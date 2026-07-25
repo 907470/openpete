@@ -340,6 +340,10 @@ static int                s_scene_ref_compare = 1; /* set by init: 1 = ab/diff (
  * reference-aligned depth even when the LIVE mode is vk-only (whose on-screen
  * present keeps running ahead at depth 0). */
 static int s_scene_shot_compose = 0;
+/* 1 when the shot compose may use the lagged history slot (headless — the
+ * canonical feeder walk maintains the ring there). Set with s_scene_shot_compose
+ * by the screenshot_all wrapper (s_nr is not yet declared at this point). */
+static int s_scene_shot_lag = 0;
 /* Intermediate (sub-tick alpha=0.5) capture: the re-extract builds the
  * interpolated scene into the CURRENT s_scene and never pushes it to the frame
  * history, so the compose must read depth 0 — the normal shot_compose delay
@@ -361,10 +365,20 @@ static int scene_delay_depth(void) {
     if (s_scene_delay >= 0) return s_scene_delay;
     /* Intermediate capture reads the freshly-built current scene (see the flag). */
     if (s_scene_shot_nodelay) return 0;
-    /* Mode default: reference-compare modes and the screenshot compose align
-     * with the lagged PsyCross reference; the live vk-only present has no
-     * reference → depth 0 (live frame, runs ahead). */
-    return (s_scene_ref_compare || s_scene_shot_compose) ? AB_DIFF_SCENE_DELAY : 0;
+    /* Mode default: reference-compare modes align with the lagged PsyCross
+     * reference; the live vk-only present has no reference → depth 0 (live
+     * frame, runs ahead). The screenshot compose uses the lag ONLY where the
+     * canonical feeder walk actually maintains the history ring: ref-compare
+     * modes, and headless (where the canonical walk is the renderer). In a
+     * WINDOWED vk-only run the sub-tick spine rebuilds the CURRENT scene at
+     * present cadence and never pushes it — the per-VBL begin_frame pushes
+     * snapshot whatever the accumulator holds at sim time, which on
+     * present-less VBLs is EMPTY — so the lagged slot is garbage there and the
+     * dump reads the current scene (the frame the window just presented;
+     * "-ab showed two copies of -og / -diff black" was this). */
+    if (s_scene_ref_compare) return AB_DIFF_SCENE_DELAY;
+    if (s_scene_shot_compose && s_scene_shot_lag) return AB_DIFF_SCENE_DELAY;
+    return 0;
 }
 
 /* No ambient scene category/carry: add_tri takes both EXPLICITLY per call, so a
@@ -5402,10 +5416,9 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
  * glyphs in the same overlay space as the FPS overlay, pushed once per
  * present by openpete_mods_present_flush. Drawn by draw_mod_overlay on the
  * vk variant, deliberately NOT s_overlay_live-gated so --record videos
- * include it (a HUD mod's drawing is content, not chrome). Empirical note:
- * --screenshot PNGs read the scene-only reference target and do NOT show
- * overlay layers (verified M6) — visual proof of mod HUD = live window or
- * a --record clip. */
+ * include it (a HUD mod's drawing is content, not chrome). Screenshot
+ * dumps include it too: the windowed -vk is a readback of the presented
+ * frame, and the recompose paths call draw_mod_overlay themselves. */
 static openpete_hud_vert s_mod_overlay_verts[MOD_OVL_MAX_VERTS];
 static int               s_mod_overlay_n = 0;
 void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts) {
@@ -6902,9 +6915,14 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         upload_synced_textures();
         hd_flush_pending();
         native_depth_prepass();
-        rhi_begin_render_target(s_nr.dev, rt, br, bgc, bb, 1.0f);
+        /* Black clear + mod draws + SCENE point: live-offscreen parity, same
+         * rationale as the 4:3 dump compose (see screenshot_all_impl). */
+        rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
+        draw_mod_meshes();
+        draw_mod_overlay();
         rhi_end_render_target(s_nr.dev, rt);
+        native_postfx_run(1 /* SCENE */, rt, Wc, H);
         native_postfx_run(0 /* COMPOSITE */, rt, Wc, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
@@ -6919,6 +6937,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
     if (!nat) return 1;
     int nw = 0, nh = 0;
     if (!rhi_read_render_target(s_nr.dev, rt, nat, px * 4, &nw, &nh)) { free(nat); return 1; }
+    for (size_t i = 0; i < px; i++) nat[i * 4 + 3] = 0xFF;   /* GPU blend alpha → opaque */
 
     int rc = 0;
     char path[1100];
@@ -6937,14 +6956,59 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
 int openpete_native_render_screenshot_all(const char *base)
 {
     s_scene_shot_compose = 1;
+    s_scene_shot_lag = s_nr.headless ? 1 : 0;
     int r = native_render_screenshot_all_impl(base);
     s_scene_shot_compose = 0;
+    s_scene_shot_lag = 0;
     return r;
+}
+
+/* Blocking off_image readback → PNG. Shared by the A/B present capture and the
+ * live -vk screenshot; `what` labels the log line. Returns 0 on success. */
+static int shot_write_offscreen(const char *path, const char *what)
+{
+    size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+    if (cap == 0) return 1;
+    unsigned char *buf = malloc(cap);
+    if (!buf) return 1;
+    int w = 0, h = 0, rc = 1;
+    if (rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h)) {
+        /* Blend ops write real alpha into off_image (driver-dependent; opaque
+         * on llvmpipe, fractional on discrete GPUs). The display ignores it,
+         * but a PNG keeps it and viewers then show transparency checkerboard —
+         * force opaque so the file shows exactly what the window showed. */
+        for (size_t i = 0; i < (size_t)w * (size_t)h; i++)
+            buf[i * 4 + 3] = 0xFF;
+        rc = openpete_write_png_rgba(path, buf, w, h);
+    }
+    free(buf);
+    if (rc == 0)
+        OPL_INFO_F("native", "%s screenshot %dx%d -> %s", what, w, h, path);
+    return rc;
 }
 
 static int native_render_screenshot_all_impl(const char *base)
 {
     if (!s_nr.enabled || !base) return 1;
+
+    /* Live-present -vk (pure-vk window runs): off_image still holds the frame
+     * the user is seeing — the present just blitted it to the swapchain — so
+     * -vk is a ground-truth READBACK of the presented image, read BEFORE the
+     * recomposes below open new frames over it. The recompose is a
+     * reconstruction (canonical lagged scene, ref-sized RTT) and diverges from
+     * the window whenever a live-only path is in play (sub-tick interp scenes,
+     * SSAA, overlays); it is kept only to build the -og-aligned -ab/-diff
+     * compare pair. Not taken when:
+     *   - headless: openpete_native_render_frame early-returns, no present;
+     *   - live ab/diff modes: off_image holds the panel composite, not a vk view;
+     *   - intermediate capture (s_scene_shot_nodelay): the caller re-extracted
+     *     a sub-tick scene precisely to have it RECOMPOSED deterministically. */
+    bool live_vk = false;
+    if (!s_nr.headless && !s_nr.diff_mode && !s_nr.ab_mode && !s_scene_shot_nodelay) {
+        char lp[1100];
+        path_with_suffix(base, "-vk", lp, sizeof(lp));
+        live_vk = shot_write_offscreen(lp, "vk (live present)") == 0;
+    }
 
     /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
     sync_vram_texture();
@@ -6973,6 +7037,11 @@ static int native_render_screenshot_all_impl(const char *base)
     bool with_ref = have_ref && s_nr.readback != NULL;
     if (!s_nr.native_rtt || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
         return 1;
+
+    /* Live -vk written and no reference → there is no -ab/-diff pair to build;
+     * the recompose would only overwrite the truthful capture. Done. */
+    if (live_vk && !with_ref)
+        return 0;
 
     /* Widescreen (Hor+) native-only capture: render the widened view into the
      * dedicated shot_rtt and write the single -vk image. Only in vk-only mode
@@ -7012,12 +7081,31 @@ static int native_render_screenshot_all_impl(const char *base)
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
         hd_flush_pending();        /* HD replacement textures queued at draw time */
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
-        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
+        /* BLACK clear — live-offscreen parity. The live present clears black and
+         * relies on the scene's own bg-fill quad; clearing to the bg colour here
+         * painted over exactly the class of bug where that quad is built but
+         * never drawn, making the dump unable to reproduce a live-visible black
+         * region. Where the quad exists (every normal frame) the output is
+         * identical. */
+        rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
+        /* Mod draw-service content (3D meshes under the mod HUD) — the live
+         * compose draws these into the offscreen after the scene; without them
+         * the dump showed a mod-free frame while the window showed mod content.
+         * Committed per tick and re-read here, so drawing after the live present
+         * is idempotent. NB the live path runs the SCENE postfx point BEFORE
+         * these; the RT pass can't re-open with a load-op, so the dump runs the
+         * SCENE chain after them — mod content gets chained into SCENE passes
+         * here (visible only when a SCENE-point pass AND mod draws are both
+         * active). */
+        draw_mod_meshes();
+        draw_mod_overlay();
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
-        /* Mod postfx over the dump compose too — this path bypasses
-         * off_image, so without this call a headless/screenshot-all gate
-         * would pass vacuously (plan-review trap). */
+        /* Postfx over the dump compose too — this path bypasses off_image, so
+         * without these calls a headless/screenshot-all gate would pass
+         * vacuously (plan-review trap). SCENE point first (--raster-quantize,
+         * mod scene shaders — previously dump-bypassed), then COMPOSITE. */
+        native_postfx_run(1 /* SCENE */, s_nr.native_rtt, W, H);
         native_postfx_run(0 /* COMPOSITE */, s_nr.native_rtt, W, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
@@ -7048,11 +7136,16 @@ static int native_render_screenshot_all_impl(const char *base)
         free(nat); free(ref); free(ab); free(dif);
         return 1;
     }
+    /* RT alpha is whatever the blend ops left (fractional on discrete GPUs) —
+     * force opaque so the PNGs don't show viewer transparency checkerboard.
+     * ab inherits from nat/ref below; dif already writes 0xFF. */
+    for (size_t i = 0; i < frame_px; i++) nat[i * 4 + 3] = 0xFF;
     if (with_ref) {
         /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
         for (int y = 0; y < H; y++)
             memcpy(&ref[(size_t)y * W * 4],
                    &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
+        for (size_t i = 0; i < frame_px; i++) ref[i * 4 + 3] = 0xFF;
         /* Empty native scene (load/transition frames): mirror the reference so -vk
          * shows the framebuffer and -diff reads ~zero instead of a flat clear. */
         if (scene_n <= 0) memcpy(nat, ref, frame_px * 4);
@@ -7097,10 +7190,14 @@ static int native_render_screenshot_all_impl(const char *base)
 
     int rc = 0;
     char path[1100];
-    path_with_suffix(base, "-vk", path, sizeof(path));
-    if (openpete_write_png_rgba(path, nat, W, H) == 0)
-        OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
-    else rc = 1;
+    /* -vk: the live capture already wrote it in a pure-vk window run; only the
+     * headless / ab / diff / intermediate composes fall back to the recompose. */
+    if (!live_vk) {
+        path_with_suffix(base, "-vk", path, sizeof(path));
+        if (openpete_write_png_rgba(path, nat, W, H) == 0)
+            OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
+        else rc = 1;
+    }
     if (with_ref) {
         path_with_suffix(base, "-ab", path, sizeof(path));
         if (openpete_write_png_rgba(path, ab, 2 * W, H) == 0)
@@ -7122,17 +7219,7 @@ static int native_render_screenshot_all_impl(const char *base)
 int openpete_native_render_screenshot(const char *path)
 {
     if (!s_nr.enabled || !path) return 1;
-    size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
-    if (cap == 0) return 1;
-    unsigned char *buf = malloc(cap);
-    if (!buf) return 1;
-    int w = 0, h = 0, rc = 1;
-    if (rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h))
-        rc = openpete_write_png_rgba(path, buf, w, h);
-    free(buf);
-    if (rc == 0)
-        OPL_INFO_F("native", "A/B screenshot %dx%d -> %s", w, h, path);
-    return rc;
+    return shot_write_offscreen(path, "A/B");
 }
 
 /* --record shutdown drain: the async ring still holds the last few presents
