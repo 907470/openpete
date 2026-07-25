@@ -33,7 +33,7 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "TEXTURE", "LOD", "FREECAM",
+    "TEXTURES", "LOD", "FREECAM",
 };
 
 /* Aspect presets (label + width/height). */
