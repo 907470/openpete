@@ -222,6 +222,7 @@ add_executable(openpete-spyro1
     features/ui_sprite_native.c
     features/portal_native.c
     features/text_moby_native.c
+    features/text_moby_id.c
     features/transition_native.c
     features/freecam_native.c
     features/cheats_native.c

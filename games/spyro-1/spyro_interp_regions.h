@@ -14,8 +14,11 @@ void spyro_interp_register(void);
  * halves — the same logical moby alternates between two addresses every
  * tick, so an address key is evicted every other tick and never pairs.
  * HUD-pool mobys key as 0x40000000 + (addr - pool base) (slot-relative,
- * stable across halves); everything else keys by address. Used by BOTH
- * the capture walk and the shaded-path consumers — they must agree. */
+ * stable across halves); everything else keys by address. Text glyphs
+ * take precedence over both: they key by emitter-call provenance
+ * (features/text_moby_id.h), because a pool slot shifts whenever any
+ * earlier allocation appears or disappears. Used by BOTH the capture
+ * walk and the shaded-path consumers — they must agree. */
 uint32_t spyro_interp_moby_key(uint32_t m);
 
 #ifdef __cplusplus

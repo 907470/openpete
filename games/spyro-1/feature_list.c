@@ -22,6 +22,7 @@ extern const feature_module_t ui_sprite_native_module;
 extern const feature_module_t portal_native_module;
 extern const feature_module_t transition_native_module;
 extern const feature_module_t cheats_native_module;
+extern const feature_module_t text_moby_id_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: parse the path-isolation selection at startup (apply_options
@@ -99,6 +100,11 @@ const feature_module_t* const openpete_features[] = {
      * effects are written from game_on_frame_pre once a level is live —
      * see features/cheats_native.c). Inert without the flag. */
     &cheats_native_module,
+    /* Records the emitter-call provenance of every HUD text glyph
+     * (func_80017FE4 / func_800181AC entry hooks, read-only, always fall
+     * through) so the sub-tick interpolator can tell one tick's letters from
+     * the next's. See features/text_moby_id.c. */
+    &text_moby_id_module,
 };
 
 const size_t openpete_feature_count =

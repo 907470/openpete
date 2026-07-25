@@ -43,6 +43,7 @@
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "spyro_interp_regions.h"
 #include "spyro_native_reextract.h"   /* moby_native_canon_drawn_mobys */
+#include "features/text_moby_id.h"    /* text_moby_id_lookup */
 
 #include <math.h>
 #include <stdint.h>
@@ -98,6 +99,19 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
  * (lowest allocated entry, bump-down); a moby within [base, base+64*0x58)
  * keys slot-relative so the double-buffered halves share one identity. */
 uint32_t spyro_interp_moby_key(uint32_t m) {
+    /* Text glyphs first: a glyph emitted by func_80017FE4 / func_800181AC has a
+     * real provenance identity — "the Nth character of the Mth call from
+     * callsite C" — recorded by text_moby_id.c. It beats every position-derived
+     * key here because it is blind to unrelated HUD-pool traffic: the inventory
+     * page's blinking navigation arrows change the pool ordinal of every glyph
+     * behind them twice a second, which renamed ~100 glyphs mid-menu and made
+     * each pair with its neighbour's previous position (the "0" of a gem count
+     * sliding into the "0" of the dragon count and back). */
+    {
+        uint32_t tk;
+        if (text_moby_id_lookup(m, &tk)) return tk;
+    }
+
     /* Level-exit gem fly-out identity (user report 2026-07-07). At a level exit
      * the game animates the collected gems flying to the chest; the shaded pass
      * stages a moby COPY per active gem into the double-buffered polybuf, in
