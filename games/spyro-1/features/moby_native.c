@@ -545,7 +545,13 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * basket wall) stops z-eating riders keyed nearer. */
         if (ot_slot_end > 0.0 && fvz > ot_slot_end)
             fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
-        else if (ot_slot_end > 0.0 && fvz < ot_slot_end)
+        /* Near side: ONLY vertices in front of the camera. Behind-camera
+         * vertices (fvz <= 0) must keep their sign — emit's vz<=0 near cull
+         * rejects them; mapping them to a positive depth near the centre
+         * DEFEATED that cull and let off-view mobys draw garbage
+         * screen-covering triangles (whole-screen balloon flashes at interp
+         * camera poses). */
+        else if (ot_slot_end > 0.0 && fvz > 0.0 && fvz < ot_slot_end)
             fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
         fvz -= ot_pull;
         /* One-slot tie pull: the .s resolves same-slot moby-vs-terrain ties to
@@ -4024,7 +4030,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * keys the whole moby at the centre slot in both directions. */
             if (ot_slot_end > 0.0 && fvz > ot_slot_end)
                 fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
-            else if (ot_slot_end > 0.0 && fvz < ot_slot_end)
+            /* Front-of-camera only — see the regular walk: compressing a
+             * behind-camera vertex to a positive depth defeats the vz<=0 cull. */
+            else if (ot_slot_end > 0.0 && fvz > 0.0 && fvz < ot_slot_end)
                 fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
             fvz -= ot_pull;
             /* One-slot tie pull — see the regular walk's twin above. The
