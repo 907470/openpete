@@ -101,6 +101,17 @@ void flame_native_set_subframe(double frac);
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
 void cyclorama_native_reextract(struct CPUState* cpu);
+/* One extracted cyclorama dome triangle: screen space (float), per-vertex PSX
+ * 0xBBGGRR colour. */
+typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri;
+/* Re-derive the DPCS-faded dome that the cross-fade renderer func_8004F000
+ * draws (level exit + balloonist), from g_Cyclorama and g_Camera's matrices.
+ * That renderer culls faces against the 4:3 outcode box, so its prims stop at
+ * the 4:3 edges; this extraction uses the ACTIVE (Hor+ widened) bounds, so the
+ * revealed sides of a wide frame get real dome instead of background clear.
+ * Fills up to `max` triangles and returns the count. Defined in
+ * cyclorama_native.c. */
+int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max);
 /* Present-time draw-env clear sync (called from render_paths_commit, once per
  * canonical present): re-reads the clear colour from g_CurDB->m_DrawEnv in PSX
  * RAM — the env DrawOTag will use for the scene being presented — instead of

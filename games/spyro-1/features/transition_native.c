@@ -2,28 +2,24 @@
 // transition presentation layer: the balloonist / level-exit cross-fade backdrop
 // (func_8004F000) and the GS_ExitLevel grayscale freeze (func_8001C694).
 //
-// func_8004F000 ("cross-fade / edge-fill"): during a level transition or a
-// balloonist take-off (GS_Balloonist func_8001E24C, and GS_ExitLevel
-// func_8001C694) the game captures the scene into g_SonyImage as a coarse
-// vertex-colour mesh, then every tick re-projects + colour-fades it into a
-// full-screen GOURAUD mesh (POLY_G3/F3, no texture) drawn behind the balloon
-// and the "ENTERING <world>" text — the soft dreamy gradient backdrop. The
-// native renderer never fed it, so during the balloonist screen the panel
-// showed a flat background-clear fill instead of the gradient.
+// func_8004F000 ("cross-fade"): during a level transition or a balloonist
+// take-off (GS_Balloonist func_8001E24C, and GS_ExitLevel func_8001C694) the
+// game draws the g_Cyclorama dome with every sector colour run through a GTE
+// DPCS fade toward D_BLEND_TARGET by D_FOG_FACTOR — the soft dreamy gradient
+// backdrop behind the balloon and the "ENTERING <world>" text. It is the same
+// dome geometry the main sky renderer (func_8004EBA8) draws, so this feeder
+// RE-DERIVES it from gamestate via cyclorama_native_extract_faded rather than
+// replaying prims: func_8004F000 culls each face by AND-ing its three vertices'
+// outcodes against the 4:3 box [0,512]x[0,256], so the prims it emits stop dead
+// at the 4:3 edges and a Hor+ frame was left on background clear beyond them.
 //
-// It writes its prims into the shared polybuf cursor (0x800757B0) exactly like
-// the other renderers, so this is a CAPTURE-AND-FEED feeder (cf. tracer /
-// dragonstar): run the real .s once (verdict / state untouched), bracket the
-// polybuf, decode the screen-space gouraud tris it emitted, and feed them into
-// the native scene as the backmost opaque layer. The mesh is already 2D screen
-// space (GTE-projected), so there is nothing to re-derive in float — we replay
-// the projected tris verbatim, held static across sub-tick presents (the warp
-// animates slowly; a 33 ms hold is imperceptible and avoids strobing the
-// backdrop between canonical and intermediate frames).
+// The real renderer still runs first (it owns the gameplay verdict and the
+// g_SonyImage scratch), and its polybuf interval is still bracketed — that
+// range drives the --render-paths OT filter and the RP_TRANSITION liveness
+// latch. Only the pixels come from the native extraction.
 //
-// Display-only / oracle-inert: the real renderer still runs (it owns the
-// gameplay verdict + g_SonyImage state); we only read the prims it left in the
-// polybuf and draw our own copy.
+// Display-only / oracle-inert: the extraction only READS g_Cyclorama and
+// g_Camera, so no gameplay-readable byte moves.
 //
 // func_8001C694 (GS_ExitLevel): case 0 is the green-tinted grayscale freeze of
 // the level being exited — the SAME effect as the pause/inventory freeze
@@ -58,36 +54,35 @@ extern unsigned openpete_frame;
 /* g_Cyclorama.m_BackgroundColor (g_Cyclorama @0x80078A40 + 0x10): the destination
  * homeworld's flat background colour. In case 1 the game clears the framebuffer to
  * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) — a linear fade-in from black, drawn
- * BEHIND the cyclorama mesh. */
+ * BEHIND the cyclorama dome. */
 /* func_8001C694's address span [start, next fn) — to tell the exit-level's nested
  * func_8004F000 call (ra inside this range) from the balloonist's standalone one. */
 
 #define CRED   "\033[1;31m"
 #define CRESET "\033[0m"
 
-/* ---- captured cross-fade mesh (screen-space gouraud tris) ----------------- */
-typedef struct { float sx[3], sy[3]; uint32_t rgb[3]; int blend; } xtri;
-#define MAX_XTRI 8192
-static xtri s_cross[MAX_XTRI];
+/* ---- the cross-fade dome (screen-space tris) ------------------------------ */
+#define MAX_DOME_TRI 8192
+static cyclorama_native_tri s_cross[MAX_DOME_TRI];
 static int  s_cross_n;
-/* Backdrop for the warp-pinch gaps. The warp mesh is a 4:3 shape that pinches
- * inward at the bottom sides, so in widescreen (Hor+) its bottom corners don't
- * reach the widened frame and the background clear leaks through. Behind the
- * mesh we draw (1) a flat full-panel quad in the mesh's average colour (catches
- * any area beyond the mesh's bbox at extreme aspects), then (2) a bilinear
- * gradient quad spanning the mesh's bbox with its four CORNER colours — so the
- * fill matches the mesh seamlessly where the warp boundary cuts the corner. */
+/* Backdrop behind the dome. The dome only covers the sky; below its horizon
+ * (and above its cap, when the camera pitches) the PSX shows the draw-env
+ * clear. Behind the dome we draw (1) a flat full-panel quad in the dome's
+ * average colour (catches any area beyond its bbox at extreme aspects), then
+ * (2) a bilinear gradient quad spanning the dome's bbox with its four CORNER
+ * colours — so the fill matches the dome seamlessly where its silhouette cuts
+ * a corner. */
 static uint32_t s_cross_corner[4];   /* TL, TR, BL, BR (PSX 0xBBGGRR) */
 static uint32_t s_cross_avg;
 static float    s_cross_bbox[4];     /* minx, miny, maxx, maxy */
 static int      s_cross_have_bg;
-/* Flat backdrop override for the GS_ExitLevel cyclorama fade (case 1). The mesh
- * corner colours used for the widescreen edge-fill are the DPCS-faded cyclorama,
- * near-black early in the fade — so the backdrop grid covers the lerped clear and
- * the homeworld bg appears too late. For the exit-level the true backdrop IS flat
+/* Flat backdrop override for the GS_ExitLevel cyclorama fade (case 1). The dome
+ * corner colours the backdrop grid is built from are the DPCS-faded cyclorama,
+ * near-black early in the fade — so the grid covers the lerped clear and the
+ * homeworld bg appears too late. For the exit-level the true backdrop IS flat
  * (the game clears to ColorLerp(cyclorama_bg, 0)=bg*tick/32), so override the grid
  * with that colour. Bit 31 = set; low 24 = PSX 0xBBGGRR. 0 (balloonist) = use the
- * mesh corners. */
+ * dome corners. */
 static uint32_t s_cross_bg_flat;
 
 /* Staleness gate: the hook records its emitted polybuf interval as
@@ -96,79 +91,24 @@ static uint32_t s_cross_bg_flat;
  * func_8004F000 stops emitting. Replaces the old private s_cross_ran /
  * s_cross_canon_drawn latch + chained commit. */
 
-static int16_t s16(uint32_t v) { return (int16_t)(uint16_t)v; }
-
-/* Walk the polybuf as a linked OT list and decode the gouraud/flat polygon
- * prims. The cursor slot at `start` holds a forward link to the first prim;
- * each prim word0 = tag (high byte = length, low 24 = next-prim link), word1 =
- * code|rgb0, then per-vertex rgb (gouraud) + xy (+uv if textured). The
- * cross-fade emits POLY_G3 (code 0x30, len 6, screen-space, often extending
- * past the 4:3 edges — the warp over-covers). A 0xE1 draw-mode prim updates the
- * current ABR (semi-transparency) mode; quads split into two tris. */
-static void crossfade_capture(CPUState* cpu, uint32_t start, uint32_t end) {
+/* Rebuild the dome func_8004F000 just drew, from gamestate, against the ACTIVE
+ * frustum. The .s culls each face by AND-ing its three vertices' outcodes
+ * against the 4:3 box, so the prims it leaves in the polybuf stop at the 4:3
+ * edges and a Hor+ frame showed background clear beyond them; the native
+ * extraction iterates the whole 360-degree dome and rejects against the widened
+ * bounds instead. Also derives the backdrop stats used behind the dome. */
+static void crossfade_extract(CPUState* cpu) {
     /* Runahead lookahead: a speculative tick crossing a level-exit trigger
-     * would capture led OT tris into these host buffers; the rollback does
-     * not revert them. The committed re-run recaptures for real. */
+     * would leave its tris in these host buffers; the rollback does not revert
+     * them. The committed re-run re-extracts for real. */
     extern int openpete_speculative;
     if (openpete_speculative) return;
-    s_cross_n = 0;
-    int cur_abr = 0;                         /* ABR mode from the last 0xE1 prim */
-    uint32_t p = cpu->read_word(start);      /* head link -> first prim tag */
-    int guard = 0;
-    while (p >= start && p < end && guard++ < MAX_XTRI * 2) {
-        uint32_t tag = cpu->read_word(p);
-        uint32_t taglen = (tag >> 24) & 0xFF;
-        uint32_t link24 = tag & 0x00FFFFFFu;
-        uint32_t next = (p & 0xFF000000u) | link24;     /* restore the KSEG high byte */
-        if (link24 == 0x00FFFFFFu) taglen = 0;          /* OT terminator: decode nothing, stop */
-        if (taglen == 0 || taglen > 12) break;          /* not a prim / end */
-        uint32_t w1 = cpu->read_word(p + 4);
-        uint8_t code = (uint8_t)(w1 >> 24);
+    s_cross_n = cyclorama_native_extract_faded(cpu, s_cross, MAX_DOME_TRI);
 
-        if ((code & 0xE0) == 0x20) {                     /* GPU polygon */
-            int gouraud = (code & 0x10) != 0;
-            int quad    = (code & 0x08) != 0;
-            int tex     = (code & 0x04) != 0;
-            int stp     = (code & 0x02) != 0;
-            int nv = quad ? 4 : 3;
-            uint32_t rgb0 = w1 & 0xFFFFFF;
-            float    x[4], y[4];
-            uint32_t rgb[4];
-            int wi = 2;                                   /* word index (word1 done) */
-            for (int k = 0; k < nv; k++) {
-                rgb[k] = (gouraud && k > 0) ? (cpu->read_word(p + (uint32_t)wi++ * 4) & 0xFFFFFF) : rgb0;
-                uint32_t xy = cpu->read_word(p + (uint32_t)wi++ * 4);
-                x[k] = (float)s16(xy & 0xFFFF);
-                y[k] = (float)s16(xy >> 16);
-                if (tex) wi++;                            /* skip uv/clut/tpage word */
-            }
-            /* blend: opaque unless the poly carries STP, then the current ABR
-             * (0 -> (B+F)/2 alpha, 1 -> additive, 2 -> subtractive). The
-             * cross-fade backdrop is opaque in practice; STP is honoured for
-             * faithfulness if a prim ever sets it. */
-            int blend = 0;
-            if (stp) blend = (cur_abr == 1) ? 2 : (cur_abr == 2) ? 3 : 1;
-            int tri_idx[2][3] = { {0,1,2}, {1,3,2} };    /* quad -> 2 tris */
-            int ntri = quad ? 2 : 1;
-            for (int ti = 0; ti < ntri && s_cross_n < MAX_XTRI; ti++) {
-                xtri* t = &s_cross[s_cross_n++];
-                for (int k = 0; k < 3; k++) {
-                    int vi = tri_idx[ti][k];
-                    t->sx[k] = x[vi]; t->sy[k] = y[vi]; t->rgb[k] = rgb[vi];
-                }
-                t->blend = blend;
-            }
-        } else if (code == 0xE1) {                        /* DR_MODE: ABR in bits 5-6 */
-            cur_abr = (int)((w1 >> 5) & 3);
-        }
-        if (next == p) break;                             /* self-loop guard */
-        p = next;
-    }
-
-    /* Backdrop colours: the mesh bbox, its four corner-quadrant average colours
-     * (for the bilinear gradient quad), and the overall average (for the flat
-     * backstop). Corner quadrants are the 40% nearest each bbox corner in both
-     * axes; an empty quadrant falls back to the overall average. */
+    /* Backdrop colours: the dome's bbox, its four corner-quadrant average
+     * colours (for the bilinear gradient quad), and the overall average (for the
+     * flat backstop). Corner quadrants are the 40% nearest each bbox corner in
+     * both axes; an empty quadrant falls back to the overall average. */
     s_cross_have_bg = 0;
     if (s_cross_n > 0) {
         float minx=1e9f,maxx=-1e9f,miny=1e9f,maxy=-1e9f;
@@ -205,23 +145,21 @@ static void crossfade_capture(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
-/* Feed the captured backdrop mesh as the backmost layer: WORLD-category, far
- * depth (z just inside the far plane) so the depth test keeps it behind the
- * balloon moby and under the HUD text, exactly the PSX draw order (backdrop
- * first, balloon + text over it). Colours are the .s's already-faded vertex
- * colours, so the gradient matches frame-for-frame. */
+/* Feed the dome as the backmost layer: WORLD-category, far depth (z just
+ * inside the far plane) so the depth test keeps it behind the balloon moby and
+ * under the HUD text, exactly the PSX draw order (backdrop first, balloon +
+ * text over it). Vertex colours carry the same DPCS fade the .s applies. */
 static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
 
-    /* Backdrop behind the mesh: a 3x3 quad grid that EDGE-CLAMP-extends the
-     * mesh's bilinear corner gradient outward to a huge scissor-clipped rect.
-     * The centre cell spans the mesh bbox with the real 4-corner gradient (so it
-     * continues the mesh seamlessly into the warp-pinch corner gaps); the 8 outer
-     * cells repeat the nearest edge/corner colour, so the gradient fills a frame
-     * of ANY width — including super-ultrawide (96:9) — with no flat block and no
-     * background-clear leak. Hor+ keeps the vertical FOV, so only the horizontal
-     * extent ever needs the extension; the verticals are safety margin. */
+    /* Backdrop behind the dome: a 3x3 quad grid that EDGE-CLAMP-extends the
+     * dome's bilinear corner gradient outward to a huge scissor-clipped rect.
+     * The centre cell spans the dome's bbox with the real 4-corner gradient (so
+     * it continues seamlessly where the dome silhouette cuts a corner); the 8
+     * outer cells repeat the nearest edge/corner colour, so the gradient fills a
+     * frame of ANY width — including super-ultrawide (96:9) — with no flat block
+     * and no background-clear leak beyond the dome's reach. */
     if (s_cross_have_bg) {
         const float BIGX = 16384.0f, BIGY = 4096.0f;
         float gx[4] = { -BIGX, s_cross_bbox[0], s_cross_bbox[2], BIGX };
@@ -261,7 +199,7 @@ static void crossfade_feed_native(void) {
 
     const float depth = 0.999f;                           /* far backdrop, still < 1.0 clear */
     for (int i = 0; i < s_cross_n; i++) {
-        xtri* t = &s_cross[i];
+        cyclorama_native_tri* t = &s_cross[i];
         openpete_scene_tri st;
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
@@ -270,7 +208,7 @@ static void crossfade_feed_native(void) {
         }
         st.textured = 0;
         st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-        st.blend = t->blend;
+        st.blend = 0;                                      /* the dome is opaque F3/G3 */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
 }
@@ -312,7 +250,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     /* Balloonist take-off (standalone func_8004F000, ra outside func_8001C694) uses
-     * the mesh-corner edge-fill backdrop, not the exit-level's flat cyclorama bg —
+     * the dome-corner backdrop grid, not the exit-level's flat cyclorama bg —
      * clear any stale override left from a prior GS_ExitLevel. The exit-level's
      * nested call (ra inside func_8001C694) keeps the override on_8001C694 just set. */
     if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
@@ -329,7 +267,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     render_path_record(RP_TRANSITION, startp, endp);
 
     if (feed && endp > startp) {
-        crossfade_capture(cpu, startp, endp);
+        crossfade_extract(cpu);
         crossfade_feed_native();
         if (dump_on()) {
             static int s_rawdumped = 0;
@@ -346,17 +284,15 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
             }
             static int s_dumped = 0;
             if (!s_dumped && openpete_frame >= 1) {
-                int blendhist[4] = {0,0,0,0};
                 float minx=1e9f,maxx=-1e9f,miny=1e9f,maxy=-1e9f;
-                for (int i = 0; i < s_cross_n; i++) {
-                    if (s_cross[i].blend>=0 && s_cross[i].blend<4) blendhist[s_cross[i].blend]++;
+                for (int i = 0; i < s_cross_n; i++)
                     for (int k=0;k<3;k++){ float X=s_cross[i].sx[k],Y=s_cross[i].sy[k];
                         if(X<minx)minx=X; if(X>maxx)maxx=X; if(Y<miny)miny=Y; if(Y>maxy)maxy=Y; }
-                }
-                fprintf(stderr, CRED "[transition-dump f=%u] polybuf %u bytes -> %d tris  "
-                        "extent x[%.0f,%.0f] y[%.0f,%.0f]  blend(op=%d,alpha=%d,add=%d,sub=%d)" CRESET "\n",
-                        openpete_frame, endp - startp, s_cross_n, minx, maxx, miny, maxy,
-                        blendhist[0], blendhist[1], blendhist[2], blendhist[3]);
+                /* The .s's own prim bytes are the 4:3-culled subset; the extent
+                 * below is the widened re-derivation actually fed. */
+                fprintf(stderr, CRED "[transition-dump f=%u] polybuf %u bytes -> %d dome tris  "
+                        "extent x[%.0f,%.0f] y[%.0f,%.0f]" CRESET "\n",
+                        openpete_frame, endp - startp, s_cross_n, minx, maxx, miny, maxy);
                 for (int i = 0; i < s_cross_n && i < 4; i++)
                     fprintf(stderr, "    tri[%d] (%.0f,%.0f)=%06X (%.0f,%.0f)=%06X (%.0f,%.0f)=%06X\n", i,
                             s_cross[i].sx[0],s_cross[i].sy[0],s_cross[i].rgb[0],
@@ -396,8 +332,8 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
      * 0, D_8007575C). D_8007575C = (0x20-tick)*0x80, and ColorLerp (GTE DPCS toward
      * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32) — a linear fade-
      * in from black. Set the flat backdrop BEFORE the nested func_8004F000 feed so
-     * the captured cyclorama mesh sits over the lerped homeworld bg (not the near-
-     * black faded-mesh corners), making the bg appear as early as the reference. */
+     * the cyclorama dome sits over the lerped homeworld bg (not the near-black
+     * faded dome corners), making the bg appear as early as the reference. */
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 1) {    /* case 1: cyclorama fade-in */
         uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
         if (tick > 31) tick = 31;
@@ -427,19 +363,20 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* ---- sub-tick re-extract (high-FPS spine): replay the captured backdrop ----
+/* ---- sub-tick re-extract (high-FPS spine): re-derive the backdrop ---------
  * The scene is rebuilt against interpolated gamestate on every intermediate
- * present; without re-adding the captured backdrop it would strobe (gradient on
- * canonical frames, background-clear on intermediates). The mesh is screen-space
- * 2D, so we replay it verbatim (no re-projection). Gated on
- * render_path_canon_drawn(RP_TRANSITION) — latched once per canonical present
- * by the shared render_paths commit from the hook's recorded polybuf interval
- * — so a stale capture isn't painted over the next level once the transition
- * ends (the hook stops emitting → the mask bit drops). */
+ * present; without re-adding the backdrop it would strobe (dome on canonical
+ * frames, background-clear on intermediates). Re-running the extraction (rather
+ * than replaying the canonical tris) reads g_Camera's matrices live, so the dome
+ * turns smoothly with the bracketed sub-tick camera — the same property the main
+ * sky's re-extract has. Gated on render_path_canon_drawn(RP_TRANSITION) —
+ * latched once per canonical present by the shared render_paths commit from the
+ * hook's recorded polybuf interval — so the dome isn't painted over the next
+ * level once the transition ends (the hook stops emitting → the mask bit drops). */
 void transition_native_reextract(CPUState* cpu) {
-    (void)cpu;
     if (!openpete_native_render_enabled()) return;
     if (!render_path_canon_drawn(RP_TRANSITION)) return;
+    crossfade_extract(cpu);
     crossfade_feed_native();
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;

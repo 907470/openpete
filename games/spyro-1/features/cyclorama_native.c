@@ -23,6 +23,10 @@
 //
 // Format map: the format notes (asm ground
 // truth, corroborated by SpyroEdit SkySectorHeaderS1 / UpdateSky).
+//
+// The same extraction also serves the level-exit / balloonist cross-fade
+// renderer func_8004F000 — the same dome with a DPCS colour fade — via
+// cyclorama_native_extract_faded, which transition_native.c feeds.
 
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
@@ -109,6 +113,22 @@ static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
     }
 }
 
+/* GTE DPCS in float: lerp a dome colour toward the far colour FC by IR0/4096.
+ * The cross-fade dome renderer (func_8004F000) runs the real op (cmd 0x10,
+ * sf=1) over the sector colour table with FC = D_BLEND_TARGET's components
+ * SHL 4 and IR0 = D_FOG_FACTOR; since FC SHL 12 then lines up with the
+ * colour's SHL 16, the whole op reduces to this per-channel lerp. */
+static uint32_t cyc_fade(uint32_t rgb, uint32_t fc, int ir0) {
+    uint32_t out = 0;
+    for (int k = 0; k < 3; k++) {
+        int c = (int)((rgb >> (k * 8)) & 0xFF), f = (int)((fc >> (k * 8)) & 0xFF);
+        int v = (int)(c + (f - c) * (double)ir0 / 4096.0 + 0.5);   /* float, like the rest of the path */
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        out |= (uint32_t)v << (k * 8);
+    }
+    return out;
+}
+
 /* Sutherland-Hodgman clip a gouraud tri to m3 >= CYC_NEARZ, then push the
  * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
  * fully behind -> dropped. */
@@ -131,7 +151,8 @@ static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
  * fills s_native[]. Mirrors func_8004EBA8: phase-1 sector visibility cull
  * (cull matrix a1), phase-2 per-vertex unpack + float project (draw matrix
  * a2) + per-face flat/gouraud emit. */
-static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
+static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
+                        uint32_t fade_rgb, int fade_ir0) {
     s_native_n = 0;
 
     int Mcull[3][3], Mdraw[3][3];
@@ -216,8 +237,10 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2) {
         }
         uint32_t colorCount = faceOffByte / 4;
         if (colorCount > 4096) colorCount = 4096;
-        for (uint32_t j = 0; j < colorCount; j++)
-            col[j] = cpu->read_word(colorBase + j * 4) & 0xFFFFFF;
+        for (uint32_t j = 0; j < colorCount; j++) {
+            uint32_t c = cpu->read_word(colorBase + j * 4) & 0xFFFFFF;
+            col[j] = fade_ir0 ? cyc_fade(c, fade_rgb, fade_ir0) : c;
+        }
 
         /* phase-2b: faces. word0 = vertex indices, word1 = colour indices.
          * Flat (F3) when the 3 colour indices match, else gouraud (G3). */
@@ -473,7 +496,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
 
     render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */
 
-    cyc_extract(cpu, a0, a1, a2);           /* native scene from gamestate */
+    cyc_extract(cpu, a0, a1, a2, 0, 0);     /* native scene from gamestate */
     if (feed)
         push_scene(cpu);                    /* always sets the scene bg colour;
                                              * dome tris gated inside on RP_CYCLORAMA */
@@ -510,8 +533,34 @@ void cyclorama_native_reextract(CPUState* cpu) {
      * unaffected. */
     if (!render_path_canon_drawn(RP_CYCLORAMA)) return;
     if (s_cyc_a1 == 0 || s_cyc_a2 == 0) return;   /* no real frame captured yet */
-    cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2);
+    cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2, 0, 0);
     push_scene(cpu);
+}
+
+/* ---- the cross-fade dome (func_8004F000) ----------------------------------
+ * The level-exit / balloonist cross-fade renderer draws the SAME g_Cyclorama
+ * dome as func_8004EBA8, with two differences: every sector colour is first
+ * run through a GTE DPCS fade toward D_BLEND_TARGET by D_FOG_FACTOR, and the
+ * cull/draw matrices are g_Camera's own (view @+0x14, projection @+0x00)
+ * rather than caller-supplied. Its visibility test is a per-vertex outcode
+ * against the 4:3 box [0,512]x[0,256], AND-ed over each face, so the prims it
+ * emits stop dead at the 4:3 edges — replaying them leaves the widened sides
+ * of a Hor+ frame on the background clear. Re-derive the dome here instead,
+ * through the same widescreen-aware sector iteration, near-plane clip and
+ * trivial reject the main sky uses. Fills up to `max` triangles and returns
+ * the count. */
+int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int max) {
+    cyc_extract(cpu, 0xFFFFFFFFu, G_CAMERA + 0x14, G_CAMERA,
+                cpu->read_word(D_BLEND_TARGET) & 0xFFFFFFu,
+                (int)cpu->read_word(D_FOG_FACTOR));
+    int n = s_native_n < max ? s_native_n : max;
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 3; k++) {
+            out[i].sx[k]  = s_native[i].v[k].sx;
+            out[i].sy[k]  = s_native[i].v[k].sy;
+            out[i].rgb[k] = s_native[i].v[k].rgb;
+        }
+    return n;
 }
 
 /* ---- present-time draw-env clear sync (portal-entry flash fix) ---------
