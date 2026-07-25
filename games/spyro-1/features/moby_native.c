@@ -442,6 +442,17 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables (A/B) */
     if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
     double ot_pull = s_otbias_on ? 128.0 * (double)(((int32_t)(w0 << 8)) >> 24) : 0.0;
+    /* OPENPETE_DEPTHDBG="f0,f1": per-record OT-key inputs (header, w0/dofs,
+     * pull, centre) for frames [f0,f1] — the OT-sort parity forensics
+     * instrument (pairs with the Spyro-feed line and the moby TRIDBG box). */
+    { static int s_dd = -1; static int df0, df1;
+      if (s_dd < 0) { const char* e = getenv("OPENPETE_DEPTHDBG");
+          s_dd = 0; if (e && sscanf(e, "%d,%d", &df0, &df1) == 2) s_dd = 1; }
+      if (s_dd == 1 && (int)openpete_frame >= df0 && (int)openpete_frame <= df1) {
+          double cf = TR_frac ? TR_frac[2] * 4.0 : (double)TR_raw[2] * 4.0;
+          fprintf(stderr, "[mb-pull f=%u] hdr=%08X w0=%08X pull=%.0f centre=%.0f\n",
+                  openpete_frame, header, w0, ot_pull, cf);
+      } }
     /* .s OT-slot FLATTEN: the walk sorts the WHOLE moby at its centre's slot —
      * per-vertex depth never enters the OT key — in BOTH directions. Far side:
      * the far tail of a moby lying in terrain (a pedestal disc's up-slope lip)
