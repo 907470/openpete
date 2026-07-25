@@ -453,27 +453,16 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
           fprintf(stderr, "[mb-pull f=%u] hdr=%08X w0=%08X pull=%.0f centre=%.0f\n",
                   openpete_frame, header, w0, ot_pull, cf);
       } }
-    /* .s OT-slot FLATTEN: the walk sorts the WHOLE moby at its centre's slot —
-     * per-vertex depth never enters the OT key — in BOTH directions. Far side:
-     * the far tail of a moby lying in terrain (a pedestal disc's up-slope lip)
-     * still sorts AT the centre and paints over the ground; per-pixel Z buried
-     * it. Near side: a moby's near geometry keys at the far centre too, so
-     * anything with a nearer key paints over it — Spyro riding INSIDE a
-     * carrier moby (the balloonist basket: near wall ~1350 units nearer than
-     * the assembly's origin) draws over the wall on PSX even though the wall
-     * is truly closer; keeping near-side true-Z buried him (and put the
-     * balloon wires in front of him). Mirror both halves as a COMPRESS toward
-     * the centre — monotonic so self- and inter-moby sorting survive. Contact
-     * pixels (Spyro's feet on a flat disc) are unaffected: a flat moby's
-     * surface sits at its centre, so the near-side displacement is ~0 there
-     * and the sortDepth/tie pulls still decide contact. */
-    double ot_slot_end = 0.0;      /* 0 = disabled */
+    /* Tie-pull gate: applied only when the record centre is in front of the
+     * camera, so behind-camera records keep raw signed depths and emit's
+     * vz<=0 near cull stays authoritative. */
+    double ot_centre = 0.0;        /* 0 = disabled */
     if (s_otbias_on) {
         double centre_full = TR_frac
             ? TR_frac[2] * 4.0                       /* full-world = stored x4 */
             : (double)TR_raw[2] * 4.0;
         if (centre_full > 0.0)
-            ot_slot_end = centre_full;
+            ot_centre = centre_full;
     }
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
@@ -546,31 +535,21 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
         double fvz = (vzz + vz_bias) * (double)(1 << ds);
-        /* COMPRESS (not clamp) both sides of the centre: a hard clamp
-         * flattened half of every moby to one depth, killing SELF-occlusion
-         * (faces z-tie and resolve by draw order). /16 keeps per-vertex depth
-         * strictly monotonic — self- and inter-moby sorting intact — while
-         * the whole moby sorts within ~radius/16 of its centre, mirroring the
-         * .s's single centre-slot key: a buried pedestal lip keeps beating
-         * the ground face it sits in, and near-side geometry (the balloonist
-         * basket wall) stops z-eating riders keyed nearer. */
-        if (ot_slot_end > 0.0 && fvz > ot_slot_end)
-            fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
-        /* Near side: ONLY vertices in front of the camera. Behind-camera
-         * vertices (fvz <= 0) must keep their sign — emit's vz<=0 near cull
-         * rejects them; mapping them to a positive depth near the centre
-         * DEFEATED that cull and let off-view mobys draw garbage
-         * screen-covering triangles (whole-screen balloon flashes at interp
-         * camera poses). */
-        else if (ot_slot_end > 0.0 && fvz > 0.0 && fvz < ot_slot_end)
-            fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
+        /* Fed depth is TRUE per-vertex view-Z. The game's OT is per-FACE —
+         * each face inserts at its own average-Z slot minus the authored
+         * bias, so one moby's faces bracket other producers' prims in the
+         * real walk (the balloonist basket's far wall paints behind the
+         * rider Spyro, its near wall and wires over him). Per-pixel Z over
+         * true depth reproduces that ordering; collapsing a record toward
+         * its centre depth cannot, and z-fights everything sharing the
+         * squashed band. Only the uniform biases below shift depth. */
         fvz -= ot_pull;
         /* One-slot tie pull: the .s resolves same-slot moby-vs-terrain ties to
          * the MOBY (moby prims insert before the environment, and the near
          * band is deferred behind the OT entirely), so a moby's surface wins
          * ground it touches. 127 world units < one OT slot: it can flip only
          * pairs og calls a tie. */
-        if (ot_slot_end > 0.0) fvz -= 127.0;
+        if (ot_centre > 0.0) fvz -= 127.0;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
         out[i].vz = (float)fvz; out[i].sat = sat;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
@@ -3998,19 +3977,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         static int s_otbias_on = -1;   /* OPENPETE_SHADED_OTBIAS=0 disables (A/B) */
         if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
         double ot_pull = (billboard || !s_otbias_on) ? 0.0 : 128.0 * (double)((int32_t)rot >> 24);
-        /* .s OT-slot FLATTEN (shaded twin of moby_decode_project's): the walk
-         * keys the WHOLE moby at (centre>>6)−bias — per-vertex depth never
-         * enters the sort — so a flat pedestal disc's up-slope lip, buried in
-         * the ground it sits on, still paints over that ground (dofs is 0 on
-         * the disc classes; the tie goes to the moby because the moby passes
-         * insert before the environment). Compress each vertex's fed depth
-         * toward the centre from BOTH sides, mirroring the single-slot key
-         * (see the regular walk's flatten for the near-side rationale). */
-        double ot_slot_end = 0.0;
+        /* Tie-pull gate (shaded twin of moby_decode_project's): applied only
+         * when the moby centre is in front of the camera, so behind-camera
+         * records keep raw signed depths for the vz<=0 near cull. */
+        double ot_centre = 0.0;
         if (!billboard && s_otbias_on) {
             double centre_full = TR[2] * vz_scale;
             if (centre_full > 0.0)
-                ot_slot_end = centre_full;
+                ot_centre = centre_full;
         }
         {
             static int s_obd = -1;
@@ -4036,19 +4010,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
-            /* Compress BOTH sides of the centre (see the regular walk's twin)
-             * — self-occlusion needs monotonic per-vertex depth, and the .s
-             * keys the whole moby at the centre slot in both directions. */
-            if (ot_slot_end > 0.0 && fvz > ot_slot_end)
-                fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
-            /* Front-of-camera only — see the regular walk: compressing a
-             * behind-camera vertex to a positive depth defeats the vz<=0 cull. */
-            else if (ot_slot_end > 0.0 && fvz > 0.0 && fvz < ot_slot_end)
-                fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
+            /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
+             * the game's OT is per-face, so per-pixel Z over true depth is
+             * the faithful mirror; only the uniform biases shift depth. */
             fvz -= ot_pull;
             /* One-slot tie pull — see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
-            if (ot_slot_end > 0.0) fvz -= 127.0;
+            if (ot_centre > 0.0) fvz -= 127.0;
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
