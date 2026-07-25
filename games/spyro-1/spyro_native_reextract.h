@@ -66,6 +66,17 @@ void moby_native_set_rot_interp(int on);
  * Defined in features/moby_native.c. */
 void moby_native_set_occl_pan(float px_per_tick);
 
+/* The mobys the canonical .s render passes drew this tick, taken from their cull
+ * records (REGULAR + SPECULAR, deduped). Most are also reachable by walking
+ * g_LevelMobys, but not all: the balloonist relocates the balloon into the render
+ * scratch for the arrival flight, and anything drawn from outside the array has
+ * no prev/curr snapshot and no fractional position — it steps at the sim rate
+ * while everything around it interpolates. Both the interp capture and the
+ * sub-tick lerp walk consult this list so that class is covered generally.
+ * Returns the entry count and points *out at the (borrowed) array.
+ * Defined in features/moby_native.c. */
+int moby_native_canon_drawn_mobys(const uint32_t** out);
+
 /* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
  * counter advance for this sub-tick present. The flame feeder lerps each ribbon
  * cross-section between adjacent static spine records by this, so the ribbon

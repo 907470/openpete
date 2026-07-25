@@ -42,6 +42,7 @@
 #include "openpete_interp_objs.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "spyro_interp_regions.h"
+#include "spyro_native_reextract.h"   /* moby_native_canon_drawn_mobys */
 
 #include <math.h>
 #include <stdint.h>
@@ -294,6 +295,24 @@ static void spyro_interp_capture_objs(void) {
         const void* host = openpete_psx_to_host_ptr(m);
         if (host) openpete_interp_objs_capture(spyro_interp_moby_key(m), host,
                                                OPENPETE_INTERP_OBJ_BLOB_BYTES);
+    }
+
+    /* REGULAR/SPECULAR render set (the mobys the canonical cull records point at):
+     * the same dedup-overwrite idea as the shaded list above, for the mobys the
+     * g_LevelMobys walk can't reach. The balloonist copies the balloon into the
+     * render scratch on arrival and draws it from there for the descent, so
+     * without this it is the one object in the scene with no prev/curr snapshot —
+     * no position, rotation or keyframe interp — while the camera it fills the
+     * screen in interpolates around it. */
+    {
+        const uint32_t* drawn = NULL;
+        int drawn_n = moby_native_canon_drawn_mobys(&drawn);
+        for (int i = 0; i < drawn_n; ++i) {
+            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
+            if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
+            openpete_interp_objs_capture(spyro_interp_moby_key(drawn[i]), host,
+                                         OPENPETE_INTERP_OBJ_BLOB_BYTES);
+        }
     }
 
     /* Dragon-star record (D_DRAGONSTAR — the circling damage stars around

@@ -700,6 +700,49 @@ static int fade_snap_get(uint32_t moby, int dflt) {
  * time) is still fed by SPECULAR. Snapshotted in the REGULAR pass (runs first). */
 static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
 
+/* Mobys the CANONICAL .s render passes actually drew this tick, harvested from
+ * their cull records (REGULAR + SPECULAR, deduped).
+ *
+ * The interp capture and the sub-tick spine's lerp walk both iterate
+ * g_LevelMobys, but the game also renders mobys that live OUTSIDE that array —
+ * the balloonist copies the balloon out of g_LevelMobys into the render scratch
+ * (g_SonyImage.m_WorldFarQueued[106]) before the level swap and draws it from
+ * there for the whole arrival flight. Such a moby has no prev/curr snapshot and
+ * no fractional position, so it steps at the sim rate while the camera, Spyro
+ * and the terrain interpolate around it. The cull records are the game's own
+ * authoritative "what is being drawn" list, so harvesting them covers that class
+ * generally instead of special-casing each relocation.
+ *
+ * Refreshed per canonical tick (keyed on the VBL the passes ran in, so REGULAR
+ * resets and SPECULAR appends); read on the host fiber right after the game
+ * yields, while the referenced records are still live. */
+static uint32_t s_canon_drawn[MAX_RECORDS * 2]; static int s_canon_drawn_n;
+static unsigned s_canon_drawn_frame = ~0u;
+
+int moby_native_canon_drawn_mobys(const uint32_t** out) {
+    *out = s_canon_drawn;
+    /* Stale-bound: the game draws every other VBL, so a set older than that is
+     * from before a stall — a CD load or level swap, after which the addresses
+     * name whatever now occupies that memory. Reporting none is correct there:
+     * nothing was drawn to interpolate. */
+    return (openpete_frame - s_canon_drawn_frame <= 2u) ? s_canon_drawn_n : 0;
+}
+
+static void canon_drawn_harvest(int nrec) {
+    if (openpete_frame != s_canon_drawn_frame) {
+        s_canon_drawn_frame = openpete_frame;
+        s_canon_drawn_n = 0;
+    }
+    const int cap = (int)(sizeof s_canon_drawn / sizeof s_canon_drawn[0]);
+    for (int r = 0; r < nrec && s_canon_drawn_n < cap; r++) {
+        uint32_t m = s_recs[r].moby;
+        if (m < 0x80000000u) continue;
+        int dup = 0;
+        for (int k = 0; k < s_canon_drawn_n; k++) if (s_canon_drawn[k] == m) { dup = 1; break; }
+        if (!dup) s_canon_drawn[s_canon_drawn_n++] = m;
+    }
+}
+
 /* ---- LOD tier (mirrors func_8001F798 block_8001FDD0; spec twin @80021670) ----
  * The record's ZSF4 (+0x2E, sign-extended via ctc2/cfc2 gte_ctrl[30]) is the
  * game's own per-record LOD verdict: the cull pass computes it @8001F404 as
@@ -914,9 +957,29 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
      * nor the moby's own motion steps on the 1-world-unit lerp32 grid. */
     double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
     double mfx=(double)mx, mfy=(double)my, mfz=(double)mz;
+    int fpos_hit = 0, cam_hit = 0;
     { double cf[3], mf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; }
-      if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
+      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; cam_hit=1; }
+      if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; fpos_hit=1; } }
+    /* OPENPETE_REG_INTERP_MISS: regular/specular mobys with NO fractional position
+     * (not reached by the spine's lerp walk → they step at the sim rate while the
+     * camera interpolates around them). The shaded twin is
+     * OPENPETE_SHADED_INTERP_MISS. Gated on the CAMERA having a fractional
+     * position: that is what marks a sub-tick re-extract, and on the canonical
+     * pass (where the resolver is inert by design) every moby would "miss".
+     * Rate-limited to a dozen lines a second. */
+    {
+        static int s_rm = -1;
+        if (s_rm < 0) { const char* e = getenv("OPENPETE_REG_INTERP_MISS"); s_rm = (e && *e && *e != '0'); }
+        if (s_rm && cam_hit && !fpos_hit) {
+            static uint64_t t0 = 0; static int nn = 0;
+            uint64_t nowp = openpete_phase_now_us();
+            if (nowp - t0 >= 1000000u) { t0 = nowp; nn = 0; }
+            if (nn < 12) { nn++;
+                fprintf(stderr, "[reg-interp-MISS f=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
+                        openpete_frame, moby, (unsigned)cpu->read_half(moby + 0x36u), mx, my, mz); }
+        }
+    }
     double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
     for (int i=0;i<3;i++)
         f->TR_frac[i] = (PM[i][0]*dVy + PM[i][1]*dVz + PM[i][2]*dVx) / 4096.0;
@@ -2999,6 +3062,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
      * (e.g. the rescue dragon the specular cull adds to a slot a regular moby held at
      * REGULAR-read time; also the disjoint specular queue under --no-lod). */
     int is_spec = (mat && mat[0]=='S' && mat[1]=='P');
+    canon_drawn_harvest(nrec);  /* the drawn set for the sub-tick interp walks */
     if (is_spec) {              /* snapshot the SPEC moby set for the reveal skip */
         s_specq_n = 0;
         for (int r = 0; r < nrec && s_specq_n < MAX_RECORDS; r++)

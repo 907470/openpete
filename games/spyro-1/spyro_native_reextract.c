@@ -8,6 +8,7 @@
 #include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "psx_runtime.h"            /* CPUState (read_word) */
 #include "features/render_paths.h"  /* canon-drawn mask (load-window census) */
+#include "spyro_interp_regions.h"   /* spyro_interp_moby_key */
 
 #include <math.h>
 #include <stdint.h>
@@ -1308,15 +1309,34 @@ static void spyro_native_reextract(void* cpu_v) {
         op_time_t now = openpete_interp_present_now();
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
         uint32_t arr = 0; if (base_p) memcpy(&arr, base_p, 4);
-        if (arr >= 0x80000000u) {
+        /* Phase 1 of the walk: the mobys the canonical render drew from OUTSIDE
+         * g_LevelMobys (the balloonist's relocated balloon — see
+         * moby_native_canon_drawn_mobys). Entries inside the array's extent were
+         * already handled by phase 0 and are skipped. */
+        const uint32_t* drawn = NULL;
+        int drawn_n = moby_native_canon_drawn_mobys(&drawn), drawn_i = 0;
+        uint32_t arr_end = arr;    /* one past the last slot phase 0 walked */
+        {
             uint32_t m = arr; int guard = 0;
+            int phase = (arr >= 0x80000000u) ? 0 : 1;   /* no array → drawn set only */
             while (guard++ < 4096 && moby_save_n < MOBY_SAVE_MAX) {
-                uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(m);
-                if (!mh) break;
+                uint8_t* mh;
+                if (phase == 0) {
+                    mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+                    if (!mh || mh[MOBY_STATE] == 0xFF) {   /* unmapped / array sentinel */
+                        arr_end = m; phase = 1; continue;
+                    }
+                } else {
+                    if (drawn_i >= drawn_n) break;
+                    m = drawn[drawn_i++];
+                    if (m >= arr && m < arr_end) continue;   /* phase 0 already had it */
+                    mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+                    if (!mh) continue;
+                }
                 uint8_t st = mh[MOBY_STATE];
-                if (st == 0xFF) break;                /* array sentinel */
                 if (st < 0x80) {                      /* alive */
-                    const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
+                    const openpete_interp_obj_t* o =
+                        openpete_interp_objs_find(phase ? spyro_interp_moby_key(m) : m);
                     if (o && o->have_prev) {
                         /* IDENTITY guard (slot reuse). The interp-objs table is keyed
                          * by the moby SLOT ADDRESS, so a slot a DIFFERENT moby respawns
@@ -1334,7 +1354,7 @@ static void spyro_native_reextract(void* cpu_v) {
                         uint16_t pcls, ccls;
                         memcpy(&pcls, o->prev + 0x36u, 2);
                         memcpy(&ccls, o->curr + 0x36u, 2);
-                        if (pcls != ccls) { m += MOBY_STRIDE; continue; }
+                        if (pcls != ccls) goto next_moby;
 
                         /* Per-object alpha from the moby's OWN distinct-roll
                          * timestamps, over a denominator capped at one tick
@@ -1354,7 +1374,7 @@ static void spyro_native_reextract(void* cpu_v) {
                              * one tick — lerping streaks it across the screen. Snap
                              * (leave at curr, don't bracket) when the jump is large. */
                             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) { m += MOBY_STRIDE; continue; }
+                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) goto next_moby;
                             s_moby_save[moby_save_n].addr = m;
                             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
                             moby_save_n++;
@@ -1450,7 +1470,8 @@ static void spyro_native_reextract(void* cpu_v) {
                         }
                     }
                 }
-                m += MOBY_STRIDE;
+            next_moby:
+                if (phase == 0) m += MOBY_STRIDE;
             }
         }
     }
