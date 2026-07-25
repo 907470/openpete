@@ -443,14 +443,19 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
     double ot_pull = s_otbias_on ? 128.0 * (double)(((int32_t)(w0 << 8)) >> 24) : 0.0;
     /* .s OT-slot FLATTEN: the walk sorts the WHOLE moby at its centre's slot —
-     * per-vertex depth never enters the OT key — so the far tail of a moby
-     * lying in terrain (a pedestal disc's up-slope lip, buried a few hundred
-     * units along a grazing ray) still sorts AT the centre and paints over the
-     * ground; per-pixel Z buried it. Mirror the flatten only where it differs
-     * from true depth: clamp each vertex's fed depth to the END of the
-     * centre's 128-world-unit slot. Depth can only DECREASE toward slot end
-     * (>= centre), so nothing nearer than the moby's centre is ever newly
-     * occluded — contact pixels (Spyro's feet on the disc) keep true-Z. */
+     * per-vertex depth never enters the OT key — in BOTH directions. Far side:
+     * the far tail of a moby lying in terrain (a pedestal disc's up-slope lip)
+     * still sorts AT the centre and paints over the ground; per-pixel Z buried
+     * it. Near side: a moby's near geometry keys at the far centre too, so
+     * anything with a nearer key paints over it — Spyro riding INSIDE a
+     * carrier moby (the balloonist basket: near wall ~1350 units nearer than
+     * the assembly's origin) draws over the wall on PSX even though the wall
+     * is truly closer; keeping near-side true-Z buried him (and put the
+     * balloon wires in front of him). Mirror both halves as a COMPRESS toward
+     * the centre — monotonic so self- and inter-moby sorting survive. Contact
+     * pixels (Spyro's feet on a flat disc) are unaffected: a flat moby's
+     * surface sits at its centre, so the near-side displacement is ~0 there
+     * and the sortDepth/tie pulls still decide contact. */
     double ot_slot_end = 0.0;      /* 0 = disabled */
     if (s_otbias_on) {
         double centre_full = TR_frac
@@ -530,14 +535,18 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
         double fvz = (vzz + vz_bias) * (double)(1 << ds);
-        /* COMPRESS (not clamp) beyond the centre: a hard clamp flattened the
-         * far half of every moby to one depth, killing SELF-occlusion there
-         * (far faces z-tie and resolve by draw order). /16 keeps per-vertex
-         * depth strictly monotonic — self- and inter-moby sorting intact —
-         * while the far tail still sorts within ~radius/16 of the centre, so
-         * a buried pedestal lip keeps beating the ground face it sits in. */
+        /* COMPRESS (not clamp) both sides of the centre: a hard clamp
+         * flattened half of every moby to one depth, killing SELF-occlusion
+         * (faces z-tie and resolve by draw order). /16 keeps per-vertex depth
+         * strictly monotonic — self- and inter-moby sorting intact — while
+         * the whole moby sorts within ~radius/16 of its centre, mirroring the
+         * .s's single centre-slot key: a buried pedestal lip keeps beating
+         * the ground face it sits in, and near-side geometry (the balloonist
+         * basket wall) stops z-eating riders keyed nearer. */
         if (ot_slot_end > 0.0 && fvz > ot_slot_end)
             fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
+        else if (ot_slot_end > 0.0 && fvz < ot_slot_end)
+            fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
         fvz -= ot_pull;
         /* One-slot tie pull: the .s resolves same-slot moby-vs-terrain ties to
          * the MOBY (moby prims insert before the environment, and the near
@@ -3977,9 +3986,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * enters the sort — so a flat pedestal disc's up-slope lip, buried in
          * the ground it sits on, still paints over that ground (dofs is 0 on
          * the disc classes; the tie goes to the moby because the moby passes
-         * insert before the environment). Clamp each vertex's fed depth to the
-         * END of the centre's 128-world-unit slot: only the far tail moves,
-         * nothing nearer than the centre is ever newly occluded. */
+         * insert before the environment). Compress each vertex's fed depth
+         * toward the centre from BOTH sides, mirroring the single-slot key
+         * (see the regular walk's flatten for the near-side rationale). */
         double ot_slot_end = 0.0;
         if (!billboard && s_otbias_on) {
             double centre_full = TR[2] * vz_scale;
@@ -4010,10 +4019,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
-            /* Compress beyond the centre (see the regular walk's twin) —
-             * self-occlusion needs monotonic per-vertex depth. */
+            /* Compress BOTH sides of the centre (see the regular walk's twin)
+             * — self-occlusion needs monotonic per-vertex depth, and the .s
+             * keys the whole moby at the centre slot in both directions. */
             if (ot_slot_end > 0.0 && fvz > ot_slot_end)
                 fvz = ot_slot_end + (fvz - ot_slot_end) / 16.0;
+            else if (ot_slot_end > 0.0 && fvz < ot_slot_end)
+                fvz = ot_slot_end - (ot_slot_end - fvz) / 16.0;
             fvz -= ot_pull;
             /* One-slot tie pull — see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
