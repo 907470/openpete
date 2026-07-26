@@ -766,6 +766,23 @@ static int       s_render_fps       = 0;
 static op_time_t s_render_period_ns = 0;
 static int       s_render_fps_dirty = 0;
 
+/* Slip ledger for the pacer's deadline clamps below. A clamp fires when the
+ * loop has fallen more than slip_threshold_ns behind and snaps the deadline
+ * forward by whole periods instead of firing catch-up iterations back to
+ * back. That is the correct behaviour — a stall must never be repaid as a
+ * burst — but it DISCARDS real time, so it must never be silent.
+ *
+ * The two kinds are not equally serious. A render slip is display-only: a
+ * present was late, nothing about the game moved. A SIM slip means wall-clock
+ * time passed that the game clock did not account for, so RTA time and tick
+ * time have diverged by that much. Sim slips are therefore warned per event;
+ * render slips are counted and reported once, because at high --render-fps a
+ * struggling host can produce them continuously. */
+static uint64_t s_sim_slip_events    = 0;
+static uint64_t s_sim_slip_periods   = 0;
+static uint64_t s_render_slip_events = 0;
+static uint64_t s_render_slip_periods = 0;
+
 void openpete_set_render_fps(int fps) {
     if (fps < 0) fps = 0;
     if (fps == s_render_fps) return;
@@ -3294,8 +3311,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 next_sim_ns += sim_period_ns;
                 op_time_t now2 = op_now();
                 if (now2 - next_sim_ns > slip_threshold_ns) {
-                    op_time_t skip = (now2 - next_sim_ns) / sim_period_ns;
+                    op_time_t behind = now2 - next_sim_ns;
+                    op_time_t skip = behind / sim_period_ns;
                     next_sim_ns += skip * sim_period_ns;
+                    s_sim_slip_events++;
+                    s_sim_slip_periods += (uint64_t)skip;
+                    OPL_WARN_F("pacer",
+                               "sim slip: host stalled %.1f ms (dropped %lld tick period(s) "
+                               "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
                 op_sleep_until(next_sim_ns);
             }
@@ -3308,14 +3331,22 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (sim_due) {
                 next_sim_ns += sim_period_ns;
                 if (now2 - next_sim_ns > slip_threshold_ns) {
-                    op_time_t skip = (now2 - next_sim_ns) / sim_period_ns;
+                    op_time_t behind = now2 - next_sim_ns;
+                    op_time_t skip = behind / sim_period_ns;
                     next_sim_ns += skip * sim_period_ns;
+                    s_sim_slip_events++;
+                    s_sim_slip_periods += (uint64_t)skip;
+                    OPL_WARN_F("pacer",
+                               "sim slip: host stalled %.1f ms (dropped %lld tick period(s) "
+                               "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
             }
             next_render_ns += s_render_period_ns;
             if (now2 - next_render_ns > slip_threshold_ns) {
                 op_time_t skip = (now2 - next_render_ns) / s_render_period_ns;
                 next_render_ns += skip * s_render_period_ns;
+                s_render_slip_events++;
+                s_render_slip_periods += (uint64_t)skip;
             }
             op_time_t next = (next_sim_ns < next_render_ns)
                              ? next_sim_ns : next_render_ns;
@@ -3401,6 +3432,16 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                "reason=%s frames=%u elapsed_ms=%llu dispatch_ok=%d",
                exit_reason, openpete_frame,
                (unsigned long long)elapsed, g_game.dispatch_ok);
+
+    if (s_sim_slip_events || s_render_slip_events) {
+        OPL_INFO_F("pacer",
+                   "slip totals: sim %llu event(s) / %llu period(s) discarded; "
+                   "render %llu event(s) / %llu period(s)",
+                   (unsigned long long)s_sim_slip_events,
+                   (unsigned long long)s_sim_slip_periods,
+                   (unsigned long long)s_render_slip_events,
+                   (unsigned long long)s_render_slip_periods);
+    }
 
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
