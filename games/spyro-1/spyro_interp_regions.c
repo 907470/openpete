@@ -93,11 +93,23 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
 #define PART_STRIDE    0x20u         /* particle record stride */
 #define PART_HDR_SEL   8u            /* (hdr>>8)&0xFF: m_Type/sel; 0xFF=end, &0x80=inactive */
 #define PART_MAX       320u          /* pool walk bound */
-#define HUD_POOL_MAX   64u           /* generous HUD-pool entry bound (tally text+gems) */
+/* Entries the pool can hold. The inventory page emits ~110 (level rows +
+ * counters); the shaded list the drain feeds is Moby*[256], so 256 is the
+ * real ceiling. Doubles as the pool-membership test: g_LevelMobys lives
+ * ~150 KB below the pool top, far outside this span. */
+#define HUD_POOL_MAX   256u
+#define G_HUD_POOL_TOP  0x800756FCu  /* D_800756FC — pool top; entries bump DOWN */
+#define G_TRANS_HUD     0x800756B0u  /* g_LevelTransHudActive */
+#define G_TRANS_GEMS    0x8007571Cu  /* g_LevelTransGems — TransGem[64] @ g_SonyImage+0x2800 */
+#define G_RECENT_GEMS   0x80077DB8u  /* g_RecentGemsCollected[32] — u_char class per gem */
+#define TRANS_GEM_MAX   32u          /* both the fly-out update and the draw loop stop at 32 */
 
-/* See spyro_interp_regions.h. The pool base is the LIVE g_HudMobys pointer
- * (lowest allocated entry, bump-down); a moby within [base, base+64*0x58)
- * keys slot-relative so the double-buffered halves share one identity. */
+static uint32_t rd32(uint32_t addr);
+
+/* See spyro_interp_regions.h. Tried in order of how much of the game's own
+ * state backs the identity: emitter-call provenance for text glyphs, the
+ * fly-out source slot for tally gems, then a class-relative pool ordinal for
+ * everything else in the HUD pool, and finally the moby's own address. */
 uint32_t spyro_interp_moby_key(uint32_t m) {
     /* Text glyphs first: a glyph emitted by func_80017FE4 / func_800181AC has a
      * real provenance identity — "the Nth character of the Mth call from
@@ -112,9 +124,9 @@ uint32_t spyro_interp_moby_key(uint32_t m) {
         if (text_moby_id_lookup(m, &tk)) return tk;
     }
 
-    /* Level-exit gem fly-out identity (user report 2026-07-07). At a level exit
-     * the game animates the collected gems flying to the chest; the shaded pass
-     * stages a moby COPY per active gem into the double-buffered polybuf, in
+    /* Level-exit gem fly-out identity. At a level exit the game animates the
+     * collected gems flying to the chest; the shaded pass stages a moby COPY
+     * per active gem into the double-buffered polybuf, in
      * source-index order. When a gem finishes and DEACTIVATES the copies COMPACT
      * (every later copy shifts a slot), so no copy-address / slot key is stable —
      * the copies mispair across ticks and the gems jiggle under --render-fps.
@@ -127,55 +139,81 @@ uint32_t spyro_interp_moby_key(uint32_t m) {
      * (update.c) — an EXACT per-gem fingerprint (rot.z spins; included for extra
      * bits, matched live). So recover i by matching the copy's 3 rotation bytes
      * to the live source and key by i: prev/curr then pair as the same gem across
-     * ticks AND the buffer swap, with no threshold. Gated to cls 0x53 (GEM_1)
-     * while g_LevelTransHudActive (0x800756B0). OPENPETE_GEM_FLYOUT_KEY=0 reverts. */
+     * ticks AND the buffer swap, with no threshold. Runs for every gem class
+     * (GEM_1..GEM_25, 0x53..0x57 — the copy's class is g_RecentGemsCollected[i],
+     * so the tally is whatever mix the player picked up) while
+     * g_LevelTransHudActive (0x800756B0). OPENPETE_GEM_FLYOUT_KEY=0 reverts.
+     *
+     * The match is EXACT, not a nearest-fit: rotation fingerprint AND the copy's
+     * screen Y, which draw.c writes as 198 - yOffset with no other term, AND the
+     * class the source slot recorded. Two gems cannot satisfy all three. */
     {
         static int s_fly = -1;
         if (s_fly < 0) { const char* e = getenv("OPENPETE_GEM_FLYOUT_KEY"); s_fly = (e && *e) ? (*e != '0') : 1; }
         const uint8_t* mh0 = s_fly ? (const uint8_t*)openpete_psx_to_host_ptr(m) : NULL;
         uint16_t cls0 = 0; if (mh0) memcpy(&cls0, mh0 + 0x36, 2);
-        if (mh0 && (cls0 & 0xFFFu) == 0x53u) {
-            uint32_t hud_active = 0;
-            { const void* p = openpete_psx_to_host_ptr(0x800756B0u); if (p) memcpy(&hud_active, p, 4); }
-            uint32_t arr = 0;
-            { const void* p = openpete_psx_to_host_ptr(0x8007571Cu); if (p) memcpy(&arr, p, 4); }
+        if (mh0 && cls0 >= 0x53u && cls0 <= 0x57u) {
+            uint32_t hud_active = rd32(G_TRANS_HUD);
+            uint32_t arr = rd32(G_TRANS_GEMS);
             if (hud_active && arr >= 0x80000000u) {
                 uint8_t cr0 = mh0[0x44], cr1 = mh0[0x45], cr2 = mh0[0x46];
-                for (uint32_t i = 0; i < 64u; i++) {
+                int32_t py; memcpy(&py, mh0 + 0x10u, 4);          /* m_Position.y */
+                const uint8_t* recent = (const uint8_t*)openpete_psx_to_host_ptr(G_RECENT_GEMS);
+                for (uint32_t i = 0; i < TRANS_GEM_MAX; i++) {
                     const uint8_t* g = (const uint8_t*)openpete_psx_to_host_ptr(arr + i * 0x10u);
                     if (!g) break;
-                    if (g[0x08] == 0) continue;                       /* inactive slot */
-                    if (g[0x0A] == cr0 && g[0x0B] == cr1 && g[0x0C] == cr2)
-                        return 0xA0000000u | (i & 0x3Fu);             /* stable per-gem key */
+                    if (g[0x08] == 0) continue;                   /* inactive slot */
+                    if (g[0x0A] != cr0 || g[0x0B] != cr1 || g[0x0C] != cr2) continue;
+                    int16_t yoff; memcpy(&yoff, g + 0x02u, 2);
+                    if (py != 198 - (int32_t)yoff) continue;
+                    if (recent && recent[i] != (uint8_t)cls0) continue;
+                    return 0xA0000000u | (i & 0x3Fu);             /* stable per-gem key */
                 }
                 /* no active source match (transient staging) → fall through */
             }
         }
     }
-    const void* hp = openpete_psx_to_host_ptr(G_HUDMOBYS);
-    uint32_t base = 0;
-    if (hp) memcpy(&base, hp, 4);
-    /* Window SYMMETRICALLY around the live pointer: it bump-allocates DOWN and
-     * may be read at a different allocation phase than the entries were made
-     * (observed: tally mobys sit BELOW the read value by a stable per-frame
-     * offset), but within one frame the pointer is the same at capture and
-     * re-extract time, so ptr-relative offsets pair across the halves.
-     * The m_Class (+0x36) is FOLDED INTO the key: the pool is re-allocated in
-     * draw order every frame, so a despawn (a tally gem absorbed into the
-     * chest) SHIFTS every later entry one slot — a pure slot key would pair a
-     * gem's prev with the CHEST's curr and blend across two different objects
-     * (user report 2026-07-04). A class change ⇒ different key ⇒ clean snap.
-     * (Same-class slot shifts can still pair gem-with-gem; the consumers'
-     * distance guards cover those.) */
-    if (base >= 0x80000000u) {
-        int32_t off = (int32_t)(m - base);
-        if (off > -(int32_t)(HUD_POOL_MAX * MOBY_STRIDE) &&
-            off <  (int32_t)(HUD_POOL_MAX * MOBY_STRIDE)) {
+
+    /* Everything else in the HUD pool: key by (class, ordinal among entries of
+     * the SAME class). The pool bump-allocates DOWN from D_800756FC in draw
+     * order and is rebuilt from scratch every tick, so an entry's ABSOLUTE
+     * ordinal is not an identity — anything emitted earlier that appears or
+     * disappears renames every entry behind it. A level exit does that on every
+     * single tick: the tally despawns a gem as it lands in the chest, and the
+     * counter text loses a digit as it counts down. An absolute ordinal
+     * therefore hands the chest and every odd-valued gem a fresh key each tick,
+     * so they never have a prev to pair with and step at the 29.97 Hz sim rate
+     * while the gems around them (which own a source identity, above) run smooth.
+     *
+     * Counting only same-class predecessors makes the ordinal blind to that
+     * traffic: the chest is "the only class-473", a lone GEM_5 "the only 0x55",
+     * whatever else the tally emits. It is the strongest identity available
+     * without a per-object source array — same-class entries still shift among
+     * themselves, which is exactly the case the gem fingerprint above covers.
+     * Class stays folded into the key so a class change is a clean snap rather
+     * than a blend between two different objects.
+     *
+     * Read D_800756FC, not the live g_HudMobys: the drain at the end of each
+     * draw walks the cursor back to the top, so the two agree at capture time,
+     * but only the top is stable if a re-extract observes a draw in progress.
+     * The pool alternates between the two polybuf halves each tick; a
+     * top-relative ordinal is identical in both. */
+    {
+        uint32_t top = rd32(G_HUD_POOL_TOP);
+        uint32_t delta = (top >= 0x80000000u && m < top) ? top - m : 0u;
+        if (delta != 0u &&
+            delta <= HUD_POOL_MAX * MOBY_STRIDE && (delta % MOBY_STRIDE) == 0u) {
+            uint32_t ord = delta / MOBY_STRIDE - 1u;   /* 0 = first entry allocated */
             const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
-            uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36, 2);
-            return 0x40000000u
-                 | ((uint32_t)(cls & 0x3FFu) << 16)
-                 | ((uint32_t)(off + (int32_t)(HUD_POOL_MAX * MOBY_STRIDE)) & 0xFFFFu);
+            uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
+            uint32_t n = 0;
+            for (uint32_t k = 0; k < ord; k++) {
+                const uint8_t* e = (const uint8_t*)openpete_psx_to_host_ptr(top - (k + 1u) * MOBY_STRIDE);
+                if (!e) break;
+                uint16_t c2; memcpy(&c2, e + 0x36u, 2);
+                if (c2 == cls) n++;
+            }
+            return 0x40000000u | ((uint32_t)(cls & 0x3FFu) << 16) | (n & 0xFFFFu);
         }
     }
     return m;
