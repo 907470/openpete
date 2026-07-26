@@ -236,8 +236,8 @@ void psyq_VSync(CPUState* cpu) {
      * exits after exactly 2 yields per logical frame regardless of wall-
      * clock pacing, which is the invariant BK2 replay relies on.
      *
-     * Wall-clock pacing lives elsewhere: the host loop (run.c) blocks on
-     * the openpete_ticker condvar between game slices, so 1 yield ≈
+     * Wall-clock pacing lives elsewhere: the host loop (run.c) sleeps to
+     * its own phase-locked deadline between game slices, so 1 yield ≈
      * 16.67 ms. Single-VSync(0) flyby → 1 yield/logical frame = 60 fps;
      * wait-loop gameplay → 2 yields/logical frame = 30 fps. No per-game
      * predicate needed. Tab / --headless skip the host-loop wait, which

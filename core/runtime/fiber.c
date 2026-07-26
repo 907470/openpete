@@ -28,9 +28,9 @@ int          openpete_fov_h_override    = 0;
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */
-    /* `openpete_vbl` is the ticker's job now (free-running 60 Hz, see
-     * openpete_ticker.h). Yields only bump the host-side render counter so
-     * frame-limit / screenshot / bk2 alignment stay yield-driven. */
+    /* `openpete_vbl` belongs to psyq_VSync, which advances it once per
+     * logical frame waited. Yields only bump the host-side render counter
+     * so frame-limit / screenshot / bk2 alignment stay yield-driven. */
     openpete_frame++;
     op_functrace_pause();     /* exclude host render+sleep from func-trace */
     co_switch((cothread_t)openpete_host_fiber);

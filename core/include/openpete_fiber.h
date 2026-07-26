@@ -24,8 +24,8 @@ extern void*    openpete_game_fiber;
  * iterations where the host fiber is never resumed. This is the value
  * `psyq_VSync` returns to the game (libetc's "vbl counter" contract).
  * The game's busy-waits like `int s = VSync(-1); while (VSync(-1) - s < N) VSync(0);`
- * key off this. Atomic because the 60 Hz ticker thread (see
- * openpete_ticker.h) advances it free-running, racing PSX-fiber readers. */
+ * key off this. Advanced only by psyq_VSync — one increment per logical
+ * frame waited — plus absolute restores from the savestate path. */
 extern SDL_AtomicInt openpete_vbl;
 
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
@@ -89,9 +89,9 @@ extern int      openpete_fast_boot_active;
 extern int      openpete_skip_present_until_level;
 
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
- * `openpete_vbl` is *not* touched here — the ticker (openpete_ticker.h)
- * is the sole writer once running. Used by the VSync(0) thunk outside
- * fast-boot. */
+ * `openpete_vbl` is *not* touched here — psyq_VSync owns that counter,
+ * so a yield and a VBL stay separately accountable. Used by the
+ * VSync(0) thunk outside fast-boot. */
 void openpete_yield_to_host(void);
 
 /* Game fiber → host fiber WITHOUT advancing the frame counter. Used by stub

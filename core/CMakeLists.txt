@@ -157,8 +157,8 @@ add_library(openpete_core STATIC
     # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
     runtime/fiber.c
 
-    # Free-running 60 Hz vblank ticker (drives openpete_vbl + paces the host
-    # loop). See plans/openpete-free-running-vblank-counter.md.
+    # Pacing-clock lifecycle + the fast-forward flag. The host loop paces
+    # itself against op_sleep_until deadlines; there is no pacing thread.
     runtime/ticker.c
 
     # Phase 1e infra-triangle: hardcoded POLY_F3 emit to validate the full
