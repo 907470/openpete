@@ -1868,19 +1868,33 @@ static int mods_discover(const openpete_options_t* opts,
     } else if (en) {
         /* One WHOLE line per iteration: a comment (or any text) longer
          * than the buffer must not come back as fragments, or each tail
-         * reads as a bogus id and warns at every boot. */
+         * reads as a bogus id and warns at every boot.
+         *
+         * fgets drops the newline in two very different cases: the line
+         * outran the buffer, or the file simply ended without a trailing
+         * newline. Only the first is truncation — telling them apart by
+         * "did fgets fill the buffer" rather than by the missing newline,
+         * because a final line with no newline is the norm for editors
+         * that don't add one, and treating it as truncated silently drops
+         * whatever mod the user appended last. */
         char line[512];
         while (n_order < MODS_MAX && fgets(line, sizeof line, en)) {
             size_t got = strlen(line);
-            int whole = got == 0 || line[got - 1] == '\n';
-            if (!whole) { /* drain the rest of the over-long line */
+            int truncated = (got == sizeof line - 1) && line[got - 1] != '\n';
+            if (truncated) { /* drain the rest of the over-long line */
                 int c;
                 while ((c = fgetc(en)) != EOF && c != '\n') { }
             }
             line[strcspn(line, "\r\n")] = 0;
             char* s = trim_id(line);
             if (!*s || *s == '#') continue;
-            if (!whole || strlen(s) >= MOD_ID_MAX) {
+            if (truncated) {
+                OPL_WARN_F("mods", "enabled.txt: line starting \"%.32s\" is "
+                           "longer than %d characters — skipped",
+                           s, (int)(sizeof line - 1));
+                continue;
+            }
+            if (strlen(s) >= MOD_ID_MAX) {
                 OPL_WARN_F("mods", "enabled.txt: id \"%.32s...\" exceeds "
                            "%d characters — skipped", s, MOD_ID_MAX - 1);
                 continue;

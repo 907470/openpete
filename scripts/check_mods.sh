@@ -96,6 +96,23 @@ else
     bad "--mods did not override enabled.txt: $seq3"
 fi
 
+# ── 2c. a final line with no trailing newline is still an id ───────────
+# Editors that don't append a newline are common, and fgets reports that
+# line the same way it reports one that outran the buffer — so the last
+# mod the user added used to be dropped with a bogus "exceeds 63
+# characters" warning.
+say "enabled.txt: last line without a trailing newline still loads"
+fixture "$WORK/duo4" chain-duo-a chain-duo-b
+printf 'chain-duo-a\nchain-duo-b' > "$WORK/duo4/enabled.txt"
+out="$(run_game "$WORK/duo4" 5000)"
+seq4="$(printf '%s\n' "$out" | grep -oE 'chain (enter|exit)  ?[<>AB]+' | tr -d ' ' | paste -sd, -)"
+if [ "$seq4" = "chainenterB>,chainenterA>,chainexit<A,chainexit<B" ] &&
+   ! printf '%s\n' "$out" | grep -q "exceeds 63 characters"; then
+    ok "newline-less final id loaded ($seq4)"
+else
+    bad "newline-less final id dropped or warned: $seq4"
+fi
+
 say "--mods \"\": empty list disables every mod"
 out="$(run_game "$WORK/duo3" 600 --mods "")"
 if printf '%s\n' "$out" | grep -q "none enabled" &&
