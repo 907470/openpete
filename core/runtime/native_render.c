@@ -629,10 +629,14 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
          * 2 = ACTOR/HUD3D mobys, 4 = WORLD terrain), which is how a divergence
          * gets attributed to one feeder without a rebuild. Default = all on. */
         {
+            /* The parse is masked to 0..7 so the cache stays non-negative and
+             * the `< 0` first-use latch actually holds — a negative "unset"
+             * value would re-enter getenv on every triangle. 7 keeps all three
+             * categories, i.e. the default no-op, so the mask loop is skipped. */
             static int s_tw = -1;
             if (s_tw < 0) { const char* e = getenv("OPENPETE_TRUE_W");
-                            s_tw = (e && *e) ? (int)strtol(e, NULL, 0) : -2; }
-            if (s_tw != -2) {
+                            s_tw = (e && *e) ? ((int)strtol(e, NULL, 0) & 7) : 7; }
+            if (s_tw != 7) {
                 int bit = (category == OPENPETE_SCENE_PLAYER) ? 1
                         : (category == OPENPETE_SCENE_ACTOR ||
                            category == OPENPETE_SCENE_ACTOR_FRONT ||
