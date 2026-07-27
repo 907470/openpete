@@ -132,6 +132,33 @@ static double project(const int M[3][3], const double TR[3], double vx, double v
     return ngte_project_raw(M, TR, vx, vy, vz, ofx_px, ofy_px, H, out_sx, out_sy, out_sat);
 }
 
+/* GTE near-plane mirror for one projected vertex.
+ *
+ * project() above is the RAW float H/z: it keeps the true screen X the
+ * widescreen reveal needs, but it has no counterpart to the GTE's UNR divide
+ * cap. RTPS saturates the quotient at 0x1FFFF once SZ3 <= H/2, then clamps SXY
+ * to the 11-bit signed window — so on hardware a vertex that close is pinned
+ * near the screen edge. Ours divides by an arbitrarily small view-Z instead and
+ * flings the vertex to |x| in the hundred-thousands, which the rasterizer then
+ * streaks across the frame.
+ *
+ * Inside that regime the raw coordinate carries no information the hardware
+ * ever had, so take the GTE's: re-project through the faithful path (divide
+ * cap + ±1024 SXY saturation) and flag the vertex. Outside it — every vertex
+ * further than H/2 — nothing changes, so the reveal keeps its true X.
+ *
+ * Returns 1 when the vertex was in the regime (and sx/sy were replaced). */
+static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
+                               double vx, double vy, double vz, double vzz,
+                               double ofx, double ofy, double H,
+                               double* sx, double* sy) {
+    if (vzz > 0.0 && H < 2.0 * vzz) return 0;
+    ngte_proj gp;
+    ngte_project_gte(M, TR, vx, vy, vz, ofx, ofy, H, 1, &gp);
+    *sx = gp.sx; *sy = gp.sy;
+    return 1;
+}
+
 /* Forward decl: the host-side moby record builder (widescreen reveal, below)
  * reuses the shaded path's euler matrix composer, defined later in this file.
  * Takes the moby vaddr (not the raw rotation word) so the composer can look up
@@ -315,8 +342,10 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
  * vertex in MODEL space by blend/4096 before RTPS (the asm INTPLs IR(=A) toward
  * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
-typedef struct { float sx, sy, vz; int sat; int rec;
+typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  float ex, ey, ez; } proj_xy;  /* vz=view-Z; rec=source record (diag);
+                 unr = this vertex fell in the GTE divide-overflow regime (see
+                 moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
                  the input to the specular env-reflection UV map (#1). */
 
@@ -526,6 +555,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         }
         double sx, sy; int sat;
         double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
+        int unr = moby_gte_near_fixup(M, TR, vx, vy, vz, vzz, ofx, ofy, H, &sx, &sy);
         /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
          * each other. project's mac3 is in the m_scale-adjusted world/4 scale
          * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
@@ -551,7 +581,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * pairs og calls a tie. */
         if (ot_centre > 0.0) fvz -= 127.0;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
-        out[i].vz = (float)fvz; out[i].sat = sat;
+        out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
@@ -1375,7 +1405,7 @@ static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
 }
 
 static struct {   /* walk diagnostics (printed by compare_walk_vs_prims) */
-    int faces, emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad;
+    int faces, emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
     int align_lo, align_hi, desync;
 } s_walkdiag;
 
@@ -1395,6 +1425,28 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * mobys rarely straddle the near plane, and a 1-frame early disappear beats
      * a flipped explosion. */
     if (a->vz <= 0.0f || b->vz <= 0.0f || c->vz <= 0.0f) return;
+    /* NEAR-PLANE STRADDLE: a face with a vertex inside the GTE divide-overflow
+     * regime got that vertex's screen position from the hardware-clamped path
+     * (moby_gte_near_fixup), so it is pinned to the ±1024 SXY window rather
+     * than the true perspective point — the face's shape is no longer the one
+     * the camera sees. The GPU is what resolves this on hardware: it discards
+     * any primitive spanning more than 1023 px horizontally or 511 vertically,
+     * which is exactly the class the clamp produces. Mirror that and the
+     * straddling face drops, as it does on PSX; without it the face survives
+     * with one corner slammed to the window edge and sweeps the frame (mobys
+     * the camera passes through — the 1-frame whole-screen flash).
+     *
+     * Gated on the flag so ordinary geometry is untouched: a legitimately huge
+     * near face (or a wide face under Hor+ reveal, whose true X exceeds the
+     * PSX screen by design) never enters the regime and never sees this test. */
+    if (a->unr || b->unr || c->unr) {
+        float xlo = a->sx, xhi = a->sx, ylo = a->sy, yhi = a->sy;
+        if (b->sx < xlo) xlo = b->sx; if (b->sx > xhi) xhi = b->sx;
+        if (c->sx < xlo) xlo = c->sx; if (c->sx > xhi) xhi = c->sx;
+        if (b->sy < ylo) ylo = b->sy; if (b->sy > yhi) yhi = b->sy;
+        if (c->sy < ylo) ylo = c->sy; if (c->sy > yhi) yhi = c->sy;
+        if (xhi - xlo > 1023.0f || yhi - ylo > 511.0f) { s_walkdiag.nearstraddle++; return; }
+    }
     s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
     s_wtri_front[s_wtri_n] = (uint8_t)s_cur_front;  /* cutscene actor (front-pass eligible) */
     s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
@@ -2366,12 +2418,12 @@ static void compare_walk_vs_prims(void) {
         wmatch, wn, wn?100.0*wmatch/wn:0.0, pcov, pn, pn?100.0*pcov/pn:0.0);
     fprintf(stderr,
         "[moby-walk2 f=%u] "
-        "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d} "
+        "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
         "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f\n",
         openpete_frame,
         s_walkdiag.fresh_g, s_walkdiag.fresh_t, s_walkdiag.strip, s_walkdiag.sprite,
-        s_walkdiag.skip, s_walkdiag.quad, s_walkdiag.oor,
+        s_walkdiag.skip, s_walkdiag.quad, s_walkdiag.oor, s_walkdiag.nearstraddle,
         s_walkdiag.align_lo, s_walkdiag.align_hi, s_walkdiag.desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_walkdiag.quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
@@ -2835,6 +2887,40 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
+    /* TEMP forensics (OPENPETE_MBCEN=1): one line per emitted moby per PRESENT —
+     * tri count, screen bbox, fed-depth range. Offline the strobe hunt reads
+     * this as a per-present set and names mobys that appear for a single
+     * isolated present (the 1-frame flash). */
+    { static int s_cen = -1; static unsigned s_pres = 0;
+      if (s_cen < 0) { const char* e = getenv("OPENPETE_MBCEN"); s_cen = (e && *e && *e != '0'); }
+      if (s_cen) {
+          s_pres++;
+          struct { uint32_t m; int cls, n; float x0,y0,x1,y1,z0,z1; } acc[512];
+          int na = 0;
+          for (int i = 0; i < s_wtri_n; i++) {
+              const ntri_t* w = &s_wtri[i];
+              int j = 0;
+              for (; j < na; j++) if (acc[j].m == s_wtri_moby[i]) break;
+              if (j == na) {
+                  if (na >= 512) continue;
+                  acc[na].m = s_wtri_moby[i]; acc[na].cls = s_wtri_cls[i]; acc[na].n = 0;
+                  acc[na].x0 = acc[na].y0 = acc[na].z0 = 1e30f;
+                  acc[na].x1 = acc[na].y1 = acc[na].z1 = -1e30f;
+                  na++;
+              }
+              acc[j].n++;
+              for (int k = 0; k < 3; k++) {
+                  float x = w->v[k].sx, y = w->v[k].sy, z = w->v[k].vz;
+                  if (x < acc[j].x0) acc[j].x0 = x; if (x > acc[j].x1) acc[j].x1 = x;
+                  if (y < acc[j].y0) acc[j].y0 = y; if (y > acc[j].y1) acc[j].y1 = y;
+                  if (z < acc[j].z0) acc[j].z0 = z; if (z > acc[j].z1) acc[j].z1 = z;
+              }
+          }
+          for (int j = 0; j < na; j++)
+              fprintf(stderr, "[mbcen] p=%u f=%u m=%08X cls=%03X n=%d bb=%.0f,%.0f,%.0f,%.0f vz=%.0f,%.0f\n",
+                      s_pres, openpete_frame, acc[j].m, acc[j].cls, acc[j].n,
+                      acc[j].x0, acc[j].y0, acc[j].x1, acc[j].y1, acc[j].z0, acc[j].z1);
+      } }
     /* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB": dump every walk tri whose
      * centroid falls in the PSX-screen box for frames [fA,fB] — offline
      * identity diff (moby+fkey) across frames names which attribute flaps.
@@ -4072,6 +4158,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            int unr = moby_gte_near_fixup(M, TR, (double)VX,(double)VY,(double)VZ, vzz,
+                                          mofx, mofy, H, &sx, &sy);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
             /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
@@ -4082,7 +4170,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
             if (ot_centre > 0.0) fvz -= 127.0;
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
-            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat;
+            out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
         }
