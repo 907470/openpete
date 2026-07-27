@@ -622,6 +622,26 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                 sv[k].sy = floorf(sv[k].sy);
             }
         }
+        /* OPENPETE_TRUE_W: kill switch / bisect mask for the stated perspective
+         * W (openpete_scene_vert.pvz). 0 drops every feeder's value, restoring
+         * the historical "derive W from the ordering depth" behaviour exactly;
+         * a bitmask keeps it for selected categories only (1 = PLAYER,
+         * 2 = ACTOR/HUD3D mobys, 4 = WORLD terrain), which is how a divergence
+         * gets attributed to one feeder without a rebuild. Default = all on. */
+        {
+            static int s_tw = -1;
+            if (s_tw < 0) { const char* e = getenv("OPENPETE_TRUE_W");
+                            s_tw = (e && *e) ? (int)strtol(e, NULL, 0) : -2; }
+            if (s_tw != -2) {
+                int bit = (category == OPENPETE_SCENE_PLAYER) ? 1
+                        : (category == OPENPETE_SCENE_ACTOR ||
+                           category == OPENPETE_SCENE_ACTOR_FRONT ||
+                           category == OPENPETE_SCENE_HUD3D ||
+                           category == OPENPETE_SCENE_HUD) ? 2 : 4;
+                if (!(s_tw & bit))
+                    for (int k = 0; k < 3; k++) s_scene[s_scene_n].v[k].pvz = 0.0f;
+            }
+        }
         /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
          * overlay tri joins this tick's carry set NOW, so it survives however
          * many sub-tick scene wipes land before the canonical capture. carry==2
@@ -2671,7 +2691,7 @@ static void native_depth_prepass(void)
             { {-1,-1}, {1,-1}, {1,1}, {-1,-1}, {1,1}, {-1,1} };
         for (int k = 0; k < 6; k++) {
             rhi_vertex* o = &pbuf[m + k];
-            o->x = bq[k][0]; o->y = bq[k][1]; o->z = 0.999f;
+            o->x = bq[k][0]; o->y = bq[k][1]; o->z = 0.999f; o->w = 0.0f;
             o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->tex = 0;
         }
         m += 6;
@@ -2689,7 +2709,7 @@ static void native_depth_prepass(void)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex* o = &pbuf[m + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             /* Vertex colour retained for vertex-struct completeness; the shadow
              * and occlusion consumers sample the pre-pass depth only. */
             o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->tex = 0;
@@ -4309,7 +4329,7 @@ static bool draw_native_scene(bool full_extent)
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
                 rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                 o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
                 o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->tex = 0;
@@ -4342,7 +4362,7 @@ static bool draw_native_scene(bool full_extent)
                     float cx, cy;
                     scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
                     rhi_vertex *o = &buf[n + k];
-                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z;
+                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                     o->u = 0.0f; o->v = 0.0f;
                     o->rgba = scene[t].v[k].rgba; o->tex = 0;
                 }
@@ -4413,7 +4433,8 @@ static bool draw_native_scene(bool full_extent)
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
                 rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             n += 3;
@@ -4429,7 +4450,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4445,7 +4467,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4463,7 +4486,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4479,7 +4503,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4497,7 +4522,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4510,7 +4536,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4530,7 +4557,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
@@ -4552,7 +4580,8 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(sx, sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3; af_n++;
@@ -4588,7 +4617,8 @@ static bool draw_native_scene(bool full_extent)
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
                 rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->u = 0.0f; o->v = 0.0f;
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             runs[cur].count += 3;
@@ -4674,7 +4704,7 @@ static bool draw_native_scene(bool full_extent)
             float cx, cy;
             scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[tx_start + i * 3 + k];
-            o->x = cx; o->y = cy; o->z = st->v[k].z;
+            o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
             o->u = st->v[k].u; o->v = st->v[k].v;
             o->rgba = st->v[k].rgba; o->tex = 0;
             /* PSX screen coord for the textured shadow decal (location 3); the
@@ -5469,7 +5499,7 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
         buf[n].x = (v->x + ox) * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].tex = 0;
+        buf[n].rgba = v->rgba; buf[n].tex = 0; buf[n].w = 0.0f;
         n++;
     }
     n -= n % 3;
@@ -5500,7 +5530,7 @@ static void draw_mod_overlay(void) {
         buf[n].x = v->x * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].tex = 0;
+        buf[n].rgba = v->rgba; buf[n].tex = 0; buf[n].w = 0.0f;
         n++;
     }
     n -= n % 3;
@@ -5667,6 +5697,7 @@ static void draw_menu_glyphs_3d(float ax, float ay) {
         gbuf[gn].y = 1.0f - v->y * ay;
         gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
         gbuf[gn].rgba = v->rgba; gbuf[gn].tex = 0; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
+        gbuf[gn].w = 0.0f;
         gn++;
     }
     gn -= gn % 3;
@@ -6301,6 +6332,7 @@ static void draw_mod_meshes(void)
             v->u = mv[k].u; v->v = mv[k].v;
             v->rgba = mv[k].rgba;
             v->tex = 0; v->sx = 0.f; v->sy = 0.f;
+            v->w = 0.f;    /* mod meshes feed unshifted depth: derive W from z */
         }
         total += n;
     }

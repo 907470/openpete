@@ -14,6 +14,8 @@ layout(location = 0) in vec3 inPos;       /* xy = clip-space screen, z = NDC dep
 layout(location = 1) in vec2 inUV;        /* sprite texel coords within the page   */
 layout(location = 2) in vec4 inColor;     /* R8G8B8A8 -> 0..1 modulate             */
 layout(location = 3) in vec2 inScreenPSX; /* PSX screen coord (SX,SY)              */
+layout(location = 4) in float inW;        /* true view-Z when z carries an OT shift
+                                           * (0 = unshifted; see psx_scene.vert)   */
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
@@ -21,10 +23,11 @@ layout(location = 2) noperspective out vec2 vScreenPSX;
 
 void main()
 {
-    float z = clamp(inPos.z, 0.0, 0.9999);           /* bound W (z->1 => W->inf) */
-    float W = 4096.0 * z / max(1.0 - z, 1e-6);        /* view-Z == clip-space W   */
-    W = max(W, 1.0);                                   /* near-plane / z==0 guard  */
-    gl_Position = vec4(inPos.xy * W, z * W, W);
+    float z   = clamp(inPos.z, 0.0, 0.9999);         /* bound W (z->1 => W->inf) */
+    float vzo = 4096.0 * z / max(1.0 - z, 1e-6);      /* view-Z the DEPTH encodes */
+    vzo = max(vzo, 1.0);                               /* near-plane / z==0 guard  */
+    float W = inW > 0.0 ? max(inW, 1.0) : vzo;        /* perspective W (true vz)  */
+    gl_Position = vec4(inPos.xy * W, z * W, W);       /* window depth = z, as fed */
     vUV = inUV;
     vColor = inColor;
     vScreenPSX = inScreenPSX;

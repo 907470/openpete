@@ -97,7 +97,7 @@ static int tracer_project(const int R[3][3], const double cam[3],
 static void emit_tri(double ax, double ay, double az, uint32_t acol,
                      double bx, double by, double bz, uint32_t bcol,
                      double cx, double cy, double cz, uint32_t ccol) {
-    openpete_scene_tri st;
+    openpete_scene_tri st = {0};
     memset(&st, 0, sizeof st);
     st.textured = 0;
     st.blend    = 2;                          /* ABR mode 1 (additive) */

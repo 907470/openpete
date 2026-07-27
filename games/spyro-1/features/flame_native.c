@@ -595,7 +595,7 @@ static void flame_feed_scaffold(CPUState* cpu) {
             int a, b, c;
             if (s == 0) { a = 0; b = 1; c = 2; } else { a = 1; b = 3; c = 2; }  /* GT4 split */
             int idx[3] = { a, b, c };
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = idx[k];
                 st.v[k].sx = t->x[j]; st.v[k].sy = t->y[j]; st.v[k].z = depth;
@@ -624,7 +624,7 @@ static void flame_feed_native(CPUState* cpu) {
         /* GT4 -> two tris: (v0,v1,v2) + (v1,v3,v2) */
         int split[2][3] = { {0,1,2}, {1,3,2} };
         for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j];
@@ -639,7 +639,7 @@ static void flame_feed_native(CPUState* cpu) {
     }
     for (int i = 0; i < s_fcap_n; i++) {
         fcap* c = &s_fcap[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
             st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(c->sz[k]));

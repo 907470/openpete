@@ -531,7 +531,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_mosh_n; i++) {
         moshtri* m = &s_mosh[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         float bias = shadow_bias_moby();
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = m->sx[k]; st.v[k].sy = m->sy[k];
@@ -738,7 +738,7 @@ static void shadow_spyro_feed_native(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_sptri_n; i++) {
         sptri* c = &s_sptri[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         float bias = shadow_bias_spyro();
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
@@ -801,7 +801,7 @@ static void shadow_moby_feed_scaffold(CPUState* cpu) {
         int tpx = (t->tpage & 0xF) * 64, tpy = ((t->tpage >> 4) & 1) * 256;
         int mode = (t->tpage >> 7) & 3, bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
         int clx = (t->clut & 0x3F) * 16, cly = (t->clut >> 6) & 0x1FF;
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->x[k]; st.v[k].sy = t->y[k]; st.v[k].z = depth;
             st.v[k].u = (float)t->u[k]; st.v[k].v = (float)t->v[k];
@@ -825,7 +825,7 @@ static void shadow_spyro_feed_scaffold(CPUState* cpu) {
     for (int p = 0; p < s_gte_n; p++) {
         prim_t* t = &s_gte[p];
         if (t->nv < 3 || t->textured) continue;       /* skip the E1 mini-packet */
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->x[k]; st.v[k].sy = t->y[k]; st.v[k].z = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;

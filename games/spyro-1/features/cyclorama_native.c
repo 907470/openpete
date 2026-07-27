@@ -453,7 +453,7 @@ static void push_scene(CPUState* cpu) {
     openpete_native_scene_set_bg(bg | 0xFF000000u);
     if (!render_path_enabled(RP_CYCLORAMA)) return;  /* bg only; dome not selected */
     for (int i = 0; i < s_native_n; i++) {
-        openpete_scene_tri t;
+        openpete_scene_tri t = {0};
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_native[i].v[k].sx;
             t.v[k].sy   = s_native[i].v[k].sy;

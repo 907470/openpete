@@ -343,7 +343,7 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
  * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
 typedef struct { float sx, sy, vz; int sat; int unr; int rec;
-                 float ex, ey, ez; } proj_xy;  /* vz=view-Z; rec=source record (diag);
+                 float ex, ey, ez; float tvz; } proj_xy;  /* vz=view-Z; rec=source record (diag);
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
@@ -582,6 +582,12 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         if (ot_centre > 0.0) fvz -= 127.0;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
         out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
+        /* Perspective W = the view-Z the SCREEN PROJECTION divided by, so it
+         * excludes both the OT pulls below and the GPF depth restore: sx/sy came
+         * from the rescaled TR, and only that vzz makes their UV interpolation
+         * consistent. (Any positive multiple works — interpolation sees ratios
+         * only — so the 1<<ds normalizer just keeps it in depth units.) */
+        out[i].tvz = (float)(vzz * (double)(1 << ds));
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
@@ -1317,7 +1323,10 @@ static void append_revealed_regular(CPUState* cpu) {
  * promoted (2026-06-15); the walk is jitter-free (exact word0 indices) where
  * the scaffold's screen-proximity matching jittered. */
 typedef struct { float sx, sy, vz; int u, v; uint32_t rgb;
-                 float ex, ey, ez; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input (#1) */
+                 float ex, ey, ez; float tvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input (#1);
+                 tvz = the same vertex's UNSHIFTED view-Z, the perspective W (see
+                 openpete_scene_vert.pvz): vz carries the OT-slot pull, which can
+                 reach 16256 world units on a saturated authored bias. */
 typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
@@ -1455,9 +1464,9 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
     s_wtri_matslot[s_wtri_n] = s_cur_moby_matslot;  /* per-instance material (S8b) */
     ntri_t* t = &s_wtri[s_wtri_n++];
-    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez};
-    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez};
-    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez};
+    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
+    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
+    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
     s_walkdiag.emitted++;
 }
@@ -2955,11 +2964,16 @@ static void push_scene_moby(void) {
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
                 : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
                                     : OPENPETE_SCENE_ACTOR;
-        openpete_scene_tri t;
+        openpete_scene_tri t = {0};
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
             t.v[k].sy   = s_wtri[i].v[k].sy;
             t.v[k].z    = openpete_native_depth_from_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
+            /* State the perspective W only where the OT pulls actually moved
+             * this vertex; an unshifted vertex keeps the derive-from-z path
+             * (identical result, no round-trip difference). */
+            t.v[k].pvz  = (s_wtri[i].v[k].tvz == s_wtri[i].v[k].vz)
+                        ? 0.0f : s_wtri[i].v[k].tvz;
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
             t.v[k].rgba = s_wtri[i].v[k].rgb | 0xFF000000u;
@@ -4171,6 +4185,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             if (ot_centre > 0.0) fvz -= 127.0;
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
+            out[n].tvz=(float)(vzz*vz_scale);            /* pre-bias: the perspective W */
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             n++;
         }

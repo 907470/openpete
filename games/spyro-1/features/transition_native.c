@@ -181,7 +181,7 @@ static void crossfade_feed_native(void) {
                 float cy[4] = { gy[ri], gy[ri], gy[ri+1], gy[ri+1] };
                 int col[4] = { ci, ci+1, ci, ci+1 }, row[4] = { ri, ri, ri+1, ri+1 };
                 for (int ti = 0; ti < 2; ti++) {
-                    openpete_scene_tri st;
+                    openpete_scene_tri st = {0};
                     for (int k = 0; k < 3; k++) {
                         int vi = qi[ti][k];
                         int cidx = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
@@ -200,7 +200,7 @@ static void crossfade_feed_native(void) {
     const float depth = 0.999f;                           /* far backdrop, still < 1.0 clear */
     for (int i = 0; i < s_cross_n; i++) {
         cyclorama_native_tri* t = &s_cross[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;

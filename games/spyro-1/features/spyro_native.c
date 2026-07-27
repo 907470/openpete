@@ -1273,8 +1273,55 @@ static void spyro_missdump(void) {
     fprintf(stderr, "[spyro-miss f=%u] unmatched prims: %d/%d\n", openpete_frame, missn, s_gte_n);
 }
 
+/* OPENPETE_SPYRO_EXTRADUMP=1 (with VERIFY): the REVERSE of spyro_missdump —
+ * every walk tri whose centroid has no .s tri near it, i.e. geometry the walk
+ * INVENTS. (missdump answers "what does the walk fail to produce?"; a face that
+ * paints where the .s drew nothing needs the opposite question.) The expected
+ * tri list splits quads GT4-style, so the two centroid sets align 1:1. A clean
+ * 0/N here says a wrong-looking face is a SHADING fault, not a cull/split one. */
+static void spyro_extradump(void) {
+    static int s_ed = -1; static int s_done = 0;
+    if (s_ed < 0) { const char* e = getenv("OPENPETE_SPYRO_EXTRADUMP"); s_ed = (e && *e && *e != '0'); }
+    if (!s_ed || s_done > 6) return;
+    s_done++;
+    static double ecx[MAX_SWTRI], ecy[MAX_SWTRI]; int en = 0;
+    for (int p = 0; p < s_gte_n && en + 2 < MAX_SWTRI; p++) {
+        prim_t* pr = &s_gte[p];
+        if (pr->nv < 3) continue;
+        int splits = (pr->nv == 4) ? 2 : 1;
+        for (int s = 0; s < splits; s++) {
+            int a,b,c; if (s == 0) { a=0;b=1;c=2; } else { a=1;b=3;c=2; }
+            ecx[en] = (pr->x[a]+pr->x[b]+pr->x[c])/3.0;
+            ecy[en] = (pr->y[a]+pr->y[b]+pr->y[c])/3.0;
+            en++;
+        }
+    }
+    int extra = 0;
+    for (int w = 0; w < s_swtri_n; w++) {
+        swtri* t = &s_swtri[w];
+        double wcx = (t->v[0].sx + t->v[1].sx + t->v[2].sx)/3.0;
+        double wcy = (t->v[0].sy + t->v[1].sy + t->v[2].sy)/3.0;
+        double best = 1e18;
+        for (int e = 0; e < en; e++) {
+            double d = fabs(ecx[e]-wcx) + fabs(ecy[e]-wcy);
+            if (d < best) best = d;
+        }
+        if (best > 3.0) {
+            fprintf(stderr, "[spyro-extra f=%u] tri[%d] ctr=(%.1f,%.1f) nn=%.1f vz=(%.0f,%.0f,%.0f) rgb=%06X,%06X,%06X clut=(%d,%d) uv0=(%d,%d)\n",
+                    openpete_frame, w, wcx, wcy, best,
+                    t->v[0].vz, t->v[1].vz, t->v[2].vz,
+                    t->v[0].rgb & 0xFFFFFF, t->v[1].rgb & 0xFFFFFF, t->v[2].rgb & 0xFFFFFF,
+                    t->clut_x, t->clut_y, t->v[0].u, t->v[0].v);
+            extra++;
+        }
+    }
+    fprintf(stderr, "[spyro-extra f=%u] unmatched walk tris: %d/%d (expected tris=%d)\n",
+            openpete_frame, extra, s_swtri_n, en);
+}
+
 static void spyro_walk_compare(CPUState* cpu) {
     spyro_missdump();
+    spyro_extradump();
     walk_stats st; spyro_walk_eval(cpu, &st);
     fprintf(stderr, "[spyro-walk f=%u] walk=%d expected=%d (prims=%d) %s pos=%.1f%% rgb=%.1f%% uv=%.1f%%  first_bad=%d\n",
             openpete_frame, st.walk, st.expected, s_gte_n, st.cnt_ok ? "CNT-OK" : "CNT-MISMATCH",
@@ -1402,7 +1449,7 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
             double fvz;
@@ -1415,6 +1462,12 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
                 fvz = (double)w->v[k].vz - sp_pull;
             }
             st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full((float)fvz));
+            /* Perspective W from the UNSHIFTED view-Z. sortDepth saturates at
+             * 127 during the level-transition flight (OT slot 0 = in front of
+             * everything), which pulls the whole model onto the near plane; a
+             * W taken from that depth varies 2:1 across the snout's faces and
+             * smears one texel over them. */
+            st.v[k].pvz = w->v[k].vz;
             st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
             st.v[k].rgba = w->v[k].rgb | 0xFF000000u;
         }
@@ -1527,7 +1580,7 @@ int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
                 if (idx < 0 || idx >= s_sproj_n || s_sproj[idx].sat) sat = 1;
             }
             if (sat) continue;
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
                 st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(w->v[k].vz));

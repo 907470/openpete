@@ -15,6 +15,9 @@
 layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = NDC depth */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;  /* R8G8B8A8_UNORM -> 0..1 */
+/* True view-Z when the feeder shifted z to encode OT ordering (0 = unshifted).
+ * See psx_scene.vert — same rule, so both scene pipes share one vertex buffer. */
+layout(location = 4) in float inW;
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
@@ -39,11 +42,12 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
-    float z = clamp(inPos.z, 0.0, 0.9999);          /* bound W (z->1 => W->inf) */
-    float W = 4096.0 * z / max(1.0 - z, 1e-6);       /* view-Z == clip-space W   */
-    W = max(W, 1.0);                                  /* near-plane / z==0 guard  */
-    float zc = DEPTH_AFFINE ? (W - 1.0) : (z * W);   /* z_ndc = zc/W */
-    gl_Position = AFFINE_UV ? vec4(inPos.xy, zc / W, 1.0)
+    float z   = clamp(inPos.z, 0.0, 0.9999);        /* bound W (z->1 => W->inf) */
+    float vzo = 4096.0 * z / max(1.0 - z, 1e-6);     /* view-Z the DEPTH encodes */
+    vzo = max(vzo, 1.0);                              /* near-plane / z==0 guard  */
+    float W = inW > 0.0 ? max(inW, 1.0) : vzo;       /* perspective W (true vz)  */
+    float zc = DEPTH_AFFINE ? (vzo - 1.0) * (W / vzo) : (z * W);   /* z_ndc = zc/W */
+    gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
                             : vec4(inPos.xy * W, zc, W);
     vColor = inColor;
     vUV = inUV;

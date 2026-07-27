@@ -201,7 +201,17 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * the cyclorama/sky passes 1.0 (always the backdrop). */
 /* u,v are texel coords within the texture page (PSX integer texel space, 0..255)
  * — only meaningful when the tri is textured. */
-typedef struct { float sx, sy, z; float u, v; uint32_t rgba; } openpete_scene_vert;
+/* pvz is the TRUE full-world view-Z of this vertex — the perspective W the
+ * rasterizer divides UV/colour by. It is separate from `z` because `z` is an
+ * ORDERING quantity: feeders shift it (openpete_worldvz_pull/_bias, the OT-slot
+ * mirrors) to reproduce the PSX's per-object OT placement, and a shifted depth
+ * implies a wrong W. Where the shift is large — the level-transition flight
+ * pulls the whole player 2488 world units so its nearest vertex sits on the
+ * near plane — W varies 2:1 across a face that truly spans 1.01:1, smearing one
+ * texel over the snout. State the real view-Z here and `z` stays free to encode
+ * ordering. 0 = no shift applied: W is derived from `z` (the historical
+ * behaviour, exact for every unbiased feeder). */
+typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpete_scene_vert;
 /* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly

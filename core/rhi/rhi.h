@@ -171,6 +171,10 @@ typedef struct {
                          * u,v are the sprite texel (unlike the untextured Spyro
                          * decal, which parks the screen coord in u,v). Ignored
                          * by every pipeline whose shader omits location 3.     */
+    float    w;         /* perspective W = TRUE view-Z (location 4). z encodes
+                         * ORDERING and may carry a feeder's OT-slot shift, so
+                         * deriving W from it warps UV/colour interpolation.
+                         * 0 = no shift: the vertex stages derive W from z.     */
 } rhi_vertex;
 
 typedef struct rhi_buffer   rhi_buffer;

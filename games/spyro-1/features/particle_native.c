@@ -965,7 +965,7 @@ static void particle_feed_native(CPUState* cpu) {
         uint32_t cc[4] = { l->rgb0, l->rgb0, l->rgb1, l->rgb1 };  /* gouraud along the line */
         float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(l->cz));
         for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
@@ -1009,7 +1009,7 @@ static void particle_feed_native(CPUState* cpu) {
          * by drawing that bucket after the ADD group.) */
         float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(q->cz));
         for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j]; st.v[k].z = depth;
@@ -1219,7 +1219,7 @@ static void glow_feed_native(CPUState* cpu) {
          * openpete_worldvz_bias would round differently in the last ULP). */
         float depth = openpete_native_depth_from_viewz(
             openpete_worldvz_full((float)(t->cz * GLOW_AURA_BEHIND_MOBY_BIAS)));
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
@@ -1545,7 +1545,7 @@ static void sparkle_feed_native(CPUState* cpu) {
         }
         for (int k = 0; k < 8; k++) {
             int k2 = (k + 1) & 7;
-            openpete_scene_tri t;
+            openpete_scene_tri t = {0};
             t.v[0].sx = st->sx[0];    t.v[0].sy = st->sy[0];
             t.v[1].sx = st->sx[k+1];  t.v[1].sy = st->sy[k+1];
             t.v[2].sx = st->sx[k2+1]; t.v[2].sy = st->sy[k2+1];
@@ -1576,7 +1576,7 @@ static void sparkle_feed_native(CPUState* cpu) {
         float depth = openpete_native_depth_from_viewz(
             openpete_worldvz_pull(openpete_worldvz_full(l->cz), SPARKLE_OT_PULL));
         for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
@@ -1717,7 +1717,7 @@ static void dragonstar_feed_native(CPUState* cpu) {
     float depth = 0.0f;
     for (int i = 0; i < s_dstri_n; i++) {
         gtri* t = &s_dstri[i];
-        openpete_scene_tri st;
+        openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;

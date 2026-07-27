@@ -673,6 +673,9 @@ static const knob_desc_t g_builtin[] = {
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
     ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",
         "Same pull for the SHADED walk."),
+    ENVROW_LATCHED("TRUE_W", "Debug", "7",
+        "Perspective W from the true view-Z, not the OT-pulled depth "
+        "(bitmask 1=player 2=moby 4=world; 0 = legacy derive-from-depth)."),
     ENVROW_LATCHED("MOBY_SNAP_STALE", "Debug", "1",
         "Snap instead of lerp across stale interp pairs (default 1)."),
     ENVROW_LATCHED("MOBY_IDLE", "Debug", "0",

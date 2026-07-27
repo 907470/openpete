@@ -395,7 +395,7 @@ int spyro1_s3_actor_emit(CPUState* cpu, const void* pose, int len,
             if (ia >= nv || ib >= nv || ic >= nv) { skip_idx++; continue; }
             if (s_sat[ia] || s_sat[ib] || s_sat[ic]) { skip_sat++; continue; }
             /* screen-space backface cull (double-sided for v1: keep) */
-            openpete_scene_tri st;
+            openpete_scene_tri st = {0};
             int idx[3] = { ia, ib, ic };
             int cidx[3] = { ci[a], ci[b], ci[c] };
             for (int k = 0; k < 3; k++) {

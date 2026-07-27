@@ -19,6 +19,8 @@
 layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = canonical NDC depth */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
+layout(location = 4) in float inW;    /* true view-Z when z carries an OT shift
+                                       * (0 = unshifted; see psx_scene.vert)   */
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
@@ -26,10 +28,13 @@ layout(location = 2) noperspective out vec2 vScreenPSX;
 
 void main()
 {
-    float z = clamp(inPos.z, 0.0, 0.9999);
-    float W = 4096.0 * z / max(1.0 - z, 1e-6);       /* canonical depth -> view-Z */
-    W = max(W, 1.0);
-    gl_Position = vec4(inPos.xy * W, W - 1.0, W);    /* z_ndc = 1 - 1/vz */
+    float z   = clamp(inPos.z, 0.0, 0.9999);
+    float vzo = 4096.0 * z / max(1.0 - z, 1e-6);     /* canonical depth -> view-Z */
+    vzo = max(vzo, 1.0);
+    float W = inW > 0.0 ? max(inW, 1.0) : vzo;       /* perspective W (true vz)   */
+    /* Depth still encodes vzo (the value the scene pass ordered by); only the
+     * homogeneous scale changes. Folds to (xy*W, W-1, W) on the unshifted path. */
+    gl_Position = vec4(inPos.xy * W, (vzo - 1.0) * (W / vzo), W);  /* z_ndc = 1 - 1/vzo */
     vColor = inColor;
     vUV = inUV;
     vScreenPSX = inUV;

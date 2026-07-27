@@ -692,7 +692,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
         float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
-            openpete_scene_tri t;
+            openpete_scene_tri t = {0};
             memset(&t, 0, sizeof t);
             t.textured = 0; t.blend = 0;
             const int idx3[3] = { 0, i, i + 1 };
@@ -738,7 +738,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
     for (int ti = 0; ti < 2; ti++) {
-        openpete_scene_tri t;
+        openpete_scene_tri t = {0};
         memset(&t, 0, sizeof t);
         t.textured = 0; t.blend = 0;
         for (int k = 0; k < 3; k++) {
@@ -919,7 +919,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
                           int use_plane, double pa, double pb, double pc) {
     for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
-        openpete_scene_tri t;
+        openpete_scene_tri t = {0};
         memset(&t, 0, sizeof t);
         t.textured = 0; t.blend = 0;
         const pgv* tv[3] = { &v[0], &v[i], &v[i + 1] };
@@ -1472,7 +1472,7 @@ static void feed_revealed_portals(CPUState* cpu) {
         uint32_t rgba = rgb | 0xFF000000u;
         s_portal_group = (int)skybox;   /* group id = skybox (one portal = one group) */
         for (int k = 1; k + 1 < pn; k++) {                /* fan-triangulate the outline polygon */
-            openpete_scene_tri t;
+            openpete_scene_tri t = {0};
             memset(&t, 0, sizeof t);
             t.textured = 0; t.blend = 0;
             const int idx3[3] = { 0, k, k + 1 };

@@ -3894,7 +3894,10 @@ static void terrain_feed_native(CPUState* cpu) {
             {
                 static int s_fillpull = -1;
                 if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
-                if (t->tier && (s_fillpull || !t->fill)) wz = openpete_worldvz_bias(wz, 1.03f);   /* tier==1 → LP */
+                if (t->tier && (s_fillpull || !t->fill)) {
+                    tri.v[k].pvz = wz.vz;      /* perspective W = the UNPULLED view-Z */
+                    wz = openpete_worldvz_bias(wz, 1.03f);   /* tier==1 → LP */
+                }
             }
             tri.v[k].z  = openpete_native_depth_from_viewz(wz);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
