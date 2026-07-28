@@ -1092,6 +1092,47 @@ static int reveal_prev_has(uint32_t m) {
     return 0;
 }
 
+/* Run-once mobys: instances whose FIRST update does a one-shot job and then
+ * retires them (m_State >= 0x80). The update-list builder (@80052040)
+ * auto-includes any moby whose m_WasDrawn is set, ahead of its
+ * m_UpdateDistance path, so canonically "drawn" implies "updated next tick"
+ * and such an instance is on screen for at most the single tick that admits
+ * it — never long enough to be intended as scenery.
+ *
+ * Two display bugs follow. The extended-LOD reveal must not write m_WasDrawn
+ * (gameplay-readable), so a revealed instance is drawn WITHOUT ever entering
+ * the update list: it never runs, never retires, and stands there until the .s
+ * draw range finally reaches it and kills it. And even in range, the canonical
+ * queue still yields that one-tick flash. Both are display-side, so the fix is
+ * too: the walk emits no triangles for these and the reveal never admits them,
+ * while the .s cull, m_WasDrawn, the update list and the moby's one-shot job
+ * all proceed untouched.
+ *
+ * Identity is the level author's own spawn parameter: m_Props (+0x00) points
+ * at a per-instance block whose word at +0x04 selects the class's behaviour
+ * variant. Jacques' fools ship four instances at variant 6 — the ones that
+ * only set a moving platform's height — against eight at variants 0/1/2, the
+ * ordinary hopping fools. Nothing in the Moby record itself distinguishes
+ * them: an ordinary fool sits at m_State 0 with a zero rotation matrix and
+ * animation frame 0 exactly like an unreached run-once one, and STAYS at
+ * m_State 0 after being drawn, so a liveness test would hide every distant
+ * fool in the level. The table is keyed per level because class ids index the
+ * level overlay's own g_Models, and the props layout is class-specific. */
+static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
+    static const struct { uint16_t level, cls; uint32_t variant; } k_run_once[] = {
+        /* jacques: the fools that set the moving platforms' heights */
+        { 54u, 0x7Eu, 6u },
+    };
+    for (size_t i = 0; i < sizeof k_run_once / sizeof k_run_once[0]; i++) {
+        if (k_run_once[i].cls != cls) continue;
+        if (cpu->read_word(G_LEVELID) != k_run_once[i].level) continue;
+        uint32_t props = cpu->read_word(m + 0x00u);
+        if (props < 0x80000000u || props >= 0x80200000u) continue;
+        if (cpu->read_word(props + 0x04u) == k_run_once[i].variant) return 1;
+    }
+    return 0;
+}
+
 /* Append host-built records for mobys the canonical 4:3 cull skipped but that
  * the retired producer widenings WOULD have drawn. Dedups against the .s queue
  * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
@@ -1138,6 +1179,10 @@ static void append_revealed_regular(CPUState* cpu) {
         uint8_t stt = cpu->read_byte(m + 0x48);
         if (stt == 0xFF) break;                        /* array sentinel */
         if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
+        if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + 0x36))) {
+            TRC("skip=run-once (retires on its first update)");
+            m += 0x58; continue;
+        }
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
          * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
          * a held off-4:3 speck is never double-drawn by the reveal) */
@@ -1839,6 +1884,13 @@ static int build_walk_tris_inner(CPUState* cpu) {
         }
         s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
+        /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
+         * queued it, and s_reg_moby membership is what the reveal builder and
+         * the occlusion/hold bookkeeping dedup against) — only its triangles
+         * are dropped, so this is display-side alone: the .s pass still sets
+         * m_WasDrawn @8001F4CC, the moby still auto-includes into the next
+         * tick's update list, and its one-shot job still runs on schedule. */
+        if (mob && moby_run_once_hidden(cpu, mob, s_cur_moby_cls)) continue;
         /* OPENPETE_MOBY_CLASSDBG=1: one line per drawn moby (class + vaddr +
          * world position) — names the producer when a scene object needs a
          * class-keyed treatment (e.g. a mod material selector). */
