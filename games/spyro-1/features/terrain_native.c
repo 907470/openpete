@@ -4028,6 +4028,104 @@ static void terrain_feed_native(CPUState* cpu) {
       if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
           fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
+    /* OPENPETE_PORTAL_FIT_DBG=<frame>: one-shot dump of each active opening and
+     * the terrain around it, expressed in the OPENING PLANE's own 2D basis.
+     *
+     * This is the measurement behind the per-portal art corrections. An arch's
+     * true opening is the hole in the terrain mesh, not the authored outline
+     * polygon, and on several arches the two disagree. Both are dumped in the
+     * same (u,v) frame so the correction can be FITTED from geometry rather
+     * than judged by eye — the outline in plane coords, then every nearby face
+     * with its own plane coords and its rim classification, so the surviving
+     * (post-cull) geometry can be separated from the rim that is dropped.
+     * Units are world units throughout. */
+    { static int s_fit = -2; static unsigned s_fit_f = 0;
+      if (s_fit == -2) { const char* e = getenv("OPENPETE_PORTAL_FIT_DBG");
+                         s_fit = (e && *e) ? 1 : -1; s_fit_f = (e && *e) ? (unsigned)atoi(e) : 0; }
+      if (s_fit == 1 && openpete_frame >= s_fit_f && s_pplane_n > 0) {
+        s_fit = -1;                                  /* one shot */
+        const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+        const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+        const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+        for (int pi = 0; pi < s_pplane_n && H >= 1.0; pi++) {
+          const openpete_portal_skyplane* pp = &s_pplane[pi];
+          if (pp->vn < 3) continue;
+          double nx = pp->a * H, ny = pp->b * H;
+          double nz = pp->c + pp->a * ofx + pp->b * ofy;
+          double nn = sqrt(nx*nx + ny*ny + nz*nz);
+          if (nn < 1e-12) continue;
+          nx /= nn; ny /= nn; nz /= nn;
+          double O[3], U[3], W[3]; rim_uv pv[16];
+          const double nn3[3] = { nx, ny, nz };
+          if (!rim_plane_basis(pp, nn3, O, U, W, pv, 16)) continue;
+          const int levelId = (int32_t)cpu->read_word(pp->portal + 0x1C);
+          /* The CORRECTION basis, expressed in this census's (U,W) frame.
+           *
+           * portal_outline_world applies dh/dv/sh/sv about world-space in-plane
+           * axes (vertical = world +Z projected into the opening plane,
+           * horizontal = normal x vertical), while the basis above is built
+           * from the outline's own first edge. The two span the same plane but
+           * differ by an in-plane rotation, so a fit computed here would apply
+           * along the wrong axes. Emitting both axes in (U,W) coordinates lets
+           * the fit be converted exactly. */
+          double zx, zy, zz;              /* world +Z, in view space */
+          { int Mc[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, Mc);
+            ngte_mac(Mc, 0.0, -1.0, 0.0, &zx, &zy, &zz); }
+          { const double zd = zx*nx + zy*ny + zz*nz;    /* project into plane */
+            zx -= zd*nx; zy -= zd*ny; zz -= zd*nz; }
+          const double zl = sqrt(zx*zx + zy*zy + zz*zz);
+          if (zl < 1e-9) continue;                      /* opening lies flat */
+          zx /= zl; zy /= zl; zz /= zl;                 /* = code's vertical */
+          const double hax[3] = { ny*zz - nz*zy, nz*zx - nx*zz, nx*zy - ny*zx };
+          fprintf(stderr, "[pfit] portal=%08X levelId=%d vn=%d "
+                  "vax=%.6f,%.6f hax=%.6f,%.6f\n",
+                  pp->portal, levelId, pp->vn,
+                  zx*U[0] + zy*U[1] + zz*U[2], zx*W[0] + zy*W[1] + zz*W[2],
+                  hax[0]*U[0] + hax[1]*U[1] + hax[2]*U[2],
+                  hax[0]*W[0] + hax[1]*W[1] + hax[2]*W[2]);
+          for (int k = 0; k < pp->vn; k++)
+            fprintf(stderr, "[pfit]   out %d %.2f %.2f\n", k, pv[k].u, pv[k].v);
+          double pulo = pv[0].u, puhi = pv[0].u, pvlo = pv[0].v, pvhi = pv[0].v;
+          for (int i = 1; i < pp->vn; i++) {
+            if (pv[i].u < pulo) pulo = pv[i].u; if (pv[i].u > puhi) puhi = pv[i].u;
+            if (pv[i].v < pvlo) pvlo = pv[i].v; if (pv[i].v > pvhi) pvhi = pv[i].v;
+          }
+          /* Search box: the opening grown by its own size, so the arch jamb and
+           * the ground meeting the sill are both included without dragging in
+           * the whole sector. */
+          const double gu = (puhi - pulo), gv = (pvhi - pvlo);
+          for (int i = 0; i < s_tri_n; i++) {
+            const ttri* t = &s_tri[i];
+            double V[3][3]; int okz = 1; double dmin = 1e30, dmax = 0.0;
+            for (int k = 0; k < 3; k++) {
+              const double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
+              if (inv <= 1e-9) { okz = 0; break; }
+              const double vz = t->vz[k] * 16.0;
+              V[k][0] = (t->sx[k]-ofx) * vz / H; V[k][1] = (t->sy[k]-ofy) * vz / H; V[k][2] = vz;
+              const double dz = vz - 1.0 / inv;
+              const double d = fabs(dz * (nx*(t->sx[k]-ofx) + ny*(t->sy[k]-ofy) + nz*H) / H);
+              if (d < dmin) dmin = d;
+              if (d > dmax) dmax = d;
+            }
+            if (!okz) continue;
+            if (dmin > 1024.0) continue;          /* only geometry AT the opening */
+            rim_uv f[3];
+            double fulo = 1e30, fuhi = -1e30, fvlo = 1e30, fvhi = -1e30;
+            for (int k = 0; k < 3; k++) {
+              const double r[3] = { V[k][0]-O[0], V[k][1]-O[1], V[k][2]-O[2] };
+              f[k].u = r[0]*U[0] + r[1]*U[1] + r[2]*U[2];
+              f[k].v = r[0]*W[0] + r[1]*W[1] + r[2]*W[2];
+              if (f[k].u < fulo) fulo = f[k].u; if (f[k].u > fuhi) fuhi = f[k].u;
+              if (f[k].v < fvlo) fvlo = f[k].v; if (f[k].v > fvhi) fvhi = f[k].v;
+            }
+            if (fuhi < pulo - gu || fulo > puhi + gu ||
+                fvhi < pvlo - gv || fvlo > pvhi + gv) continue;
+            fprintf(stderr, "[pfit]   f %d %d %d %.1f %.1f %.2f %.2f %.2f %.2f %.2f %.2f\n",
+                    t->sec, t->face, portal_rim_classify(cpu, t), dmin, dmax,
+                    f[0].u, f[0].v, f[1].u, f[1].v, f[2].u, f[2].v);
+          }
+        }
+      } }
     /* OPENPETE_PORTAL_RIM_DBG=<frame>: one-shot census of terrain faces near a
      * portal's opening plane, printing each face's per-term verdict. The rim
      * predicate has three terms and a yes/no highlight cannot say which one
