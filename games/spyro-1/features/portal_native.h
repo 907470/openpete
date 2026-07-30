@@ -40,6 +40,16 @@ typedef struct {
      * face deep and exposed the distant terrain). */
     float    px[16], py[16];
     int      pn;
+    /* The outline in VIEW space, transformed straight from the portal's world
+     * m_Points without going through the projection. The screen arrays above
+     * exist only when EVERY outline point is in front of the camera — get
+     * close to an arch at a sheer angle and one crosses behind, the projection
+     * fails, and a consumer keyed on px/py loses the portal entirely just when
+     * it matters most. View space is a rigid transform of world space, so
+     * these are always valid and any distance or containment measured from
+     * them is the world-space answer. */
+    double   vx[16], vy[16], vz[16];
+    int      vn;                    /* outline points in view space (0 = none) */
 } openpete_portal_skyplane;
 
 /* Fill out[] with the opening planes of every portal whose sky was drawn on

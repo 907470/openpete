@@ -566,12 +566,46 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         if (!portal_plane_invz(cpu, p, &o->a, &o->b, &o->c)) continue;
         o->back_vz = portal_outline_maxvz(cpu, p);
         if (o->back_vz <= 1.0) continue;      /* whole outline behind the camera */
+        /* The outline in VIEW space, which — unlike the projection below — is
+         * defined for every camera. Any consumer that works in the opening
+         * plane can use this at ranges where the projection has failed. */
+        o->vn = 0;
+        {
+            const int npts = (int32_t)cpu->read_word(p + 0x04);
+            if (npts >= 3 && npts <= 16) {
+                int M[3][3];
+                ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
+                const int ccx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
+                const int ccy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
+                const int ccz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+                for (int k = 0; k < npts; k++) {
+                    const double wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
+                    const double wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
+                    const double wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
+                    ngte_mac(M, -(wy - ccy), -(wz - ccz), (wx - ccx),
+                             &o->vx[k], &o->vy[k], &o->vz[k]);
+                }
+                o->vn = npts;
+            }
+        }
         ppt poly[16];
         int pn = portal_outline_screen(cpu, p, poly, 16);
-        /* The sink needs the projected outline POLYGON (coverage confinement)
-         * — with a point behind the camera there is none, so no sinking for
-         * that portal (point-blank/entering: the near-cover path rules). */
-        if (pn < 3) continue;
+        /* The conformance sink needs the PROJECTED polygon (coverage
+         * confinement) — with a point behind the camera there is none, so no
+         * sinking for that portal (point-blank/entering: the near-cover path
+         * rules). The entry is still published when the view-space outline
+         * exists, because consumers that work in the plane are perfectly able
+         * to run at that range and were losing the portal exactly when the
+         * camera got close to it. A pn=0 entry is inert to the sink, which
+         * already requires pn >= 3. */
+        if (pn < 3) {
+            if (o->vn < 3) continue;
+            o->pn = 0; o->ot_vz = 0.0;
+            o->x0 = o->y0 = -1e9f; o->x1 = o->y1 = 1e9f;
+            o->portal = p;
+            n++;
+            continue;
+        }
         double sum = 0.0;                     /* mirror the .s sky bucket B */
         for (int k = 0; k < pn; k++) sum += poly[k].vz;
         long B = (long)(sum / (double)pn) >> 7;
