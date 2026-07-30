@@ -4028,6 +4028,71 @@ static void terrain_feed_native(CPUState* cpu) {
       if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
           fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
+    /* OPENPETE_PORTAL_RIM_DBG=<frame>: one-shot census of terrain faces near a
+     * portal's opening plane, printing each face's per-term verdict. The rim
+     * predicate has three terms and a yes/no highlight cannot say which one
+     * rejected a face — that ambiguity is what made earlier misses guesswork.
+     * Fires on >= the target frame, never ==: canonical feeds do not land on a
+     * fixed parity, so an equality test can miss entirely. */
+    { static int s_rim = -2; static unsigned s_rim_f = 0;
+      if (s_rim == -2) { const char* e = getenv("OPENPETE_PORTAL_RIM_DBG");
+                         s_rim = (e && *e) ? 1 : -1; s_rim_f = (e && *e) ? (unsigned)atoi(e) : 0; }
+      if (s_rim == 1 && openpete_frame >= s_rim_f && s_pplane_n > 0) {
+        s_rim = -1;                                  /* one shot */
+        const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+        const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+        const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+        for (int pi = 0; pi < s_pplane_n; pi++) {
+          const openpete_portal_skyplane* pp = &s_pplane[pi];
+          double nx = pp->a * H, ny = pp->b * H;
+          double nz = pp->c + pp->a * ofx + pp->b * ofy;
+          double nn = sqrt(nx*nx + ny*ny + nz*nz);
+          if (nn < 1e-12) continue;
+          nx /= nn; ny /= nn; nz /= nn;
+          fprintf(stderr, "[rim] portal=%08X bbox=(%.0f,%.0f)-(%.0f,%.0f) skyot=%.0f n=(%.3f,%.3f,%.3f)\n",
+                  pp->portal, pp->x0, pp->y0, pp->x1, pp->y1, pp->ot_vz, nx, ny, nz);
+          for (int i = 0; i < s_tri_n; i++) {
+            const ttri* t = &s_tri[i];
+            float cx = (t->sx[0]+t->sx[1]+t->sx[2])/3.0f, cy = (t->sy[0]+t->sy[1]+t->sy[2])/3.0f;
+            if (cx < pp->x0-8 || cx > pp->x1+8 || cy < pp->y0-8 || cy > pp->y1+8) continue;
+            /* PERPENDICULAR distance to the opening plane, in world units:
+             * along the pixel ray v = (x-ofx, y-ofy, H), a view-Z offset dz
+             * from the plane is a perpendicular offset dz * (n.v)/H. */
+            double d[3]; int ok = 1;
+            for (int k = 0; k < 3; k++) {
+              double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
+              if (inv <= 1e-9) { ok = 0; break; }
+              double dz = t->vz[k] * 16.0 - 1.0 / inv;   /* + = behind the plane */
+              double vx = t->sx[k] - ofx, vy = t->sy[k] - ofy;
+              d[k] = dz * (nx*vx + ny*vy + nz*H) / H;
+            }
+            if (!ok) continue;
+            double amax = fabs(d[0]) > fabs(d[1]) ? fabs(d[0]) : fabs(d[1]);
+            if (fabs(d[2]) > amax) amax = fabs(d[2]);
+            if (amax > 400.0) continue;              /* only the near-plane band */
+            double VV[3][3];
+            for (int k = 0; k < 3; k++) {
+              const double vz = t->vz[k] * 16.0;
+              VV[k][0] = (t->sx[k]-ofx) * vz / H; VV[k][1] = (t->sy[k]-ofy) * vz / H; VV[k][2] = vz;
+            }
+            const double u0[3] = { VV[1][0]-VV[0][0], VV[1][1]-VV[0][1], VV[1][2]-VV[0][2] };
+            const double w0[3] = { VV[2][0]-VV[0][0], VV[2][1]-VV[0][1], VV[2][2]-VV[0][2] };
+            double fnx = u0[1]*w0[2]-u0[2]*w0[1], fny = u0[2]*w0[0]-u0[0]*w0[2], fnz = u0[0]*w0[1]-u0[1]*w0[0];
+            const double fl = sqrt(fnx*fnx + fny*fny + fnz*fnz);
+            double para = 0.0;
+            if (fl > 1e-9) para = fabs((fnx*nx + fny*ny + fnz*nz) / fl);
+            const double ang = acos(para > 1.0 ? 1.0 : para) * 180.0 / 3.14159265358979323846;
+            const int cls = portal_rim_classify(cpu, t);
+            fprintf(stderr, "  sec=%d face=%d tier=%d texid=%d d=(%.1f,%.1f,%.1f) "
+                    "|d|max=%.1f ang=%.1fdeg at=(%.1f,%.1f) => %s%s%s%s\n",
+                    t->sec, t->face, t->tier, t->texid, d[0], d[1], d[2], amax, ang, cx, cy,
+                    cls < 0 ? "not-a-candidate" : cls == 0 ? "ACCEPT" : "REJECT",
+                    (cls > 0 && (cls & RIMFAIL_CONTAIN)) ? " contain" : "",
+                    (cls > 0 && (cls & RIMFAIL_DIST))    ? " dist" : "",
+                    (cls > 0 && (cls & RIMFAIL_ANGLE))   ? " angle" : "");
+          }
+        }
+      } }
     static float s_fill_dilate = -1.0f;  /* OPENPETE_TERRAIN_FILL_DILATE px (0 disables) */
     if (s_fill_dilate < 0.0f) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
@@ -4201,6 +4266,36 @@ static void terrain_feed_native(CPUState* cpu) {
             if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
                               s_cull = (e && *e) ? (*e != '0') : 1; }
             if (s_cull && portal_rim_face(cpu, t)) continue;
+        }
+        /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per
+         * failure COMBINATION, so the picture says which TERM is responsible
+         * rather than merely that something was rejected. A yes/no highlight
+         * left every miss to inference; this is what made the predicate
+         * debuggable. Pair with OPENPETE_PORTAL_RIM_CULL=0 — the cull runs
+         * first, so accepted faces are already gone by here — and with
+         * --render-paths terrain, which excludes the previews that would
+         * otherwise z-fight the very faces under test. */
+        {   static int s_show = -1;
+            if (s_show < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_SHOW");
+                              s_show = (e && *e && *e != '0'); }
+            if (s_show) {
+                const int cls = portal_rim_classify(cpu, t);
+                if (cls >= 0) {
+                    /* vertex rgba packs R in the low byte:
+                     *   RED     accepted (all terms pass)
+                     *   BLUE    contain            GREEN   distance
+                     *   CYAN    contain+distance   YELLOW  angle
+                     *   MAGENTA contain+angle      ORANGE  distance+angle
+                     *   WHITE   all three */
+                    static const uint32_t k_rim_cols[8] = {
+                        0xFF0000FFu, 0xFFFF0000u, 0xFF00FF00u, 0xFFFFFF00u,
+                        0xFF00FFFFu, 0xFFFF00FFu, 0xFF0080FFu, 0xFFFFFFFFu,
+                    };
+                    tri.textured = 0;
+                    const uint32_t c = k_rim_cols[cls & 7];
+                    for (int k = 0; k < 3; k++) tri.v[k].rgba = c;
+                }
+            }
         }
         openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);

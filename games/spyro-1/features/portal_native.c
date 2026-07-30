@@ -246,13 +246,61 @@ static void dump_portal_table(CPUState* cpu) {
         if (!p) { fprintf(stderr, "  portal[%u] = NULL\n", i); continue; }
         uint32_t skybox = cpu->read_word(p + 0x00);
         int levelId     = (int32_t)cpu->read_word(p + 0x1C);
+        /* m_PointCount: the outline polygon's vertex count. Every outline reader
+         * here caps at 16 (ppt poly[16]) and BAILS above it, so a count >16 costs
+         * the plane fit, the two-region spill split and the widescreen un-clamp. */
+        int npts        = (int32_t)cpu->read_word(p + 0x04);
         /* Centroid of the outline points (p+0x20 + 12*k), projected as the game
          * does — confirms which portals are on-screen + their view-Z. */
         double sx, sy, vz = project_world(cpu, (int32_t)cpu->read_word(p + 0x20),
                                           (int32_t)cpu->read_word(p + 0x24),
                                           (int32_t)cpu->read_word(p + 0x28), &sx, &sy);
-        fprintf(stderr, "  portal[%u]@%08X skybox=%08X levelId=%d bg=%06X -> screen(%.0f,%.0f) viewZ=%.0f\n",
-                i, p, skybox, levelId, cpu->read_word(skybox + 0x18) & 0xFFFFFF, sx, sy, vz);
+        fprintf(stderr, "  portal[%u]@%08X skybox=%08X levelId=%d npts=%d%s bg=%06X -> screen(%.0f,%.0f) viewZ=%.0f\n",
+                i, p, skybox, levelId, npts, (npts > 16 || npts < 3) ? " OVER-CAP" : "",
+                cpu->read_word(skybox + 0x18) & 0xFFFFFF, sx, sy, vz);
+        /* World-space geometry of the opening: centroid + plane normal + radius.
+         * Camera poses for the per-portal verification tour are derived from
+         * these, so every arch is framed the same way instead of hand-flown. */
+        if (npts >= 3 && npts <= 16) {
+            double cxw = 0, cyw = 0, czw = 0;
+            for (int k = 0; k < npts; k++) {
+                cxw += (int32_t)cpu->read_word(p + 0x20 + k*12);
+                cyw += (int32_t)cpu->read_word(p + 0x24 + k*12);
+                czw += (int32_t)cpu->read_word(p + 0x28 + k*12);
+            }
+            cxw /= npts; cyw /= npts; czw /= npts;
+            const double ax = (int32_t)cpu->read_word(p + 0x20) - cxw;
+            const double ay = (int32_t)cpu->read_word(p + 0x24) - cyw;
+            const double az = (int32_t)cpu->read_word(p + 0x28) - czw;
+            const int k2 = npts / 2;
+            const double bx = (int32_t)cpu->read_word(p + 0x20 + k2*12) - cxw;
+            const double by = (int32_t)cpu->read_word(p + 0x24 + k2*12) - cyw;
+            const double bz = (int32_t)cpu->read_word(p + 0x28 + k2*12) - czw;
+            double nx2 = ay*bz - az*by, ny2 = az*bx - ax*bz, nz2 = ax*by - ay*bx;
+            const double nl = sqrt(nx2*nx2 + ny2*ny2 + nz2*nz2);
+            if (nl > 1e-9) { nx2 /= nl; ny2 /= nl; nz2 /= nl; }
+            double rad = 0.0;
+            for (int k = 0; k < npts; k++) {
+                const double dx = (int32_t)cpu->read_word(p + 0x20 + k*12) - cxw;
+                const double dy = (int32_t)cpu->read_word(p + 0x24 + k*12) - cyw;
+                const double dz = (int32_t)cpu->read_word(p + 0x28 + k*12) - czw;
+                const double r = sqrt(dx*dx + dy*dy + dz*dz);
+                if (r > rad) rad = r;
+            }
+            fprintf(stderr, "    world c=(%.0f,%.0f,%.0f) n=(%.4f,%.4f,%.4f) rad=%.0f\n",
+                    cxw, cyw, czw, nx2, ny2, nz2, rad);
+        }
+        if (npts >= 3 && npts <= 16 && vz > 1.0) {
+            fprintf(stderr, "    outline:");
+            for (int k = 0; k < npts; k++) {
+                double ox, oy, ovz = project_world(cpu,
+                        (int32_t)cpu->read_word(p + 0x20 + k*12),
+                        (int32_t)cpu->read_word(p + 0x24 + k*12),
+                        (int32_t)cpu->read_word(p + 0x28 + k*12), &ox, &oy);
+                fprintf(stderr, " [%d](%.1f,%.1f)vz=%.0f", k, ox, oy, ovz);
+            }
+            fprintf(stderr, "\n");
+        }
     }
 }
 
@@ -715,19 +763,36 @@ int openpete_portal_sky_recent(void) {
  * bracket yields a plane consistent with the terrain verts of the same
  * present. */
 int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int max) {
-    if (!s_pcap_valid || s_pcap_n == 0) return 0;
-    if (openpete_frame - s_pcap_frame > 2u) return 0;
+    /* OPENPETE_PORTAL_PLANES_DBG: name the reason a portal produced no plane
+     * entry. Every bail here is silent otherwise, and "no colours at all" was
+     * repeatedly mistaken for "the classifier rejected everything". */
+    static int dbg = -1;
+    if (dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_PLANES_DBG"); dbg = (e && *e && *e != '0'); }
+    if (!s_pcap_valid || s_pcap_n == 0) {
+        if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL no-cap valid=%d n=%d\n", openpete_frame, s_pcap_valid, s_pcap_n);
+        return 0;
+    }
+    if (openpete_frame - s_pcap_frame > 2u) {
+        if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL stale capframe=%u\n", openpete_frame, s_pcap_frame);
+        return 0;
+    }
     int n = 0;
     for (int i = 0; i < s_pcap_n && n < max; i++) {
         uint32_t p = s_pcap[i].portal;
-        if (!p) continue;
+        if (!p) { if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d no-portal\n", openpete_frame, i); continue; }
         int dup = 0;
         for (int j = 0; j < n; j++) if (out[j].portal == p) { dup = 1; break; }
         if (dup) continue;
         openpete_portal_skyplane* o = &out[n];
-        if (!portal_plane_invz(cpu, p, &o->a, &o->b, &o->c)) continue;
+        if (!portal_plane_invz(cpu, p, &o->a, &o->b, &o->c)) {
+            if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X plane-FAIL\n", openpete_frame, i, p);
+            continue;
+        }
         o->back_vz = portal_outline_maxvz(cpu, p);
-        if (o->back_vz <= 1.0) continue;      /* whole outline behind the camera */
+        if (o->back_vz <= 1.0) {              /* whole outline behind the camera */
+            if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X back_vz=%.1f\n", openpete_frame, i, p, o->back_vz);
+            continue;
+        }
         /* The outline in VIEW space, which — unlike the projection below — is
          * defined for every camera. Any consumer that works in the opening
          * plane can use this at ranges where the projection has failed. */
@@ -756,6 +821,7 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         }
         ppt poly[16];
         int pn = portal_outline_screen(cpu, p, poly, 16);
+        if (dbg && pn < 3) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X pn=%d vn=%d\n", openpete_frame, i, p, pn, o->vn);
         /* The conformance sink needs the PROJECTED polygon (coverage
          * confinement) — with a point behind the camera there is none, so no
          * sinking for that portal (point-blank/entering: the near-cover path
