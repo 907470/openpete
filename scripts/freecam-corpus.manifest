@@ -58,3 +58,56 @@ toasty | pos=(92116, 101099, 17370) yaw=6213 pitch=111
 wizard_peak | pos=(107300, 76462, 17200) yaw=0 pitch=190
 wizard_peak | pos=(107500, 74500, 17500) yaw=512 pitch=240
 wizard_peak | pos=(109537, 74800, 18000) yaw=1024 pitch=280
+
+# ---------------------------------------------------------------------------
+# Portal-sky / arch boundary cases.
+#
+# Where the destination-sky preview meets the arch is the hardest edge in the
+# renderer: the PSX confines the preview by OT painter order plus a scissor
+# rect, and a depth buffer has to reproduce that silhouette from depth and a
+# stencil aperture instead. Every failure below is a different way that
+# reconstruction goes wrong, and each is ANGLE-dependent — an arch viewed
+# square-on hides all of them, because the defects live on the jamb that
+# recedes away from the camera. Hence exact poses.
+#
+# Two invariants these rows exist to protect:
+#   1. The sky must not appear anywhere outside the arch opening.
+#   2. The preview's junction with the ground must be a STRAIGHT LINE.
+#      (PsyCross itself gets #2 wrong sometimes, so it is not the arbiter
+#      here — straightness is judged directly.)
+#
+# NOTE these are captured at both LOD modes by the corpus driver, which
+# matters: the distant-arch row below only misbehaves under extended LOD,
+# where the arch renders at a range the original would have culled.
+
+# Sky escaping PAST the arch — the preview paints over the stone jamb and the
+# wall behind it. Cause: the sky's rect spill carried one constant depth (the
+# farthest outline point), but on an angled arch the jamb OUTSIDE the opening
+# recedes past that depth and loses to it. Broken = a purple/blue wedge sitting
+# on the stone at the upper LEFT, growing as yaw turns the far side away.
+dream_weavers | pos=(31259, 44935, 13693) yaw=1379 pitch=-66
+
+# Gap between the preview and the arch INTERIOR at close range. Cause: clipping
+# the sky strictly to the authored outline polygon under-covers — the outline
+# sits inside the visible opening. Broken = a dark sliver down the inner jamb,
+# between the stone and the preview.
+beast_makers | pos=(120326, 113108, 18243) yaw=-509 pitch=79
+
+# The same edge at DISTANCE (needs the extended-LOD leg). Opposite sign to the
+# row above and the reason a single global margin is not sufficient: here the
+# outline IS the visible opening, so widening the aperture opens a dark band
+# along the inner edge that grows with the margin. A change that fixes the
+# close arch by widening must be checked here before it is believed.
+beast_makers | pos=(111382, 124004, 17636) yaw=3474 pitch=-14
+
+# Sky/ground junction, straightness invariant (#2). Broken = the junction
+# breaks into a staircase, because the sky fill was pushed below the sill into
+# ground that is nearer and lost the depth test along terrain triangle edges.
+beast_makers | pos=(119196, 113801, 17840) yaw=-669 pitch=246
+
+# Ground junction, PRE-EXISTING defect (present with the portal aperture
+# disabled, and NOT introduced by it). The terrain under the opening bulges up
+# into the preview in a curved hump instead of meeting it flat — the terrain
+# OT-conformance sink failing to flatten those faces to the sky plane. Kept as
+# a row so the eventual fix has a witness; expect it to look wrong today.
+beast_makers | pos=(118535, 113493, 16946) yaw=3397 pitch=104

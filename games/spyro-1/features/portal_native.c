@@ -657,6 +657,18 @@ static float plane_depth(double a, double b, double c, double x, double y) {
  * replay), set by each feed path immediately before it emits. File-local
  * ambient only — never crosses a feeder boundary. */
 static int s_portal_group = 0;
+/* Set while the current feed has marked a stencil aperture from the OPENING
+ * POLYGON (emit_portal_aperture): the sky tris then emit as colours only, and
+ * the opening — not a depth race against the arch stone — bounds coverage.
+ * Cleared per feed, so a portal with no usable outline falls back to core's
+ * "a sky run without a matching mask uses its own footprint" behaviour. */
+static int s_aperture_ok = 0;
+static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
+                                 int use_plane, double pa, double pb, double pc);
+static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* ey);
+static double portal_aperture_margin_px(void);
+static void emit_aperture_ring(const ppt* poly, int pn, double margin,
+                               uint32_t rgba, int channel);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
  * true while a portal fed sky within the last couple of presents. */
 static unsigned s_sky_fed_frame = 0;
@@ -759,7 +771,8 @@ static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTA
 
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     if (!portal_scene_emit_enabled()) return;
-    openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+    if (!s_aperture_ok)   /* no opening polygon this feed: footprint IS the mask */
+        openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
 }
 
@@ -857,19 +870,32 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
         s_sky_fed_frame = openpete_frame;
         float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
+        emit_portal_aperture(cpu, p, poly, pn, 0, 0.0, 0.0, 0.0);
+        /* Interior fill = the EXACT outline fan (per-vertex view-Z, the .s
+         * flat leaf's own construction, f2439); erosion (debug) offsets it to
+         * match the eroded mask. The dilation band's colours come from the
+         * behind-depth ring below, matching the mask ring's extent. */
+        const double fmargin = portal_aperture_margin_px();
+        float fx[16], fy[16];
+        outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? -fmargin : 0.0, fx, fy);
+        double qa = 0.0, qb = 0.0, qc = 0.0;
+        const int fan_plane = s_aperture_ok && fit_invz(poly, pn, &qa, &qb, &qc);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
             openpete_scene_tri t = {0};
             memset(&t, 0, sizeof t);
             t.textured = 0; t.blend = 0;
             const int idx3[3] = { 0, i, i + 1 };
             for (int k = 0; k < 3; k++) {
-                const ppt* v = &poly[idx3[k]];
-                t.v[k].sx = v->x; t.v[k].sy = v->y;
-                t.v[k].z = sky_min2(portal_cyclorama_depth(v->vz), cz, cmode);
+                const int j = idx3[k];
+                t.v[k].sx = fx[j]; t.v[k].sy = fy[j];
+                t.v[k].z = sky_min2(fan_plane ? plane_depth(qa, qb, qc, fx[j], fy[j])
+                                              : portal_cyclorama_depth(poly[j].vz), cz, cmode);
                 t.v[k].rgba = rgba;
             }
             portal_add_sky_tri(&t);
         }
+        if (s_aperture_ok && fmargin > 0.0)
+            emit_aperture_ring(poly, pn, fmargin, rgba, OPENPETE_SCENE_PORTAL_CYCLORAMA);
         return 1;
     }
 
@@ -1005,6 +1031,198 @@ static void register_skyout(const ppt* poly, int pn) {
     if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
 }
 
+/* ---- stencil aperture from the opening polygon ----------------------------
+ * The dome leaves are confined ONLY by the GPU scissor rect — func_80050BD0
+ * zeroes D_80077EA0[0], so func_8005060C's edge clip is skipped — and the PSX
+ * relies on the arch stone repainting the rect spill by OT painter order. A
+ * depth buffer cannot reproduce that with one spill depth: s_skyout_back is the
+ * FARTHEST outline point plus the margin, but on a portal seen at an angle the
+ * jamb just OUTSIDE the opening recedes past that depth, so the sky wins there
+ * and pokes through the arch shoulder on the far side. (dream_weavers, portal
+ * levelId=52: outline vz runs 8653 on the far-left edge down to 7027 on the
+ * near-right, so the left jamb sits behind the behind-ring depth and the spill
+ * beat it; the right jamb, nearer, occluded correctly.)
+ *
+ * Fix: mark the stencil aperture from the OPENING POLYGON rather than from the
+ * sky footprint, so the silhouette is bounded geometrically and no depth race
+ * decides it. This matches what the .s flat leaf already does — the f2439 OT
+ * dump shows it fans the opening polygon, not the clip rect — so confining the
+ * dome the same way finishes a partition the original half-implements rather
+ * than diverging from it.
+ *
+ * The polygon is eroded inward by a constant screen-space margin, as an
+ * EDGE-NORMAL offset rather than a scale about the centroid: a scale pulls in
+ * proportionally to arch size and would lift the sky off the sill, which the
+ * terrain OT-conformance sink depends on meeting. The mask stays depth-TESTED,
+ * so anything genuinely in front of the opening — Spyro mid-entry, a moby, the
+ * threshold lip — still punches it out. */
+static int portal_aperture_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_APERTURE"); v = (e && e[0] == '0') ? 0 : 1; }
+    return v;
+}
+/* Outward margin on the aperture, in PSX screen pixels (512x256 space);
+ * negative erodes inward. DEFAULT 2.
+ *
+ * A STRICT clip to the opening polygon (0) is too tight: the authored outline
+ * sits a pixel or two inside the arch's visible opening, so a band of
+ * through-hole terrain shows between the preview and the stone (beast_makers,
+ * freecam pos=(120326,113108,18243) yaw=-509 pitch=79 — a dark sliver down the
+ * jamb that neither the .s nor the pre-aperture path has).
+ *
+ * The margin is BOUNDED, which is the whole point: the mask is still
+ * depth-tested, so the sky reaches at most this far past the opening and only
+ * where nothing occludes it. The old behaviour was the same race run over the
+ * ENTIRE clip rect, which is how the far jamb got painted at a grazing angle.
+ * Measured against PsyCross at 4:3 over the affected pixels: beast_makers gap
+ * 69.8 (strict) -> 35.4 (1) -> 9.5 (2) = exact parity with the .s, while the
+ * dream_weavers poke stays fixed at 28.1 vs 206.3 for every value — a 2px band
+ * cannot reach spill that ran to the rect edge. */
+static double portal_aperture_margin_px(void) {
+    static int init = 0;
+    static double v = 2.0;
+    if (!init) {
+        const char* e = getenv("OPENPETE_PORTAL_APERTURE_MARGIN");
+        if (e && *e) v = atof(e);
+        init = 1;
+    }
+    return v;
+}
+/* Offset the outline polygon by `d` pixels along each vertex's inward angle
+ * bisector (negative d pushes OUTWARD). Shared by the stencil aperture and the
+ * flat background fan so both reach exactly the same extent — the fan is the
+ * ONLY thing that covers the opening below the dome's horizon, so if it stops
+ * at the un-offset outline while the aperture reaches past it, a band of bare
+ * through-hole terrain shows between the preview and the stone. */
+static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* ey) {
+    double cx = 0.0, cy = 0.0;
+    for (int i = 0; i < pn; i++) { cx += poly[i].x; cy += poly[i].y; }
+    cx /= pn; cy /= pn;
+    for (int i = 0; i < pn; i++) {
+        const ppt* pv = &poly[(i + pn - 1) % pn];
+        const ppt* cv = &poly[i];
+        const ppt* nv = &poly[(i + 1) % pn];
+        /* average the two adjacent edges' inward normals (oriented by the
+         * centroid side, so winding order doesn't matter) and step along it */
+        double nx = 0.0, ny = 0.0;
+        const double ax = cv->x - pv->x, ay = cv->y - pv->y;
+        const double bx = nv->x - cv->x, by = nv->y - cv->y;
+        double n1x = -ay, n1y = ax, n2x = -by, n2y = bx;
+        const double l1 = sqrt(n1x*n1x + n1y*n1y), l2 = sqrt(n2x*n2x + n2y*n2y);
+        if (l1 > 1e-6) {
+            n1x /= l1; n1y /= l1;
+            if ((cx - cv->x) * n1x + (cy - cv->y) * n1y < 0.0) { n1x = -n1x; n1y = -n1y; }
+            nx += n1x; ny += n1y;
+        }
+        if (l2 > 1e-6) {
+            n2x /= l2; n2y /= l2;
+            if ((cx - cv->x) * n2x + (cy - cv->y) * n2y < 0.0) { n2x = -n2x; n2y = -n2y; }
+            nx += n2x; ny += n2y;
+        }
+        const double l = sqrt(nx*nx + ny*ny);
+        if (l > 1e-6) { nx /= l; ny /= l; } else { nx = 0.0; ny = 0.0; }
+        double ox = nx * d, oy = ny * d;
+        /* Never push the outline DOWN when dilating. The opening's base sits on
+         * the sill, and the sky/ground junction there must stay a straight line
+         * on the authored edge: pushed below the sill the fill lands inside
+         * ground that is nearer, loses the depth test along terrain triangle
+         * edges, and the junction breaks into a staircase. The sides and top
+         * still spill to meet the stone, which is all the margin exists for.
+         * (Erosion keeps the plain offset — it pulls in, never past the sill.) */
+        if (d < 0.0 && oy > 0.0) oy = 0.0;
+        ex[i] = (float)(cv->x + ox);
+        ey[i] = (float)(cv->y + oy);
+    }
+}
+
+/* The dilation band between the outline and its outward offset, emitted as a
+ * ring of quads at the BEHIND depth (farthest outline vz + PORTAL_SKY_EPS_VZ,
+ * pushed back — the same construction as the dome spill's s_skyout_back).
+ *
+ * The margin exists because some arches author the opening polygon a little
+ * INSIDE the visible stone edge: clipped strictly to the outline, the sky
+ * under-covers and a sliver of background shows along the jamb. But the band
+ * must never carry the interior's depth: the interior sits on the opening
+ * plane pulled ~24 vz units NEARER (portal_cyclorama_depth's z-fight bias), so
+ * a band at that depth BEATS any stone at/near the plane and paints over the
+ * jamb — measured on beast_makers' distant arch, where the outline matches the
+ * stone edge exactly and every margin value ate stone (the constant backstop
+ * colour replacing the jamb texels). At the behind depth the race resolves
+ * itself per pixel with no distance conditioning: stone that rasters in the
+ * band is nearer and wins; a true authoring gap shows background terrain far
+ * behind the plane, which the ring beats and fills.
+ *
+ * A FULL spill mask (dome pieces / rect at a behind-biased plane field, with
+ * the terrain conformance widened to match) was tried as the general form and
+ * REVERTED: it delegates the whole silhouette to the bucket-mirror verdict,
+ * and that mirror mis-judges real faces (dream_weavers LP sec=42 face=3 —
+ * mirrored mean 8337 vs sky 7808 reads covered, the .s keeps it on top), so
+ * previews poked through arch stone at many angles in free camera. The
+ * bounded ring keeps the contest local to the authoring-gap band where the
+ * mirror is never consulted. Do not generalize again until the per-walk
+ * bucket mirror is calibrated against a world-OT dump. */
+static void emit_aperture_ring(const ppt* poly, int pn, double margin,
+                               uint32_t rgba, int channel) {
+    if (!portal_scene_emit_enabled()) return;
+    float rx[16], ry[16];
+    outline_offset(poly, pn, -margin, rx, ry);
+    double maxvz = poly[0].vz;
+    for (int i = 1; i < pn; i++) if (poly[i].vz > maxvz) maxvz = poly[i].vz;
+    float rz = openpete_native_depth_from_viewz(
+                   openpete_worldvz_full((float)(maxvz + portal_sky_eps_vz())));
+    if (rz > 1.0f) rz = 1.0f;
+    for (int i = 0; i < pn; i++) {
+        const int j = (i + 1) % pn;
+        const float qx[4] = { (float)poly[i].x, (float)poly[j].x, rx[j], rx[i] };
+        const float qy[4] = { (float)poly[i].y, (float)poly[j].y, ry[j], ry[i] };
+        for (int half = 0; half < 2; half++) {   /* zero-area halves (a no-offset
+                                                  * bottom edge) raster nothing */
+            const int ks[3] = { 0, half ? 2 : 1, half ? 3 : 2 };
+            openpete_scene_tri t;
+            memset(&t, 0, sizeof t);
+            t.textured = 0; t.blend = 0;
+            for (int k = 0; k < 3; k++) {
+                t.v[k].sx = qx[ks[k]]; t.v[k].sy = qy[ks[k]];
+                t.v[k].z = rz; t.v[k].rgba = rgba;
+            }
+            openpete_native_scene_add_tri_grouped(&t, channel, 0, s_portal_group);
+        }
+    }
+}
+
+static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
+                                 int use_plane, double pa, double pb, double pc) {
+    (void)cpu; (void)portal;
+    s_aperture_ok = 0;
+    if (!portal_aperture_enabled() || pn < 3 || pn > 16) return;
+    if (!portal_scene_emit_enabled()) return;
+    const double margin = portal_aperture_margin_px();
+    float ex[16], ey[16];
+    outline_offset(poly, pn, (margin < 0.0) ? -margin : 0.0, ex, ey);
+    /* The outline is planar, so fit the plane here when the caller had none. */
+    if (!use_plane) use_plane = fit_invz(poly, pn, &pa, &pb, &pc);
+    float cz = 0.0f;
+    const int cmode = sky_const_depth(&cz);
+    for (int i = 1; i + 1 < pn; i++) {                      /* fan-triangulate */
+        openpete_scene_tri t;
+        memset(&t, 0, sizeof t);
+        t.textured = 0; t.blend = 0;
+        const int idx3[3] = { 0, i, i + 1 };
+        for (int k = 0; k < 3; k++) {
+            const int j = idx3[k];
+            const float pz = use_plane ? plane_depth(pa, pb, pc, ex[j], ey[j])
+                                       : portal_cyclorama_depth(poly[j].vz);
+            t.v[k].sx = ex[j]; t.v[k].sy = ey[j];
+            t.v[k].z = sky_min2(pz, cz, cmode);
+            t.v[k].rgba = 0xFF000000u;                      /* colour-write is off */
+        }
+        openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+    }
+    if (margin > 0.0)
+        emit_aperture_ring(poly, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+    s_aperture_ok = 1;
+}
+
 /* General half-plane clip: keep points on the LEFT of a->b (CCW inside). */
 static int clip_dir(const pgv* in, int n, pgv* out,
                     float ax, float ay, float bx, float by, int keepLeft) {
@@ -1052,6 +1270,11 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
         src = (src == a) ? b : a;
     }
     if (m >= 3) fan_emit_poly(src, m, depth, use_plane, pa, pb, pc);
+    /* With an aperture marked and no dilation the spill is stencil-killed, so
+     * emitting it would be dead geometry. Under DILATION the aperture reaches
+     * outside the opening, and these are the only colours that can fill that
+     * band — skipping them makes the dilation knob inert. */
+    if (s_aperture_ok && portal_aperture_margin_px() <= 0.0) return;
     /* outside pieces: for edge i keep RIGHT of edge i and LEFT of edges 0..i-1
      * (a disjoint decomposition of the outline's complement) */
     for (int i = 0; i < s_skyout_n; i++) {
@@ -1208,6 +1431,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
         if ((int)floorf(oylo) < y0) y0 = (int)floorf(oylo);
         if ((int)ceilf (oyhi) > y1) y1 = (int)ceilf (oyhi);
     }
+    emit_portal_aperture(cpu, p, poly, pn, use_plane, pa, pb, pc);
 
     uint32_t cnt = cpu->read_word(skybox + 0x00), arr = cpu->read_word(skybox + 0x04);
     if (cnt > 1024) cnt = 1024;
