@@ -601,6 +601,8 @@ static const knob_desc_t g_builtin[] = {
         "Kill switch for extended-LOD always-render dome (default 1)."),
     ENVROW_LATCHED("PORTAL_GUARD", "Debug", "0",
         "Experiment: re-feed .s near-band tris as portal guard."),
+    ENVROW_LATCHED("PORTAL_NUDGE", "Debug", "",
+        "Per-portal opening correction \"id:dh,dv[,sh[,sv]];...\" in world units."),
     ENVROW_LIVE("TERRAIN_CULL", "Debug", "1",
         "bit0 HP NCLIP cull, bit1 LP cull, bit2 invert LP sign (default 1)."),
     ENVROW_LIVE("TERRAIN_FLAT", "Debug", "0",

@@ -113,6 +113,128 @@ static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double 
  * instead of drawn flat, so the stone frame occludes it correctly at an angle). */
 static int    portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn);
 
+/* Per-portal opening-polygon correction, in world units, along the opening
+ * plane's own horizontal/vertical axes.
+ *
+ * Some arches have their outline authored slightly off the stone it belongs to
+ * — offset to one side, or simply smaller than the hole. The original never
+ * showed it: its projection was coarse enough to absorb a few units. At this
+ * renderer's precision the shortfall is visible as a band of through-hole
+ * terrain along one jamb that no depth policy can close, because the preview
+ * genuinely does not reach that far.
+ *
+ * Keyed by DESTINATION levelId, which identifies a portal uniquely within its
+ * homeworld. OPENPETE_PORTAL_NUDGE="id:dh,dv[,sh[,sv]];..." overrides at
+ * runtime for tuning; +dh is right along the opening, +dv is up. Three fields
+ * translate only, four scale uniformly, five scale per-axis. */
+typedef struct { int levelId; double dh, dv, sh, sv; } portal_nudge_t;
+static const portal_nudge_t k_portal_nudge[] = {
+    /* filled in per arch once each correction is verified */
+    { 0, 0.0, 0.0, 1.0, 1.0 },
+};
+static int portal_nudge_for(int levelId, double* dh, double* dv,
+                            double* sh, double* sv) {
+    *dh = 0.0; *dv = 0.0; *sh = 1.0; *sv = 1.0;
+    const char* e = getenv("OPENPETE_PORTAL_NUDGE");
+    if (e && *e) {
+        const char* q = e;
+        while (*q) {
+            int id = 0; double a = 0.0, b = 0.0, c = 1.0, d = 1.0;
+            const int got = sscanf(q, "%d:%lf,%lf,%lf,%lf", &id, &a, &b, &c, &d);
+            if (got >= 3 && id == levelId) {
+                *dh = a; *dv = b;
+                if (got >= 4) *sh = c;
+                *sv = (got >= 5) ? d : *sh;      /* one scale = uniform */
+                return 1;
+            }
+            while (*q && *q != ';') q++;
+            if (*q == ';') q++;
+        }
+    }
+    for (size_t i = 0; i < sizeof k_portal_nudge / sizeof k_portal_nudge[0]; i++)
+        if (k_portal_nudge[i].levelId == levelId) {
+            *dh = k_portal_nudge[i].dh; *dv = k_portal_nudge[i].dv;
+            *sh = k_portal_nudge[i].sh; *sv = k_portal_nudge[i].sv;
+            return (*dh != 0.0 || *dv != 0.0 || *sh != 1.0 || *sv != 1.0);
+        }
+    return 0;
+}
+
+/* Read a portal's outline in WORLD space — the single site that touches
+ * m_Points, so every derived quantity (the projected polygon, the plane fit,
+ * the spill depth) agrees on where the opening is. `nudge` applies the
+ * per-portal correction above; pass 0 for the AUTHORED outline.
+ *
+ * The correction is deliberately scoped to RENDERING. Anything asking a
+ * question about the MESH — which faces lie in the opening plane — reads the
+ * authored outline instead, so repositioning a portal to sit correctly on its
+ * arch cannot disturb geometry classification. Those are separate questions:
+ * where the preview should be drawn is an art fix; what the mesh is, is not.
+ *
+ * The plane ITSELF is unaffected either way — dh/dv translate within the plane
+ * and the scale is about in-plane axes, so a corrected outline spans the same
+ * plane and the plane fit returns the same answer for both.
+ * Returns the point count, 0 if the portal is unusable. */
+static int portal_outline_world(CPUState* cpu, uint32_t p, double W[16][3], int nudge) {
+    const int npts = (int32_t)cpu->read_word(p + 0x04);
+    if (npts < 3 || npts > 16) return 0;
+    for (int k = 0; k < npts; k++) {
+        W[k][0] = (double)(int32_t)cpu->read_word(p + 0x20 + k*12);
+        W[k][1] = (double)(int32_t)cpu->read_word(p + 0x24 + k*12);
+        W[k][2] = (double)(int32_t)cpu->read_word(p + 0x28 + k*12);
+    }
+    if (!nudge) return npts;
+    double dh = 0.0, dv = 0.0, sh = 1.0, sv = 1.0;
+    if (!portal_nudge_for((int32_t)cpu->read_word(p + 0x1C), &dh, &dv, &sh, &sv)) return npts;
+    /* in-plane axes: vertical = world +Z projected into the plane */
+    const double e1[3] = { W[1][0]-W[0][0], W[1][1]-W[0][1], W[1][2]-W[0][2] };
+    const double e2[3] = { W[2][0]-W[0][0], W[2][1]-W[0][1], W[2][2]-W[0][2] };
+    double nx = e1[1]*e2[2]-e1[2]*e2[1], ny = e1[2]*e2[0]-e1[0]*e2[2], nz = e1[0]*e2[1]-e1[1]*e2[0];
+    double nl = sqrt(nx*nx + ny*ny + nz*nz);
+    if (nl < 1e-9) return npts;
+    nx /= nl; ny /= nl; nz /= nl;
+    double ux = 0.0, uy = 0.0, uz = 1.0;
+    const double dot = uz*nz;
+    ux -= dot*nx; uy -= dot*ny; uz -= dot*nz;
+    double ul = sqrt(ux*ux + uy*uy + uz*uz);
+    if (ul < 1e-9) return npts;                     /* opening lies flat */
+    ux /= ul; uy /= ul; uz /= ul;
+    const double hx = ny*uz - nz*uy, hy = nz*ux - nx*uz, hz = nx*uy - ny*ux;
+    /* Decompose about the opening's own origin, correct, recompose.
+     *
+     * Translation alone cannot fix an outline that is simply SMALLER than the
+     * arch it belongs to (stone_hill: no horizontal offset covers it), so a
+     * scale is needed too — anchored at HORIZONTAL CENTRE, VERTICAL BOTTOM.
+     * Not the centroid: the opening's base sits on the sill, and that junction
+     * has to stay a straight line on the authored edge, so a vertical scale
+     * must grow the arch upward and leave its foot exactly where it is.
+     * The out-of-plane component is carried through untouched, so a slightly
+     * non-planar authored outline is not flattened. */
+    double ox = W[0][0], oy = W[0][1], oz = W[0][2];
+    double hlo = 1e30, hhi = -1e30, vlo = 1e30;
+    for (int k = 0; k < npts; k++) {
+        const double r[3] = { W[k][0]-ox, W[k][1]-oy, W[k][2]-oz };
+        const double rh = r[0]*hx + r[1]*hy + r[2]*hz;
+        const double rv = r[0]*ux + r[1]*uy + r[2]*uz;
+        if (rh < hlo) hlo = rh; if (rh > hhi) hhi = rh;
+        if (rv < vlo) vlo = rv;
+    }
+    const double ah = 0.5 * (hlo + hhi);            /* horizontal centre */
+    const double av = vlo;                          /* bottom edge */
+    for (int k = 0; k < npts; k++) {
+        const double r[3] = { W[k][0]-ox, W[k][1]-oy, W[k][2]-oz };
+        const double rh = r[0]*hx + r[1]*hy + r[2]*hz;
+        const double rv = r[0]*ux + r[1]*uy + r[2]*uz;
+        const double rn = r[0]*nx + r[1]*ny + r[2]*nz;
+        const double gh = ah + (rh - ah) * sh + dh;
+        const double gv = av + (rv - av) * sv + dv;
+        W[k][0] = ox + gh*hx + gv*ux + rn*nx;
+        W[k][1] = oy + gh*hy + gv*uy + rn*ny;
+        W[k][2] = oz + gh*hz + gv*uz + rn*nz;
+    }
+    return npts;
+}
+
 static void dump_portal_table(CPUState* cpu) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT);
     fprintf(stderr, "[portal-dump f=%u] RenderPortals: g_PortalCount=%u yaw=%d pitch=%d\n",
@@ -230,14 +352,12 @@ static double project_world(CPUState* cpu, int wx, int wy, int wz,
  * far nearer than the through-hole background so it still shows in the opening.
  * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind. */
 static double portal_outline_maxvz(CPUState* cpu, uint32_t p) {
-    int npts = (int32_t)cpu->read_word(p + 0x04);
-    if (npts < 1 || npts > 16) npts = 5;
+    double W[16][3];
+    const int npts = portal_outline_world(cpu, p, W, 1);
+    if (!npts) return -1.0;
     double maxvz = -1.0;
     for (int k = 0; k < npts; k++) {
-        int wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
-        int wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
-        int wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
-        double sx, sy, vz = project_world(cpu, wx, wy, wz, &sx, &sy);
+        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], 0, 0);
         if (vz > maxvz) maxvz = vz;
     }
     return maxvz;
@@ -285,14 +405,13 @@ static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
 /* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
  * count iff >=3 points and ALL are in front (so the polygon + plane are valid). */
 static int portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
-    int npts = (int32_t)cpu->read_word(p + 0x04);
-    if (npts < 3 || npts > maxn) return 0;
+    double W[16][3];
+    const int npts = portal_outline_world(cpu, p, W, 1);
+    if (!npts || npts > maxn) return 0;
     for (int k = 0; k < npts; k++) {
-        int wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
-        int wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
-        int wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
-        double sx, sy, vz = project_world(cpu, wx, wy, wz, &sx, &sy);
-        if (vz <= 1.0) return 0;                         /* a point is behind the camera */
+        double sx, sy;
+        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], &sx, &sy);
+        if (vz <= 1.0) return 0;              /* a point behind the camera */
         poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
     return npts;
@@ -339,12 +458,11 @@ static int portal_plane_invz(CPUState* cpu, uint32_t p,
     if (idx[1] == idx[0]) idx[1] = 1;
     if (idx[2] == idx[1]) idx[2] = npts - 1;
     if (idx[2] == idx[0]) return 0;
+    double Wn[16][3];
+    if (!portal_outline_world(cpu, p, Wn, 1)) return 0;
     double V[3][3];
     for (int k = 0; k < 3; k++) {
-        int wx = (int32_t)cpu->read_word(p + 0x20 + idx[k]*12);
-        int wy = (int32_t)cpu->read_word(p + 0x24 + idx[k]*12);
-        int wz = (int32_t)cpu->read_word(p + 0x28 + idx[k]*12);
-        ngte_mac(M, -((double)wy - cy), -((double)wz - cz), ((double)wx - cx),
+        ngte_mac(M, -(Wn[idx[k]][1] - cy), -(Wn[idx[k]][2] - cz), (Wn[idx[k]][0] - cx),
                  &V[k][0], &V[k][1], &V[k][2]);
     }
     double e1x = V[1][0]-V[0][0], e1y = V[1][1]-V[0][1], e1z = V[1][2]-V[0][2];
@@ -571,20 +689,24 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
          * plane can use this at ranges where the projection has failed. */
         o->vn = 0;
         {
-            const int npts = (int32_t)cpu->read_word(p + 0x04);
-            if (npts >= 3 && npts <= 16) {
+            double Wv[16][3];
+            /* AUTHORED outline (nudge=0). Consumers of the view-space outline
+             * ask about the MESH, and the answer must not move when a portal
+             * is repositioned for art reasons. OPENPETE_PORTAL_RIM_NUDGED=1
+             * follows the corrected outline instead, for A/B. */
+            static int s_rimnud = -1;
+            if (s_rimnud < 0) { const char* e2 = getenv("OPENPETE_PORTAL_RIM_NUDGED");
+                                s_rimnud = (e2 && *e2 && *e2 != '0'); }
+            const int npts = portal_outline_world(cpu, p, Wv, s_rimnud);
+            if (npts) {
                 int M[3][3];
                 ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
                 const int ccx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
                 const int ccy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
                 const int ccz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
-                for (int k = 0; k < npts; k++) {
-                    const double wx = (int32_t)cpu->read_word(p + 0x20 + k*12);
-                    const double wy = (int32_t)cpu->read_word(p + 0x24 + k*12);
-                    const double wz = (int32_t)cpu->read_word(p + 0x28 + k*12);
-                    ngte_mac(M, -(wy - ccy), -(wz - ccz), (wx - ccx),
+                for (int k = 0; k < npts; k++)
+                    ngte_mac(M, -(Wv[k][1] - ccy), -(Wv[k][2] - ccz), (Wv[k][0] - ccx),
                              &o->vx[k], &o->vy[k], &o->vz[k]);
-                }
                 o->vn = npts;
             }
         }
