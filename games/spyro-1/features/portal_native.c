@@ -592,7 +592,17 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
     }
     return n;
 }
+/* --render-paths honours RP_PORTAL for the NATIVE feed too, not just the OT
+ * walk. Without this the flag filtered portal prims out of the PsyCross leg
+ * while the native leg kept drawing them, so "--render-paths terrain" still
+ * showed destination-sky previews — and the previews sit exactly on top of the
+ * arch geometry being inspected, which is the one thing an isolation flag
+ * exists to prevent. Bookkeeping (captures, plane provider, canon-drawn marks)
+ * still runs; only the scene emission is suppressed. */
+static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTAL); }
+
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
+    if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
 }
