@@ -404,6 +404,22 @@ static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
 
 /* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
  * count iff >=3 points and ALL are in front (so the polygon + plane are valid). */
+/* The AUTHORED outline projected — the opening as the artists placed it,
+ * before any per-portal correction. A corrected outline reaches past it into
+ * the arch, and that band cannot be depth-treated like the opening interior. */
+static int portal_outline_screen_raw(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
+    double W[16][3];
+    const int npts = portal_outline_world(cpu, p, W, 0);
+    if (!npts || npts > maxn) return 0;
+    for (int k = 0; k < npts; k++) {
+        double sx, sy;
+        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], &sx, &sy);
+        if (vz <= 1.0) return 0;
+        poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
+    }
+    return npts;
+}
+
 static int portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, 1);
@@ -527,6 +543,15 @@ static int portal_plane_invz(CPUState* cpu, uint32_t p,
  * (OPENPETE_DEPTH_AFFINE) without a rebuild: the affine curve resolves the inner-
  * frame z-fight this margin was inflated to overpower, so it wants a smaller pull.
  * OPENPETE_PORTAL_SKY_EPS=0 disables the forward bias entirely. */
+/* How far BEHIND the opening plane a correction band is marked, world units.
+ * Only needs to exceed the depth quantum plus any authoring slop in the stone
+ * it overlaps; it never applies to the opening interior. */
+static double portal_band_back_vz(void) {
+    static int init = 0; static double v = 24.0;
+    if (!init) { const char* e = getenv("OPENPETE_PORTAL_BAND_BACK");
+                 if (e && *e) v = atof(e); init = 1; }
+    return v;
+}
 static double portal_sky_eps_vz(void) {
     static double v = -1.0;
     if (v < 0.0) {
@@ -1192,13 +1217,35 @@ static void emit_aperture_ring(const ppt* poly, int pn, double margin,
 
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
                                  int use_plane, double pa, double pb, double pc) {
-    (void)cpu; (void)portal;
     s_aperture_ok = 0;
     if (!portal_aperture_enabled() || pn < 3 || pn > 16) return;
     if (!portal_scene_emit_enabled()) return;
+    /* Split the aperture at the AUTHORED opening.
+     *
+     * Interior (authored outline) is marked at plane depth, exactly as before
+     * any correction existed. The strip between the authored opening and a
+     * corrected one is marked BEHIND the plane instead: that band is part stone
+     * and part genuine gap, and the preview must lose to the stone while still
+     * beating the terrain visible through the shortfall. On the plane it is
+     * coplanar with the stone and the depth test has no winner — the z-fighting
+     * a corrected portal shows, and the reason no single sky bias resolves it.
+     *
+     * The interior must NOT be widened to the corrected outline: stencil
+     * marking is a union, so a widened interior marks the band at plane depth
+     * and the behind-depth strip underneath it becomes dead geometry. */
+    ppt raw[16];
+    int rn = portal ? portal_outline_screen_raw(cpu, portal, raw, 16) : 0;
+    int corrected = (rn == pn);
+    if (corrected) {
+        int moved = 0;
+        for (int i = 0; i < pn && !moved; i++)
+            if (fabsf(raw[i].x - poly[i].x) > 0.01f || fabsf(raw[i].y - poly[i].y) > 0.01f) moved = 1;
+        corrected = moved;
+    }
+    const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
     const double margin = portal_aperture_margin_px();
     float ex[16], ey[16];
-    outline_offset(poly, pn, (margin < 0.0) ? -margin : 0.0, ex, ey);
+    outline_offset(interior, pn, (margin < 0.0) ? -margin : 0.0, ex, ey);
     /* The outline is planar, so fit the plane here when the caller had none. */
     if (!use_plane) use_plane = fit_invz(poly, pn, &pa, &pb, &pc);
     float cz = 0.0f;
@@ -1211,7 +1258,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
         for (int k = 0; k < 3; k++) {
             const int j = idx3[k];
             const float pz = use_plane ? plane_depth(pa, pb, pc, ex[j], ey[j])
-                                       : portal_cyclorama_depth(poly[j].vz);
+                                       : portal_cyclorama_depth(interior[j].vz);
             t.v[k].sx = ex[j]; t.v[k].sy = ey[j];
             t.v[k].z = sky_min2(pz, cz, cmode);
             t.v[k].rgba = 0xFF000000u;                      /* colour-write is off */
@@ -1219,7 +1266,28 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
         openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     }
     if (margin > 0.0)
-        emit_aperture_ring(poly, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+        emit_aperture_ring(interior, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+    if (corrected) {
+        for (int i = 0; i < pn; i++) {
+            const int j = (i + 1) % pn;
+            const ppt* q[4] = { &raw[i], &raw[j], &poly[j], &poly[i] };
+            for (int half = 0; half < 2; half++) {
+                const int ks[3] = { 0, half ? 2 : 1, half ? 3 : 2 };
+                openpete_scene_tri t;
+                memset(&t, 0, sizeof t);
+                t.textured = 0; t.blend = 0;
+                for (int k = 0; k < 3; k++) {
+                    const ppt* v = q[ks[k]];
+                    float z = openpete_native_depth_from_viewz(
+                                  openpete_worldvz_full((float)(v->vz + portal_band_back_vz())));
+                    if (z > 1.0f) z = 1.0f;
+                    t.v[k].sx = v->x; t.v[k].sy = v->y;
+                    t.v[k].z = z; t.v[k].rgba = 0xFF000000u;
+                }
+                openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+            }
+        }
+    }
     s_aperture_ok = 1;
 }
 
