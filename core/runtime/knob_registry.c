@@ -605,6 +605,8 @@ static const knob_desc_t g_builtin[] = {
         "Stencil the portal sky to the opening polygon (0 = old sky-footprint mask)."),
     ENVROW_LATCHED("PORTAL_APERTURE_MARGIN", "Debug", "2",
         "Outward margin on the portal aperture, in PSX screen px (default 2; negative erodes)."),
+    ENVROW_LATCHED("PORTAL_RIM_CULL", "Debug", "1",
+        "Cull terrain lying in a portal's opening plane (the inner rim). 0 = keep."),
     ENVROW_LATCHED("PORTAL_NUDGE", "Debug", "",
         "Per-portal opening correction \"id:dh,dv[,sh[,sv]];...\" in world units."),
     ENVROW_LIVE("TERRAIN_CULL", "Debug", "1",

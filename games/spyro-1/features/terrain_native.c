@@ -3694,10 +3694,253 @@ static int skyplane_contains(const openpete_portal_skyplane* pp, float x, float 
     }
     return in;
 }
+/* ---- portal inner-rim detection -------------------------------------------
+ * Some arches carry a thin band of terrain lying IN the portal's opening plane.
+ * It is coincident with the destination-sky preview, so no depth ordering can
+ * separate them — the band must be excluded from the contest rather than
+ * out-depthed. (Not every arch has one, so finding zero faces is a valid
+ * result, not a failure: tree_tops and gnorc_cove have none from either side,
+ * and dream_weavers authors its rims visible from one side only.)
+ *
+ * Coplanarity ALONE is not the predicate: a portal is a hole in a wall, and
+ * that wall is coplanar with the opening by construction — beast_makers has
+ * wall faces 20 units off the plane and thousands of units across. What
+ * separates them is WHERE they sit, not how big they are: the rim intrudes
+ * INTO the opening, the wall surrounds it. So the second term is containment
+ * in the opening POLYGON — the cyclorama's own footprint — and not its
+ * bounding box, which necessarily swallows the surrounding wall.
+ *
+ * Every term is measured in the opening plane or perpendicular to it, never on
+ * screen. View space is a rigid transform of world space, so those are the
+ * world-space answers and do not move as the camera does. A view-Z offset does
+ * move: an earlier version classified the same face as rim head-on and as
+ * frame at an angle. Screen-space size is unusable for the same reason — the
+ * same faces measure 3.6 px and 29.8 px from two cameras. */
+static double portal_rim_eps(void) {     /* max |perp distance|, world units */
+    static double v = -1.0;
+    if (v < 0.0) { const char* e = getenv("OPENPETE_PORTAL_RIM_EPS");
+                   v = (e && *e) ? atof(e) : 384.0; if (v < 0.0) v = 0.0; }
+    return v;
+}
+/* Max angle between a rim face and the opening plane, in degrees; returned as
+ * the cosine so the test is a plain dot-product compare. 60 recovers a
+ * stone_hill band but false-positives beast_makers levelId=43, which has no
+ * rim at all; 45 helps nothing. */
+static double portal_rim_cos(void) {
+    static double v = -1.0;
+    if (v < 0.0) {
+        const char* e = getenv("OPENPETE_PORTAL_RIM_ANGLE");
+        double deg = (e && *e) ? atof(e) : 30.0;
+        if (deg < 0.0) deg = 0.0;
+        if (deg > 90.0) deg = 90.0;
+        v = cos(deg * 3.14159265358979323846 / 180.0);
+    }
+    return v;
+}
+/* How far OUTSIDE the opening polygon a face may still reach and count as rim,
+ * in world units. Portals whose polygon is authored inset from the visible
+ * stone carry their rim outside it entirely — at a pointed top the polygon's
+ * straight edges cut inside the real peak, so those faces have no vertex
+ * within the outline and no tolerance on distance or angle can recover them.
+ * The rim is a band ADJACENT to the opening boundary; which side it falls on
+ * is an authoring detail.
+ *
+ * DEFAULT 128, measured IN THE PLANE. A screen-space form of this was tried
+ * first and falsified — it put ~7k px of false positive on beast_makers
+ * levelId=43 at every value from 32 up, because "just outside the opening"
+ * measured on screen depends on the camera. Re-measured in the plane the same
+ * term is clean: bm_43 stays at zero for 64/128/256 while bm_44 goes 1432 ->
+ * 6706. 256 is too far (peace_keepers_23 inflates 5106 -> 9201).
+ *
+ * NOTE this also absorbs up to 128 units of authoring drift, so it masks
+ * openings that are simply mis-placed. Lower it once per-portal corrections
+ * are baked in, and re-verify every arch. */
+static double portal_rim_reach(void) {
+    static double v = -1.0;
+    if (v < 0.0) { const char* e = getenv("OPENPETE_PORTAL_RIM_REACH");
+                   v = (e && *e) ? atof(e) : 128.0; if (v < 0.0) v = 0.0; }
+    return v;
+}
+/* Classify a tri against the active portals. Returns -1 when the face is not a
+ * candidate at all (not over an opening, or nowhere near its plane); otherwise
+ * a BITMASK of the terms it fails, so 0 means accepted as inner rim:
+ *   bit0 RIMFAIL_CONTAIN  does not intrude into the opening polygon
+ *   bit1 RIMFAIL_DIST     a vertex further than eps from the opening plane
+ *   bit2 RIMFAIL_ANGLE    face not within the angle tolerance of parallel
+ * Reporting the exact combination (rather than a yes/no) is what lets a miss be
+ * pointed at directly instead of inferred from a pixel count. */
+#define RIMFAIL_CONTAIN 1
+#define RIMFAIL_DIST    2
+#define RIMFAIL_ANGLE   4
+#define RIM_CAND_WINDOW 400.0   /* world units either side of the plane */
+#define RIM_CAND_MARGIN 600.0   /* world units outside the opening, in-plane */
+
+/* Containment measured IN THE OPENING PLANE rather than on screen.
+ *
+ * Screen containment tests the face's projection against the polygon's
+ * projection, and those two carry different perspective shifts whenever the
+ * face is offset from the plane — so a rim band 200 units behind the opening
+ * lands inside the projected outline from one angle and outside it from
+ * another. Observed directly: stone_hill's band alternated between
+ * contain-fail and not-a-candidate as the camera moved, with distance and
+ * angle both passing throughout.
+ *
+ * Instead: build a 2D basis on the plane from the view-space outline, drop
+ * both the polygon and the face onto it along the normal, and test there. The
+ * verdict then depends only on the geometry. */
+typedef struct { double u, v; } rim_uv;
+static int rim_plane_basis(const openpete_portal_skyplane* pp,
+                           const double n[3], double O[3], double U[3], double W[3],
+                           rim_uv* poly, int maxn) {
+    if (pp->vn < 3 || pp->vn > maxn) return 0;
+    O[0] = pp->vx[0]; O[1] = pp->vy[0]; O[2] = pp->vz[0];
+    double e[3] = { pp->vx[1]-O[0], pp->vy[1]-O[1], pp->vz[1]-O[2] };
+    const double d = e[0]*n[0] + e[1]*n[1] + e[2]*n[2];
+    e[0] -= d*n[0]; e[1] -= d*n[1]; e[2] -= d*n[2];   /* into the plane */
+    const double el = sqrt(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
+    if (el < 1e-9) return 0;
+    U[0] = e[0]/el; U[1] = e[1]/el; U[2] = e[2]/el;
+    W[0] = n[1]*U[2] - n[2]*U[1];
+    W[1] = n[2]*U[0] - n[0]*U[2];
+    W[2] = n[0]*U[1] - n[1]*U[0];
+    for (int i = 0; i < pp->vn; i++) {
+        const double r[3] = { pp->vx[i]-O[0], pp->vy[i]-O[1], pp->vz[i]-O[2] };
+        poly[i].u = r[0]*U[0] + r[1]*U[1] + r[2]*U[2];
+        poly[i].v = r[0]*W[0] + r[1]*W[1] + r[2]*W[2];
+    }
+    return 1;
+}
+static double rim_uv_edge_dist(const rim_uv* poly, int pn, double u, double v) {
+    double best = 1e30;
+    for (int i = 0, j = pn - 1; i < pn; j = i++) {
+        const double ax = poly[j].u, ay = poly[j].v;
+        const double ex = poly[i].u - ax, ey = poly[i].v - ay;
+        const double L2 = ex*ex + ey*ey;
+        double t = (L2 > 1e-9) ? ((u-ax)*ex + (v-ay)*ey) / L2 : 0.0;
+        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+        const double dx = u - (ax + t*ex), dy = v - (ay + t*ey);
+        const double d = sqrt(dx*dx + dy*dy);
+        if (d < best) best = d;
+    }
+    return best;
+}
+static int rim_uv_contains(const rim_uv* poly, int pn, double u, double v) {
+    int in = 0;
+    for (int i = 0, j = pn - 1; i < pn; j = i++) {
+        if ((poly[i].v > v) != (poly[j].v > v) &&
+            u < (poly[j].u - poly[i].u) * (v - poly[i].v) / (poly[j].v - poly[i].v) + poly[i].u)
+            in = !in;
+    }
+    return in;
+}
+static int portal_rim_classify(CPUState* cpu, const ttri* t) {
+    if (!s_pplane_n) return -1;
+    const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    if (H < 1.0) return -1;
+    const double eps = portal_rim_eps(), reach = portal_rim_reach();
+    int best = -1;
+    for (int pi = 0; pi < s_pplane_n; pi++) {
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        if (pp->vn < 3) continue;
+        /* Unit view-space normal of the opening plane, recovered from the
+         * inv-vz fit: the fit is inv = (n.x/(H k))x + (n.y/(H k))y +
+         * (n.z - n.x ofx/H - n.y ofy/H)/k, so n is proportional to
+         * (a H, b H, c + a ofx + b ofy). */
+        double nx = pp->a * H, ny = pp->b * H;
+        double nz = pp->c + pp->a * ofx + pp->b * ofy;
+        double nn = sqrt(nx*nx + ny*ny + nz*nz);
+        if (nn < 1e-12) continue;
+        nx /= nn; ny /= nn; nz /= nn;
+        /* perpendicular distances + view-space verts. Along the pixel ray
+         * v = (x-ofx, y-ofy, H), a view-Z offset dz from the plane is a
+         * perpendicular offset dz * (n.v)/H. */
+        double V[3][3], dmin = 1e30, dmax = 0.0; int okz = 1;
+        for (int k = 0; k < 3; k++) {
+            const double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
+            if (inv <= 1e-9) { okz = 0; break; }
+            const double vz = t->vz[k] * 16.0;
+            V[k][0] = (t->sx[k]-ofx) * vz / H; V[k][1] = (t->sy[k]-ofy) * vz / H; V[k][2] = vz;
+            const double dz = vz - 1.0 / inv;
+            const double d = fabs(dz * (nx*(t->sx[k]-ofx) + ny*(t->sy[k]-ofy) + nz*H) / H);
+            if (d < dmin) dmin = d;
+            if (d > dmax) dmax = d;
+        }
+        if (!okz) continue;
+        /* Candidate gate, entirely IN THE PLANE.
+         *
+         * Every screen-space gate on this path has turned out to be a bug:
+         * measuring depth along view-Z, testing containment against the
+         * projected polygon, and finally this — a face is near the opening or
+         * it is not, and walking around the arch must not change the answer.
+         * A face offset from the plane projects with a different perspective
+         * shift than the polygon does, so a screen bbox overlap admitted it
+         * from some angles and dropped it from others (stone_hill rendered
+         * untinted at pos=(97051,49348,8798) yaw=581 pitch=162 and tinted a
+         * few degrees away).
+         *
+         * So: drop the face onto the plane, and require its in-plane bbox to
+         * overlap the opening's, grown by RIM_CAND_MARGIN world units. The
+         * plane is infinite, so some spatial bound is needed — this one is a
+         * property of the geometry rather than of the viewpoint. */
+        double O[3], U[3], W[3]; rim_uv pv[16];
+        const double nn3[3] = { nx, ny, nz };
+        if (!rim_plane_basis(pp, nn3, O, U, W, pv, 16)) continue;
+        if (dmin > RIM_CAND_WINDOW) continue;
+        double pulo = pv[0].u, puhi = pv[0].u, pvlo = pv[0].v, pvhi = pv[0].v;
+        for (int i = 1; i < pp->vn; i++) {
+            if (pv[i].u < pulo) pulo = pv[i].u; if (pv[i].u > puhi) puhi = pv[i].u;
+            if (pv[i].v < pvlo) pvlo = pv[i].v; if (pv[i].v > pvhi) pvhi = pv[i].v;
+        }
+        rim_uv fuv[3];
+        double fulo = 1e30, fuhi = -1e30, fvlo = 1e30, fvhi = -1e30;
+        for (int k = 0; k < 3; k++) {
+            const double r[3] = { V[k][0]-O[0], V[k][1]-O[1], V[k][2]-O[2] };
+            fuv[k].u = r[0]*U[0] + r[1]*U[1] + r[2]*U[2];
+            fuv[k].v = r[0]*W[0] + r[1]*W[1] + r[2]*W[2];
+            if (fuv[k].u < fulo) fulo = fuv[k].u; if (fuv[k].u > fuhi) fuhi = fuv[k].u;
+            if (fuv[k].v < fvlo) fvlo = fuv[k].v; if (fuv[k].v > fvhi) fvhi = fuv[k].v;
+        }
+        if (fuhi < pulo - RIM_CAND_MARGIN || fulo > puhi + RIM_CAND_MARGIN ||
+            fvhi < pvlo - RIM_CAND_MARGIN || fvlo > pvhi + RIM_CAND_MARGIN) continue;
+        int flags = 0;
+        /* contain: any vertex or the centroid, dropped onto the opening plane
+         * along its normal and tested against the polygon there. A face can
+         * straddle a non-convex opening with its centre in and every corner
+         * out, hence both. */
+        int touches = 0;
+        double cu = 0.0, cv = 0.0;
+        for (int k = 0; k < 3; k++) {
+            cu += fuv[k].u; cv += fuv[k].v;
+            if (!touches && rim_uv_contains(pv, pp->vn, fuv[k].u, fuv[k].v)) touches = 1;
+        }
+        if (!touches && rim_uv_contains(pv, pp->vn, cu/3.0, cv/3.0)) touches = 1;
+        if (!touches && reach > 0.0)
+            for (int k = 0; k < 3 && !touches; k++)
+                if (rim_uv_edge_dist(pv, pp->vn, fuv[k].u, fuv[k].v) <= reach) touches = 1;
+        if (!touches) flags |= RIMFAIL_CONTAIN;
+        if (dmax > eps) flags |= RIMFAIL_DIST;
+        const double u[3] = { V[1][0]-V[0][0], V[1][1]-V[0][1], V[1][2]-V[0][2] };
+        const double w[3] = { V[2][0]-V[0][0], V[2][1]-V[0][1], V[2][2]-V[0][2] };
+        double fx = u[1]*w[2]-u[2]*w[1], fy = u[2]*w[0]-u[0]*w[2], fz = u[0]*w[1]-u[1]*w[0];
+        const double fl = sqrt(fx*fx + fy*fy + fz*fz);
+        if (fl < 1e-9) flags |= RIMFAIL_ANGLE;
+        else if (fabs((fx*nx + fy*ny + fz*nz) / fl) < portal_rim_cos()) flags |= RIMFAIL_ANGLE;
+        if (best < 0 || flags < best) best = flags;
+        if (best == 0) return 0;
+    }
+    return best;
+}
+
+static int portal_rim_face(CPUState* cpu, const ttri* t) {
+    return portal_rim_classify(cpu, t) == 0;
+}
+
 static int portal_conform_vz(const ttri* t, float ovz[3]) {
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
-        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
+        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;   /* no projected polygon */
         /* Confinement: the face's screen CENTROID must be inside the outline
          * polygon — only there does the sky raster (fan / dome) and win;
          * sinking outside it punches through to the world behind (mc f3040). */
@@ -3947,6 +4190,18 @@ static void terrain_feed_native(CPUState* cpu) {
             : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
                                          t->sec < 0 ? 0 : t->sec, untex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
+        /* Portal inner-rim CULL. The rim lies in the opening plane, coincident
+         * with the destination-sky preview, so no depth ordering can separate
+         * them — on the original it never shows, and the only reason it did not
+         * show here was PORTAL_SKY_EPS dragging the whole sky forward to
+         * overpower it, which is what broke the silhouette everywhere else.
+         * Dropping the rim removes the contest instead of trying to win it.
+         * OPENPETE_PORTAL_RIM_CULL=0 restores the old behaviour for A/B. */
+        {   static int s_cull = -1;
+            if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
+                              s_cull = (e && *e) ? (*e != '0') : 1; }
+            if (s_cull && portal_rim_face(cpu, t)) continue;
+        }
         openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);
         openpete_native_scene_set_tag(0);
