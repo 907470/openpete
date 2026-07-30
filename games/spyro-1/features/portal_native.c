@@ -128,10 +128,67 @@ static int    portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int ma
  * runtime for tuning; +dh is right along the opening, +dv is up. Three fields
  * translate only, four scale uniformly, five scale per-axis. */
 typedef struct { int levelId; double dh, dv, sh, sv; } portal_nudge_t;
+/* Measured, not eyeballed. Each opening was compared against its own arch in
+ * the opening plane: the inner rim is the band that gets culled, so the OUTER
+ * boundary of the culled rim is exactly where surviving stone begins — the
+ * inner edge the preview has to meet. The correction is the transform taking
+ * the authored outline's bbox onto that boundary's bbox, and each entry was
+ * confirmed by re-measuring with the correction applied (residual <2 world
+ * units on openings 1900-3200 units across, i.e. under 0.1%).
+ *
+ * Only five arches need one. Every other portal in the game already agrees
+ * with its stone to within ~10 units and is deliberately left untouched.
+ *
+ * NOTE the dh sign is per-portal, not global: the horizontal axis is
+ * normal x vertical, and the authored winding decides which way the normal
+ * points, so two arches that look identical can want opposite dh. Never carry
+ * a sign over from a neighbouring portal — measure it.
+ *
+ * The dragon-head arches (14, 62/63/64) are absent ON PURPOSE. Their geometry
+ * animates, so a measurement taken at one frame describes a mouth caught
+ * mid-open, not the opening. */
 static const portal_nudge_t k_portal_nudge[] = {
-    /* filled in per arch once each correction is verified */
-    { 0, 0.0, 0.0, 1.0, 1.0 },
+    /* Alignment: the opening does not sit on its arch. */
+    { 11,  48.8, -3.8, 1.0425, 1.0000 },  /* artisans -> stone_hill: opening sits right of its arch */
+    { 41,  11.2,  4.4, 1.0803, 1.0585 },  /* beast_makers -> terrace_village: outline ~8% undersized */
+    { 42, -16.5, -5.0, 1.0820, 1.0629 },  /* beast_makers -> misty_bog */
+    { 44,  -3.0, -3.2, 1.0770, 1.0641 },  /* beast_makers -> metalhead */
+    { 45,  -2.0, -4.4, 1.0824, 1.0585 },  /* beast_makers -> wild_flight */
+    /* Sill: the bottom edge grazes the floor. See the note below. */
+    { 13,   0.0, -3.0, 1.0000, 1.0016 },  /* artisans -> town_square */
+    { 21,   0.0, -5.0, 1.0000, 1.0046 },  /* peace_keepers -> dry_canyon */
+    { 25,   0.0, -4.0, 1.0000, 1.0038 },  /* peace_keepers -> night_flight */
+    { 33,   0.0, -4.0, 1.0000, 1.0043 },  /* magic_crafters -> wizard_peak */
+    { 52,   0.0, -4.0, 1.0000, 1.0021 },  /* dream_weavers -> lofty_castle */
 };
+/* The sill entries fix a different defect from the alignment ones, and are
+ * paired dv/sv on purpose: dv drops the opening's BOTTOM edge, and sv is
+ * exactly the compensation that leaves the TOP where it was, so nothing opens
+ * up against the arch above.
+ *
+ * Their bottom edge sat within a couple of units of the floor that meets the
+ * sill, and the floor is triangulated, so along the edge the preview was
+ * alternately in front of and behind it — the visible junction flipped between
+ * the polygon's straight edge and the floor's contour, breaking into a
+ * staircase. dry_canyon crosses outright: its bottom edge runs from v=0.0 to
+ * v=-7.4 while the floor's top runs from -1.7 to -5.4. Dropping the edge a few
+ * units puts it under the floor for the whole span, so the floor occludes it
+ * cleanly and the junction stops flickering between two answers.
+ *
+ * Minimums measured from renders (town_square clears at -2, dry_canyon at -4,
+ * the rest at -4); the values here carry a unit of margin where known. This
+ * defect could NOT be settled in the opening plane the way the alignment ones
+ * were — the floor stands in FRONT of the plane, so which of the two wins is a
+ * projective question, and an in-plane test calls every one of these fine.
+ *
+ * Finding them needs care. A diff between the corrected and uncorrected render
+ * looks identical whether a sliver vanished or the destination sky merely slid
+ * a pixel, and a sharp horizon in the sky art produces exactly the same
+ * "many changed pixels, few rows" signature a sliver does. magic_crafters ->
+ * alpine_ridge(31) and gnorc_gnexus -> gnorc_cove(61) were flagged that way
+ * and are NOT defects — the flag was their own horizon moving. Confirm the
+ * artifact by eye at the rows the diff fires on before adding a row here.
+ * (34, 51, 55 also flagged and were not confirmed either way; left alone.) */
 static int portal_nudge_for(int levelId, double* dh, double* dv,
                             double* sh, double* sv) {
     *dh = 0.0; *dv = 0.0; *sh = 1.0; *sv = 1.0;
