@@ -553,12 +553,19 @@ static double portal_band_back_vz(void) {
     return v;
 }
 static double portal_sky_eps_vz(void) {
-    static double v = -1.0;
-    if (v < 0.0) {
+    static int init = 0;
+    static double v = PORTAL_SKY_EPS_VZ_DEFAULT;
+    if (!init) {
         const char* e = getenv("OPENPETE_PORTAL_SKY_EPS");
-        v = (e && *e) ? atof(e) : PORTAL_SKY_EPS_VZ_DEFAULT;
-        if (v < 0.0) v = 0.0;
+        if (e && *e) v = atof(e);
+        init = 1;
     }
+    /* NEGATIVE is meaningful now that the inner rim is culled: the bias used to
+     * pull the sky FORWARD to overpower the rim (and that pull is what let it
+     * beat receding jamb stone — the original poke). With the rim gone there is
+     * nothing to overpower, and sitting exactly ON the opening plane leaves the
+     * preview coplanar with whatever else the arch has there. A small push BACK
+     * makes every piece of the frame win cleanly. */
     return v;
 }
 static float portal_cyclorama_depth(double vz) {
