@@ -807,10 +807,12 @@ static int s_portal_group = 0;
 static int s_aperture_ok = 0;
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
                                  int use_plane, double pa, double pb, double pc);
-static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* ey);
-static double portal_aperture_margin_px(void);
+static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey);
+static double portal_aperture_margin_world(void);
 static double portal_margin_for(CPUState* cpu, uint32_t p);
-static void emit_aperture_ring(const ppt* poly, int pn, double margin,
+static void margin_px_per_vertex(CPUState* cpu, const ppt* poly, int pn,
+                                 double world, double* out);
+static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
  * true while a portal fed sky within the last couple of presents. */
@@ -1037,8 +1039,11 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
          * match the eroded mask. The dilation band's colours come from the
          * behind-depth ring below, matching the mask ring's extent. */
         const double fmargin = portal_margin_for(cpu, p);
+        double fpx[16], fzero[16];
+        margin_px_per_vertex(cpu, poly, pn, fmargin, fpx);
+        for (int i = 0; i < pn; i++) fzero[i] = 0.0;
         float fx[16], fy[16];
-        outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? -fmargin : 0.0, fx, fy);
+        outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? fpx : fzero, fx, fy);
         double qa = 0.0, qb = 0.0, qc = 0.0;
         const int fan_plane = s_aperture_ok && fit_invz(poly, pn, &qa, &qb, &qc);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
@@ -1056,7 +1061,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
             portal_add_sky_tri(&t);
         }
         if (s_aperture_ok && fmargin > 0.0)
-            emit_aperture_ring(poly, pn, fmargin, rgba, OPENPETE_SCENE_PORTAL_CYCLORAMA);
+            emit_aperture_ring(poly, pn, fpx, rgba, OPENPETE_SCENE_PORTAL_CYCLORAMA);
         return 1;
     }
 
@@ -1222,32 +1227,43 @@ static int portal_aperture_enabled(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_APERTURE"); v = (e && e[0] == '0') ? 0 : 1; }
     return v;
 }
-/* Outward margin on the aperture, in PSX screen pixels (512x256 space);
- * negative erodes inward. DEFAULT 2.
+/* Outward margin on the aperture, in WORLD UNITS; negative erodes inward.
  *
- * A STRICT clip to the opening polygon (0) is too tight: the authored outline
- * sits a pixel or two inside the arch's visible opening, so a band of
- * through-hole terrain shows between the preview and the stone (beast_makers,
- * freecam pos=(120326,113108,18243) yaw=-509 pitch=79 — a dark sliver down the
- * jamb that neither the .s nor the pre-aperture path has).
+ * NOT screen pixels. A constant screen margin is a fixed fraction of the
+ * SCREEN, not of the arch, so as an arch shrinks with distance the margin
+ * becomes an ever-larger share of it — far enough away the preview grows
+ * visibly bigger than the stone it is supposed to sit inside (artisans from
+ * pos=(65633,8739,58123): the stone_hill arch is a few px across and the
+ * preview is a blob over it). The same defect in a new place: this file's
+ * whole history is geometric quantities that were expressed on screen and had
+ * to be moved into world space.
  *
- * The margin is BOUNDED, which is the whole point: the mask is still
- * depth-tested, so the sky reaches at most this far past the opening and only
- * where nothing occludes it. The old behaviour was the same race run over the
- * ENTIRE clip rect, which is how the far jamb got painted at a grazing angle.
- * Measured against PsyCross at 4:3 over the affected pixels: beast_makers gap
- * 69.8 (strict) -> 35.4 (1) -> 9.5 (2) = exact parity with the .s, while the
- * dream_weavers poke stays fixed at 28.1 vs 206.3 for every value — a 2px band
- * cannot reach spill that ran to the rect edge. */
-static double portal_aperture_margin_px(void) {
+ * Converted per-vertex at emit time — a world displacement perpendicular to
+ * the view maps to d*H/vz screen units — so the margin tracks the arch at
+ * every distance and the aperture keeps a constant relationship to the stone.
+ *
+ * The margin exists because the authored outline can sit slightly inside the
+ * arch's visible opening, leaving a seam of through-hole world down the jamb.
+ * It stays BOUNDED and the mask stays depth-TESTED, so the sky reaches at most
+ * this far past the opening and only where nothing occludes it. */
+static double portal_aperture_margin_world(void) {
     static int init = 0;
-    static double v = 5.0;
+    static double v = 40.0;
     if (!init) {
         const char* e = getenv("OPENPETE_PORTAL_APERTURE_MARGIN");
         if (e && *e) v = atof(e);
         init = 1;
     }
     return v;
+}
+/* Per-vertex screen offset for a world-unit margin at this outline's depths. */
+static void margin_px_per_vertex(CPUState* cpu, const ppt* poly, int pn,
+                                 double world, double* out) {
+    const double H = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    for (int i = 0; i < pn; i++) {
+        const double vz = (poly[i].vz > 1.0) ? poly[i].vz : 1.0;
+        out[i] = world * H / vz;
+    }
 }
 /* Arches whose GEOMETRY ANIMATES — the dragon heads, destination levelId 14
  * (artisans -> toasty) and 62/63/64 (gnorc_gnexus -> twilight_harbor /
@@ -1256,7 +1272,10 @@ static double portal_aperture_margin_px(void) {
  * with the mouth the way it does on a static arch. A margin wide enough to
  * close authoring seams elsewhere spills preview straight past the mouth on
  * these (measured: ~3 px of overshoot all round, and sky through the apex of
- * levelId 14), so they stay on the conservative pre-widening value.
+ * levelId 14), so they get NO dilation at all: the aperture is exactly the
+ * authored polygon. When the polygon is the only description of the opening
+ * that exists, drawing it verbatim is both the most faithful choice and the
+ * only one that cannot spill past a mouth it does not match.
  *
  * NOT a boss-portal rule: doctor_shemp(24), blowhard(34), metalhead(44) and
  * jacques(54) are ordinary static arches and take the normal margin. */
@@ -1265,11 +1284,11 @@ static int portal_arch_animates(CPUState* cpu, uint32_t p) {
     const int lid = (int32_t)cpu->read_word(p + 0x1C);
     return lid == 14 || lid == 62 || lid == 63 || lid == 64;
 }
-#define PORTAL_ANIM_ARCH_MARGIN_PX 2.0
+#define PORTAL_ANIM_ARCH_MARGIN_WORLD 0.0
 static double portal_margin_for(CPUState* cpu, uint32_t p) {
-    const double m = portal_aperture_margin_px();
-    if (m > PORTAL_ANIM_ARCH_MARGIN_PX && portal_arch_animates(cpu, p))
-        return PORTAL_ANIM_ARCH_MARGIN_PX;
+    const double m = portal_aperture_margin_world();
+    if (m > PORTAL_ANIM_ARCH_MARGIN_WORLD && portal_arch_animates(cpu, p))
+        return PORTAL_ANIM_ARCH_MARGIN_WORLD;
     return m;
 }
 
@@ -1279,7 +1298,7 @@ static double portal_margin_for(CPUState* cpu, uint32_t p) {
  * ONLY thing that covers the opening below the dome's horizon, so if it stops
  * at the un-offset outline while the aperture reaches past it, a band of bare
  * through-hole terrain shows between the preview and the stone. */
-static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* ey) {
+static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey) {
     double cx = 0.0, cy = 0.0;
     for (int i = 0; i < pn; i++) { cx += poly[i].x; cy += poly[i].y; }
     cx /= pn; cy /= pn;
@@ -1306,7 +1325,7 @@ static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* 
         }
         const double l = sqrt(nx*nx + ny*ny);
         if (l > 1e-6) { nx /= l; ny /= l; } else { nx = 0.0; ny = 0.0; }
-        double ox = nx * d, oy = ny * d;
+        double ox = nx * d[i], oy = ny * d[i];
         /* Never push the outline DOWN when dilating. The opening's base sits on
          * the sill, and the sky/ground junction there must stay a straight line
          * on the authored edge: pushed below the sill the fill lands inside
@@ -1314,7 +1333,7 @@ static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* 
          * edges, and the junction breaks into a staircase. The sides and top
          * still spill to meet the stone, which is all the margin exists for.
          * (Erosion keeps the plain offset — it pulls in, never past the sill.) */
-        if (d < 0.0 && oy > 0.0) oy = 0.0;
+        if (d[i] < 0.0 && oy > 0.0) oy = 0.0;
         ex[i] = (float)(cv->x + ox);
         ey[i] = (float)(cv->y + oy);
     }
@@ -1346,11 +1365,13 @@ static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* 
  * bounded ring keeps the contest local to the authoring-gap band where the
  * mirror is never consulted. Do not generalize again until the per-walk
  * bucket mirror is calibrated against a world-OT dump. */
-static void emit_aperture_ring(const ppt* poly, int pn, double margin,
+static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel) {
     if (!portal_scene_emit_enabled()) return;
     float rx[16], ry[16];
-    outline_offset(poly, pn, -margin, rx, ry);
+    double outward[16];
+    for (int i = 0; i < pn; i++) outward[i] = -dpx[i];
+    outline_offset(poly, pn, outward, rx, ry);
     for (int i = 0; i < pn; i++) {
         const int j = (i + 1) % pn;
         /* PER-VERTEX depth, following the opening plane.
@@ -1421,8 +1442,11 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
     }
     const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
     const double margin = portal_margin_for(cpu, portal);
+    double mpx[16], mzero[16];
+    margin_px_per_vertex(cpu, interior, pn, margin, mpx);
+    for (int i = 0; i < pn; i++) mzero[i] = 0.0;
     float ex[16], ey[16];
-    outline_offset(interior, pn, (margin < 0.0) ? -margin : 0.0, ex, ey);
+    outline_offset(interior, pn, (margin < 0.0) ? mpx : mzero, ex, ey);
     /* The outline is planar, so fit the plane here when the caller had none. */
     if (!use_plane) use_plane = fit_invz(poly, pn, &pa, &pb, &pc);
     float cz = 0.0f;
@@ -1448,7 +1472,10 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
      * the margin silently stopped working on exactly the arches whose openings
      * had to be moved, which is where it was needed most. */
     if (margin > 0.0)
-        emit_aperture_ring(poly, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+    {   double rpx[16];
+        margin_px_per_vertex(cpu, poly, pn, margin, rpx);
+        emit_aperture_ring(poly, pn, rpx, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+    }
     if (corrected) {
         for (int i = 0; i < pn; i++) {
             const int j = (i + 1) % pn;
@@ -1524,7 +1551,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
      * emitting it would be dead geometry. Under DILATION the aperture reaches
      * outside the opening, and these are the only colours that can fill that
      * band — skipping them makes the dilation knob inert. */
-    if (s_aperture_ok && portal_aperture_margin_px() <= 0.0) return;
+    if (s_aperture_ok && portal_aperture_margin_world() <= 0.0) return;
     /* outside pieces: for edge i keep RIGHT of edge i and LEFT of edges 0..i-1
      * (a disjoint decomposition of the outline's complement) */
     for (int i = 0; i < s_skyout_n; i++) {
