@@ -950,6 +950,8 @@ static void portal_add_sky_tri(const openpete_scene_tri* t) {
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
 }
 
+static int band_dbg(void);
+
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
                             uint32_t fog_rgb, double fog_t) {
@@ -1067,12 +1069,13 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                 t.v[k].sx = fx[j]; t.v[k].sy = fy[j];
                 t.v[k].z = sky_min2(fan_plane ? plane_depth(qa, qb, qc, fx[j], fy[j])
                                               : portal_cyclorama_depth(poly[j].vz), cz, cmode);
-                t.v[k].rgba = rgba;
+                t.v[k].rgba = band_dbg() ? 0xFFFF0000u : rgba;   /* BLUE = flat interior fan */
             }
             portal_add_sky_tri(&t);
         }
         if (s_aperture_ok && fmargin > 0.0)
-            emit_aperture_ring(poly, pn, fpx, rgba, OPENPETE_SCENE_PORTAL_CYCLORAMA);
+            emit_aperture_ring(poly, pn, fpx, band_dbg() ? 0xFF0000FFu : rgba,  /* RED = flat ring */
+                               OPENPETE_SCENE_PORTAL_CYCLORAMA);
         return 1;
     }
 
@@ -1534,6 +1537,14 @@ static int clip_dir(const pgv* in, int n, pgv* out,
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
                           int use_plane, double pa, double pb, double pc);
 
+/* TEMP band census: 0=off, else tint each band producer a flat colour. */
+static int s_band_dbg = -1;
+static uint32_t s_band_tint = 0;   /* nonzero overrides fan_emit_poly's gouraud */
+static int band_dbg(void) {
+    if (s_band_dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_BAND_DBG"); s_band_dbg = (e && *e && *e != '0'); }
+    return s_band_dbg;
+}
+
 /* Fan-emit `poly` split by the outline: the inside piece at PLANE depth, the
  * outside pieces on that plane pushed BEHIND it. Falls back to plane-depth-only
  * when no outline is registered. */
@@ -1579,6 +1590,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
             cur = (cur == w) ? u : w;
         }
         if (k >= 3) {
+            if (band_dbg()) s_band_tint = 0xFF00FF00u;   /* GREEN = dome spill */
             /* PER-VERTEX behind-plane depth, not one constant for the whole spill.
              *
              * That constant was the FARTHEST outline point plus the bias. On a
@@ -1595,6 +1607,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
              * The spill stays BEHIND the plane, so the world still wins every
              * honest contest; only the constant was wrong, not the policy. */
             fan_emit_poly(cur, k, 0.0f, 2, pa, pb, pc);
+            s_band_tint = 0;
         }
     }
 }
@@ -1623,7 +1636,8 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
                                          : const_depth;
             t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
             t.v[k].z = sky_min2(pz2, cz2, cm2);
-            t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
+            t.v[k].rgba = s_band_tint ? s_band_tint
+                                      : (r | (g << 8) | (bl << 16) | 0xFF000000u);   /* low byte=R, matches cyc */
         }
         portal_add_sky_tri(&t);
     }
