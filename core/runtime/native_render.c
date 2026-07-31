@@ -1029,7 +1029,7 @@ static struct {
     rhi_pipeline *gouraud_sub_ztest_pipe; /* fallback subtractive pipe (plain depth test + W2.5 hw bias) when the depth pre-pass is unavailable */
     rhi_pipeline *gouraud_sub_fade_pipe;  /* subtractive, depth-test OFF, quad.frag — the full-screen mode-2 fade (NOT the decal pipe, which would sample/discard) */
     rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
-    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test OFF + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
+    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test ON / write OFF ("noz" = no z WRITE) + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
     rhi_pipeline *portal_mask_pipe;   /* W2.6: invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
     rhi_pipeline *gouraud_mark_pipe;  /* W2.6-c: WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
     rhi_pipeline *scene_tex_mark_pipe;/* W2.6-c: WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
@@ -4595,8 +4595,10 @@ static bool draw_native_scene(bool full_extent)
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
      * rasterize the mask invisibly, depth-TESTED against the world (the arch
-     * stone / a nearer wall punches it out) → draw the colours depth-FREE,
-     * stencil-gated. Groups draw far→near by plane depth so a nearer portal
+     * stone / a nearer wall punches it out) → draw the colours stencil-gated
+     * and ALSO depth-TESTED (write off — "noz" is no z WRITE, not no z test),
+     * so a colour whose depth disagrees with the mask's silently drops out.
+     * Groups draw far→near by plane depth so a nearer portal
      * paints over a farther one seen through it; within a group, submission
      * order = the feeder's painter order (flat base → dome). */
     struct portal_run { int group; int first, count; float depth; };
