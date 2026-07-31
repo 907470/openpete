@@ -809,6 +809,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
                                  int use_plane, double pa, double pb, double pc);
 static void outline_offset(const ppt* poly, int pn, double d, float* ex, float* ey);
 static double portal_aperture_margin_px(void);
+static double portal_margin_for(CPUState* cpu, uint32_t p);
 static void emit_aperture_ring(const ppt* poly, int pn, double margin,
                                uint32_t rgba, int channel);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
@@ -1035,7 +1036,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
          * flat leaf's own construction, f2439); erosion (debug) offsets it to
          * match the eroded mask. The dilation band's colours come from the
          * behind-depth ring below, matching the mask ring's extent. */
-        const double fmargin = portal_aperture_margin_px();
+        const double fmargin = portal_margin_for(cpu, p);
         float fx[16], fy[16];
         outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? -fmargin : 0.0, fx, fy);
         double qa = 0.0, qb = 0.0, qc = 0.0;
@@ -1248,6 +1249,30 @@ static double portal_aperture_margin_px(void) {
     }
     return v;
 }
+/* Arches whose GEOMETRY ANIMATES — the dragon heads, destination levelId 14
+ * (artisans -> toasty) and 62/63/64 (gnorc_gnexus -> twilight_harbor /
+ * gnasty_gnorc / gnastys_loot). The head stretches as it opens and the opening
+ * polygon does not track the mesh, so the aperture boundary does not coincide
+ * with the mouth the way it does on a static arch. A margin wide enough to
+ * close authoring seams elsewhere spills preview straight past the mouth on
+ * these (measured: ~3 px of overshoot all round, and sky through the apex of
+ * levelId 14), so they stay on the conservative pre-widening value.
+ *
+ * NOT a boss-portal rule: doctor_shemp(24), blowhard(34), metalhead(44) and
+ * jacques(54) are ordinary static arches and take the normal margin. */
+static int portal_arch_animates(CPUState* cpu, uint32_t p) {
+    if (!p) return 0;
+    const int lid = (int32_t)cpu->read_word(p + 0x1C);
+    return lid == 14 || lid == 62 || lid == 63 || lid == 64;
+}
+#define PORTAL_ANIM_ARCH_MARGIN_PX 2.0
+static double portal_margin_for(CPUState* cpu, uint32_t p) {
+    const double m = portal_aperture_margin_px();
+    if (m > PORTAL_ANIM_ARCH_MARGIN_PX && portal_arch_animates(cpu, p))
+        return PORTAL_ANIM_ARCH_MARGIN_PX;
+    return m;
+}
+
 /* Offset the outline polygon by `d` pixels along each vertex's inward angle
  * bisector (negative d pushes OUTWARD). Shared by the stencil aperture and the
  * flat background fan so both reach exactly the same extent — the fan is the
@@ -1395,7 +1420,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
         corrected = moved;
     }
     const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
-    const double margin = portal_aperture_margin_px();
+    const double margin = portal_margin_for(cpu, portal);
     float ex[16], ey[16];
     outline_offset(interior, pn, (margin < 0.0) ? -margin : 0.0, ex, ey);
     /* The outline is planar, so fit the plane here when the caller had none. */
