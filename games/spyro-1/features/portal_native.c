@@ -764,6 +764,17 @@ static float plane_depth(double a, double b, double c, double x, double y) {
     return portal_cyclorama_depth(vz);
 }
 
+/* The same field pushed BEHIND the opening plane, matching the aperture ring's
+ * construction (outline vz + PORTAL_SKY_EPS_VZ). Used for the dome's spill
+ * outside the opening, where the world must win any honest contest. */
+static float plane_depth_back(double a, double b, double c, double x, double y) {
+    double inv = a * x + b * y + c;
+    double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
+    float z = openpete_native_depth_from_viewz(
+                  openpete_worldvz_full((float)(vz + portal_sky_eps_vz())));
+    return (z > 1.0f) ? 1.0f : z;
+}
+
 /* Far-path portal preview: the destination dome renders as a single flat colour
  * (a0[0]) filling the arch clip rect. Emit it as one opaque quad at the portal's
  * world-Z depth, so it sorts OVER the far terrain but UNDER the near arch stone
@@ -1166,11 +1177,9 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
  * world must win. */
 static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
 static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
-static float s_skyout_back = 1.0f;/* behind-ring depth for the outside region */
 
 /* Register the projected outline for the two-region split (both the dome and
- * the flat-fill paths): orient CCW by the centroid side, set the behind-ring
- * depth from the farthest outline point + the sky margin. Also refreshes
+ * the flat-fill paths): orient CCW by the centroid side. Also refreshes
  * s_ring_vz / the portal-guard recency. */
 static void register_skyout(const ppt* poly, int pn) {
     double maxvz = 0.0, mx = 0.0, my = 0.0;
@@ -1191,19 +1200,15 @@ static void register_skyout(const ppt* poly, int pn) {
     s_skyout_n = pn;
     s_ring_vz = maxvz;
     s_sky_fed_frame = openpete_frame;
-    s_skyout_back = openpete_native_depth_from_viewz(
-                        openpete_worldvz_full((float)(maxvz + portal_sky_eps_vz())));
-    /* behind the ring, same world-unit margin as ring_depth */
-    if (s_skyout_back > 1.0f) s_skyout_back = 1.0f;
 }
 
 /* ---- stencil aperture from the opening polygon ----------------------------
  * The dome leaves are confined ONLY by the GPU scissor rect — func_80050BD0
  * zeroes D_80077EA0[0], so func_8005060C's edge clip is skipped — and the PSX
  * relies on the arch stone repainting the rect spill by OT painter order. A
- * depth buffer cannot reproduce that with one spill depth: s_skyout_back is the
- * FARTHEST outline point plus the margin, but on a portal seen at an angle the
- * jamb just OUTSIDE the opening recedes past that depth, so the sky wins there
+ * depth buffer cannot reproduce that with ONE spill depth: pinned to the
+ * FARTHEST outline point plus the margin, a portal seen at an angle has jamb
+ * just OUTSIDE the opening that recedes past that depth, so the sky wins there
  * and pokes through the arch shoulder on the far side. (dream_weavers, portal
  * levelId=52: outline vz runs 8653 on the far-left edge down to 7027 on the
  * near-right, so the left jamb sits behind the behind-ring depth and the spill
@@ -1341,7 +1346,7 @@ static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, 
 
 /* The dilation band between the outline and its outward offset, emitted as a
  * ring of quads at the BEHIND depth (farthest outline vz + PORTAL_SKY_EPS_VZ,
- * pushed back — the same construction as the dome spill's s_skyout_back).
+ * pushed back — the same construction the dome's spill uses outside it).
  *
  * The margin exists because some arches author the opening polygon a little
  * INSIDE the visible stone edge: clipped strictly to the outline, the sky
@@ -1524,11 +1529,13 @@ static int clip_dir(const pgv* in, int n, pgv* out,
     return m;
 }
 
+/* use_plane: 0 = const_depth, 1 = the opening plane, 2 = that plane pushed
+ * BEHIND it (plane_depth_back — the spill outside the opening). */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
                           int use_plane, double pa, double pb, double pc);
 
 /* Fan-emit `poly` split by the outline: the inside piece at PLANE depth, the
- * outside pieces at the behind-ring depth. Falls back to plane-depth-only
+ * outside pieces on that plane pushed BEHIND it. Falls back to plane-depth-only
  * when no outline is registered. */
 static void emit_split_by_outline(const pgv* poly, int n, float depth,
                                   int use_plane, double pa, double pb, double pc) {
@@ -1571,7 +1578,24 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
             k = clip_dir(cur, k, (cur == w) ? u : w, p0->x, p0->y, p1->x, p1->y, 1);
             cur = (cur == w) ? u : w;
         }
-        if (k >= 3) fan_emit_poly(cur, k, s_skyout_back, 0, 0, 0, 0);
+        if (k >= 3) {
+            /* PER-VERTEX behind-plane depth, not one constant for the whole spill.
+             *
+             * That constant was the FARTHEST outline point plus the bias. On a
+             * tilted opening the near jamb's spill then sits far behind the
+             * plane, loses the depth test to the through-hole world, and never
+             * rasters — while the flat base's dilation ring, which follows the
+             * plane per vertex, does raster there. The result is the level's
+             * background colour tracing the arch's inner edge in the dilation
+             * band, brightest where the two depths diverge most (a near-white
+             * line down dream_weavers' jambs). Matching the ring's construction
+             * makes the two cover the same pixels, so the dome — submitted
+             * after the base — paints its own sky over it.
+             *
+             * The spill stays BEHIND the plane, so the world still wins every
+             * honest contest; only the constant was wrong, not the policy. */
+            fan_emit_poly(cur, k, 0.0f, 2, pa, pb, pc);
+        }
     }
 }
 
@@ -1594,7 +1618,9 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
             if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
             float cz2 = 0.0f;
             int cm2 = sky_const_depth(&cz2);
-            float pz2 = use_plane ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y) : const_depth;
+            float pz2 = (use_plane == 2) ? plane_depth_back(pa, pb, pc, tv[k]->x, tv[k]->y)
+                      : use_plane        ? plane_depth(pa, pb, pc, tv[k]->x, tv[k]->y)
+                                         : const_depth;
             t.v[k].sx = tv[k]->x; t.v[k].sy = tv[k]->y;
             t.v[k].z = sky_min2(pz2, cz2, cm2);
             t.v[k].rgba = r | (g << 8) | (bl << 16) | 0xFF000000u;   /* low byte=R, matches cyc */
@@ -1683,9 +1709,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     if (!use_plane && !crossed && p && portal_plane_invz(cpu, p, &pa, &pb, &pc))
         use_plane = 1;
     /* Register the outline for the two-region sky-depth split (see
-     * emit_split_by_outline): orient CCW by signed area; behind-ring depth =
-     * the farthest outline point, nudged a hair FARTHER (+PORTAL_SKY_EPS_VZ) so the
-     * ring geometry wins even where the spill grazes its far tangent. */
+     * emit_split_by_outline): orient CCW by signed area. */
     s_skyout_n = 0;
     if (use_plane && pn >= 3) register_skyout(poly, pn);
 
