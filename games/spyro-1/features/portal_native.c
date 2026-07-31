@@ -160,6 +160,7 @@ static const portal_nudge_t k_portal_nudge[] = {
     { 25,   0.0, -4.0, 1.0000, 1.0038 },  /* peace_keepers -> night_flight */
     { 33,   0.0, -4.0, 1.0000, 1.0043 },  /* magic_crafters -> wizard_peak */
     { 52,   0.0, -4.0, 1.0000, 1.0021 },  /* dream_weavers -> lofty_castle */
+    { 54,   0.0, -4.0, 1.0000, 1.0018 },  /* dream_weavers -> jacques */
 };
 /* The sill entries fix a different defect from the alignment ones, and are
  * paired dv/sv on purpose: dv drops the opening's BOTTOM edge, and sv is
