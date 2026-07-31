@@ -497,7 +497,7 @@ static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double 
             az += (int32_t)cpu->read_word(p + 0x28 + k*12);
         }
         ax /= npts; ay /= npts; az /= npts;
-        double sx, sy, vz = project_world(cpu, (int)ax, (int)ay, (int)az, &sx, &sy);
+        double sx, sy, vz = project_world(cpu, ax, ay, az, &sx, &sy);
         if (vz <= 1.0) continue;
         double dx = sx - cx, dy = sy - cy, d = dx*dx + dy*dy;
         if (d < best_d) { best_d = d; best_p = p; }
@@ -1703,6 +1703,10 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
             if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
             if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
         }
+        /* This rect is NOT widened by the aperture margin. Tried, and it made
+         * no difference on any of the 29 portals — the mask reaches past the
+         * outline but the colours filling that band are not bounded by this
+         * rect, so tightening or loosening it changes nothing. Don't re-add. */
         if ((int)floorf(oxlo) < x0) x0 = (int)floorf(oxlo);
         if ((int)ceilf (oxhi) > x1) x1 = (int)ceilf (oxhi);
         if ((int)floorf(oylo) < y0) y0 = (int)floorf(oylo);
