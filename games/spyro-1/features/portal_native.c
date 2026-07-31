@@ -460,10 +460,12 @@ static double project_world(CPUState* cpu, double wx, double wy, double wz,
  * a centre-depth sky overdraws the top of the frame (f1845); placing it behind
  * the whole ring lets the stone occlude it into the arch shape, while it stays
  * far nearer than the through-hole background so it still shows in the opening.
- * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind. */
-static double portal_outline_maxvz(CPUState* cpu, uint32_t p) {
+ * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind.
+ * `nudge` picks the corrected outline (render) or the authored one (anything
+ * describing the arch's own geometry). */
+static double portal_outline_maxvz(CPUState* cpu, uint32_t p, int nudge) {
     double W[16][3];
-    const int npts = portal_outline_world(cpu, p, W, 1);
+    const int npts = portal_outline_world(cpu, p, W, nudge);
     if (!npts) return -1.0;
     double maxvz = -1.0;
     for (int k = 0; k < npts; k++) {
@@ -509,7 +511,7 @@ static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double 
  * can't be used (an outline point is behind the camera). */
 static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
     uint32_t p = owning_portal_ptr(cpu, a0, cx, cy);
-    return p ? portal_outline_maxvz(cpu, p) : -1.0;
+    return p ? portal_outline_maxvz(cpu, p, 1) : -1.0;   /* render depth */
 }
 
 /* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
@@ -852,6 +854,15 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL stale capframe=%u\n", openpete_frame, s_pcap_frame);
         return 0;
     }
+    /* Everything this provider publishes describes the AUTHORED opening
+     * (nudge=0). Its consumers ask about the MESH — is this face part of the
+     * arch's inner rim, does the preview cover this terrain — and the answer
+     * must not move when a portal is repositioned for art reasons. Only the
+     * RENDER may use the corrected outline. OPENPETE_PORTAL_RIM_NUDGED=1
+     * follows the corrected one instead, for A/B. */
+    static int s_rimnud = -1;
+    if (s_rimnud < 0) { const char* e2 = getenv("OPENPETE_PORTAL_RIM_NUDGED");
+                        s_rimnud = (e2 && *e2 && *e2 != '0'); }
     int n = 0;
     for (int i = 0; i < s_pcap_n && n < max; i++) {
         uint32_t p = s_pcap[i].portal;
@@ -864,7 +875,7 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
             if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X plane-FAIL\n", openpete_frame, i, p);
             continue;
         }
-        o->back_vz = portal_outline_maxvz(cpu, p);
+        o->back_vz = portal_outline_maxvz(cpu, p, s_rimnud);
         if (o->back_vz <= 1.0) {              /* whole outline behind the camera */
             if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X back_vz=%.1f\n", openpete_frame, i, p, o->back_vz);
             continue;
@@ -872,15 +883,6 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         /* The outline in VIEW space, which — unlike the projection below — is
          * defined for every camera. Any consumer that works in the opening
          * plane can use this at ranges where the projection has failed. */
-        /* AUTHORED outline (nudge=0) for BOTH the view-space and the projected
-         * polygon below. Consumers of these ask about the MESH — is this face
-         * part of the arch's inner rim, does the preview cover this terrain —
-         * and the answer must not move when a portal is repositioned for art
-         * reasons. OPENPETE_PORTAL_RIM_NUDGED=1 follows the corrected outline
-         * instead, for A/B. */
-        static int s_rimnud = -1;
-        if (s_rimnud < 0) { const char* e2 = getenv("OPENPETE_PORTAL_RIM_NUDGED");
-                            s_rimnud = (e2 && *e2 && *e2 != '0'); }
         o->vn = 0;
         {
             double Wv[16][3];
