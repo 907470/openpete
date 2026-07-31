@@ -1240,7 +1240,7 @@ static int portal_aperture_enabled(void) {
  * cannot reach spill that ran to the rect edge. */
 static double portal_aperture_margin_px(void) {
     static int init = 0;
-    static double v = 2.0;
+    static double v = 5.0;
     if (!init) {
         const char* e = getenv("OPENPETE_PORTAL_APERTURE_MARGIN");
         if (e && *e) v = atof(e);
@@ -1326,15 +1326,32 @@ static void emit_aperture_ring(const ppt* poly, int pn, double margin,
     if (!portal_scene_emit_enabled()) return;
     float rx[16], ry[16];
     outline_offset(poly, pn, -margin, rx, ry);
-    double maxvz = poly[0].vz;
-    for (int i = 1; i < pn; i++) if (poly[i].vz > maxvz) maxvz = poly[i].vz;
-    float rz = openpete_native_depth_from_viewz(
-                   openpete_worldvz_full((float)(maxvz + portal_sky_eps_vz())));
-    if (rz > 1.0f) rz = 1.0f;
     for (int i = 0; i < pn; i++) {
         const int j = (i + 1) % pn;
+        /* PER-VERTEX depth, following the opening plane.
+         *
+         * This used to be one constant for the whole ring — the FARTHEST
+         * outline point plus the bias — which is the same constant-depth
+         * mistake the stencil aperture was introduced to fix, just moved
+         * inward. On an arch seen at an angle the opening is tilted, so a
+         * ring pinned to the far edge's depth sits far BEHIND the plane along
+         * the near jamb, and anything in that void beats it: the margin stops
+         * covering exactly where the outline needed help, leaving a 1-2px seam
+         * of through-hole world along the near side.
+         *
+         * Each ring vertex now carries its own outline point's view-Z, so the
+         * ring is a skirt on the plane rather than a flat card behind it, and
+         * the stone-versus-gap contest resolves the same way at every point
+         * around the opening. */
+        const double vzi = poly[i].vz + portal_sky_eps_vz();
+        const double vzj = poly[j].vz + portal_sky_eps_vz();
+        float zi = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzi));
+        float zj = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzj));
+        if (zi > 1.0f) zi = 1.0f;
+        if (zj > 1.0f) zj = 1.0f;
         const float qx[4] = { (float)poly[i].x, (float)poly[j].x, rx[j], rx[i] };
         const float qy[4] = { (float)poly[i].y, (float)poly[j].y, ry[j], ry[i] };
+        const float qz[4] = { zi, zj, zj, zi };
         for (int half = 0; half < 2; half++) {   /* zero-area halves (a no-offset
                                                   * bottom edge) raster nothing */
             const int ks[3] = { 0, half ? 2 : 1, half ? 3 : 2 };
@@ -1343,7 +1360,7 @@ static void emit_aperture_ring(const ppt* poly, int pn, double margin,
             t.textured = 0; t.blend = 0;
             for (int k = 0; k < 3; k++) {
                 t.v[k].sx = qx[ks[k]]; t.v[k].sy = qy[ks[k]];
-                t.v[k].z = rz; t.v[k].rgba = rgba;
+                t.v[k].z = qz[ks[k]]; t.v[k].rgba = rgba;
             }
             openpete_native_scene_add_tri_grouped(&t, channel, 0, s_portal_group);
         }
@@ -1400,8 +1417,13 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
         }
         openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     }
+    /* The margin ring belongs on the OUTERMOST boundary, which on a corrected
+     * portal is the corrected outline, not the authored one. Emitted around the
+     * interior it lands inside the correction band and does nothing at all —
+     * the margin silently stopped working on exactly the arches whose openings
+     * had to be moved, which is where it was needed most. */
     if (margin > 0.0)
-        emit_aperture_ring(interior, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
+        emit_aperture_ring(poly, pn, margin, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
     if (corrected) {
         for (int i = 0; i < pn; i++) {
             const int j = (i + 1) % pn;
