@@ -872,16 +872,18 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         /* The outline in VIEW space, which — unlike the projection below — is
          * defined for every camera. Any consumer that works in the opening
          * plane can use this at ranges where the projection has failed. */
+        /* AUTHORED outline (nudge=0) for BOTH the view-space and the projected
+         * polygon below. Consumers of these ask about the MESH — is this face
+         * part of the arch's inner rim, does the preview cover this terrain —
+         * and the answer must not move when a portal is repositioned for art
+         * reasons. OPENPETE_PORTAL_RIM_NUDGED=1 follows the corrected outline
+         * instead, for A/B. */
+        static int s_rimnud = -1;
+        if (s_rimnud < 0) { const char* e2 = getenv("OPENPETE_PORTAL_RIM_NUDGED");
+                            s_rimnud = (e2 && *e2 && *e2 != '0'); }
         o->vn = 0;
         {
             double Wv[16][3];
-            /* AUTHORED outline (nudge=0). Consumers of the view-space outline
-             * ask about the MESH, and the answer must not move when a portal
-             * is repositioned for art reasons. OPENPETE_PORTAL_RIM_NUDGED=1
-             * follows the corrected outline instead, for A/B. */
-            static int s_rimnud = -1;
-            if (s_rimnud < 0) { const char* e2 = getenv("OPENPETE_PORTAL_RIM_NUDGED");
-                                s_rimnud = (e2 && *e2 && *e2 != '0'); }
             const int npts = portal_outline_world(cpu, p, Wv, s_rimnud);
             if (npts) {
                 int M[3][3];
@@ -896,7 +898,15 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
             }
         }
         ppt poly[16];
-        int pn = portal_outline_screen(cpu, p, poly, 16);
+        /* The conformance sink swallows terrain that the preview covers. Fed
+         * the CORRECTED outline it swallowed arch stone: a correction reaches
+         * outward to meet the arch's inner edge, so faces of the jamb itself
+         * fall inside it, get sunk behind the preview, and the sky eats a
+         * wedge out of the stone (artisans->stone_hill, whose opening is the
+         * most-corrected of the ten). The sink must ask where the ORIGINAL
+         * opening was, exactly as the rim classifier does. */
+        int pn = s_rimnud ? portal_outline_screen(cpu, p, poly, 16)
+                          : portal_outline_screen_raw(cpu, p, poly, 16);
         if (dbg && pn < 3) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X pn=%d vn=%d\n", openpete_frame, i, p, pn, o->vn);
         /* The conformance sink needs the PROJECTED polygon (coverage
          * confinement) — with a point behind the camera there is none, so no
