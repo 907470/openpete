@@ -100,7 +100,7 @@ static unsigned portal_dump_frame(void) {
     return f;
 }
 
-static double project_world(CPUState* cpu, int wx, int wy, int wz, double* out_sx, double* out_sy);
+static double project_world(CPUState* cpu, double wx, double wy, double wz, double* out_sx, double* out_sy);
 
 typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex (clipping) */
 typedef struct { float x, y; double vz; } ppt; /* projected portal-outline point  */
@@ -429,16 +429,21 @@ static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
  * (wx-cx)). The per-point distance >>shift it applies cancels in the MAC1/MAC3
  * ratio, so float needs no shift. Returns the full-world view-space Z (MAC3);
  * fills screen sx/sy. OFX/OFY/H from the live GTE control regs. */
-static double project_world(CPUState* cpu, int wx, int wy, int wz,
+/* World coordinates are DOUBLE, not int. m_Points are authored as integers, but
+ * a corrected outline lands between them, and truncating it back to whole world
+ * units shifts the whole opening by up to a unit before it is ever projected.
+ * That is invisible at a distance and a pixel of misplacement up close, which
+ * is exactly where the opening meeting its stone is judged. */
+static double project_world(CPUState* cpu, double wx, double wy, double wz,
                             double* out_sx, double* out_sy) {
     int M[3][3];
     ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
     int cx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
     int cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
     int cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
-    double vx = -((double)wy - cy);    /* GTE VX = -(world.y - cam.y) */
-    double vy = -((double)wz - cz);    /* GTE VY = -(world.z - cam.z) */
-    double vz =  ((double)wx - cx);    /* GTE VZ =  (world.x - cam.x) */
+    double vx = -(wy - (double)cy);    /* GTE VX = -(world.y - cam.y) */
+    double vy = -(wz - (double)cz);    /* GTE VY = -(world.z - cam.z) */
+    double vz =  (wx - (double)cx);    /* GTE VZ =  (world.x - cam.x) */
     double mac1, mac2, mac3;
     ngte_mac(M, vx, vy, vz, &mac1, &mac2, &mac3);
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
@@ -462,7 +467,7 @@ static double portal_outline_maxvz(CPUState* cpu, uint32_t p) {
     if (!npts) return -1.0;
     double maxvz = -1.0;
     for (int k = 0; k < npts; k++) {
-        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], 0, 0);
+        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], 0, 0);
         if (vz > maxvz) maxvz = vz;
     }
     return maxvz;
@@ -518,7 +523,7 @@ static int portal_outline_screen_raw(CPUState* cpu, uint32_t p, ppt* poly, int m
     if (!npts || npts > maxn) return 0;
     for (int k = 0; k < npts; k++) {
         double sx, sy;
-        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], &sx, &sy);
+        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], &sx, &sy);
         if (vz <= 1.0) return 0;
         poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
@@ -531,7 +536,7 @@ static int portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn)
     if (!npts || npts > maxn) return 0;
     for (int k = 0; k < npts; k++) {
         double sx, sy;
-        const double vz = project_world(cpu, (int)W[k][0], (int)W[k][1], (int)W[k][2], &sx, &sy);
+        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], &sx, &sy);
         if (vz <= 1.0) return 0;              /* a point behind the camera */
         poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
