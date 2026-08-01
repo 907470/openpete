@@ -16,6 +16,11 @@
 #     --freecam-filter  freecam level substring (default all poses)
 #     --bless           (re)capture and promote --all instead of gating
 #
+# The candidate images are KEPT (build/presentation-candidate by default, or
+# PRESENTATION_GOLDEN_OUT) so a selective promote costs nothing: adjudicate the
+# diff, then run presentation-corpus-promote.sh against that directory. Only a
+# whole-corpus re-bless needs --bless. PRESENTATION_GOLDEN_KEEP=0 discards them.
+#
 # Exit: 0 = matches golden, 1 = divergence, 64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
@@ -33,8 +38,16 @@ for a in "$@"; do case "$a" in
   --build-dir=*) BUILD_ARG="$a";;
 esac; done
 
-OUT="$(mktemp -d -t presentation-golden.XXXXXX)"
-trap 'rm -rf "$OUT"' EXIT
+# The candidate images OUTLIVE the run, in a stable per-build path. A capture is
+# ~24 minutes; discarding it on exit meant that adjudicating a divergence — or
+# promoting a single tile — cost a full re-capture, and the temp dir was already
+# gone by the time the diff had been read. One fixed directory (rather than a
+# fresh mktemp each run) keeps exactly the last run without accumulating.
+# PRESENTATION_GOLDEN_OUT overrides; PRESENTATION_GOLDEN_KEEP=0 restores the old
+# discard-on-exit behaviour.
+OUT="${PRESENTATION_GOLDEN_OUT:-build/presentation-candidate}"
+rm -rf "$OUT"; mkdir -p "$OUT"
+if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the
 # golden tracks whatever ships. The depth A/B is a separate manual tool
@@ -64,8 +77,11 @@ drc=$?
 if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; exit 64; fi
 if [[ $drc -ne 0 ]]; then
   echo "[presentation-golden] FAIL: candidate diverged from golden."
-  echo "  If this is an INTENDED visual change, adjudicate reference-first then re-bless:"
-  echo "    scripts/check_presentation_golden.sh --bless"
+  echo "  Candidate images kept in: $OUT"
+  echo "  If this is an INTENDED visual change, adjudicate reference-first, then"
+  echo "  promote from the images ALREADY CAPTURED above — no re-capture needed:"
+  echo "    scripts/presentation-corpus-promote.sh $OUT <tile-or-substring>...   # selective"
+  echo "    scripts/presentation-corpus-promote.sh $OUT --all                    # whole corpus"
   exit 1
 fi
 echo "[presentation-golden] PASS: corpus matches golden"

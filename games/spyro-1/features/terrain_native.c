@@ -3937,6 +3937,35 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
     return portal_rim_classify(cpu, t) == 0;
 }
 
+/* Does a portal sky cover this face outright — the .s walk draws the preview
+ * AFTER it, so on PSX it is invisible?
+ *
+ * The opaque path handles this with depth: the preview rasters nearer and
+ * repaints over the terrain behind it. Transparent terrain cannot ride that.
+ * The preview colours draw depth-test-only (no depth WRITE, so a moby in front
+ * of the arch keeps its pixels and the player is never clipped mid-entry), and
+ * the ALPHA / ADDITIVE / SUBTRACT classes draw AFTER the portal sequence — they
+ * test against the depth the OPAQUE terrain left behind, pass, and blend on top
+ * of the preview. A waterfall behind a Dream Weavers arch reads as its animated
+ * texture shining through the portal.
+ *
+ * Mirror the walk instead of fighting the depth buffer: a transparent face the
+ * sky covers is simply not drawn. */
+static int portal_sky_covers(const ttri* t) {
+    for (int pi = 0; pi < s_pplane_n; pi++) {
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
+        const float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
+        const float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
+        if (cx < pp->x0 || cx > pp->x1 || cy < pp->y0 || cy > pp->y1) continue;
+        if (!skyplane_contains(pp, cx, cy)) continue;
+        const double mean = (t->otkey > 0.0f) ? (double)t->otkey
+                                              : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
+        if (mean >= pp->ot_vz + 64.0) return 1;   /* sorts behind the sky's bucket */
+    }
+    return 0;
+}
+
 static int portal_conform_vz(const ttri* t, float ovz[3]) {
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
@@ -4214,6 +4243,8 @@ static void terrain_feed_native(CPUState* cpu) {
         /* Portal OT-conformance clamp (see portal_conform_vz above). */
         float pcvz[3]; int pclamp = 0;
         if (s_pplane_n) pclamp = portal_conform_vz(t, pcvz);
+        /* Transparent terrain the preview covers: drop it (portal_sky_covers). */
+        if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         int tex = (!s_flat && !s_notex && !s_tiercolor) ? t->textured : 0;
         tri.textured = tex; tri.blend = tex ? t->blend : 0;
