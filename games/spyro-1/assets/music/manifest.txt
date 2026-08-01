@@ -22,54 +22,72 @@
 #
 # The disc image is still required — this only replaces music.
 #
-# Track table (uncomment an entry to point it at a different file;
-# as written each line just restates the track_NN.wav default):
+# LENGTH MATTERS. The game itself decides when a track loops: it watches
+# the CD head and restarts the stream once it passes the original XA
+# track's end, so the loop period is a property of the ORIGINAL track,
+# not of your file. Author to the length in the table below —
 #
-# 0   track_00.wav   # Artisans (homeworld)
-# 1   track_01.wav   # Wild Flight
-# 2   track_02.wav   # Stone Hill
-# 3   track_03.wav   # Dry Canyon
-# 4   track_04.wav   # Haunted Towers
-# 5   track_05.wav   # Gnorc Cove
-# 6   track_06.wav   # Sunny Flight
-# 7   track_07.wav   # Terrace Village
-# 8   track_08.wav   # Doctor Shemp
-# 9   track_09.wav   # Wizard Peak
-# 10  track_10.wav   # Icy Flight
-# 11  track_11.wav   # Night Flight
-# 12  track_12.wav   # Dark Passage
-# 13  track_13.wav   # Ice Cavern
-# 14  track_14.wav   # Lofty Castle
-# 15  track_15.wav   # Beast Makers (homeworld)
-# 16  track_16.wav   # Blowhard
-# 17  track_17.wav   # Peace Keepers (homeworld)
-# 18  track_18.wav   # Crystal Flight
-# 19  track_19.wav   # Gnasty's Loot
-# 20  track_20.wav   # Title screen
-# 21  track_21.wav   # Misty Bog
-# 22  track_22.wav   # Alpine Ridge
-# 23  track_23.wav   # Metalhead
-# 24  track_24.wav   # Twilight Harbour
-# 25  track_25.wav   # Gnasty Gnorc
-# 26  track_26.wav   # Town Square
-# 27  track_27.wav   # Cliff Town
-# 28  track_28.wav   # Jacques
-# 29  track_29.wav   # Tree Tops
-# 30  track_30.wav   # (not referenced by the level table)
-# 31  track_31.wav   # Magic Crafters (homeworld)
-# 32  track_32.wav   # Dark Hollow
-# 33  track_33.wav   # Toasty / Gnorc Gnexus (homeworld)
-# 34  track_34.wav   # Dream Weavers (homeworld)
-# 35  track_35.wav   # (not referenced by the level table)
-# 36  track_36.wav   # Easter egg 1 (long-idle alternate rotation)
-# 37  track_37.wav   # Easter egg 2
-# 38  track_38.wav   # Easter egg 3
-# 39  track_39.wav   # Easter egg 4
-# 40  track_40.wav   # Easter egg 5
-# 41  track_41.wav   # Easter egg 6
-# 42  track_42.wav   # Easter egg 7
-# 43  track_43.wav   # Easter egg 8
-# 44  track_44.wav   # Easter egg 9
-# 45  track_45.wav   # Easter egg 10
-# 46  track_46.wav   # Easter egg 11 / High Caves
-# 47  track_47.wav   # Easter egg 12
+#   shorter  → your track finishes, then silence until the loop point
+#   longer   → your track is cut off at the original's length
+#
+# Trim precisely with ffmpeg (-t takes m:ss.ss directly):
+#
+#   ffmpeg -i input.flac -ac 2 -ar 44100 -sample_fmt s16 \
+#          -t 1:54.29 track_00.wav
+#
+# The lengths are derived from the game's own music table (start/end
+# sector per track) at the 150 sectors/s the music streams at, so they
+# are the exact loop period, not an approximation.
+#
+# Track table (uncomment an entry to point it at a different file;
+# as written each line just restates the track_NN.wav default; the
+# middle column is the loop length):
+#
+# 0   track_00.wav   1:54.29   # Artisans (homeworld)
+# 1   track_01.wav   2:05.83   # Wild Flight
+# 2   track_02.wav   2:07.92   # Stone Hill
+# 3   track_03.wav   2:25.41   # Dry Canyon
+# 4   track_04.wav   2:28.59   # Haunted Towers
+# 5   track_05.wav   2:31.44   # Gnorc Cove
+# 6   track_06.wav   2:31.05   # Sunny Flight
+# 7   track_07.wav   2:35.41   # Terrace Village
+# 8   track_08.wav   2:44.61   # Doctor Shemp
+# 9   track_09.wav   2:53.97   # Wizard Peak
+# 10  track_10.wav   2:55.40   # Icy Flight
+# 11  track_11.wav   3:03.52   # Night Flight
+# 12  track_12.wav   3:05.23   # Dark Passage
+# 13  track_13.wav   3:07.05   # Ice Cavern
+# 14  track_14.wav   3:11.45   # Lofty Castle
+# 15  track_15.wav   3:11.63   # Beast Makers (homeworld)
+# 16  track_16.wav   3:11.17   # Blowhard
+# 17  track_17.wav   3:14.30   # Peace Keepers (homeworld)
+# 18  track_18.wav   3:16.99   # Crystal Flight
+# 19  track_19.wav   3:23.89   # Gnasty's Loot
+# 20  track_20.wav   3:33.43   # Title screen
+# 21  track_21.wav   3:34.20   # Misty Bog
+# 22  track_22.wav   3:38.17   # Alpine Ridge
+# 23  track_23.wav   3:44.59   # Metalhead
+# 24  track_24.wav   3:48.13   # Twilight Harbour
+# 25  track_25.wav   3:53.56   # Gnasty Gnorc
+# 26  track_26.wav   3:56.29   # Town Square
+# 27  track_27.wav   3:58.90   # Cliff Town
+# 28  track_28.wav   3:58.22   # Jacques
+# 29  track_29.wav   4:04.31   # Tree Tops
+# 30  track_30.wav   4:09.12   # (not referenced by the level table)
+# 31  track_31.wav   4:09.66   # Magic Crafters (homeworld)
+# 32  track_32.wav   4:12.73   # Dark Hollow
+# 33  track_33.wav   4:15.40   # Toasty / Gnorc Gnexus (homeworld)
+# 34  track_34.wav   4:36.65   # Dream Weavers (homeworld)
+# 35  track_35.wav   4:36.74   # (not referenced by the level table)
+# 36  track_36.wav   4:06.25   # Easter egg 1 (long-idle alternate rotation)
+# 37  track_37.wav   3:33.07   # Easter egg 2
+# 38  track_38.wav   3:10.79   # Easter egg 3
+# 39  track_39.wav   3:41.07   # Easter egg 4
+# 40  track_40.wav   3:23.65   # Easter egg 5
+# 41  track_41.wav   2:29.30   # Easter egg 6
+# 42  track_42.wav   4:05.57   # Easter egg 7
+# 43  track_43.wav   3:33.03   # Easter egg 8
+# 44  track_44.wav   3:11.25   # Easter egg 9
+# 45  track_45.wav   3:41.09   # Easter egg 10
+# 46  track_46.wav   3:22.31   # Easter egg 11 / High Caves
+# 47  track_47.wav   2:30.61   # Easter egg 12

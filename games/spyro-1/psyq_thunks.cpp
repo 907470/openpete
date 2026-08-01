@@ -1270,7 +1270,13 @@ static void start_music_stream(int sector) {
      * speculative tick would be audible and then re-fired by the committed
      * re-run. Guest-side effects of the read roll back regardless. */
     if (openpete_speculative) return;
-    if (music_override_try_start(spyro_current_music_track(), sector)) {
+    /* One line per track start / loop (every couple of minutes), so a
+     * music report can be read off an ordinary log: the gap between two
+     * of these is the loop period the guest measured. */
+    const int track = spyro_current_music_track();
+    OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d",
+               track, sector, s_xa_filter_chan, g_cdXaStartVBL);
+    if (music_override_try_start(track, sector)) {
         if (PsyX_XA_IsActive()) PsyX_XA_Stop();
         return;
     }
@@ -1530,13 +1536,24 @@ void psyq_CdSync(CPUState* cpu) {
      * time doesn't pass). Feeding it to the guest makes m_TrackPosition
      * a stealth host-state read: track ends fire early vs PSX, and
      * runahead's led/committed predictions diverge the moment music
-     * starts. The virtual head advances at exactly 75 sectors
-     * per wall-second of GUEST time (75/59.94 = 1001/800 per VBL) from
-     * the ReadS anchor — deterministic, snapshotted, hardware-rate. */
+     * starts.
+     *
+     * Rate = 150 sectors per wall-second of GUEST time, i.e. DOUBLE
+     * speed, because that is how the music is streamed: SetMusicState
+     * issues CdlModeSF|CdlModeRT|CdlModeSpeed with chan = track % 8,
+     * the textbook 8-channel 37.8 kHz-stereo XA layout. Each matching
+     * sector carries 53.3 ms of audio and only 1 sector in 8 matches
+     * the filter, so real-time playback burns 150 LBA/s and a real
+     * drive's head — which is what CdlGetlocP reports — covers the
+     * same 150. At single speed the guest sees a track as twice its
+     * true length: the audio runs out mid-track and the decoder walks
+     * on into the next XA file's stream on the same channel (which is
+     * an unrelated level's theme) until the late loop finally fires.
+     * 150/59.94 = 1001/400 per VBL — deterministic and snapshotted. */
     if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
         int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
         if (vd < 0) vd = 0;
-        int cur = g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 800);
+        int cur = g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 400);
         CdlLOC abs;
         CdIntToPos(cur, &abs);
         result[5] = abs.minute;

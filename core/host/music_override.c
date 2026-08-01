@@ -10,13 +10,11 @@
 
 #include "openpete_log.h"
 #include "openpete_mods.h" /* asset-overlay roots */
-#include "openpete_time.h"
 #include "wav_loader.h"
 
 #define MO_MAX_TRACKS   64    /* m_MusicTable capacity; 48 used in Spyro 1 */
 #define MO_RING         4
 #define MO_CHUNK_FRAMES 8192u /* ~0.19 s @ 44.1 kHz per AL buffer */
-#define MO_SECTOR_HZ    75    /* LBA rate CdlGetlocP reports */
 
 enum { MO_UNLOADED = 0, MO_LOADED, MO_FAILED };
 
@@ -36,8 +34,6 @@ static struct {
 
     int       active;
     int       track;
-    int       start_sector;
-    op_time_t start_ns;
     uint32_t  cursor;               /* frames consumed from pcm */
     const op_wav_pcm* pcm;
 
@@ -188,8 +184,6 @@ int music_override_try_start(int track_index, int start_sector)
 
     music_override_stop();
     s.track        = track_index;
-    s.start_sector = start_sector;
-    s.start_ns     = op_now();
     s.cursor       = 0;
     s.pcm          = pcm;
     s.active       = 1;
@@ -201,13 +195,6 @@ int music_override_try_start(int track_index, int start_sector)
 }
 
 int music_override_is_active(void) { return s.active; }
-
-int music_override_get_sector(void)
-{
-    if (!s.active) return 0;
-    int64_t elapsed_ns = (int64_t)(op_now() - s.start_ns);
-    return s.start_sector + (int)(elapsed_ns * MO_SECTOR_HZ / 1000000000LL);
-}
 
 void music_override_pump(void)
 {
@@ -235,8 +222,12 @@ void music_override_pump(void)
         s.cursor += n;
     }
 
-    /* WAV exhausted → ring drains and the source stops; the synthetic
-     * playhead keeps advancing so the game's track-end check fires. */
+    /* WAV exhausted → ring drains and the source stops. Looping is the
+     * game's job: it polls CdlGetlocP and re-issues CdlReadS when the
+     * head passes the track's end, which restarts us from frame 0. The
+     * head is driven by the game layer (psyq_CdSync), not from here, so
+     * a WAV shorter than the original XA track trails silence and a
+     * longer one is cut off at the original's length. */
     ALint queued = 0;
     alGetSourcei(s.source, AL_BUFFERS_QUEUED, &queued);
     if (queued > 0) {
