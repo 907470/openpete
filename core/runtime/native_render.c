@@ -461,65 +461,6 @@ void openpete_native_scene_begin_frame(unsigned frame) {
                 for (int ti = 0; ti < s_scene_n; ti++)
                     if (s_scene[ti].blend != db) { if (w != ti) s_scene[w] = s_scene[ti]; w++; }
                 s_scene_n = w; } }
-            /* OPENPETE_SCENECAT_TINT=<category>[,<rgb hex>] — recolour every
-             * completed scene triangle of one layer. Renderer-side, so it
-             * shows what actually reaches the framebuffer for that layer
-             * regardless of which feeder produced it (feeder-side tints miss
-             * anything a feeder emits through a shared helper). */
-            { static int tc = -2; static uint32_t trgb = 0x00FF00u;
-              if (tc == -2) { const char* e = getenv("OPENPETE_SCENECAT_TINT");
-                  unsigned c, rgb;
-                  if (e && sscanf(e, "%u,%x", &c, &rgb) == 2) { tc = (int)c; trgb = rgb; }
-                  else if (e && sscanf(e, "%u", &c) == 1)     { tc = (int)c; }
-                  else tc = -1; }
-              if (tc >= 0)
-                for (int ti = 0; ti < s_scene_n; ti++)
-                    if (s_scene[ti].category == tc) {
-                        s_scene[ti].textured = 0;
-                        for (int k = 0; k < 3; k++)
-                            s_scene[ti].v[k].rgba = 0xFF000000u | trgb;
-                    } }
-            /* OPENPETE_SCENEPROBE=x,y — every completed scene triangle whose
-             * screen triangle covers that point (PSX census space: 512 wide,
-             * 240 tall with the 8-line overscan band), in FEED order, with its
-             * layer and the depth it will hand the rasterizer at that point.
-             * Answers "who covers this pixel and who should win" from the
-             * renderer's own scene, not from a feeder's intent. */
-            { static int sp = -1; static float spx, spy;
-              if (sp < 0) { const char* e = getenv("OPENPETE_SCENEPROBE");
-                  sp = (e && *e && sscanf(e, "%f,%f", &spx, &spy) == 2) ? 1 : 0; }
-              if (sp) {
-                static const char* CATN[14] = { "WORLD","ACTOR","HUD","PLAYER","OVERLAY",
-                    "HUD_PANEL","HUD3D","PORTAL_CYCLORAMA","PORTAL_MASK","PORTAL_GUARD",
-                    "SKY","WORLD_FILL","SHADOW","ACTOR_FRONT" };
-                int hits = 0; float best = 2.0f; int bestc = -1;
-                for (int ti = 0; ti < s_scene_n; ti++) {
-                    const scene_tri_t* T = &s_scene[ti];
-                    const float ax = T->v[0].sx, ay = T->v[0].sy;
-                    const float e1x = T->v[1].sx-ax, e1y = T->v[1].sy-ay;
-                    const float e2x = T->v[2].sx-ax, e2y = T->v[2].sy-ay;
-                    const float det = e1x*e2y - e2x*e1y;
-                    if (det > -1e-6f && det < 1e-6f) continue;
-                    const float rx = spx-ax, ry = spy-ay;
-                    const float b1 = (rx*e2y - e2x*ry)/det;
-                    const float b2 = (e1x*ry - rx*e1y)/det;
-                    const float b0 = 1.0f - b1 - b2;
-                    if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
-                    const float z = b0*T->v[0].z + b1*T->v[1].z + b2*T->v[2].z;
-                    const int c = T->category;
-                    fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] #%d cat=%d(%s) grp=%d tex=%d "
-                                    "blend=%d z=%.6f (verts %.6f/%.6f/%.6f)\n",
-                            s_scene_frame, (double)spx, (double)spy, ti, c,
-                            (c >= 0 && c < 14) ? CATN[c] : "?", T->group, T->textured,
-                            T->blend, (double)z,
-                            (double)T->v[0].z, (double)T->v[1].z, (double)T->v[2].z);
-                    hits++;
-                    if (z < best) { best = z; bestc = c; }
-                }
-                fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] %d covering tri(s); NEAREST z=%.6f cat=%d(%s)\n",
-                        s_scene_frame, (double)spx, (double)spy, hits, (double)best,
-                        bestc, (bestc >= 0 && bestc < 14) ? CATN[bestc] : "none");
-              } }
             alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
@@ -4225,10 +4166,88 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
     }
 }
 
+
+/* Per-PRESENT scene instruments. Hosted here rather than in
+ * openpete_native_scene_begin_frame because that block is gated on the VBL
+ * number changing, and sub-tick presents REUSE the current VBL number — so a
+ * probe living there never observes an intermediate present, exactly where the
+ * sub-tick re-extract path differs from the canonical one. */
+static void scene_probes(scene_tri_t* sc, int n)
+{
+    /* OPENPETE_SCENECAT_TINT=<category>[,<rgb hex>] — recolour every
+     * completed scene triangle of one layer. Renderer-side, so it
+     * shows what actually reaches the framebuffer for that layer
+     * regardless of which feeder produced it (feeder-side tints miss
+     * anything a feeder emits through a shared helper). */
+    { static int tc = -2; static uint32_t trgb = 0x00FF00u;
+      if (tc == -2) { const char* e = getenv("OPENPETE_SCENECAT_TINT");
+          unsigned c, rgb;
+          if (e && sscanf(e, "%u,%x", &c, &rgb) == 2) { tc = (int)c; trgb = rgb; }
+          else if (e && sscanf(e, "%u", &c) == 1)     { tc = (int)c; }
+          else tc = -1; }
+      /* trgb is given as rrggbb (what a human types); scene vertex
+       * colour is 0xAABBGGRR, so swap R and B rather than making every
+       * caller pre-swizzle — passing rrggbb straight through paints the
+       * complement and silently invalidates any colour-keyed count. */
+      if (tc >= 0) {
+        const uint32_t tv = 0xFF000000u
+                          | ((trgb & 0x0000FFu) << 16)
+                          | ((trgb & 0x00FF00u))
+                          | ((trgb & 0xFF0000u) >> 16);
+        for (int ti = 0; ti < n; ti++)
+            if (sc[ti].category == tc) {
+                sc[ti].textured = 0;
+                for (int k = 0; k < 3; k++)
+                    sc[ti].v[k].rgba = tv;
+            } } }
+    /* OPENPETE_SCENEPROBE=x,y — every completed scene triangle whose
+     * screen triangle covers that point (PSX census space: 512 wide,
+     * 240 tall with the 8-line overscan band), in FEED order, with its
+     * layer and the depth it will hand the rasterizer at that point.
+     * Answers "who covers this pixel and who should win" from the
+     * renderer's own scene, not from a feeder's intent. */
+    { static int sp = -1; static float spx, spy;
+      if (sp < 0) { const char* e = getenv("OPENPETE_SCENEPROBE");
+          sp = (e && *e && sscanf(e, "%f,%f", &spx, &spy) == 2) ? 1 : 0; }
+      if (sp) {
+        static const char* CATN[14] = { "WORLD","ACTOR","HUD","PLAYER","OVERLAY",
+            "HUD_PANEL","HUD3D","PORTAL_CYCLORAMA","PORTAL_MASK","PORTAL_GUARD",
+            "SKY","WORLD_FILL","SHADOW","ACTOR_FRONT" };
+        int hits = 0; float best = 2.0f; int bestc = -1;
+        for (int ti = 0; ti < n; ti++) {
+            const scene_tri_t* T = &sc[ti];
+            const float ax = T->v[0].sx, ay = T->v[0].sy;
+            const float e1x = T->v[1].sx-ax, e1y = T->v[1].sy-ay;
+            const float e2x = T->v[2].sx-ax, e2y = T->v[2].sy-ay;
+            const float det = e1x*e2y - e2x*e1y;
+            if (det > -1e-6f && det < 1e-6f) continue;
+            const float rx = spx-ax, ry = spy-ay;
+            const float b1 = (rx*e2y - e2x*ry)/det;
+            const float b2 = (e1x*ry - rx*e1y)/det;
+            const float b0 = 1.0f - b1 - b2;
+            if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
+            const float z = b0*T->v[0].z + b1*T->v[1].z + b2*T->v[2].z;
+            const int c = T->category;
+            fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] #%d cat=%d(%s) grp=%d tex=%d "
+                            "blend=%d z=%.6f (verts %.6f/%.6f/%.6f)\n",
+                    s_scene_frame, (double)spx, (double)spy, ti, c,
+                    (c >= 0 && c < 14) ? CATN[c] : "?", T->group, T->textured,
+                    T->blend, (double)z,
+                    (double)T->v[0].z, (double)T->v[1].z, (double)T->v[2].z);
+            hits++;
+            if (z < best) { best = z; bestc = c; }
+        }
+        fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] %d covering tri(s); NEAREST z=%.6f cat=%d(%s)\n",
+                s_scene_frame, (double)spx, (double)spy, hits, (double)best,
+                bestc, (bestc >= 0 && bestc < 14) ? CATN[bestc] : "none");
+      } }
+}
+
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
+    scene_probes((scene_tri_t*)scene, scene_n);   /* per-present: sees intermediates too */
 
     /* S8b: publish this present's interned per-instance material uniforms
      * into the material UBO before any draw_tex_runs override binds them.

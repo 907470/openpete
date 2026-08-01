@@ -965,9 +965,27 @@ static void portal_add_sky_tri(const openpete_scene_tri* t) {
 
 static int band_dbg(void);
 
+/* OPENPETE_PORTAL_REPR=flat|dome — emit only ONE preview representation.
+ *
+ * The flat and the dome are cross-dissolved into each other, so the blend is
+ * only ever a colour blend: their FOOTPRINTS must agree pixel-for-pixel at any
+ * angle and distance. Where they disagree, one representation paints a band the
+ * other does not, and mid-dissolve that band reads as a rim of the outgoing
+ * colour around an interior that has already moved on. Rendering each alone in
+ * one flat colour turns "do they agree?" into a pixel count. */
+static int portal_repr_skip(int is_dome) {
+    static int m = -2;
+    if (m == -2) {
+        const char* e = getenv("OPENPETE_PORTAL_REPR");
+        m = (!e || !*e) ? -1 : (e[0] == 'd' ? 1 : 0);
+    }
+    return (m >= 0) && ((m == 1) != (is_dome != 0));
+}
+
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
                             uint32_t fog_rgb, double fog_t) {
+    if (portal_repr_skip(0)) return 0;
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
     /* The flat-fill colour. Far/medium leaves (func_8004FEA0/80050240) pass a
@@ -1687,6 +1705,7 @@ typedef struct { pgv a, b, c; double key; } dome_face;
 
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
                             int canonical, uint32_t fog_rgb, double fog_t) {
+    if (portal_repr_skip(1)) return 0;
     s_portal_group = (int)skybox;   /* group id for mask↔colour pairing (W2.6) */
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int x0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, x1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
@@ -2102,7 +2121,27 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
             if (fp && s_fed_n < 8) s_fed_portal[s_fed_n++] = fp;
             if (s_pcap_n < PORTAL_CAP_MAX) {
                 portal_cap_t* c = &s_pcap[s_pcap_n++];
-                c->portal        = fp;
+                /* A skybox-linked flat (the close base / backstop, a0 = m_Skybox
+                 * or +0x10) does not resolve through owning_portal_ptr, which
+                 * keys on the leaf's colour pointer. Without an owning portal
+                 * the sub-tick replay cannot recompute the clip rect from the
+                 * LIVE outline and falls back to the captured one — the stale
+                 * corners then disagree with the dome (re-projected through the
+                 * lerped matrix) by a pixel or two at the silhouette, and the
+                 * flat's single colour paints the gap. Only intermediate
+                 * presents show it; the canonical rect is never stale.
+                 * Match the portal by its skybox, exactly as the close-backstop
+                 * test above does. */
+                uint32_t owner = fp;
+                if (!owner) {
+                    uint32_t np3 = cpu->read_word(G_PORTALCOUNT); if (np3 > 6) np3 = 6;
+                    for (uint32_t i3 = 0; i3 < np3; i3++) {
+                        uint32_t p3 = cpu->read_word(G_PORTALS + i3 * 4); if (!p3) continue;
+                        uint32_t sb3 = cpu->read_word(p3 + 0x00);
+                        if (sb3 && (sb3 == a0 || sb3 + 0x10 == a0)) { owner = p3; break; }
+                    }
+                }
+                c->portal        = owner;
                 c->flat_a0       = a0;
                 /* raw, pre-fog; the forced --no-lod dome overrides the far fog
                  * colour with the destination close-base (below-horizon fill) */
@@ -2419,6 +2458,10 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
          * lands on canonical presents). Captured rect kept only as the
          * fallback when the live outline has a point behind the camera. */
         int rc[4] = { c->clip[0], c->clip[1], c->clip[2], c->clip[3] };
+        { static int rd=-1; if(rd<0){const char*e=getenv("OPENPETE_REPLAY_DBG");rd=(e&&*e&&*e!='0');}
+          if (rd) fprintf(stderr, "[replay f=%u] cap portal=%08X flat_a0=%08X skybox=%08X is_dome=%d capturedrect=(%d,%d)-(%d,%d)\n",
+                          openpete_frame, c->portal, c->flat_a0, c->skybox, c->is_dome,
+                          c->clip[2], c->clip[0], c->clip[3], c->clip[1]); }
         if (c->portal) {
             ppt rp[16];
             int rn = portal_outline_screen(cpu, c->portal, rp, 16);
@@ -2428,8 +2471,25 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
                     if (rp[k].x < lx0) lx0 = rp[k].x; if (rp[k].x > lx1) lx1 = rp[k].x;
                     if (rp[k].y < ly0) ly0 = rp[k].y; if (rp[k].y > ly1) ly1 = rp[k].y;
                 }
-                rc[0] = (int)floorf(ly0); rc[1] = (int)ceilf(ly1);
-                rc[2] = (int)floorf(lx0); rc[3] = (int)ceilf(lx1);
+                /* Inflate to the APERTURE's extent, not the bare outline's.
+                 * The stencil mask is the outline DILATED by the per-vertex
+                 * aperture margin, but the dome is confined to this rect — so a
+                 * band exists where the mask grants the stencil and the dome
+                 * cannot reach. Canonically the arch stone covers that band; on
+                 * an intermediate present the terrain is re-extracted at the
+                 * lagged alpha and the silhouette recedes a pixel or two,
+                 * exposing it, and the flat (whose fan and ring both follow the
+                 * outline+margin) paints the gap with its single colour. Giving
+                 * the dome the mask's extent makes both representations cover
+                 * the same pixels on every present. */
+                double mpx[16];
+                margin_px_per_vertex(cpu, rp, rn, portal_margin_for(cpu, c->portal), mpx);
+                double mmax = 0.0;
+                for (int k = 0; k < rn; k++) { const double a = mpx[k] < 0 ? -mpx[k] : mpx[k];
+                                               if (a > mmax) mmax = a; }
+                const int pad = (int)ceil(mmax) + 1;
+                rc[0] = (int)floorf(ly0) - pad; rc[1] = (int)ceilf(ly1) + pad;
+                rc[2] = (int)floorf(lx0) - pad; rc[3] = (int)ceilf(lx1) + pad;
             }
         }
         cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)rc[0] << 16);

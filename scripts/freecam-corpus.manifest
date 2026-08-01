@@ -91,6 +91,13 @@ dream_weavers | pos=(31259, 44935, 13693) yaw=1379 pitch=-66
 # the transparent-terrain sky-cover drop (portal_sky_covers) — the preview draws
 # depth-test-only, so without it the additive pass blends over the preview.
 dream_weavers | pos=(73050, 69383, 13760) yaw=-1400 pitch=41
+# Close on a portal at a sheer angle, where the arch silhouette cuts the opening.
+# Guards the flat/dome coverage identity on INTERMEDIATE presents: the stencil
+# mask is the outline dilated by the aperture margin while the dome is confined
+# to a rect, so a band can exist that only the flat reaches. Canonically the
+# stone hides it; sub-tick the silhouette shifts and it shows as a bright sliver.
+# The corpus's `inter` leg is what catches this — the canon leg cannot.
+dream_weavers | pos=(72461, 66230, 13605) yaw=-2567 pitch=67
 
 # Gap between the preview and the arch INTERIOR at close range. Cause: clipping
 # the sky strictly to the authored outline polygon under-covers — the outline
