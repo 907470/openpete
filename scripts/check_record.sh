@@ -12,6 +12,9 @@
 #      internal* width (well over 640), NOT the window width — proving the
 #      capture reads the present FBO at internal resolution, bars-free and
 #      independent of window size. (See openpete-record-video.md.)
+#   3. --record-cfr: the opposite of run 1 — an exact NTSC rational rate, a
+#      single PTS delta (perfectly even cadence), exactly --record-frames
+#      frames, and no audio track.
 #
 # Headless runs unpaced, so wall-clock duration reflects host speed, not
 # 30 fps — this test asserts frame *count* + codec + VFR structure, never
@@ -154,6 +157,47 @@ if [[ -s "$OUT2" ]]; then
     fi
 else
     bad "no widescreen output written"
+fi
+
+# ---- Run 3: --record-cfr constant-rate capture ---------------------------
+# Asserts the opposite of Run 1: a fixed NTSC rational rate, a PTS grid with
+# ONE delta, the exact frame budget from --record-frames, and no audio track.
+# .mp4 (not .mkv) because mkv's millisecond timescale cannot represent
+# 1001/30000 exactly and would quantise the grid.
+OUT3="$OUT_DIR/cfr.mp4"
+LOG3="$OUT_DIR/cfr.log"
+CFR_FRAMES=90
+rm -f "$OUT3"
+"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --mute 1 \
+       --record-cfr 29.97 --record-frames "$CFR_FRAMES" \
+       --record "$OUT3" >"$LOG3" 2>&1
+
+if [[ -s "$OUT3" ]]; then
+    rate="$(probe -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$OUT3")"
+    [[ "$rate" == "30000/1001" ]] || bad "cfr: expected r_frame_rate 30000/1001, got '$rate'"
+
+    dec3="$(probe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$OUT3")"
+    (( ${dec3:-0} == CFR_FRAMES )) || bad "cfr: expected $CFR_FRAMES frames, got ${dec3:-0}"
+
+    acodec3="$(probe -select_streams a -show_entries stream=codec_name -of csv=p=0 "$OUT3")"
+    [[ -z "$acodec3" ]] || bad "cfr: expected no audio stream, got '$acodec3'"
+
+    mapfile -t PTS3 < <(probe -select_streams v:0 \
+        -show_entries frame=best_effort_timestamp -of csv=p=0 "$OUT3" | grep -vE '^\s*$')
+    if (( ${#PTS3[@]} >= 3 )); then
+        printf '%s\n' "${PTS3[@]}" | python3 -c '
+import sys
+pts = sorted(int(x) for x in sys.stdin if x.strip())
+deltas = {b - a for a, b in zip(pts, pts[1:])}
+sys.exit(0 if len(deltas) == 1 else 1)
+'
+        if (( $? != 0 )); then bad "cfr: PTS grid is not evenly spaced"
+        else note "cfr: ${dec3} frames @ $rate, one PTS delta, no audio"; fi
+    else
+        bad "cfr: too few frames to check PTS (${#PTS3[@]})"
+    fi
+else
+    bad "cfr: no output file written ($OUT3)"
 fi
 
 echo

@@ -36,9 +36,15 @@ int  openpete_record_init(const openpete_options_t* opts);
  * present FBO's native dimensions and spawns the encoder thread. */
 void openpete_record_capture_frame(uint64_t pts_us);
 
-/* True while recording is armed and not failed — gate the (non-trivial) native
- * offscreen readback on this so it only runs when actually recording. */
+/* True while recording is armed, not failed, and still accepting frames — gate
+ * the (non-trivial) native offscreen readback on this so it only runs when
+ * actually recording. Goes false once a --record-frames budget is spent. */
 int  openpete_record_active(void);
+
+/* True once a --record-frames budget has been filled. The host loop polls this
+ * to end the run on the exact frame the capture window closes, so the clip is
+ * neither short nor padded with presents past the window. */
+int  openpete_record_finished(void);
 
 /* Graphics-API-agnostic frame submit for the native renderer: hand a CPU RGBA
  * buffer (w x h, `top_down` = 1 for the Vulkan offscreen) at wall-clock `pts_us`.

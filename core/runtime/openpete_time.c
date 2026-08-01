@@ -143,6 +143,17 @@ static void ensure_initialized(void) {
     if (!s_initialized) op_time_init();
 }
 
+/* Virtual clock (see the header). Advanced only by op_sleep_until. */
+static int       s_virtual_on = 0;
+static op_time_t s_virtual_ns = 0;
+
+void op_virtual_clock_enable(op_time_t start_ns) {
+    s_virtual_ns = (start_ns > 0) ? start_ns : OP_NS_PER_SEC;
+    s_virtual_on = 1;
+}
+
+int op_virtual_clock_active(void) { return s_virtual_on; }
+
 op_time_t op_pacer_slack_ns(void) {
     ensure_initialized();
     return s_slack_ns;
@@ -153,6 +164,7 @@ op_time_t op_pacer_slack_ns(void) {
  * ---------------------------------------------------------------- */
 
 op_time_t op_now(void) {
+    if (s_virtual_on) return s_virtual_ns;
     ensure_initialized();
     op_time_t ns;
 #if defined(_WIN32)
@@ -250,6 +262,12 @@ static void sleep_until_posix(op_time_t deadline_ns) {
 #endif
 
 void op_sleep_until(op_time_t deadline_ns) {
+    /* Virtual clock: the deadline IS the next instant. Never block — the
+     * caller's schedule advances, wall time doesn't enter into it. */
+    if (s_virtual_on) {
+        if (deadline_ns > s_virtual_ns) s_virtual_ns = deadline_ns;
+        return;
+    }
     ensure_initialized();
 
 #if defined(__EMSCRIPTEN__)

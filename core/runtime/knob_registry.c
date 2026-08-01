@@ -500,6 +500,19 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    { "record_cfr", "Constant-rate capture", "Recording", "--record-cfr", NULL,
+      "Capture at a fixed frame rate (an integer multiple of the 29.97 Hz "
+      "tick rate) on an offline clock, instead of true VFR. 0 = VFR. "
+      "Latched at boot.",
+      KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.0f, 480.0f,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "record_frames", "Capture frame budget", "Recording", "--record-frames", NULL,
+      "Finish the recording and exit after this many encoded frames. "
+      "0 = until the run ends. Latched at boot.",
+      KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 1000000,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     { "record_fps_overlay", "FPS overlay in recording", "Recording",
       "--record-fps-overlay", "OPENPETE_FPS_IN_RECORD",
       "Burn the FPS overlay into --record video output. Live: re-resolved "
@@ -973,6 +986,12 @@ void knob_registry_init(const struct openpete_options *opts) {
         } else if (!strcmp(k->id, "mute")) {
             k->stored_num = opts->mute ? 1 : 0;
             if (opts->mute) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "record_cfr")) {
+            k->stored_num = opts->record_cfr;
+            if (opts->record_cfr > 0.0) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "record_frames")) {
+            k->stored_num = opts->record_frames;
+            if (opts->record_frames > 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "record_fps_overlay")) {
             if (opts->record_fps_overlay >= 0) {
                 k->stored_num = opts->record_fps_overlay ? 1 : 0;

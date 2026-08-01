@@ -142,6 +142,19 @@ static struct {
     int          pbo_pts_count;
     int          pbo_depth;
 
+    /* Constant-frame-rate capture (--record-cfr). `cfr_mult` is the number of
+     * presents per NTSC sim tick (1 = 29.97 fps, 2 = 59.94, 4 = 119.88); zero
+     * means true VFR. Under CFR the encoder time_base is 1001/(30000*mult), a
+     * frame's PTS is simply its ordinal, and the ring applies backpressure
+     * instead of dropping — a dropped frame would silently shift every later
+     * frame's game time. */
+    int          cfr_mult;
+    uint64_t     cfr_next;      /* next CFR ordinal to hand out */
+
+    /* --record-frames: stop after this many encoded frames (0 = unlimited). */
+    uint64_t     max_frames;
+    int          finished;      /* frame budget reached; ignore further frames */
+
     /* Stats */
     uint64_t     start_us;      /* first capture timestamp (t=0) */
     uint64_t     captured;
@@ -358,6 +371,8 @@ static int rec_thread_main(void* unused) {
         SDL_LockMutex(g_rec.mutex);
         g_rec.read_idx = (idx + 1) % REC_RING_SLOTS;
         g_rec.count--;
+        /* Wakes a producer parked on a full ring (CFR backpressure). */
+        SDL_BroadcastCondition(g_rec.cond);
         SDL_UnlockMutex(g_rec.mutex);
     }
     return 0;
@@ -422,8 +437,18 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     g_rec.codec->height    = h;
     g_rec.codec->pix_fmt   = pixfmt;
     g_rec.codec->gop_size  = g_rec.gop;
-    /* Microsecond timestamps; true VFR (no fixed framerate). */
-    g_rec.codec->time_base = (AVRational){ 1, 1000000 };
+    if (g_rec.cfr_mult > 0) {
+        /* Exact NTSC rational: one tick is 1001/30000 s, split into cfr_mult
+         * presents. A frame's PTS is its ordinal, so the cadence is perfectly
+         * even by construction and the container advertises the true rate
+         * (29.97 / 59.94 / 119.88) rather than a rounded 30 / 60 / 120. */
+        g_rec.codec->time_base = (AVRational){ 1001, 30000 * g_rec.cfr_mult };
+        g_rec.codec->framerate = (AVRational){ 30000 * g_rec.cfr_mult, 1001 };
+        g_rec.start_us = 0;   /* PTS is an ordinal, not an offset from t0 */
+    } else {
+        /* Microsecond timestamps; true VFR (no fixed framerate). */
+        g_rec.codec->time_base = (AVRational){ 1, 1000000 };
+    }
     if (g_rec.fmt->oformat->flags & AVFMT_GLOBALHEADER)
         g_rec.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
@@ -518,9 +543,14 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     if (w != native_w || h != native_h)
         OPL_INFO_F("record", "native %dx%d -> encoding %dx%d (even-aligned)",
                    native_w, native_h, w, h);
-    OPL_INFO_F("record", "armed: %s [%s %dx%d crf=%d gop=%d %s]",
+    OPL_INFO_F("record", "armed: %s [%s %dx%d crf=%d gop=%d %s] %s",
                g_rec.path, g_rec.encoder_name, w, h, g_rec.crf, g_rec.gop,
-               g_rec.pixfmt_name);
+               g_rec.pixfmt_name,
+               g_rec.cfr_mult > 0 ? "cfr" : "vfr");
+    if (g_rec.cfr_mult > 0)
+        OPL_INFO_F("record", "cfr %.5f fps (%dx the NTSC tick rate), budget %llu frame(s)",
+                   30000.0 * g_rec.cfr_mult / 1001.0, g_rec.cfr_mult,
+                   (unsigned long long)g_rec.max_frames);
     return 0;
 }
 
@@ -539,14 +569,41 @@ int openpete_record_init(const openpete_options_t* opts) {
     g_rec.audio_requested    = !opts->record_no_audio;
     g_rec.audio_encoder_name = opts->record_audio_encoder
                                ? opts->record_audio_encoder : "aac";
+    g_rec.max_frames         = (opts->record_frames > 0)
+                               ? (uint64_t)opts->record_frames : 0u;
+    if (opts->record_cfr > 0.0) {
+        g_rec.cfr_mult = (int)(opts->record_cfr * 1001.0 / 30000.0 + 0.5);
+        if (g_rec.cfr_mult < 1) g_rec.cfr_mult = 1;
+        /* CFR frames are timed in game ticks, not wall-clock seconds, so the
+         * capture runs as fast (or as slow) as the machine renders. There is no
+         * sound track that could stay in sync with that, so drop audio rather
+         * than mux a stream that drifts against the picture. */
+        if (g_rec.audio_requested) {
+            OPL_INFO_F("record",
+                       "--record-cfr: audio capture disabled (CFR video is timed "
+                       "in game ticks, not wall-clock seconds)");
+            g_rec.audio_requested = 0;
+        }
+    }
     return 0;
 }
 
 /* Publish one RGBA frame (native_w x native_h, bottom-up) into the encoder
- * slot ring with timestamp pts_us. Drops (and counts) if the ring is full. */
+ * slot ring with timestamp pts_us. VFR drops (and counts) when the ring is
+ * full so the game stays real-time; CFR waits instead, because a hole in a
+ * constant-rate stream shifts the game time of every frame after it. Under
+ * CFR the frame's own ordinal replaces pts_us. */
 static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
     SDL_LockMutex(g_rec.mutex);
-    if (g_rec.count >= REC_RING_SLOTS) {
+    if (g_rec.finished) {
+        SDL_UnlockMutex(g_rec.mutex);
+        return;
+    }
+    if (g_rec.cfr_mult > 0) {
+        while (g_rec.count >= REC_RING_SLOTS && !g_rec.stop)
+            SDL_WaitCondition(g_rec.cond, g_rec.mutex);
+        pts_us = g_rec.cfr_next++;
+    } else if (g_rec.count >= REC_RING_SLOTS) {
         SDL_UnlockMutex(g_rec.mutex);
         if (g_rec.dropped == 0)
             OPL_WARN_F("record", "ring full; dropping frame(s) "
@@ -565,7 +622,9 @@ static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
     g_rec.write_idx   = (idx + 1) % REC_RING_SLOTS;
     g_rec.count++;
     g_rec.captured++;
-    SDL_SignalCondition(g_rec.cond);
+    if (g_rec.max_frames && g_rec.captured >= g_rec.max_frames)
+        g_rec.finished = 1;
+    SDL_BroadcastCondition(g_rec.cond);
     SDL_UnlockMutex(g_rec.mutex);
 }
 
@@ -635,7 +694,11 @@ void openpete_record_capture_frame(uint64_t pts_us) {
 }
 
 int openpete_record_active(void) {
-    return g_rec.enabled && !g_rec.failed;
+    return g_rec.enabled && !g_rec.failed && !g_rec.finished;
+}
+
+int openpete_record_finished(void) {
+    return g_rec.enabled && g_rec.finished;
 }
 
 /* Graphics-API-agnostic frame submit (the native Vulkan renderer reads its
@@ -709,7 +772,7 @@ void openpete_record_shutdown(void) {
         /* Wake + join the encoder thread (drains the slot ring first). */
         SDL_LockMutex(g_rec.mutex);
         g_rec.stop = 1;
-        SDL_SignalCondition(g_rec.cond);
+        SDL_BroadcastCondition(g_rec.cond);
         SDL_UnlockMutex(g_rec.mutex);
         SDL_WaitThread(g_rec.thread, NULL);
         g_rec.thread = NULL;
@@ -762,6 +825,8 @@ int openpete_record_init(const openpete_options_t* opts)
 void openpete_record_capture_frame(uint64_t pts_us) { (void)pts_us; }
 
 int  openpete_record_active(void) { return 0; }
+
+int  openpete_record_finished(void) { return 0; }
 
 void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
                                   int top_down, uint64_t pts_us) {

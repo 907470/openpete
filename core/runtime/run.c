@@ -1353,14 +1353,45 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * 1/tick_scale× too fast and pin at the clamp for the rest of the tick. */
     g_openpete_tick_period_ns = 2 * sim_period_ns;   /* tick = 2 VBLs, scaled */
     op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
+
+    /* --record-cfr: offline capture. `capture_mult` presents are produced per
+     * sim tick, on a clock the pacer advances itself, so the present schedule
+     * is exact no matter how long a frame takes to render — a software
+     * rasterizer and a fast GPU emit the identical frame sequence. That is what
+     * makes two captures at different rates cover the same span of game time.
+     *
+     * The render period is derived from the tick period rather than from an
+     * integer --render-fps: 60 Hz against a 59.94 Hz VBL is a 2.002 ratio,
+     * which hands some ticks two intermediates and others three. Dividing the
+     * tick period gives exactly `capture_mult` evenly spaced presents per tick.
+     * A multiplier of 1 wants no sub-tick presents at all, which is precisely
+     * the legacy match-sim pacer (s_render_fps == 0). */
+    const int capture_mult = (opts->record_cfr > 0.0)
+        ? (int)(opts->record_cfr * 1001.0 / 30000.0 + 0.5) : 0;
+    if (capture_mult > 0) {
+        if (capture_mult > 1) {
+            s_render_fps       = (int)(opts->record_cfr + 0.5);  /* nominal, for logs + the "paced" test */
+            s_render_period_ns = g_openpete_tick_period_ns / capture_mult;
+        } else {
+            s_render_fps       = 0;
+            s_render_period_ns = sim_period_ns;
+        }
+        op_virtual_clock_enable(OP_NS_PER_SEC);
+        OPL_INFO_F("pacer",
+                   "--record-cfr %.5f: offline capture clock, %d present(s) per tick "
+                   "(%.4f ms), sim %.4f ms",
+                   opts->record_cfr, capture_mult,
+                   (double)s_render_period_ns / 1e6, (double)sim_period_ns / 1e6);
+    }
+
     op_time_t start_ns      = op_now();
     op_time_t next_sim_ns    = start_ns;
     op_time_t next_render_ns = start_ns;
-    if (render_fps > 0) {
+    if (s_render_fps > 0) {
         OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (render-fps=%d, --tick-scale=%.3f)",
                    (double)sim_period_ns / 1e6,
-                   (double)render_period_ns / 1e6,
-                   render_fps, tick_scale);
+                   (double)s_render_period_ns / 1e6,
+                   s_render_fps, tick_scale);
     } else {
         OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0, --tick-scale=%.3f)",
                    (double)sim_period_ns / 1e6, tick_scale);
@@ -1376,14 +1407,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * fiber is yielded inside VSync(0). */
     if (openpete_interp_init() == 0) {
         const op_time_t sim_hz_x1000 = (OP_NS_PER_SEC * 1000) / sim_period_ns;
-        const op_time_t render_hz_x1000 = (render_period_ns > 0)
-            ? (OP_NS_PER_SEC * 1000) / render_period_ns
+        const op_time_t render_hz_x1000 = (s_render_period_ns > 0)
+            ? (OP_NS_PER_SEC * 1000) / s_render_period_ns
             : 0;
-        if (render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
+        if (s_render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
             openpete_interp_set_enabled(1);
             OPL_INFO_F("interp",
                        "capture enabled (render-fps=%d > sim ~30 Hz)",
-                       render_fps);
+                       s_render_fps);
+        }
+        /* Offline capture at 2 presents per tick puts the render period exactly
+         * ON the VBL period, which the ">" above reads as parity. It isn't: the
+         * game draws every OTHER VBL, so one of those two presents is a sub-tick
+         * frame and interpolation has real work to do. */
+        if (capture_mult >= 2) {
+            openpete_interp_set_enabled(1);
+            OPL_INFO_F("interp", "capture enabled (offline capture, %d present(s) per tick)",
+                       capture_mult);
         }
         /* Presentation-golden intermediate corpus: capture the ring headless so
          * --screenshot-intermediate-on-frame can re-extract a deterministic
@@ -3218,6 +3258,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             (int)openpete_frame >= opts->frame_limit) {
             quit = 1;
             exit_reason = "frame-limit";
+        }
+        /* --record-frames: the capture window has closed. Stop here rather
+         * than at the next frame/tick boundary so the clip ends on exactly the
+         * requested frame count and every rate covers the same game time. */
+        if (!quit && openpete_record_finished()) {
+            quit = 1;
+            exit_reason = "record-frames";
         }
         if (!quit && opts->max_runtime_seconds > 0 &&
             (SDL_GetTicks() - start)

@@ -60,6 +60,26 @@ void op_sleep_until(op_time_t deadline_ns);
  * smaller = less spin but more risk of overshoot when the OS oversleeps. */
 op_time_t op_pacer_slack_ns(void);
 
+/* Virtual clock: replace the monotonic source with a counter that only the
+ * pacer advances, so op_now() reports *scheduled* time rather than elapsed
+ * wall time and op_sleep_until() jumps straight to its deadline instead of
+ * blocking. The host loop's sim/present deadlines then land on an exact grid
+ * no matter how long a frame actually took to render, which is what an
+ * offline capture needs: a software rasterizer that manages 8 fps still
+ * produces the same present sequence a 120 fps machine would.
+ *
+ * Everything downstream of op_now() — the interpolation stamps, the present
+ * PLL, the world-liveness gate — follows the same clock, so sub-tick alphas
+ * land on exact fractions of a tick. Once enabled it stays enabled for the
+ * process; there is no coherent way back to wall time mid-run.
+ *
+ * `start_ns` seeds the clock. Pass something comfortably above zero: several
+ * consumers treat a zero timestamp as "unset". */
+void op_virtual_clock_enable(op_time_t start_ns);
+
+/* Non-zero while the virtual clock is driving op_now(). */
+int  op_virtual_clock_active(void);
+
 /* One-shot init: requests timer-resolution boosts (Win32
  * timeBeginPeriod(1)) and probes for high-resolution waitable timers.
  * Idempotent. Optional — op_now / op_sleep_until self-init on first

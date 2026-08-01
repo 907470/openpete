@@ -579,6 +579,30 @@ typedef struct openpete_options {
      * OPENPETE_FPS_IN_RECORD env, else off). Display-only. */
     int         record_fps_overlay;
 
+    /* --record-cfr RATE: capture at a constant frame rate instead of true VFR.
+     * RATE must be an integer multiple of the NTSC sim-tick rate (30000/1001 =
+     * 29.97): 29.97, 59.94, 119.88, ... Any other value is rejected, because a
+     * non-integer ratio makes the sub-tick interpolator emit an uneven number
+     * of intermediate presents per tick — the very cadence jitter CFR exists to
+     * remove. 0 = off (VFR).
+     *
+     * The mode is more than a timestamping change: it drives the host clock
+     * from the pacer (op_virtual_clock_enable) so exactly RATE/29.97 presents
+     * are produced per sim tick regardless of how fast the machine renders, and
+     * stamps frame N at exactly N/RATE. Two captures of the same window at
+     * different rates therefore cover the identical span of game time.
+     * Wall-clock never enters the output. */
+/* Largest accepted --record-cfr multiple of the tick rate (16x = 479.5 fps).
+ * Presents-per-tick above this is well past any display and just multiplies
+ * encode cost. */
+#define OPENPETE_RECORD_CFR_MAX_MULT 16
+    double      record_cfr;
+
+    /* --record-frames N: finish the recording (and exit) after exactly N
+     * encoded frames. With --record-cfr this pins the captured window to an
+     * exact game-time length: N / RATE seconds. 0 = unlimited. */
+    int         record_frames;
+
     /* --texpack-dir PATH: directory of HD texture-replacement PNGs (the texture
      * pack). NULL = unset (defer to the OPENPETE_TEXPACK_DIR env, else the
      * built-in <exe>/assets/textures/replacements/). Native renderer only;

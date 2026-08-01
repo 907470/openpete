@@ -123,6 +123,40 @@ it.
 > host frame rates it can add a few percent of overhead; an async path is
 > planned (see `notes/plans/openpete-record-video.md`).
 
+### Constant-frame-rate capture
+
+`--record-cfr RATE` swaps true VFR for a fixed cadence: frame N is stamped at
+exactly N/RATE, wall-clock never enters the timestamps, and the container
+carries the exact NTSC rational (`30000/1001`, `60000/1001`, ...). RATE must be
+an integer multiple of the 29.97 Hz sim-tick rate — **29.97, 59.94, 119.88**,
+up to 16x — because only a whole number of presents per tick gives the sub-tick
+interpolator an even number of intermediates to emit.
+
+The mode also takes over pacing. Presents are scheduled on a clock the pacer
+advances itself rather than on wall time, so exactly RATE/29.97 presents are
+produced per tick however slowly the machine renders — a software rasterizer
+and a fast GPU emit the identical frame sequence. Pair it with `--record-frames
+N` to close the capture on an exact frame count (and end the run there): the
+clip then covers exactly N/RATE seconds of *game* time, so the same window
+captured at 29.97, 59.94 and 119.88 spans the identical moment with 1x, 2x and
+4x the frames. Audio is dropped in this mode (there is no wall-clock second for
+it to sit in), and `--mute 1` keeps the run itself quiet.
+
+```bash
+# The same 1220-tick window at three rates: 1220 / 2440 / 4880 frames,
+# 40.708 s each, byte-for-byte the same game moments.
+for r in 29.97:1220 59.94:2440 119.88:4880; do
+  ./build/linux-release/games/spyro-1/openpete-spyro1 \
+      --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
+      --aspect 16:9 --window 1280x720 --mute 1 --no-record-audio \
+      --record-cfr "${r%%:*}" --record-frames "${r##*:}" \
+      --record-crf 22 --record "clip-${r%%:*}.mp4"
+done
+```
+
+The recorder writes a valid CFR MP4 directly; a `-c copy` remux is still worth
+running to add `+faststart` for web delivery.
+
 ## Repository layout
 
 See `notes/plans/openpete-pc-port.md` §3. Briefly:

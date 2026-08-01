@@ -10,6 +10,7 @@
 
 #include <SDL3/SDL.h>     /* SDL_GetBasePath — locate openpete.opts next to the exe */
 
+#include <math.h>       /* lround/fabs — --record-cfr NTSC-multiple validation */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -455,7 +456,13 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
         "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
         "  --record-fps-overlay 0|1   burn the native FPS overlay into --record video (default 0 = clean\n"
-        "                             capture; on|off also accepted). Display-only.\n",
+        "                             capture; on|off also accepted). Display-only.\n"
+        "  --record-cfr RATE          capture at a constant frame rate instead of true VFR. RATE must be an\n"
+        "                             integer multiple of the NTSC tick rate: 29.97, 59.94, 119.88, ...\n"
+        "                             Drives the host clock from the pacer, so the same span of GAME time is\n"
+        "                             captured however slowly the machine renders. Implies --no-record-audio.\n"
+        "  --record-frames N          finish the recording and exit after exactly N encoded frames (with\n"
+        "                             --record-cfr, a window of exactly N/RATE seconds of game time)\n",
         stderr);
 #endif
 
@@ -580,6 +587,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_pixfmt       = "yuv420p";
     opts->record_audio_encoder = "aac";
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
+    opts->record_cfr          = 0.0;   /* 0 = true VFR (wall-clock PTS) */
+    opts->record_frames       = 0;     /* 0 = record until the run ends */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
     opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
     opts->mods_enabled        = NULL;  /* NULL = unset; env OPENPETE_MODS / mods/enabled.txt */
@@ -1051,6 +1060,38 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
+        } else if (strcmp(a, "--record-cfr") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            double rate = atof(v);
+            /* Only exact multiples of the NTSC tick rate are representable as a
+             * whole number of presents per sim tick; anything else would have
+             * the interpolator emit 2 intermediates on some ticks and 3 on
+             * others. Reject rather than round, so a typo is loud. */
+            double mult = rate * 1001.0 / 30000.0;
+            long   k    = lround(mult);
+            /* Relative tolerance so the rounded spellings people actually type
+             * — 30, 60, 120 — all land on their NTSC neighbour, while a genuine
+             * non-multiple like 45 is refused. */
+            if (rate <= 0.0 || k < 1 || k > OPENPETE_RECORD_CFR_MAX_MULT ||
+                fabs(mult - (double)k) > 0.0015 * (double)k) {
+                fprintf(stderr,
+                        "openpete: --record-cfr expects an integer multiple of the NTSC "
+                        "tick rate 30000/1001 (29.97, 59.94, 119.88, ... up to %dx), got: %s\n",
+                        OPENPETE_RECORD_CFR_MAX_MULT, v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->record_cfr = (double)k * 30000.0 / 1001.0;
+            if (fabs(opts->record_cfr - rate) > 0.001)
+                fprintf(stderr, "openpete: --record-cfr %s -> %.5f fps (NTSC %ldx)\n",
+                        v, opts->record_cfr, k);
+            i++;
+        } else if (strcmp(a, "--record-frames") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->record_frames = atoi(v); i++;
+            if (opts->record_frames < 0) {
+                fprintf(stderr, "openpete: --record-frames expects a non-negative integer\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
         } else if (strcmp(a, "--texpack-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->texpack_dir = v; i++;
