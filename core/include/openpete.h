@@ -199,6 +199,15 @@ typedef struct openpete_options {
      * renderer only. */
     int raster_quantize;
 
+    /* Reference-renderer raster (`--psycross-native-raster 0|1`). 1 renders the
+     * PsyCross scene at the console's own 512x240 display grid rather than a
+     * square-pixel 4:3 grid derived from the window height, so a screenshot or
+     * a --record capture carries one texel per PSX pixel — the authentic
+     * raster and its aliasing, not a supersampled resample of it. The window
+     * blit scales it up, so only the sampling grid changes. Ignored unless
+     * PsyCross rasterizes (--renderer psycross|ab|diff). */
+    int psycross_native_raster;
+
     /* Texture/colour interpolation (`--texture-mapping perspective|affine`).
      * AFFINE = the PSX GPU's screen-linear interpolation (authentic texture
      * swim). Boot-latched; display-only (see openpete_texture_mapping_t). */

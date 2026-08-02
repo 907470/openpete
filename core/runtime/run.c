@@ -985,6 +985,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     g_psyx_audioCaptureMode =
         (opts->record_path && !opts->record_no_audio) ? 1 : 0;
 
+    /* --psycross-native-raster: size the reference renderer's present FBO to
+     * the console display grid instead of the window. Read per scene begin, so
+     * setting it before init is enough. */
+    extern int g_psyx_present_native_raster;
+    g_psyx_present_native_raster = opts->psycross_native_raster ? 1 : 0;
+
     /* Phase 6 decouple: pure vk runs PsyCross as a LIBRARY only (null-GPU
      * mode — SDL + vblank/intr core + input + SPU + CDFS, but no GL window,
      * no GL context, no PSX GPU state; every GL-touching GR entry point
