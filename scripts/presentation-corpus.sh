@@ -24,6 +24,8 @@
 # See notes/plans/openpete-presentation-golden.md.
 set -u
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/corpus-jobs.sh
+source scripts/corpus-jobs.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -184,10 +186,11 @@ while IFS='|' read -r name start interval freeze; do
   echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}"
   # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
   for lod in $CAP_LODS; do
-    run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" || fail=1
-    run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" || fail=1
+    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze"
+    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze"
   done
 done < "$MANIFEST"
+cj_wait || fail=1
 
 if [[ $ran -eq 0 ]]; then echo "[presentation-corpus] SKIP: no manifest rows matched '$FILTER'"; exit 64; fi
 if [[ $fail -ne 0 ]]; then echo "[presentation-corpus] FAIL: missing captures"; exit 1; fi

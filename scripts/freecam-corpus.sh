@@ -31,6 +31,8 @@
 # See notes/plans/openpete-presentation-golden.md.
 set -u
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/corpus-jobs.sh
+source scripts/corpus-jobs.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -115,10 +117,11 @@ while IFS='|' read -r level pose start; do
   ran=$((ran+1))
   echo "[$slug] level=$level start=$start pose='$pose'"
   for lod in $CAP_LODS; do
-    run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" || fail=1
-    run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" || fail=1
+    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose"
+    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose"
   done
 done < "$MANIFEST"
+cj_wait || fail=1
 
 if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] no rows matched '$FILTER' — nothing to capture"; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[freecam-corpus] FAIL: missing captures"; exit 1; fi
