@@ -22,6 +22,7 @@ extern const feature_module_t ui_sprite_native_module;
 extern const feature_module_t portal_native_module;
 extern const feature_module_t transition_native_module;
 extern const feature_module_t cheats_native_module;
+extern const feature_module_t levelwarp_native_module;
 extern const feature_module_t text_moby_id_module;
 
 const feature_module_t* const openpete_features[] = {
@@ -100,6 +101,11 @@ const feature_module_t* const openpete_features[] = {
      * effects are written from game_on_frame_pre once a level is live —
      * see features/cheats_native.c). Inert without the flag. */
     &cheats_native_module,
+    /* Dev-overlay level warp (M menu): a level dropdown + Jump button that
+     * rides the game's own exit-level -> load sequence to any level, plus
+     * the shared level id/name table --skip-to-level resolves against.
+     * Writes nothing until the button is clicked. */
+    &levelwarp_native_module,
     /* Records the emitter-call provenance of every HUD text glyph
      * (func_80017FE4 / func_800181AC entry hooks, read-only, always fall
      * through) so the sub-tick interpolator can tell one tick's letters from

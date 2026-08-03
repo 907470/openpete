@@ -226,6 +226,7 @@ add_executable(openpete-spyro1
     features/transition_native.c
     features/freecam_native.c
     features/cheats_native.c
+    features/levelwarp_native.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
     # via the AST rewriter (tools/rewrite_tu.py). Each native TU is

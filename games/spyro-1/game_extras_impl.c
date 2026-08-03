@@ -18,6 +18,7 @@
 #include "features/text_moby_native.h"
 #include "features/cheats_native.h"
 #include "features/freecam_native.h"
+#include "features/levelwarp_native.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -314,78 +315,11 @@ void game_set_skip_to_level(int level_id) {
     s_skip_applied  = 0;
 }
 
-/* Level id table for --skip-to-level by name. Names are g_LevelNames
- * (decomp strings.c) lower_snake_cased; ids follow the game's scheme:
- * tens digit = homeworld, units = HOME(0), levels(1-3), boss(4),
- * flight(5). Two alias rows cover common alternate spellings. */
-static const struct { const char* name; int id; } s_level_ids[] = {
-    { "artisans",         10 },
-    { "stone_hill",       11 },
-    { "dark_hollow",      12 },
-    { "town_square",      13 },
-    { "toasty",           14 },
-    { "sunny_flight",     15 },
-    { "peace_keepers",    20 },
-    { "dry_canyon",       21 },
-    { "cliff_town",       22 },
-    { "ice_cavern",       23 },
-    { "doctor_shemp",     24 },
-    { "night_flight",     25 },
-    { "magic_crafters",   30 },
-    { "alpine_ridge",     31 },
-    { "high_caves",       32 },
-    { "wizard_peak",      33 },
-    { "blowhard",         34 },
-    { "crystal_flight",   35 },
-    { "beast_makers",     40 },
-    { "terrace_village",  41 },
-    { "misty_bog",        42 },
-    { "tree_tops",        43 },
-    { "metalhead",        44 },
-    { "wild_flight",      45 },
-    { "dream_weavers",    50 },
-    { "dark_passage",     51 },
-    { "lofty_castle",     52 },
-    { "haunted_towers",   53 },
-    { "jacques",          54 },
-    { "icy_flight",       55 },
-    { "gnorc_gnexus",     60 },
-    { "gnastys_world",    60 },  /* alias */
-    { "gnorc_cove",       61 },
-    { "twilight_harbor",  62 },
-    { "twilight_harbour", 62 },  /* alias */
-    { "gnasty_gnorc",     63 },
-    { "gnastys_loot",     64 },
-};
-
+/* The level id/name table lives with the dev-overlay warp feature
+ * (features/levelwarp_native.c) so the dropdown and --skip-to-level
+ * resolve against exactly one list. */
 int game_resolve_level_arg(const char* arg) {
-    size_t i, n;
-    char norm[32];
-
-    if (!arg || !arg[0]) return -1;
-
-    /* All-digits → numeric level id, passed through as before. */
-    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
-    if (!arg[i]) return atoi(arg);
-
-    /* Normalise: lowercase, '-' → '_'. */
-    for (n = 0; arg[n] && n < sizeof(norm) - 1; n++) {
-        char c = (char)tolower((unsigned char)arg[n]);
-        norm[n] = (c == '-') ? '_' : c;
-    }
-    norm[n] = '\0';
-
-    for (i = 0; i < sizeof(s_level_ids) / sizeof(s_level_ids[0]); i++) {
-        if (strcmp(norm, s_level_ids[i].name) == 0)
-            return s_level_ids[i].id;
-    }
-
-    fprintf(stderr, "valid --skip-to-level names:\n");
-    for (i = 0; i < sizeof(s_level_ids) / sizeof(s_level_ids[0]); i++) {
-        fprintf(stderr, "  %-18s (%d)\n",
-                s_level_ids[i].name, s_level_ids[i].id);
-    }
-    return -1;
+    return spyro1_level_resolve(arg);
 }
 
 void game_on_hash_emit(uint32_t frame) {
@@ -486,6 +420,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * live, re-armed at the title screen so each new session gets them. Inert
      * without the flag. */
     spyro1_cheats_on_tick(cpu);
+
+    /* Dev-overlay level warp (M menu): drives the game's own exit-level ->
+     * load sequence toward a chosen level. Inert until the Jump button is
+     * clicked. */
+    spyro1_levelwarp_on_tick(cpu);
 
 
     /* Build the FPS overlay from Spyro's own 3D HUD text mobys (digits 260-269,
@@ -735,6 +674,7 @@ extern void spyro_set_active_overlay_by_magic(uint32_t magic);
 void game_on_state_loaded(CPUState* cpu) {
     uint32_t magic = cpu->read_word(0x8007AA38u);
     spyro_set_active_overlay_by_magic(magic);
+
 }
 
 /* Gameplay-live gate for the in-memory snapshot users (savestate P3).
@@ -759,7 +699,10 @@ int game_is_gameplay_live(CPUState* cpu) {
  *   v3: + guest-mutated thunk latches (CD-ready / VSync callback vaddrs,
  *       XA arm + filter): CdlSetmode flips the XA route and load code
  *       re-registers callbacks, so a rolled-back tick that ran transition
- *       code otherwise leaves them on the abandoned branch. */
+ *       code otherwise leaves them on the abandoned branch.
+ *   v4: + dev-overlay level-warp FSM (features/levelwarp_native.c). The
+ *       phase gates guest writes across several ticks, so a rewind past a
+ *       half-applied warp has to restore it alongside the RAM it wrote. */
 extern uint32_t spyro1_mod_wad_cursor_get(void);
 extern void     spyro1_mod_wad_cursor_set(uint32_t s);
 extern uint32_t spyro_get_active_overlay_magic(void);
@@ -768,20 +711,25 @@ extern void     spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
 extern void     spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
                                         uint32_t xa_word);
 
-uint32_t game_state_extra_size(void) { return 24u; }
+uint32_t game_state_extra_size(void) { return 36u; }
 
 void game_state_extra_save(void* dst) {
     uint8_t* p = (uint8_t*)dst;
-    uint32_t ver = 3u, cur = spyro1_mod_wad_cursor_get();
+    uint32_t ver = 4u, cur = spyro1_mod_wad_cursor_get();
     uint32_t ovl = spyro_get_active_overlay_magic();
     uint32_t cd_cb, vs_cb, xa;
+    uint32_t wphase, wtarget, wticks;
     spyro1_thunk_state_save(&cd_cb, &vs_cb, &xa);
+    spyro1_levelwarp_state_save(&wphase, &wtarget, &wticks);
     memcpy(p +  0, &ver, 4);
     memcpy(p +  4, &cur, 4);
     memcpy(p +  8, &ovl, 4);
     memcpy(p + 12, &cd_cb, 4);
     memcpy(p + 16, &vs_cb, 4);
     memcpy(p + 20, &xa, 4);
+    memcpy(p + 24, &wphase, 4);
+    memcpy(p + 28, &wtarget, 4);
+    memcpy(p + 32, &wticks, 4);
 }
 
 void game_state_extra_load(const void* src, uint32_t size) {
@@ -802,6 +750,13 @@ void game_state_extra_load(const void* src, uint32_t size) {
         memcpy(&vs_cb, p + 16, 4);
         memcpy(&xa,    p + 20, 4);
         spyro1_thunk_state_load(cd_cb, vs_cb, xa);
+    }
+    if (ver >= 4u && size >= 36u) {
+        uint32_t wphase, wtarget, wticks;
+        memcpy(&wphase,  p + 24, 4);
+        memcpy(&wtarget, p + 28, 4);
+        memcpy(&wticks,  p + 32, 4);
+        spyro1_levelwarp_state_load(wphase, wtarget, wticks);
     }
 }
 
