@@ -270,16 +270,22 @@ static int sel_set(knob_desc_t* k, double v) {
     return 0;
 }
 
-/* Button gate: only offer the jump where one of the two routes applies. */
+/* Button gate: a route has to apply, and no warp may already be queued or in
+ * flight. "Busy" is checked HERE rather than folded into s_route, because
+ * s_route is also what the tick consults when it drains the queue — a route
+ * that reads ROUTE_NONE just because a click is pending would make every
+ * click discard itself. */
+static int warp_busy(void) { return s_pending || s_phase != WARP_IDLE; }
+
 static double go_ready(const knob_desc_t* k) {
     (void)k;
-    return s_route != ROUTE_NONE ? 1.0 : 0.0;
+    return (s_route != ROUTE_NONE && !warp_busy()) ? 1.0 : 0.0;
 }
 
 static int go_fire(knob_desc_t* k, double v) {
     (void)k;
     (void)v;
-    if (s_route == ROUTE_NONE) return -1;
+    if (s_route == ROUTE_NONE || warp_busy()) return -1;
     s_pending_id = k_levels[s_sel].id;   /* snapshot: the combo may move */
     s_pending    = 1;
     return 0;
@@ -450,17 +456,24 @@ void spyro1_levelwarp_on_tick(CPUState* cpu) {
      * rollback of an in-flight warp stays consistent.) */
     if (openpete_speculative) return;
 
+    /* Queue the harness request BEFORE anything else reads s_pending, so it
+     * lands in the same place a UI click does: set between ticks, drained on
+     * the NEXT one. Firing it mid-tick instead would let the harness take a
+     * path the button never takes, which is exactly how the drain bug below
+     * shipped past a green headless run. */
+    test_trigger_tick();
+
     gs = cpu->read_word(ADDR_G_GAMESTATE);
 
-    /* Which route a click would take right now. Pause and inventory count as
-     * "in a level" for the same reason the cheats module accepts them: they
-     * are gameplay with the sim paused, and the exit sequence takes over the
-     * gamestate anyway. The attract demo runs GS_Playing with a level loaded,
-     * so it needs excluding explicitly. Freecam is refused because the camera
-     * is detached from Spyro and the fly-in would be meaningless. */
-    if (s_phase != WARP_IDLE || s_pending) {
-        s_route = ROUTE_NONE;                 /* one warp at a time */
-    } else if (gs == GS_TITLESCREEN) {
+    /* Which route a click would take from this gamestate. Derived from guest
+     * state ONLY — whether a warp is already queued or running is a separate
+     * question, asked by warp_busy() at the button. Pause and inventory count
+     * as "in a level" for the same reason the cheats module accepts them:
+     * they are gameplay with the sim paused, and the exit sequence takes over
+     * the gamestate anyway. The attract demo runs GS_Playing with a level
+     * loaded, so it needs excluding explicitly. Freecam is refused because the
+     * camera is detached from Spyro and the fly-in would be meaningless. */
+    if (gs == GS_TITLESCREEN) {
         s_route = ROUTE_TITLE;
     } else if ((gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU) &&
                cpu->read_word(ADDR_G_LEVELID) != 0u &&
@@ -478,7 +491,7 @@ void spyro1_levelwarp_on_tick(CPUState* cpu) {
         if (idx >= 0) s_sel = idx;
     }
 
-    test_trigger_tick();
+    if (s_pending && s_phase != WARP_IDLE) return;   /* drain when idle */
 
     if (s_pending) {
         int target = s_pending_id;
