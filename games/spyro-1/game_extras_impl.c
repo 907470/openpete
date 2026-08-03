@@ -393,8 +393,53 @@ void game_on_hash_emit(uint32_t frame) {
     }
 }
 
+/* --- Per-tick word peek (OPENPETE_PEEK_ADDR) -----------------------------
+ *
+ * Companion to the write watcher above, which only sees stores routed through
+ * cpu->write_*. This samples a guest word at every tick boundary and prints
+ * it BOTH ways: straight out of the RAM block, and through cpu->read_word.
+ *
+ *   RAM value changes with no watched store in between
+ *       -> something wrote it outside cpu->write_* (host path, DMA, thunk).
+ *   RAM and cpu->read_word disagree
+ *       -> the read path is returning something other than what is resident,
+ *          which implicates address formation rather than any writer.
+ *
+ * Env: OPENPETE_PEEK_ADDR=0x800756ac [OPENPETE_PEEK_FRAME_MIN/MAX] */
+static uint32_t s_peek_addr = 0;
+static int      s_peek_min  = 0;
+static int      s_peek_max  = 0;
+static int      s_peek_init = 0;
+
+static void peek_tick(CPUState* cpu) {
+    if (!s_peek_init) {
+        const char* a = getenv("OPENPETE_PEEK_ADDR");
+        const char* lo = getenv("OPENPETE_PEEK_FRAME_MIN");
+        const char* hi = getenv("OPENPETE_PEEK_FRAME_MAX");
+        s_peek_init = 1;
+        s_peek_addr = a ? (uint32_t)strtoul(a, NULL, 0) : 0;
+        s_peek_min  = lo ? atoi(lo) : 0;
+        s_peek_max  = hi ? atoi(hi) : 0;
+    }
+    if (!s_peek_addr) return;
+    if (s_peek_min > 0 && (int)openpete_frame < s_peek_min) return;
+    if (s_peek_max > 0 && (int)openpete_frame > s_peek_max) return;
+    {
+        uint8_t* ram = openpete_psx_get_ram();
+        uint32_t raw = 0;
+        memcpy(&raw, ram + (s_peek_addr & 0x1FFFFFFFu), 4);
+        fprintf(stderr,
+                "PEEK frame=%u addr=0x%08x ram=0x%08x read_word=0x%08x "
+                "s0=0x%08x s1=0x%08x s2=0x%08x gp=0x%08x sp=0x%08x\n",
+                openpete_frame, s_peek_addr, raw, cpu->read_word(s_peek_addr),
+                cpu->s0, cpu->s1, cpu->s2, cpu->gp, cpu->sp);
+    }
+}
+
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
+
+    peek_tick(cpu);
 
     /* Install env-var write-watcher on the first frame, after the
      * runtime has wired cpu->write_byte/half/word. */
