@@ -512,10 +512,11 @@ static int s_vertex_snap = 0;
  * per-vertex snap here would break that collinearity and re-open T-junction
  * cracks); every other feeder leaves this 0 and gets the chokepoint snap. */
 static int s_cur_presnap = 0;
-/* --raster-quantize multiplier (0 = off): engine SCENE-point box-resample of
- * the composed 3D scene onto the 512Nx240N virtual PSX raster — an integer
+/* --raster-quantize multiplier (0 = off): engine SCENE-point resample of the
+ * composed 3D scene onto the 512Nx240N virtual PSX raster — an integer
  * multiple of the vertex-snap grid, so snapped edges always land on cell
- * boundaries (see native_postfx_run). */
+ * boundaries (see native_postfx_run). One point sample per cell, as the
+ * hardware rasterizer produced. */
 static int s_raster_mult = 0;
 /* --texture-mapping (0 = perspective, 1 = affine): the live mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
@@ -6509,7 +6510,7 @@ static void pfx_drain_retired(void) {
 /* Run the chain. target == NULL → over off_image (live present);
  * else over the given compose RT (screenshot-all). Returns pass count. */
 /* Any enabled postfx pass at `point`? Cheap gate for the SCENE split. */
-/* Engine-owned SCENE pass (--raster-quantize): PSX-raster box-resample of the
+/* Engine-owned SCENE pass (--raster-quantize): PSX-raster point-resample of the
  * composed scene. Rides the postfx executor as pass 0 with a pre-built
  * pipeline (embedded raster_quantize.frag) so it stacks under any mod chain
  * (a CRT filter processes the quantized scene, as it should). */

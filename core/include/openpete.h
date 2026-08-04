@@ -189,12 +189,14 @@ typedef struct openpete_options {
 
     /* Raster output quantize (`--raster-quantize N`). N > 0 resamples the
      * composed 3D scene (pre-HUD) on the virtual PSX raster at N x scale — each
-     * output pixel becomes the box average of its 512N x 240N cell (N=1 =
-     * authentic 240p). An integer MULTIPLIER of the PSX grid rather than a row
-     * count, so every setting stays aligned with the INTEGER vertex snap's
-     * 512x240 lattice by construction: snapped edges land on cell boundaries,
-     * and the snap's silhouette/T-junction seams (<= ~1 PSX pixel) become faint
-     * cell tints instead of multi-device-pixel tears. -1 = auto (1 when
+     * 512N x 240N cell takes ONE point sample (N=1 = authentic 240p), matching
+     * the hardware rasterizer's single sample per output pixel: no downsample
+     * filter, so textures and polygon edges stay hard. An integer MULTIPLIER of
+     * the PSX grid rather than a row count, so every setting stays aligned with
+     * the INTEGER vertex snap's 512x240 lattice by construction: snapped edges
+     * land on cell boundaries, and the snap's silhouette/T-junction seams
+     * (<= ~1 PSX pixel) are bounded to one cell, where a per-cell depth vote
+     * moves the sample point off the leaking sliver. -1 = auto (1 when
      * vertex_precision is INTEGER, else off); 0 = off. Display-only; native
      * renderer only. */
     int raster_quantize;

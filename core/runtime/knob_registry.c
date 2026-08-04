@@ -351,10 +351,10 @@ static const knob_desc_t g_builtin[] = {
       get_stored, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
-      "Box-resample the 3D scene to N x the PSX raster (1 = the authentic "
+      "Point-resample the 3D scene to N x the PSX raster (1 = the authentic "
       "512x240 grid — 224 lines visible on screen, letterbands trimmed; "
-      "0 = off). Always aligned with the integer vertex snap, whose seams "
-      "shrink to faint cell tints. Display-only.",
+      "0 = off). One sample per cell, as the hardware rasterizer produced, "
+      "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

@@ -401,7 +401,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
         "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
         "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
-        "  --raster-quantize N        box-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
+        "  --raster-quantize N        point-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
         "                             authentic 512x240 grid, of which the 224 visible lines span the\n"
         "                             screen — the letterband rows are trimmed, so on-screen this is\n"
         "                             512x224 as on a real TV; every N stays aligned with the\n"
