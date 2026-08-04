@@ -98,6 +98,13 @@ dream_weavers | pos=(73050, 69383, 13760) yaw=-1400 pitch=41
 # stone hides it; sub-tick the silhouette shifts and it shows as a bright sliver.
 # The corpus's `inter` leg is what catches this — the canon leg cannot.
 dream_weavers | pos=(72461, 66230, 13605) yaw=-2567 pitch=67
+# Far back from a portal arch (d=32000), where the arch's sector has handed its
+# HP tier over to LP. Guards the per-face scoping of the LP depth pull: applied
+# to every LP face the pull is proportional, so at this range it exceeds the
+# ~40 units by which the arch clears the opening plane and the plane-pinned
+# preview eats a face-sized bite out of the jamb. Original-LOD leg is the one
+# that matters — under extended LOD the HP never drops and there is no LP here.
+dream_weavers | pos=(108122, 83001, 15311) yaw=-1794 pitch=9
 
 # Gap between the preview and the arch INTERIOR at close range. Cause: clipping
 # the sky strictly to the authored outline polygon under-covers — the outline

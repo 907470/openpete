@@ -434,6 +434,22 @@ static inline openpete_worldvz openpete_worldvz_scaled(float vz, float mul) {
 static inline openpete_worldvz openpete_worldvz_bias(openpete_worldvz z, float mul) {
     z.vz *= mul; return z;
 }
+/* _bias with the offset SATURATED at `cap` world units (cap <= 0 = uncapped).
+ *
+ * A proportional bias grows without bound, so at distance it eventually exceeds
+ * the real clearance between whatever it is meant to separate and something
+ * else entirely — it stops being a tie-break and starts reordering the scene.
+ * Capping bounds that collateral while keeping the two properties the tie-break
+ * needs: the biased surface is still strictly behind a coincident unbiased one
+ * at every distance, and the map vz -> vz' stays strictly INCREASING, so the
+ * relative order of two biased surfaces is preserved exactly. That second
+ * property is what a per-face or per-sector exemption cannot offer — exempting
+ * some faces of one continuous surface and not others tears it at the boundary. */
+static inline openpete_worldvz openpete_worldvz_bias_capped(openpete_worldvz z, float mul, float cap) {
+    float d = z.vz * (mul - 1.0f);
+    if (cap > 0.0f) { if (d > cap) d = cap; else if (d < -cap) d = -cap; }
+    z.vz += d; return z;
+}
 /* An INTENTIONAL ordering pull by a FIXED world-unit distance (toward the
  * camera), applied after unit normalization. For OT-tie-break emulation: the
  * PSX links a whole moby's prims at its CENTRE-depth bucket, so late-added

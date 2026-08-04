@@ -1397,6 +1397,36 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
     }
     gp_build_nohp_pool(cpu, sectorPtr, sectorCnt);
     gp_build_all_pool(cpu, sectorPtr, sectorCnt);
+    /* One-shot per-level tally of how the sector table splits by LOD class —
+     * sizes the set where the two tiers can actually coexist. */
+    if (getenv("OPENPETE_TERRAIN_TIERCENSUS")) {
+        static uint32_t last_key;
+        uint32_t ck = sectorPtr ^ (sectorCnt * 2654435761u);
+        if (ck != last_key) {
+            last_key = ck;
+            int both = 0, forceLP = 0, noHP = 0, noLP = 0, hpOnly = 0, lpOnly = 0, tot = 0;
+            long lpF_overlap = 0, lpF_tot = 0, hpF_tot = 0;
+            uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t s = rd(cpu, sectorPtr + i * 4); if (!s) continue;
+                uint32_t g0 = rd(cpu, s + 0x04), g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+                int flags = (int)(g0 & 0xE000);
+                int nLpF = (int)((g3 >> 16) & 0xFF), nHpF = (int)((g4 >> 16) & 0xFF);
+                tot++; lpF_tot += nLpF; hpF_tot += nHpF;
+                if (flags & 0x8000) { forceLP++; lpF_overlap += nLpF; }
+                else if (flags & 0x4000) noHP++;
+                else if (flags & 0x2000) noLP++;
+                else if (nHpF && nLpF) { both++; lpF_overlap += nLpF; }
+                else if (nHpF) hpOnly++;
+                else if (nLpF) lpOnly++;
+            }
+            fprintf(stderr, "[tiercensus] sectors=%d forceLP(0x8000)=%d both(plain)=%d "
+                            "noHP(0x4000)=%d noLP(0x2000)=%d hpOnly=%d lpOnly=%d "
+                            "lpFaces=%ld hpFaces=%ld lpFacesInOverlap=%ld\n",
+                    tot, forceLP, both, noHP, noLP, hpOnly, lpOnly,
+                    lpF_tot, hpF_tot, lpF_overlap);
+        }
+    }
     const double TOL2 = s_tol * s_tol;     /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
     const double COV_MIN = s_cov;          /* gap-filler iff >10% of samples are unbacked... */
     const double GAP_D2  = s_dgap * s_dgap; /* ...AND the unbacked region is FAR from all HP
@@ -3572,8 +3602,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         if (T->sy[k]<mny)mny=T->sy[k]; if (T->sy[k]>mxy)mxy=T->sy[k];
                     }
                     if (mxx < bx0 || mnx > bx1 || mxy < by0 || mny > by1) continue;
-                    fprintf(stderr, "  [pixbox-nat] tier=%d fill=%d tex=%d blend=%d xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) vz=%.0f\n",
-                            T->tier, T->fill, T->textured, T->blend,
+                    fprintf(stderr, "  [pixbox-nat] s=%d f=%d tier=%d fill=%d tex=%d blend=%d "
+                                    "xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) vz=%.0f\n",
+                            T->sec, T->face, T->tier, T->fill, T->textured, T->blend,
                             T->sx[0],T->sy[0],T->sx[1],T->sy[1],T->sx[2],T->sy[2], T->vz[0]);
                 }
             }
@@ -4331,9 +4362,57 @@ static void terrain_feed_native(CPUState* cpu) {
             {
                 static int s_fillpull = -1;
                 if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
+                /* LP rides behind HP by a CONSTANT, mirroring the .s exactly.
+                 *
+                 * The original keys the world OT at viewZ/128 for BOTH tiers
+                 * (LP sums four SZ3 in 16-world units then >>5; HP sums four in
+                 * 4-world units then >>7 — the same scale), and then adds a
+                 * flat +0x40 slots to every LP face's index. One slot is 128
+                 * world units, so the offset is 8192 world units of view-Z,
+                 * applied before projection — which is where this sits.
+                 *
+                 * That constant is what makes the tiers a PARTITION rather than
+                 * a tie-break: at the stock LOD distance HP cannot exceed slot
+                 * 283 while LP starts at 257, so LP is behind every co-located
+                 * HP face by construction, whatever the two meshes do. It also
+                 * cannot misbehave with distance the way a proportional scale
+                 * does — as a fraction of depth it is ~25% at the LOD line and
+                 * decays outward, instead of a fixed 3% that is far too little
+                 * exactly where the tiers overlap and far too much out at
+                 * portal range.
+                 *
+                 * 64 slots is nominal; 36 (0x40 minus the largest authored HP
+                 * bias) is the floor that still guarantees the ordering. The
+                 * per-face OT bias fields the .s also carries — LP word1 bits
+                 * 3-7 scaled x8, HP word0 bits 3-5 scaled x4 — are NOT modelled
+                 * here yet; they shift individual faces by up to 248 and 28
+                 * slots respectively.
+                 *
+                 * DEFAULT 0 (legacy proportional path) — the constant is NOT
+                 * shippable on its own. Ported alone it regresses: the .s
+                 * admits LP faces by `viewZ >= lodDist - 128*((w0&0x1F)*8) -
+                 * 4096`, an authored per-face field spanning nearly the whole
+                 * LOD range, which this feeder does not read — so the LP face
+                 * SET here is not the .s's, and a faithful ordering constant
+                 * over an unfaithful face set is not faithful. Measured: jamb
+                 * 72.8 -> 278.9, artisans waterline 16.0 -> 42.6 (shimmer does
+                 * improve, 254 -> 223). The constant only pays off alongside
+                 * the admission field and both per-face OT bias fields.
+                 * OPENPETE_TERRAIN_LP_OTSLOTS sets the slot count (0 = legacy).
+                 * OPENPETE_TERRAIN_LP_BIAS 1/0 = on/off. Live, re-read per VBL. */
+                static tn_envvbl_t lpb_c, lpc_c, lpm_c, lps_c;
+                const int lp_bias  = tn_env_vbl(&lpb_c, "OPENPETE_TERRAIN_LP_BIAS", 1, 1);
+                const int lp_cap   = tn_env_vbl(&lpc_c, "OPENPETE_TERRAIN_LP_BIAS_CAP", 768, 0);
+                const int lp_mil   = tn_env_vbl(&lpm_c, "OPENPETE_TERRAIN_LP_BIAS_MIL", 30, 0);
+                const int lp_slots = tn_env_vbl(&lps_c, "OPENPETE_TERRAIN_LP_OTSLOTS", 0, 0);
                 if (t->tier && (s_fillpull || !t->fill)) {
                     tri.v[k].pvz = wz.vz;      /* perspective W = the UNPULLED view-Z */
-                    wz = openpete_worldvz_bias(wz, 1.03f);   /* tier==1 → LP */
+                    if (lp_bias)              /* tier==1 → LP */
+                        wz = lp_slots > 0
+                           /* negative pull = push FARTHER, by whole OT slots */
+                           ? openpete_worldvz_pull(wz, -(float)lp_slots * 128.0f)
+                           : openpete_worldvz_bias_capped(wz, 1.0f + lp_mil * 0.001f,
+                                                          (float)lp_cap);
                 }
             }
             tri.v[k].z  = openpete_native_depth_from_viewz(wz);
