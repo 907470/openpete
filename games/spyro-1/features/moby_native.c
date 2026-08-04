@@ -40,6 +40,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <limits.h>   /* INT32_MAX/INT32_MIN: the removed extended-LOD cull ceiling */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,7 +67,13 @@ static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec 
 static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_native_pass */
 
 #define REC_STRIDE    0x38u
-#define MAX_RECORDS   512
+/* Capacity for one pass's records / projected vertices, shared by the canonical
+ * .s-queue walk and the host reveal builder. Extended LOD with the distance
+ * ceiling removed feeds a whole level's mobys from a single distant vantage, so
+ * these are sized for that rather than for the ~50 a canonical 4:3 view queues;
+ * overflow BREAKS the reveal walk mid-list (a silent tail-of-the-level drop) and
+ * truncates the straddling record's mesh. */
+#define MAX_RECORDS   1024
 #define SHADED_BASE   (G_SCRATCH + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
 
 /* Sub-tick SPEC-pass scratch snapshot: G_SCRATCH+0x1100..0x1900 (per-vertex fog
@@ -639,7 +646,7 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, int zsf4, proj_xy* o
     return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, zsf4, out, cap);
 }
 
-#define MAX_PROJ 8192
+#define MAX_PROJ 32768
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
 /* Per-record metadata for the independent face-stream walk (3a.2b): where this
@@ -981,8 +988,17 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
     int32_t mx=(int32_t)cpu->read_word(moby+0x0C), my=(int32_t)cpu->read_word(moby+0x10), mz=(int32_t)cpu->read_word(moby+0x14);
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
-    for (int i=0;i<3;i++)
-        f->TR_raw[i] = (PM[i][0]*Vy + PM[i][1]*Vz + PM[i][2]*Vx) >> 12;
+    /* 64-bit accumulate: the products reach 4096*|V|, so an int32 sum wraps once
+     * a component passes ~175 K view units (~700 K world) and the wrapped view-Z
+     * reads as behind-camera. Unreachable while a distance ceiling culled first;
+     * reachable now that extended LOD has none. Identical to the 32-bit form
+     * everywhere it did not overflow, and closer to the GTE, whose MAC
+     * accumulator is 44-bit. */
+    for (int i=0;i<3;i++) {
+        int64_t acc = ((int64_t)PM[i][0]*Vy + (int64_t)PM[i][1]*Vz + (int64_t)PM[i][2]*Vx) >> 12;
+        f->TR_raw[i] = (int32_t)(acc > INT32_MAX ? INT32_MAX
+                                : (acc < INT32_MIN ? INT32_MIN : acc));
+    }
     /* TR_frac: the same view-space centre, FRACTIONAL — delta as ÷4.0 (not >>2) so
      * the moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
      * chunks (moby analog of the terrain cam>>4 fix). Same scale as TR_raw. The
@@ -1138,7 +1154,7 @@ static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
  * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
  * Inert at 4:3 without --no-lod. */
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
-static void append_revealed_regular(CPUState* cpu) {
+static int append_revealed_regular(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
     /* Two reveal modes, composable — each mirrors a retired game-side
      * producer widening, so admission is deliberately liveness-BLIND
@@ -1154,7 +1170,7 @@ static void append_revealed_regular(CPUState* cpu) {
      *    parity with the retired m_Distance saturation. Ceiling = the
      *    same 0x7F<<8 view-Z the saturated compare admitted. */
     int nl = openpete_no_lod;
-    if (F <= 1.0f && !nl) return;                       /* 4:3, LOD faithful — nothing to reveal */
+    if (F <= 1.0f && !nl) return 0;                     /* 4:3, LOD faithful — nothing to reveal */
     float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -1175,11 +1191,23 @@ static void append_revealed_regular(CPUState* cpu) {
     uint32_t trc_m = moby_trace_target();
     #define TRC(fmt, ...) do { if (m == trc_m) fprintf(stderr, \
         "[moby-trace f=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
+    /* OPENPETE_MOBY_RANGE_CENSUS: per-present tally of every reveal-loop exit,
+     * plus the worst out-of-range candidate's axis delta / view-Z against the
+     * threshold that rejected it. A moby missing from a distant vantage is
+     * either range-rejected (rng>0, and maxd/maxrz says by how much) or lost to
+     * the record/vertex caps (cap>0) — the two have the same symptom on screen
+     * and opposite fixes. */
+    static int s_rcen = -1;
+    if (s_rcen < 0) { const char* e = getenv("OPENPETE_MOBY_RANGE_CENSUS"); s_rcen = (e && *e && *e != '0'); }
+    struct { int live, dead, runonce, dup, spec, nomodel, behind, rng, ceded, offwin, dec0, cap; } cen = {0};
+    int32_t cen_maxd = 0; double cen_maxrz = 0.0; int32_t cen_t4e = 0;
     while (m >= 0x80000000u && guard++ < 4096) {
         uint8_t stt = cpu->read_byte(m + 0x48);
         if (stt == 0xFF) break;                        /* array sentinel */
-        if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
+        if (stt >= 0x80) { cen.dead++; TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
+        cen.live++;
         if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + 0x36))) {
+            cen.runonce++;
             TRC("skip=run-once (retires on its first update)");
             m += 0x58; continue;
         }
@@ -1188,7 +1216,7 @@ static void append_revealed_regular(CPUState* cpu) {
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
-        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
+        if (dup) { cen.dup++; TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
          * 4:3 — the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
@@ -1218,12 +1246,12 @@ static void append_revealed_regular(CPUState* cpu) {
                         openpete_frame, m, (unsigned)cpu->read_half(m + 0x36), stt,
                         (unsigned)cpu->read_byte(m + 0x50), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
-        if (!bok) { TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
+        if (!bok) { cen.nomodel++; TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
         double rr = (double)((int)cpu->read_byte(f.header + 7) << 4);
-        if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
+        if (rz + rr <= 0.0) { cen.behind++; TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
         /* Distance admission = the .s cull's EXACT 3-axis box test (F158
          * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
          * narrower and dropped far-off-axis mobys the .s draws — the
@@ -1262,9 +1290,17 @@ static void append_revealed_regular(CPUState* cpu) {
                 d1 = ((int32_t)cpu->read_word(m + 0x10) - cy) >> 2,
                 d2 = ((int32_t)cpu->read_word(m + 0x14) - cz) >> 2;
         int32_t t4c = ((int32_t)rad_byte << 8) + hyst_canon;         /* canonical threshold (.s mirror) */
+        /* Effective threshold. Extended LOD means "draw it wherever it is", so
+         * the ceiling is REMOVED rather than raised: saturating m_Distance to
+         * 0x7F only bought (0x7F << 8) * 4 ~= 130 K world units, which a camera
+         * high enough above a level clears outright — every moby then failed the
+         * box while terrain (a PVS sector list with no distance term) kept
+         * drawing. m_Distance == 0 keeps its canonical meaning: the dormant /
+         * unpopulated slot sentinel, whose degenerate box admits nothing. */
         uint32_t eff = rad_byte;
-        if (nl && (eff & 0x7Fu)) eff = (eff & 0x80u) | 0x7Fu;        /* --no-lod saturation parity */
-        int32_t t4e = ((int32_t)eff << 8) + hyst;                    /* effective threshold */
+        int32_t t4e;
+        if (nl && (eff & 0x7Fu)) t4e = INT32_MAX;                    /* no ceiling */
+        else                     t4e = ((int32_t)eff << 8) + hyst;
         #define REVEAL_BOX(t) (d0 > -(t) && d0 < (t) && d1 > -(t) && d1 < (t) && d2 > -(t) && d2 < (t))
         /* the .s pairs the box test with a view-Z cap on the SAME threshold
          * (@8001F2E8: reject MAC3 >= t4) — mirror both or far-axis mobys the
@@ -1273,8 +1309,17 @@ static void append_revealed_regular(CPUState* cpu) {
         TRC("b51=%02X rad=%02X d=(%d,%d,%d) t4c=%d t4e=%d rz=%.0f admit_canon=%d prev=%d",
             (unsigned)cpu->read_byte(m + 0x51), rad_byte, d0, d1, d2, t4c, t4e, rz,
             admit_canon, reveal_prev_has(m));
-        if (in_spec_snap && admit_canon) { TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
-        if (!REVEAL_BOX(t4e) || rz >= (double)t4e) { TRC("skip=out-of-range"); m += 0x58; continue; } /* out of draw range (canonical or nl ceiling) */
+        if (in_spec_snap && admit_canon) { cen.spec++; TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
+        if (!REVEAL_BOX(t4e) || rz >= (double)t4e) {
+            cen.rng++;
+            if (s_rcen) {   /* worst offender: how far past the threshold it sat */
+                int32_t a0 = d0 < 0 ? -d0 : d0, a1 = d1 < 0 ? -d1 : d1, a2 = d2 < 0 ? -d2 : d2;
+                int32_t mx = a0 > a1 ? a0 : a1; if (a2 > mx) mx = a2;
+                if (mx > cen_maxd) { cen_maxd = mx; cen_t4e = t4e; }
+                if (rz > cen_maxrz) cen_maxrz = rz;
+            }
+            TRC("skip=out-of-range"); m += 0x58; continue;
+        } /* out of draw range (canonical or nl ceiling) */
         #undef REVEAL_BOX
         if (rz <= 0.0) { TRC("skip=camera-plane"); m += 0x58; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
@@ -1289,9 +1334,9 @@ static void append_revealed_regular(CPUState* cpu) {
          * there and not in the queue was cull-rejected for a non-box reason —
          * leave it); central + beyond-canonical is the no-lod clause's NEW
          * coverage. */
-        if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
-        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
-        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
+        if (central && admit_canon) { cen.ceded++; TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
+        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { cen.offwin++; TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
+        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) { cen.cap++; break; }
         int off = s_proj_n;
         /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
          * record behind a revealed moby to read the verdict from. Validated by
@@ -1305,9 +1350,21 @@ static void append_revealed_regular(CPUState* cpu) {
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the
          * distance term for records that are near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
+        else if (openpete_no_lod) {
+            /* Sub-near (effect-authored fade) records keep the distance term —
+             * but the .s holds the verdict in an int16, which WRAPS once view-Z
+             * passes 32767. Canonically unreachable (nothing is drawn that far),
+             * yet live now that the reveal has no distance ceiling: a wrapped
+             * verdict re-enters the 0 < ZSF4 < 1024 fog band and re-fades a moby
+             * that is unambiguously far-tier, cycling every 65536 view units.
+             * Saturate instead. zsf4_raw below keeps the faithful truncation —
+             * it exists to say what the .s would have computed. */
+            int v = (rmd << 8) - (int)f.TR_raw[2];
+            rzsf4 = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
+        }
         int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                       rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
-        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
+        if (got <= 0) { cen.dec0++; TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
@@ -1331,6 +1388,19 @@ static void append_revealed_regular(CPUState* cpu) {
         m += 0x58;
     }
     #undef TRC
+    if (s_rcen) {
+        {
+            static unsigned last = 0xFFFFFFFFu; static int pass = 0;
+            pass = (openpete_frame == last) ? pass + 1 : 0;   /* 0 = canonical, >0 = sub-tick */
+            last = openpete_frame;
+            fprintf(stderr, "[moby-range f=%u.%d] live=%d revealed=%d | rng=%d cap=%d dec0=%d offwin=%d "
+                    "ceded=%d dup=%d spec=%d nomodel=%d behind=%d runonce=%d dead=%d | maxd=%d vs t4e=%d maxrz=%.0f "
+                    "| recs=%d/%d verts=%d/%d\n",
+                    openpete_frame, pass, cen.live, revealed, cen.rng, cen.cap, cen.dec0, cen.offwin,
+                    cen.ceded, cen.dup, cen.spec, cen.nomodel, cen.behind, cen.runonce, cen.dead,
+                    cen_maxd, cen_t4e, cen_maxrz, s_nrecs, MAX_RECORDS, s_proj_n, MAX_PROJ);
+        }
+    }
     /* publish this call's reveal set as the next call's hysteresis set */
     s_rev_prev_n = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
     memcpy(s_rev_prev, revlist, (size_t)s_rev_prev_n * sizeof(uint32_t));
@@ -1360,6 +1430,7 @@ static void append_revealed_regular(CPUState* cpu) {
         fprintf(stderr, "[moby-reveal-feed] frame=%u F=%.3f host-built %d revealed regular mobys "
                 "(off-4:3, live) appended to the native scene\n", openpete_frame, F, revealed);
     }
+    return revealed;
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -3227,7 +3298,20 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
     }
     if (feed) {
-        if (!is_spec) append_revealed_regular(cpu);  /* widescreen: host-build records for mobys the 4:3 cull skipped */
+        if (!is_spec) {
+            /* Host-built records are native-only — they never reach the .s
+             * polybuf, so a present whose mobys came ENTIRELY from the reveal
+             * records no RP_MOBY interval and reads as "canonical drew no
+             * mobys". moby_native_reextract then skips every sub-tick pass and
+             * the mobys exist on canonical presents alone: solid at
+             * --render-fps 0, flickering-to-absent the moment presents outrun
+             * ticks. That is the state past the canonical cull distance, where
+             * the .s queue is empty by construction — so mark the path drawn on
+             * the reveal's own yield. Can only fire when the .s REGULAR render
+             * fn actually ran this tick (this is its hook), so a load screen —
+             * where only the SHADED/text producer runs — still cannot mark it. */
+            if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
+        }
         build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
         /* Adopt render-time-animated colours the post-render walk can't see (e.g.
          * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
@@ -3987,13 +4071,15 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * queue — is what hides distant gems/props on PSX (the SHADED_BASE
          * list still contains them); without it native drew every listed
          * moby at any distance (the user-reported distant-gem leak).
-         * --no-lod parity with the retired Phase-8 lhu hook: saturate the
-         * low 7 bits to 0x7F (the m_Distance==0 dormant sentinel never
-         * reaches here — skipped above). */
+         * Extended LOD drops the band outright (the reveal builder's twin —
+         * saturating to 0x7F still hid every gem once the camera cleared
+         * ~130 K world units). The m_Distance==0 dormant sentinel never
+         * reaches here (skipped above), so dropping the test cannot resurrect
+         * a dormant gem; billboards already bypass it. */
         {
             uint8_t r50 = cpu->read_byte(m + 0x50);
-            if (!(r50 & 0x80)) {
-                int eff = openpete_no_lod ? 0x7F : (int)(r50 & 0x7F);
+            if (!(r50 & 0x80) && !openpete_no_lod) {
+                int eff = (int)(r50 & 0x7F);
                 int32_t a0 = ((int32_t)eff << 8)
                            + ((cpu->read_byte(m + 0x51) & 1) ? 0x200 : 0);
                 int32_t t;
@@ -4565,7 +4651,12 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
 
     if (feed) {                                 /* feed shaded mobys to the scene — fully native */
         s_cur_mat = "SHD";
-        build_shaded_walk_tris(cpu);            /* native topology (#2a) + native lighting (#2b) */
+        int shd_n = build_shaded_walk_tris(cpu); /* native topology (#2a) + native lighting (#2b) */
+        /* Twin of the REG reveal mark: past the canonical band the .s shaded
+         * walk emits nothing (its own 3-axis cull, which extended LOD drops on
+         * the native mirror), so the interval above is empty and the gems/props
+         * this feeder just built would live on canonical presents only. */
+        if (shd_n > 0) render_path_mark_drawn(RP_MOBY);
         push_scene_moby();                      /* reads zero .s prim output */
         /* Sub-tick spine: snapshot the shaded Moby* list (live now) so
          * intermediates can re-derive the gems/props. */
