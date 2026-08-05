@@ -3156,8 +3156,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             if (s_facemap_active && passLP && !passFill) {
                 const int ci[4] = { i0, i1, i2, i3 };
                 int nc = quad ? 4 : 3;
-                fprintf(stderr, "[facemap] s=%u f=%d q=%d gf=%d flr=%d fr=%d secdraw=%d",
-                        (unsigned)i, f, quad, F->gapfill, F->floorf, front, !fmDumpOnly);
+                fprintf(stderr, "[facemap] s=%u f=%d q=%d gf=%d flr=%d fb=%d fr=%d secdraw=%d",
+                        (unsigned)i, f, quad, F->gapfill, F->floorf, F->fogbias, front, !fmDumpOnly);
                 for (int q2 = 0; q2 < nc; q2++) {
                     const lvert* V = &sv[ci[q2]];
                     fprintf(stderr, " v%d=%.2f,%.2f,%.2f", q2, V->sx, V->sy, V->m3);
@@ -3677,8 +3677,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Header last so its presence marks a complete dump. Screen space is
          * the walk's 512-wide/240-line frame (8-line overscan crop):
          * screenshot px = (1.25*sx, 2*(sy-8)) at 640x448. */
-        fprintf(stderr, "[facemap-hdr] frame=%u ofx=%.2f ofy=%.2f H=%.0f nolod=%d\n",
-                openpete_frame, s_ofx, s_ofy, s_H, openpete_no_lod);
+        fprintf(stderr, "[facemap-hdr] frame=%u ofx=%.2f ofy=%.2f H=%.0f nolod=%d fogRefBase=%d\n",
+                openpete_frame, s_ofx, s_ofy, s_H, openpete_no_lod, fogRefBase);
         s_facemap_done = 1;
         s_facemap_active = 0;
     }
@@ -4869,6 +4869,18 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     int32_t occGroup = (int32_t)cpu->a0;
     s_terrain_saved_occGroup = occGroup;   /* for sub-tick re-extract */
 
+    /* OPENPETE_ENV_LODDIST=<int>: poke g_Environment.m_LodDistance before the
+     * .s renders. Measurement legs only (never a shipping mode — this IS a
+     * gameplay-readable RAM write): saturating it (0x7FFFFFFF) makes the .s
+     * drop ALL LP and keep HP everywhere, so a PsyCross -og capture becomes a
+     * pure-HP reference — "does authored HP cover this pixel" from the game's
+     * own renderer, the ground-truth leg for extended-LOD fidelity and the
+     * fill-tag sweep ({og-orig covers ∧ og-sat uncovered} = LP-only
+     * sightlines, a level-data property). */
+    { static int s_lodpoke = -2;
+      if (s_lodpoke == -2) { const char* e = getenv("OPENPETE_ENV_LODDIST");
+                             s_lodpoke = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
+      if (s_lodpoke >= 0) cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, (uint32_t)s_lodpoke); }
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_800258F0(cpu);                            /* run the real renderer (verdicts intact) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
