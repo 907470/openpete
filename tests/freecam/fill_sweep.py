@@ -4,6 +4,9 @@
 Per pose (tests/freecam/fill-sweep-poses.manifest), five headless legs:
   M        native vk, --lod extended, all fill mechanisms off, with the
            OPENPETE_TERRAIN_FACEMAP per-LP-face footprint dump on stderr
+  MO       native vk, --lod original, all fill mechanisms off (the handoff
+           drops in-band LP whose sparse HP never covers the footprint —
+           a MODE-dependent need the two-og mask cannot see)
   BLANK-vk native vk, --render-paths none        (pure background)
   OG       PsyCross,  terrain-only               (the game's own terrain)
   OGSAT    PsyCross,  terrain-only, m_LodDistance doubled (pure-HP reference)
@@ -15,6 +18,8 @@ clear is the per-level draw-env colour and screen corners can be covered):
   ogc       = OG != BLANK-og          the game draws terrain here
   hpc       = OGSAT != BLANK-og       authored HP covers here
   need_data = ogc AND NOT hpc         sightlines only LP covers (level-data fact)
+  need_orig = ogc AND (MO == BLANK-vk)  original-mode holes (mode-dependent)
+  need      = need_data OR need_orig
 
 Tag rule per pose, unioned across poses per (level, sector, face):
   AUTO tier:   secdraw==0, not fully-fogged, |footprint ∩ need_data| >= MIN_OV
@@ -55,7 +60,8 @@ def base_env():
 
 def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
     """Capture one leg into outdir; returns the artifact path (png or log)."""
-    art = {"M": f"{outdir}/M-{frame}-vk.png",       "BLANKV": f"{outdir}/BLANKV-{frame}-vk.png",
+    art = {"M": f"{outdir}/M-{frame}-vk.png",       "MO": f"{outdir}/MO-{frame}-vk.png",
+           "BLANKV": f"{outdir}/BLANKV-{frame}-vk.png",
            "OG": f"{outdir}/OG-{frame}-og.png",     "OGSAT": f"{outdir}/OGSAT-{frame}-og.png",
            "BLANKO": f"{outdir}/BLANKO-{frame}-og.png"}[leg]
     fmlog = f"{outdir}/facemap.log"
@@ -65,7 +71,10 @@ def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
     rend, paths, lod = "vk", "terrain", "extended"
     if leg == "M":
         env.update(OPENPETE_TERRAIN_FACEMAP=str(frame), OPENPETE_TERRAIN_GAPFILL="0",
-                   OPENPETE_TERRAIN_HOLEFILL="0", OPENPETE_TERRAIN_FILLNEAR="0")
+                   OPENPETE_TERRAIN_HOLEFILL="0")
+    elif leg == "MO":
+        env.update(OPENPETE_TERRAIN_GAPFILL="0", OPENPETE_TERRAIN_HOLEFILL="0")
+        lod = "original"
     elif leg == "BLANKV":
         paths = "none"
     elif leg == "OG":
@@ -80,7 +89,7 @@ def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
         env["OPENPETE_ENV_LODDIST"] = "0x10000"
     elif leg == "BLANKO":
         rend, paths, lod = "psycross", "none", "original"
-    tag = {"M": "M", "BLANKV": "BLANKV", "OG": "OG", "OGSAT": "OGSAT", "BLANKO": "BLANKO"}[leg]
+    tag = leg
     args = [binary, "--headless", "--disc", disc, "--run-recomp", "0x80012204",
             "--renderer", rend, "--mute", "1", "--aspect", "4:3",
             "--skip-to-level", level, "--lod", lod,
@@ -166,11 +175,13 @@ def footprint(F, w, h):
 
 def analyze_pose(level, tag, outdir, tags, frame=FRAME):
     M, w, h = img(f"{outdir}/M-{frame}-vk.png")
+    MO, _, _ = img(f"{outdir}/MO-{frame}-vk.png")
     BV, _, _ = img(f"{outdir}/BLANKV-{frame}-vk.png")
     OG, _, _ = img(f"{outdir}/OG-{frame}-og.png")
     OS, _, _ = img(f"{outdir}/OGSAT-{frame}-og.png")
     BO, _, _ = img(f"{outdir}/BLANKO-{frame}-og.png")
-    need = [1 if (OG[i] != BO[i] and OS[i] == BO[i]) else 0 for i in range(w * h)]
+    need = [1 if (OG[i] != BO[i] and (OS[i] == BO[i] or MO[i] == BV[i])) else 0
+            for i in range(w * h)]
     faces, fogref = parse_facemap(f"{outdir}/facemap.log")
     new_faces = 0
     for F in faces:
@@ -229,7 +240,7 @@ def main():
     for level, pose, tag, frame in poses:
         outdir = os.path.join(args.cache, f"{level}__{tag}")
         os.makedirs(outdir, exist_ok=True)
-        for leg in ("M", "BLANKV", "OG", "OGSAT", "BLANKO"):
+        for leg in ("M", "MO", "BLANKV", "OG", "OGSAT", "BLANKO"):
             jobs.append((level, pose, leg, outdir, frame))
     fails = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:

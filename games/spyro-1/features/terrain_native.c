@@ -981,7 +981,7 @@ typedef struct {
     uint8_t  i0, i1, i2, i3, quad, flip;
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
-    uint8_t  gapfill;                              /* LP only: HP-coverage-gap filler (see tsc_classify_gapfill) */
+    uint8_t  gapfill;                              /* LP only: frozen fill-tag face (terrain_fill_tags.h) */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
@@ -1105,250 +1105,34 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
     }
 }
 
-/* ---- LP HP-coverage-gap classifier (the near-LP-gap fix) --------------------
- * The game bins terrain HP-near / LP-far, so an lpFarOnly LP face with no
- * corner past the fog line is dropped (the .s never draws a near HP-sector's
- * LP).  Where the sector's HP mesh is SPARSE — authored without polys over
- * part of the LP footprint (unreachable at gameplay cameras) — that drop
- * leaves a bare hole to the cyclorama at detached/free cameras.
- *
- * Which LP faces may back-fill near is decidable from GEOMETRY, offline-
- * validated on artisans (2026-07-09): sample each LP face against the same sector's HP mesh.
- * LP faces over intentional openings (portal arches, windows) are ~fully
- * REDUNDANT with the HP surface around the opening (cov = 1.00 — the LP arch
- * hugs the HP walls), while true coverage-gap faces are LP-EXCLUSIVE
- * (cov 0.0–0.8, median 150+ units from any HP poly).  The distribution is
- * strongly bimodal: 24 of 833 artisans LP faces classify as gap-fillers.
- * Misclassification is benign in both directions: a false gap-filler draws
- * at true LP depth behind the HP that covers it (the WORLD LP tier pull),
- * a missed one keeps the status-quo hole.
- *
- * Same-sector pooling only (neighbour HP changed no verdict in the offline
- * sweep).  Computed once per sector decode; vertex-anim sectors keep their
- * decode-pose verdict (a moving wall's classification drift is cosmetic). */
-static double gp_dot(const double a[3], const double b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
-static double gp_pt_tri_d2_v(const double p[3], const double a[3], const double bv[3], const double cv[3]) {
-    double ab[3] = { bv[0] - a[0], bv[1] - a[1], bv[2] - a[2] };
-    double ac[3] = { cv[0] - a[0], cv[1] - a[1], cv[2] - a[2] };
-    double ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
-    double d1 = gp_dot(ab, ap), d2 = gp_dot(ac, ap);
-    double q[3];
-    if (d1 <= 0.0 && d2 <= 0.0) { q[0]=a[0]; q[1]=a[1]; q[2]=a[2]; goto out; }
-    {
-        double bp[3] = { p[0]-bv[0], p[1]-bv[1], p[2]-bv[2] };
-        double d3 = gp_dot(ab, bp), d4 = gp_dot(ac, bp);
-        if (d3 >= 0.0 && d4 <= d3) { q[0]=bv[0]; q[1]=bv[1]; q[2]=bv[2]; goto out; }
-        double vc = d1*d4 - d3*d2;
-        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
-            double den = d1 - d3, t = den != 0.0 ? d1/den : 0.0;
-            q[0]=a[0]+ab[0]*t; q[1]=a[1]+ab[1]*t; q[2]=a[2]+ab[2]*t; goto out;
-        }
-        double cp[3] = { p[0]-cv[0], p[1]-cv[1], p[2]-cv[2] };
-        double d5 = gp_dot(ab, cp), d6 = gp_dot(ac, cp);
-        if (d6 >= 0.0 && d5 <= d6) { q[0]=cv[0]; q[1]=cv[1]; q[2]=cv[2]; goto out; }
-        double vb = d5*d2 - d1*d6;
-        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
-            double den = d2 - d6, t = den != 0.0 ? d2/den : 0.0;
-            q[0]=a[0]+ac[0]*t; q[1]=a[1]+ac[1]*t; q[2]=a[2]+ac[2]*t; goto out;
-        }
-        double va = d3*d6 - d5*d4;
-        if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
-            double den = (d4 - d3) + (d5 - d6), t = den != 0.0 ? (d4 - d3)/den : 0.0;
-            q[0]=bv[0]+(cv[0]-bv[0])*t; q[1]=bv[1]+(cv[1]-bv[1])*t; q[2]=bv[2]+(cv[2]-bv[2])*t; goto out;
-        }
-        /* interior: distance along the plane normal */
-        double n[3] = { ab[1]*ac[2]-ab[2]*ac[1], ab[2]*ac[0]-ab[0]*ac[2], ab[0]*ac[1]-ab[1]*ac[0] };
-        double nl = gp_dot(n, n);
-        if (nl <= 0.0) { q[0]=a[0]; q[1]=a[1]; q[2]=a[2]; goto out; }
-        double t = gp_dot(ap, n) / nl;
-        q[0] = p[0] - n[0]*t; q[1] = p[1] - n[1]*t; q[2] = p[2] - n[2]*t;
-    }
-out:;
-    double dx = p[0]-q[0], dy = p[1]-q[1], dz = p[2]-q[2];
-    return dx*dx + dy*dy + dz*dz;
-}
-static double gp_pt_tri_d2(const double p[3], const tsvert_t* A, const tsvert_t* B, const tsvert_t* C) {
-    double a[3] = { (double)A->x, (double)A->y, (double)A->z };
-    double b[3] = { (double)B->x, (double)B->y, (double)B->z };
-    double c[3] = { (double)C->x, (double)C->y, (double)C->z };
-    return gp_pt_tri_d2_v(p, a, b, c);
-}
-/* Level-wide pool of LP triangles from LP-AUTHORITATIVE sectors (no HP faces,
- * or force-LP 0x8000) in WORLD space — the near-noHP re-admission test below
- * asks whether a wall gap face's unbacked span continues into territory where
- * the LP tier is the only geometry that exists (level-boundary cliffs) vs
- * deep inside HP-dense territory (interior shortcut skins).  Built lazily
- * once per level (keyed on the sector-table pointer). */
-typedef struct { float ax,ay,az,bx,by,bz,cx,cy,cz; } gp_wtri;
-static gp_wtri* s_nohp_tris; static int s_nohp_n; static uint32_t s_nohp_key;
-#define GP_NOHP_MAX 8192
-static void gp_build_nohp_pool(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
-    /* Stamp covers the pointer, count and the first sector's origin word so an
-     * in-place level reload (same table address) still rebuilds. */
-    uint32_t key = sectorPtr ^ (sectorCnt * 2654435761u);
-    if (sectorPtr) { uint32_t s0 = rd(cpu, sectorPtr); if (s0) key ^= rd(cpu, s0 + 0x08); }
-    if (key == s_nohp_key) return;
-    s_nohp_key = key; s_nohp_n = 0;
-    if (!s_nohp_tris) s_nohp_tris = (gp_wtri*)malloc(sizeof(gp_wtri) * GP_NOHP_MAX);
-    if (!s_nohp_tris || !sectorPtr) return;
-    if (sectorCnt > 1024) sectorCnt = 1024;
-    for (uint32_t i = 0; i < sectorCnt; i++) {
-        uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
-        uint32_t g0 = rd(cpu, s + 0x04), g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
-        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
-        int nHpF = (int)((g4 >> 16) & 0xFF);
-        int flags = (int)(g0 & 0xE000);
-        if (nHpF != 0 && !(flags & 0x8000)) continue;      /* LP-authoritative only */
-        int nLpV = (int)(g3 & 0xFF), nLpC = (int)((g3 >> 8) & 0xFF), nLpF = (int)((g3 >> 16) & 0xFF);
-        if (nLpV <= 0 || nLpF <= 0 || nLpV > 256) continue;
-        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
-        uint32_t verts = s + 0x1C;
-        uint32_t faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;
-        tsvert_t lv[256];
-        tsc_decode_verts(cpu, verts, nLpV, lv);
-        for (int f = 0; f < nLpF && s_nohp_n + 2 <= GP_NOHP_MAX; f++) {
-            uint32_t w0 = rd(cpu, faces + (uint32_t)f * 8u);
-            int i0 = (int)(((w0 >> 23) & 0x1F8) >> 3), i1 = (int)(((w0 >> 17) & 0x1F8) >> 3);
-            int i2 = (int)(((w0 >> 11) & 0x1F8) >> 3), i3 = (int)(((w0 >> 5) & 0x1F8) >> 3);
-            if (i0 >= nLpV || i1 >= nLpV || i2 >= nLpV || i3 >= nLpV) continue;
-            gp_wtri* T = &s_nohp_tris[s_nohp_n++];
-            T->ax = (float)(ox + lv[i0].x); T->ay = (float)(oy + lv[i0].y); T->az = (float)(oz + lv[i0].z);
-            T->bx = (float)(ox + lv[i1].x); T->by = (float)(oy + lv[i1].y); T->bz = (float)(oz + lv[i1].z);
-            T->cx = (float)(ox + lv[i2].x); T->cy = (float)(oy + lv[i2].y); T->cz = (float)(oz + lv[i2].z);
-            if (i2 != i3) {   /* quad: second half (i0,i2,i3) */
-                gp_wtri* U = &s_nohp_tris[s_nohp_n++];
-                U->ax = T->ax; U->ay = T->ay; U->az = T->az;
-                U->bx = T->cx; U->by = T->cy; U->bz = T->cz;
-                U->cx = (float)(ox + lv[i3].x); U->cy = (float)(oy + lv[i3].y); U->cz = (float)(oz + lv[i3].z);
-            }
-        }
-    }
-}
-static double gp_pool_d2(const double p[3]) {
-    double best = 1e30;
-    for (int k = 0; k < s_nohp_n; k++) {
-        const gp_wtri* T = &s_nohp_tris[k];
-        double A[3] = { T->ax, T->ay, T->az }, B[3] = { T->bx, T->by, T->bz }, Cc[3] = { T->cx, T->cy, T->cz };
-        double d = gp_pt_tri_d2_v(p, A, B, Cc);
-        if (d < best) best = d;
-    }
-    return best;
-}
+/* ---- LP fill-face tags (frozen, measurement-derived) -----------------------
+ * Which LP faces may back-fill sightlines no authored HP covers is a FROZEN,
+ * human-reviewed list (terrain_fill_tags.h, generated by
+ * scripts/gen-fill-tags.py from tests/freecam/fill-tags.verdicts). Candidates
+ * are measured per pixel from the game's own renderer — og-original coverage
+ * minus pure-HP coverage (m_LodDistance doubled) — attributed to LP faces by
+ * projected screen footprint, then reviewed face-by-face. FILL faces are
+ * og-terrain-over-void (water planes, level-boundary channels); every
+ * rejected candidate was a silhouette sliver between the coarse/alternate LP
+ * shape and the HP silhouette, where filling paints LP wedges over sky.
+ * Absence from the table = not a fill face: a face the sweep never measured
+ * fails loud (an unfilled hole at a new camera) instead of silently shipping
+ * a guess — the failure mode is visible and local, unlike the threshold
+ * classifier this replaces (six tuned constants + a per-level kill list,
+ * v1-v12, each version patching a newly discovered misprediction). */
+#include "terrain_fill_tags.h"
 
-/* Level-wide pool of ALL terrain triangles (both tiers, every sector) in
- * WORLD space, owner-tagged so a face can exclude itself.  The mid-band
- * (cov in [0.9, 0.97)) VOID re-admission below asks whether an unbacked
- * sample sits over a TRUE WORLD VOID — nothing drawn there by anything,
- * so dropping the face exposes cyclorama (peace_keepers' authored one-cell
- * HP hole under a mostly-backed water quad) — or over/behind OTHER
- * geometry (tree_tops' branch-floor sliver overlapping the trunk: the LP
- * poking through the HP, found in testing 2026-07-09).  Same lazy per-level
- * stamp as the no-HP pool. */
-typedef struct { float ax,ay,az,bx,by,bz,cx,cy,cz; uint32_t owner; uint16_t face; uint8_t hp; } gp_wtri2;
-static gp_wtri2* s_all_tris; static int s_all_n; static uint32_t s_all_key;
-#define GP_ALL_MAX 32768
-static void gp_all_push(uint32_t owner, int f, int hp, int ox, int oy, int oz,
-                        const tsvert_t* a, const tsvert_t* b, const tsvert_t* c) {
-    gp_wtri2* T = &s_all_tris[s_all_n++];
-    T->ax = (float)(ox + a->x); T->ay = (float)(oy + a->y); T->az = (float)(oz + a->z);
-    T->bx = (float)(ox + b->x); T->by = (float)(oy + b->y); T->bz = (float)(oz + b->z);
-    T->cx = (float)(ox + c->x); T->cy = (float)(oy + c->y); T->cz = (float)(oz + c->z);
-    T->owner = owner; T->face = (uint16_t)f; T->hp = (uint8_t)hp;
-}
-static void gp_build_all_pool(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
-    uint32_t key = sectorPtr ^ (sectorCnt * 2654435761u) ^ 0x9E3779B9u;
-    if (sectorPtr) { uint32_t s0 = rd(cpu, sectorPtr); if (s0) key ^= rd(cpu, s0 + 0x08); }
-    if (key == s_all_key) return;
-    s_all_key = key; s_all_n = 0;
-    if (!s_all_tris) s_all_tris = (gp_wtri2*)malloc(sizeof(gp_wtri2) * GP_ALL_MAX);
-    if (!s_all_tris || !sectorPtr) return;
-    if (sectorCnt > 1024) sectorCnt = 1024;
-    for (uint32_t i = 0; i < sectorCnt; i++) {
-        uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
-        uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
-        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
-        int nLpV = (int)(g3 & 0xFF), nLpC = (int)((g3 >> 8) & 0xFF), nLpF = (int)((g3 >> 16) & 0xFF);
-        int nHpV = (int)(g4 & 0xFF), nHpC = (int)((g4 >> 8) & 0xFF), nHpF = (int)((g4 >> 16) & 0xFF);
-        int hpVertsOff = (int)((g4 >> 24) & 0xFF);
-        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
-        tsvert_t tv[256];
-        if (nLpV > 0 && nLpV <= 256 && nLpF > 0) {
-            tsc_decode_verts(cpu, s + 0x1C, nLpV, tv);
-            uint32_t faces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;
-            for (int f = 0; f < nLpF && s_all_n + 2 <= GP_ALL_MAX; f++) {
-                uint32_t w0 = rd(cpu, faces + (uint32_t)f * 8u);
-                int i0 = (int)(((w0 >> 23) & 0x1F8) >> 3), i1 = (int)(((w0 >> 17) & 0x1F8) >> 3);
-                int i2 = (int)(((w0 >> 11) & 0x1F8) >> 3), i3 = (int)(((w0 >> 5) & 0x1F8) >> 3);
-                if (i0 >= nLpV || i1 >= nLpV || i2 >= nLpV || i3 >= nLpV) continue;
-                gp_all_push(s, f, 0, ox, oy, oz, &tv[i0], &tv[i1], &tv[i2]);
-                if (i2 != i3) gp_all_push(s, f, 0, ox, oy, oz, &tv[i0], &tv[i2], &tv[i3]);
-            }
-        }
-        if (nHpV > 0 && nHpV <= 256 && nHpF > 0) {
-            uint32_t hpVerts = s + 0x1C + (uint32_t)hpVertsOff * 4;
-            tsc_decode_verts(cpu, hpVerts, nHpV, tv);
-            uint32_t faces = hpVerts + (uint32_t)(nHpV + nHpC * 2) * 4;
-            for (int f = 0; f < nHpF && s_all_n + 2 <= GP_ALL_MAX; f++) {
-                uint32_t w0 = rd(cpu, faces + (uint32_t)f * 16u);
-                int i0 = (int)((w0 >> 24) & 0xFF), i1 = (int)((w0 >> 16) & 0xFF);
-                int i2 = (int)((w0 >> 8) & 0xFF),  i3 = (int)(w0 & 0xFF);
-                if (i0 >= nHpV || i1 >= nHpV || i2 >= nHpV || i3 >= nHpV) continue;
-                gp_all_push(s, f, 1, ox, oy, oz, &tv[i0], &tv[i1], &tv[i2]);
-                if (i2 != i3) gp_all_push(s, f, 1, ox, oy, oz, &tv[i0], &tv[i2], &tv[i3]);
-            }
-        }
-    }
-}
-/* min dist^2 from p to the pool, excluding the LP face (ownerSec, face);
- * early-outs once at/below lim2. */
-static double gp_all_d2_excl(const double p[3], uint32_t ownerSec, int face, double lim2) {
-    double best = 1e30;
-    for (int k = 0; k < s_all_n; k++) {
-        const gp_wtri2* T = &s_all_tris[k];
-        if (T->owner == ownerSec && !T->hp && T->face == face) continue;
-        double A[3] = { T->ax, T->ay, T->az }, B[3] = { T->bx, T->by, T->bz }, Cc[3] = { T->cx, T->cy, T->cz };
-        double d = gp_pt_tri_d2_v(p, A, B, Cc);
-        if (d < best) { best = d; if (best <= lim2) break; }
-    }
-    return best;
-}
-/* Any pool triangle hit by the ray p + t*dir (unit dir), t in (eps, tmax],
- * excluding the LP face itself?  Moller-Trumbore. */
-static int gp_all_ray_hit(const double p[3], const double dir[3], double tmax,
-                          uint32_t ownerSec, int face) {
-    for (int k = 0; k < s_all_n; k++) {
-        const gp_wtri2* T = &s_all_tris[k];
-        if (T->owner == ownerSec && !T->hp && T->face == face) continue;
-        double e1[3] = { T->bx - T->ax, T->by - T->ay, T->bz - T->az };
-        double e2[3] = { T->cx - T->ax, T->cy - T->ay, T->cz - T->az };
-        double h[3] = { dir[1]*e2[2] - dir[2]*e2[1], dir[2]*e2[0] - dir[0]*e2[2], dir[0]*e2[1] - dir[1]*e2[0] };
-        double det = e1[0]*h[0] + e1[1]*h[1] + e1[2]*h[2];
-        if (det > -1e-9 && det < 1e-9) continue;
-        double f2 = 1.0 / det;
-        double sv[3] = { p[0] - T->ax, p[1] - T->ay, p[2] - T->az };
-        double u = f2 * (sv[0]*h[0] + sv[1]*h[1] + sv[2]*h[2]);
-        if (u < -1e-6 || u > 1.0 + 1e-6) continue;
-        double q[3] = { sv[1]*e1[2] - sv[2]*e1[1], sv[2]*e1[0] - sv[0]*e1[2], sv[0]*e1[1] - sv[1]*e1[0] };
-        double v = f2 * (dir[0]*q[0] + dir[1]*q[1] + dir[2]*q[2]);
-        if (v < -1e-6 || u + v > 1.0 + 1e-6) continue;
-        double t = f2 * (e2[0]*q[0] + e2[1]*q[1] + e2[2]*q[2]);
-        if (t > 1e-6 && t <= tmax) return 1;
+static int tft_fill(int level, int sec, int face) {
+    int lo = 0, hi = (int)(sizeof(k_terrain_fill_tags)/sizeof(k_terrain_fill_tags[0])) - 1;
+    long q = ((long)level << 20) | ((long)sec << 8) | face;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        const tft_entry_t* e = &k_terrain_fill_tags[mid];
+        long k = ((long)e->level << 20) | ((long)e->sec << 8) | e->face;
+        if (k == q) return 1;
+        if (k < q) lo = mid + 1; else hi = mid - 1;
     }
     return 0;
-}
-
-/* Per-face gapfill kill switch (bisection probe): "s:f,s:f" list. Shared by
- * BOTH draw paths (the lpFarOnly beyond==0 exemption and the --no-lod
- * lpGapOnly gate). */
-static int gp_gf_excluded(uint32_t i, int f) {
-    static const char* s_excl = (const char*)-1;
-    if (s_excl == (const char*)-1) s_excl = getenv("OPENPETE_TERRAIN_GAPFILL_EXCL");
-    if (!s_excl || !*s_excl) return 0;
-    char key[24]; snprintf(key, sizeof key, ",%u:%d,", i, f);
-    char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_excl);
-    return strstr(pad, key) != NULL;
 }
 
 /* ---- authored-data art corrections (native display only) -----------------
@@ -1383,53 +1167,8 @@ static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     return 0;
 }
 
-/* Per-LEVEL gapfill kill list: levels whose LP tier is NOT a coarse mirror
- * of the HP world but an authored ALTERNATE (blowhard/34: the LP has a
- * portal ARCH where the HP world has the exit vortex — LP-exclusive
- * structures classify as "gap fillers" and materialize as green arches on
- * the plateau, found in testing 2026-07-09).  The redundancy premise the whole
- * classifier rests on doesn't hold there; disable the feature wholesale.
- * OPENPETE_TERRAIN_GAPFILL_SKIP="34,..." overrides (comma list of
- * g_LevelId values; empty string = skip nothing). */
-static int gp_level_skipped(CPUState* cpu) {
-    static const char* s_skip = (const char*)-1;
-    if (s_skip == (const char*)-1) {
-        s_skip = getenv("OPENPETE_TERRAIN_GAPFILL_SKIP");
-        if (!s_skip) s_skip = "34";
-    }
-    if (!*s_skip) return 0;
-    int lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
-    char key[16]; snprintf(key, sizeof key, ",%d,", lvl);
-    char pad[128]; snprintf(pad, sizeof pad, ",%s,", s_skip);
-    return strstr(pad, key) != NULL;
-}
-
-static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
-                                 uint32_t sectorPtr, uint32_t sectorCnt) {
-    /* Thresholds are env-tunable without a rebuild (corpus-harness sweeps /
-     * future per-level tuning): OPENPETE_TERRAIN_GAPFILL_TUNE=
-     * "tol,cov,dgap,nz,nohp" (any suffix omittable; defaults
-     * 96,0.9,192,0.8,1200). */
-    static double s_tol = -1.0, s_cov, s_dgap, s_nz, s_nohp, s_covhi;
-    if (s_tol < 0.0) {
-        /* covhi 0.97 mid-band: peace_keepers' authored one-cell HP hole under
-         * a 512x512 LP water quad measures cov = 27/30 = 0.900 EXACTLY and
-         * was rejected on the knife's edge, leaving a cyclorama hole under
-         * extended LOD (found in testing 2026-07-09).  Simply widening the cov
-         * gate to 0.97 regressed tree_tops (a branch-floor LP sliver in the
-         * same band POKES THROUGH the trunk HP — found in testing the same day),
-         * so band faces get the stricter VOID test instead of the v5 rules:
-         * admit only if some unbacked sample sits over a true world void.
-         * The all-level bimodality sweep puts intentional-opening LP at
-         * cov >= 0.97 and true gaps at <= 0.83; the band is the dead zone
-         * between. */
-        s_tol = 96.0; s_cov = 0.9; s_dgap = 192.0; s_nz = 0.8; s_nohp = 1200.0;
-        s_covhi = 0.97;
-        const char* e = getenv("OPENPETE_TERRAIN_GAPFILL_TUNE");
-        if (e && *e) sscanf(e, "%lf,%lf,%lf,%lf,%lf,%lf", &s_tol, &s_cov, &s_dgap, &s_nz, &s_nohp, &s_covhi);
-    }
-    gp_build_nohp_pool(cpu, sectorPtr, sectorCnt);
-    gp_build_all_pool(cpu, sectorPtr, sectorCnt);
+static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
+                            uint32_t sectorPtr, uint32_t sectorCnt) {
     /* One-shot per-level tally of how the sector table splits by LOD class —
      * sizes the set where the two tiers can actually coexist. */
     if (getenv("OPENPETE_TERRAIN_TIERCENSUS")) {
@@ -1460,34 +1199,21 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
                     lpF_tot, hpF_tot, lpF_overlap);
         }
     }
-    const double TOL2 = s_tol * s_tol;     /* offline-validated: backed dmax ≤ ~82, gap dmed ≥ 150 */
-    const double COV_MIN = s_cov;          /* gap-filler iff >10% of samples are unbacked... */
-    const double GAP_D2  = s_dgap * s_dgap; /* ...AND the unbacked region is FAR from all HP
-                                            * (median ≥ 2×TOL) OR the face is an UP-FACING
-                                            * floor (n_z < 0, |n_z| > 0.8).  The distance test separates
-                                            * true coverage voids (artisans holes: unbacked
-                                            * dmed 218–512) from LP "shortcut skins" hugging
-                                            * recessed HP detail (sunny_flight cave walls:
-                                            * dmed 102–172), which punch through in front of
-                                            * the wall — the ×1.03 depth pull only protects
-                                            * LP≈HP surfaces (found in testing 2026-07-09,
-                                            * sunny_flight freecam).  The horizontal exemption
-                                            * re-admits the mid-distance FLOOR strips the two
-                                            * bands share (artisans z=192 water-floor plain
-                                            * edges, gnorc_cove z=1088 water plane: dmed
-                                            * 116–181) — every observed punch-through skin is
-                                            * a WALL, every observed mid-distance hole filler
-                                            * is a floor. */
-    const double NZ_MIN  = s_nz;
     if (!C->lpF || !C->lpV) return;
-    if (!C->hpF || !C->hpV || C->nHpF <= 0) return;   /* no HP: LP draws anyway */
+    C->nGapfill = 0;
+    /* The table keys on the sector INDEX; the cache keys on the sector
+     * address — recover the index from the table (decode-time only). */
+    int secIdx = -1;
+    uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
+    for (uint32_t i = 0; i < n; i++)
+        if (rd(cpu, sectorPtr + i * 4) == C->s) { secIdx = (int)i; break; }
+    int level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
     for (int f = 0; f < C->nLpF; f++) {
         tsface_t* F = &C->lpF[f];
         F->gapfill = 0;
         if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV) continue;
-        {   /* stamp the up-facing-floor bit for EVERY LP face (the near-floor
-             * fill backstop reads it; same winding convention as the rules
-             * below: floors have n_z < 0). */
+        {   /* up-facing-floor bit (facemap metadata; game winding: floors have
+             * n_z < 0, |n_z| >= 0.8 of the normal). */
             const tsvert_t* a = &C->lpV[F->i0];
             const tsvert_t* b = &C->lpV[F->i1];
             const tsvert_t* c = &C->lpV[F->i2];
@@ -1497,159 +1223,12 @@ static void tsc_classify_gapfill(CPUState* cpu, tscache_t* C,
             double nx = e1[1]*e2[2] - e1[2]*e2[1];
             double ny = e1[2]*e2[0] - e1[0]*e2[2];
             double nl = nx*nx + ny*ny + nz*nz;
-            F->floorf = (nl > 0.0 && nz < 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
+            F->floorf = (nl > 0.0 && nz < 0.0 && nz*nz >= 0.64*nl);
         }
-        if (gp_level_skipped(cpu)) continue;   /* alternate-LP level: no verdicts */
-        int hit = 0, total = 0, nunb = 0;
-        double unb[30];                    /* per-unbacked-sample min dist² (≤ 2 tris × 15) */
-        double unbp[30][3];                /* their sector-local positions (near-noHP test) */
-        for (int half = 0; half < (F->quad ? 2 : 1); half++) {
-            /* same split as the offline sweep: (i0,i1,i2) + (i0,i2,i3) */
-            const tsvert_t* a = &C->lpV[F->i0];
-            const tsvert_t* b = &C->lpV[half ? F->i2 : F->i1];
-            const tsvert_t* c = &C->lpV[half ? F->i3 : F->i2];
-            for (int u = 0; u <= 4; u++)
-                for (int v = 0; v + u <= 4; v++) {
-                    int w = 4 - u - v;
-                    double p[3] = { (a->x*u + b->x*v + c->x*w) / 4.0,
-                                    (a->y*u + b->y*v + c->y*w) / 4.0,
-                                    (a->z*u + b->z*v + c->z*w) / 4.0 };
-                    total++;
-                    double best = 1e30;
-                    for (int hf = 0; hf < C->nHpF; hf++) {
-                        const tsface_t* H = &C->hpF[hf];
-                        if (H->i0 >= C->nHpV || H->i1 >= C->nHpV ||
-                            H->i2 >= C->nHpV || H->i3 >= C->nHpV) continue;
-                        double d = gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i1], &C->hpV[H->i2]);
-                        if (d < best) best = d;
-                        if (H->quad) {
-                            d = gp_pt_tri_d2(p, &C->hpV[H->i0], &C->hpV[H->i2], &C->hpV[H->i3]);
-                            if (d < best) best = d;
-                        }
-                        if (best <= TOL2) break;
-                    }
-                    if (best <= TOL2) hit++;
-                    else if (nunb < 30) {
-                        unbp[nunb][0] = p[0]; unbp[nunb][1] = p[1]; unbp[nunb][2] = p[2];
-                        unb[nunb++] = best;
-                    }
-                }
+        if (secIdx >= 0) {
+            F->gapfill = (uint8_t)tft_fill(level, secIdx, f);
+            C->nGapfill += F->gapfill;
         }
-        if (total > 0 && (double)hit < s_covhi * (double)total && nunb > 0) {
-            /* median of the unbacked distances (insertion sort, ≤30);
-             * keep the position array in the same order */
-            for (int a2 = 1; a2 < nunb; a2++) {
-                double v2 = unb[a2]; int b2 = a2 - 1;
-                double p2[3] = { unbp[a2][0], unbp[a2][1], unbp[a2][2] };
-                while (b2 >= 0 && unb[b2] > v2) {
-                    unb[b2 + 1] = unb[b2];
-                    unbp[b2 + 1][0] = unbp[b2][0]; unbp[b2 + 1][1] = unbp[b2][1]; unbp[b2 + 1][2] = unbp[b2][2];
-                    b2--;
-                }
-                unb[b2 + 1] = v2;
-                unbp[b2 + 1][0] = p2[0]; unbp[b2 + 1][1] = p2[1]; unbp[b2 + 1][2] = p2[2];
-            }
-            int far_gap = (unb[nunb / 2] >= GAP_D2);
-            int floorH = 0, wallH = 0;
-            double nrm[3] = { 0.0, 0.0, 0.0 };
-            {   /* SIGNED n_z of the first triangle (z = the height axis; the
-                 * game's face winding gives UP-facing floors n_z < 0, i.e.
-                 * the winding normal points AWAY from the visible side).
-                 * Only FLOORS earn the horizontal exemption — a DOWN-facing
-                 * flat face in the sunny-skin dmed band is a coarse LP
-                 * *ceiling* skin drawn below the recessed HP ceiling
-                 * (magic_crafters z=1770 room lids, n_z=+1.00, dmed 103–128:
-                 * found in testing 2026-07-09); every needed horizontal filler
-                 * across artisans/gnorc (197 faces) is n_z ≤ −0.85. */
-                const tsvert_t* a = &C->lpV[F->i0];
-                const tsvert_t* b = &C->lpV[F->i1];
-                const tsvert_t* c = &C->lpV[F->i2];
-                double e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z };
-                double e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
-                double nx = e1[1]*e2[2] - e1[2]*e2[1];
-                double ny = e1[2]*e2[0] - e1[0]*e2[2];
-                double nz = e1[0]*e2[1] - e1[1]*e2[0];
-                double nl = nx*nx + ny*ny + nz*nz;
-                floorH = (nl > 0.0 && nz < 0.0 && nz*nz >= NZ_MIN*NZ_MIN*nl);
-                wallH  = (nl > 0.0 && nz*nz < NZ_MIN*NZ_MIN*nl);
-                if (nl > 0.0) {
-                    double inv = 1.0 / sqrt(nl);
-                    nrm[0] = nx*inv; nrm[1] = ny*inv; nrm[2] = nz*inv;
-                }
-            }
-            int in_band = ((double)hit >= COV_MIN * (double)total);
-            int voidok = 0;
-            if (s_all_n > 0 && (in_band || floorH || far_gap)) {
-                /* TWO-SIDED world-void test: some unbacked sample farther
-                 * than TOL from ALL other geometry (both tiers, every
-                 * sector, self-excluded) with BOTH normal directions clear
-                 * within 256 — a needed fill is the world's last surface
-                 * there and floats in genuinely OPEN space (peace_keepers
-                 * s58 f#3: void sample at d_any=128, both rays clear).
-                 * One-sided (behind-only) was not enough: a skin slicing
-                 * INTO a solid has under-surface samples that are
-                 * geometrically empty but visually inside the hill — the
-                 * front ray (visible side, −n) hits the surface above
-                 * (artisans s12 f#21 grass poke, found in testing 2026-07-09).
-                 * tree_tops s47/s155/s180: samples touch other geometry
-                 * (d_any=0) or have the trunk 31 behind → rejected. */
-                double neg[3] = { -nrm[0], -nrm[1], -nrm[2] };
-                for (int k = 0; k < nunb && !voidok; k++) {
-                    double pw[3] = { unbp[k][0] + C->originX,
-                                     unbp[k][1] + C->originY,
-                                     unbp[k][2] + C->originZ };
-                    if (gp_all_d2_excl(pw, C->s, f, TOL2) > TOL2 &&
-                        !gp_all_ray_hit(pw, nrm, 256.0, C->s, f) &&
-                        !gp_all_ray_hit(pw, neg, 256.0, C->s, f))
-                        voidok = 1;
-                }
-            }
-            if (!in_band) {
-                int near_nohp = 0;
-                /* The pool must be SUBSTANTIAL (≥32 tris) for "near noHP LP"
-                 * to mean "LP-authoritative territory": levels with real
-                 * boundary terrain have 178–310 pool tris (artisans 269,
-                 * peace_keepers 310, cliff_town 178), while degenerate no-HP
-                 * SLIVER sectors give 1–7 (haunted_towers 2, magic_crafters
-                 * 2, tree_tops 1, gnorc 7) and made the proximity test
-                 * meaningless — haunted's tunnel-interior LP walls (dmed
-                 * 112–144, all four two-sided-void-rejected) were admitted
-                 * off a 2-tri sliver and drew as dark slabs across the
-                 * corridor (found in testing 2026-07-09). */
-                if (!far_gap && wallH && s_nohp_n >= 32) {
-                    /* Wall re-admission: the unbacked span continues into
-                     * LP-AUTHORITATIVE territory (min sample distance to a no-HP /
-                     * force-LP sector's LP ≤ s_nohp) — a level-boundary cliff whose
-                     * LP is the only geometry there (artisans outer wall: 606–991),
-                     * NOT an interior shortcut skin (sunny cave walls: ≥1382). */
-                    double lim2 = s_nohp * s_nohp;
-                    for (int k = 0; k < nunb && !near_nohp; k++) {
-                        double pw[3] = { unbp[k][0] + C->originX,
-                                         unbp[k][1] + C->originY,
-                                         unbp[k][2] + C->originZ };
-                        if (gp_pool_d2(pw) <= lim2) near_nohp = 1;
-                    }
-                }
-                /* floorH alone is NOT sufficient (v8): the horizontal
-                 * exemption's mid-distance floor strips must also pass the
-                 * void test, or a coarse LP floor tri slicing through an HP
-                 * mound gets admitted and pokes through the grass. */
-                /* far_gap TOO is void-gated (v12): an LP-exclusive WALL tri
-                 * with dmed 308 poked out of a jacques wall base — dmed≥192
-                 * alone can't distinguish "deep void" from "deeply different
-                 * alternate geometry"; the true artisans holes all carry void
-                 * samples (offline audit: 6 kept / 16 flipped across 8
-                 * levels; the artisans outer-wall cliffs stay admitted via
-                 * near_nohp). */
-                F->gapfill = (((far_gap || floorH) && voidok) || near_nohp);
-            } else {
-                /* MID-BAND [COV_MIN, covhi) — the bimodality dead zone; the
-                 * v5 orientation rules are not trustworthy here.  Void test
-                 * only. */
-                F->gapfill = voidok;
-            }
-        }
-        C->nGapfill += F->gapfill;
     }
 }
 
@@ -1748,7 +1327,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
-        tsc_classify_gapfill(cpu, C, sectorPtr, sectorCnt);
+        tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
         C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
         if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
             for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
@@ -2854,7 +2433,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * ride along — ONLY those — so the sparse-HP holes stay filled (the
          * near-LP-gap fix; per-face gate below). */
         int lpFarOnly = 0, lpGapOnly = 0;
-        int drawLPfull = drawLP;   /* LP tier fully drawn (pre-substitution arms) */
         if (drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
             if (lod_handoff) { drawLP = 1; lpFarOnly = 1; }
             else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
@@ -2908,32 +2486,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int fillLP = s_holefill && !(flags & 0x2000) && nLpF > 0
                      && ((double)lodThr < cbin + SC->radius + 0x100)
                      && !(openpete_no_lod && drawHP);
-        /* NEAR-FLOOR fill backstop (cliff_town crest strip, found in testing
-         * 2026-07-09): a fully-near HP sector's dropped LP FLOOR faces can
-         * cover sightlines NOTHING else covers — ground strips past the HP
-         * mesh edge whose cov reads 1.0 because the samples hug the HP cliff
-         * face within TOL (a fundamentally NON-LOCAL class: no point-geometry
-         * rule can see it; the PSX hides it because everything beyond the
-         * crest is fog-saturated, native's extended draw distance exposes
-         * it).  Feed those floors through the stencil-gated fill pass at
-         * true LP depth — the stencil makes over-inclusion safe for every
-         * covered pixel (overdraw impossible); floors-only keeps the near
-         * arch/aperture walls out (the failure that gated the fill to far
-         * sectors in the first place).
-         * DEFAULT OFF (OPENPETE_TERRAIN_FILLNEAR=1 opts in): the backstop
-         * cannot distinguish an interior hole (cliff_town strip: SHOULD be
-         * terrain) from a coarse-LP silhouette overhang (haunted_towers
-         * island rims, sunny_flight horizon: 1-2px terrain slivers painted
-         * on SKY — the fringe class the fully-fogged gate exists to block).
-         * Both are stencil-0 pixels beside drawn terrain; the separator is
-         * screen-space morphology (interior vs boundary), which the fill
-         * pass cannot see.  Opt in to fill crest strips at the cost of rim
-         * slivers. */
-        static int s_fillnear = -1;
-        if (s_fillnear < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILLNEAR"); s_fillnear = (e && *e) ? (*e != '0') : 0; }
-        int fillNearLP = s_fillnear && s_holefill && !fillLP && drawHP && !drawLPfull
-                         && !(flags & 0x2000) && nLpF > 0
-                         && !gp_level_skipped(cpu);   /* alternate-LP levels: no backstop either */
+        /* (The v9 near-floor fill backstop is retired: its cliff_town
+         * crest-strip motivation measured as a NATIVE HP coverage deficit —
+         * the pure-HP og reference covers those sightlines — and its
+         * rim-sliver false positives were the fringe class the frozen fill
+         * tags exclude by review.) */
 
         s_walk_sectors++;
 
@@ -2952,7 +2509,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             else continue;
         }
         if (pass == 1 && !drawHP) continue;
-        if (passFill && !fillLP && !fillNearLP) continue;
+        if (passFill && !fillLP) continue;
         if (passFill && SC->polyanim) continue;   /* stale LP bank — never backstop-fill */
 
         uint32_t faces; int nv, nf, faceStride;
@@ -3197,7 +2754,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 fputc('\n', stderr);
             }
             if (fmDumpOnly) continue;
-            if (passLP && !passFill && lpGapOnly && (!F->gapfill || gp_gf_excluded(i, f))) { continue; } /* --no-lod: gap fillers only */
+            if (passLP && !passFill && lpGapOnly && !F->gapfill) { continue; } /* --no-lod: fill-tag faces only */
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 const int ci[4] = { i0, i1, i2, i3 };
@@ -3206,7 +2763,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
                 if (passLP && !passFill && lpFarOnly && beyond == 0) {
                     /* LP far-only — EXCEPT classified HP-coverage-gap fillers
-                     * (tsc_classify_gapfill), which draw at all distances so a
+                     * (the frozen fill tags), which draw at all distances so a
                      * sparse near HP mesh doesn't open a hole to the cyclorama
                      * (the near-LP-gap fix; at the fog line the game itself
                      * draws these faces the moment one corner crosses, so this
@@ -3221,7 +2778,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         e = getenv("OPENPETE_TERRAIN_LPKEEPDBG");   /* = frame to log at */
                         s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
                     }
-                    int gfKeep = s_gapfill_en && F->gapfill && !gp_gf_excluded(i, f);
+                    int gfKeep = s_gapfill_en && F->gapfill;
                     if (!s_lpkeep && !gfKeep) continue;
                     if (s_lpkeepdbg && openpete_frame >= (unsigned)s_lpkeepdbg
                         && openpete_frame < (unsigned)s_lpkeepdbg + 4u) {
@@ -3248,11 +2805,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
              * float raster is a hair tighter than the PSX integer edge — gate
              * tick 4888, peace-keepers cliffs). */
-            if (passFill && fillNearLP) {
-                /* Near-floor backstop: floors only (walls/aperture arches
-                 * stay out); stencil-gated to pixels nothing else covered. */
-                if (!F->floorf) continue;
-            } else if (passFill) {
+            if (passFill) {
                 /* Slack 1024 (face admitted when every corner is ≥75% fogged):
                  * a strict ir0≤0 dropped the LP of sectors STRADDLING the LOD
                  * boundary, leaving their far rows' raster gaps unfilled (the

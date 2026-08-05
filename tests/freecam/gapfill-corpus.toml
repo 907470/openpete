@@ -1,5 +1,7 @@
-# Freecam-spot regression corpus for the terrain near-LP gapfill classifier
-# (games/spyro-1/features/terrain_native.c tsc_classify_gapfill).
+# Freecam-spot regression corpus for the terrain LP fill-tag mechanism
+# (games/spyro-1/features/terrain_native.c tsc_tag_gapfill: the frozen,
+# measurement-derived fill-face table in terrain_fill_tags.h — regenerate
+# with scripts/gen-fill-tags.py from tests/freecam/fill-tags.verdicts).
 #
 # Each case boots headless (software Vulkan — deterministic), jumps the
 # freecam to a recorded pose, screenshots at `frame`, and asserts metric
@@ -253,47 +255,11 @@ mode  = "terrain"
   kind   = "ab-identical"
   max_px = 0
 
-# cliff_town crest-strip floor gap (found in testing): fully-near HP sectors'
-# dropped LP floors cover sightlines NOTHING else covers (ground strips
-# past the HP mesh edge; cov reads 1.0 because samples hug the HP cliff
-# within TOL -- a non-local class no point rule can see).  v9: near-floor
-# fill backstop -- such sectors' LP FLOORS feed the stencil-gated
-# WORLD_FILL pass (paints only uncovered pixels; walls/arches stay out).
-# Fills fully under extended LOD (no fog -> true stencil-0); under
-# original LOD the hole pixels are covered by fully-fogged far-LP WORLD
-# geometry, so the patch renders fogged (PSX-faithful) -- documented
-# residual.  DEFAULT OFF: the backstop cannot separate interior holes
-# from coarse-LP silhouette overhangs (haunted island rims / sunny
-# horizon: 1-2px terrain slivers on sky), so it is opt-in
-# (OPENPETE_TERRAIN_FILLNEAR=1).  Guard: the mechanism must keep
-# filling the strip under extended when enabled.
-[[case]]
-name   = "clifftown-crest-strip-filled-extended"
-level  = "cliff_town"
-pose   = "57191,104992,33420,1726,698"
-lod    = "extended"
-mode   = "terrain"
-ab_env = "OPENPETE_TERRAIN_FILLNEAR"
-  [[case.check]]
-  kind   = "ab-active"
-  bbox   = [209, 156, 503, 284]
-  min_px = 8000
-  [[case.check]]
-  kind   = "bg-max"
-  bbox   = [220, 165, 490, 275]
-  max_px = 200
-
-# Near-floor backstop blast-radius bound at the attract-demo gameplay
-# cameras: FILLNEAR on/off may differ only by small seam fills (tick 2694:
-# 154 px = the castle dome's truncated tip completed + a grass-on-grass
-# sliver; ticks 4888/9775 = 0, portal masks untouched).
-[[case]]
-name   = "attract-demo-fillnear-bounded"
-ticks  = [2694, 4888, 9775]
-ab_env = "OPENPETE_TERRAIN_FILLNEAR"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 300
+# cliff_town crest strip: the v9 near-floor fill backstop that served it is
+# retired — the strip's sightlines measured as COVERED by authored HP in the
+# pure-HP og reference (og with m_LodDistance doubled), i.e. the visible gap
+# is a native HP coverage deficit, not missing LP. Tracked as a renderer bug,
+# not a fill concern.
 
 # haunted_towers tunnel-interior LP wall slabs (found in testing): four LP
 # walls (s143/s139/s82/s89, dmed 112-144, all two-sided-void-rejected)
@@ -312,13 +278,14 @@ mode  = "terrain"
   max_px = 0
 
 # blowhard: the LP tier is an authored ALTERNATE, not a coarse mirror --
-# it has a portal ARCH where the HP world has the exit vortex, so
-# LP-exclusive structures classify as gap fillers and materialize as
-# green arches on the plateau.  The classifier's redundancy premise
-# doesn't hold; gapfill is disabled level-wide (g_LevelId 34 in the
-# OPENPETE_TERRAIN_GAPFILL_SKIP list, default "34").
+# it has a portal ARCH where the HP world has the exit vortex.  Under the
+# frozen fill tags this needs no special-casing: the pure-HP og reference
+# covers every sightline og-original covers here, so no blowhard face ever
+# enters the fill table.  The old threshold classifier needed a level-wide
+# kill list for exactly this; the guard stays to prove the arch never
+# materializes.
 [[case]]
-name  = "blowhard-level-disabled"
+name  = "blowhard-no-fill-faces"
 level = "blowhard"
 pose  = "89820,73764,23253,2337,166"
 mode  = "terrain"
