@@ -1,0 +1,34 @@
+# Pose manifest for the terrain fill-tag sweep (tests/freecam/fill_sweep.py).
+# One pose per line: level | x,y,z,yaw,pitch | tag
+#
+# Selection rule: canonical-plausible cameras (gameplay-like views, plus the
+# validated gapfill/freecam corpus spots). The og legs are only valid ground
+# truth where the .s occlusion/culling verdicts fire for cameras the game
+# could plausibly have; fully detached orbits under-cover in og and can only
+# ADD candidate faces via views the game never shows — the review tier and
+# the stencil gate bound that risk, but prefer plausible poses.
+#
+# Ordering matters for the marginal-new-faces curve: the harness processes
+# poses in file order and reports how many new faces each pose contributes,
+# per level — the convergence signal that decides sweep density.
+
+artisans      | 90094,104721,11484,283,227  | water-y283
+artisans      | 90094,104721,11484,284,227  | water-y284
+artisans      | 90094,104721,11484,260,227  | water-y260
+artisans      | 72451,136571,12777,604,265  | waterline-psx-repro
+artisans      | 78657,80237,7024,-885,-47   | arch
+artisans      | 30400,127062,11872,-922,66  | outer-wall
+artisans      | 73189,44026,7159,2465,160   | delbin-pedestal
+artisans      | 86800,69542,10184,243,447   | grass-mound
+artisans      | 36902,108127,14518,2634,300 | structural-mountain
+peace_keepers | 167657,116990,62434,323,438 | water-quad
+haunted_towers| 106236,143423,35847,-1180,227 | lp-bridge
+haunted_towers| 100234,109750,63909,-1046,992 | topdown-rims
+haunted_towers| 120133,79584,30936,3928,52  | tunnel-interior
+cliff_town    | 57191,104992,33420,1726,698 | crest-strip
+gnorc_cove    | 36863,117108,30800,1448,343 | water-plane
+magic_crafters| 63187,89684,26826,4146,-159 | ceiling-room
+magic_crafters| 69519,93695,26535,619,26    | waterfall-room
+jacques       | 86273,68249,29528,2609,289  | wall-base
+sunny_flight  | 118328,132884,12580,953,32  | cave-wall
+blowhard      | 89820,73764,23253,2337,166  | plateau
