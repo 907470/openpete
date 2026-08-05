@@ -78,17 +78,33 @@ bool render_path_enabled(render_path_t p) {
 }
 
 /* Per-frame intervals. Sized generously: mobys can emit many separate dispatch
- * intervals per frame. */
+ * intervals per frame.
+ *
+ * Two banks: the game submits DrawOTag at the START of a VBL, before that
+ * VBL's render functions record any intervals — so at walk time the current
+ * table describes the OT being BUILT, not the one being DRAWN. The commit
+ * (once per canonical present) rolls current -> previous instead of
+ * discarding, and the OT-walk filter consults current first, then previous.
+ * The polybuf double-buffers per frame, so the two tables cover disjoint
+ * address banks and cannot false-match each other. */
 #define MAX_INTERVALS 1024
 typedef struct { uint32_t start, end; render_path_t path; } interval_t;
 static interval_t s_iv[MAX_INTERVALS];
 static int        s_iv_n = 0;
+static interval_t s_iv_prev[MAX_INTERVALS];
+static int        s_iv_prev_n = 0;
 
 /* Interval-less canon-drawn marks (render_path_mark_drawn). Kept separate from
  * the intervals so they can never leak into the OT-walk addr filter. */
 static uint32_t s_pending_marks = 0;
 
-void render_paths_frame_reset(void) { s_iv_n = 0; s_pending_marks = 0; }
+void render_paths_frame_reset(void) {
+    if (s_iv_n) {   /* roll into the drawn-OT bank; keep it across idle VBLs */
+        memcpy(s_iv_prev, s_iv, (size_t)s_iv_n * sizeof(s_iv[0]));
+        s_iv_prev_n = s_iv_n;
+    }
+    s_iv_n = 0; s_pending_marks = 0;
+}
 
 void render_path_mark_drawn(render_path_t p) {
     if (p < 0 || p >= RP_COUNT) return;
@@ -156,6 +172,13 @@ bool render_path_addr_visible(uint32_t addr) {
     for (int i = 0; i < s_iv_n; i++) {
         if (addr >= s_iv[i].start && addr < s_iv[i].end)
             return render_path_enabled(s_iv[i].path);
+    }
+    /* The walked OT was built on the PREVIOUS render VBL (DrawOTag submits at
+     * the start of a VBL, before this VBL's records) — its intervals live in
+     * the rolled bank. */
+    for (int i = 0; i < s_iv_prev_n; i++) {
+        if (addr >= s_iv_prev[i].start && addr < s_iv_prev[i].end)
+            return render_path_enabled(s_iv_prev[i].path);
     }
     return false;   /* untracked geometry: dropped while a selection is active */
 }
