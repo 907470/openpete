@@ -670,6 +670,8 @@ static const knob_desc_t g_builtin[] = {
         "CSV level ids where gapfill disabled (default 34)."),
     ENVROW_LATCHED("TERRAIN_GAPFILL_EXCL", "Debug", "",
         "Per-face gapfill kill switch sector:face."),
+    ENVROW_LATCHED("TERRAIN_ARTFIX", "Debug", "1",
+        "Recolour known unpainted level-data faces (0 = authentic)."),
     ENVROW_LATCHED("TERRAIN_LOD_FAITHFUL", "Debug", "0",
         "Faithful .s tier swap at fog saturation."),
     ENVROW_LATCHED("TERRAIN_FOGSCALE", "Debug", "1.0",

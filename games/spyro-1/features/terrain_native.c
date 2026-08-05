@@ -1351,6 +1351,38 @@ static int gp_gf_excluded(uint32_t i, int f) {
     return strstr(pad, key) != NULL;
 }
 
+/* ---- authored-data art corrections (native display only) -----------------
+ * Level-data authoring bugs corrected at the native colour fetch; emulated RAM
+ * stays canonical, so the PSX/og legs keep the authentic data and gameplay
+ * state is untouched. Keyed on exact (g_LevelId, sector, face).
+ *
+ * stone_hill s205 f4-f7: four quads of the water backdrop group carry the
+ * editor-default vertex colour 7F7F7F (unpainted) while every sibling panel
+ * is FF7F60 — the pre-fogged sky camouflage. On PSX the grey shows when
+ * looking up from under the water; natively it also shows from above (the LP
+ * either-half NCLIP acceptance draws the underside the .s culls). Recolour
+ * to the sibling sky-blue. OPENPETE_TERRAIN_ARTFIX=0 restores authentic. */
+typedef struct { int level, sec, face; uint32_t rgb; } lp_artfix_t;
+static const lp_artfix_t k_lp_artfix[] = {
+    { 11, 205, 4, 0xFF7F60u }, { 11, 205, 5, 0xFF7F60u },
+    { 11, 205, 6, 0xFF7F60u }, { 11, 205, 7, 0xFF7F60u },
+};
+static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ARTFIX");
+                    s_on = !(e && *e == '0'); }
+    if (!s_on) return 0;
+    static int s_lvl = -1, s_lvl_frame = -1;
+    if (s_lvl_frame != (int)openpete_frame) {   /* one RAM read per VBL */
+        s_lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+        s_lvl_frame = (int)openpete_frame;
+    }
+    for (size_t k = 0; k < sizeof(k_lp_artfix)/sizeof(k_lp_artfix[0]); k++)
+        if (k_lp_artfix[k].level == s_lvl && k_lp_artfix[k].sec == sec
+            && k_lp_artfix[k].face == face) { *rgb = k_lp_artfix[k].rgb; return 1; }
+    return 0;
+}
+
 /* Per-LEVEL gapfill kill list: levels whose LP tier is NOT a coarse mirror
  * of the HP world but an authored ALTERNATE (blowhard/34: the LP has a
  * portal ARCH where the HP world has the exit vortex — LP-exclusive
@@ -3423,6 +3455,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
                 rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
                 rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
+            }
+            /* Authored-data corrections (unpainted vertex colours) — see
+             * k_lp_artfix. Applies to LP world faces and their fill twins. */
+            if (passLP) {
+                uint32_t fixrgb;
+                if (lp_artfix_lookup(cpu, (int)i, f, &fixrgb))
+                    rc0 = rc1 = rc2 = rc3 = fixrgb;
             }
             /* Sub-tick UV scroll (env texture anim): translate every corner V by
              * the tile's fractional offset. One block covers GT4, GT3 (the

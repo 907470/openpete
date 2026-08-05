@@ -149,3 +149,9 @@ beast_makers | pos=(118535, 113493, 16946) yaw=3397 pitch=104
 # side, 54/55 from the far), so an empty result from one side is correct there.
 # Broken = shimmer along the inner rim as the camera moves.
 peace_keepers | pos=(73452, 77502, 55889) yaw=2942 pitch=81
+
+# stone_hill water-backdrop group at the level's far north (visible on the
+# horizon from legal gameplay cameras). Guards the k_lp_artfix recolour of the
+# four unpainted quads (s205 f4-f7, editor-default 7F7F7F -> sibling FF7F60):
+# a regression re-shows a grey panel floating over the water here.
+stone_hill | pos=(163352, 247415, 37632) yaw=1038 pitch=602
