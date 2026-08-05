@@ -199,3 +199,247 @@ NOFILL twilight_harbor 146 21 31 spawn:31
 # the yaw-283 ON-leg hole is 6,875 px under exactly this face (bg-max
 # attribution 2026-08-05).
 FILL   artisans 43 4 6875 y283-onleg-bgmax
+# --- NW water plane (user-reported top-down hole; strip-reviewed: og water
+# --- over og-sat/native void across every quad) ---
+FILL   artisans 111 0 1836 water-nw-topdown:1836
+FILL   artisans 111 2 1860 water-nw-topdown:1860
+FILL   artisans 120 0 2742 water-nw-topdown:2742
+FILL   artisans 120 1 1878 water-nw-topdown:1878
+FILL   artisans 120 2 3705 water-nw-topdown:3705
+FILL   artisans 120 3 3850 water-nw-topdown:3850
+FILL   artisans 124 0 1979 water-nw-topdown:1979
+FILL   artisans 124 2 4062 water-nw-topdown:4062
+FILL   artisans 124 3 4160 water-nw-topdown:4160
+FILL   artisans 153 0 1893 water-nw-topdown:1893
+FILL   artisans 153 1 1940 water-nw-topdown:1940
+FILL   artisans 153 2 3881 water-nw-topdown:3881
+FILL   artisans 153 3 3973 water-nw-topdown:3973
+FILL   artisans 68 2 1854 water-nw-topdown:1854
+FILL   artisans 78 0 1830 water-nw-topdown:1830
+FILL   artisans 78 2 1860 water-nw-topdown:1860
+FILL   artisans 94 2 54 water-nw-topdown:54
+# --- user-audit poses 2 & 3 (strip-reviewed): artisans east water quads
+# --- (s7/s172, og water over void) FILL; tree/arch silhouette slivers
+# --- NOFILL; cliff_town mesa-top ground quads (s2/s3/s5/s7/s14, og ground
+# --- over sky from above — the crest family) all FILL ---
+FILL   artisans 172 1 779 user-east:779
+FILL   artisans 172 3 2211 user-east:2211
+FILL   artisans 7 16 183 user-east:183
+FILL   artisans 7 2 7718 user-east:7718
+FILL   artisans 7 3 3661 user-east:3661
+FILL   artisans 7 4 122 user-east:122
+FILL   artisans 7 5 484 user-east:484
+FILL   cliff_town 14 10 161 user-topdown:161
+FILL   cliff_town 14 2 2419 user-topdown:2419
+FILL   cliff_town 14 9 103 user-topdown:103
+FILL   cliff_town 2 0 137 user-topdown:137
+FILL   cliff_town 2 1 317 user-topdown:317
+FILL   cliff_town 2 3 1838 user-topdown:1838
+FILL   cliff_town 2 4 1104 user-topdown:1104
+FILL   cliff_town 2 6 2146 user-topdown:2146
+FILL   cliff_town 2 7 1384 user-topdown:1384
+FILL   cliff_town 3 0 2256 user-topdown:2256
+FILL   cliff_town 3 1 1228 user-topdown:1228
+FILL   cliff_town 3 3 2280 user-topdown:2280
+FILL   cliff_town 3 4 1155 user-topdown:1155
+FILL   cliff_town 3 6 2060 user-topdown:2060
+FILL   cliff_town 3 7 1043 user-topdown:1043
+FILL   cliff_town 5 0 2130 user-topdown:2130
+FILL   cliff_town 5 1 1045 user-topdown:1045
+FILL   cliff_town 5 3 2126 user-topdown:2126
+FILL   cliff_town 5 4 1059 user-topdown:1059
+FILL   cliff_town 5 6 2254 user-topdown:2254
+FILL   cliff_town 63 2 85 user-topdown:85
+FILL   cliff_town 63 3 78 user-topdown:78
+FILL   cliff_town 7 0 2048 user-topdown:2048
+FILL   cliff_town 7 1 2128 user-topdown:2128
+FILL   cliff_town 7 3 2007 user-topdown:2007
+FILL   cliff_town 7 4 2106 user-topdown:2106
+FILL   cliff_town 7 6 2011 user-topdown:2011
+NOFILL artisans 151 0 35 user-east:35
+NOFILL artisans 151 1 23 user-east:23
+NOFILL artisans 169 1 38 user-east:38
+NOFILL artisans 169 2 42 user-east:42
+NOFILL artisans 49 4 102 user-east:102
+NOFILL artisans 49 5 102 user-east:102
+NOFILL artisans 56 6 82 user-east:82
+NOFILL artisans 99 2 138 user-east:138
+
+# ============================================================================
+# NOFILL re-classification (found in testing): NOFILL rows conflated three classes.
+# The fill mechanism reads only FILL rows, so behaviour is unchanged — but the
+# semantics below bind future reviews and P2's acceptance gate:
+#
+# P2-PENDING — need is ORIG-ONLY: og draws the face under the authored per-face
+#   admission field; native-original drops it because the fog-corner handoff
+#   approximation disagrees. These are artifacts of OUR admission stand-in, not
+#   level-data facts. P2 (authored admission port) must dissolve them:
+#   acceptance metric = orig-need at these faces goes to ~0.
+#     artisans s27 f3,f4 · blowhard s89 f0,f2,f7,f9,f22 · jacques s63 f1,f3 · s157 f15
+#
+# PHANTOM — candidates born only under the corrupted full-saturation og-sat
+#   legs (pre-0x10000); they measure data=0 orig=0 today and drop out on the
+#   next sweep regeneration:
+#     dream_weavers s66 f3,f4,f7,f8 · s85 f3,f14 · blowhard s60 f5,f6,f13,f14
+#     toasty s41 f0,f1 · ice_cavern s41 f16,f22 · doctor_shemp s84 f15 · stone_hill s33 f0
+#
+# All remaining NOFILL rows are DESIGN: data-backed LP-only sightlines where
+# extended mode deliberately shows HP-true silhouettes (island-rim fringes,
+# LP-alternate shapes).
+# ============================================================================
+# --- gnorc_cove water BORDER ring (user attestation: the level has a
+# --- circular LP border; class = z=1088 LP faces with a vertex OUTSIDE the
+# --- HP water footprint in XY — exact polygon coverage on level data, no
+# --- thresholds. Interior z=1088 LP is HP-covered and stays untagged.) ---
+# --- gnorc_cove water BORDER ring (user attestation: the level has a
+# --- circular LP border; class = z=1088 LP faces with a vertex OUTSIDE the
+# --- HP water footprint in XY — exact polygon coverage on level data, no
+# --- thresholds. Interior z=1088 LP is HP-covered and stays untagged.) ---
+FILL   gnorc_cove 32 0 0 z1088-border
+FILL   gnorc_cove 88 0 0 z1088-border
+FILL   gnorc_cove 88 1 0 z1088-border
+FILL   gnorc_cove 88 2 0 z1088-border
+FILL   gnorc_cove 88 3 0 z1088-border
+FILL   gnorc_cove 88 5 0 z1088-border
+FILL   gnorc_cove 93 0 0 z1088-border
+FILL   gnorc_cove 93 1 0 z1088-border
+FILL   gnorc_cove 93 2 0 z1088-border
+FILL   gnorc_cove 93 3 0 z1088-border
+FILL   gnorc_cove 93 4 0 z1088-border
+FILL   gnorc_cove 93 5 0 z1088-border
+FILL   gnorc_cove 97 0 0 z1088-border
+FILL   gnorc_cove 97 1 0 z1088-border
+FILL   gnorc_cove 97 2 0 z1088-border
+FILL   gnorc_cove 97 3 0 z1088-border
+FILL   gnorc_cove 97 4 0 z1088-border
+FILL   gnorc_cove 97 5 0 z1088-border
+FILL   gnorc_cove 97 6 0 z1088-border
+FILL   gnorc_cove 97 7 0 z1088-border
+FILL   gnorc_cove 97 8 0 z1088-border
+FILL   gnorc_cove 98 0 0 z1088-border
+FILL   gnorc_cove 98 1 0 z1088-border
+FILL   gnorc_cove 98 2 0 z1088-border
+FILL   gnorc_cove 98 3 0 z1088-border
+FILL   gnorc_cove 98 4 0 z1088-border
+FILL   gnorc_cove 98 5 0 z1088-border
+FILL   gnorc_cove 103 0 0 z1088-border
+FILL   gnorc_cove 103 1 0 z1088-border
+FILL   gnorc_cove 103 2 0 z1088-border
+FILL   gnorc_cove 103 3 0 z1088-border
+FILL   gnorc_cove 103 4 0 z1088-border
+FILL   gnorc_cove 103 5 0 z1088-border
+FILL   gnorc_cove 103 6 0 z1088-border
+FILL   gnorc_cove 103 7 0 z1088-border
+FILL   gnorc_cove 109 0 0 z1088-border
+FILL   gnorc_cove 109 1 0 z1088-border
+FILL   gnorc_cove 109 2 0 z1088-border
+FILL   gnorc_cove 109 3 0 z1088-border
+FILL   gnorc_cove 109 4 0 z1088-border
+FILL   gnorc_cove 109 5 0 z1088-border
+FILL   gnorc_cove 118 0 0 z1088-border
+FILL   gnorc_cove 118 1 0 z1088-border
+FILL   gnorc_cove 118 2 0 z1088-border
+FILL   gnorc_cove 118 3 0 z1088-border
+FILL   gnorc_cove 118 4 0 z1088-border
+FILL   gnorc_cove 118 5 0 z1088-border
+FILL   gnorc_cove 118 6 0 z1088-border
+FILL   gnorc_cove 118 7 0 z1088-border
+FILL   gnorc_cove 123 0 0 z1088-border
+FILL   gnorc_cove 123 1 0 z1088-border
+FILL   gnorc_cove 123 2 0 z1088-border
+FILL   gnorc_cove 123 3 0 z1088-border
+FILL   gnorc_cove 123 4 0 z1088-border
+FILL   gnorc_cove 123 5 0 z1088-border
+FILL   gnorc_cove 128 3 0 z1088-border
+FILL   gnorc_cove 128 4 0 z1088-border
+FILL   gnorc_cove 128 5 0 z1088-border
+FILL   gnorc_cove 128 6 0 z1088-border
+FILL   gnorc_cove 128 7 0 z1088-border
+FILL   gnorc_cove 128 8 0 z1088-border
+FILL   gnorc_cove 138 0 0 z1088-border
+FILL   gnorc_cove 142 0 0 z1088-border
+FILL   gnorc_cove 142 1 0 z1088-border
+FILL   gnorc_cove 142 2 0 z1088-border
+FILL   gnorc_cove 142 3 0 z1088-border
+FILL   gnorc_cove 142 4 0 z1088-border
+FILL   gnorc_cove 142 5 0 z1088-border
+FILL   gnorc_cove 148 0 0 z1088-border
+FILL   gnorc_cove 148 1 0 z1088-border
+FILL   gnorc_cove 148 2 0 z1088-border
+FILL   gnorc_cove 148 3 0 z1088-border
+FILL   gnorc_cove 148 4 0 z1088-border
+FILL   gnorc_cove 148 5 0 z1088-border
+FILL   gnorc_cove 148 6 0 z1088-border
+FILL   gnorc_cove 148 7 0 z1088-border
+FILL   gnorc_cove 154 0 0 z1088-border
+FILL   gnorc_cove 154 1 0 z1088-border
+FILL   gnorc_cove 154 2 0 z1088-border
+FILL   gnorc_cove 154 3 0 z1088-border
+FILL   gnorc_cove 154 4 0 z1088-border
+FILL   gnorc_cove 154 5 0 z1088-border
+FILL   gnorc_cove 158 0 0 z1088-border
+FILL   gnorc_cove 158 1 0 z1088-border
+FILL   gnorc_cove 158 3 0 z1088-border
+FILL   gnorc_cove 158 4 0 z1088-border
+FILL   gnorc_cove 158 5 0 z1088-border
+FILL   gnorc_cove 158 6 0 z1088-border
+FILL   gnorc_cove 158 7 0 z1088-border
+FILL   gnorc_cove 158 8 0 z1088-border
+FILL   gnorc_cove 161 5 0 z1088-border
+FILL   gnorc_cove 170 1 0 z1088-border
+FILL   gnorc_cove 174 0 0 z1088-border
+FILL   gnorc_cove 174 1 0 z1088-border
+FILL   gnorc_cove 174 2 0 z1088-border
+FILL   gnorc_cove 174 3 0 z1088-border
+FILL   gnorc_cove 174 4 0 z1088-border
+FILL   gnorc_cove 174 5 0 z1088-border
+FILL   gnorc_cove 183 0 0 z1088-border
+FILL   gnorc_cove 183 2 0 z1088-border
+FILL   gnorc_cove 183 3 0 z1088-border
+FILL   gnorc_cove 183 4 0 z1088-border
+FILL   gnorc_cove 186 0 0 z1088-border
+FILL   gnorc_cove 186 1 0 z1088-border
+FILL   gnorc_cove 186 2 0 z1088-border
+FILL   gnorc_cove 186 3 0 z1088-border
+FILL   gnorc_cove 186 4 0 z1088-border
+FILL   gnorc_cove 189 5 0 z1088-border
+FILL   gnorc_cove 191 0 0 z1088-border
+FILL   gnorc_cove 191 1 0 z1088-border
+FILL   gnorc_cove 191 2 0 z1088-border
+FILL   gnorc_cove 191 3 0 z1088-border
+FILL   gnorc_cove 191 4 0 z1088-border
+FILL   gnorc_cove 191 5 0 z1088-border
+FILL   gnorc_cove 217 0 0 z1088-border
+FILL   gnorc_cove 217 1 0 z1088-border
+FILL   gnorc_cove 217 2 0 z1088-border
+FILL   gnorc_cove 217 3 0 z1088-border
+FILL   gnorc_cove 217 4 0 z1088-border
+FILL   gnorc_cove 217 5 0 z1088-border
+FILL   gnorc_cove 224 1 0 z1088-border
+FILL   gnorc_cove 224 3 0 z1088-border
+FILL   gnorc_cove 224 4 0 z1088-border
+FILL   gnorc_cove 227 0 0 z1088-border
+FILL   gnorc_cove 227 3 0 z1088-border
+FILL   gnorc_cove 227 4 0 z1088-border
+FILL   gnorc_cove 227 5 0 z1088-border
+FILL   gnorc_cove 230 1 0 z1088-border
+FILL   gnorc_cove 230 2 0 z1088-border
+FILL   gnorc_cove 230 3 0 z1088-border
+FILL   gnorc_cove 230 4 0 z1088-border
+FILL   gnorc_cove 230 5 0 z1088-border
+FILL   gnorc_cove 230 6 0 z1088-border
+FILL   gnorc_cove 230 7 0 z1088-border
+FILL   gnorc_cove 234 0 0 z1088-border
+FILL   gnorc_cove 234 2 0 z1088-border
+FILL   gnorc_cove 234 3 0 z1088-border
+FILL   gnorc_cove 238 0 0 z1088-border
+FILL   gnorc_cove 238 1 0 z1088-border
+FILL   gnorc_cove 238 2 0 z1088-border
+FILL   gnorc_cove 238 3 0 z1088-border
+FILL   gnorc_cove 238 4 0 z1088-border
+FILL   gnorc_cove 239 2 0 z1088-border
+FILL   gnorc_cove 239 3 0 z1088-border
+FILL   gnorc_cove 239 4 0 z1088-border
+FILL   gnorc_cove 239 5 0 z1088-border
+FILL   gnorc_cove 239 6 0 z1088-border
+FILL   gnorc_cove 239 7 0 z1088-border

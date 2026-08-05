@@ -25,6 +25,8 @@ artisans        | 30400,127062,11872,-922,66    | outer-wall
 artisans        | 73189,44026,7159,2465,160     | delbin-pedestal
 artisans        | 86800,69542,10184,243,447     | grass-mound
 artisans        | 36902,108127,14518,2634,300   | structural-mountain
+artisans        | 55555,118312,58525,5120,992   | water-nw-topdown
+artisans        | 99194,99580,19688,-154,350    | user-east
 stone_hill      | default                       | spawn
 stone_hill      | 212446,140508,40020,-12128,227 | user-spot
 dark_hollow     | default                       | spawn
@@ -37,6 +39,7 @@ peace_keepers   | 167657,116990,62434,323,438   | water-quad
 dry_canyon      | default                       | spawn
 cliff_town      | default                       | spawn
 cliff_town      | 57191,104992,33420,1726,698   | crest-strip
+cliff_town      | 70291,89616,68904,6171,784    | user-topdown
 ice_cavern      | default                       | spawn
 doctor_shemp    | default                       | spawn
 night_flight    | default                       | spawn
@@ -68,6 +71,7 @@ icy_flight      | default                       | spawn | 3001
 gnorc_gnexus    | default                       | spawn
 gnorc_cove      | default                       | spawn
 gnorc_cove      | 36863,117108,30800,1448,343   | water-plane
+gnorc_cove      | 75462,-34396,81807,5021,426   | user-ring
 twilight_harbor | default                       | spawn
 gnasty_gnorc    | default                       | spawn
 gnastys_loot    | default                       | spawn

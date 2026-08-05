@@ -983,6 +983,7 @@ typedef struct {
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
     uint8_t  gapfill;                              /* LP only: frozen fill-tag face (terrain_fill_tags.h) */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
+    uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
     uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
@@ -1096,6 +1097,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
         } else {                                   /* LP: 6-bit indices; untextured */
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
+            F->admit = (uint8_t)(w0 & 0x1F);       /* authored LP admission (crossover in 1024-world steps) */
             F->c0 = (uint16_t)((w1 >> 24) & 0xFC); F->c1 = (uint16_t)((w1 >> 18) & 0xFC);
             F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
             F->tb = -1;
@@ -2755,6 +2757,33 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             }
             if (fmDumpOnly) continue;
             if (passLP && !passFill && lpGapOnly && !F->gapfill) { continue; } /* --no-lod: fill-tag faces only */
+            /* Authored per-face LP admission (the .s test, exact): with
+             * slot = (four corner SZ3 summed, tris doubling the shared corner)
+             * >> 5 and s3 = (m_LodDistance >> 7) - 0x20, an LP face draws iff
+             * slot + 8*admit >= s3; a deficit of -31..-1 falls back to
+             * per-vertex "draw if ANY corner SZ3 >= (s3 - 8*admit)*8"; deeper
+             * deficits reject. LP is a FAR tier — the .s drops it NEAR (the
+             * blowhard floating-triangle class: coarse alternates the player
+             * is never meant to see up close). Applies in every mode;
+             * fill-tag faces are exempt (og-attested hole cover at any range).
+             * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
+             * behaviour (A/B). */
+            if (passLP && !passFill && !F->gapfill) {
+                static tn_envvbl_t adm_c;
+                if (tn_env_vbl(&adm_c, "OPENPETE_TERRAIN_LP_ADMIT", 1, 1)) {
+                    double sz0 = sv[i0].m3, sz1 = sv[i1].m3, sz2 = sv[i2].m3;
+                    double sz3 = quad ? sv[i3].m3 : sz2;   /* .s tris sum the shared corner twice */
+                    double slot = (sz0 + sz1 + sz2 + sz3) / 32.0;
+                    double s3v = (double)((fogRefBase >> 5) - 0x20);
+                    double a1 = slot + 8.0 * (double)F->admit - s3v;
+                    if (a1 < 0.0) {
+                        if (a1 <= -32.0) continue;
+                        double thr = (s3v - 8.0 * (double)F->admit) * 8.0;
+                        if (!(sz0 >= thr || sz1 >= thr || sz2 >= thr ||
+                              (quad && sv[i3].m3 >= thr))) continue;
+                    }
+                }
+            }
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 const int ci[4] = { i0, i1, i2, i3 };

@@ -10,7 +10,12 @@
 
 typedef struct { unsigned short level, sec, face; } tft_entry_t;
 
-static const tft_entry_t k_terrain_fill_tags[66] = {
+static const tft_entry_t k_terrain_fill_tags[265] = {
+    { 10,   7,  2 },  /* artisans */
+    { 10,   7,  3 },  /* artisans */
+    { 10,   7,  4 },  /* artisans */
+    { 10,   7,  5 },  /* artisans */
+    { 10,   7, 16 },  /* artisans */
     { 10,  43,  0 },  /* artisans */
     { 10,  43,  2 },  /* artisans */
     { 10,  43,  3 },  /* artisans */
@@ -23,8 +28,12 @@ static const tft_entry_t k_terrain_fill_tags[66] = {
     { 10,  57,  2 },  /* artisans */
     { 10,  57,  3 },  /* artisans */
     { 10,  68,  0 },  /* artisans */
+    { 10,  68,  2 },  /* artisans */
+    { 10,  78,  0 },  /* artisans */
+    { 10,  78,  2 },  /* artisans */
     { 10,  94,  0 },  /* artisans */
     { 10,  94,  1 },  /* artisans */
+    { 10,  94,  2 },  /* artisans */
     { 10,  94,  5 },  /* artisans */
     { 10, 101,  0 },  /* artisans */
     { 10, 101,  2 },  /* artisans */
@@ -40,7 +49,22 @@ static const tft_entry_t k_terrain_fill_tags[66] = {
     { 10, 107,  1 },  /* artisans */
     { 10, 107,  2 },  /* artisans */
     { 10, 107,  3 },  /* artisans */
+    { 10, 111,  0 },  /* artisans */
+    { 10, 111,  2 },  /* artisans */
+    { 10, 120,  0 },  /* artisans */
+    { 10, 120,  1 },  /* artisans */
+    { 10, 120,  2 },  /* artisans */
+    { 10, 120,  3 },  /* artisans */
+    { 10, 124,  0 },  /* artisans */
     { 10, 124,  1 },  /* artisans */
+    { 10, 124,  2 },  /* artisans */
+    { 10, 124,  3 },  /* artisans */
+    { 10, 153,  0 },  /* artisans */
+    { 10, 153,  1 },  /* artisans */
+    { 10, 153,  2 },  /* artisans */
+    { 10, 153,  3 },  /* artisans */
+    { 10, 172,  1 },  /* artisans */
+    { 10, 172,  3 },  /* artisans */
     { 11, 126,  2 },  /* stone_hill */
     { 14,  15,  0 },  /* toasty */
     { 14,  15,  1 },  /* toasty */
@@ -52,31 +76,206 @@ static const tft_entry_t k_terrain_fill_tags[66] = {
     { 20, 151,  0 },  /* peace_keepers */
     { 20, 151,  1 },  /* peace_keepers */
     { 20, 151,  5 },  /* peace_keepers */
+    { 22,   2,  0 },  /* cliff_town */
+    { 22,   2,  1 },  /* cliff_town */
+    { 22,   2,  3 },  /* cliff_town */
+    { 22,   2,  4 },  /* cliff_town */
+    { 22,   2,  6 },  /* cliff_town */
+    { 22,   2,  7 },  /* cliff_town */
+    { 22,   3,  0 },  /* cliff_town */
+    { 22,   3,  1 },  /* cliff_town */
+    { 22,   3,  3 },  /* cliff_town */
+    { 22,   3,  4 },  /* cliff_town */
+    { 22,   3,  6 },  /* cliff_town */
+    { 22,   3,  7 },  /* cliff_town */
+    { 22,   5,  0 },  /* cliff_town */
+    { 22,   5,  1 },  /* cliff_town */
+    { 22,   5,  3 },  /* cliff_town */
+    { 22,   5,  4 },  /* cliff_town */
+    { 22,   5,  6 },  /* cliff_town */
     { 22,   5,  7 },  /* cliff_town */
+    { 22,   7,  0 },  /* cliff_town */
+    { 22,   7,  1 },  /* cliff_town */
     { 22,   7,  2 },  /* cliff_town */
+    { 22,   7,  3 },  /* cliff_town */
+    { 22,   7,  4 },  /* cliff_town */
     { 22,   7,  5 },  /* cliff_town */
+    { 22,   7,  6 },  /* cliff_town */
     { 22,   7,  7 },  /* cliff_town */
     { 22,   7,  8 },  /* cliff_town */
     { 22,  14,  1 },  /* cliff_town */
+    { 22,  14,  2 },  /* cliff_town */
+    { 22,  14,  9 },  /* cliff_town */
+    { 22,  14, 10 },  /* cliff_town */
+    { 22,  63,  2 },  /* cliff_town */
+    { 22,  63,  3 },  /* cliff_town */
+    { 61,  32,  0 },  /* gnorc_cove */
+    { 61,  88,  0 },  /* gnorc_cove */
+    { 61,  88,  1 },  /* gnorc_cove */
+    { 61,  88,  2 },  /* gnorc_cove */
+    { 61,  88,  3 },  /* gnorc_cove */
+    { 61,  88,  5 },  /* gnorc_cove */
+    { 61,  93,  0 },  /* gnorc_cove */
+    { 61,  93,  1 },  /* gnorc_cove */
+    { 61,  93,  2 },  /* gnorc_cove */
+    { 61,  93,  3 },  /* gnorc_cove */
+    { 61,  93,  4 },  /* gnorc_cove */
+    { 61,  93,  5 },  /* gnorc_cove */
+    { 61,  97,  0 },  /* gnorc_cove */
+    { 61,  97,  1 },  /* gnorc_cove */
+    { 61,  97,  2 },  /* gnorc_cove */
+    { 61,  97,  3 },  /* gnorc_cove */
+    { 61,  97,  4 },  /* gnorc_cove */
+    { 61,  97,  5 },  /* gnorc_cove */
+    { 61,  97,  6 },  /* gnorc_cove */
+    { 61,  97,  7 },  /* gnorc_cove */
+    { 61,  97,  8 },  /* gnorc_cove */
+    { 61,  98,  0 },  /* gnorc_cove */
+    { 61,  98,  1 },  /* gnorc_cove */
+    { 61,  98,  2 },  /* gnorc_cove */
+    { 61,  98,  3 },  /* gnorc_cove */
+    { 61,  98,  4 },  /* gnorc_cove */
+    { 61,  98,  5 },  /* gnorc_cove */
+    { 61, 103,  0 },  /* gnorc_cove */
+    { 61, 103,  1 },  /* gnorc_cove */
+    { 61, 103,  2 },  /* gnorc_cove */
+    { 61, 103,  3 },  /* gnorc_cove */
+    { 61, 103,  4 },  /* gnorc_cove */
+    { 61, 103,  5 },  /* gnorc_cove */
+    { 61, 103,  6 },  /* gnorc_cove */
+    { 61, 103,  7 },  /* gnorc_cove */
+    { 61, 109,  0 },  /* gnorc_cove */
+    { 61, 109,  1 },  /* gnorc_cove */
+    { 61, 109,  2 },  /* gnorc_cove */
+    { 61, 109,  3 },  /* gnorc_cove */
+    { 61, 109,  4 },  /* gnorc_cove */
+    { 61, 109,  5 },  /* gnorc_cove */
+    { 61, 118,  0 },  /* gnorc_cove */
+    { 61, 118,  1 },  /* gnorc_cove */
+    { 61, 118,  2 },  /* gnorc_cove */
+    { 61, 118,  3 },  /* gnorc_cove */
+    { 61, 118,  4 },  /* gnorc_cove */
+    { 61, 118,  5 },  /* gnorc_cove */
+    { 61, 118,  6 },  /* gnorc_cove */
+    { 61, 118,  7 },  /* gnorc_cove */
     { 61, 122,  0 },  /* gnorc_cove */
     { 61, 122,  1 },  /* gnorc_cove */
     { 61, 122,  3 },  /* gnorc_cove */
     { 61, 122,  4 },  /* gnorc_cove */
     { 61, 122,  5 },  /* gnorc_cove */
     { 61, 122,  6 },  /* gnorc_cove */
+    { 61, 123,  0 },  /* gnorc_cove */
+    { 61, 123,  1 },  /* gnorc_cove */
+    { 61, 123,  2 },  /* gnorc_cove */
+    { 61, 123,  3 },  /* gnorc_cove */
+    { 61, 123,  4 },  /* gnorc_cove */
+    { 61, 123,  5 },  /* gnorc_cove */
+    { 61, 128,  3 },  /* gnorc_cove */
+    { 61, 128,  4 },  /* gnorc_cove */
+    { 61, 128,  5 },  /* gnorc_cove */
+    { 61, 128,  6 },  /* gnorc_cove */
+    { 61, 128,  7 },  /* gnorc_cove */
+    { 61, 128,  8 },  /* gnorc_cove */
     { 61, 133,  1 },  /* gnorc_cove */
     { 61, 133,  2 },  /* gnorc_cove */
     { 61, 133,  3 },  /* gnorc_cove */
     { 61, 133,  5 },  /* gnorc_cove */
     { 61, 133,  6 },  /* gnorc_cove */
+    { 61, 138,  0 },  /* gnorc_cove */
+    { 61, 142,  0 },  /* gnorc_cove */
+    { 61, 142,  1 },  /* gnorc_cove */
+    { 61, 142,  2 },  /* gnorc_cove */
+    { 61, 142,  3 },  /* gnorc_cove */
+    { 61, 142,  4 },  /* gnorc_cove */
+    { 61, 142,  5 },  /* gnorc_cove */
+    { 61, 148,  0 },  /* gnorc_cove */
+    { 61, 148,  1 },  /* gnorc_cove */
+    { 61, 148,  2 },  /* gnorc_cove */
+    { 61, 148,  3 },  /* gnorc_cove */
+    { 61, 148,  4 },  /* gnorc_cove */
+    { 61, 148,  5 },  /* gnorc_cove */
+    { 61, 148,  6 },  /* gnorc_cove */
+    { 61, 148,  7 },  /* gnorc_cove */
+    { 61, 154,  0 },  /* gnorc_cove */
+    { 61, 154,  1 },  /* gnorc_cove */
+    { 61, 154,  2 },  /* gnorc_cove */
+    { 61, 154,  3 },  /* gnorc_cove */
+    { 61, 154,  4 },  /* gnorc_cove */
+    { 61, 154,  5 },  /* gnorc_cove */
+    { 61, 158,  0 },  /* gnorc_cove */
+    { 61, 158,  1 },  /* gnorc_cove */
+    { 61, 158,  3 },  /* gnorc_cove */
+    { 61, 158,  4 },  /* gnorc_cove */
+    { 61, 158,  5 },  /* gnorc_cove */
+    { 61, 158,  6 },  /* gnorc_cove */
+    { 61, 158,  7 },  /* gnorc_cove */
+    { 61, 158,  8 },  /* gnorc_cove */
     { 61, 161,  0 },  /* gnorc_cove */
     { 61, 161,  1 },  /* gnorc_cove */
     { 61, 161,  2 },  /* gnorc_cove */
     { 61, 161,  3 },  /* gnorc_cove */
     { 61, 161,  4 },  /* gnorc_cove */
+    { 61, 161,  5 },  /* gnorc_cove */
+    { 61, 170,  1 },  /* gnorc_cove */
+    { 61, 174,  0 },  /* gnorc_cove */
+    { 61, 174,  1 },  /* gnorc_cove */
+    { 61, 174,  2 },  /* gnorc_cove */
+    { 61, 174,  3 },  /* gnorc_cove */
+    { 61, 174,  4 },  /* gnorc_cove */
+    { 61, 174,  5 },  /* gnorc_cove */
+    { 61, 183,  0 },  /* gnorc_cove */
+    { 61, 183,  2 },  /* gnorc_cove */
+    { 61, 183,  3 },  /* gnorc_cove */
+    { 61, 183,  4 },  /* gnorc_cove */
+    { 61, 186,  0 },  /* gnorc_cove */
+    { 61, 186,  1 },  /* gnorc_cove */
+    { 61, 186,  2 },  /* gnorc_cove */
+    { 61, 186,  3 },  /* gnorc_cove */
+    { 61, 186,  4 },  /* gnorc_cove */
+    { 61, 189,  5 },  /* gnorc_cove */
+    { 61, 191,  0 },  /* gnorc_cove */
+    { 61, 191,  1 },  /* gnorc_cove */
+    { 61, 191,  2 },  /* gnorc_cove */
+    { 61, 191,  3 },  /* gnorc_cove */
+    { 61, 191,  4 },  /* gnorc_cove */
+    { 61, 191,  5 },  /* gnorc_cove */
+    { 61, 217,  0 },  /* gnorc_cove */
+    { 61, 217,  1 },  /* gnorc_cove */
+    { 61, 217,  2 },  /* gnorc_cove */
+    { 61, 217,  3 },  /* gnorc_cove */
+    { 61, 217,  4 },  /* gnorc_cove */
+    { 61, 217,  5 },  /* gnorc_cove */
     { 61, 224,  0 },  /* gnorc_cove */
+    { 61, 224,  1 },  /* gnorc_cove */
     { 61, 224,  2 },  /* gnorc_cove */
+    { 61, 224,  3 },  /* gnorc_cove */
+    { 61, 224,  4 },  /* gnorc_cove */
     { 61, 224,  5 },  /* gnorc_cove */
+    { 61, 227,  0 },  /* gnorc_cove */
+    { 61, 227,  3 },  /* gnorc_cove */
+    { 61, 227,  4 },  /* gnorc_cove */
+    { 61, 227,  5 },  /* gnorc_cove */
+    { 61, 230,  1 },  /* gnorc_cove */
+    { 61, 230,  2 },  /* gnorc_cove */
+    { 61, 230,  3 },  /* gnorc_cove */
+    { 61, 230,  4 },  /* gnorc_cove */
+    { 61, 230,  5 },  /* gnorc_cove */
+    { 61, 230,  6 },  /* gnorc_cove */
+    { 61, 230,  7 },  /* gnorc_cove */
+    { 61, 234,  0 },  /* gnorc_cove */
+    { 61, 234,  2 },  /* gnorc_cove */
+    { 61, 234,  3 },  /* gnorc_cove */
+    { 61, 238,  0 },  /* gnorc_cove */
+    { 61, 238,  1 },  /* gnorc_cove */
+    { 61, 238,  2 },  /* gnorc_cove */
+    { 61, 238,  3 },  /* gnorc_cove */
+    { 61, 238,  4 },  /* gnorc_cove */
+    { 61, 239,  2 },  /* gnorc_cove */
+    { 61, 239,  3 },  /* gnorc_cove */
+    { 61, 239,  4 },  /* gnorc_cove */
+    { 61, 239,  5 },  /* gnorc_cove */
+    { 61, 239,  6 },  /* gnorc_cove */
+    { 61, 239,  7 },  /* gnorc_cove */
 };
 
 #endif /* TERRAIN_FILL_TAGS_H */

@@ -654,6 +654,8 @@ static const knob_desc_t g_builtin[] = {
         "Floor-quantize fill verts (default 1)."),
     ENVROW_LATCHED("TERRAIN_FILL_TIERPULL", "Debug", "1",
         "Apply LP depth pull to fill copies (default 1)."),
+    ENVROW_LIVE("TERRAIN_LP_ADMIT", "Debug", "1",
+        "Authored per-face LP admission (.s exact; 0 = legacy)."),
     ENVROW_LIVE("TERRAIN_LP_BIAS", "Debug", "1",
         "LP-over-HP depth pull (default 1)."),
     ENVROW_LIVE("TERRAIN_LP_BIAS_CAP", "Debug", "768",

@@ -155,3 +155,19 @@ peace_keepers | pos=(73452, 77502, 55889) yaw=2942 pitch=81
 # four unpainted quads (s205 f4-f7, editor-default 7F7F7F -> sibling FF7F60):
 # a regression re-shows a grey panel floating over the water here.
 stone_hill | pos=(163352, 247415, 37632) yaw=1038 pitch=602
+
+# artisans NW water plane, top-down (found in testing 2026-08-05): the far corner of
+# the water LP showed bare backdrop — 17 unswept water-plane quads absent from
+# the fill-tag table. Guards the tags for the whole NW water cluster
+# (s120/s124/s153/s78/s111/s68).
+artisans | pos=(55555, 118312, 58525) yaw=5120 pitch=992
+
+# User audit guard poses (2026-08-05, the fill-tag/admission batch):
+# artisans east water quads (s7/s172 fills)
+artisans | pos=(99194, 99580, 19688) yaw=-154 pitch=350
+# cliff_town mesa-top ground quads from above (s2/s3/s5/s7/s14 fills)
+cliff_town | pos=(70291, 89616, 68904) yaw=6171 pitch=784
+# blowhard near-LP triangle: authored admission must keep this og-empty
+blowhard | pos=(86047, 74782, 25143) yaw=2938 pitch=212
+# gnorc_cove circular water border (z=1088 border class, 167 faces)
+gnorc_cove | pos=(75462, -34396, 81807) yaw=5021 pitch=426
