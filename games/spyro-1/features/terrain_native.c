@@ -4869,20 +4869,32 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     int32_t occGroup = (int32_t)cpu->a0;
     s_terrain_saved_occGroup = occGroup;   /* for sub-tick re-extract */
 
-    /* OPENPETE_ENV_LODDIST=<int>: poke g_Environment.m_LodDistance before the
-     * .s renders. Measurement legs only (never a shipping mode — this IS a
-     * gameplay-readable RAM write): saturating it (0x7FFFFFFF) makes the .s
-     * drop ALL LP and keep HP everywhere, so a PsyCross -og capture becomes a
-     * pure-HP reference — "does authored HP cover this pixel" from the game's
-     * own renderer, the ground-truth leg for extended-LOD fidelity and the
-     * fill-tag sweep ({og-orig covers ∧ og-sat uncovered} = LP-only
-     * sightlines, a level-data property). */
-    { static int s_lodpoke = -2;
-      if (s_lodpoke == -2) { const char* e = getenv("OPENPETE_ENV_LODDIST");
-                             s_lodpoke = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
-      if (s_lodpoke >= 0) cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, (uint32_t)s_lodpoke); }
+    /* OPENPETE_ENV_LODDIST=<int>: substitute g_Environment.m_LodDistance for
+     * the DURATION OF THE TERRAIN RENDER CALL ONLY (poke, call, restore).
+     * Measurement legs only (never a shipping mode): saturating it
+     * (0x7FFFFFFF) makes the .s drop ALL LP and keep HP everywhere, so a
+     * PsyCross -og capture becomes a pure-HP reference — "does authored HP
+     * cover this pixel" from the game's own renderer, the ground-truth leg
+     * for extended-LOD fidelity and the fill-tag sweep ({og-orig covers ∧
+     * og-sat uncovered} = LP-only sightlines, a level-data property).
+     * The bracket keeps every non-terrain reader of the field canonical.
+     * Value ceiling: past ~2x the authored 0x8000 the big swamp levels
+     * (misty_bog/beast_makers/ice_cavern) exhaust the frame's prim budget
+     * under all-HP sector lists — empty renders, OT-walk hangs, or crashes —
+     * so measurement legs use 0x10000, which is already far beyond anything
+     * visible through fog. */
+    static int s_lodpoke = -2;
+    if (s_lodpoke == -2) { const char* e = getenv("OPENPETE_ENV_LODDIST");
+                           s_lodpoke = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
+    uint32_t lodsave = 0;
+    if (s_lodpoke >= 0) {
+        lodsave = cpu->read_word(G_ENVIRONMENT + ENV_LODDIST);
+        cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, (uint32_t)s_lodpoke);
+    }
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     func_800258F0(cpu);                            /* run the real renderer (verdicts intact) */
+    if (s_lodpoke >= 0)
+        cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, lodsave);
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_TERRAIN, startp, endp);

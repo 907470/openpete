@@ -6,7 +6,7 @@ Per pose (tests/freecam/fill-sweep-poses.manifest), five headless legs:
            OPENPETE_TERRAIN_FACEMAP per-LP-face footprint dump on stderr
   BLANK-vk native vk, --render-paths none        (pure background)
   OG       PsyCross,  terrain-only               (the game's own terrain)
-  OGSAT    PsyCross,  terrain-only, m_LodDistance saturated (pure-HP reference)
+  OGSAT    PsyCross,  terrain-only, m_LodDistance doubled (pure-HP reference)
   BLANK-og PsyCross,  --render-paths none
 
 Masks (blank-leg method — never detect the background by colour; the native
@@ -53,19 +53,18 @@ def base_env():
     return env
 
 
-def run_leg(binary, disc, level, pose, leg, outdir):
+def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
     """Capture one leg into outdir; returns the artifact path (png or log)."""
-    x, y, z, yaw, pitch = pose.split(",")
-    art = {"M": f"{outdir}/M-{FRAME}-vk.png",       "BLANKV": f"{outdir}/BLANKV-{FRAME}-vk.png",
-           "OG": f"{outdir}/OG-{FRAME}-og.png",     "OGSAT": f"{outdir}/OGSAT-{FRAME}-og.png",
-           "BLANKO": f"{outdir}/BLANKO-{FRAME}-og.png"}[leg]
+    art = {"M": f"{outdir}/M-{frame}-vk.png",       "BLANKV": f"{outdir}/BLANKV-{frame}-vk.png",
+           "OG": f"{outdir}/OG-{frame}-og.png",     "OGSAT": f"{outdir}/OGSAT-{frame}-og.png",
+           "BLANKO": f"{outdir}/BLANKO-{frame}-og.png"}[leg]
     fmlog = f"{outdir}/facemap.log"
     if os.path.exists(art) and (leg != "M" or os.path.exists(fmlog)):
         return art
     env = base_env()
     rend, paths, lod = "vk", "terrain", "extended"
     if leg == "M":
-        env.update(OPENPETE_TERRAIN_FACEMAP=str(FRAME), OPENPETE_TERRAIN_GAPFILL="0",
+        env.update(OPENPETE_TERRAIN_FACEMAP=str(frame), OPENPETE_TERRAIN_GAPFILL="0",
                    OPENPETE_TERRAIN_HOLEFILL="0", OPENPETE_TERRAIN_FILLNEAR="0")
     elif leg == "BLANKV":
         paths = "none"
@@ -73,18 +72,27 @@ def run_leg(binary, disc, level, pose, leg, outdir):
         rend, lod = "psycross", "original"
     elif leg == "OGSAT":
         rend, lod = "psycross", "original"
-        env["OPENPETE_ENV_LODDIST"] = "0x7FFFFFFF"
+        # 2x the authored 0x8000: far beyond anything visible through fog, but
+        # inside the .s frame prim budget — >=4x makes the big swamp levels
+        # (misty_bog/beast_makers/ice_cavern) exhaust it and hang, crash, or
+        # render empty. Validated pixel-equal (mod far-fog palette rows) to
+        # full saturation on the levels that tolerate both.
+        env["OPENPETE_ENV_LODDIST"] = "0x10000"
     elif leg == "BLANKO":
         rend, paths, lod = "psycross", "none", "original"
     tag = {"M": "M", "BLANKV": "BLANKV", "OG": "OG", "OGSAT": "OGSAT", "BLANKO": "BLANKO"}[leg]
     args = [binary, "--headless", "--disc", disc, "--run-recomp", "0x80012204",
             "--renderer", rend, "--mute", "1", "--aspect", "4:3",
             "--skip-to-level", level, "--lod", lod,
-            "--freecam-pose", f"pos=({x}, {y}, {z}) yaw={yaw} pitch={pitch}",
             "--render-paths", paths,
-            "--screenshot-on-frame", str(FRAME),
+            "--screenshot-on-frame", str(frame),
             "--screenshot-output", f"{outdir}/{tag}-{{n}}.png",
-            "--frame-limit", str(FRAME + 10), "--max-runtime-seconds", "380"]
+            "--frame-limit", str(frame + 10), "--max-runtime-seconds", "380"]
+    if pose != "default":
+        # "default" = the canonical load-in camera (no freecam) — one
+        # og-maximally-valid region view per level for free
+        x, y, z, yaw, pitch = pose.split(",")
+        args += ["--freecam-pose", f"pos=({x}, {y}, {z}) yaw={yaw} pitch={pitch}"]
     if rend == "vk":
         args.append("--screenshot-native-only")
     stderr = open(fmlog, "w") if leg == "M" else subprocess.DEVNULL
@@ -156,12 +164,12 @@ def footprint(F, w, h):
     return out
 
 
-def analyze_pose(level, tag, outdir, tags):
-    M, w, h = img(f"{outdir}/M-{FRAME}-vk.png")
-    BV, _, _ = img(f"{outdir}/BLANKV-{FRAME}-vk.png")
-    OG, _, _ = img(f"{outdir}/OG-{FRAME}-og.png")
-    OS, _, _ = img(f"{outdir}/OGSAT-{FRAME}-og.png")
-    BO, _, _ = img(f"{outdir}/BLANKO-{FRAME}-og.png")
+def analyze_pose(level, tag, outdir, tags, frame=FRAME):
+    M, w, h = img(f"{outdir}/M-{frame}-vk.png")
+    BV, _, _ = img(f"{outdir}/BLANKV-{frame}-vk.png")
+    OG, _, _ = img(f"{outdir}/OG-{frame}-og.png")
+    OS, _, _ = img(f"{outdir}/OGSAT-{frame}-og.png")
+    BO, _, _ = img(f"{outdir}/BLANKO-{frame}-og.png")
     need = [1 if (OG[i] != BO[i] and OS[i] == BO[i]) else 0 for i in range(w * h)]
     faces, fogref = parse_facemap(f"{outdir}/facemap.log")
     new_faces = 0
@@ -207,24 +215,26 @@ def main():
     for line in open(args.manifest):
         line = line.split("#")[0].strip()
         if not line: continue
-        level, pose, tag = (p.strip() for p in line.split("|"))
+        parts = [p.strip() for p in line.split("|")]
+        level, pose, tag = parts[0], parts[1], parts[2]
+        frame = int(parts[3]) if len(parts) > 3 else FRAME   # optional per-pose frame
         if args.only and args.only not in level and args.only not in tag: continue
-        poses.append((level, pose, tag))
+        poses.append((level, pose, tag, frame))
     if not poses:
         print("[fill-sweep] SKIP: no poses matched"); return 64
 
     # capture (cached legs skipped inside run_leg)
     os.makedirs(args.cache, exist_ok=True)
     jobs = []
-    for level, pose, tag in poses:
+    for level, pose, tag, frame in poses:
         outdir = os.path.join(args.cache, f"{level}__{tag}")
         os.makedirs(outdir, exist_ok=True)
         for leg in ("M", "BLANKV", "OG", "OGSAT", "BLANKO"):
-            jobs.append((level, pose, leg, outdir))
+            jobs.append((level, pose, leg, outdir, frame))
     fails = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = {ex.submit(run_leg, args.binary, args.disc, lv, po, lg, od): (lv, lg)
-                for lv, po, lg, od in jobs}
+        futs = {ex.submit(run_leg, args.binary, args.disc, lv, po, lg, od, fr): (lv, lg)
+                for lv, po, lg, od, fr in jobs}
         for fut in concurrent.futures.as_completed(futs):
             try: fut.result()
             except Exception as e:
@@ -235,10 +245,10 @@ def main():
     # attribute, in manifest order (the order IS the marginal-new-faces curve)
     tags = {}
     print(f"\n{'level':<15}{'pose':<22}{'new':>5}{'need px':>9}{'resid px':>9}")
-    for level, pose, tag in poses:
+    for level, pose, tag, frame in poses:
         outdir = os.path.join(args.cache, f"{level}__{tag}")
         try:
-            new, needpx, resid = analyze_pose(level, tag, outdir, tags)
+            new, needpx, resid = analyze_pose(level, tag, outdir, tags, frame)
             print(f"{level:<15}{tag:<22}{new:>5}{needpx:>9}{resid:>9}")
         except Exception as e:
             print(f"{level:<15}{tag:<22}  ERROR: {e}")
