@@ -26,6 +26,7 @@ artisans        | 73189,44026,7159,2465,160     | delbin-pedestal
 artisans        | 86800,69542,10184,243,447     | grass-mound
 artisans        | 36902,108127,14518,2634,300   | structural-mountain
 stone_hill      | default                       | spawn
+stone_hill      | 212446,140508,40020,-12128,227 | user-spot
 dark_hollow     | default                       | spawn
 town_square     | default                       | spawn
 toasty          | default                       | spawn

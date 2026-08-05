@@ -1,0 +1,115 @@
+# Frozen terrain fill-face verdicts — the reviewed output of the fill-tag
+# sweep (scripts/terrain-fill-sweep.sh; measurement provenance per line).
+# verdict level sector face need-px provenance
+#
+# FILL   = og draws this LP surface over sightlines no authored HP covers
+#          (water planes, level-boundary channels); the fill pass may draw it.
+# NOFILL = the need is a silhouette sliver between the coarse/alternate LP
+#          shape and the HP silhouette (or an island-rim fringe); filling
+#          paints LP wedges over sky around detailed HP. Reviewed 2026-08-05;
+#          the haunted lp-bridge cluster is NOFILL by review (the HP bridge
+#          alone reads correctly at distance).
+#
+# Regenerate candidates with the sweep; NEVER hand-add a FILL without a strip
+# review. A sweep face absent here is unreviewed — new candidates fail loud.
+NOFILL artisans 12 0 64 spawn:64
+NOFILL artisans 29 1 110 spawn:84,outer-wall:26
+NOFILL artisans 35 9 99 spawn:99
+FILL   artisans 43 0 4991 water-y283:1558,water-y284:1528,water-y260:1905
+FILL   artisans 43 2 8019 water-y283:2701,water-y284:2732,water-y260:2586
+NOFILL artisans 48 5 52 outer-wall:52
+FILL   artisans 57 0 4286 water-y283:1511,water-y284:1525,water-y260:1113,waterline-psx-repro:137
+FILL   artisans 57 1 8016 water-y283:2643,water-y284:2621,water-y260:2752
+FILL   artisans 57 2 1702 water-y284:18,waterline-psx-repro:1684
+FILL   artisans 57 3 3492 water-y283:1380,water-y284:1292,water-y260:820
+FILL   artisans 94 0 1813 outer-wall:1813
+FILL   artisans 94 1 3077 outer-wall:3077
+FILL   artisans 94 5 925 outer-wall:925
+FILL   artisans 103 0 7047 outer-wall:4350,structural-mountain:2697
+FILL   artisans 103 1 3651 outer-wall:3651
+FILL   artisans 103 2 3230 outer-wall:3230
+FILL   artisans 103 3 6312 outer-wall:6312
+FILL   artisans 103 4 5378 outer-wall:5378
+FILL   artisans 103 5 4877 outer-wall:4877
+FILL   artisans 103 6 2728 outer-wall:2728
+FILL   artisans 103 7 3295 outer-wall:3295
+FILL   artisans 107 0 10516 water-y283:3488,water-y284:3410,water-y260:3618
+FILL   artisans 107 1 14264 water-y283:4646,water-y284:4716,water-y260:4902
+FILL   artisans 124 1 3639 outer-wall:3639
+NOFILL blowhard 60 5 27 spawn:27
+NOFILL blowhard 60 6 21 spawn:21
+NOFILL blowhard 60 13 29 spawn:29
+NOFILL blowhard 60 14 29 spawn:29
+NOFILL dream_weavers 46 23 45 spawn:45
+NOFILL dream_weavers 46 24 45 spawn:45
+NOFILL dream_weavers 66 3 64 spawn:64
+NOFILL dream_weavers 66 4 64 spawn:64
+NOFILL dream_weavers 66 7 39 spawn:39
+NOFILL dream_weavers 66 8 34 spawn:34
+NOFILL dream_weavers 80 24 63 spawn:63
+NOFILL dream_weavers 80 25 73 spawn:73
+NOFILL dream_weavers 85 3 80 spawn:80
+NOFILL dream_weavers 85 14 80 spawn:80
+NOFILL dream_weavers 88 6 17 spawn:17
+NOFILL dream_weavers 88 7 25 spawn:25
+NOFILL dream_weavers 88 8 42 spawn:42
+FILL   gnorc_cove 122 0 88 water-plane:88
+FILL   gnorc_cove 122 1 2188 water-plane:2188
+FILL   gnorc_cove 122 3 460 water-plane:460
+FILL   gnorc_cove 122 4 3732 water-plane:3732
+FILL   gnorc_cove 122 5 1190 water-plane:1190
+FILL   gnorc_cove 122 6 2326 water-plane:2326
+FILL   gnorc_cove 133 1 935 water-plane:935
+FILL   gnorc_cove 133 2 7139 water-plane:7139
+FILL   gnorc_cove 133 3 1565 water-plane:1565
+FILL   gnorc_cove 133 5 2751 water-plane:2751
+FILL   gnorc_cove 133 6 4191 water-plane:4191
+FILL   gnorc_cove 161 0 415 water-plane:415
+FILL   gnorc_cove 161 1 1924 water-plane:1924
+FILL   gnorc_cove 161 2 601 water-plane:601
+FILL   gnorc_cove 161 3 654 water-plane:654
+FILL   gnorc_cove 161 4 152 water-plane:152
+FILL   gnorc_cove 224 5 4614 water-plane:4614
+NOFILL haunted_towers 12 2 27 topdown-rims:27
+NOFILL haunted_towers 22 12 420 topdown-rims:420
+NOFILL haunted_towers 31 1 42 lp-bridge:42
+NOFILL haunted_towers 31 18 17 topdown-rims:17
+NOFILL haunted_towers 31 19 192 lp-bridge:40,topdown-rims:152
+NOFILL haunted_towers 31 20 143 lp-bridge:94,topdown-rims:49
+NOFILL haunted_towers 32 0 25 topdown-rims:25
+NOFILL haunted_towers 32 1 64 lp-bridge:64
+NOFILL haunted_towers 32 4 233 topdown-rims:233
+NOFILL haunted_towers 32 5 421 topdown-rims:421
+NOFILL haunted_towers 32 6 142 lp-bridge:85,topdown-rims:57
+NOFILL haunted_towers 32 7 115 lp-bridge:69,topdown-rims:46
+NOFILL haunted_towers 32 8 175 lp-bridge:71,topdown-rims:104
+NOFILL haunted_towers 32 9 164 topdown-rims:164
+NOFILL haunted_towers 32 10 32 topdown-rims:32
+NOFILL haunted_towers 32 11 239 lp-bridge:130,topdown-rims:109
+NOFILL haunted_towers 32 16 30 spawn:30
+NOFILL haunted_towers 32 18 56 spawn:28,lp-bridge:28
+NOFILL haunted_towers 32 19 206 lp-bridge:28,topdown-rims:178
+NOFILL haunted_towers 32 20 55 topdown-rims:55
+NOFILL haunted_towers 44 0 58 topdown-rims:58
+NOFILL haunted_towers 51 10 126 lp-bridge:94,topdown-rims:32
+NOFILL haunted_towers 51 11 105 lp-bridge:35,topdown-rims:70
+NOFILL haunted_towers 56 0 125 topdown-rims:125
+NOFILL haunted_towers 56 3 125 topdown-rims:125
+NOFILL haunted_towers 56 7 20 topdown-rims:20
+NOFILL haunted_towers 60 6 125 topdown-rims:125
+NOFILL haunted_towers 60 7 125 topdown-rims:125
+NOFILL haunted_towers 83 0 43 topdown-rims:43
+NOFILL haunted_towers 92 0 85 topdown-rims:85
+NOFILL haunted_towers 93 0 86 topdown-rims:86
+NOFILL haunted_towers 93 9 86 topdown-rims:86
+NOFILL haunted_towers 95 2 64 lp-bridge:47,topdown-rims:17
+NOFILL haunted_towers 107 1 77 topdown-rims:77
+NOFILL ice_cavern 41 16 16 spawn:16
+FILL   peace_keepers 151 0 4124 water-quad:4124
+FILL   peace_keepers 151 1 5746 water-quad:5746
+FILL   stone_hill 126 2 16 user-spot:16
+NOFILL stone_hill 221 0 34 spawn:34
+NOFILL stone_hill 221 2 37 spawn:37
+NOFILL stone_hill 221 3 34 spawn:34
+NOFILL stone_hill 221 4 37 spawn:37
+NOFILL wizard_peak 230 0 21 spawn:21
