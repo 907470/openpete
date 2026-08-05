@@ -313,6 +313,7 @@ static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
+static int s_facemap = -1, s_facemap_done = 0, s_facemap_active = 0;  /* OPENPETE_TERRAIN_FACEMAP */
 
 /* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
 typedef struct {
@@ -2625,6 +2626,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * --screenshot-on-frame of the same number); 1 = first build (verify mode) */
     s_fardbg_active = s_fardbg && !s_fardbg_done
                       && (s_fardbg == 1 || openpete_frame >= (unsigned)s_fardbg);
+    /* OPENPETE_TERRAIN_FACEMAP=<frame>: one-shot per-LP-face screen-footprint
+     * dump (fires on the first build at/after <frame> — no VBL-parity trap) for
+     * offline hole→face attribution: rasterize the dumped footprints and
+     * intersect with the {og covers ∧ native uncovered} pixel mask to derive
+     * the fill-face list. Forces a dump-only LP walk for sectors whose LP pass
+     * would not otherwise run, so DROPPED candidates are attributable too —
+     * the pixels needing attribution are exactly the ones nothing drew. */
+    if (s_facemap < 0) { const char* e = getenv("OPENPETE_TERRAIN_FACEMAP"); s_facemap = (e && *e) ? atoi(e) : 0; }
+    s_facemap_active = s_facemap && !s_facemap_done && openpete_frame >= (unsigned)s_facemap;
     int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
@@ -2904,7 +2914,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
       for (int pass = 0; pass < 3; pass++) {
         int passFill = (pass == 2);               /* LP hole-fill backing (W2.6-c) */
         int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
-        if (pass == 0 && !drawLP) continue;
+        int fmDumpOnly = 0;                       /* facemap: project + dump, never emit */
+        if (pass == 0 && !drawLP) {
+            if (s_facemap_active && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
+            else continue;
+        }
         if (pass == 1 && !drawHP) continue;
         if (passFill && !fillLP && !fillNearLP) continue;
         if (passFill && SC->polyanim) continue;   /* stale LP bank — never backstop-fill */
@@ -3135,6 +3149,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
                 fputc('\n', stderr);
             }
+            /* facemap: one line per LP face with projected corners (backfaces
+             * and behind-camera corners included — m3 ≤ 0 corners are marked
+             * by their value; the offline side clips). secdraw distinguishes
+             * "sector's LP pass ran normally" from the forced dump-only walk. */
+            if (s_facemap_active && passLP && !passFill) {
+                const int ci[4] = { i0, i1, i2, i3 };
+                int nc = quad ? 4 : 3;
+                fprintf(stderr, "[facemap] s=%u f=%d q=%d gf=%d flr=%d fr=%d secdraw=%d",
+                        (unsigned)i, f, quad, F->gapfill, F->floorf, front, !fmDumpOnly);
+                for (int q2 = 0; q2 < nc; q2++) {
+                    const lvert* V = &sv[ci[q2]];
+                    fprintf(stderr, " v%d=%.2f,%.2f,%.2f", q2, V->sx, V->sy, V->m3);
+                }
+                fputc('\n', stderr);
+            }
+            if (fmDumpOnly) continue;
             if (passLP && !passFill && lpGapOnly && (!F->gapfill || gp_gf_excluded(i, f))) { continue; } /* --no-lod: gap fillers only */
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
@@ -3642,6 +3672,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         s_fardbg_done = 1;
         s_fardbg_active = 0;
+    }
+    if (s_facemap_active) {
+        /* Header last so its presence marks a complete dump. Screen space is
+         * the walk's 512-wide/240-line frame (8-line overscan crop):
+         * screenshot px = (1.25*sx, 2*(sy-8)) at 640x448. */
+        fprintf(stderr, "[facemap-hdr] frame=%u ofx=%.2f ofy=%.2f H=%.0f nolod=%d\n",
+                openpete_frame, s_ofx, s_ofy, s_H, openpete_no_lod);
+        s_facemap_done = 1;
+        s_facemap_active = 0;
     }
 }
 
