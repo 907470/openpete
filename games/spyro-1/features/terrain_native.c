@@ -301,6 +301,9 @@ typedef struct {
     uint8_t env;                                   /* env-anim tile member (provenance tag) */
     float otkey;                                   /* parent face's .s OT key (full-world mean
                                                     * vz of the 4 corners; portal conformance) */
+    uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
+                                                    * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
+                                                    * 1 slot = 128 world units (P4) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
@@ -308,6 +311,7 @@ static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
 static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
 static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
+static uint16_t s_emit_otslots = 0;  /* current face's authored OT-slot offset (P4) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -625,6 +629,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->sec = (int16_t)s_emit_sec; t->face = (int16_t)s_emit_face;
     t->env = (uint8_t)s_emit_env;
     t->otkey = s_emit_otkey;
+    t->otslots = s_emit_otslots;
     if (m->textured) s_tex_tris++;
 }
 
@@ -989,6 +994,8 @@ typedef struct {
     uint8_t  gapfill;                              /* LP only: frozen fill-tag face (terrain_fill_tags.h) */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
+    uint8_t  otbias;                               /* authored OT-bias field: LP (w1>>3)&0x1F,
+                                                    * HP (w3>>3)&0x7 (slot units before x8/x4) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
     uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
@@ -1086,6 +1093,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
             uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
             F->flip = (w3 & 0x2) != 0; F->fogbias = (w3 & 0x1) != 0; F->w3 = w3;
+            F->otbias = (uint8_t)((w3 >> 3) & 0x7);
             F->c0 = (uint16_t)((w1 >> 22) & 0x3FC); F->c1 = (uint16_t)((w1 >> 14) & 0x3FC);
             F->c2 = (uint16_t)((w1 >> 6) & 0x3FC);  F->c3 = (uint16_t)((w1 << 2) & 0x3FC);
             F->hq_idx = (uint8_t)(w2 & 0x7F); F->abe = (w2 & 0x80) != 0;
@@ -1103,6 +1111,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
             F->admit = (uint8_t)(w0 & 0x1F);       /* authored LP admission (crossover in 1024-world steps) */
+            F->otbias = (uint8_t)((w1 >> 3) & 0x1F);
             F->c0 = (uint16_t)((w1 >> 24) & 0xFC); F->c1 = (uint16_t)((w1 >> 18) & 0xFC);
             F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
             F->tb = -1;
@@ -2712,6 +2721,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * split tri's own 3-vert mean can land on the other side of the
              * sky's bucket (the fix4 left-edge blue triangle). */
             s_emit_otkey = (float)((sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + sv[i3].m3) * 4.0);
+            /* Authored OT-slot depth offset (P4): the .s adds bias*8 + 0x40
+             * slots to every LP face's OT index and bias*4 to HP's; ported as
+             * world units on the TEST depth at the emit (1 slot = 128). Set
+             * ambient here so the near/HQ subdivide and clip paths inherit
+             * the PARENT face's offset, like otkey. */
+            s_emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
+                                    : (uint16_t)(4u * F->otbias);
             /* .s HP-walk texture-fog select (generated C block_80027040-809C,
              * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
              * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
@@ -4194,67 +4210,42 @@ static void terrain_feed_native(CPUState* cpu) {
              * tie pull covers the pedestal cases without touching terrain.) */
             openpete_worldvz wz = openpete_worldvz_scaled(
                 pclamp ? pcvz[k] : (float)t->vz[k], 16.0f);
-            /* FILL depth = the SAME ×1.03 as its canonical LP twin, so the two
-             * copies TIE exactly (fill drawn later wins where quantize+grow
-             * differ) instead of the fill sitting 3% NEARER — which let a
-             * grown fill row depth-beat neighbouring canonical LP bodies
-             * (rock-edge notch, gaps-2 f2770). The stencil gate — not depth —
-             * is what keeps the fill behind HP (W2.6-c). */
+            /* Authored OT-slot depth offsets (P4) — the .s's ordering intent,
+             * ported as world units on the TEST depth. The original keys the
+             * world OT at viewZ/128 for BOTH tiers (LP sums four SZ3 in
+             * 16-world units then >>5; HP in 4-world units then >>7 — the
+             * same scale), then offsets each face's index by its authored
+             * bias: LP += ((w1>>3)&0x1F)*8 + 0x40, HP += ((w3>>3)&0x7)*4.
+             * One slot = 128 world units; t->otslots carries the face's total.
+             *
+             * The +0x40 makes the tiers a PARTITION rather than a tie-break:
+             * for two faces at the same true depth LP's index exceeds HP's by
+             * 64 + lpBias*8 − hpBias*4 ≥ 36 slots (4608 world), so LP sits
+             * behind every co-located HP face by construction — and as a
+             * fraction of depth the offset is ~25% at the LOD line decaying
+             * outward, the shape no proportional scalar could give (the
+             * retired ×1.03 was ~3% flat: too little where the tiers overlap,
+             * too much at portal range; its 768-cap saturation was a symptom
+             * of that wrongness, not a feature). Only the TEST depth is
+             * pulled: pvz (perspective W) stays the unpulled view-Z for BOTH
+             * tiers — HP carries a nonzero offset on 40% of faces, and a
+             * pulled W would warp its UVs.
+             *
+             * FILL twin: identical per-face offset, so the two copies TIE
+             * exactly (fill drawn later wins where quantize+grow differ)
+             * instead of the fill depth-beating neighbouring canonical LP
+             * (rock-edge notch class). OPENPETE_TERRAIN_FILL_TIERPULL=0
+             * drops the fill's offset (A/B). OPENPETE_TERRAIN_OT_BIAS=0
+             * drops all offsets — raw true depth (A/B). */
             {
                 static int s_fillpull = -1;
                 if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
-                /* LP rides behind HP by a CONSTANT, mirroring the .s exactly.
-                 *
-                 * The original keys the world OT at viewZ/128 for BOTH tiers
-                 * (LP sums four SZ3 in 16-world units then >>5; HP sums four in
-                 * 4-world units then >>7 — the same scale), and then adds a
-                 * flat +0x40 slots to every LP face's index. One slot is 128
-                 * world units, so the offset is 8192 world units of view-Z,
-                 * applied before projection — which is where this sits.
-                 *
-                 * That constant is what makes the tiers a PARTITION rather than
-                 * a tie-break: at the stock LOD distance HP cannot exceed slot
-                 * 283 while LP starts at 257, so LP is behind every co-located
-                 * HP face by construction, whatever the two meshes do. It also
-                 * cannot misbehave with distance the way a proportional scale
-                 * does — as a fraction of depth it is ~25% at the LOD line and
-                 * decays outward, instead of a fixed 3% that is far too little
-                 * exactly where the tiers overlap and far too much out at
-                 * portal range.
-                 *
-                 * 64 slots is nominal; 36 (0x40 minus the largest authored HP
-                 * bias) is the floor that still guarantees the ordering. The
-                 * per-face OT bias fields the .s also carries — LP word1 bits
-                 * 3-7 scaled x8, HP word0 bits 3-5 scaled x4 — are NOT modelled
-                 * here yet; they shift individual faces by up to 248 and 28
-                 * slots respectively.
-                 *
-                 * DEFAULT 0 (legacy proportional path) — the constant is NOT
-                 * shippable on its own. Ported alone it regresses: the .s
-                 * admits LP faces by `viewZ >= lodDist - 128*((w0&0x1F)*8) -
-                 * 4096`, an authored per-face field spanning nearly the whole
-                 * LOD range, which this feeder does not read — so the LP face
-                 * SET here is not the .s's, and a faithful ordering constant
-                 * over an unfaithful face set is not faithful. Measured: jamb
-                 * 72.8 -> 278.9, artisans waterline 16.0 -> 42.6 (shimmer does
-                 * improve, 254 -> 223). The constant only pays off alongside
-                 * the admission field and both per-face OT bias fields.
-                 * OPENPETE_TERRAIN_LP_OTSLOTS sets the slot count (0 = legacy).
-                 * OPENPETE_TERRAIN_LP_BIAS 1/0 = on/off. Live, re-read per VBL. */
-                static tn_envvbl_t lpb_c, lpc_c, lpm_c, lps_c;
-                const int lp_bias  = tn_env_vbl(&lpb_c, "OPENPETE_TERRAIN_LP_BIAS", 1, 1);
-                const int lp_cap   = tn_env_vbl(&lpc_c, "OPENPETE_TERRAIN_LP_BIAS_CAP", 768, 0);
-                const int lp_mil   = tn_env_vbl(&lpm_c, "OPENPETE_TERRAIN_LP_BIAS_MIL", 30, 0);
-                const int lp_slots = tn_env_vbl(&lps_c, "OPENPETE_TERRAIN_LP_OTSLOTS", 0, 0);
-                if (t->tier && (s_fillpull || !t->fill)) {
-                    tri.v[k].pvz = wz.vz;      /* perspective W = the UNPULLED view-Z */
-                    if (lp_bias)              /* tier==1 → LP */
-                        wz = lp_slots > 0
-                           /* negative pull = push FARTHER, by whole OT slots */
-                           ? openpete_worldvz_pull(wz, -(float)lp_slots * 128.0f)
-                           : openpete_worldvz_bias_capped(wz, 1.0f + lp_mil * 0.001f,
-                                                          (float)lp_cap);
-                }
+                static tn_envvbl_t otb_c;
+                const int ot_bias = tn_env_vbl(&otb_c, "OPENPETE_TERRAIN_OT_BIAS", 1, 1);
+                tri.v[k].pvz = wz.vz;      /* perspective W = the UNPULLED view-Z */
+                if (ot_bias && t->otslots && (s_fillpull || !t->fill))
+                    /* negative pull = push FARTHER, by whole OT slots */
+                    wz = openpete_worldvz_pull(wz, -(float)t->otslots * 128.0f);
             }
             tri.v[k].z  = openpete_native_depth_from_viewz(wz);
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
