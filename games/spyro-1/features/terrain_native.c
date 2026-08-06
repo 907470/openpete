@@ -4225,6 +4225,40 @@ static void terrain_feed_native(CPUState* cpu) {
                     (double)t->vz[0]*16.0, (double)t->vz[1]*16.0, (double)t->vz[2]*16.0);
         }
       } }
+    /* OPENPETE_TERRAIN_TRIDUMP=<frame>[,path] — one-shot full-feed dump of
+     * every terrain tri with its FACE IDENTITY and depth inputs, on the first
+     * feed whose VBL is >= <frame>. The identity-granular sibling of the
+     * scene dump: sec/face/tier is what per-pixel winner attribution (og OT
+     * raster vs native raster) needs and the scene dump cannot carry. */
+    { static int s_td = -2; static unsigned s_td_f = 0; static char s_td_path[512];
+      if (s_td == -2) { const char* e = getenv("OPENPETE_TERRAIN_TRIDUMP");
+          s_td = -1;
+          if (e && *e) {
+              const char* c = strchr(e, ',');
+              s_td = 1; s_td_f = (unsigned)atoi(e);
+              snprintf(s_td_path, sizeof s_td_path, "%s",
+                       (c && c[1]) ? c + 1 : "/tmp/terrain-tridump.txt");
+          } }
+      if (s_td == 1 && openpete_frame >= s_td_f) {
+        s_td = -1;
+        FILE* fp = fopen(s_td_path, "w");
+        if (fp) {
+            fprintf(fp, "# frame=%u n=%d\n", openpete_frame, s_tri_n);
+            fprintf(fp, "# sec,face,tier,fill,blend,textured,slots,"
+                        "x0,y0,vz0,x1,y1,vz1,x2,y2,vz2  (vz true world units)\n");
+            for (int i = 0; i < s_tri_n; i++) {
+                const ttri* t = &s_tri[i];
+                fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,"
+                            "%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,%.2f,%.2f,%.1f\n",
+                        t->sec, t->face, t->tier, t->fill, t->blend, t->textured,
+                        (int)t->otslots,
+                        (double)t->sx[0], (double)t->sy[0], (double)t->vz[0]*16.0,
+                        (double)t->sx[1], (double)t->sy[1], (double)t->vz[1]*16.0,
+                        (double)t->sx[2], (double)t->sy[2], (double)t->vz[2]*16.0);
+            }
+            fclose(fp);
+        }
+      } }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
