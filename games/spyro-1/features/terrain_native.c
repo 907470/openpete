@@ -939,7 +939,12 @@ static int is_deferred(uint32_t faceRecPtr) {
  * makes this --no-lod-robust (no m_LodDistance dependency). depthSum > 0 stands in
  * for the tier-4 depthSum != 0 guard and drops behind-camera faces. */
 static double s_hqscale = -1.0;   /* SZ3 = s_hqscale * m3 (env OPENPETE_TERRAIN_HQSCALE) */
-static int face_is_near(double z0, double z1, double z2, double z3, uint32_t word3) {
+/* The CANONICAL .s foreground classification (no --no-lod pin): true iff the
+ * canonical walk would route this face to the near/HQ defer queues — i.e. it
+ * never receives a main-OT index. Consumers that model og's OT (the authored
+ * bias gate) must use THIS; the render-routing wrapper below layers the
+ * --no-lod always-HQ pin on top. */
+static int face_is_near_canonical(double z0, double z1, double z2, double z3, uint32_t word3) {
     if (s_hqscale < 0.0) {
         const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
     }
@@ -955,20 +960,32 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
     double sum = sz0 + sz1 + sz2 + sz3;
     if (sum <= 0.0) return 0;                          /* FULLY behind camera */
     if (word3 & 0x80) return 0;                        /* face hard-excluded from HQ subdivide */
-    /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
-     * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
-     * canonical game switches LQ→HQ only inside the 0x2000 foreground band (the
-     * `sum < 0x2000` gate + per-corner tier checks below); under --no-lod we drop
-     * all the distance-derived gates and keep only the two that aren't distance:
-     * the behind-camera guard above and the word3 & 0x80 hard-exclusion (those
-     * faces never carry a valid HQ Tiledef). Quads only — near TRIANGLES still
-     * fall to the GT3 LQ emit (the existing detail-descriptor carve-out, see the
-     * near-dispatch site). Display-only; reads no gameplay state. */
-    if (openpete_no_lod) return 1;
     if (sum >= 8192.0) return 0;                       /* not foreground (0x2000) */
     double mn = sz0; if (sz1<mn) mn=sz1; if (sz2<mn) mn=sz2; if (sz3<mn) mn=sz3;
     if (mn < 320.0) return 1;                          /* a corner SZ3 < 0x140 → tier 4 */
     return !(word3 & 0x40);                            /* else tier 2 unless flag 0x40 */
+}
+static int face_is_near(double z0, double z1, double z2, double z3, uint32_t word3) {
+    /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
+     * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
+     * canonical game switches LQ→HQ only inside the 0x2000 foreground band;
+     * under --no-lod we drop all the distance-derived gates and keep only the
+     * two that aren't distance: the behind-camera guard and the word3 & 0x80
+     * hard-exclusion (those faces never carry a valid HQ Tiledef). Quads only —
+     * near TRIANGLES still fall to the GT3 LQ emit (the existing
+     * detail-descriptor carve-out, see the near-dispatch site). Display-only;
+     * reads no gameplay state. */
+    if (openpete_no_lod) {
+        if (s_hqscale < 0.0) {
+            const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
+        }
+        double s = s_hqscale;
+        double sz0 = z0 > 0.0 ? z0*s : 0.0, sz1 = z1 > 0.0 ? z1*s : 0.0;
+        double sz2 = z2 > 0.0 ? z2*s : 0.0, sz3 = z3 > 0.0 ? z3*s : 0.0;
+        if (sz0 + sz1 + sz2 + sz3 <= 0.0) return 0;    /* FULLY behind camera */
+        return !(word3 & 0x80);
+    }
+    return face_is_near_canonical(z0, z1, z2, z3, word3);
 }
 static int s_near_q_agree, s_near_c_only;   /* classifier vs queue cross-check (verify) */
 static int s_caldbg = -1, s_cal_qn;         /* calibration probe (OPENPETE_TERRAIN_CALDBG) */
@@ -2721,13 +2738,32 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * split tri's own 3-vert mean can land on the other side of the
              * sky's bucket (the fix4 left-edge blue triangle). */
             s_emit_otkey = (float)((sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + sv[i3].m3) * 4.0);
-            /* Authored OT-slot depth offset (P4): the .s adds bias*8 + 0x40
-             * slots to every LP face's OT index and bias*4 to HP's; ported as
+            /* Authored OT-slot depth offset: the .s adds bias*8 + 0x40 slots
+             * to every LP face's OT index and bias*4 to HP's; ported as
              * world units on the TEST depth at the emit (1 slot = 128). Set
              * ambient here so the near/HQ subdivide and clip paths inherit
              * the PARENT face's offset, like otkey. */
             s_emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
                                     : (uint16_t)(4u * F->otbias);
+            /* EXCEPT an HP face in the .s's FOREGROUND band: the classifier
+             * (depthSum < 0x2000 + the flag/corner terms — face_is_near, the
+             * exact .s test from gamestate) routes those to the near/HQ
+             * queues, where they are DrawPrim-drawn, mask-bit-protected, and
+             * never inserted into the OT — there is no OT index for the
+             * authored bias to offset. Foreground faces contest each other
+             * by protected draw order, which raw per-pixel depth
+             * approximates; a whole-face world offset instead moves a
+             * grazing face's crossing line across the floor (magic_crafters
+             * hub: one 4-slot bias flipped a ~30k px slab of near ground to
+             * the wrong face; the artisans bridge rail lost its corner poly
+             * to the deck underside). The CLASSIFIER is the right gate, not
+             * the .s's filled queue: a foreground face the .s clip-rejects
+             * before classification (extreme grazing projection — native
+             * draws it, GPU-clipped) never reaches the queue yet must not
+             * carry a bias either — og never gave it an OT key at all. */
+            if (!passLP && face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3,
+                                                  (quad ? sv[i3].m3 : sv[i2].m3), hqW3))
+                s_emit_otslots = 0;
             /* .s HP-walk texture-fog select (generated C block_80027040-809C,
              * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
              * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
