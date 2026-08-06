@@ -30,6 +30,9 @@ layout(location = 2) noperspective out vec2 vScreenPSX;
  * the depth's own view-Z (clip-invariance), so perspective-in-inW colour is
  * recovered by dividing by this in the fragment stage. */
 layout(location = 3) out float vQ;
+/* Terrain og OT key (rhi_vertex.koff) — see psx_scene.vert. */
+layout(location = 4) flat out float vKoff;
+layout(location = 5) in float inKoff;
 
 /* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0) —
  * see psx_scene.vert: false = legacy z=vz/(vz+4096), true = screen-affine
@@ -63,4 +66,5 @@ void main()
     vUV = inUV * q;
     vScreenPSX = inUV;
     vQ = q;
+    vKoff = inKoff;
 }
