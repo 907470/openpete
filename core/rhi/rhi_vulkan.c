@@ -1416,11 +1416,15 @@ void rhi_wait_idle(rhi_device *dev)
     if (dev && dev->device) vkDeviceWaitIdle(dev->device);
 }
 
+static uint64_t s_frame_serial = 0;
+uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
+
 bool rhi_begin_frame(rhi_device *dev)
 {
     if (dev->needs_recreate && !dev->headless) {
         if (!recreate(dev)) return false;
     }
+    s_frame_serial++;
 
     vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
 
@@ -1819,6 +1823,27 @@ rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
                                        /*prefer_cached=*/false);
     if (b) b->ring_stride = (VkDeviceSize)bytes;
     return b;
+}
+
+void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
+                             size_t offset, size_t bytes)
+{
+    if (!buf || !buf->mapped) return;
+    VkDeviceSize cap = buf->ring_stride ? buf->ring_stride : buf->size;
+    if ((VkDeviceSize)offset >= cap) return;
+    if ((VkDeviceSize)(offset + bytes) > cap) bytes = (size_t)(cap - offset);
+    if (!buf->ring_stride) {
+        memcpy((uint8_t *)buf->mapped + offset, data, bytes);
+        return;
+    }
+    if (buf->dev && buf->dev->frame_active) {
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * buf->dev->frame + offset,
+               data, bytes);
+    } else {
+        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+            memcpy((uint8_t *)buf->mapped + buf->ring_stride * i + offset,
+                   data, bytes);
+    }
 }
 
 void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)

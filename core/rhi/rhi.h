@@ -80,6 +80,12 @@ void rhi_wait_idle(rhi_device *dev);
  * the window is minimized) — the caller should skip rendering this
  * iteration; the device handles recreation internally. */
 bool rhi_begin_frame(rhi_device *dev);
+/* Monotonic count of rhi_begin_frame calls. A pass that must write its ring
+ * vertex buffer more than once per frame (e.g. one batch per render target)
+ * bump-allocates within the buffer and resets its offset when this changes —
+ * a second same-frame rhi_update_buffer to the same offset clobbers data a
+ * recorded-but-unexecuted pass will read. */
+uint64_t rhi_frame_serial(rhi_device *dev);
 
 /* Offscreen color pass. For 1a, begin+end with nothing drawn between
  * clears the offscreen target to the given (linear, 0..1) color. From 1b
@@ -265,6 +271,11 @@ typedef struct {
 rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes);
 void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
+/* Ranged variant: write `bytes` at byte `offset` within the (per-slot)
+ * buffer. For passes that bump-allocate several batches into one ring slot
+ * per frame (the terrain key pass) — a plain update at offset 0 would
+ * clobber batches an earlier recorded pass reads. */
+void        rhi_update_buffer_range(rhi_buffer *buf, const void *data, size_t offset, size_t bytes);
 void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);

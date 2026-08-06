@@ -2948,18 +2948,91 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         }
         m += 3;
     }
+    { static int kdbg = -1;
+      if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
+      if (kdbg) {
+        extern unsigned openpete_frame;
+        fprintf(stderr, "[keypass f=%u] vw=%d vh=%d tris=%d\n", openpete_frame, vw, vh, m/3);
+        { const char* kd = getenv("OPENPETE_TERRAIN_KEY_DUMP");
+          if (kd && *kd) { FILE* fp = fopen(kd, "a");
+            if (fp) { fprintf(fp, "# pass vw=%d vh=%d fe=%d m=%d\n", vw, vh, full_extent, m);
+              for (int t3 = 0; t3 + 3 <= m; t3 += 3)
+                fprintf(fp, "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.8f\n",
+                        (double)kbuf[t3].x,(double)kbuf[t3].y,(double)kbuf[t3+1].x,
+                        (double)kbuf[t3+1].y,(double)kbuf[t3+2].x,(double)kbuf[t3+2].y,
+                        (double)kbuf[t3].z);
+              fclose(fp); } } }
+        /* OPENPETE_TERRAIN_KEY_PX=wx,wy: every kbuf tri covering that WALK
+         * point (via the pass's own scene_to_clip), with its flat key. */
+        { static int kpx = -1; static float wx, wy;
+          if (kpx < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_PX");
+              kpx = (e && *e && sscanf(e, "%f,%f", &wx, &wy) == 2) ? 1 : 0; }
+          if (kpx) {
+            float pcx, pcy;
+            int pf = s_render_full_extent; s_render_full_extent = full_extent ? 1 : 0;
+            scene_to_clip(wx, wy, &pcx, &pcy);
+            s_render_full_extent = pf;
+            for (int t3 = 0; t3 + 3 <= m; t3 += 3) {
+                float x0=kbuf[t3].x, y0=kbuf[t3].y, x1=kbuf[t3+1].x, y1=kbuf[t3+1].y,
+                      x2=kbuf[t3+2].x, y2=kbuf[t3+2].y;
+                float det=(x1-x0)*(y2-y0)-(x2-x0)*(y1-y0);
+                if (det > -1e-12f && det < 1e-12f) continue;
+                float b1=((pcx-x0)*(y2-y0)-(x2-x0)*(pcy-y0))/det;
+                float b2=((x1-x0)*(pcy-y0)-(pcx-x0)*(y1-y0))/det;
+                float b0=1.0f-b1-b2;
+                if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
+                float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
+                fprintf(stderr, "[keycover] K=%.0f xy=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f)\n",
+                        K, x0,y0,x1,y1,x2,y2);
+            }
+          } }
+        for (int t3 = 0; t3 + 3 <= m; t3 += 3) {
+            float x0=kbuf[t3].x, x1=kbuf[t3+1].x, x2=kbuf[t3+2].x;
+            float y0=kbuf[t3].y, y1=kbuf[t3+1].y, y2=kbuf[t3+2].y;
+            float xmin=fminf(x0,fminf(x1,x2)), xmax=fmaxf(x0,fmaxf(x1,x2));
+            float ymin=fminf(y0,fminf(y1,y2)), ymax=fmaxf(y0,fmaxf(y1,y2));
+            float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
+            /* wide-in-clip tris that overlap the viewport: the phantom class */
+            if ((xmax-xmin) > 0.8f && xmax > -1.0f && xmin < 1.0f && ymax > -1.0f && ymin < 1.0f)
+                fprintf(stderr, "[keytri] K=%.0f x=[%.2f,%.2f] y=[%.2f,%.2f]\n",
+                        K, xmin, xmax, ymin, ymax);
+        }
+      } }
     s_render_full_extent = prev_fe;
+    /* BUMP-ALLOCATE within the ring slot: a screenshot compose runs SEVERAL
+     * scene targets per rhi frame (widescreen -vk, the 4:3 dump, frozen),
+     * each with its own key batch — and a second same-frame
+     * rhi_update_buffer at offset 0 would clobber the vertex data a
+     * RECORDED-but-unexecuted earlier key pass reads. At 4:3 every batch
+     * happened to pack identical bytes, masking it; the 16:9 compose mixes
+     * widened and 4:3 mappings and the first target sampled the second
+     * target's geometry — horizontal bands of wrongly-discarded terrain
+     * (the presentation corpus water tiles). Offsets reset when
+     * rhi_begin_frame's serial changes. */
+    static uint64_t s_tk_serial = 0;
+    static int s_tk_base = 0;
+    uint64_t serial = rhi_frame_serial(s_nr.dev);
+    if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
+    if (s_tk_base + (m > 0 ? m : 1) > SCENE_VB_VERTS) {
+        /* Ring slot exhausted (many large targets in one frame): serialize
+         * once rather than corrupt — headless-compose-only in practice. */
+        rhi_wait_idle(s_nr.dev);
+        s_tk_base = 0;
+    }
     /* Even m==0 renders: the cleared far depth reads as "no HP cover", which
      * is the correct contest input — never a stale image. */
-    rhi_update_buffer(s_nr.terrain_key_vb, kbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
+    rhi_update_buffer_range(s_nr.terrain_key_vb, kbuf,
+                            sizeof(rhi_vertex) * (size_t)s_tk_base,
+                            sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
     rhi_begin_render_target(s_nr.dev, s_nr.terrain_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
     if (m > 0) {
         rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
-        rhi_draw(s_nr.dev, (uint32_t)m, 0);
+        rhi_draw(s_nr.dev, (uint32_t)m, (uint32_t)s_tk_base);
     }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
+    s_tk_base += (m > 0 ? m : 1);
 }
 
 /* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
