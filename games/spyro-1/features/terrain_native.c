@@ -2745,24 +2745,40 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * the PARENT face's offset, like otkey. */
             s_emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
                                     : (uint16_t)(4u * F->otbias);
-            /* EXCEPT an HP face in the .s's FOREGROUND band: the classifier
-             * (depthSum < 0x2000 + the flag/corner terms — face_is_near, the
-             * exact .s test from gamestate) routes those to the near/HQ
-             * queues, where they are DrawPrim-drawn, mask-bit-protected, and
-             * never inserted into the OT — there is no OT index for the
-             * authored bias to offset. Foreground faces contest each other
-             * by protected draw order, which raw per-pixel depth
-             * approximates; a whole-face world offset instead moves a
-             * grazing face's crossing line across the floor (magic_crafters
-             * hub: one 4-slot bias flipped a ~30k px slab of near ground to
-             * the wrong face; the artisans bridge rail lost its corner poly
-             * to the deck underside). The CLASSIFIER is the right gate, not
-             * the .s's filled queue: a foreground face the .s clip-rejects
-             * before classification (extreme grazing projection — native
-             * draws it, GPU-clipped) never reaches the queue yet must not
-             * carry a bias either — og never gave it an OT key at all. */
-            if (!passLP && face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3,
-                                                  (quad ? sv[i3].m3 : sv[i2].m3), hqW3))
+            /* EXCEPT any face in the .s's FOREGROUND band (corner-depth sum
+             * < 0x2000).
+             *
+             * HP: the classifier (the sum + flag/corner terms — the exact .s
+             * test from gamestate) routes those faces to the near/HQ queues,
+             * where they are DrawPrim-drawn, mask-bit-protected, and never
+             * inserted into the OT — there is no OT index for the authored
+             * bias to offset. Foreground faces contest each other by
+             * protected draw order, which raw per-pixel depth approximates;
+             * a whole-face world offset instead moves a grazing face's
+             * crossing line across the floor (magic_crafters hub: one 4-slot
+             * bias flipped a ~30k px slab of near ground to the wrong face;
+             * the artisans bridge rail lost its corner poly to the deck
+             * underside). The CLASSIFIER is the right gate, not the .s's
+             * filled queue: a foreground face the .s clip-rejects before
+             * classification (extreme grazing projection — native draws it,
+             * GPU-clipped) never reaches the queue yet must not carry a bias
+             * either — og never gave it an OT key at all.
+             *
+             * LP: the LP walk has no defer path, so og DOES key foreground
+             * LP (a=31 / force-LP 0x8000 / fill-tag cover — the only LP the
+             * admission lets survive this near). But an 8192+-world stored
+             * offset on WALKABLE foreground LP (stone_hill's force-LP
+             * primary surfaces, the fill water planes) breaks the port's
+             * true moby/Spyro-vs-terrain occlusion exactly where it is most
+             * contested. Zero it: true depth already orders the s79-style
+             * base-under-overlay pair (the HP detail physically sits above
+             * its LP base), and exact coplanar ties are the stencil/bias
+             * machinery's job, not a world-scale push's. The flag terms are
+             * HP-record semantics, so LP tests the distance band alone
+             * (word3 = 0 makes the classifier exactly that test). */
+            if (face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3,
+                                       (quad ? sv[i3].m3 : sv[i2].m3),
+                                       passLP ? 0u : hqW3))
                 s_emit_otslots = 0;
             /* .s HP-walk texture-fog select (generated C block_80027040-809C,
              * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
