@@ -171,14 +171,7 @@ typedef struct {
     float    x, y, z;   /* position (clip space in the smoke test; proj later) */
     float    u, v;      /* texture coords in TEXEL units (PSX integer indexing) */
     uint32_t rgba;      /* per-vertex color, byte order R,G,B,A                 */
-    float    koff;      /* terrain og-KEY slot offset (location 5), world units
-                         * +0.5 sentinel; SIGN marks the tier: negative = LP
-                         * (fragment runs the key-resolve contest against the
-                         * HP key image), positive = HP (key-image pass input),
-                         * 0 = not terrain / contest off. The og OT key of a
-                         * face is its view-Z plus this offset; stored depth
-                         * stays TRUE view-Z — faithfulness lives in the
-                         * fragment SELECT, never in the depth value.          */
+    uint32_t tex;       /* reserved (packed tpage|clut|mode), see note above    */
     float    sx, sy;    /* PSX screen coord (location 3) — the textured shadow
                          * decal's depth-pre-pass lookup rides here, because its
                          * u,v are the sprite texel (unlike the untextured Spyro
@@ -234,10 +227,6 @@ typedef struct {
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
-    bool           uses_vram3;  /* third sampler at set 2 (the terrain HP key
-                                 * image). Implies sets 0..2 exist in the
-                                 * layout; sets a shader never statically
-                                 * accesses need no binding at draw.           */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex — pair with the

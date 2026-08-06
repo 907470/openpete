@@ -204,7 +204,6 @@ typedef struct {
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
-    float koff;     /* terrain og-key slot offset — see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) — add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -1197,10 +1196,6 @@ static struct {
     rhi_texture  *opaque_depth;       /* rhi_create_render_target_depth_sampled */
     int           od_w, od_h;         /* current opaque_depth allocation */
     rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
-    rhi_pipeline *terrain_key_pipe;   /* P6b HP key pass (terrain_key.vert) */
-    rhi_buffer   *terrain_key_vb;     /* HP-opaque clip geometry, per-present ring */
-    rhi_texture  *terrain_key_depth;  /* HP og-key image the LP fragments contest */
-    int           tk_w, tk_h;         /* current terrain_key_depth allocation */
     rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth → grid (may be NULL) */
     rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL → no culling) */
 } s_nr;
@@ -1516,9 +1511,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * (quad.vert/quad.frag from 1b.1) — exactly the cyclorama dome's shading. */
     rhi_pipeline_desc gouraud_desc = {
         .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
-        .uses_vram = false, .uses_vram3 = true, .push_const_size = 0,
+        .uses_vram = false, .push_const_size = 0,
     };
     /* WORLD-group variants that also stencil-MARK their coverage (W2.6-c): the
      * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
@@ -1530,9 +1525,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * fill must repaint. */
     rhi_pipeline_desc gouraud_mark_desc = {
         .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = false, .uses_vram3 = true, .push_const_size = 0,
+        .uses_vram = false, .push_const_size = 0,
     };
     /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
      * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
@@ -1613,17 +1608,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* Terrain HP KEY pass (P6b): rasterise opaque HP terrain with depth = the
-     * og OT key (true view-Z + authored slot offset) into a private depth
-     * image; the scene's LP fragments key-contest it (quad_key.frag /
-     * psx_scene_key.frag). Rendered per scene TARGET at that target's size so
-     * texelFetch(gl_FragCoord.xy) aligns exactly. */
-    rhi_pipeline_desc terrain_key_desc = {
-        .vert_spv = "terrain_key.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = false, .push_const_size = 0,
-    };
     /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
      * ABR mode 1 (dst = B + F). RHI_BLEND_ADD = src ONE + dst ONE. The glow is a
      * gouraud fan, bright centre colour fading to black ring vertices, so the
@@ -1675,17 +1659,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
     rhi_pipeline_desc scene_tex_desc = {
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* Textured WORLD-group stencil-MARK variant (W2.6-c) — most terrain is
      * textured, so the coverage mark must come from this pipe too. */
     rhi_pipeline_desc scene_tex_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
      * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
@@ -1797,14 +1781,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     rhi_pipeline_desc hd_cutout_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
@@ -1934,17 +1918,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
-    /* Optional P6b key-pass resources (graceful fallback: NULL → the feeder
-     * emits koff=0, LP fragments never sample, terrain contests at raw true
-     * depth — the OT_BIAS=0 look). The key IMAGE allocates lazily per target
-     * size (ensure_terrain_key_depth). */
-    rhi_pipeline *terrain_key_pipe = rhi_create_pipeline(dev, &terrain_key_desc);
-    rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
-    if (!terrain_key_pipe || !terrain_key_vb) {
-        if (terrain_key_pipe) { rhi_destroy_pipeline(dev, terrain_key_pipe); terrain_key_pipe = NULL; }
-        if (terrain_key_vb)   { rhi_destroy_buffer(dev, terrain_key_vb);     terrain_key_vb = NULL; }
-        OPL_ERROR_F("native", "terrain key pass unavailable; LP key-resolve disabled");
-    }
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     /* W2.4: the CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) — written by the native ops at op time and shadow-synced
@@ -2013,8 +1986,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_sub_fade_pipe = gouraud_sub_fade_pipe;
     s_nr.prepass_pipe = prepass_pipe;
     s_nr.prepass_vb   = prepass_vb;
-    s_nr.terrain_key_pipe = terrain_key_pipe;
-    s_nr.terrain_key_vb   = terrain_key_vb;
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
     s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
     s_nr.portal_mask_pipe = portal_mask_pipe;
@@ -2738,7 +2709,7 @@ static void native_depth_prepass(void)
         for (int k = 0; k < 6; k++) {
             rhi_vertex* o = &pbuf[m + k];
             o->x = bq[k][0]; o->y = bq[k][1]; o->z = 0.999f; o->w = 0.0f;
-            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->koff = 0.0f;
+            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->tex = 0;
         }
         m += 6;
     }
@@ -2758,7 +2729,7 @@ static void native_depth_prepass(void)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             /* Vertex colour retained for vertex-struct completeness; the shadow
              * and occlusion consumers sample the pre-pass depth only. */
-            o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         m += 3;
     }
@@ -2881,174 +2852,6 @@ static void native_depth_prepass(void)
     s_od_ready = 1;
 }
 
-/* ---- P6b: terrain HP KEY pass ----------------------------------------------
- *
- * og's terrain rule is a per-pixel KEY contest: a face's OT key is its view-Z
- * plus the authored slot offset (LP +0x40+8*bias, HP +4*bias, 128 world/slot),
- * and LP owns a pixel only where its key is nearer than HP's. The scene's
- * stored depth is TRUE view-Z (the select never enters the depth buffer), so
- * the contest needs its own image: rasterise opaque HP terrain with depth =
- * key view-Z (affine-encoded, terrain_key.vert) at the SCENE TARGET's exact
- * size, and let LP fragments texelFetch it at gl_FragCoord
- * (psx_scene_key.frag / quad_key.frag / hd_tex_cutout.frag).
- *
- * Called at each scene-target call site BEFORE the target's render pass
- * begins (a pass can't nest); `full_extent` mirrors the draw_native_scene
- * argument so scene_to_clip packs identical positions. */
-int openpete_native_key_resolve_on(void)
-{
-    return s_nr.enabled && s_nr.terrain_key_pipe && s_nr.terrain_key_vb;
-}
-
-static void ensure_terrain_key_depth(int w, int h)
-{
-    if (w <= 0 || h <= 0) return;
-    if (s_nr.terrain_key_depth && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
-    if (w < s_nr.tk_w) w = s_nr.tk_w;
-    if (h < s_nr.tk_h) h = s_nr.tk_h;
-    rhi_wait_idle(s_nr.dev);
-    if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
-    s_nr.terrain_key_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
-    if (s_nr.terrain_key_depth)
-        rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
-    else { s_nr.tk_w = s_nr.tk_h = 0; }
-}
-
-static void native_terrain_key_pass(int full_extent, int vw, int vh)
-{
-    if (!openpete_native_key_resolve_on()) return;
-    ensure_terrain_key_depth(vw, vh);
-    if (!s_nr.terrain_key_depth) return;
-    if (vw > s_nr.tk_w) vw = s_nr.tk_w;
-    if (vh > s_nr.tk_h) vh = s_nr.tk_h;
-    int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
-    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
-    int prev_fe = s_render_full_extent;
-    s_render_full_extent = full_extent ? 1 : 0;
-    static rhi_vertex kbuf[SCENE_VB_VERTS];
-    int m = 0;
-    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
-        const int keycat = scene[t].category == OPENPETE_SCENE_TERRAIN_KEY;
-        if (scene[t].blend != 0) continue;                       /* opaque only */
-        if (scene[t].category != OPENPETE_SCENE_WORLD && !keycat) continue;
-        if (scene[t].koff <= 0.25f) continue;   /* keyed faces / sky fans only */
-        /* koff carries the face's ABSOLUTE og key (+0.5 sentinel): encode it
-         * as a FLAT vertex depth so the raster lays the constant across the
-         * face — the image becomes og's per-pixel OT-index occupancy, exact
-         * on both sides of the fragment contest (no interpolation). */
-        float K = scene[t].koff - 0.5f;
-        float z = K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex* o = &kbuf[m + k];
-            o->x = cx; o->y = cy; o->z = z; o->w = 0.0f;
-            o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u;
-            o->koff = 0.5f;
-        }
-        m += 3;
-    }
-    { static int kdbg = -1;
-      if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
-      if (kdbg) {
-        extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] vw=%d vh=%d tris=%d\n", openpete_frame, vw, vh, m/3);
-        { const char* kd = getenv("OPENPETE_TERRAIN_KEY_DUMP");
-          if (kd && *kd) { FILE* fp = fopen(kd, "a");
-            if (fp) { fprintf(fp, "# pass vw=%d vh=%d fe=%d m=%d\n", vw, vh, full_extent, m);
-              for (int t3 = 0; t3 + 3 <= m; t3 += 3)
-                fprintf(fp, "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.8f\n",
-                        (double)kbuf[t3].x,(double)kbuf[t3].y,(double)kbuf[t3+1].x,
-                        (double)kbuf[t3+1].y,(double)kbuf[t3+2].x,(double)kbuf[t3+2].y,
-                        (double)kbuf[t3].z);
-              fclose(fp); } } }
-        /* OPENPETE_TERRAIN_KEY_PX=wx,wy: every kbuf tri covering that WALK
-         * point (via the pass's own scene_to_clip), with its flat key. */
-        { static int kpx = -1; static float wx, wy;
-          if (kpx < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_PX");
-              kpx = (e && *e && sscanf(e, "%f,%f", &wx, &wy) == 2) ? 1 : 0; }
-          if (kpx) {
-            float pcx, pcy;
-            int pf = s_render_full_extent; s_render_full_extent = full_extent ? 1 : 0;
-            scene_to_clip(wx, wy, &pcx, &pcy);
-            s_render_full_extent = pf;
-            for (int t3 = 0; t3 + 3 <= m; t3 += 3) {
-                float x0=kbuf[t3].x, y0=kbuf[t3].y, x1=kbuf[t3+1].x, y1=kbuf[t3+1].y,
-                      x2=kbuf[t3+2].x, y2=kbuf[t3+2].y;
-                float det=(x1-x0)*(y2-y0)-(x2-x0)*(y1-y0);
-                if (det > -1e-12f && det < 1e-12f) continue;
-                float b1=((pcx-x0)*(y2-y0)-(x2-x0)*(pcy-y0))/det;
-                float b2=((x1-x0)*(pcy-y0)-(pcx-x0)*(y1-y0))/det;
-                float b0=1.0f-b1-b2;
-                if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
-                float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
-                fprintf(stderr, "[keycover] K=%.0f xy=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f)\n",
-                        K, x0,y0,x1,y1,x2,y2);
-            }
-          } }
-        for (int t3 = 0; t3 + 3 <= m; t3 += 3) {
-            float x0=kbuf[t3].x, x1=kbuf[t3+1].x, x2=kbuf[t3+2].x;
-            float y0=kbuf[t3].y, y1=kbuf[t3+1].y, y2=kbuf[t3+2].y;
-            float xmin=fminf(x0,fminf(x1,x2)), xmax=fmaxf(x0,fmaxf(x1,x2));
-            float ymin=fminf(y0,fminf(y1,y2)), ymax=fmaxf(y0,fmaxf(y1,y2));
-            float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
-            /* wide-in-clip tris that overlap the viewport: the phantom class */
-            if ((xmax-xmin) > 0.8f && xmax > -1.0f && xmin < 1.0f && ymax > -1.0f && ymin < 1.0f)
-                fprintf(stderr, "[keytri] K=%.0f x=[%.2f,%.2f] y=[%.2f,%.2f]\n",
-                        K, xmin, xmax, ymin, ymax);
-        }
-      } }
-    s_render_full_extent = prev_fe;
-    /* BUMP-ALLOCATE within the ring slot: a screenshot compose runs SEVERAL
-     * scene targets per rhi frame (widescreen -vk, the 4:3 dump, frozen),
-     * each with its own key batch — and a second same-frame
-     * rhi_update_buffer at offset 0 would clobber the vertex data a
-     * RECORDED-but-unexecuted earlier key pass reads. At 4:3 every batch
-     * happened to pack identical bytes, masking it; the 16:9 compose mixes
-     * widened and 4:3 mappings and the first target sampled the second
-     * target's geometry — horizontal bands of wrongly-discarded terrain
-     * (the presentation corpus water tiles). Offsets reset when
-     * rhi_begin_frame's serial changes. */
-    static uint64_t s_tk_serial = 0;
-    static int s_tk_base = 0;
-    uint64_t serial = rhi_frame_serial(s_nr.dev);
-    if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
-    if (s_tk_base + (m > 0 ? m : 1) > SCENE_VB_VERTS) {
-        /* Ring slot exhausted (many large targets in one frame): serialize
-         * once rather than corrupt — headless-compose-only in practice. */
-        rhi_wait_idle(s_nr.dev);
-        s_tk_base = 0;
-    }
-    /* Even m==0 renders: the cleared far depth reads as "no HP cover", which
-     * is the correct contest input — never a stale image. */
-    rhi_update_buffer_range(s_nr.terrain_key_vb, kbuf,
-                            sizeof(rhi_vertex) * (size_t)s_tk_base,
-                            sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
-    rhi_begin_render_target(s_nr.dev, s_nr.terrain_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
-    rhi_set_viewport(s_nr.dev, vw, vh);
-    if (m > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
-        rhi_draw(s_nr.dev, (uint32_t)m, (uint32_t)s_tk_base);
-    }
-    rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
-    s_tk_base += (m > 0 ? m : 1);
-}
-
-/* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
- * sampler set 2) additionally get the HP key image bound there — done at
- * pipeline-bind time so the invariant needs no per-site reasoning. Plain
- * passthrough for every other pipeline. */
-static void bind_scene_pipe(rhi_pipeline* p)
-{
-    rhi_bind_pipeline(s_nr.dev, p);
-    if (!s_nr.terrain_key_depth) return;
-    if (p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
-        p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
-        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe)
-        rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
-}
-
 /* ---- moby occlusion culling: grid pass + readback + query -------------------
  *
  * Per LIVE present: one tiny render pass reduces the WORLD-opaque depth
@@ -3102,7 +2905,7 @@ static void native_occl_downsample(void)
     struct { int gw, gh, pvw, pvh; } pc =
         { OCCL_GW, OCCL_GH, (int)s_od_vw, (int)s_od_vh };
     rhi_begin_render_target(s_nr.dev, s_nr.occl_grid, 0.0f, 0.0f, 0.0f, 1.0f);
-    bind_scene_pipe(s_nr.occl_pipe);
+    rhi_bind_pipeline(s_nr.dev, s_nr.occl_pipe);
     rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
@@ -3721,7 +3524,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark) {
             }
             if (*slot != PFX_PIPE_FAILED) {
                 pipe = (rhi_pipeline*)*slot;
-                bind_scene_pipe(pipe);
+                rhi_bind_pipeline(s_nr.dev, pipe);
                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
@@ -3733,7 +3536,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark) {
                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
             }
         }
-        if (!pipe) bind_scene_pipe(stock);
+        if (!pipe) rhi_bind_pipeline(s_nr.dev, stock);
         rhi_draw(s_nr.dev, (uint32_t)s_utmat[si].count, (uint32_t)s_utmat[si].first);
     }
 }
@@ -3775,7 +3578,7 @@ static void hd_defer_flush(rhi_pipeline *hd_pipe, rhi_pipeline *self)
 {
     if (!s_hd_defer_n) return;
     qsort(s_hd_defer, (size_t)s_hd_defer_n, sizeof *s_hd_defer, hd_defer_cmp);
-    bind_scene_pipe(hd_pipe);
+    rhi_bind_pipeline(s_nr.dev, hd_pipe);
     rhi_texture *cur = NULL;
     for (int i = 0; i < s_hd_defer_n; i++) {
         hd_defer_ent *e = &s_hd_defer[i];
@@ -3784,7 +3587,7 @@ static void hd_defer_flush(rhi_pipeline *hd_pipe, rhi_pipeline *self)
         rhi_draw(s_nr.dev, e->count, e->first);
     }
     s_hd_defer_n = 0;
-    bind_scene_pipe(self);
+    rhi_bind_pipeline(s_nr.dev, self);
     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
 }
 
@@ -3938,7 +3741,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                                         "FAILED for %s\n", mg.owner);
                 }
                 if (*ov_slot != PFX_PIPE_FAILED) {
-                    bind_scene_pipe((rhi_pipeline*)*ov_slot);
+                    rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*ov_slot);
                     rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                     rhi_texture* pack_bound = s_nr.mat_pack_dummy;
                     if (pack_bound)
@@ -4020,7 +3823,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                             t += g;
                         }
                     }
-                    bind_scene_pipe(self);   /* HD-path restore discipline */
+                    rhi_bind_pipeline(s_nr.dev, self);   /* HD-path restore discipline */
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                     i += run;
                     continue;
@@ -4046,11 +3849,11 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                      * they push the identity fog transform. */
                     const hd_pc pc = { 0.f, 0.f, (float)mw, (float)mh,
                                        { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
-                    bind_scene_pipe(hd_pipe);
+                    rhi_bind_pipeline(s_nr.dev, hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                     rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
-                    bind_scene_pipe(self);
+                    rhi_bind_pipeline(s_nr.dev, self);
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 }
             }
@@ -4131,11 +3934,11 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         hd_defer_push(tex, &pc, (uint32_t)(g * 3),
                                       (uint32_t)(first_vert + (i + t) * 3));
                     } else {
-                        bind_scene_pipe(hd_pipe);
+                        rhi_bind_pipeline(s_nr.dev, hd_pipe);
                         rhi_bind_vram(s_nr.dev, tex);
                         rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                         rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
-                        bind_scene_pipe(self);
+                        rhi_bind_pipeline(s_nr.dev, self);
                         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                         m_pushed = 0;           /* push constants were overwritten */
                     }
@@ -4172,12 +3975,12 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
             rhi_pipeline *pipe = (scene[t].blend == 3) ? s_nr.gouraud_hud_sub_pipe
                                                        : s_nr.gouraud_hud_blend_pipe;
-            if (pipe) { bind_scene_pipe(pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
+            if (pipe) { rhi_bind_pipeline(s_nr.dev, pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
             voff += 3;
         }
     }
     if (hud_tex_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
-        bind_scene_pipe(s_nr.scene_tex_hud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
@@ -4189,7 +3992,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
         if (s_zp < 0) { const char* e = getenv("OPENPETE_HUD6_ZPIPE"); s_zp = (e && *e && *e != '0'); }
         if (s_zp && s_nr.gouraud_pipe && ut_count[6] > 0) {
             rhi_clear_depth(s_nr.dev);
-            bind_scene_pipe(s_nr.gouraud_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
             return;
@@ -4202,7 +4005,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
          * depth-off pipe. (The textured HUD range above stays submission-order:
          * its content is constant-z 2D sprites; extend the sort there if a
          * rotating TEXTURED near-OT moby ever appears.) */
-        bind_scene_pipe(s_nr.gouraud_hud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
     }
@@ -4350,14 +4153,14 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
 {
     if (bg != 0 && s_nr.gouraud_pipe) {
         rhi_gpu_zone_begin(s_nr.dev, "sc.bg");
-        bind_scene_pipe(s_nr.gouraud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, 6, 0);
         rhi_gpu_zone_end(s_nr.dev);
     }
     if (sky_ok && s_nr.gouraud_pipe && ut_count[11] > 0) {
         rhi_gpu_zone_begin(s_nr.dev, "sc.sky");
-        bind_scene_pipe(s_nr.gouraud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
         rhi_gpu_zone_end(s_nr.dev);
@@ -4411,9 +4214,8 @@ static void scene_probes(scene_tri_t* sc, int n)
         fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_frame, n);
         for (int ti = 0; ti < n; ti++) {
             const scene_tri_t* T = &sc[ti];
-            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f", ti,
-                    T->category, T->blend, T->textured, T->group,
-                    (double)T->koff);
+            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d", ti,
+                    T->category, T->blend, T->textured, T->group);
             for (int k = 0; k < 3; k++)
                 fprintf(stderr, " (%.2f,%.2f,z%.6f,w%.1f,%08X)",
                         (double)T->v[k].sx, (double)T->v[k].sy,
@@ -4647,7 +4449,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                 o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
                 o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             n += 3;
         }
@@ -4679,7 +4481,7 @@ static bool draw_native_scene(bool full_extent)
                     rhi_vertex *o = &buf[n + k];
                     o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                     o->u = 0.0f; o->v = 0.0f;
-                    o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                    o->rgba = scene[t].v[k].rgba; o->tex = 0;
                 }
                 n += 3;
             }
@@ -4750,7 +4552,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_vertex *o = &buf[n + k];
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             n += 3;
         }
@@ -4767,7 +4569,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4784,7 +4586,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4803,7 +4605,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4820,7 +4622,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4839,7 +4641,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4853,7 +4655,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4874,7 +4676,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3;
     }
@@ -4897,7 +4699,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->rgba = scene[t].v[k].rgba; o->tex = 0;
         }
         n += 3; af_n++;
     }
@@ -4936,7 +4738,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_vertex *o = &buf[n + k];
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->rgba = scene[t].v[k].rgba; o->tex = 0;
             }
             runs[cur].count += 3;
             n += 3;
@@ -5023,7 +4825,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_vertex *o = &buf[tx_start + i * 3 + k];
             o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
             o->u = st->v[k].u; o->v = st->v[k].v;
-            o->rgba = st->v[k].rgba; o->koff = st->koff;
+            o->rgba = st->v[k].rgba; o->tex = 0;
             /* PSX screen coord for the textured shadow decal (location 3); the
              * scene_to_clip INPUT is the PSX screen coord. Harmless for the
              * other textured pipes (their shaders omit location 3). */
@@ -5185,7 +4987,7 @@ static bool draw_native_scene(bool full_extent)
     if (freeze_first >= 0) {
         rhi_texture *frz = active_frozen_tex(NULL);
         if (frz) {
-            bind_scene_pipe(s_nr.freeze_overlay_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
             rhi_bind_vram(s_nr.dev, frz);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
@@ -5236,12 +5038,12 @@ static bool draw_native_scene(bool full_extent)
             scene_to_clip(af_x1, af_y1, &cx1, &cy1);
             rhi_clear_depth_rect_ndc(s_nr.dev, cx0, cy0, cx1, cy1);
             if (s_nr.gouraud_pipe && ut_count[14] > 0) {
-                bind_scene_pipe(s_nr.gouraud_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
             }
             if (txg_count[9] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
@@ -5268,7 +5070,7 @@ static bool draw_native_scene(bool full_extent)
                  * wall rejection, no bias). Fallback (pre-pass unavailable this
                  * present / unsupported device): plain depth test + W2.5 bias. */
                 if (s_od_ready && s_nr.opaque_depth) {
-                    bind_scene_pipe(s_nr.gouraud_sub_pipe);
+                    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
                     rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
                     shadow_decal_pc pc;
                     pc.col0x = s_shadow_decal.cam_col0[0];
@@ -5300,13 +5102,13 @@ static bool draw_native_scene(bool full_extent)
                     pc.pvw = s_od_vw; pc.pvh = s_od_vh;
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 } else {
-                    bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
+                    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
                     float c, s, cl;
                     shadow_hw_bias(&c, &s, &cl);
                     rhi_set_depth_bias(s_nr.dev, c, cl, s);
                 }
             } else {
-                bind_scene_pipe(g->utex);
+                rhi_bind_pipeline(s_nr.dev, g->utex);
             }
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
@@ -5358,14 +5160,14 @@ static bool draw_native_scene(bool full_extent)
                 pc.tpage_x = m0->tpage_x; pc.tpage_y = m0->tpage_y;
                 pc.clut_x = m0->clut_x;   pc.clut_y = m0->clut_y;
                 pc.bpp = m0->bpp;
-                bind_scene_pipe(s_nr.scene_tex_sub_decal_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_sub_decal_pipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 rhi_bind_vram2(s_nr.dev, s_nr.vram_tex);                /* set 1 */
                 rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
             } else {
-                bind_scene_pipe(g->tex);
+                rhi_bind_pipeline(s_nr.dev, g->tex);
                 if (gi == 1) {
                     float c, s, cl;
                     shadow_hw_bias(&c, &s, &cl);
@@ -5413,12 +5215,12 @@ static bool draw_native_scene(bool full_extent)
             rhi_pipeline* atex  = holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe;
             rhi_pipeline* acut  = holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe;
             if (apipe && ut_count[14] > 0) {
-                bind_scene_pipe(apipe);
+                rhi_bind_pipeline(s_nr.dev, apipe);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
             }
             if (txg_count[9] > 0 && s_nr.vram_tex && atex) {
-                bind_scene_pipe(atex);
+                rhi_bind_pipeline(s_nr.dev, atex);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
@@ -5435,7 +5237,7 @@ static bool draw_native_scene(bool full_extent)
          * actors draw at gi==3 and don't mark — cutscene draw lists carry no
          * fill-backed decor, so the seam fill stays correct there.) */
         if (gi == 2 && holefill_on && ut_count[12] > 0) {
-            bind_scene_pipe(s_nr.gouraud_fill_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
@@ -5461,13 +5263,13 @@ static bool draw_native_scene(bool full_extent)
                                  s_nr.gouraud_sub_ztest_pipe != NULL,
                                  s_nr.scene_tex_sub_pipe != NULL, s_nr.vram_tex != NULL); }
             if (ut_count[13] > 0 && s_nr.gouraud_sub_ztest_pipe) {
-                bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
                 rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)ut_count[13], (uint32_t)ut_first[13]);
             }
             if (txg_count[8] > 0 && s_nr.vram_tex && s_nr.scene_tex_sub_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_sub_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
                 rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
@@ -5518,7 +5320,7 @@ static bool draw_native_scene(bool full_extent)
                 int mc = mk ? mk->count : sk->count;
                 if (sk->count <= 0 || mc <= 0) continue;
                 rhi_clear_stencil(s_nr.dev);
-                bind_scene_pipe(s_nr.portal_mask_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.portal_mask_pipe);
                 /* dynamic bias must be (re)set after THIS bind (see the note
                  * at the shadow group). Default neutral — the tie-break margin
                  * is already baked into the mask z (the feeder's world-unit
@@ -5532,7 +5334,7 @@ static bool draw_native_scene(bool full_extent)
                     rhi_set_depth_bias(s_nr.dev, c, cl, s);
                 }
                 rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
-                bind_scene_pipe(s_nr.gouraud_noz_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_noz_pipe);
                 rhi_draw(s_nr.dev, (uint32_t)sk->count, (uint32_t)sk->first);
             }
             /* PORTAL_GUARD: near-band terrain protection redraw — the PSX
@@ -5540,12 +5342,12 @@ static bool draw_native_scene(bool full_extent)
              * once after ALL portal groups; the sky wrote no depth, so the
              * guard's normal LEQUAL re-wins exactly its own pixels. */
             if (ut_count[10] > 0 && s_nr.gouraud_pipe) {
-                bind_scene_pipe(s_nr.gouraud_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)ut_count[10], (uint32_t)ut_first[10]);
             }
             if (txg_count[7] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_pipe);
+                rhi_bind_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe,
@@ -5585,7 +5387,7 @@ static bool draw_native_scene(bool full_extent)
      * the .s to <1px; this only fixes their internal depth ordering. */
     if (s_nr.gouraud_pipe && ut_count[9] > 0) {
         rhi_clear_depth(s_nr.dev);
-        bind_scene_pipe(s_nr.gouraud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[9], (uint32_t)ut_first[9]);
     }
@@ -5595,7 +5397,7 @@ static bool draw_native_scene(bool full_extent)
      * (gouraud_hud_pipe). Before the fade, matching the PSX HUD-OT order (the fade
      * F4 is linked after the border, so it draws on top of the bars). */
     if (s_nr.gouraud_hud_pipe && ut_count[7] > 0) {
-        bind_scene_pipe(s_nr.gouraud_hud_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[7], (uint32_t)ut_first[7]);
     }
@@ -5612,7 +5414,7 @@ static bool draw_native_scene(bool full_extent)
                          : (fade_mode == 0) ? s_nr.gouraud_blend_pipe
                                             : s_nr.gouraud_add_pipe;  /* 1 (and 3) -> additive */
         if (fp) {
-            bind_scene_pipe(fp);
+            rhi_bind_pipeline(s_nr.dev, fp);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
@@ -5816,7 +5618,7 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
         buf[n].x = (v->x + ox) * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].tex = 0; buf[n].w = 0.0f;
         n++;
     }
     n -= n % 3;
@@ -5824,7 +5626,7 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
     rhi_update_buffer(s_nr.overlay_vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
     rhi_clear_depth(s_nr.dev);
-    bind_scene_pipe(s_nr.gouraud_pipe);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.overlay_vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
     return true;
@@ -5847,7 +5649,7 @@ static void draw_mod_overlay(void) {
         buf[n].x = v->x * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].tex = 0; buf[n].w = 0.0f;
         n++;
     }
     n -= n % 3;
@@ -5855,7 +5657,7 @@ static void draw_mod_overlay(void) {
     rhi_update_buffer(s_nr.mod_ovl_vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
     rhi_clear_depth(s_nr.dev);
-    bind_scene_pipe(s_nr.gouraud_pipe);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.mod_ovl_vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
 }
@@ -5962,7 +5764,7 @@ static void draw_fps_overlay(void) {
     if (ovl_ss_ready()) {
         int factor = OVL_SS_FACTOR;
         rhi_reset_scissor(s_nr.dev);
-        bind_scene_pipe(s_nr.ovl_resolve_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.ovl_ss);
         rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.ovl_quad_vb);
@@ -6013,7 +5815,7 @@ static void draw_menu_glyphs_3d(float ax, float ay) {
         gbuf[gn].x = v->x * ax - 1.0f;
         gbuf[gn].y = 1.0f - v->y * ay;
         gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
-        gbuf[gn].rgba = v->rgba; gbuf[gn].koff = 0.0f; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
+        gbuf[gn].rgba = v->rgba; gbuf[gn].tex = 0; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
         gbuf[gn].w = 0.0f;
         gn++;
     }
@@ -6022,7 +5824,7 @@ static void draw_menu_glyphs_3d(float ax, float ay) {
     rhi_update_buffer(s_nr.menu_glyph_vb, gbuf, (size_t)gn * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
     rhi_clear_depth(s_nr.dev);
-    bind_scene_pipe(s_nr.gouraud_pipe);
+    rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_pipe);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_glyph_vb);
     rhi_draw(s_nr.dev, (uint32_t)gn, 0);
 }
@@ -6112,7 +5914,7 @@ static void draw_menu_overlay(void) {
     rhi_reset_scissor(s_nr.dev);
 
     if (sub_n > 0 && s_nr.gouraud_hud_sub_pipe) {
-        bind_scene_pipe(s_nr.gouraud_hud_sub_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
         rhi_draw(s_nr.dev, (uint32_t)sub_n, (uint32_t)sub0);
     }
@@ -6126,7 +5928,7 @@ static void draw_menu_overlay(void) {
     if (menu_ss_ready() && s_menu_glyph_n >= 3) {
         int factor = MENU_SS_FACTOR;
         rhi_reset_scissor(s_nr.dev);
-        bind_scene_pipe(s_nr.ovl_resolve_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.menu_ss);
         rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_quad_vb);
@@ -6219,15 +6021,13 @@ static bool compose_variant(int variant, bool have_ref)
      * after the offscreen pass below). */
     if (s_nr.native_rtt && want_scene &&
         (variant == NRV_DIFF || (variant == NRV_AB && world_frame))) {
-        { int kw, kh; rhi_texture_extent(s_nr.native_rtt, &kw, &kh);
-          native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, br, bgc, bb, 1.0f);
         rtt_drew = draw_native_scene(true);
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
 
         if (variant == NRV_AB && rtt_drew && world_frame && s_nr.frozen_tex) {
             rhi_begin_render_target(s_nr.dev, s_nr.frozen_tex, 0.0f, 0.0f, 0.0f, 1.0f);
-            bind_scene_pipe(s_nr.blit_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.native_rtt);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
             rhi_draw(s_nr.dev, 6, 0);
@@ -6239,7 +6039,7 @@ static bool compose_variant(int variant, bool have_ref)
     /* Diff: |native_rtt - reference| into the offscreen (panel-0 rect). */
     if (variant == NRV_DIFF && rtt_drew && have_ref) {
         rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
-        bind_scene_pipe(s_nr.diff_pipe);
+        rhi_bind_pipeline(s_nr.dev, s_nr.diff_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.native_rtt);  /* set 0 = native */
         rhi_bind_vram2(s_nr.dev, s_nr.ref_tex);    /* set 1 = reference */
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.diff_quad_vb);
@@ -6260,8 +6060,6 @@ static bool compose_variant(int variant, bool have_ref)
          * taxes every later colour write (~+130us on both the clear and the
          * WORLD group at 4K SSAA4), cancelling the saved quad. */
         rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
-        { int kw, kh; rhi_texture_extent(s_nr.ss_rtt, &kw, &kh);
-          native_terrain_key_pass(0, kw, kh); }
         rhi_gpu_zone_begin(s_nr.dev, "sc.rtbegin");
         rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         rhi_gpu_zone_end(s_nr.dev);
@@ -6273,7 +6071,7 @@ static bool compose_variant(int variant, bool have_ref)
         if (drew) {
             int n = s_nr.ss_factor;
             rhi_gpu_zone_begin(s_nr.dev, "sc.resolve");
-            bind_scene_pipe(s_nr.resolve_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.resolve_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.ss_rtt);
             rhi_push_constants(s_nr.dev, &n, sizeof(n));
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
@@ -6287,7 +6085,7 @@ static bool compose_variant(int variant, bool have_ref)
                 tx = s_nr.disp_x; ty = s_nr.disp_y + dy;
             }
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
-            bind_scene_pipe(s_nr.vram_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
@@ -6315,7 +6113,6 @@ static bool compose_variant(int variant, bool have_ref)
      * draw_native_scene sampling frozen_tex — composes here too on menu frames. An
      * empty scene falls back to re-displaying the PSX VRAM framebuffer (loading
      * screens / transitions / pre-scene bootstrap). */
-    native_terrain_key_pass(0, s_nr.win_w, s_nr.win_h);
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
         /* tpage = the CURRENT front-buffer origin (flips per frame via the double
@@ -6331,7 +6128,7 @@ static bool compose_variant(int variant, bool have_ref)
         rhi_gpu_zone_end(s_nr.dev);
         if (!scene_drew) {
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
-            bind_scene_pipe(s_nr.vram_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.vram_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
             rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
@@ -6340,7 +6137,7 @@ static bool compose_variant(int variant, bool have_ref)
 
         /* Panel 1 — reference (A/B compare only; vk/diff are single panels). */
         if (variant == NRV_AB && have_ref) {
-            bind_scene_pipe(s_nr.blit_pipe);
+            rhi_bind_pipeline(s_nr.dev, s_nr.blit_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.ref_tex);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 6);
@@ -6653,7 +6450,7 @@ static void draw_mod_meshes(void)
             v->x = mv[k].x; v->y = mv[k].y; v->z = mv[k].z;
             v->u = mv[k].u; v->v = mv[k].v;
             v->rgba = mv[k].rgba;
-            v->koff = 0.0f; v->sx = 0.f; v->sy = 0.f;
+            v->tex = 0; v->sx = 0.f; v->sy = 0.f;
             v->w = 0.f;    /* mod meshes feed unshifted depth: derive W from z */
         }
         total += n;
@@ -6695,7 +6492,7 @@ static void draw_mod_meshes(void)
                                 "for %s\n", pd.owner);
         }
         if (*pd.pipeline_slot != PFX_PIPE_FAILED) {
-            bind_scene_pipe((rhi_pipeline*)*pd.pipeline_slot);
+            rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pd.pipeline_slot);
             /* set 0: the mod texture (texture_register id) through the HD
              * cache; untextured/missing binds the VRAM texture (inert for
              * shaders that don't sample). Sets 1/2 mirror it (contract:
@@ -6852,7 +6649,7 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
          * path runs outside the frame-loop zone budget. */
         if (!target) rhi_gpu_zone_begin(s_nr.dev, pass[i].owner);
         rhi_begin_render_target(s_nr.dev, out, 0.f, 0.f, 0.f, 1.f);
-        bind_scene_pipe((rhi_pipeline*)*pass[i].pipeline_slot);
+        rhi_bind_pipeline(s_nr.dev, (rhi_pipeline*)*pass[i].pipeline_slot);
         /* set 0 = previous pass (chain input on pass 0); set 1 = opaque
          * pre-pass depth (contract: WORLD-opaque only, the input color
          * as a documented fallback when the pre-pass is absent); set 2 =
@@ -7224,8 +7021,6 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
         upload_synced_textures();
         hd_flush_pending();
         native_depth_prepass();
-        { int kw, kh; rhi_texture_extent(s_nr.shot_frozen, &kw, &kh);
-          native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, s_nr.shot_frozen, br, bgc, bb, 1.0f);
         draw_native_scene(true);
         rhi_end_render_target(s_nr.dev, s_nr.shot_frozen);
@@ -7273,8 +7068,6 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         native_depth_prepass();
         /* Black clear + mod draws + SCENE point: live-offscreen parity, same
          * rationale as the 4:3 dump compose (see screenshot_all_impl). */
-        { int kw, kh; rhi_texture_extent(rt, &kw, &kh);
-          native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
         draw_mod_meshes();
@@ -7445,8 +7238,6 @@ static int native_render_screenshot_all_impl(const char *base)
          * never drawn, making the dump unable to reproduce a live-visible black
          * region. Where the quad exists (every normal frame) the output is
          * identical. */
-        { int kw, kh; rhi_texture_extent(s_nr.native_rtt, &kw, &kh);
-          native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
         /* Mod draw-service content (3D meshes under the mod HUD) — the live
@@ -7635,9 +7426,6 @@ void openpete_native_render_shutdown(void)
     if (s_nr.occl_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.occl_pipe);
     if (s_nr.prepass_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
     if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
-    if (s_nr.terrain_key_depth) rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth);
-    if (s_nr.terrain_key_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.terrain_key_vb);
-    if (s_nr.terrain_key_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
     if (s_nr.gouraud_sub_ztest_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
     if (s_nr.gouraud_sub_fade_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_fade_pipe);
     if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);
