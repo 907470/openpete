@@ -26,6 +26,10 @@ layout(location = 1) out vec2 vUV;
  * mode-specific gl_FragCoord->screen affine. noperspective: screen position is
  * affine in screen space, not perspective-correct. Other frags ignore it. */
 layout(location = 2) noperspective out vec2 vScreenPSX;
+/* Interpolation ratio (vzo/inW) — see psx_scene.vert: position W must equal
+ * the depth's own view-Z (clip-invariance), so perspective-in-inW colour is
+ * recovered by dividing by this in the fragment stage. */
+layout(location = 3) out float vQ;
 
 /* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0) —
  * see psx_scene.vert: false = legacy z=vz/(vz+4096), true = screen-affine
@@ -42,14 +46,21 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
+    /* Position W MUST be the depth's own view-Z (vzo), not the true-vz inW:
+     * the clipper interpolates (zc, W) linearly, and only a matched pair
+     * keeps window depth screen-linear through clipping (see psx_scene.vert
+     * for the failure this prevents). Colour perspective in inW is recovered
+     * via the vQ ratio in the fragment stage. */
     float z   = clamp(inPos.z, 0.0, 0.9999);        /* bound W (z->1 => W->inf) */
     float vzo = 4096.0 * z / max(1.0 - z, 1e-6);     /* view-Z the DEPTH encodes */
     vzo = max(vzo, 1.0);                              /* near-plane / z==0 guard  */
-    float W = inW > 0.0 ? max(inW, 1.0) : vzo;       /* perspective W (true vz)  */
-    float zc = DEPTH_AFFINE ? (vzo - 1.0) * (W / vzo) : (z * W);   /* z_ndc = zc/W */
+    float Wu = inW > 0.0 ? max(inW, 1.0) : vzo;      /* colour perspective W     */
+    float q  = AFFINE_UV ? 1.0 : (vzo / Wu);
+    float zc = DEPTH_AFFINE ? (vzo - 1.0) : (z * vzo);   /* z_ndc = zc/vzo */
     gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
-                            : vec4(inPos.xy * W, zc, W);
-    vColor = inColor;
-    vUV = inUV;
+                            : vec4(inPos.xy * vzo, zc, vzo);
+    vColor = inColor * q;
+    vUV = inUV * q;
     vScreenPSX = inUV;
+    vQ = q;
 }

@@ -21,8 +21,9 @@ layout(push_constant) uniform PsxMaterial {
     int bpp;                /* 4, 8, or 16 */
 } pc;
 
-layout(location = 0) in vec2 vUV;     /* texel coords within the texture page */
-layout(location = 1) in vec4 vColor;  /* per-vertex modulate (R8G8B8A8 -> 0..1) */
+layout(location = 0) in vec2 vUV;     /* texel coords x ratio (divide by vQ) */
+layout(location = 1) in vec4 vColor;  /* per-vertex modulate x ratio (divide by vQ) */
+layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -56,9 +57,11 @@ uint sample_word(int u, int v)
 
 void main()
 {
-    vec4 c = decode555(sample_word(int(vUV.x), int(vUV.y)));
+    vec2 uv = vUV / vQ;
+    vec4 col = vColor / vQ;
+    vec4 c = decode555(sample_word(int(uv.x), int(uv.y)));
     if (c.a == 0.0) discard;
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
-    vec3 rgb = clamp(c.rgb * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
+    vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     outColor = vec4(rgb, c.a);
 }

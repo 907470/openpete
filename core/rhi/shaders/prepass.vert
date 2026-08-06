@@ -31,10 +31,15 @@ void main()
     float z   = clamp(inPos.z, 0.0, 0.9999);
     float vzo = 4096.0 * z / max(1.0 - z, 1e-6);     /* canonical depth -> view-Z */
     vzo = max(vzo, 1.0);
-    float W = inW > 0.0 ? max(inW, 1.0) : vzo;       /* perspective W (true vz)   */
-    /* Depth still encodes vzo (the value the scene pass ordered by); only the
-     * homogeneous scale changes. Folds to (xy*W, W-1, W) on the unshifted path. */
-    gl_Position = vec4(inPos.xy * W, (vzo - 1.0) * (W / vzo), W);  /* z_ndc = 1 - 1/vzo */
+    /* TRUE view-Z, both as the depth encoding and the homogeneous W. The
+     * decal reconstructs world geometry from this image, so it must encode
+     * the surface's real distance — NOT the OT-shifted ordering value the
+     * visible scene sorts by (a slot-shifted floor read as thousands of
+     * units deeper drapes the shadow onto phantom ground). And the (z, W)
+     * pair must be matched or the clipper corrupts the depth of partially
+     * off-screen triangles (see psx_scene.vert). */
+    float Wt = inW > 0.0 ? max(inW, 1.0) : vzo;
+    gl_Position = vec4(inPos.xy * Wt, Wt - 1.0, Wt);  /* z_ndc = 1 - 1/Wt */
     vColor = inColor;
     vUV = inUV;
     vScreenPSX = inUV;

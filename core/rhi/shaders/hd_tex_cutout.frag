@@ -12,13 +12,16 @@ layout(push_constant) uniform HdRect {
     vec4 fogA, fogB;        /* per-channel fog transform; identity = (1,1,1)/(0,0,0) */
 } pc;
 
-layout(location = 0) in vec2 vUV;
-layout(location = 1) in vec4 vColor;
+layout(location = 0) in vec2 vUVq;    /* x ratio (divide by vQ) */
+layout(location = 1) in vec4 vColorq; /* x ratio (divide by vQ) */
+layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) */
 
 layout(location = 0) out vec4 outColor;
 
 void main()
 {
+    vec2 vUV = vUVq / vQ;
+    vec4 vColor = vColorq / vQ;
     vec2 t = vec2((vUV.x - pc.u0) / pc.uw, (vUV.y - pc.v0) / pc.vh);
     vec4 c = texture(u_hd, clamp(t, 0.0, 1.0));
     if (c.a < 0.5) discard;

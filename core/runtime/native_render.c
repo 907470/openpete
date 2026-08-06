@@ -4201,6 +4201,28 @@ static void scene_probes(scene_tri_t* sc, int n)
                 for (int k = 0; k < 3; k++)
                     sc[ti].v[k].rgba = tv;
             } } }
+    /* OPENPETE_SCENEDUMP=<frame> — dump EVERY completed scene triangle of the
+     * first present labelled >= that frame: category/blend/tex/group + all
+     * three vertices (sx, sy, z, pvz, rgba). The probe below answers "who
+     * covers this point"; the dump answers "what is in the scene at all" with
+     * no coverage math to be wrong. */
+    { static int sd = -2; static unsigned sdf = 0;
+      if (sd == -2) { const char* e = getenv("OPENPETE_SCENEDUMP");
+          sd = (e && *e) ? 1 : -1; sdf = (e && *e) ? (unsigned)atoi(e) : 0; }
+      if (sd == 1 && s_scene_frame >= sdf) {
+        sd = -1;
+        fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_frame, n);
+        for (int ti = 0; ti < n; ti++) {
+            const scene_tri_t* T = &sc[ti];
+            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d", ti,
+                    T->category, T->blend, T->textured, T->group);
+            for (int k = 0; k < 3; k++)
+                fprintf(stderr, " (%.2f,%.2f,z%.6f,w%.1f,%08X)",
+                        (double)T->v[k].sx, (double)T->v[k].sy,
+                        (double)T->v[k].z, (double)T->v[k].pvz, T->v[k].rgba);
+            fprintf(stderr, "\n");
+        }
+      } }
     /* OPENPETE_SCENEPROBE=x,y — every completed scene triangle whose
      * screen triangle covers that point (PSX census space: 512 wide,
      * 240 tall with the 8-line overscan band), in FEED order, with its

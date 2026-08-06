@@ -65,9 +65,10 @@ layout(push_constant) uniform PC {
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
 } pc;
 
-layout(location = 0) in vec4 vColor;
+layout(location = 0) in vec4 vColor;  /* x ratio (divide by vQ) */
 layout(location = 1) in vec2 vUV;
 layout(location = 2) noperspective in vec2 vScreenPSX;  /* PSX screen coord (SX,SY) */
+layout(location = 3) in float vQ;     /* perspective ratio (see quad.vert) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -216,5 +217,5 @@ void main()
     } else {                                   /* fallback: view-Z band (params invalid) */
         if (viewZ + pc.band < viewz_from_scene_depth(dS)) discard;
     }
-    outColor = vColor;
+    outColor = vColor / vQ;
 }
