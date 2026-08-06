@@ -15,10 +15,11 @@ Both legs are rasterised here with the SAME sampling rule (pixel centres in
 walk space x2 vertical, i.e. 512x464 grid mapped from 512x240-8), so edge
 pixels cancel instead of reading as disagreement.
 
-Native winner rule mirrors the GPU: window depth is screen-linear in
-1/vz_stored (vz_stored = true vz + 128*otslots world units); the winner is
-the max of interpolated 1/vz_stored among depth-writing tris. og winner rule
-is the PSX painter: prims draw in dump order (far -> near), last wins.
+Native winner rule mirrors the GPU (--model): 'offset' = the pre-P6b
+renderer, min interpolated stored depth (true vz + 128*otslots); 'keyresolve'
+= the P6b renderer, flat per-face og-key raster + strict-less-by-half-slot
+survivor filter, winner = min TRUE depth among survivors. og winner rule is
+the PSX painter: prims draw in dump order (far -> near), last wins.
 
 Census classes per both-covered pixel:
   agree           same (sec,face,tier) wins both legs
@@ -85,19 +86,23 @@ def parse_ot(path, want_frame):
 
 
 def parse_tridump(path):
-    """-> list of dicts: identity + verts + true vz (world units)."""
+    """-> list of dicts: identity + verts + true vz (world units). 16-column
+    dumps predate the otkey/nearband columns (offset-era captures)."""
     tris = []
     for ln in open(path):
         if ln.startswith('#'):
             continue
         p = ln.strip().split(',')
-        if len(p) != 16:
+        if len(p) not in (16, 18):
             continue
         sec, face, tier, fill, blend, textured, slots = (int(x) for x in p[:7])
         v = [(float(p[7 + 3 * k]), float(p[8 + 3 * k]), float(p[9 + 3 * k]))
              for k in range(3)]
+        otkey = float(p[16]) if len(p) == 18 else 0.0
+        nearband = int(p[17]) if len(p) == 18 else 0
         tris.append(dict(sec=sec, face=face, tier=tier, fill=fill,
-                         blend=blend, textured=textured, slots=slots, v=v))
+                         blend=blend, textured=textured, slots=slots, v=v,
+                         otkey=otkey, nearband=nearband))
     if not tris:
         sys.exit(f'no tris parsed from {path}')
     return tris
@@ -150,21 +155,51 @@ def og_winner_map(prims):
     return win
 
 
-def native_winner_map(tris):
-    """Depth raster: winner = max interpolated 1/vz_stored among
-    depth-writing tris (blend writes no depth; FILL twins duplicate their
-    WORLD tri at identical depth, so including them is a harmless tie)."""
+def face_key(t):
+    mean = t['otkey'] if t['otkey'] > 0 else sum(vz for _, _, vz in t['v']) / 3.0
+    return mean + 128.0 * t['slots']
+
+
+def native_winner_map(tris, model='offset'):
+    """model='offset': winner = min interpolated stored depth
+    (true vz + 128*slots) — the pre-P6b renderer. model='keyresolve': the
+    P6b renderer — a flat per-face og-key raster (non-nearband opaque)
+    forms the key image; a keyed face survives a pixel iff its key is
+    within half a slot of the image min; winner = min TRUE depth among
+    survivors (nearband/fill faces always survive at true depth)."""
     best = np.zeros((GH, GW), np.float64)
     win = np.full((GH, GW), -1, np.int32)
+    kimg = None
+    if model == 'keyresolve':
+        kimg = np.full((GH, GW), 1e18, np.float64)
+        for t in tris:
+            if t['blend'] or t['fill'] or t['nearband']:
+                continue
+            xy = [to_grid(x, y) for x, y, _ in t['v']]
+            r = raster(xy)
+            if not r:
+                continue
+            ix, iy = r
+            K = face_key(t)
+            sel = K < kimg[iy, ix]
+            kimg[iy[sel], ix[sel]] = K
     for i, t in enumerate(tris):
         if t['blend']:
             continue
         xy = [to_grid(x, y) for x, y, _ in t['v']]
-        q = [1.0 / max(vz + 128.0 * t['slots'], 1.0) for _, _, vz in t['v']]
+        if model == 'keyresolve':
+            q = [1.0 / max(vz, 1.0) for _, _, vz in t['v']]
+        else:
+            q = [1.0 / max(vz + 128.0 * t['slots'], 1.0) for _, _, vz in t['v']]
         r = raster(xy, q)
         if not r:
             continue
         ix, iy, z = r
+        if model == 'keyresolve' and not (t['fill'] or t['nearband']):
+            keep = kimg[iy, ix] >= face_key(t) - 64.0
+            ix, iy, z = ix[keep], iy[keep], z[keep]
+            if not len(ix):
+                continue
         upd = z > best[iy, ix]
         wix, wiy = ix[upd], iy[upd]
         best[wiy, wix] = z[upd]
@@ -251,6 +286,8 @@ def main():
     ap.add_argument('--ot', required=True)
     ap.add_argument('--tridump', required=True)
     ap.add_argument('--og-frame', type=int, default=-1)
+    ap.add_argument('--model', choices=('offset', 'keyresolve'),
+                    default='offset', help='native winner rule to mirror')
     ap.add_argument('--heat', help='write class heat PNG')
     ap.add_argument('--label', default='')
     a = ap.parse_args()
@@ -259,7 +296,7 @@ def main():
     tris = parse_tridump(a.tridump)
     ident, vert_tris, grid = build_identity_index(tris)
     ogmap = og_winner_map(prims)
-    natmap, natq = native_winner_map(tris)
+    natmap, natq = native_winner_map(tris, a.model)
     ogmatch = match_og_prims(prims, ident, vert_tris, grid, tris)
 
     # Face-level vert sets: subdivided children keep their parent's
