@@ -169,7 +169,7 @@ def native_winner_map(tris):
         wix, wiy = ix[upd], iy[upd]
         best[wiy, wix] = z[upd]
         win[wiy, wix] = i
-    return win
+    return win, best
 
 
 SNAP_R = 2.0   # og verts are PSX fixed-point GTE, native is float: offsets
@@ -259,8 +259,111 @@ def main():
     tris = parse_tridump(a.tridump)
     ident, vert_tris, grid = build_identity_index(tris)
     ogmap = og_winner_map(prims)
-    natmap = native_winner_map(tris)
+    natmap, natq = native_winner_map(tris)
     ogmatch = match_og_prims(prims, ident, vert_tris, grid, tris)
+
+    # Face-level vert sets: subdivided children keep their parent's
+    # (sec,face), so the union of a face's tri verts contains the parent's
+    # corners. Used to resolve og's near-band OT prims: the visible pixels
+    # there come from subdivided HQ twins DrawPrim'd under mask-bit
+    # protection, and the OT carries only the UNSUBDIVIDED copies — which
+    # exact-tri matching can never hit.
+    face_verts = collections.defaultdict(set)
+    face_tris2d = collections.defaultdict(list)
+    for t in tris:
+        for x, y, _ in t['v']:
+            face_verts[(t['sec'], t['face'])].add((x, y))
+        face_tris2d[(t['sec'], t['face'])].append(
+            tuple((x, y) for x, y, _ in t['v']))
+
+    def point_on_face(px, py, fkey, margin=2.0):
+        """px,py within `margin` PIXELS of some tri of the face: signed
+        distance to each edge line (oriented by the tri's winding) must be
+        >= -margin. Pixel-space, so it holds for arbitrarily large tris."""
+        import math
+        for (v0, v1, v2) in face_tris2d.get(fkey, ()):
+            (x0, y0), (x1, y1), (x2, y2) = v0, v1, v2
+            det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+            if abs(det) < 1e-9:
+                continue
+            s = 1.0 if det > 0 else -1.0
+            ok = True
+            for (ax, ay), (bx, by) in ((v0, v1), (v1, v2), (v2, v0)):
+                ex, ey = bx - ax, by - ay
+                el = math.hypot(ex, ey)
+                if el < 1e-9:
+                    ok = False
+                    break
+                d = s * (ex * (py - ay) - ey * (px - ax)) / el
+                if d < -margin:
+                    ok = False
+                    break
+            if ok:
+                return True
+        return False
+
+    _opf_cache = {}
+
+    def og_prim_on_face(og_idx, fkey):
+        """>=min(3, nverts) og corners within SNAP_R of the face's verts."""
+        ck = (og_idx, fkey)
+        if ck in _opf_cache:
+            return _opf_cache[ck]
+        _opf_cache[ck] = r = _og_prim_on_face(og_idx, fkey)
+        return r
+
+    def _og_prim_on_face(og_idx, fkey):
+        """Same surface iff every og corner sits on (or within snap noise of)
+        the face's fed footprint. Handles both subdivision asymmetries: an og
+        parent over native children, and og OT children (midpoint verts) over
+        a native parent — the near band's mask-bit HQ twin pattern. Known
+        limit: an UNFED nearer face lying wholly inside the winner's
+        footprint would false-agree; such holes are only counted where they
+        straddle the winner's silhouette."""
+        xy = prims[og_idx][1]
+        vs = face_verts.get(fkey)
+        if not vs:
+            return False
+        if all(any((nx, ny) in vs for (nx, ny) in snap_all((ox, oy), grid))
+               or point_on_face(ox, oy, fkey) for (ox, oy) in xy):
+            return True
+        # Reverse direction: the native winner face is a subdivision CHILD
+        # of the og prim (its own face record, distinct id), so the og
+        # parent's corners straddle sibling children — but every child vert
+        # sits inside the parent's footprint. Near-band mask-twin regime:
+        # the OT carries the unsubdivided fallback; visible og pixels come
+        # from the DrawPrim'd HQ twins, so footprint identity is the best
+        # the OT dump can attest.
+        import math
+        ring = xy if len(xy) == 3 else [xy[0], xy[1], xy[3], xy[2]]
+        n = len(ring)
+        area2 = sum(ring[i][0] * ring[(i + 1) % n][1] -
+                    ring[(i + 1) % n][0] * ring[i][1] for i in range(n))
+        if abs(area2) < 1e-9:
+            return False
+        s = 1.0 if area2 > 0 else -1.0
+        for (fx, fy) in vs:
+            for i in range(n):
+                (ax, ay), (bx, by) = ring[i], ring[(i + 1) % n]
+                ex, ey = bx - ax, by - ay
+                el = math.hypot(ex, ey)
+                if el < 1e-9 or s * (ex * (fy - ay) - ey * (fx - ax)) / el < -2.0:
+                    return False
+        return True
+    # Identity matching degrades where faces shrink toward the snap radius:
+    # a far vista packs many native verts inside SNAP_R and the exact-tri
+    # lookup misses, inflating og-hole. Band the census by the native
+    # winner's stored view-Z so near/mid attribution (where P6b/P6d act)
+    # is read separately from the far-field noise floor.
+    BANDS = ((0.0, 8192.0, 'near'), (8192.0, 32768.0, 'mid'),
+             (32768.0, 1e18, 'far'))
+
+    def band_of(q):
+        vz = 1.0 / q if q > 0 else 1e18
+        for lo, hi, nm in BANDS:
+            if lo <= vz < hi:
+                return nm
+        return 'far'
 
     cls = np.zeros((GH, GW), np.uint8)   # 0 none,1 agree,2 intra,3 cross,
                                          # 4 og-hole,5 og-foreign,6 native-only
@@ -282,15 +385,30 @@ def main():
                     cls[y, x] = 5; C['og-foreign'] += 1
                 continue
             if kind == 'hole' or n < 0:
+                if (n >= 0 and
+                        og_prim_on_face(o - 1, (tris[n]['sec'],
+                                                tris[n]['face']))):
+                    # og's unsubdivided OT copy of the face whose subdivided
+                    # twin wins natively — same surface, agree.
+                    cls[y, x] = 1; C['agree'] += 1
+                    C[f'agree/{band_of(natq[y, x])}'] += 1
+                    continue
                 cls[y, x] = 4; C['og-hole'] += 1
                 continue
             to_, tn = tris[oi], tris[n]
             if (to_['sec'], to_['face']) == (tn['sec'], tn['face']):
-                cls[y, x] = 1; C['agree'] += 1
+                cls[y, x] = 1; C['agree'] += 1; k = 'agree'
             elif to_['tier'] == tn['tier']:
-                cls[y, x] = 2; C['intra-tier'] += 1
+                cls[y, x] = 2; C['intra-tier'] += 1; k = 'intra-tier'
             else:
-                cls[y, x] = 3; C['cross-tier'] += 1
+                cls[y, x] = 3; C['cross-tier'] += 1; k = 'cross-tier'
+            C[f'{k}/{band_of(natq[y, x])}'] += 1
+
+    for y in range(GH):        # band the holes too (native winner depth,
+        for x in range(GW):    # or far when native has no coverage)
+            if cls[y, x] == 4:
+                q = natq[y, x] if natmap[y, x] >= 0 else 0.0
+                C[f'og-hole/{band_of(q)}'] += 1
 
     dom = sum(C.get(k, 0) for k in ('agree', 'intra-tier', 'cross-tier',
                                     'og-hole'))
@@ -300,8 +418,28 @@ def main():
               'native-only'):
         v = C.get(k, 0)
         pct = 100.0 * v / dom if dom else 0
-        print(f'  {k:<12} {v:>8}  {pct:6.2f}%{"" if k in ("agree","intra-tier","cross-tier","og-hole") else " (of terrain domain, informational)"}')
+        bands = ''
+        if k in ('agree', 'intra-tier', 'cross-tier', 'og-hole'):
+            bands = '  [' + ' '.join(f'{nm}:{C.get(f"{k}/{nm}", 0)}'
+                                     for nm in ('near', 'mid', 'far')) + ']'
+        note = '' if k in ('agree', 'intra-tier', 'cross-tier', 'og-hole') \
+               else ' (of terrain domain, informational)'
+        print(f'  {k:<12} {v:>8}  {pct:6.2f}%{note}{bands}')
     print(f'  terrain-domain px: {dom}')
+    # The near band cannot always be attributed from the OT dump: og's
+    # visible near pixels are DrawPrim'd HQ subdivision twins under mask-bit
+    # protection, and the OT carries fallback tessellations that can
+    # cross-cut the native subdivision (neither footprint contains the
+    # other). Since P5.5 the near band carries no authored offsets in either
+    # tier, so no stored-depth change acts there — the GATE metric is the
+    # mid+far population, where the offsets actually live.
+    gm = {k: C.get(f'{k}/mid', 0) + C.get(f'{k}/far', 0)
+          for k in ('agree', 'intra-tier', 'cross-tier', 'og-hole')}
+    gd = sum(gm.values())
+    if gd:
+        print(f'  GATE mid+far: agree {100.0 * gm["agree"] / gd:.2f}%  '
+              f'intra {gm["intra-tier"]}  cross {gm["cross-tier"]}  '
+              f'hole {gm["og-hole"]}  ({gd} px)')
 
     if a.heat:
         from PIL import Image
