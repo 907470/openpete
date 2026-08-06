@@ -2183,20 +2183,25 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                      s_caldbg || s_nearq > 0 ||
                      (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
     terrain_dbg_init();
-    /* FAITHFUL LOD (W2.6-c, OPENPETE_TERRAIN_LOD_FAITHFUL): mirror the .s
+    /* FAITHFUL LOD (OPENPETE_TERRAIN_LOD_FAITHFUL, DEFAULT ON): mirror the .s
      * sector binning — HP list = lodThr > centreZ − radius (HP ends at the LOD
      * distance), LP list = 0x8000 || lodThr < centreZ + radius + 0x100 (LP
-     * substitutes beyond it) — AND default the exact DPCS fog on (the two are
-     * one mechanism: the .s tier swap happens exactly at fog saturation,
-     * ir0 = fogRef−4·m3 = 0 at m3 = lodThr, which is what makes the PSX
-     * handoff invisible; the 2026-06 "pop-in" rejection of mirrored lists
-     * happened under the under-fogged fogscale-1 default). Forced OFF under
-     * --no-lod: HP-everywhere IS the no-lod intent, and there the exact fog
-     * must stay off with it (fully-fogged HP without the .s tier coverage was
-     * the W2.3 vista regression). */
+     * substitutes beyond it), noLP 0x2000 tested first (overrides force-LP).
+     * With the exact per-face tests in place the bin is almost pure pre-pass:
+     * every face of an HP-unlisted sector fails the per-face drop anyway
+     * (all corners ≥ c − r ≥ lodDist), and the LP bin's +0x100 equals the
+     * admission s3's −0x20 (both 4096 world), so a=0 faces agree at the
+     * boundary by construction. The behavioural content is the near-sector
+     * LP exclusion the per-face admission alone cannot see: an a=31
+     * (admit-to-camera) face in a fully-near sector is culled by the .s at
+     * the sector level. (The 2026-06 "pop-in" rejection of mirrored lists
+     * predated the exact fog + exact per-face model.) Forced OFF under
+     * --no-lod: HP-everywhere IS that mode's intent. NB the bin uses the raw
+     * lodThr — under a user-stretched --fog-scale the per-face tests ride the
+     * curve and this doesn't; stock is exact. =0 restores admission-only. */
     if (s_tier_faithful < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_LOD_FAITHFUL");
-        s_tier_faithful = (e && *e) ? (*e != '0') : 0;
+        s_tier_faithful = (e && *e) ? (*e != '0') : 1;
     }
     /* no-lod override applied per walk (not baked into the latch): the
      * draw-distance toggle can flip openpete_no_lod mid-level. */
@@ -2488,6 +2493,49 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
                     (int)i, flags, cbin, SC->radius, lodThr, fogRefBase,
                     drawHP, drawLP, nLpF, nHpF);
+        /* OPENPETE_TERRAIN_BINCHECK=<frame> — P3 gate: compare the native
+         * sector-bin verdict against the .s's OWN HP list, decoded from the
+         * render arena after this tick's func_800258F0 ran. The HP list
+         * (arena+0x1C00, `ptr|bits` entries, NULL-terminated) SURVIVES the
+         * call; the LP list (+0x2000) is clobbered by the HP walk's subdivide
+         * lists, so LP membership is attested by the face-set join instead.
+         * arena+0x44D4 (D_800771C8-D_8006FCF4) is the pre-pass's surviving
+         * frustum-visible byte map (0xFF = passed), scoping the compare:
+         * native deliberately draws sectors the .s frustum-culls (GPU clips).
+         * Expected: native drawHP == HP-list membership for every
+         * frustum-visible sector. */
+        {
+            static int s_binchk = -2;
+            if (s_binchk == -2) {
+                const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
+                s_binchk = (e && *e) ? atoi(e) : 0;
+            }
+            if (s_binchk && openpete_frame >= (unsigned)s_binchk
+                && openpete_frame < (unsigned)s_binchk + 2u && !openpete_no_lod) {
+                extern uint32_t psx_runtime_g_sony_image_base;
+                uint32_t B = psx_runtime_g_sony_image_base;
+                static uint32_t hp_list[192]; static int hp_n = -1;
+                static unsigned hp_frame;
+                if (hp_frame != openpete_frame || hp_n < 0) {
+                    hp_frame = openpete_frame; hp_n = 0;
+                    for (int k = 0; k < 192; k++) {
+                        uint32_t e2 = rd(cpu, B + 0x1C00u + (uint32_t)k * 4);
+                        if (!e2) break;
+                        hp_list[hp_n++] = e2 & ~3u;
+                    }
+                    fprintf(stderr, "[bincheck-hdr] frame=%u hpList=%d\n",
+                            openpete_frame, hp_n);
+                }
+                int inHP = 0;
+                for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
+                uint32_t vw = rd(cpu, 0x800771C8u + (i & ~3u));
+                int vis = (int)((vw >> ((i & 3u) * 8)) & 0xFF) == 0xFF;
+                fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
+                        "cbin=%.1f rad=%d%s\n",
+                        (unsigned)i, drawHP, inHP, vis, flags, cbin, SC->radius,
+                        (vis && drawHP != inHP) ? " MISMATCH" : "");
+            }
+        }
         /* .s HP-list membership (lodThr > cbin − radius): the CLUT-fog ladder
          * is only ever evaluated by the .s INSIDE this envelope — beyond it
          * the .s draws LP, so ladder rows past it are unauthored for many
@@ -2497,15 +2545,20 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * the closer stand-in for the LP look. The envelope stretches with
          * --fog-scale (k = 4/s_fogscale; ×1 at stock, bit-identical). */
         int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
-        /* LOD-handoff experiment: LP also substitutes for the HP dropped beyond
-         * the LOD distance (far-only; gated per face below).
-         * lpGapOnly: when the handoff is OFF (--no-lod draws HP at all
-         * distances), an HP sector's classified coverage-gap LP faces still
-         * ride along — ONLY those — so the sparse-HP holes stay filled (the
-         * near-LP-gap fix; per-face gate below). */
+        /* LP ride-alongs for sectors the bin leaves LP-unlisted:
+         * - lpFarOnly (legacy, faithful-bin OFF only): the handoff substitutes
+         *   a both-tier sector's LP for its dropped far HP. Under the faithful
+         *   bin this must NOT fire — an LP-unlisted sector there is one the .s
+         *   walks no LP for (fully-near; straddlers land in BOTH lists), and
+         *   re-adding it would draw near-sector a=31 faces the game culls at
+         *   the sector level.
+         * - lpGapOnly: frozen fill-tag faces still ride — ONLY those — so
+         *   og-attested hole cover survives the bin (a tag in a fully-near
+         *   both-tier or no-HP sector; and under --no-lod, the sparse-HP
+         *   holes of HP-drawing sectors; per-face gate below). */
         int lpFarOnly = 0, lpGapOnly = 0;
-        if (drawHP && !drawLP && !(flags & 0x2000) && nLpF > 0) {
-            if (lod_handoff) { drawLP = 1; lpFarOnly = 1; }
+        if (!drawLP && !(flags & 0x2000) && nLpF > 0) {
+            if (lod_handoff && !tier_faithful && drawHP) { drawLP = 1; lpFarOnly = 1; }
             else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
         }
         /* LP HOLE-FILL backing (W2.6-c): an HP sector that does NOT already
