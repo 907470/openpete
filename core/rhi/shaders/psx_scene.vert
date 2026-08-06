@@ -36,12 +36,17 @@ layout(location = 2) in vec4 inColor; /* R8G8B8A8_UNORM -> 0..1 modulate */
  * derive W from z as above). The depth WRITTEN is always the z the feeder sent
  * — only the UV/colour interpolation basis changes. */
 layout(location = 4) in float inW;
+/* Terrain og-key slot offset (rhi_vertex.koff): |koff|-0.5 world units added
+ * to TRUE view-Z gives the face's og OT key; sign<0 marks an LP face whose
+ * fragments run the key-resolve contest. Per-face constant -> flat. */
+layout(location = 5) in float inKoff;
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
 /* Interpolation ratio (vzo/inW): fragment divides vUV/vColor by this to
  * recover perspective-correct-in-inW values. 1.0 on unshifted vertices. */
 layout(location = 2) out float vQ;
+layout(location = 3) flat out float vKoff;
 
 /* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0):
  * false = legacy z=vz/(vz+4096) (hyperbolic in vz, interpolated screen-linearly
@@ -71,4 +76,5 @@ void main()
     vUV = inUV * q;
     vColor = inColor * q;
     vQ = q;
+    vKoff = inKoff;
 }

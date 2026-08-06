@@ -114,6 +114,11 @@ int openpete_native_vertex_snap_active(void);
  * snapped parent edges). Clear after the feed, like set_tag. */
 void openpete_native_scene_set_presnap(int on);
 
+/* P6b: true when the terrain LP key-resolve contest is live (key pass +
+ * key-capable pipelines came up). The terrain feeder emits scene-tri koff
+ * only when this holds, so LP fragments can never contest a missing image. */
+int openpete_native_key_resolve_on(void);
+
 /* Raster output quantize: box-resample the composed 3D scene (pre-HUD) onto
  * the 512Nx240N virtual PSX raster (N=1 = authentic 240p; 0 = off). An integer
  * multiplier of the vertex-snap grid, so snapped edges land on cell boundaries
@@ -367,6 +372,13 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * real Z instead of being painted over. Tagged by the moby feeder via pointer
  * match against g_DragonCutscene (the game's own actor set — no heuristic). */
 #define OPENPETE_SCENE_ACTOR_FRONT 13
+/* TERRAIN_KEY: never drawn — consumed ONLY by the terrain HP key pass (P6c).
+ * The portal feeder emits the revealed-aperture outline as a fan of these
+ * with koff = the sky bucket's ABSOLUTE og key (bucket + 64 world; the
+ * half-bucket margin of the .s painter contest), so og-covered opaque
+ * terrain loses the per-pixel key contest exactly where the sky rasters —
+ * replacing the old stored-depth conformance sink. */
+#define OPENPETE_SCENE_TERRAIN_KEY 14
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
@@ -385,6 +397,12 @@ typedef struct {
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
+    float koff;  /* terrain og-KEY slot offset, world units + 0.5 sentinel;
+                  * sign<0 = LP (fragments key-contest the HP key image),
+                  * >0 = HP (key-image pass input), 0 = not terrain/off.
+                  * Stored depth (v[].z) is TRUE view-Z either way — og's
+                  * keys select WHICH terrain surface owns a pixel, they
+                  * never enter the depth buffer. Per-face constant.       */
 } openpete_scene_tri;
 
 /* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------

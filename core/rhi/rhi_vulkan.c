@@ -2878,8 +2878,14 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
           .pSpecializationInfo = &vsSpec },
+        /* The fragment stage sees the SAME spec constants (constant_id 0 =
+         * DEPTH_AFFINE): the terrain key-resolve fragments invert
+         * gl_FragCoord.z back to view-Z, and the inversion formula follows
+         * the encoding the vertex stage selected. Frags that declare no
+         * spec constants ignore the info. */
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main" },
+          .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main",
+          .pSpecializationInfo = &vsSpec },
     };
     VkVertexInputBindingDescription bind = {
         .binding = 0, .stride = sizeof(rhi_vertex),
@@ -2890,20 +2896,22 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
      * declared here yet not read by a shader merely warns "not consumed", so one
      * superset attribute list serves every pipeline. Location 3 (sx,sy, the PSX
      * screen coord) is read only by the textured shadow decal (shadow_decal_tex);
-     * every other shader ignores it. (`tex` at offset in rhi_vertex remains
-     * reserved and undeclared until a mixed-material path needs it.) Location 4
-     * is the perspective W (true view-Z), read by the scene vertex stages. */
-    VkVertexInputAttributeDescription attrs[5] = {
+     * every other shader ignores it. Location 4 is the perspective W (true
+     * view-Z), read by the scene vertex stages. Location 5 is the terrain
+     * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
+     * and the terrain key pass. */
+    VkVertexInputAttributeDescription attrs[6] = {
         { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
         { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
         { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
         { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, sx) },
         { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
+        { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
     };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
-        .vertexAttributeDescriptionCount = 5, .pVertexAttributeDescriptions = attrs,
+        .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = attrs,
     };
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
         vi.vertexBindingDescriptionCount = 0;
@@ -3024,6 +3032,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     VkDescriptorSetLayout set_layouts[4] = { dev->vram_set_layout, dev->vram_set_layout,
                                              dev->vram_set_layout, dev->ubo_set_layout };
     uint32_t set_count = (desc->postfx || desc->mod_pipeline) ? 4u
+                       : desc->uses_vram3 ? 3u
                        : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
