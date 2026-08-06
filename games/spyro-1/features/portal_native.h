@@ -31,6 +31,12 @@ typedef struct {
                                      * whose OT mean sorts behind THIS are drawn
                                      * before the sky in the walk (sky covers
                                      * them whole-face). 0 if unavailable. */
+    double   push_vz;               /* world-unit view-Z push the sky RENDERS
+                                     * with (the .s's +64-slot far-bucket bump =
+                                     * 8192; 0 for near portals). Sky-relative
+                                     * depth constructions — the conformance
+                                     * sink target — must add it so covered
+                                     * faces still land just BEHIND the sky. */
     float    x0, y0, x1, y1;        /* outline screen bbox (broadphase) */
     /* The projected outline POLYGON. The conformance sink is confined to
      * faces whose screen centroid is INSIDE it — that is where the sky

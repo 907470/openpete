@@ -681,8 +681,29 @@ static double portal_sky_eps_vz(void) {
      * makes every piece of the frame win cleanly. */
     return v;
 }
+/* The .s inserts the sky at bucket B = (Σ outline SZ / npts) >> 7, bumped
+ * +64 slots iff B >= 256 (RenderPortals, block_800515C4) — the same +0x40
+ * constant the terrain walk adds to every LP face's OT index. Terrain
+ * carries its authored slot offsets as world-unit pushes on its test depth,
+ * so a far portal's sky must carry its matching 64-slot push (8192 world
+ * units) or it beats the near-plane band of terrain the original repaints
+ * over it (arch jambs and shoulders read as preview sky). Bumped buckets
+ * are identifiable from the bucket value alone: any pre-bump B >= 256 lands
+ * at >= 320, so 256..319 is unreachable. Applied to EVERY sky construction
+ * of the feed (interior, spill, mask ring, correction band, backstop) so
+ * the whole skirt shifts together; zero for near portals, and forced zero
+ * mid-entry where the near cover must win everything.
+ * OPENPETE_PORTAL_SKY_OTPUSH=0 = un-pushed plane A/B. */
+static double s_sky_push_vz = 0.0;
+static int sky_otpush_enabled(void) {
+    const char* e = getenv("OPENPETE_PORTAL_SKY_OTPUSH");
+    return !(e && *e && atoi(e) == 0);
+}
+static double sky_ot_push_for(double ot_vz) {
+    return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;
+}
 static float portal_cyclorama_depth(double vz) {
-    double v = vz - portal_sky_eps_vz();
+    double v = vz + s_sky_push_vz - portal_sky_eps_vz();
     if (v < 1.0) v = 1.0;
     return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
 }
@@ -714,11 +735,15 @@ static int portal_sky_depth_mode(void) {
 }
 static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
 static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
+/* Finalise the feed's OT push from its resolved bucket (live D_PORTAL_DEPTH,
+ * captured hint, or the outline mirror — all carry the +64 bump). Call after
+ * s_ot_vz is settled and before any depth is constructed. */
+static void set_sky_ot_push(void) { s_sky_push_vz = sky_ot_push_for(s_ot_vz); }
 static float ring_depth(void) {
     /* +EPS (not −): the ring construction wants the sky BEHIND the outline
      * it was measured from — the same margin, opposite direction. */
     float z = openpete_native_depth_from_viewz(
-                  openpete_worldvz_full((float)(s_ring_vz + portal_sky_eps_vz())));
+                  openpete_worldvz_full((float)(s_ring_vz + s_sky_push_vz + portal_sky_eps_vz())));
     return z > 1.0f ? 1.0f : z;
 }
 static float ot_depth(void) {
@@ -774,7 +799,7 @@ static float plane_depth_back(double a, double b, double c, double x, double y) 
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
     float z = openpete_native_depth_from_viewz(
-                  openpete_worldvz_full((float)(vz + portal_sky_eps_vz())));
+                  openpete_worldvz_full((float)(vz + s_sky_push_vz + portal_sky_eps_vz())));
     return (z > 1.0f) ? 1.0f : z;
 }
 
@@ -921,7 +946,7 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
          * already requires pn >= 3. */
         if (pn < 3) {
             if (o->vn < 3) continue;
-            o->pn = 0; o->ot_vz = 0.0;
+            o->pn = 0; o->ot_vz = 0.0; o->push_vz = 0.0;
             o->x0 = o->y0 = -1e9f; o->x1 = o->y1 = 1e9f;
             o->portal = p;
             n++;
@@ -934,6 +959,7 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         if (B > 2047) B = 2047;
         if (B < 1) B = 1;
         o->ot_vz = 128.0 * (double)B;
+        o->push_vz = sky_ot_push_for(o->ot_vz);
         float x0 = poly[0].x, x1 = poly[0].x, y0 = poly[0].y, y1 = poly[0].y;
         for (int k = 1; k < pn; k++) {
             if (poly[k].x < x0) x0 = poly[k].x; if (poly[k].x > x1) x1 = poly[k].x;
@@ -1048,6 +1074,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
         s_ot_vz = 0.0;
     if (pn >= 3) {
         if (s_ot_vz <= 0.0) set_ot_sky_vz(poly, pn);
+        set_sky_ot_push();
         /* Mirror check (canonical only; a0 live means the .s just computed
          * D_PORTAL_DEPTH for THIS portal): our bucket must equal the .s's. */
         if (portal_dump_enabled() && rgb_override == PORTAL_RGB_RESOLVE) {
@@ -1128,6 +1155,8 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
     double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* crossed → nearest (was 16384 far-sentinel) */
+    set_sky_ot_push();
+    if (crossed) s_sky_push_vz = 0.0;   /* mid-entry cover must win everything */
     float depth = portal_cyclorama_depth(vz);
     float cz3 = 0.0f;
     int cm3 = sky_const_depth(&cz3);
@@ -1428,8 +1457,8 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
          * ring is a skirt on the plane rather than a flat card behind it, and
          * the stone-versus-gap contest resolves the same way at every point
          * around the opening. */
-        const double vzi = poly[i].vz + portal_sky_eps_vz();
-        const double vzj = poly[j].vz + portal_sky_eps_vz();
+        const double vzi = poly[i].vz + s_sky_push_vz + portal_sky_eps_vz();
+        const double vzj = poly[j].vz + s_sky_push_vz + portal_sky_eps_vz();
         float zi = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzi));
         float zj = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzj));
         if (zi > 1.0f) zi = 1.0f;
@@ -1527,7 +1556,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
                 for (int k = 0; k < 3; k++) {
                     const ppt* v = q[ks[k]];
                     float z = openpete_native_depth_from_viewz(
-                                  openpete_worldvz_full((float)(v->vz + portal_band_back_vz())));
+                                  openpete_worldvz_full((float)(v->vz + s_sky_push_vz + portal_band_back_vz())));
                     if (z > 1.0f) z = 1.0f;
                     t.v[k].sx = v->x; t.v[k].sy = v->y;
                     t.v[k].z = z; t.v[k].rgba = 0xFF000000u;
@@ -1731,12 +1760,6 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     double vz = portal_viewz(cpu, skybox, cx, cy);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* camera crossed the plane → nearest (see feed_portal_quad) */
-    float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth */
-    {
-        float cz3 = 0.0f;
-        int cm3 = sky_const_depth(&cz3);
-        if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
-    }
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
@@ -1744,6 +1767,18 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
      * the rect clip + constant depth when an outline point is behind the camera. */
     uint32_t p = owning_portal_ptr(cpu, skybox, cx, cy);
     ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    /* A revealed (culled) portal has no live/captured bucket — the outline
+     * mirror (validated == live) supplies it so the push agrees with the
+     * flat fan the reveal already emitted. */
+    if (s_ot_vz <= 0.0 && pn >= 3) set_ot_sky_vz(poly, pn);
+    set_sky_ot_push();
+    if (crossed) s_sky_push_vz = 0.0;   /* mid-entry cover must win everything */
+    float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth */
+    {
+        float cz3 = 0.0f;
+        int cm3 = sky_const_depth(&cz3);
+        if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
+    }
     double pa = 0, pb = 0, pc = 0;
     int use_plane = (pn >= 3) && fit_invz(poly, pn, &pa, &pb, &pc);
     /* Analytic plane when the projected fit is unavailable (a point behind
@@ -2232,6 +2267,11 @@ static void feed_revealed_portals(CPUState* cpu) {
         uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
         uint32_t rgba = rgb | 0xFF000000u;
         s_portal_group = (int)skybox;   /* group id = skybox (one portal = one group) */
+        /* A culled portal's live D_PORTAL_DEPTH belongs to another portal, and
+         * s_ot_vz still holds the previous feed's bucket — mirror this
+         * portal's own bucket so the reveal's push is its own. */
+        set_ot_sky_vz(poly, pn);
+        set_sky_ot_push();
         for (int k = 1; k + 1 < pn; k++) {                /* fan-triangulate the outline polygon */
             openpete_scene_tri t = {0};
             memset(&t, 0, sizeof t);

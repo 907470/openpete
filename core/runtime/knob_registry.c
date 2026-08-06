@@ -610,6 +610,8 @@ static const knob_desc_t g_builtin[] = {
         "Portal-sky forward depth margin (default 24; two independent latches)."),
     ENVROW_LATCHED("PORTAL_SKY_DEPTH", "Debug", "plane",
         "Portal sky depth model: ot|plane|ring."),
+    ENVROW_LIVE("PORTAL_SKY_OTPUSH", "Debug", "1",
+        "Far-portal sky rides the .s +64-slot OT bump as an 8192-world depth push (0 = un-pushed plane)."),
     ENVROW_LATCHED("NOLOD_PORTAL_DOME", "Debug", "1",
         "Kill switch for extended-LOD always-render dome (default 1)."),
     ENVROW_LATCHED("PORTAL_GUARD", "Debug", "0",

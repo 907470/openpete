@@ -311,7 +311,7 @@ static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
 static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
 static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
-static uint16_t s_emit_otslots = 0;  /* current face's authored OT-slot offset (P4) */
+static uint16_t s_emit_otslots = 0;  /* current face's authored OT-slot offset */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -3565,6 +3565,10 @@ static double portal_clamp_eps_vz(void) {
     return v;
 }
 static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
+static int s_otbias_on = 1;        /* OPENPETE_TERRAIN_OT_BIAS this VBL (shared: the
+                                    * emit-site pull and the conform front cap must
+                                    * agree, or the cap's pre-offset compensation
+                                    * lands at the wrong final depth) */
 static openpete_portal_skyplane s_pplane[6];
 static int s_pplane_n = 0;
 
@@ -3849,7 +3853,9 @@ static int portal_sky_covers(const ttri* t) {
         if (!skyplane_contains(pp, cx, cy)) continue;
         const double mean = (t->otkey > 0.0f) ? (double)t->otkey
                                               : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-        if (mean >= pp->ot_vz + 64.0) return 1;   /* sorts behind the sky's bucket */
+        /* The face's .s OT index carries its authored slot offset — both
+         * sides of the contest compare at their true insertion depth. */
+        if (mean + 128.0 * (double)t->otslots >= pp->ot_vz + 64.0) return 1;
     }
     return 0;
 }
@@ -3884,11 +3890,17 @@ static int portal_conform_vz(const ttri* t, float ovz[3]) {
          * recorded it (always, today), else the tri's own 3-vert mean. */
         double mean = (t->otkey > 0.0f) ? (double)t->otkey
                                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-        int covered = (mean >= pp->ot_vz + 64.0);   /* face key behind the sky's B (half-bucket margin) */
+        /* The painter contest is decided by .s OT insertion keys on BOTH
+         * sides: face = 4-corner mean + its authored slot offset, sky = the
+         * bucket B (bump included). The +64 (half a bucket) margin leaves
+         * near-tie faces to raw depth — the FIFO-tie band, where the sky's
+         * own eps margin already resolves coincident geometry the way the
+         * .s does. */
+        int covered = (mean + 128.0 * (double)t->otslots >= pp->ot_vz + 64.0);
         if (dbg)
-            fprintf(stderr, "[pconf f=%u] sec=%d face=%d tier=%d mean=%.0f skyot=%.0f back=%.0f covered=%d\n",
-                    openpete_frame, t->sec, t->face, t->tier, mean, pp->ot_vz,
-                    pp->back_vz, covered);
+            fprintf(stderr, "[pconf f=%u] sec=%d face=%d tier=%d mean=%.0f slots=%d skyot=%.0f back=%.0f covered=%d\n",
+                    openpete_frame, t->sec, t->face, t->tier, mean, (int)t->otslots,
+                    pp->ot_vz, pp->back_vz, covered);
         if (covered) {
             /* Sink each vertex to just behind the OPENING-PLANE FIELD on its
              * own pixel ray (never pulled forward) — the face then loses to
@@ -3904,7 +3916,9 @@ static int portal_conform_vz(const ttri* t, float ovz[3]) {
                 ovz[k] = (float)t->vz[k];
                 double inv = pp->a * t->sx[k] + pp->b * t->sy[k] + pp->c;
                 if (inv <= 1e-9) continue;       /* plane behind camera on this ray */
-                float sunk = (float)((1.0 / inv + portal_clamp_eps_vz()) / 16.0);
+                /* Just behind the sky as RENDERED: the plane field plus the
+                 * sky's far-bucket push (push_vz), plus the clamp margin. */
+                float sunk = (float)((1.0 / inv + pp->push_vz + portal_clamp_eps_vz()) / 16.0);
                 if (ovz[k] < sunk) { ovz[k] = sunk; changed = 1; }
             }
             if (changed) return 1;
@@ -3915,10 +3929,11 @@ static int portal_conform_vz(const ttri* t, float ovz[3]) {
 
 static void terrain_feed_native(CPUState* cpu) {
     {
-        static tn_envvbl_t nt_c, tc_c, to_c;
+        static tn_envvbl_t nt_c, tc_c, to_c, ob_c;
         s_notex     = tn_env_vbl(&nt_c, "OPENPETE_TERRAIN_NOTEX", 0, 1);
         s_tiercolor = tn_env_vbl(&tc_c, "OPENPETE_TERRAIN_TIERCOLOR", 0, 1);
         s_tieronly  = tn_env_vbl(&to_c, "OPENPETE_TERRAIN_TIERONLY", 0, 0);
+        s_otbias_on = tn_env_vbl(&ob_c, "OPENPETE_TERRAIN_OT_BIAS", 1, 1);
     }
     if (s_pconform < 0) { const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM"); s_pconform = (e && *e) ? (*e != '0') : 1; }
     if (s_pconform_dbg < 0) {
@@ -4124,6 +4139,40 @@ static void terrain_feed_native(CPUState* cpu) {
      * midpoints carry exact on-edge positions) — the renderer chokepoint
      * must pass these coordinates through untouched. */
     openpete_native_scene_set_presnap(1);
+    /* OPENPETE_TERRAIN_PXPROBE=x,y[,f0,f1] (walk space): print every terrain
+     * tri covering that point with its identity + depth inputs, for VBLs in
+     * [f0,f1] (default 1899-1904). The terrain-side complement of
+     * OPENPETE_SCENEPROBE: sec/face/tier/slots attribution the scene probe
+     * cannot give. */
+    { static int s_pxp = -1; static float ppx, ppy;
+      static unsigned pf0 = 1899, pf1 = 1904;
+      if (s_pxp < 0) { const char* e = getenv("OPENPETE_TERRAIN_PXPROBE");
+          s_pxp = (e && *e && sscanf(e, "%f,%f,%u,%u", &ppx, &ppy, &pf0, &pf1) >= 2) ? 1 : 0; }
+      if (s_pxp && openpete_frame >= pf0 && openpete_frame <= pf1) {
+        for (int i = 0; i < s_tri_n; i++) {
+            const ttri* t = &s_tri[i];
+            const float ax = t->sx[0], ay = t->sy[0];
+            const float e1x = t->sx[1]-ax, e1y = t->sy[1]-ay;
+            const float e2x = t->sx[2]-ax, e2y = t->sy[2]-ay;
+            const float det = e1x*e2y - e2x*e1y;
+            if (det > -1e-6f && det < 1e-6f) continue;
+            const float rx = ppx-ax, ry = ppy-ay;
+            const float b1 = (rx*e2y - e2x*ry)/det;
+            const float b2 = (e1x*ry - rx*e1y)/det;
+            const float b0 = 1.0f - b1 - b2;
+            if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
+            const float vz = b0*t->vz[0] + b1*t->vz[1] + b2*t->vz[2];
+            fprintf(stderr, "[pxprobe f=%u %.0f,%.0f] tri#%d sec=%d face=%d tier=%d "
+                    "fill=%d blend=%d slots=%d otkey=%.0f vz16=%.1f (full %.0f, +slots %.0f) "
+                    "xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vzv=(%.0f,%.0f,%.0f)\n",
+                    openpete_frame, (double)ppx, (double)ppy, i, t->sec, t->face,
+                    t->tier, t->fill, t->blend, (int)t->otslots, (double)t->otkey,
+                    (double)vz, (double)vz*16.0, (double)(vz*16.0 + 128.0*t->otslots),
+                    (double)t->sx[0], (double)t->sy[0], (double)t->sx[1], (double)t->sy[1],
+                    (double)t->sx[2], (double)t->sy[2],
+                    (double)t->vz[0]*16.0, (double)t->vz[1]*16.0, (double)t->vz[2]*16.0);
+        }
+      } }
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -4240,10 +4289,8 @@ static void terrain_feed_native(CPUState* cpu) {
             {
                 static int s_fillpull = -1;
                 if (s_fillpull < 0) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_TIERPULL"); s_fillpull = (e2 && *e2) ? atoi(e2) : 1; }
-                static tn_envvbl_t otb_c;
-                const int ot_bias = tn_env_vbl(&otb_c, "OPENPETE_TERRAIN_OT_BIAS", 1, 1);
                 tri.v[k].pvz = wz.vz;      /* perspective W = the UNPULLED view-Z */
-                if (ot_bias && t->otslots && (s_fillpull || !t->fill))
+                if (s_otbias_on && t->otslots && (s_fillpull || !t->fill))
                     /* negative pull = push FARTHER, by whole OT slots */
                     wz = openpete_worldvz_pull(wz, -(float)t->otslots * 128.0f);
             }
