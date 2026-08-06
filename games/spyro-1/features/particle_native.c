@@ -1504,14 +1504,17 @@ static void sparkle_build(CPUState* cpu) {
  * Style-1 stars feed as an 8-tri fan (centre + consecutive outline
  * pairs), ADDITIVE, white-hot core fading to m_Color at the rim. */
 
-/* OT tie-break pull (user report 2026-07-12: sparkles hid BEHIND their
- * gems/statues). The PSX links a moby's whole model into ONE OT bucket at
- * its centre depth and the sparkle renderer appends into that same bucket
- * AFTER the mobys (tail-append idiom at 0x80058508 ff.), so a sparkle
- * draws over its ENTIRE source moby; per-pixel Z inverts that tie (the
- * body's front polys are nearer than the centre-spawned sparkle). Pull
- * sparkle depth by a fixed distance that clears typical source bodies
- * (gems ~250, chests ~300, statue parts more). Residual vs PSX: geometry
+/* OT source-body pull. The PSX links a moby's whole model into ONE OT
+ * bucket at its centre depth and the sparkle renderer appends into that
+ * same bucket AFTER the mobys (tail-append idiom at 0x80058508 ff.), so a
+ * sparkle draws over its ENTIRE source moby; per-pixel Z inverts that tie
+ * (the body's front polys are nearer than the centre-spawned sparkle).
+ * Pull sparkle depth by a fixed distance that clears typical source
+ * bodies (gems ~250, chests ~300, statue parts more). This is a
+ * deliberate carve-out from the true-stored-depth rule: the og behaviour
+ * is same-bucket APPEND ORDER — the sparkle beats its source regardless
+ * of body size — which no sub-slot tie pull can express; the pull must
+ * span the source body, not one OT slot. Residual vs PSX: geometry
  * BETWEEN sparkle and camera within this margin is overdrawn (PSX's own
  * pierce bound was its ~128-unit bucket); transient 5px glints make that
  * invisible in practice. */

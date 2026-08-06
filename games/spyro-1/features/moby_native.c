@@ -469,15 +469,15 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     /* .s OT bias, REGULAR/SPECULAR walks: the render loop keys the OT as
      * (TR.z_raw>>5) − signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0];
      * the cull packs m_DepthOffset (top byte of the moby+0x44 word, +0x47) into
-     * record w0 bits 16-23 [@8001F464..F46C]. One OT slot = 32 raw = 128
-     * full-world view-Z units, so the authored "draw over what shares my depth"
-     * pull (default 4 slots — how a flat pedestal disc paints over the terrain
-     * it sits on) mirrors as a world-unit depth-only bias — the regular twin of
-     * the shaded walk's ot_pull. Host-built w0 carries the same byte
-     * (build_moby_record_fields); sx/sy/fog are untouched. */
-    static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables (A/B) */
+     * record w0 bits 16-23 [@8001F464..F46C]. That bias is an OT ORDERING KEY
+     * (slots, 128 world each), not geometry — per-pixel Z over TRUE depth
+     * mirrors the per-face OT sort, so the authored slot pull never enters the
+     * stored depth (a 512+-world pull here punched mobys through terrain that
+     * genuinely occludes them). Its authored job — "win the surface I sit
+     * on" — survives as the sub-slot tie pull below, which can only flip
+     * pairs the OT calls a tie. */
+    static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables the tie pull (A/B) */
     if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
-    double ot_pull = s_otbias_on ? 128.0 * (double)(((int32_t)(w0 << 8)) >> 24) : 0.0;
     /* OPENPETE_DEPTHDBG="f0,f1": per-record OT-key inputs (header, w0/dofs,
      * pull, centre) for frames [f0,f1] — the OT-sort parity forensics
      * instrument (pairs with the Spyro-feed line and the moby TRIDBG box). */
@@ -486,8 +486,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
           s_dd = 0; if (e && sscanf(e, "%d,%d", &df0, &df1) == 2) s_dd = 1; }
       if (s_dd == 1 && (int)openpete_frame >= df0 && (int)openpete_frame <= df1) {
           double cf = TR_frac ? TR_frac[2] * 4.0 : (double)TR_raw[2] * 4.0;
-          fprintf(stderr, "[mb-pull f=%u] hdr=%08X w0=%08X pull=%.0f centre=%.0f\n",
-                  openpete_frame, header, w0, ot_pull, cf);
+          fprintf(stderr, "[mb-pull f=%u] hdr=%08X w0=%08X dofs=%d centre=%.0f\n",
+                  openpete_frame, header, w0, (int)(((int32_t)(w0 << 8)) >> 24), cf);
       } }
     /* Tie-pull gate: applied only when the record centre is in front of the
      * camera, so behind-camera records keep raw signed depths and emit's
@@ -580,7 +580,6 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
          * true depth reproduces that ordering; collapsing a record toward
          * its centre depth cannot, and z-fights everything sharing the
          * squashed band. Only the uniform biases below shift depth. */
-        fvz -= ot_pull;
         /* One-slot tie pull: the .s resolves same-slot moby-vs-terrain ties to
          * the MOBY (moby prims insert before the environment, and the near
          * band is deferred behind the OT entirely), so a moby's surface wins
@@ -4270,15 +4269,15 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         double pvzmin=1e30, pvzmax=-1e30;  /* projected view-Z extent (rotation-aware half) */
         /* .s OT bias, SHADED path: the walk subtracts the SIGNED m_Rotation>>24
          * byte from the moby's OT index (0x80022D9C: t9 -= s4>>24; OT slots are
-         * 128 world units) — the authored "draw over what shares my depth" pull.
-         * The portal-name text glyphs sit ON the arch face; without the pull
-         * their end letters clip into the stone the .s paints them over
-         * (beast-makers-wild-flight-text f3310, "W"/"T"). Mirror it as a
-         * world-unit pull on the fed per-vertex depth (never through the near
-         * plane). Billboards handle their bias via near_ot above. */
-        static int s_otbias_on = -1;   /* OPENPETE_SHADED_OTBIAS=0 disables (A/B) */
+         * 128 world units). Like the regular walk's m_DepthOffset, that bias is
+         * an OT ORDERING KEY, not geometry — it never enters stored depth
+         * (world-scale pulls punched mobys through genuinely-occluding
+         * terrain). Coincident-surface intent (the portal-name text glyphs
+         * sitting ON the arch stone, beast-makers-wild-flight-text f3310)
+         * survives as the sub-slot tie pull below. Billboards handle their
+         * bias via near_ot above. */
+        static int s_otbias_on = -1;   /* OPENPETE_SHADED_OTBIAS=0 disables the tie pull (A/B) */
         if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
-        double ot_pull = (billboard || !s_otbias_on) ? 0.0 : 128.0 * (double)((int32_t)rot >> 24);
         /* Tie-pull gate (shaded twin of moby_decode_project's): applied only
          * when the moby centre is in front of the camera, so behind-camera
          * records keep raw signed depths for the vz<=0 near cull. */
@@ -4287,16 +4286,6 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double centre_full = TR[2] * vz_scale;
             if (centre_full > 0.0)
                 ot_centre = centre_full;
-        }
-        {
-            static int s_obd = -1;
-            if (s_obd < 0) { const char* e = getenv("OPENPETE_SHADED_OTBIAS_DBG"); s_obd = (e && *e && *e != '0'); }
-            static int obl = 0;
-            if (s_obd && ot_pull != 0.0 && obl < 24) {
-                obl++;
-                fprintf(stderr, "[shaded-otbias f=%u] moby=%08x cls=%03x bias=%d pull=%.0f\n",
-                        openpete_frame, m, cls, (int32_t)rot >> 24, ot_pull);
-            }
         }
         for (int i=0;i<count && n<cap;i++) {
             uint32_t p=vbase+(uint32_t)i*3u;
@@ -4316,8 +4305,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double fvz = vzz*vz_scale;
             /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
              * the game's OT is per-face, so per-pixel Z over true depth is
-             * the faithful mirror; only the uniform biases shift depth. */
-            fvz -= ot_pull;
+             * the faithful mirror; only the sub-slot tie pull shifts depth. */
             /* One-slot tie pull — see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
             if (ot_centre > 0.0) fvz -= 127.0;
