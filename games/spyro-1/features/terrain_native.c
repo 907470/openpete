@@ -62,6 +62,10 @@ extern unsigned openpete_frame;
 #define ENV_HQTEX       0x1Cu
 #define ENV_TEXCNT      0x20u
 #define ENV_LODDIST     0x24u
+#define ENV_CULLDIST    0x28u   /* LP far draw-distance (m_CullingDistance) —
+                                 * a distinct, larger field the .s LP walk
+                                 * far-culls against; reassigned elsewhere
+                                 * (titlescreen), so read per walk like LODDIST */
 #define ENV_CULLDIST    0x28u
 
 /* g_EnvironmentAnimations (environment.h) sits 0x48 bytes BEFORE g_Environment
@@ -915,9 +919,10 @@ static int is_deferred(uint32_t faceRecPtr) {
 /* Near-cell classifier — replicates func_800258F0's HP-walk defer test (the
  * classifier at r_environment.s 0x80026CFC) from GAMESTATE, so it works in ALL
  * modes. (The deferred QUEUE the .s fills is per-frame .s OUTPUT — the plan's
- * core principle forbids consuming that; and --no-lod's m_LodDistance saturation
- * perturbs the .s's scratch-buffer reuse so the queue is garbage there anyway. So
- * the queue is kept ONLY as a verify-path oracle to calibrate this against.)
+ * core principle forbids consuming that; and under the retired recompiler-side
+ * m_LodDistance saturation it was outright garbage via perturbed scratch-buffer
+ * reuse. The queue is kept ONLY as a verify-path oracle to calibrate this
+ * against.)
  *
  * A face is deferred to the near subdivide pass when its 4 corner depths mark it
  * foreground:
@@ -2197,8 +2202,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_gapfill_en  = tn_env_vbl(&gc, "OPENPETE_TERRAIN_GAPFILL", 1, 1);
     }
     /* Effective handoff for THIS walk. Under --no-lod the near/far LOD handoff
-     * must NOT run: it keys off the RAW-RAM lodDist (no-lod saturates only the
-     * .s read sites, not RAM — g_Environment.m_LodDistance stays 0x8000), so it
+     * must NOT run: it keys off the RAW-RAM lodDist (--lod extended is pure
+     * host-side policy — the openpete_no_lod global; the old recompiler-side
+     * read-site saturation is retired and RAM stays 0x8000), so it
      * keeps dropping HP at the real fog-saturation band (m3 >= fogRef) and opens
      * the HP/LP seam the from-above freecam view exposes (an LP-only far sector
      * abutting an HP near sector, neither reaching the boundary). --lod extended
@@ -2276,6 +2282,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
           camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
       } }
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
+    /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
+     * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
+    int cullRefS2 = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST) >> 7;
     uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
     uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
     tsc_tile_gens(cpu, lqTable, rd(cpu, G_ENVIRONMENT + ENV_TEXCNT));  /* env-anim liveness */
@@ -2406,7 +2415,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int drawHP = !(flags & 0x4000) && nHpF > 0;
         int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
         if (tier_faithful) {
-            /* The .s sector binning (func @0x80025940): HP ends at the LOD
+            /* The .s sector binning (func_800258F0's list pre-pass — 0x80025940
+             * is an instruction inside it, not an entry point): HP ends at the LOD
              * distance; LP substitutes beyond it. A straddling sector lands in
              * BOTH lists (LP rides behind HP via the ×1.03 tier pull, exactly
              * the PSX LP-first/HP-over order). */
@@ -2446,7 +2456,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * never poke through the HP (the failure of the 2026-06-26 draw-LP-
          * everywhere attempt); it draws at TRUE LP depth, no tier bias.
          *
-         * DISTANCE GATE — the .s LP-list binning condition (func @0x80025940):
+         * DISTANCE GATE — the .s LP-list binning condition (func_800258F0's
+         * list pre-pass; 0x80025940 is an instruction inside it):
          * LP is fed only when lodThr < centerZ + radius + 0x100 (the sector's
          * far edge crosses the LOD boundary; lodThr = ENV_LODDIST>>4, centerZ =
          * the projected bounding-CENTRE view-Z, radius = w1 & 0x1FFF). A NEAR
@@ -2457,8 +2468,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * The seams the fill exists for sit exactly AT the LOD boundary, which
          * satisfies this condition by construction. Distance-dependence is
          * confined to sub-pixel seam slivers, so no visible pop-in. NB: reads
-         * the RAW RAM lodDist — --no-lod's INT32_MAX saturation substitutes at
-         * the .s READ sites only, so this stays the real LOD band marker. */
+         * the RAW RAM lodDist — --lod extended never writes it (host-policy
+         * global only), so this stays the real LOD band marker. */
         /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
         static tn_envvbl_t hole_c;
         int s_holefill = tn_env_vbl(&hole_c, "OPENPETE_TERRAIN_HOLEFILL", 1, 1);
@@ -2756,7 +2767,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 fputc('\n', stderr);
             }
             if (fmDumpOnly) continue;
-            if (passLP && !passFill && lpGapOnly && !F->gapfill) { continue; } /* --no-lod: fill-tag faces only */
+            /* fardbg verdict trail: every face dropped AFTER its [fardbg-face]
+             * row announces itself, so the offline face-set join can subtract
+             * (the dump alone is the pre-verdict universe). r= names the gate. */
+            #define FARDBG_DROP(reason) do { \
+                if (s_fardbg_active && !passFill) \
+                    fprintf(stderr, "[fardbg-drop] s=%d p=%d f=%d r=%s\n", \
+                            (int)i, pass, f, (reason)); } while (0)
+            if (passLP && !passFill && lpGapOnly && !F->gapfill) { FARDBG_DROP("gaponly"); continue; } /* --no-lod: fill-tag faces only */
             /* Authored per-face LP admission (the .s test, exact): with
              * slot = (four corner SZ3 summed, tris doubling the shared corner)
              * >> 5 and s3 = (m_LodDistance >> 7) - 0x20, an LP face draws iff
@@ -2765,10 +2783,27 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * deficits reject. LP is a FAR tier — the .s drops it NEAR (the
              * blowhard floating-triangle class: coarse alternates the player
              * is never meant to see up close). Applies in every mode;
-             * fill-tag faces are exempt (og-attested hole cover at any range).
+             * fill-tag faces are exempt (og-attested hole cover at any range)
+             * — but only while OPENPETE_TERRAIN_GAPFILL=1, so the tag A/B
+             * knob keeps its contract in original mode too.
              * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
              * behaviour (A/B). */
-            if (passLP && !passFill && !F->gapfill) {
+            /* .s LP far cull (r_environment.s:792-793 quad / 930-931 tri):
+             * slot = ΣSZ3>>5 tested against s2 = m_CullingDistance>>7 — drop
+             * iff slot >= s2. A distinct, larger distance than m_LodDistance;
+             * every LP face takes it, fill tags included (og-attested cover
+             * cannot extend past og's own draw distance). Skipped under
+             * --lod extended: extending the draw distance is that mode's
+             * charter. OPENPETE_TERRAIN_LP_FARCULL=0 disables (A/B). */
+            if (passLP && !passFill && !openpete_no_lod) {
+                static tn_envvbl_t fc_c;
+                if (tn_env_vbl(&fc_c, "OPENPETE_TERRAIN_LP_FARCULL", 1, 1)) {
+                    double fcz3 = quad ? sv[i3].m3 : sv[i2].m3;
+                    double fcslot = (sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + fcz3) / 32.0;
+                    if (fcslot >= (double)cullRefS2) { FARDBG_DROP("farcull"); continue; }
+                }
+            }
+            if (passLP && !passFill && !(s_gapfill_en && F->gapfill)) {
                 static tn_envvbl_t adm_c;
                 if (tn_env_vbl(&adm_c, "OPENPETE_TERRAIN_LP_ADMIT", 1, 1)) {
                     double sz0 = sv[i0].m3, sz1 = sv[i1].m3, sz2 = sv[i2].m3;
@@ -2777,10 +2812,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     double s3v = (double)((fogRefBase >> 5) - 0x20);
                     double a1 = slot + 8.0 * (double)F->admit - s3v;
                     if (a1 < 0.0) {
-                        if (a1 <= -32.0) continue;
+                        if (a1 <= -32.0) { FARDBG_DROP("admit"); continue; }
                         double thr = (s3v - 8.0 * (double)F->admit) * 8.0;
                         if (!(sz0 >= thr || sz1 >= thr || sz2 >= thr ||
-                              (quad && sv[i3].m3 >= thr))) continue;
+                              (quad && sv[i3].m3 >= thr))) { FARDBG_DROP("admit"); continue; }
                     }
                 }
             }
@@ -2789,9 +2824,40 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 const int ci[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc; q2++)
                     if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
-                if (!passLP && beyond == nc) { continue; }        /* .s: HP ends at LOD */
-                if (passLP && !passFill && lpFarOnly && beyond == 0) {
-                    /* LP far-only — EXCEPT classified HP-coverage-gap fillers
+                if (!passLP) {
+                    /* .s HP LOD drop, exact (r_environment.s:1385-1387; tri
+                     * 1759-1760): the walk sums the four corner SZ3s (tri
+                     * records store i2==i3, so the shared corner counts twice)
+                     * and drops the face iff sum >= m_LodDistance — one strict
+                     * compare. No per-vertex band, no per-face modifier: the
+                     * w3&1 flag pushes FOG saturation out by 0x2000 but not
+                     * the drop, so its faces retire at the same distance while
+                     * still partly unfogged. SZ3 = viewZ/4 = m3·(s_fogscale at
+                     * stock), so the sum compare rides the --fog-scale curve
+                     * exactly like the fog it must stay hidden inside
+                     * (bit-exact vs the .s at stock fog).
+                     * OPENPETE_TERRAIN_HP_DROP=0 restores the legacy
+                     * all-corners-fully-fogged approximation, which kept
+                     * straddling faces the .s mean-drops and honoured the
+                     * fog-push flag the .s drop ignores (A/B). */
+                    static tn_envvbl_t hpd_c;
+                    if (tn_env_vbl(&hpd_c, "OPENPETE_TERRAIN_HP_DROP", 1, 1)) {
+                        double hpz3 = quad ? sv[i3].m3 : sv[i2].m3;
+                        double hpsum = (sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + hpz3)
+                                       * s_fogscale;
+                        if (hpsum >= 4.0 * (double)fogRefBase) { FARDBG_DROP("hpdrop"); continue; }
+                    } else if (beyond == nc) { FARDBG_DROP("hpdrop"); continue; }
+                }
+                static tn_envvbl_t adm2_c;
+                if (passLP && !passFill && lpFarOnly && beyond == 0
+                    && !tn_env_vbl(&adm2_c, "OPENPETE_TERRAIN_LP_ADMIT", 1, 1)) {
+                    /* Legacy (LP_ADMIT=0) near gate for handoff-riding LP: the
+                     * fog-corner test dropped LP until a corner crossed the fog
+                     * line, but the .s's actual near cull is the authored
+                     * admission above — it admits LP well INSIDE the fog band
+                     * (the authored LP/HP overlap is wide), so running both
+                     * re-drops mid-band LP the game draws. Original text:
+                     * LP far-only — EXCEPT classified HP-coverage-gap fillers
                      * (the frozen fill tags), which draw at all distances so a
                      * sparse near HP mesh doesn't open a hole to the cyclorama
                      * (the near-LP-gap fix; at the fog line the game itself
@@ -2808,7 +2874,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         s_lpkeepdbg = (e && *e) ? atoi(e) : 0;
                     }
                     int gfKeep = s_gapfill_en && F->gapfill;
-                    if (!s_lpkeep && !gfKeep) continue;
+                    if (!s_lpkeep && !gfKeep) { FARDBG_DROP("lpfar"); continue; }
                     if (s_lpkeepdbg && openpete_frame >= (unsigned)s_lpkeepdbg
                         && openpete_frame < (unsigned)s_lpkeepdbg + 4u) {
                         float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
@@ -2969,6 +3035,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 terrain_near_emit(cpu, hqTable + (uint32_t)F->hq_idx * 168u,
                                   F->hq_idx, abe, TL, TR, BL, BR);
                 s_dbg_spike++;   /* near/HQ cells subdivided */
+                FARDBG_DROP("nearhq");  /* emitted subdivided — the face-set
+                                         * join can't corner-match the parent */
                 continue;
             }
             /* NCLIP back-face cull, mirroring the .s walk. A Z-buffer hides
@@ -3022,7 +3090,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     }
                 }
             }
-            if (cullable && !cfront) { s_dbg_nclip++; continue; }
+            if (cullable && !cfront) { s_dbg_nclip++; FARDBG_DROP("nclip"); continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
@@ -3267,8 +3335,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * histogram. Tier attribution is the prim code itself: 0x30/0x38 = LP
      * (untextured gouraud), 0x34/0x3C = HP (textured gouraud). */
     if (s_fardbg_active) {
-        fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d\n",
-                openpete_frame, s_prim_total, s_gte_n, fogRefBase);
+        fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
+                openpete_frame, s_prim_total, s_gte_n, fogRefBase, cullRefS2,
+                (unsigned)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST));
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
                 fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
