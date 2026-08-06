@@ -1174,8 +1174,67 @@ static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     return 0;
 }
 
+/* OPENPETE_TERRAIN_FIELDCENSUS=1 — one-shot per level: walk the FULL sector
+ * table directly in emulated RAM (decode is lazy and camera-dependent; the
+ * census must not be) and dump every face's authored LOD fields + the packed
+ * local verts, for the offline distribution/correlation/coplanar-overlay
+ * censuses. Layout mirrors tsc_get/tsc_decode_faces exactly. */
+static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
+    static uint32_t last_key;
+    uint32_t ck = sectorPtr ^ (sectorCnt * 2654435761u) ^ 0x5CA1AB1Eu;
+    if (ck == last_key) return;
+    last_key = ck;
+    int level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
+    fprintf(stderr, "[fc-hdr] level=%d sectors=%u\n", level, n);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t s = rd(cpu, sectorPtr + i * 4); if (!s) continue;
+        uint32_t g0 = rd(cpu, s + 0x04), g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int nLpV = (int)(g3 & 0xFF), nLpC = (int)((g3 >> 8) & 0xFF), nLpF = (int)((g3 >> 16) & 0xFF);
+        int nHpV = (int)(g4 & 0xFF), nHpC = (int)((g4 >> 8) & 0xFF), nHpF = (int)((g4 >> 16) & 0xFF);
+        uint32_t hpVerts = s + 0x1C + ((g4 >> 24) & 0xFF) * 4;
+        fprintf(stderr, "[fc-sec] s=%u flags=%04X rad=%d nLpV=%d nLpF=%d nHpV=%d nHpF=%d\n",
+                i, (unsigned)(g0 & 0xE000), (int)(g0 & 0x1FFF), nLpV, nLpF, nHpV, nHpF);
+        for (int bank = 0; bank < 2; bank++) {
+            uint32_t verts = bank ? hpVerts : s + 0x1C;
+            int nv = bank ? nHpV : nLpV;
+            if (nv <= 0) continue;
+            fprintf(stderr, "[fc-%sv] s=%u", bank ? "hp" : "lp", i);
+            for (int k = 0; k < nv && k < 256; k++) {
+                uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
+                fprintf(stderr, " %d,%d,%d", (int)((v >> 21) & 0x7FF),
+                        (int)((v >> 10) & 0x7FF), (int)(v & 0x3FF));
+            }
+            fputc('\n', stderr);
+        }
+        uint32_t lpFaces = s + 0x1C + (uint32_t)(nLpV + nLpC) * 4;
+        for (int f = 0; f < nLpF; f++) {
+            uint32_t w0 = rd(cpu, lpFaces + (uint32_t)f * 8);
+            uint32_t w1 = rd(cpu, lpFaces + (uint32_t)f * 8 + 4);
+            fprintf(stderr, "[fc-lpf] s=%u f=%d a=%u b=%u ds=%u i=%u,%u,%u,%u\n",
+                    i, f, (unsigned)(w0 & 0x1F), (unsigned)((w1 >> 3) & 0x1F),
+                    (unsigned)((w0 >> 7) & 1),
+                    (unsigned)((w0 >> 26) & 0x3F), (unsigned)((w0 >> 20) & 0x3F),
+                    (unsigned)((w0 >> 14) & 0x3F), (unsigned)((w0 >> 8) & 0x3F));
+        }
+        uint32_t hpFaces = hpVerts + (uint32_t)(nHpV + nHpC * 2) * 4;
+        for (int f = 0; f < nHpF; f++) {
+            uint32_t w0 = rd(cpu, hpFaces + (uint32_t)f * 16);
+            uint32_t w3 = rd(cpu, hpFaces + (uint32_t)f * 16 + 12);
+            fprintf(stderr, "[fc-hpf] s=%u f=%d b=%u fp=%u fl=%u ds=%u ns=%u i=%u,%u,%u,%u\n",
+                    i, f, (unsigned)((w3 >> 3) & 0x7), (unsigned)(w3 & 1),
+                    (unsigned)((w3 >> 1) & 1), (unsigned)((w3 >> 2) & 1),
+                    (unsigned)((w3 >> 6) & 3),
+                    (unsigned)((w0 >> 24) & 0xFF), (unsigned)((w0 >> 16) & 0xFF),
+                    (unsigned)((w0 >> 8) & 0xFF), (unsigned)(w0 & 0xFF));
+        }
+    }
+}
+
 static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
                             uint32_t sectorPtr, uint32_t sectorCnt) {
+    if (getenv("OPENPETE_TERRAIN_FIELDCENSUS"))
+        tsc_field_census(cpu, sectorPtr, sectorCnt);
     /* One-shot per-level tally of how the sector table splits by LOD class —
      * sizes the set where the two tiers can actually coexist. */
     if (getenv("OPENPETE_TERRAIN_TIERCENSUS")) {
