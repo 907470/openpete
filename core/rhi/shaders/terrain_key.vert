@@ -20,20 +20,33 @@
 layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = canonical NDC depth (true vz) */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
+layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout UV) */
 layout(location = 5) in float inKoff; /* +key offset + 0.5 sentinel (HP) */
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) noperspective out vec2 vScreenPSX;
+layout(location = 3) out float vQ;
+
+/* PSX-affine UV (--texture-mapping affine, spec-constant 1) — must track the
+ * SCENE stages' selection: the cutout fragment's texel lookups have to land on
+ * the same texels the scene draw samples, or a key raster stamps where the
+ * face's own paint discards (a one-texel hole to the backdrop). The position W
+ * here is the FLAT key (per-face), so hardware interpolation is screen-linear;
+ * perspective UV is recovered manually via the classic (u/w, 1/w) pair in
+ * vUV/vQ (w = the TRUE per-vertex view-Z in inW). */
+layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
     float z  = clamp(inPos.z, 0.0, 0.9999);
-    float vz = 4096.0 * z / max(1.0 - z, 1e-6);    /* TRUE view-Z, world units */
+    float vz = 4096.0 * z / max(1.0 - z, 1e-6);    /* view-Z the depth encodes */
     vz = max(vz, 1.0);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
     gl_Position = vec4(inPos.xy * kv, kv * kv / (kv + 4096.0), kv);   /* z_ndc = kv/(kv+4096) */
+    float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
     vColor = inColor;
-    vUV = inUV;
+    vUV = inUV / wq;
     vScreenPSX = inUV;
+    vQ = 1.0 / wq;
 }
