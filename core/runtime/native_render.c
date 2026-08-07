@@ -2928,8 +2928,9 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
         const int keycat = scene[t].category == OPENPETE_SCENE_TERRAIN_KEY;
         if (scene[t].blend != 0) continue;                       /* opaque only */
-        if (scene[t].category != OPENPETE_SCENE_WORLD && !keycat) continue;
-        if (scene[t].koff <= 0.25f) continue;   /* keyed faces / sky fans only */
+        if (scene[t].category != OPENPETE_SCENE_WORLD &&
+            scene[t].category != OPENPETE_SCENE_ACTOR && !keycat) continue;
+        if (scene[t].koff <= 0.25f) continue;   /* keyed terrain/moby faces / sky fans */
         /* koff carries the face's ABSOLUTE og key (+0.5 sentinel): encode it
          * as a FLAT vertex depth so the raster lays the constant across the
          * face — the image becomes og's per-pixel OT-index occupancy, exact

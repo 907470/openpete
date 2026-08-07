@@ -1513,11 +1513,13 @@ static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob) {
  * colour isn't interpolated between sim ticks, so holding the canonical colour
  * across the intermediates is correct. */
 static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
+static int8_t   s_wtri_dofs[MAX_NTRI]; /* authored OT bias (moby+0x47) of the emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
 static uint16_t s_wtri_matslot[MAX_NTRI]; /* per-instance material slot (S8b, 0 = none) */
 static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
 static uint16_t s_cur_moby_cls;        /* m_Class of that moby (set beside the key) */
+static int8_t   s_cur_moby_dofs;       /* authored OT bias (moby+0x47, set beside the key) */
 static uint16_t s_cur_moby_matslot;    /* interned per-instance material slot for that moby */
 static float    s_cur_env_az;          /* current record's TR azimuth (env-UV bias) */
 static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
@@ -1575,6 +1577,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     s_wtri_front[s_wtri_n] = (uint8_t)s_cur_front;  /* cutscene actor (front-pass eligible) */
     s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
     s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
+    s_wtri_dofs[s_wtri_n] = s_cur_moby_dofs;
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
     s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
     s_wtri_matslot[s_wtri_n] = s_cur_moby_matslot;  /* per-instance material (S8b) */
@@ -1954,6 +1957,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
         }
         s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
+        s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + 0x47u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
          * queued it, and s_reg_moby membership is what the reveal builder and
          * the occlusion/hold bookkeeping dedup against) — only its triangles
@@ -3105,6 +3109,29 @@ static void push_scene_moby(void) {
         t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
         t.bpp      = s_wtri[i].bpp;
         t.blend    = s_wtri[i].blend;
+        /* og OT key channel, moby twin of the terrain emit: the .s inserts
+         * each moby face at its average-Z slot minus the authored
+         * m_DepthOffset (moby+0x47, the byte the cull packs into record
+         * w0 bits 16-23 / the shaded walk's rot>>24) — an ordering KEY,
+         * never stored depth. Emitting the face's ABSOLUTE key into the
+         * key image makes keyed terrain within the authored bias yield
+         * per-pixel (a dragon-pedestal disc set into a sloped ground
+         * paints over it, exactly og's painter) and the moby face
+         * contests nearer keys symmetrically. Near-band terrain never
+         * keys (og mask-bit-protects it), so close walls keep occluding
+         * mobys by TRUE depth. Blend/FRONT/HUD classes stay unkeyed. */
+        { static int s_kob = -1;
+          if (s_kob < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS");
+              s_kob = (e && *e) ? (*e != '0') : 1; }
+          if (s_kob && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
+              s_wtri_moby[i] && openpete_native_key_resolve_on()) {
+              int dofs = (int)s_wtri_dofs[i];
+              double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz
+                           + (double)s_wtri[i].v[2].tvz) / 3.0;
+              double key = mean - 128.0 * (double)dofs;
+              if (key < 1.0) key = 1.0;      /* og floors the slot at 0 */
+              t.koff = (float)(key + 0.5);
+          } }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
@@ -4418,6 +4445,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + 0x36) : 0;
+        s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + 0x47u) : 0; /* og OT bias (rot>>24) */
         s_cur_moby_matslot = openpete_mods_material_has_instance()
             ? (uint16_t)openpete_mods_material_moby_slot(cpu, s_cur_moby_cls, R->moby) : 0;
         s_cur_fogsup = 0;         /* shaded mobys have no fog band — never fog-suppressed */
