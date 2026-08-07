@@ -149,13 +149,15 @@ void gte_rtpt(GTEState* gte, uint32_t instr);
 void gte_nclip(GTEState* gte, uint32_t instr);
 void gte_avsz3(GTEState* gte, uint32_t instr);
 void gte_avsz4(GTEState* gte, uint32_t instr);
-void gte_nccs_internal(GTEState* gte, int16_t* V);
+/* The *_internal helpers take `lm` (bit 10 of the issuing instruction word)
+ * so the per-vertex loops in the Triple ops can hoist the decode. */
+void gte_nccs_internal(GTEState* gte, int16_t* V, bool lm);
 void gte_nccs(GTEState* gte, uint32_t instr);
 void gte_ncct(GTEState* gte, uint32_t instr);
-void gte_ncds_internal(GTEState* gte, int16_t* V);
+void gte_ncds_internal(GTEState* gte, int16_t* V, bool lm);
 void gte_ncds(GTEState* gte, uint32_t instr);
 void gte_ncdt(GTEState* gte, uint32_t instr);
-void gte_ncs_internal(GTEState* gte, int16_t* V);
+void gte_ncs_internal(GTEState* gte, int16_t* V, bool lm);
 void gte_ncs(GTEState* gte, uint32_t instr);
 void gte_nct(GTEState* gte, uint32_t instr);
 void gte_dpcs(GTEState* gte, uint32_t instr);

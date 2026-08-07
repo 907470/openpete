@@ -104,7 +104,13 @@ static int32_t gte_divide(uint16_t H, uint16_t SZ3, uint32_t& FLAG) {
 }
 
 // Transform a vertex by Light matrix → IR1/IR2/IR3 (step 1 of lighting)
-static void light_transform(GTEState* gte, int16_t* V) {
+//
+// `lm` comes from bit 10 of the issuing instruction word: 1 clamps IR to
+// [0, 0x7FFF], 0 to [-0x8000, 0x7FFF]. Hardware honours it on every IR
+// write-back, including the lighting family — a hardcoded lm=1 here
+// silently zeroes every negative component, which breaks the off-label
+// signed-vector uses of these ops (e.g. INTPL as a vertex lerp).
+static void light_transform(GTEState* gte, int16_t* V, bool lm) {
     int64_t mac1 = ((int64_t)gte->L[0][0] * V[0] +
                     (int64_t)gte->L[0][1] * V[1] +
                     (int64_t)gte->L[0][2] * V[2]) >> 12;
@@ -117,13 +123,13 @@ static void light_transform(GTEState* gte, int16_t* V) {
     gte->MAC1 = static_cast<int32_t>(mac1);
     gte->MAC2 = static_cast<int32_t>(mac2);
     gte->MAC3 = static_cast<int32_t>(mac3);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
+    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
+    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
+    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
 }
 
 // Apply light color matrix + background color to IR → IR (step 2 of lighting)
-static void light_color(GTEState* gte) {
+static void light_color(GTEState* gte, bool lm) {
     int64_t mac1 = ((int64_t)gte->BK[0] << 12) +
                    (int64_t)gte->LC[0][0] * gte->IR1 +
                    (int64_t)gte->LC[0][1] * gte->IR2 +
@@ -139,9 +145,9 @@ static void light_color(GTEState* gte) {
     gte->MAC1 = static_cast<int32_t>(mac1 >> 12);
     gte->MAC2 = static_cast<int32_t>(mac2 >> 12);
     gte->MAC3 = static_cast<int32_t>(mac3 >> 12);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
+    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
+    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
+    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
 }
 
 // Multiply IR by RGBC color and push to RGB FIFO (step 3 of color output)
@@ -188,7 +194,7 @@ void ofx_census_record(uint32_t pc, int32_t ofx, int rp, unsigned rot) {
 }
 } // namespace
 
-static void color_output(GTEState* gte) {
+static void color_output(GTEState* gte, bool lm) {
     uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
     uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
     uint8_t b0 = (gte->RGBC >> 16) & 0xFF;
@@ -198,9 +204,9 @@ static void color_output(GTEState* gte) {
     gte->MAC1 = static_cast<int32_t>(mac1 >> 12);
     gte->MAC2 = static_cast<int32_t>(mac2 >> 12);
     gte->MAC3 = static_cast<int32_t>(mac3 >> 12);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, true);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, true);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, true);
+    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
+    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
+    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
     gte->push_rgb(
         gte->saturate_color(gte->MAC1 >> 4, 0),
         gte->saturate_color(gte->MAC2 >> 4, 1),
@@ -418,15 +424,15 @@ void gte_avsz4(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 // NCCS (0x1B) — Normal Color Color Single
 // ---------------------------------------------------------------------------
-void gte_nccs_internal(GTEState* gte, int16_t* V) {
-    light_transform(gte, V);
-    light_color(gte);
-    color_output(gte);
+void gte_nccs_internal(GTEState* gte, int16_t* V, bool lm) {
+    light_transform(gte, V, lm);
+    light_color(gte, lm);
+    color_output(gte, lm);
 }
 
 void gte_nccs(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_nccs_internal(gte, gte->V0);
+    gte_nccs_internal(gte, gte->V0, (instr >> 10) & 1);
     gte->set_error_flag();
 }
 
@@ -435,9 +441,10 @@ void gte_nccs(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_ncct(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_nccs_internal(gte, gte->V0);
-    gte_nccs_internal(gte, gte->V1);
-    gte_nccs_internal(gte, gte->V2);
+    bool lm = (instr >> 10) & 1;
+    gte_nccs_internal(gte, gte->V0, lm);
+    gte_nccs_internal(gte, gte->V1, lm);
+    gte_nccs_internal(gte, gte->V2, lm);
     gte->set_error_flag();
 }
 
@@ -459,8 +466,8 @@ void gte_ncct(GTEState* gte, uint32_t instr) {
 // instead of reading as a clean blue atmospheric haze).
 // ---------------------------------------------------------------------------
 void gte_ncds_internal(GTEState* gte, int16_t* V, bool lm) {
-    light_transform(gte, V);
-    light_color(gte);
+    light_transform(gte, V, lm);
+    light_color(gte, lm);
     color_depth_cue_from_lit_ir(gte, lm);
 }
 
@@ -486,9 +493,9 @@ void gte_ncdt(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 // NCS (0x1E) — Normal Color Single (no vertex color multiply)
 // ---------------------------------------------------------------------------
-void gte_ncs_internal(GTEState* gte, int16_t* V) {
-    light_transform(gte, V);
-    light_color(gte);
+void gte_ncs_internal(GTEState* gte, int16_t* V, bool lm) {
+    light_transform(gte, V, lm);
+    light_color(gte, lm);
     // Output directly (no RGBC multiply)
     gte->push_rgb(
         gte->saturate_color(gte->MAC1 >> 4, 0),
@@ -498,7 +505,7 @@ void gte_ncs_internal(GTEState* gte, int16_t* V) {
 
 void gte_ncs(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_ncs_internal(gte, gte->V0);
+    gte_ncs_internal(gte, gte->V0, (instr >> 10) & 1);
     gte->set_error_flag();
 }
 
@@ -507,9 +514,10 @@ void gte_ncs(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_nct(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    gte_ncs_internal(gte, gte->V0);
-    gte_ncs_internal(gte, gte->V1);
-    gte_ncs_internal(gte, gte->V2);
+    bool lm = (instr >> 10) & 1;
+    gte_ncs_internal(gte, gte->V0, lm);
+    gte_ncs_internal(gte, gte->V1, lm);
+    gte_ncs_internal(gte, gte->V2, lm);
     gte->set_error_flag();
 }
 
@@ -579,7 +587,7 @@ void gte_intpl(GTEState* gte, uint32_t instr) {
 void gte_cdp(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
     bool lm = (instr >> 10) & 1;
-    light_color(gte);
+    light_color(gte, lm);
     color_depth_cue_from_lit_ir(gte, lm);
     gte->set_error_flag();
 }
@@ -589,8 +597,9 @@ void gte_cdp(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 void gte_cc(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
-    light_color(gte);
-    color_output(gte);
+    bool lm = (instr >> 10) & 1;
+    light_color(gte, lm);
+    color_output(gte, lm);
     gte->set_error_flag();
 }
 
