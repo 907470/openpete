@@ -13,7 +13,8 @@
  * never touch the sampler. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
-layout(set = 2, binding = 0) uniform sampler2D u_hpkey; /* HP og-key depth image */
+layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
+layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* moby og-key image */
 
 layout(push_constant) uniform PsxMaterial {
     int tpage_x, tpage_y;
@@ -27,6 +28,12 @@ layout(location = 2) in float vQ;
 layout(location = 3) flat in float vKoff;
 
 layout(location = 0) out vec4 outColor;
+
+/* Depth encoding of gl_FragCoord.z (matches the vertex stage's selection):
+ * false = canonical z=vz/(vz+4096), true = screen-affine z=1-1/vz. Needed
+ * to invert the fragment's own window depth back to view-Z for the
+ * near-band per-pixel contest key. */
+layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
@@ -58,20 +65,43 @@ uint sample_word(int u, int v)
 
 void main()
 {
-    float aKoff = abs(vKoff);   /* negative koff = CONTEST-ONLY (near-band) */
-    if (aKoff > 0.25) {   /* keyed face: contest the og key raster */
-        float hk = texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r;
-        if (hk < 0.999999) {   /* clear 1.0 = nothing keyed this pixel */
-            /* Keys are FLAT per face (the .s OT index scaled to world units:
-             * corner-mean view-Z + 128*slot bias) and the image rasters them
-             * as constants, so both sides are exact — no interpolation, no
-             * encoding coupling. Decode matches terrain_key.vert's canonical
-             * z = kv/(kv+4096) (affine 1-1/kv quantises past the 64-world
-             * margin beyond kv~46k — far faces discarded themselves).
-             * Strict less-by-half-slot: a nearer-KEYED face owns the pixel
-             * (og's painter order); ties inside og's own 128-world quantum
-             * fall through to true depth. */
-            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (aKoff - 0.5) - 64.0) discard;
+    if (abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters */
+        /* Two images. Set 2 = og KEYS: every keyed face (terrain, sky
+         * fans, moby faces) as its ABSOLUTE og key laid FLAT — og's
+         * per-pixel OT occupancy, the painter select. Set 3 = PROP TRUE
+         * DEPTH: curated embedded-prop faces only (pedestal discs, statue
+         * bases), per-vertex TRUE view-Z. Decodes match terrain_key.vert's
+         * canonical z = kv/(kv+4096) (affine 1-1/kv quantises past the
+         * 64-world margin beyond kv~46k — far faces discarded themselves).
+         *
+         * POSITIVE koff (OT-band terrain + moby faces): strict
+         * less-by-half-slot painter select vs the key image; ties inside
+         * og's 128-world quantum fall through to true depth.
+         *
+         * NEGATIVE koff = NEAR-BAND terrain, contest-only, per-pixel own
+         * key (og subdivides the near band into pieces at PIECE-LOCAL
+         * means; the fragment's own view-Z — stored depth is TRUE here —
+         * is the piece limit). Vs the key image: the same strict rule
+         * (og's painter, including moby keys). Vs the PROP image: the
+         * EMBED rule, a deliberate divergence from painter roulette — an
+         * authored prop PHYSICALLY within 1024 world behind the near
+         * surface always wins the pixel, so a prop set into its ground
+         * renders whole from every angle where og's view-dependent piece
+         * keys show it complete or notched by camera. Prop-ness is a
+         * CURATED CLASS LIST in the moby feeder: no geometric quantity
+         * separates "prop set into its ground" from "actor just behind a
+         * crest" (flat keys, per-pixel keys, biased and true-depth
+         * margins all overlap across those classes). */
+        float hk = texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r;
+        float mk = texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r;
+        float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
+        float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
+        if (vKoff > 0.0) {
+            if (tkey < (vKoff - 0.5) - 64.0) discard;
+        } else {
+            float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
+                                     : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            if (tkey < own - 64.0 || mkey < own + 1024.0) discard;
         }
     }
     vec2 uv = vUV / vQ;

@@ -397,12 +397,18 @@ typedef struct {
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
-    float koff;  /* terrain og-KEY slot offset, world units + 0.5 sentinel;
-                  * sign<0 = LP (fragments key-contest the HP key image),
-                  * >0 = HP (key-image pass input), 0 = not terrain/off.
-                  * Stored depth (v[].z) is TRUE view-Z either way — og's
-                  * keys select WHICH terrain surface owns a pixel, they
-                  * never enter the depth buffer. Per-face constant.       */
+    float koff;  /* og OT KEY: the face's ABSOLUTE .s insertion key in world
+                  * units + 0.5 sentinel; sign<0 = near-band contest-only
+                  * (|koff| = key), 0 = not keyed. Stored depth (v[].z) is
+                  * TRUE view-Z either way — og's keys select WHICH surface
+                  * owns a pixel, they never enter the depth buffer.
+                  * Per-face constant.                                     */
+    int prop;    /* authored embedded PROP (pedestal discs, statue bases…):
+                  * this face additionally rasters TRUE per-vertex depth
+                  * into the prop image, and near-band terrain always
+                  * yields to a prop physically within the embed bound —
+                  * the class-curated "props render on top of the ground
+                  * they are set into" divergence.                         */
 } openpete_scene_tri;
 
 /* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------

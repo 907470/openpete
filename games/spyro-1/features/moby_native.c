@@ -3143,6 +3143,19 @@ static void push_scene_moby(void) {
               double key = mean - 128.0 * (double)dofs;
               if (key < 1.0) key = 1.0;      /* og floors the slot at 0 */
               t.koff = (float)(key + 0.5);
+              /* Embedded-PROP classes (the k_lp_artfix seam pattern):
+               * static scenery authored sunk into the ground — near-band
+               * terrain always yields to them within the embed bound, so
+               * they render whole from every angle instead of og's
+               * view-dependent piece-key roulette. Curated, because no
+               * geometric quantity separates an embedded prop from an
+               * actor standing just behind a crest. */
+              switch (s_wtri_cls[i]) {
+              case 250:   /* dragon-pedestal statue */
+              case 332:   /* dragon-pedestal base disc */
+                  t.prop = 1; break;
+              default: break;
+              }
           } }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));

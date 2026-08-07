@@ -204,7 +204,8 @@ typedef struct {
     int textured;
     int tpage_x, tpage_y, clut_x, clut_y, bpp;
     int blend;
-    float koff;     /* terrain og-key slot offset — see openpete_scene_tri */
+    float koff;     /* og OT key — see openpete_scene_tri */
+    int prop;       /* authored embedded prop — see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) — add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -1199,8 +1200,10 @@ static struct {
     rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
     rhi_pipeline *terrain_key_pipe;   /* P6b HP key pass (terrain_key.vert) */
     rhi_buffer   *terrain_key_vb;     /* HP-opaque clip geometry, per-present ring */
-    rhi_texture  *terrain_key_depth;  /* HP og-key image the LP fragments contest */
-    int           tk_w, tk_h;         /* current terrain_key_depth allocation */
+    rhi_texture  *terrain_key_depth;  /* terrain og-key image (set 2) */
+    rhi_texture  *moby_key_depth;     /* moby og-key image (set 3) — split so the
+                                       * near-band embed rule sees moby keys only */
+    int           tk_w, tk_h;         /* current key-image allocations (shared dims) */
     rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth → grid (may be NULL) */
     rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL → no culling) */
 } s_nr;
@@ -1518,7 +1521,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
-        .uses_vram = false, .uses_vram3 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
     };
     /* WORLD-group variants that also stencil-MARK their coverage (W2.6-c): the
      * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
@@ -1532,7 +1535,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = false, .uses_vram3 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
     };
     /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
      * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
@@ -1677,7 +1680,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
     };
     /* Textured WORLD-group stencil-MARK variant (W2.6-c) — most terrain is
      * textured, so the coverage mark must come from this pipe too. */
@@ -1685,7 +1688,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
     };
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
      * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
@@ -1797,14 +1800,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(hd_pc),
     };
     rhi_pipeline_desc hd_cutout_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(hd_pc),
     };
     /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
@@ -2903,15 +2906,22 @@ int openpete_native_key_resolve_on(void)
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
-    if (s_nr.terrain_key_depth && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth &&
+        s_nr.tk_w >= w && s_nr.tk_h >= h) return;
     if (w < s_nr.tk_w) w = s_nr.tk_w;
     if (h < s_nr.tk_h) h = s_nr.tk_h;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
+    if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
     s_nr.terrain_key_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
-    if (s_nr.terrain_key_depth)
+    s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth)
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
-    else { s_nr.tk_w = s_nr.tk_h = 0; }
+    else {
+        if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
+        if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
+        s_nr.tk_w = s_nr.tk_h = 0;
+    }
 }
 
 /* Pack one scene target's key batch from `scene` under the `full_extent`
@@ -2919,8 +2929,19 @@ static void ensure_terrain_key_depth(int w, int h)
  * key pass and the OPENPETE_TERRAIN_KEY_IDENT instrument, which repacks at
  * scene-draw time and byte-compares to prove pass and draw consumed the
  * same snapshot (the draw fetches scene_present_buf independently). */
+/* prop_class 0 = og KEYS (the set-2 image): every keyed face — terrain,
+ * TERRAIN_KEY sky fans, AND moby faces — as its ABSOLUTE og key laid FLAT,
+ * og's per-pixel OT occupancy (the P6b/P6g painter select).
+ * prop_class 1 = PROP TRUE DEPTH (the set-3 image): curated embedded-prop
+ * faces only (openpete_scene_tri.prop), per-vertex TRUE view-Z, no bias.
+ * The near-band embed rule reads it: no geometric quantity separates "prop
+ * set into its ground" from "actor just behind a crest" — flat keys,
+ * per-pixel keys, biased and unbiased margins all overlap across the two
+ * classes — so prop-ness is AUTHORED (a class list in the moby feeder,
+ * the k_lp_artfix seam pattern), and only props get the always-win-your-
+ * ground divergence. */
 static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
-                                  int full_extent, rhi_vertex* out)
+                                  int full_extent, int prop_class, rhi_vertex* out)
 {
     int prev_fe = s_render_full_extent;
     s_render_full_extent = full_extent ? 1 : 0;
@@ -2928,19 +2949,24 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
         const int keycat = scene[t].category == OPENPETE_SCENE_TERRAIN_KEY;
         if (scene[t].blend != 0) continue;                       /* opaque only */
-        if (scene[t].category != OPENPETE_SCENE_WORLD &&
-            scene[t].category != OPENPETE_SCENE_ACTOR && !keycat) continue;
-        if (scene[t].koff <= 0.25f) continue;   /* keyed terrain/moby faces / sky fans */
-        /* koff carries the face's ABSOLUTE og key (+0.5 sentinel): encode it
-         * as a FLAT vertex depth so the raster lays the constant across the
-         * face — the image becomes og's per-pixel OT-index occupancy, exact
-         * on both sides of the fragment contest (no interpolation). */
+        if (prop_class ? !scene[t].prop
+                       : (scene[t].category != OPENPETE_SCENE_WORLD &&
+                          scene[t].category != OPENPETE_SCENE_ACTOR && !keycat)) continue;
+        if (scene[t].koff <= 0.25f) continue;   /* keyed faces / sky fans only */
         float K = scene[t].koff - 0.5f;
-        float z = K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
+        float zflat = K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex* o = &out[m + k];
+            float z = zflat;
+            if (prop_class) {
+                /* TRUE per-vertex view-Z: pvz where the tie pull shifted the
+                 * stored z, else the stored z already IS true. */
+                float tv = scene[t].v[k].pvz;
+                z = tv > 0.0f ? tv / (tv + OPENPETE_DEPTH_VIEWZ_SCALE)
+                              : scene[t].v[k].z;
+            }
             o->x = cx; o->y = cy; o->z = z; o->w = 0.0f;
             o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u;
             o->koff = 0.5f;
@@ -2951,28 +2977,32 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     return m;
 }
 
-/* The last key-pass pack, recorded for the identity instrument in
- * draw_native_scene (m == -1 until a pass has run). */
+/* The last key-pass packs (terrain + moby), recorded for the identity
+ * instrument in draw_native_scene (m == -1 until a pass has run). */
 static struct {
     const scene_tri_t* scene;
-    int scene_n, full_extent, m;
+    int scene_n, full_extent, m, mm;
     const rhi_vertex* buf;
-} s_tk_last = { NULL, 0, -1, -1, NULL };
+    const rhi_vertex* mbuf;
+} s_tk_last = { NULL, 0, -1, -1, -1, NULL, NULL };
 
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
     ensure_terrain_key_depth(vw, vh);
-    if (!s_nr.terrain_key_depth) return;
+    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth) return;
     if (vw > s_nr.tk_w) vw = s_nr.tk_w;
     if (vh > s_nr.tk_h) vh = s_nr.tk_h;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     static rhi_vertex kbuf[SCENE_VB_VERTS];
-    int m = pack_terrain_key_batch(scene, scene_n, full_extent, kbuf);
+    static rhi_vertex mkbuf[SCENE_VB_VERTS];
+    int m  = pack_terrain_key_batch(scene, scene_n, full_extent, 0, kbuf);
+    int mm = pack_terrain_key_batch(scene, scene_n, full_extent, 1, mkbuf);
     s_tk_last.scene = scene; s_tk_last.scene_n = scene_n;
     s_tk_last.full_extent = full_extent ? 1 : 0;
     s_tk_last.m = m; s_tk_last.buf = kbuf;
+    s_tk_last.mm = mm; s_tk_last.mbuf = mkbuf;
     { static int kdbg = -1;
       if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
       if (kdbg) {
@@ -3036,27 +3066,31 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     static int s_tk_base = 0;
     uint64_t serial = rhi_frame_serial(s_nr.dev);
     if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
-    if (m > 0 && s_tk_base + m > SCENE_VB_VERTS) {
+    if (m + mm > 0 && s_tk_base + m + mm > SCENE_VB_VERTS) {
         /* Ring slot exhausted (several huge batches in one frame). The
          * earlier batches are recorded but NOT yet submitted, so resetting
          * the bump offset would clobber data a recorded pass still reads at
          * execution — and a mid-frame wait_idle cannot help, the work isn't
-         * on the GPU yet. Degrade safely: leave this target's image clear
+         * on the GPU yet. Degrade safely: leave this target's images clear
          * ("no cover" → contest OFF for this target only, keyed faces
          * resolve at true depth), and say so loudly — a silent skip would
          * read as coverage. */
         extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d > %d): "
+        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d > %d): "
                         "contest OFF for this target\n",
-                openpete_frame, s_tk_base, m, (int)SCENE_VB_VERTS);
-        m = 0;
+                openpete_frame, s_tk_base, m, mm, (int)SCENE_VB_VERTS);
+        m = mm = 0;
     }
     if (m > 0)
         rhi_update_buffer_range(s_nr.terrain_key_vb, kbuf,
                                 sizeof(rhi_vertex) * (size_t)s_tk_base,
                                 sizeof(rhi_vertex) * (size_t)m);
-    /* Even m==0 renders: the cleared far depth reads as "no cover", which
-     * is the correct contest input — never a stale image. */
+    if (mm > 0)
+        rhi_update_buffer_range(s_nr.terrain_key_vb, mkbuf,
+                                sizeof(rhi_vertex) * (size_t)(s_tk_base + m),
+                                sizeof(rhi_vertex) * (size_t)mm);
+    /* Even empty batches render: the cleared far depth reads as "no cover",
+     * which is the correct contest input — never a stale image. */
     rhi_begin_render_target(s_nr.dev, s_nr.terrain_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
     if (m > 0) {
@@ -3065,7 +3099,15 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_draw(s_nr.dev, (uint32_t)m, (uint32_t)s_tk_base);
     }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
-    s_tk_base += m;
+    rhi_begin_render_target(s_nr.dev, s_nr.moby_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    if (mm > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
+        rhi_draw(s_nr.dev, (uint32_t)mm, (uint32_t)(s_tk_base + m));
+    }
+    rhi_end_render_target(s_nr.dev, s_nr.moby_key_depth);
+    s_tk_base += m + mm;
 }
 
 /* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
@@ -3075,11 +3117,13 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
-    if (!s_nr.terrain_key_depth) return;
+    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth) return;
     if (p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
         p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
-        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe)
+        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe) {
         rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
+        rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
+    }
 }
 
 /* ---- moby occlusion culling: grid pass + readback + query -------------------
@@ -4516,19 +4560,23 @@ static bool draw_native_scene(bool full_extent)
       if (s_ident && s_tk_last.m >= 0 && openpete_native_key_resolve_on()
           && s_tk_last.full_extent == (full_extent ? 1 : 0)) {
           static rhi_vertex ibuf[SCENE_VB_VERTS];
-          int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, ibuf);
-          size_t db = 0, nb = sizeof(rhi_vertex) * (size_t)(im < s_tk_last.m ? im : s_tk_last.m);
-          const uint8_t* a = (const uint8_t*)ibuf;
-          const uint8_t* b = (const uint8_t*)s_tk_last.buf;
-          while (db < nb && a[db] == b[db]) db++;
-          if (im != s_tk_last.m || db < nb)
-              fprintf(stderr, "[keyident f=%u] MISMATCH fe=%d m=%d/%d scene=%p/%p n=%d/%d first-diff vert=%zu\n",
-                      s_scene_frame, full_extent ? 1 : 0, im, s_tk_last.m,
-                      (const void*)scene, (const void*)s_tk_last.scene,
-                      scene_n, s_tk_last.scene_n, db / sizeof(rhi_vertex));
-          else
-              fprintf(stderr, "[keyident f=%u] OK fe=%d m=%d\n",
-                      s_scene_frame, full_extent ? 1 : 0, im);
+          for (int cls = 0; cls < 2; cls++) {
+              int lm = cls ? s_tk_last.mm : s_tk_last.m;
+              const rhi_vertex* lb = cls ? s_tk_last.mbuf : s_tk_last.buf;
+              int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, cls, ibuf);
+              size_t db = 0, nb = sizeof(rhi_vertex) * (size_t)(im < lm ? im : lm);
+              const uint8_t* a = (const uint8_t*)ibuf;
+              const uint8_t* b = (const uint8_t*)lb;
+              while (db < nb && a[db] == b[db]) db++;
+              if (im != lm || db < nb)
+                  fprintf(stderr, "[keyident f=%u] MISMATCH cls=%d fe=%d m=%d/%d scene=%p/%p n=%d/%d first-diff vert=%zu\n",
+                          s_scene_frame, cls, full_extent ? 1 : 0, im, lm,
+                          (const void*)scene, (const void*)s_tk_last.scene,
+                          scene_n, s_tk_last.scene_n, db / sizeof(rhi_vertex));
+              else
+                  fprintf(stderr, "[keyident f=%u] OK cls=%d fe=%d m=%d\n",
+                          s_scene_frame, cls, full_extent ? 1 : 0, im);
+          }
       } }
 
     /* S8b: publish this present's interned per-instance material uniforms
@@ -7697,6 +7745,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.prepass_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
     if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
     if (s_nr.terrain_key_depth) rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth);
+    if (s_nr.moby_key_depth)    rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);
     if (s_nr.terrain_key_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.terrain_key_vb);
     if (s_nr.terrain_key_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
     if (s_nr.gouraud_sub_ztest_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);

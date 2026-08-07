@@ -3055,8 +3055,11 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
      * reference sampler) — both reuse the single-binding vram set layout.
      * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. */
     VkDescriptorSetLayout set_layouts[4] = { dev->vram_set_layout, dev->vram_set_layout,
-                                             dev->vram_set_layout, dev->ubo_set_layout };
+                                             dev->vram_set_layout,
+                                             (desc->postfx || desc->mod_pipeline)
+                                                 ? dev->ubo_set_layout : dev->vram_set_layout };
     uint32_t set_count = (desc->postfx || desc->mod_pipeline) ? 4u
+                       : desc->uses_vram4 ? 4u
                        : desc->uses_vram3 ? 3u
                        : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     VkPipelineLayoutCreateInfo plci = {

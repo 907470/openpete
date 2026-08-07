@@ -237,10 +237,14 @@ typedef struct {
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
-    bool           uses_vram3;  /* third sampler at set 2 (the terrain HP key
+    bool           uses_vram3;  /* third sampler at set 2 (the terrain og-key
                                  * image). Implies sets 0..2 exist in the
                                  * layout; sets a shader never statically
                                  * accesses need no binding at draw.           */
+    bool           uses_vram4;  /* fourth sampler at set 3 (the MOBY og-key
+                                 * image — split from the terrain keys so the
+                                 * near-band embed rule applies to moby keys
+                                 * only). Implies uses_vram3.                  */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex — pair with the
