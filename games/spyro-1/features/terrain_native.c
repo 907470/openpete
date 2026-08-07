@@ -4294,20 +4294,19 @@ static void terrain_feed_native(CPUState* cpu) {
          * covers the LP<->HP partition, intra-tier authored order, AND the
          * portal sky contest (the sky fans below emit bucket+64).
          *
-         * NEAR-BAND faces can be CONTEST-ONLY (NEGATIVE koff = |key|, no
-         * slot offsets), letting an authored-biased moby key win the
-         * ground it is embedded in up close (the pedestal-disc class) —
-         * they still never EMIT (a huge under-camera face's flat-key
-         * raster would discard everything behind it, and true depth
-         * already wins the viewer-side surface's own pixels). DEFAULT
-         * OFF: the og reference PROTECTS some near faces outright — a
-         * near wall keeps its pixels against a moby face whose flat key
-         * beats it (dark_hollow: a wall yielded 10k px to a beast face
-         * lying locally BEHIND it, where the PSX shows the wall) — and no
-         * key-delta or depth-delta bound separates that from the embedded
-         * -prop case. Until the .s's near-band drain/mask order is
-         * resolved, near-band stays out of the contest and the up-close
-         * embedded-prop rim is a known residual.
+         * NEAR-BAND faces are CONTEST-ONLY (NEGATIVE koff = |key|, no
+         * slot offsets — the subdivide queue inserts at raw slots): the
+         * OT dump proves near cells ride the SAME painter as everything
+         * else (dark_hollow: the beast face at slot 671 of 694 paints
+         * OVER the wall quads at slots 254-399, and the og framebuffer
+         * shows the beast), so an authored-biased moby key must be able
+         * to win near ground/walls per-pixel (the embedded pedestal-disc
+         * rim, and og's own moby-over-near-wall cases). They still never
+         * EMIT: a huge under-camera face's flat-key raster would discard
+         * everything behind it, and true depth already wins the
+         * viewer-side surface's own pixels. (Adjudication trap: dying
+         * mobys death-flash per VBL — judge these cases on SURFACE
+         * identity, never colour.)
          *
          * FILL twins stay 0 — stencil-gated to uncovered pixels, they must
          * never self-discard. Transparent terrain stays 0 — no depth
@@ -4315,9 +4314,9 @@ static void terrain_feed_native(CPUState* cpu) {
          * zeroes the channel: raw true depth (the A/B leg). */
         if (s_otbias_on && !t->fill && !tri.blend &&
             openpete_native_key_resolve_on()) {
-            static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=1 enables the near-band contest-only keys (see above) */
+            static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
             if (s_nbc < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARBAND_CONTEST");
-                s_nbc = (e && *e) ? (*e != '0') : 0; }
+                s_nbc = (e && *e) ? (*e != '0') : 1; }
             double mean = (t->otkey > 0.0f) ? (double)t->otkey
                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
             tri.koff = t->nearband ? (s_nbc ? (float)-(mean + 0.5) : 0.0f)
