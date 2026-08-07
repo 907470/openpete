@@ -1139,6 +1139,12 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
             F->tb = -1;
             F->mat.bpp = 16;                       /* untextured flat gouraud */
+            /* w1 bit 2 = ABE: the .s LP emit (quad 0x80026504 / tri 0x800266D4)
+             * ORs 0x02 into the G4/G3 prim code and precedes the prim with a
+             * DR_TPAGE carrying ABR = w1 & 3 — untextured SEMI-TRANSPARENT
+             * gouraud (the distant-waterfall veils). Same scene blend classes
+             * (1..4 = ABR 0..3) as the HP tpage decode. */
+            if (w1 & 0x4) F->mat.blend = (int)(w1 & 0x3) + 1;
         }
         F->quad = (F->i2 != F->i3);
     }
@@ -3088,6 +3094,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * float raster is a hair tighter than the PSX integer edge — gate
              * tick 4888, peace-keepers cliffs). */
             if (passFill) {
+                /* Transparent LP never rides the fill: it blends instead of
+                 * covering, so a stencil-gated twin over the face's own raster
+                 * (transparents write no stencil) would blend the same pixels
+                 * TWICE. The fill exists to patch opaque raster slivers. */
+                if (F->mat.blend) continue;
                 /* Slack 1024 (face admitted when every corner is ≥75% fogged):
                  * a strict ir0≤0 dropped the LP of sectors STRADDLING the LOD
                  * boundary, leaving their far rows' raster gaps unfilled (the
@@ -4190,7 +4201,10 @@ static void terrain_feed_native(CPUState* cpu) {
         if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         int tex = (!s_flat && !s_notex && !s_tiercolor) ? t->textured : 0;
-        tri.textured = tex; tri.blend = tex ? t->blend : 0;
+        /* blend rides for untextured faces too: LP semi-transparent gouraud
+         * (face w1 bit 2) has no texture but still routes to the ALPHA/ADD
+         * scene groups, mirroring the .s's 0x32/0x3A prim codes. */
+        tri.textured = tex; tri.blend = t->blend;
         tri.tpage_x = t->tpx; tri.tpage_y = t->tpy;
         tri.clut_x = t->clx; tri.clut_y = t->cly; tri.bpp = t->bpp;
         /* FILL tris are dilated a sub-pixel outward from their centroid: the
@@ -4309,17 +4323,22 @@ static void terrain_feed_native(CPUState* cpu) {
          * identity, never colour.)
          *
          * FILL twins stay 0 — stencil-gated to uncovered pixels, they must
-         * never self-discard. Transparent terrain stays 0 — no depth
-         * writes; covered transparents keep the CPU drop above. OT_BIAS=0
-         * zeroes the channel: raw true depth (the A/B leg). */
-        if (s_otbias_on && !t->fill && !tri.blend &&
+         * never self-discard. Transparent terrain CONTESTS but never EMITS
+         * (the key-pass pack drops blend != 0): it doesn't occlude, but the
+         * og painter still covers it — the cyclorama's sky-bucket keys must
+         * beat a beyond-the-sky LP waterfall veil exactly as they beat the
+         * opaque terrain next to it. Blended NEAR-BAND faces stay 0: the
+         * negative-koff branch carries the moby embed rule, which a veil
+         * blending OVER a moby must not inherit. OT_BIAS=0 zeroes the
+         * channel: raw true depth (the A/B leg). */
+        if (s_otbias_on && !t->fill &&
             openpete_native_key_resolve_on()) {
             static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
             if (s_nbc < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARBAND_CONTEST");
                 s_nbc = (e && *e) ? (*e != '0') : 1; }
             double mean = (t->otkey > 0.0f) ? (double)t->otkey
                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-            tri.koff = t->nearband ? (s_nbc ? (float)-(mean + 0.5) : 0.0f)
+            tri.koff = t->nearband ? ((s_nbc && !tri.blend) ? (float)-(mean + 0.5) : 0.0f)
                                    : (float)(mean + 128.0 * (double)t->otslots + 0.5);
         }
         int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;

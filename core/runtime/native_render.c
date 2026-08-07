@@ -1559,9 +1559,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * opaque gouraud pipe — quad.frag emits the full vertex rgba incl. alpha. */
     rhi_pipeline_desc gouraud_blend_desc = {
         .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
     };
     /* Subtractive UNTEXTURED gouraud pipeline (3b.2, the Spyro silhouette
      * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
@@ -1637,9 +1637,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * classic halo. depth_write_off like the other transparent passes. */
     rhi_pipeline_desc gouraud_add_desc = {
         .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
     };
     /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
      * previews (portal_native.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
@@ -1700,9 +1700,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * back-to-front sort, 3c; this is the prerequisite half). */
     rhi_pipeline_desc scene_tex_blend_desc = {
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene.frag.spv",
+        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
     };
     /* Additive (ABR mode 1, dst = B + F) textured pipeline (3b.1): the first
      * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
@@ -1713,9 +1713,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * result accumulates into the framebuffer — bright core, never darkens. */
     rhi_pipeline_desc scene_tex_add_desc = {
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene.frag.spv",
+        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
     };
     /* Subtractive (ABR mode 2, dst = B - F) textured pipeline (3b.2): moby
      * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
