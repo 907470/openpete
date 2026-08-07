@@ -1514,6 +1514,10 @@ static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob) {
  * across the intermediates is correct. */
 static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
 static int8_t   s_wtri_dofs[MAX_NTRI]; /* authored OT bias (moby+0x47) of the emitter */
+static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
+                                          * coordinate-saturated (sat): the
+                                          * SCREEN footprint is not the true
+                                          * projection — never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
 static uint16_t s_wtri_matslot[MAX_NTRI]; /* per-instance material slot (S8b, 0 = none) */
@@ -1578,6 +1582,8 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
     s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
     s_wtri_dofs[s_wtri_n] = s_cur_moby_dofs;
+    s_wtri_mangle[s_wtri_n] = (uint8_t)((a->unr || b->unr || c->unr ||
+                                         a->sat || b->sat || c->sat) ? 1 : 0);
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
     s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
     s_wtri_matslot[s_wtri_n] = s_cur_moby_matslot;  /* per-instance material (S8b) */
@@ -3117,13 +3123,19 @@ static void push_scene_moby(void) {
          * key image makes keyed terrain within the authored bias yield
          * per-pixel (a dragon-pedestal disc set into a sloped ground
          * paints over it, exactly og's painter) and the moby face
-         * contests nearer keys symmetrically. Near-band terrain never
-         * keys (og mask-bit-protects it), so close walls keep occluding
-         * mobys by TRUE depth. Blend/FRONT/HUD classes stay unkeyed. */
+         * contests nearer keys symmetrically. Blend/FRONT/HUD classes
+         * stay unkeyed — and so do MANGLED faces (near-plane fixup /
+         * coordinate saturation): their screen footprint is not the true
+         * projection, so a flat key stamped across one discards terrain
+         * far outside the moby's real silhouette (a right-at-the-camera
+         * moby flooded a whole wall away). A genuinely-near moby needs no
+         * key anyway — it is the viewer-side surface and TRUE depth
+         * already wins its own pixels. */
         { static int s_kob = -1;
           if (s_kob < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS");
               s_kob = (e && *e) ? (*e != '0') : 1; }
           if (s_kob && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
+              !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
               int dofs = (int)s_wtri_dofs[i];
               double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz

@@ -171,14 +171,17 @@ typedef struct {
     float    x, y, z;   /* position (clip space in the smoke test; proj later) */
     float    u, v;      /* texture coords in TEXEL units (PSX integer indexing) */
     uint32_t rgba;      /* per-vertex color, byte order R,G,B,A                 */
-    float    koff;      /* terrain og OT KEY (location 5): the face's ABSOLUTE
-                         * .s insertion key in world units (corner-mean view-Z
+    float    koff;      /* og OT KEY (location 5): the face's ABSOLUTE .s
+                         * insertion key in world units (corner-mean view-Z
                          * + 128*slot bias) + 0.5 sentinel; 0 = not keyed /
-                         * contest off. A keyed face both EMITS its flat key
-                         * into the key image (terrain_key.vert) and CONTESTS
-                         * it (psx_scene_key.frag et al); stored depth stays
-                         * TRUE view-Z — faithfulness lives in the fragment
-                         * SELECT, never in the depth value.                  */
+                         * contest off. POSITIVE: the face both EMITS its
+                         * flat key into the key image (terrain_key.vert)
+                         * and CONTESTS it (psx_scene_key.frag et al).
+                         * NEGATIVE (|koff| = key): CONTEST-ONLY — near-band
+                         * terrain, whose huge under-camera footprints must
+                         * never stamp the image. Stored depth stays TRUE
+                         * view-Z — faithfulness lives in the fragment
+                         * SELECT, never in the depth value.                 */
     float    sx, sy;    /* PSX screen coord (location 3) — the textured shadow
                          * decal's depth-pre-pass lookup rides here, because its
                          * u,v are the sprite texel (unlike the untextured Spyro

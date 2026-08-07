@@ -58,7 +58,8 @@ uint sample_word(int u, int v)
 
 void main()
 {
-    if (vKoff > 0.25) {   /* terrain face: contest the og key raster */
+    float aKoff = abs(vKoff);   /* negative koff = CONTEST-ONLY (near-band) */
+    if (aKoff > 0.25) {   /* keyed face: contest the og key raster */
         float hk = texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r;
         if (hk < 0.999999) {   /* clear 1.0 = nothing keyed this pixel */
             /* Keys are FLAT per face (the .s OT index scaled to world units:
@@ -70,7 +71,7 @@ void main()
              * Strict less-by-half-slot: a nearer-KEYED face owns the pixel
              * (og's painter order); ties inside og's own 128-world quantum
              * fall through to true depth. */
-            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (vKoff - 0.5) - 64.0) discard;
+            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (aKoff - 0.5) - 64.0) discard;
         }
     }
     vec2 uv = vUV / vQ;

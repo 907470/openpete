@@ -24,11 +24,12 @@ void main()
 {
     /* Terrain KEY-RESOLVE: same contest as psx_scene_key.frag so
      * HD-replaced terrain keeps og's per-pixel face select. */
-    if (vKoff > 0.25) {
+    float aKoff = abs(vKoff);   /* negative koff = CONTEST-ONLY (near-band) */
+    if (aKoff > 0.25) {
         float hk = texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r;
         if (hk < 0.999999) {
             /* canonical decode kv = 4096*hk/(1-hk) — see psx_scene_key.frag */
-            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (vKoff - 0.5) - 64.0) discard;
+            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (aKoff - 0.5) - 64.0) discard;
         }
     }
     vec2 vUV = vUVq / vQ;

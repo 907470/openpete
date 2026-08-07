@@ -16,12 +16,13 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-    if (vKoff > 0.25) {   /* terrain face: contest the og key raster
+    float aKoff = abs(vKoff);   /* negative koff = CONTEST-ONLY (near-band) */
+    if (aKoff > 0.25) {   /* keyed face: contest the og key raster
                            * (flat per-face keys — see psx_scene_key.frag) */
         float hk = texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r;
         if (hk < 0.999999) {
             /* canonical decode kv = 4096*hk/(1-hk) — see psx_scene_key.frag */
-            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (vKoff - 0.5) - 64.0) discard;
+            if (4096.0 * hk / max(1.0 - hk, 1e-9) < (aKoff - 0.5) - 64.0) discard;
         }
     }
     outColor = vColor / vQ;

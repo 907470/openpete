@@ -4292,16 +4292,36 @@ static void terrain_feed_native(CPUState* cpu) {
          * CONTESTS it (strict less-by-half-slot, so a face never loses to
          * its own key and og ties fall through to true depth). One rule
          * covers the LP<->HP partition, intra-tier authored order, AND the
-         * portal sky contest (the sky fans below emit bucket+64). FILL
-         * twins stay 0 — stencil-gated to uncovered pixels, they must
+         * portal sky contest (the sky fans below emit bucket+64).
+         *
+         * NEAR-BAND faces can be CONTEST-ONLY (NEGATIVE koff = |key|, no
+         * slot offsets), letting an authored-biased moby key win the
+         * ground it is embedded in up close (the pedestal-disc class) —
+         * they still never EMIT (a huge under-camera face's flat-key
+         * raster would discard everything behind it, and true depth
+         * already wins the viewer-side surface's own pixels). DEFAULT
+         * OFF: the og reference PROTECTS some near faces outright — a
+         * near wall keeps its pixels against a moby face whose flat key
+         * beats it (dark_hollow: a wall yielded 10k px to a beast face
+         * lying locally BEHIND it, where the PSX shows the wall) — and no
+         * key-delta or depth-delta bound separates that from the embedded
+         * -prop case. Until the .s's near-band drain/mask order is
+         * resolved, near-band stays out of the contest and the up-close
+         * embedded-prop rim is a known residual.
+         *
+         * FILL twins stay 0 — stencil-gated to uncovered pixels, they must
          * never self-discard. Transparent terrain stays 0 — no depth
          * writes; covered transparents keep the CPU drop above. OT_BIAS=0
          * zeroes the channel: raw true depth (the A/B leg). */
-        if (s_otbias_on && !t->fill && !tri.blend && !t->nearband &&
+        if (s_otbias_on && !t->fill && !tri.blend &&
             openpete_native_key_resolve_on()) {
+            static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=1 enables the near-band contest-only keys (see above) */
+            if (s_nbc < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARBAND_CONTEST");
+                s_nbc = (e && *e) ? (*e != '0') : 0; }
             double mean = (t->otkey > 0.0f) ? (double)t->otkey
                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-            tri.koff = (float)(mean + 128.0 * (double)t->otslots + 0.5);
+            tri.koff = t->nearband ? (s_nbc ? (float)-(mean + 0.5) : 0.0f)
+                                   : (float)(mean + 128.0 * (double)t->otslots + 0.5);
         }
         int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;
         if (tid >= 0 && tex_slot[tid] < 0) {
