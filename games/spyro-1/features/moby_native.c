@@ -3096,15 +3096,56 @@ static void push_scene_moby(void) {
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
                 : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
                                     : OPENPETE_SCENE_ACTOR;
+        /* og per-face painter mirror (face-flat fed depth): the .s inserts each
+         * moby face into the OT at ONE key — its average view-Z minus the
+         * authored bias — so two faces of a moby never resolve against each
+         * other per pixel on PSX; the nearer-keyed face paints over the other
+         * WHOLLY, a stable per-tick verdict (OT-dump census: descending key
+         * order predicts the real paint order at ~97%, emission order does
+         * not). Native per-vertex true depth re-adjudicates that verdict per
+         * pixel, and for authored decal stacks (eye whites / pupils / lids on
+         * a dragon head) the surfaces interpenetrate, so the winner contour
+         * swings with every anim tick — whole polys flicker in faces (the
+         * new-game cutscene dragons). Mirror og: feed each keyed ACTOR face
+         * FLAT at the mean of its own fed view-Z (the pulled depth, so the
+         * cross-record authored-bias ordering is preserved); the perspective W
+         * keeps the TRUE per-vertex view-Z so UV/texturing are unaffected.
+         * Kill-switch: OPENPETE_MOBY_FACEFLAT=0. */
+        float flatz = 0.0f;
+        { static int s_ff = -1;
+          if (s_ff < 0) { const char* e = getenv("OPENPETE_MOBY_FACEFLAT");
+              s_ff = (e && *e) ? (*e != '0') : 1; }
+          if (s_ff && (cat == OPENPETE_SCENE_ACTOR ||
+                       cat == OPENPETE_SCENE_ACTOR_FRONT) && s_wtri[i].blend == 0 &&
+              !s_wtri_mangle[i] && s_wtri_moby[i]) {
+              const float z0 = s_wtri[i].v[0].vz, z1 = s_wtri[i].v[1].vz,
+                          z2 = s_wtri[i].v[2].vz;
+              float zmin = z0 < z1 ? z0 : z1; if (z2 < zmin) zmin = z2;
+              float zmax = z0 > z1 ? z0 : z1; if (z2 > zmax) zmax = z2;
+              /* Decal-scale faces only: a face spanning less than one OT slot
+               * is flat at og's own key granularity, so laying it flat is
+               * exactly what og's sort sees — and the decal stacks that
+               * flicker (eyes, nostrils, teeth) are all in this class. Large
+               * sloped faces (a pedestal base slab spans several slots) keep
+               * per-vertex depth: og orders those against their same-slot
+               * neighbours by OT insertion, which true per-vertex depth has
+               * matched since the compression removal — flattening them
+               * re-orders by mean and visibly breaks the base rims. */
+              if (zmax - zmin < 128.0f) {
+                  float fz = (z0 + z1 + z2) / 3.0f;
+                  flatz = fz > 1.0f ? fz : 1.0f;
+              }
+          } }
         openpete_scene_tri t = {0};
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
             t.v[k].sy   = s_wtri[i].v[k].sy;
-            t.v[k].z    = openpete_native_depth_from_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
-            /* State the perspective W only where the OT pulls actually moved
-             * this vertex; an unshifted vertex keeps the derive-from-z path
-             * (identical result, no round-trip difference). */
-            t.v[k].pvz  = (s_wtri[i].v[k].tvz == s_wtri[i].v[k].vz)
+            t.v[k].z    = openpete_native_depth_from_viewz(openpete_worldvz_full(
+                              flatz > 0.0f ? flatz : s_wtri[i].v[k].vz));
+            /* State the perspective W only where the OT pulls (or the flatten)
+             * actually moved this vertex; an unshifted vertex keeps the
+             * derive-from-z path (identical result, no round-trip difference). */
+            t.v[k].pvz  = (flatz <= 0.0f && s_wtri[i].v[k].tvz == s_wtri[i].v[k].vz)
                         ? 0.0f : s_wtri[i].v[k].tvz;
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
