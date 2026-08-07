@@ -371,12 +371,6 @@ typedef struct { float sx, sy, vz; int sat, seg; } spxy;
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
 static spxy s_sproj_prev[MAX_SPROJ];   /* prev-pose projection for the two-pass shape lerp */
 static int s_lastseg_start, s_lastseg_n, s_lastseg_id;  /* last segment's s_sproj range */
-/* Per-segment origin view-Z (the TR z each segment projected with) — the value
- * r_pete's per-segment prologue projects into v1 for the OT key ((v1>>7) −
- * sortDepth, @80023F8C). Recorded by spyro_project_all; consumed by the feed's
- * per-segment slot keys. Identical across the two-pass re-extract (position
- * brackets apply to both passes), so no lerp is needed. */
-static double s_seg_origin_vz[3];
 
 /* 3b.4 face-stream walk — forward decls (the aggregate verdict uses these; the
  * definitions are below spyro_feed_scaffold). */
@@ -745,7 +739,6 @@ static int spyro_project_all(CPUState* cpu) {
             memcpy(M, s_xf[s].M, sizeof M);
             TR[0]=s_xf[s].TR[0]; TR[1]=s_xf[s].TR[1]; TR[2]=s_xf[s].TR[2];
             have_mat = 1;
-            s_seg_origin_vz[s] = TR[2];
             s_lastseg_start = s_sproj_n;
             s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
             s_lastseg_id = s; nseg++;
@@ -766,7 +759,6 @@ static int spyro_project_all(CPUState* cpu) {
         TR[0] = (double)(int32_t)cpu->read_word(entry + 0x04);
         TR[1] = (double)(int32_t)cpu->read_word(entry + 0x08);
         TR[2] = (double)(int32_t)cpu->read_word(entry + 0x0C);
-        s_seg_origin_vz[s] = TR[2];
         if (!have_mat) continue;                     /* no matrix yet (shouldn't happen for seg0) */
         s_lastseg_start = s_sproj_n;
         s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
@@ -1363,68 +1355,44 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
     if (s_swtri_n <= 0) return;
     /* .s OT key, Spyro walk: r_pete keys every SEGMENT at
      * max(0, (segment-origin viewZ >> 7) − g_Spyro.sortDepth) (@80023F8C,
-     * lbu 0x27($ra); one OT slot = 128 full-world view-Z units) — the whole
-     * segment sorts at ONE quantized slot. That integer quantization is
-     * load-bearing: riding inside a carrier moby (the balloonist basket),
-     * Spyro's body-segment slot beats the moby's centre-slot key by a full
-     * slot even though his per-vertex depth is BEHIND the whole moby — a
-     * continuous per-vertex pull loses that margin and the basket/wires
-     * z-eat him. Mirror: per-segment slot key + a monotonic within-segment
-     * /16 offset (the moby flatten's twin, so self-occlusion survives).
-     * OPENPETE_SPYRO_SEGKEY=0 falls back to the uniform continuous pull;
-     * OPENPETE_MOBY_OTBIAS=0 disables everything together. */
-    double sp_pull = 0.0;               /* fallback path (SEGKEY=0) */
-    double segkey[3] = {0.0, 0.0, 0.0};
-    double seg_lift = 0.0;
-    int use_segkey = 0;
+     * lbu 0x27($ra); one OT slot = 128 full-world view-Z units). Like the
+     * moby walks' m_DepthOffset, sortDepth is an OT ordering KEY, not
+     * geometry — it never enters stored depth (sortDepth is 5 in ordinary
+     * play, and mirroring it as a 128·sortDepth world pull showed Spyro
+     * through any wall within a constant 640 world). Per-pixel Z over TRUE
+     * depth mirrors the per-face OT sort; the sub-slot tie pull below
+     * resolves coincident surfaces to the player — ground contact, and the
+     * carrier-ride band (the balloonist basket sits ~90 world in front of
+     * the rider's body, inside the tie band, so the basket walls/wires
+     * don't z-eat him).
+     *
+     * EXCEPTION: sortDepth SATURATED at 127 is the .s's own "OT slot 0 —
+     * draw in front of everything" sentinel (the level-transition flight).
+     * That is authored full-front LAYERING, not contact depth: keep the
+     * near-plane-capped whole-model pull for exactly that window.
+     * OPENPETE_MOBY_OTBIAS=0 disables both (A/B). */
+    double sp_pull = 0.0;               /* flyby front-layer window only */
+    double tie_pull = 0.0;
     {
-        static int s_on = -1, s_sk = -1;
+        static int s_on = -1;
         if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
-        /* EXPERIMENT, default OFF: per-segment keys measured WORSE than the
-         * uniform pull at the balloonist (body key 3072 vs basket band ~2984
-         * — loses where og ties at slot 24) and the .s computes ONE key per
-         * r_pete call (single ctc2 of gte_ctrl[14]), not per segment. og
-         * resolves Spyro-vs-moby same-slot cases by OT insertion order —
-         * unreachable for continuous keys; needs the quantized-slot model. */
-        if (s_sk < 0) { const char* e = getenv("OPENPETE_SPYRO_SEGKEY"); s_sk = (e && *e) ? (*e != '0') : 0; }
         int sd = (int)(int8_t)cpu->read_byte(G_SPYRO + 0x27u);
-        if (s_on && s_sk) {
-            use_segkey = 1;
-            for (int s = 0; s < 3; s++) {
-                double oz = s_seg_origin_vz[s];
-                int slot = oz > 0.0 ? (int)(oz / 128.0) - sd : 0;
-                if (slot < 0) slot = 0;                /* og floors the slot at 0 */
-                segkey[s] = (double)slot * 128.0;
-            }
-            /* Near-floor: uniform lift (never per-vertex clamps — see the moby
-             * walk's twin) so the nearest fed vertex lands on the floor and
-             * inter-segment deltas survive. */
-            double minf = 1e30;
-            for (int i = 0; i < s_swtri_n; i++)
-                for (int k = 0; k < 3; k++) {
-                    double vz = (double)s_swtri[i].v[k].vz;
-                    if (vz <= 0.0) continue;
-                    int si = s_swtri[i].v[k].idx;
-                    int sg = (si >= 0 && si < s_sproj_n) ? s_sproj[si].seg : 0;
-                    if (sg < 0 || sg > 2) sg = 0;
-                    double f = segkey[sg] + (vz - s_seg_origin_vz[sg]) / 16.0;
-                    if (f < minf) minf = f;
-                }
-            if (minf < 1.0 && minf > -1e29) seg_lift = 1.0 - minf;
-        } else if (s_on) {
+        if (s_on && sd == 127) {
             sp_pull = 128.0 * (double)sd;
             /* Cap the pull per FRAME so the nearest vertex lands ON the near
              * floor instead of clamping each vertex at it: a per-vertex clamp
              * flattens everything past the floor to ONE depth and kills
              * self-occlusion (transition-flyby teeth-through-head). */
-            if (sp_pull > 0.0) {
-                double minvz = 1e30;
-                for (int i = 0; i < s_swtri_n; i++)
-                    for (int k = 0; k < 3; k++)
-                        if (s_swtri[i].v[k].vz > 0.0f && (double)s_swtri[i].v[k].vz < minvz)
-                            minvz = (double)s_swtri[i].v[k].vz;
-                if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
-            }
+            double minvz = 1e30;
+            for (int i = 0; i < s_swtri_n; i++)
+                for (int k = 0; k < 3; k++)
+                    if (s_swtri[i].v[k].vz > 0.0f && (double)s_swtri[i].v[k].vz < minvz)
+                        minvz = (double)s_swtri[i].v[k].vz;
+            if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
+        } else if (s_on) {
+            /* One-slot tie pull, the moby walks' twin: 127 world < one OT
+             * slot, so it can only flip pairs og calls a tie. */
+            tie_pull = 127.0;
         }
     }
     /* OPENPETE_DEPTHDBG="f0,f1": the Spyro-feed OT-key inputs (sortDepth,
@@ -1439,12 +1407,10 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
                   double z = (double)s_swtri[i].v[k].vz;
                   if (z > 0.0) { if (z < mn) mn = z; if (z > mx) mx = z; }
               }
-          fprintf(stderr, "[sp-pull f=%u] sortDepth=%d segkey=%d:%.0f/%.0f %.0f/%.0f %.0f/%.0f "
-                  "lift=%.0f pull=%.0f reproject=%d n=%d vz=%.0f..%.0f\n",
+          fprintf(stderr, "[sp-pull f=%u] sortDepth=%d pull=%.0f tie=%.0f "
+                  "reproject=%d n=%d vz=%.0f..%.0f\n",
                   openpete_frame, (int)(int8_t)cpu->read_byte(G_SPYRO + 0x27u),
-                  use_segkey, segkey[0], s_seg_origin_vz[0], segkey[1], s_seg_origin_vz[1],
-                  segkey[2], s_seg_origin_vz[2],
-                  seg_lift, sp_pull, reproject, s_swtri_n, mn, mx);
+                  sp_pull, tie_pull, reproject, s_swtri_n, mn, mx);
       } }
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
     for (int i = 0; i < s_swtri_n; i++) {
@@ -1452,15 +1418,7 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
-            double fvz;
-            if (use_segkey) {
-                int si = w->v[k].idx;
-                int sg = (si >= 0 && si < s_sproj_n) ? s_sproj[si].seg : 0;
-                if (sg < 0 || sg > 2) sg = 0;
-                fvz = segkey[sg] + ((double)w->v[k].vz - s_seg_origin_vz[sg]) / 16.0 + seg_lift;
-            } else {
-                fvz = (double)w->v[k].vz - sp_pull;
-            }
+            double fvz = (double)w->v[k].vz - sp_pull - tie_pull;
             st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full((float)fvz));
             /* Perspective W from the UNSHIFTED view-Z. sortDepth saturates at
              * 127 during the level-transition flight (OT slot 0 = in front of
