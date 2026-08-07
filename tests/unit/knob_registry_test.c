@@ -43,6 +43,8 @@ void   openpete_native_set_fps_overlay(int on) { (void)on; }
 void   openpete_native_set_fps_in_record(int on) { (void)on; }
 void   openpete_native_set_vertex_precision(int m) { (void)m; }
 void   openpete_native_set_raster_quantize(int n)  { (void)n; }
+int    openpete_native_get_dither(void)            { return 0; }
+void   openpete_native_set_dither(int on)          { (void)on; }
 void   widescreen_set_fov(float deg)           { (void)deg; }
 int    openpete_native_get_texture_mapping(void)   { return 0; }
 void   openpete_native_set_texture_mapping(int m)  { (void)m; }

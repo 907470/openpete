@@ -520,6 +520,7 @@ static int s_cur_presnap = 0;
  * boundaries (see native_postfx_run). One point sample per cell, as the
  * hardware rasterizer produced. */
 static int s_raster_mult = 0;
+static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
 /* --texture-mapping (0 = perspective, 1 = affine): the live mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above — the
@@ -1488,6 +1489,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * overridable. */
     s_raster_mult = (opts->raster_quantize >= 0) ? opts->raster_quantize
                  : (s_vertex_snap ? 1 : 0);
+    s_dither = opts->dither ? 1 : 0;   /* PS1 15-bit colour + hardware dither */
 
     /* Scene depth encoding (OPENPETE_DEPTH_AFFINE): drives the scene shaders'
      * vertex spec-constant 0. Must be set BEFORE the scene pipelines are built
@@ -5957,6 +5959,17 @@ void openpete_native_set_raster_quantize(int mult) {
 
 int openpete_native_get_raster_quantize(void) { return s_raster_mult; }
 
+/* --dither live toggle: the pass enable is checked per present at the SCENE
+ * postfx split, so no pipeline rebuild is involved — the flag alone is the
+ * whole switch. */
+void openpete_native_set_dither(int on) {
+    s_dither = on ? 1 : 0;
+    OPL_INFO_F("native", "dither -> %s",
+               s_dither ? "on (PS1 15-bit colour + 4x4 dither)" : "off");
+}
+
+int openpete_native_get_dither(void) { return s_dither; }
+
 /* --texture-mapping live toggle: the mode is a vertex spec constant baked
  * into every scene pipeline, so the setter only QUEUES the change; it takes
  * effect at the next present boundary via texmap_apply_pending(), which
@@ -7019,10 +7032,41 @@ static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
     return 1;
 }
 
+/* Engine-owned SCENE pass (--dither): PS1 15-bit colour — the 4x4 hardware
+ * dither matrix on the PSX framebuffer lattice + RGB555 truncation
+ * (psx_dither.frag). Runs AFTER the raster quantize (the console dithered
+ * each framebuffer write, i.e. downstream of rasterisation) and BEFORE any
+ * mod chain, so a CRT filter processes the dithered image — the authentic
+ * dither -> composite -> CRT order that made the pattern invisible on
+ * period hardware. Needs no custom uniforms: the grid mapping rides the
+ * shared engine UBO (op_scene_rect/op_scene_grid). */
+static void* s_dither_pipe;                    /* rhi_pipeline* / PFX_PIPE_FAILED */
+
+static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
+{
+    if (point != 1 /* OP_POSTFX_SCENE */ || !s_dither) return 0;
+    if (!s_dither_pipe) {
+        rhi_pipeline_desc pd = {0};
+        pd.vert_spv = "postfx_fs.vert.spv";
+        pd.frag_spv = "psx_dither.frag.spv";
+        pd.blend    = RHI_BLEND_NONE;
+        pd.postfx   = true;
+        rhi_pipeline* p = rhi_create_pipeline(s_nr.dev, &pd);
+        s_dither_pipe = p ? (void*)p : PFX_PIPE_FAILED;
+        if (!p)
+            fprintf(stderr, "[native] dither: pipeline build FAILED "
+                            "— dither disabled\n");
+    }
+    memset(&pass[0], 0, sizeof pass[0]);
+    pass[0].pipeline_slot = &s_dither_pipe;
+    pass[0].owner         = "psx-dither";
+    return 1;
+}
+
 static int native_postfx_point_active(int point)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
-    if (point == 1 /* OP_POSTFX_SCENE */ && s_raster_mult > 0) return 1;
+    if (point == 1 /* OP_POSTFX_SCENE */ && (s_raster_mult > 0 || s_dither)) return 1;
     return openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES) > 0;
 }
 
@@ -7030,6 +7074,7 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
     int n = raster_quantize_prepend(point, pass);
+    n += psx_dither_append(point, pass + n);
     n += openpete_mods_postfx_collect(point, pass + n, PFX_MAX_PASSES - n);
     if (n <= 0 || w <= 0 || h <= 0) return 0;
     if (!s_pfx_ubo)

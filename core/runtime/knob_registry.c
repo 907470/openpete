@@ -103,6 +103,17 @@ static int rquant_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/* Live getter: the O-menu DITHER row moves the same renderer flag. */
+static double dither_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_dither();
+}
+static int dither_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_dither(v != 0.0);
+    return 0;
+}
+
 static const char *const k_lod_names[] = { "original", "extended" };
 static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod ? 1.0 : 0.0; }
 static int lod_set(knob_desc_t *k, double v) {
@@ -357,6 +368,13 @@ static const knob_desc_t g_builtin[] = {
       "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "dither", "Dither (15-bit)", "Display", "--dither", NULL,
+      "PS1 15-bit colour: quantize the 3D scene to RGB555 with the GPU's 4x4 "
+      "ordered dither matrix on the PSX framebuffer grid (authentic banding + "
+      "crosshatch). Display-only.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      dither_get, dither_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "texture_mapping", "Texture mapping", "Display", "--texture-mapping", NULL,
       "perspective = modern perspective-correct interpolation; affine = the "
@@ -960,6 +978,9 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = (opts->raster_quantize >= 0) ? opts->raster_quantize
                           : (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER ? 1 : 0);
             if (opts->raster_quantize >= 0) k->boot_src = KNOB_SRC_CLI;
+        } else if (!strcmp(k->id, "dither")) {
+            k->stored_num = opts->dither ? 1 : 0;
+            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "texture_mapping")) {
             k->stored_num = (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
             if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;

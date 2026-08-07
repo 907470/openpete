@@ -201,6 +201,14 @@ typedef struct openpete_options {
      * renderer only. */
     int raster_quantize;
 
+    /* PS1 15-bit colour (`--dither 0|1`). 1 = quantise the composed 3D scene
+     * to RGB555 with the GPU's 4x4 ordered dither matrix on the PSX 512x240
+     * framebuffer lattice — the authentic banding+crosshatch pair the native
+     * float pipeline removed. Applied as an engine postfx below any mod chain
+     * (a CRT filter sees the dithered image, as composite video did).
+     * Display-only; native renderer only. Default 0. */
+    int dither;
+
     /* Reference-renderer raster (`--psycross-native-raster 0|1`). 1 renders the
      * PsyCross scene at the console's own 512x240 display grid rather than a
      * square-pixel 4:3 grid derived from the window height, so a screenshot or

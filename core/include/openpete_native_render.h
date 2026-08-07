@@ -128,6 +128,13 @@ void openpete_native_set_raster_quantize(int mult);
 /* Current multiplier as resolved/last set (0 = off). */
 int  openpete_native_get_raster_quantize(void);
 
+/* PS1 15-bit colour (0 = off, 1 = RGB555 truncation + the GPU's 4x4 dither
+ * matrix on the PSX framebuffer lattice), an engine postfx below the mod
+ * chain. Live: the enable is checked per present, no pipeline rebuild.
+ * Display-only: touches only renderer state, never gameplay RAM. */
+void openpete_native_set_dither(int on);
+int  openpete_native_get_dither(void);
+
 /* Texture/colour interpolation mode (0 = perspective-correct, 1 = PSX affine
  * = the original screen-linear texture swim). The mode is a vertex spec
  * constant baked into every scene pipeline, so the setter QUEUES the change

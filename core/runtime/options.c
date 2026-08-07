@@ -407,6 +407,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             512x224 as on a real TV; every N stays aligned with the\n"
         "                             --vertex-precision integer grid). 0 = off. Default: 1 under\n"
         "                             --vertex-precision integer, else off. Display-only.\n"
+        "  --dither N                 1 = PS1 15-bit colour: quantize the 3D scene to RGB555 with the\n"
+        "                             GPU's 4x4 ordered dither matrix on the PSX 512x240 framebuffer\n"
+        "                             grid (the authentic banding + crosshatch the smooth float\n"
+        "                             pipeline removed). 0 = off (default). Display-only.\n"
         "  --psycross-native-raster N 1 = render the PsyCross reference on the console's own 512x240\n"
         "                             display grid (one texel per PSX pixel, authentic aliasing) instead\n"
         "                             of a square-pixel 4:3 grid sized from the window. The window blit\n"
@@ -609,6 +613,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->handoff_argv        = NULL;
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
     opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
+    opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
@@ -788,6 +793,10 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->raster_quantize = (int)mult;
+            i++;
+        } else if (strcmp(a, "--dither") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->dither = (atoi(v) != 0);
             i++;
         } else if (strcmp(a, "--psycross-native-raster") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
