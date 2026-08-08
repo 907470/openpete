@@ -40,6 +40,7 @@ void openpete_mobyrank_ot_begin(unsigned frame);
 void openpete_mobyrank_ot_prim(int code, const uint8_t* payload, unsigned payload_bytes);
 void openpete_mobyrank_ot_end(void);
 
+
 /* Feeder-side pose snapshot: the eligible faces of the most recent canonical
  * extraction (screen XY floats + integer texel UV + material identity). */
 void openpete_mobyrank_snap_begin(unsigned frame);

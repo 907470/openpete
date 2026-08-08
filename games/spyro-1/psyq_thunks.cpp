@@ -619,7 +619,8 @@ void psyq_DrawOTag(CPUState* cpu) {
     g_ot_slot_count = 0;
 
     /* Same-moby painter rank source: record this walk's geometry prims (walk
-     * position = og paint order) for the moby feeder's rank matching. */
+     * position = og paint order) as the FALLBACK rank table — the feeder's
+     * primary source walks the g_WorldOT buckets directly, pose-exact. */
     openpete_mobyrank_ot_begin(openpete_frame);
 
     /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every

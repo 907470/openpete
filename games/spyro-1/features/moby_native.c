@@ -3128,14 +3128,29 @@ static void push_scene_moby(void) {
             }
         }
     }
-    /* Production rank source: consume a freshly-published OT table (matched
-     * against the PREVIOUS pose's snapshot — the pose that table carries),
-     * then snapshot THIS pose's eligible faces for the next table. Ranks
-     * apply to the current pose by (moby,fkey) identity — one tick of rank
-     * latency, og's own display latency. */
+    /* Production rank source: snapshot THIS pose's eligible faces, then
+     * match — the matcher walks the CURRENT tick's OT chain (complete in
+     * the drawing buffer DrawOTag hasn't submitted yet) for pose-exact
+     * ranks, falling back to the last submitted chain (one tick stale)
+     * when the fresh root is unavailable. Ranks apply by (moby,fkey), so
+     * sub-tick re-extracts inherit them for free. */
     if (openpete_mobyrank_on()) {
-        openpete_mobyrank_match();
         openpete_mobyrank_snap_begin(openpete_frame);
+        for (int i = 0; i < s_wtri_n; i++) {
+            if (s_wtri[i].blend != 0 || !s_wtri_moby[i] || s_wtri_ui[i] != 0 ||
+                s_wtri_mangle[i]) continue;
+            uint8_t su[3], sv[3];
+            float sxs[3], sys[3];
+            for (int k = 0; k < 3; k++) {
+                sxs[k] = s_wtri[i].v[k].sx; sys[k] = s_wtri[i].v[k].sy;
+                su[k] = (uint8_t)s_wtri[i].v[k].u; sv[k] = (uint8_t)s_wtri[i].v[k].v;
+            }
+            openpete_mobyrank_snap_face(s_wtri_moby[i], s_wtri_fkey[i], sxs, sys,
+                                        su, sv, s_wtri[i].textured,
+                                        s_wtri[i].clut_x, s_wtri[i].clut_y);
+        }
+        openpete_mobyrank_snap_end();
+        openpete_mobyrank_match();
     }
     uint32_t rord_moby[256]; int rord_n = 0;  /* this walk's ranked-moby ordinals */
     for (int i = 0; i < s_wtri_n; i++) {
@@ -3222,17 +3237,6 @@ static void push_scene_moby(void) {
         } else if (rank_ok && openpete_mobyrank_on()) {
             rank = openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]);
         }
-        if (rank_ok && openpete_mobyrank_on()) {
-            uint8_t su[3], sv[3];
-            float sxs[3], sys[3];
-            for (int k = 0; k < 3; k++) {
-                sxs[k] = s_wtri[i].v[k].sx; sys[k] = s_wtri[i].v[k].sy;
-                su[k] = (uint8_t)s_wtri[i].v[k].u; sv[k] = (uint8_t)s_wtri[i].v[k].v;
-            }
-            openpete_mobyrank_snap_face(s_wtri_moby[i], s_wtri_fkey[i], sxs, sys,
-                                        su, sv, s_wtri[i].textured,
-                                        s_wtri[i].clut_x, s_wtri[i].clut_y);
-        }
         if (rank > 0) {
             int oi;
             for (oi = 0; oi < rord_n; oi++)
@@ -3244,7 +3248,6 @@ static void push_scene_moby(void) {
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
-    if (openpete_mobyrank_on()) openpete_mobyrank_snap_end();
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
 }
 

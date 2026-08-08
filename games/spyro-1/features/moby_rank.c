@@ -9,6 +9,7 @@
  * more tick). */
 
 #include "moby_rank.h"
+#include "openpete_psx.h"   /* openpete_psx_to_host_ptr — fresh-chain walk */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,10 +96,8 @@ void openpete_mobyrank_ot_begin(unsigned frame)
     s_ot_frame = frame;
 }
 
-void openpete_mobyrank_ot_prim(int code, const uint8_t* payload, unsigned payload_bytes)
+static void mr_ot_append(mr_ot_t* W, int code, const uint8_t* payload, unsigned payload_bytes)
 {
-    if (!s_ot_open || !openpete_mobyrank_on()) return;
-    mr_ot_t* W = &s_ot[s_ot_wr];
     if (W->n >= MR_OT_MAX) return;
     int ixy[4] = {0}, iuv[4] = {0}, nv = 0, tex = 0;
     if (!mr_fam(code, ixy, iuv, &nv, &tex)) return;
@@ -129,12 +128,70 @@ void openpete_mobyrank_ot_prim(int code, const uint8_t* payload, unsigned payloa
     W->n = i + 1;
 }
 
+void openpete_mobyrank_ot_prim(int code, const uint8_t* payload, unsigned payload_bytes)
+{
+    if (!s_ot_open || !openpete_mobyrank_on()) return;
+    mr_ot_append(&s_ot[s_ot_wr], code, payload, payload_bytes);
+}
+
 void openpete_mobyrank_ot_end(void)
 {
     if (!s_ot_open) return;
     s_ot_open = 0;
     s_ot_pub = s_ot_wr;
     __atomic_add_fetch(&s_ot_ver, 1u, __ATOMIC_RELEASE);   /* even = published */
+}
+
+/* ---- fresh bucket walk (zero-latency rank source) ------------------------ */
+
+/* The game inserts every prim into the bucket array `*g_WorldOT` during its
+ * render pass; only at DrawOTag time does func_80016784 LINK the buckets
+ * into one chain (patching next pointers, ZEROING the entries) and submit
+ * it. At extraction time the render hooks have all run, so the bucket array
+ * holds the CURRENT pose's complete paint order — walk it directly, in the
+ * linker's own traversal: buckets TOP index down, each sub-chain from its
+ * start node (+4) via next links to its end node (+0). If the linker beat
+ * us here the buckets are zeroed and this yields nothing — the published
+ * DrawOTag chain (which then carries this same pose) is the fallback. */
+#define MR_G_WORLDOT 0x80075820u   /* g_WorldOT: pointer to the bucket array */
+#define MR_OT_BUCKETS 0x800
+
+static int mr_walk_buckets(mr_ot_t* W)
+{
+    const uint32_t* pot = (const uint32_t*)openpete_psx_to_host_ptr(MR_G_WORLDOT);
+    if (!pot) return -1;
+    uint32_t base = *pot;
+    if (!base || (base & 3)) return -1;
+    const uint8_t* bh = (const uint8_t*)openpete_psx_to_host_ptr(base);
+    const uint8_t* bh_end = (const uint8_t*)openpete_psx_to_host_ptr(
+        base + MR_OT_BUCKETS * 8u - 4u);
+    if (!bh || !bh_end) return -1;
+    W->n = 0;
+    int nodes = 0;
+    for (int i = MR_OT_BUCKETS - 1; i >= 0; i--) {
+        uint32_t endn, start;
+        memcpy(&endn,  bh + (size_t)i * 8u,      4);
+        memcpy(&start, bh + (size_t)i * 8u + 4u, 4);
+        if (!endn || !start) continue;
+        uint32_t addr = start;
+        while (addr && nodes++ < 24576) {
+            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(addr);
+            if (!host) return -1;
+            uint32_t tag;
+            memcpy(&tag, host, 4);
+            uint32_t plen = (tag >> 24) & 0xFF;
+            if (plen > 0 && plen <= 16) {
+                int code = host[7];
+                int hi = code & 0xF0;
+                if (hi == 0x20 || hi == 0x30)
+                    mr_ot_append(W, code, host + 4, plen * 4u);
+            }
+            if (addr == endn) break;   /* end node's next is unpatched garbage */
+            addr = (tag & 0x00FFFFFFu) | 0x80000000u;
+        }
+        if (nodes >= 24576) break;
+    }
+    return W->n;
 }
 
 /* ---- feeder pose snapshot ------------------------------------------------ */
@@ -187,10 +244,14 @@ void openpete_mobyrank_snap_end(void) { s_snap_writing = 0; }
 #define MR_MAP_BITS 16
 #define MR_MAP_SIZE (1 << MR_MAP_BITS)
 
-static uint32_t s_map_moby[MR_MAP_SIZE];
-static uint32_t s_map_fkey[MR_MAP_SIZE];
-static int32_t  s_map_rank[MR_MAP_SIZE];
-static int      s_map_n = 0;
+/* Double-buffered: matches build into the INACTIVE set and swap in only on
+ * acceptance — a rejected match (torn read, implausible chain, collapsed
+ * match rate) keeps the previous tick's ranks instead of dropping to zero. */
+static uint32_t s_map_moby[2][MR_MAP_SIZE];
+static uint32_t s_map_fkey[2][MR_MAP_SIZE];
+static int32_t  s_map_rank[2][MR_MAP_SIZE];
+static int      s_map_n[2] = {0, 0};
+static int      s_map_act = 0;
 
 static uint32_t mr_hash(uint32_t moby, uint32_t fkey)
 {
@@ -198,26 +259,32 @@ static uint32_t mr_hash(uint32_t moby, uint32_t fkey)
     return (h >> (32 - MR_MAP_BITS)) & (MR_MAP_SIZE - 1);
 }
 
-static void mr_map_clear(void) { memset(s_map_moby, 0, sizeof s_map_moby); s_map_n = 0; }
-
-static void mr_map_put(uint32_t moby, uint32_t fkey, int rank)
+static void mr_map_clear(int mi)
 {
-    if (s_map_n >= MR_MAP_SIZE - (MR_MAP_SIZE >> 2)) return;   /* keep load <75% */
+    memset(s_map_moby[mi], 0, sizeof s_map_moby[mi]);
+    s_map_n[mi] = 0;
+}
+
+static void mr_map_put(int mi, uint32_t moby, uint32_t fkey, int rank)
+{
+    if (s_map_n[mi] >= MR_MAP_SIZE - (MR_MAP_SIZE >> 2)) return;   /* keep load <75% */
     uint32_t h = mr_hash(moby, fkey);
-    while (s_map_moby[h]) {
-        if (s_map_moby[h] == moby && s_map_fkey[h] == fkey) return;
+    while (s_map_moby[mi][h]) {
+        if (s_map_moby[mi][h] == moby && s_map_fkey[mi][h] == fkey) return;
         h = (h + 1) & (MR_MAP_SIZE - 1);
     }
-    s_map_moby[h] = moby; s_map_fkey[h] = fkey; s_map_rank[h] = rank;
-    s_map_n++;
+    s_map_moby[mi][h] = moby; s_map_fkey[mi][h] = fkey; s_map_rank[mi][h] = rank;
+    s_map_n[mi]++;
 }
 
 int openpete_mobyrank_lookup(uint32_t moby, uint32_t fkey)
 {
-    if (!s_map_n || !moby) return 0;
+    int mi = s_map_act;
+    if (!s_map_n[mi] || !moby) return 0;
     uint32_t h = mr_hash(moby, fkey);
-    while (s_map_moby[h]) {
-        if (s_map_moby[h] == moby && s_map_fkey[h] == fkey) return s_map_rank[h];
+    while (s_map_moby[mi][h]) {
+        if (s_map_moby[mi][h] == moby && s_map_fkey[mi][h] == fkey)
+            return s_map_rank[mi][h];
         h = (h + 1) & (MR_MAP_SIZE - 1);
     }
     return 0;
@@ -248,12 +315,29 @@ static unsigned s_last_stats_frame = 0;
 
 void openpete_mobyrank_match(void)
 {
+    static unsigned s_matched_frame = ~0u;
+    static mr_ot_t  s_fresh;
     if (!openpete_mobyrank_on() || s_snap_n == 0) return;
-    unsigned seq = __atomic_load_n(&s_ot_ver, __ATOMIC_ACQUIRE);
-    if (seq == 0 || seq == s_consumed_seq || (seq & 1) || s_ot_pub < 0) return;
-    const mr_ot_t* T = &s_ot[s_ot_pub];
+    if (s_snap_frame == s_matched_frame) return;   /* this pose already matched */
+
+    /* Prefer the FRESH source — the current pose's bucket array, complete
+     * once the render hooks have run and untouched until the game's own
+     * linker (func_80016784) consumes it: pose-exact ranks, zero latency.
+     * Fall back to the last published DrawOTag chain (one tick stale, og's
+     * display latency) when the buckets are empty or already linked. */
+    const mr_ot_t* T = NULL;
+    unsigned seq = 0;
+    if (mr_walk_buckets(&s_fresh) > 0) {
+        s_fresh.frame = s_snap_frame;
+        T = &s_fresh;
+    }
+    if (!T) {
+        seq = __atomic_load_n(&s_ot_ver, __ATOMIC_ACQUIRE);
+        if (seq == 0 || seq == s_consumed_seq || (seq & 1) || s_ot_pub < 0) return;
+        T = &s_ot[s_ot_pub];
+    }
     int tn = T->n;
-    if (tn <= 0) { s_consumed_seq = seq; return; }
+    if (tn <= 0) { if (seq) s_consumed_seq = seq; return; }
 
     /* 1) global shift estimate (mode of per-face best shifts) over a sample:
      * the og pass bakes a draw-env offset the feeder projection doesn't. */
@@ -281,7 +365,7 @@ void openpete_mobyrank_match(void)
         }
         if (be < 1.0f) { hx[hist_n] = bdx; hy[hist_n] = bdy; hist_n++; }
     }
-    if (hist_n < 8) { s_consumed_seq = seq; return; }   /* nothing recognisable */
+    if (hist_n < 8) { if (seq) s_consumed_seq = seq; return; }   /* nothing recognisable: keep old map */
     /* mode via half-px binning */
     int best_cnt = 0; float gdx = 0, gdy = 0;
     for (int i = 0; i < hist_n; i++) {
@@ -307,7 +391,8 @@ void openpete_mobyrank_match(void)
 
     /* 3) per snapshot face: unique containing prim under (gdx,gdy), UV+clut
      * exact for textured pairs. Ambiguous or absent -> stays rank 0. */
-    mr_map_clear();
+    int mi = s_map_act ^ 1;   /* build into the staging map */
+    mr_map_clear(mi);
     int matched = 0, ambig = 0;
     for (int s = 0; s < s_snap_n; s++) {
         const mr_face_t* f = &s_snap[s];
@@ -383,24 +468,27 @@ void openpete_mobyrank_match(void)
         } else if (loose1 >= 0) {
             if (loose2 < 0 || lerr2 - lerr1 > 0.75f) pick = loose1; else ambig++;
         }
-        if (pick >= 0) { mr_map_put(f->moby, f->fkey, pick + 1); matched++; }
+        if (pick >= 0) { mr_map_put(mi, f->moby, f->fkey, pick + 1); matched++; }
     }
 
-    /* seqlock re-check: a writer overlapped -> the match read torn data.
-     * Drop the map (next extraction retries); the emit falls back to rank 0
-     * for one present, which is exactly the true-depth baseline. */
-    if (__atomic_load_n(&s_ot_ver, __ATOMIC_ACQUIRE) != seq) {
-        mr_map_clear();
-        return;
-    }
-    s_consumed_seq = seq;
+    /* Published-table path only: a DrawOTag writer overlapped -> torn read.
+     * Keep the previous map; the next extraction retries. */
+    if (seq && __atomic_load_n(&s_ot_ver, __ATOMIC_ACQUIRE) != seq) return;
+    /* Acceptance floor: a collapsed match rate means the source was not this
+     * pose (fresh-chain race / mid-load garbage) — keep the previous map,
+     * whose fkey identities still cover most faces one tick later. */
+    if (matched * 4 < s_snap_n && matched < 64) return;
+    s_map_act = mi;
+    s_matched_frame = s_snap_frame;
+    if (seq) s_consumed_seq = seq;
 
     { static int s_dbg = -1;
       if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_DBG"); s_dbg = (e && *e && *e != '0'); }
       if (s_dbg && s_snap_frame != s_last_stats_frame) {
           s_last_stats_frame = s_snap_frame;
-          fprintf(stderr, "[moby-rank] table f=%u prims=%d snap=%d shift=(%.2f,%.2f) "
+          fprintf(stderr, "[moby-rank] %s f=%u prims=%d snap=%d shift=(%.2f,%.2f) "
                           "matched=%d ambig=%d\n",
-                  T->frame, tn, s_snap_n, (double)gdx, (double)gdy, matched, ambig);
+                  seq ? "table" : "FRESH", T->frame, tn, s_snap_n,
+                  (double)gdx, (double)gdy, matched, ambig);
       } }
 }
