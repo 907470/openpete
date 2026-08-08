@@ -2840,14 +2840,33 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
             if (!same) continue;
         }
         const ptri* P = &PT[bp];
-        int changed = 0;
+        /* IDENTITY EVIDENCE: geometric proximity alone can pick a NEIGHBOUR
+         * when the face's own prim is absent that tick (og NCLIP-culled it at
+         * the boundary) — a lone confident-looking match the ambiguity reject
+         * above cannot catch, flat-recolouring the face for one tick. A
+         * textured face carries its identity in its UVs: pair vertices by
+         * position and require per-corner UV agreement (and textured-ness to
+         * match at all). Genuine transients keep their authored UVs, so real
+         * adoptions still pass; a neighbour's UV triple does not. */
+        if ((w->textured != 0) != (P->tex != 0)) continue;
+        int bj[3];
         for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
-            double bd = 1e18; int bj = 0;
+            double bd = 1e18; bj[k] = 0;
             for (int j = 0; j < 3; j++) {
                 double dx = w->v[k].sx - P->x[j], dy = w->v[k].sy - P->y[j];
-                double d = dx * dx + dy * dy; if (d < bd) { bd = d; bj = j; }
+                double d = dx * dx + dy * dy; if (d < bd) { bd = d; bj[k] = j; }
             }
-            uint32_t pc = P->rgb[bj] & 0xFFFFFFu;
+        }
+        if (w->textured) {
+            int uvok = 1;
+            for (int k = 0; k < 3 && uvok; k++)
+                if (abs((int)w->v[k].u - P->u[bj[k]]) > 2 ||
+                    abs((int)w->v[k].v - P->v[bj[k]]) > 2) uvok = 0;
+            if (!uvok) continue;
+        }
+        int changed = 0;
+        for (int k = 0; k < 3; k++) {
+            uint32_t pc = P->rgb[bj[k]] & 0xFFFFFFu;
             if ((w->v[k].rgb & 0xFFFFFFu) != pc) {
                 w->v[k].rgb = (w->v[k].rgb & 0xFF000000u) | pc;   /* keep alpha byte, swap RGB */
                 changed = 1;
