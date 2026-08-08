@@ -25,6 +25,8 @@ void   openpete_fog_set(int on)                { (void)on; }
 void   openpete_no_lod_set(int on)             { (void)on; }
 int    openpete_freecam_active(void)           { return 0; }
 void   openpete_freecam_toggle(void)           { }
+int    openpete_camlock_active(void)           { return 0; }
+void   openpete_camlock_toggle(void)           { }
 int    openpete_get_mute(void)                 { return 0; }
 void   openpete_set_mute(int on)               { (void)on; }
 int    openpete_get_render_fps(void)           { return 60; }

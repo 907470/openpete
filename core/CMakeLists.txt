@@ -56,6 +56,7 @@ add_library(openpete_core STATIC
     runtime/knob_registry.c
     runtime/devui.cpp
 
+    runtime/camlock.c
     runtime/freecam.c
     runtime/feature_registry.c
 

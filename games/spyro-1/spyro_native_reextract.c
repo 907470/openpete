@@ -2,6 +2,7 @@
  * See spyro_native_reextract.h for the contract. */
 
 #include "spyro_native_reextract.h"
+#include "openpete_camlock.h"       /* render camera lock (G) — bracket override */
 #include "openpete_interp.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
@@ -288,6 +289,174 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
         }
     }
     return 0;
+}
+
+/* ---- render camera lock (G) ---------------------------------------------------
+ * Presentation-side camera override (openpete_camlock.h): while engaged, every
+ * present's camera bracket is overwritten with a host-flown pose instead of the
+ * interpolated prev/curr pair. The write happens INSIDE the existing bracket
+ * (saved before, restored after, covered by the W0.3 integrity check), so
+ * gameplay RAM is byte-identical lock-on vs lock-off — cutscenes and flybys
+ * keep simulating underneath while the view holds still. This is what the
+ * gameplay freecam (F) cannot do: its drive runs inside the CameraFollowSpyro
+ * intercept, which cutscene cameras never call, and it freezes UpdateSpyro.
+ *
+ * Matrices are rebuilt with CameraUpdateMatrices' exact construction (camera.c
+ * 0x800338B8): view = X(pitch)·Y(yaw) with roll 0 in Q12, proj = view with the
+ * Y row scaled 320/512 (the framebuffer-vs-display aspect bake — the reason
+ * this matrix is rows-orthogonal but NOT orthonormal). Host lround trig vs the
+ * game's table is at most 1 LSB apart — irrelevant for a debug view. The
+ * initial pose is NUMERICALLY fitted to the live view matrix rather than read
+ * from m_Rotation, because cutscene camera writers may leave the euler fields
+ * stale; until the user actually flies, the latched bytes are held VERBATIM so
+ * engage-without-input is an exact hold of the on-screen view. */
+
+#define CL_ROT_ROLL_OFF  0x4Cu   /* g_Camera.m_Rotation int16 roll  */
+#define CL_ROT_PITCH_OFF 0x4Eu   /*                        pitch */
+#define CL_ROT_YAW_OFF   0x50u   /*                        yaw   */
+
+#ifndef M_PI
+#  define M_PI 3.14159265358979323846
+#endif
+
+static uint8_t s_cl_hold[CAM_BYTES];   /* latched camera bytes (verbatim hold) */
+static int     s_cl_have_hold = 0;
+
+static void cl_trig_q12(double units, int32_t* c, int32_t* s) {
+    double r = units * (2.0 * M_PI / 4096.0);
+    *c = (int32_t)lround(4096.0 * cos(r));
+    *s = (int32_t)lround(4096.0 * sin(r));
+}
+
+/* view[9] Q12 row-major; proj[9] = view with row 1 scaled 320/512 (integer
+ * truncation, exactly the game's C expression). */
+static void cl_build_matrices(double yaw, double pitch, int16_t view[9], int16_t proj[9]) {
+    int32_t cp, sp, cy, sy;
+    cl_trig_q12(pitch, &cp, &sp);
+    cl_trig_q12(yaw,   &cy, &sy);
+    /* X(pitch) rows: (4096,0,0) (0,cp,-sp) (0,sp,cp);
+     * Y(yaw)   rows: (cy,0,sy) (0,4096,0) (-sy,0,cy);  R = X·Y (Q12). */
+    const int32_t X[3][3] = {{4096, 0, 0}, {0, cp, -sp}, {0, sp, cp}};
+    const int32_t Y[3][3] = {{cy, 0, sy}, {0, 4096, 0}, {-sy, 0, cy}};
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+            int64_t acc = 0;
+            for (int k = 0; k < 3; k++) acc += (int64_t)X[r][k] * Y[k][c];
+            view[r * 3 + c] = (int16_t)(acc >> 12);
+        }
+    for (int i = 0; i < 9; i++) proj[i] = view[i];
+    for (int c = 0; c < 3; c++) proj[3 + c] = (int16_t)((view[3 + c] * 320) / 512);
+}
+
+/* Invert cl_build_matrices numerically: grid-fit (yaw, pitch) to a live view
+ * matrix (coarse→fine). Returns the summed squared element error of the best
+ * fit — small (≲ a few hundred, quantisation only) when the live matrix came
+ * from the game's own euler construction; large when it didn't (rolled or
+ * exotically-built cutscene matrix), in which case the fitted pose is only
+ * the nearest roll-free approximation (the verbatim hold covers the static
+ * view either way). */
+static double cl_fit_pose(const int16_t* live, double* out_yaw, double* out_pitch) {
+    double by = 0.0, bp = 0.0, berr = 1e30;
+    for (int pass = 0; pass < 3; pass++) {
+        double ys, ye, ps, pe, step;
+        if (pass == 0) { ys = 0; ye = 4096; ps = -992; pe = 992; step = 32; }
+        else { step = (pass == 1) ? 4 : 1;
+               ys = by - 32; ye = by + 32; ps = bp - 32; pe = bp + 32;
+               if (ps < -992) ps = -992; if (pe > 992) pe = 992; }
+        for (double y = ys; y < ye + 0.5; y += step)
+            for (double p = ps; p < pe + 0.5; p += step) {
+                int16_t v[9], pr[9];
+                cl_build_matrices(y, p, v, pr);
+                double err = 0;
+                for (int i = 0; i < 9; i++) {
+                    double d = (double)v[i] - (double)live[i];
+                    err += d * d;
+                }
+                if (err < berr) { berr = err; by = y; bp = p; }
+            }
+    }
+    *out_yaw = by; *out_pitch = bp;
+    return berr;
+}
+
+/* Replace (or add) the fractional-position table's camera entry so feeders
+ * read the exact locked position instead of the bracket's lerp. */
+static void cl_fpos_override(uint32_t key, double x, double y, double z) {
+    for (int i = 0; i < s_fpos_n; ++i)
+        if (s_fpos[i].key == key) {
+            s_fpos[i].p[0] = x; s_fpos[i].p[1] = y; s_fpos[i].p[2] = z;
+            return;
+        }
+    if (s_fpos_n >= FPOS_MAX) return;
+    s_fpos[s_fpos_n].key = key;
+    s_fpos[s_fpos_n].p[0] = x; s_fpos[s_fpos_n].p[1] = y; s_fpos[s_fpos_n].p[2] = z;
+    s_fpos_n++;
+}
+
+/* Per-present lock application — the camera bytes at `cam` are already
+ * bracketed (saved) by the caller. */
+static void cl_apply(uint8_t* cam) {
+    /* First apply after an engage without a scripted pose: latch. */
+    if (!openpete_camlock_pose_valid()) {
+        const int32_t* pos = (const int32_t*)(cam + CAM_OFF_POS);
+        double yaw, pitch;
+        double err = cl_fit_pose((const int16_t*)(cam + CAM_OFF_VIEW),
+                                 &yaw, &pitch);
+        openpete_camlock_set_pose((double)pos[0], (double)pos[1], (double)pos[2],
+                                  yaw, pitch);
+        memcpy(s_cl_hold, cam, sizeof s_cl_hold);
+        s_cl_have_hold = 1;
+        fprintf(stderr, "[camlock] latched pos=(%d, %d, %d) yaw=%d pitch=%d fit_err=%.0f%s\n",
+                pos[0], pos[1], pos[2], (int)lround(yaw), (int)lround(pitch), err,
+                err > 4096.0 ? " (non-euler camera matrix; fly input will snap to the nearest roll-free view)" : "");
+    }
+
+    /* Fly: advance the pose from the shared freecam axes at wall-time rate. */
+    {
+        static op_time_t s_prev_ns = 0;
+        op_time_t now = op_now();
+        double dt = (s_prev_ns && g_openpete_tick_period_ns > 0)
+                        ? (double)(now - s_prev_ns) / (double)g_openpete_tick_period_ns
+                        : 0.0;
+        s_prev_ns = now;
+        openpete_camlock_integrate(dt);
+    }
+
+    double x, y, z, yaw, pitch;
+    openpete_camlock_get_pose(&x, &y, &z, &yaw, &pitch);
+
+    if (!openpete_camlock_moved() && s_cl_have_hold) {
+        /* Untouched since engage: exact hold of the latched view. */
+        memcpy(cam, s_cl_hold, sizeof s_cl_hold);
+    } else {
+        int32_t* pos = (int32_t*)(cam + CAM_OFF_POS);
+        pos[0] = (int32_t)lround(x);
+        pos[1] = (int32_t)lround(y);
+        pos[2] = (int32_t)lround(z);
+        int32_t yi = (int32_t)lround(yaw), pi = (int32_t)lround(pitch);
+        *(int16_t*)(cam + CL_ROT_ROLL_OFF)  = 0;
+        *(int16_t*)(cam + CL_ROT_PITCH_OFF) = (int16_t)(pi & 0xFFF);
+        *(int16_t*)(cam + CL_ROT_YAW_OFF)   = (int16_t)(yi & 0xFFF);
+        int16_t view[9], proj[9];
+        cl_build_matrices(yaw, pitch, view, proj);
+        memcpy(cam + CAM_OFF_VIEW, view, sizeof view);   /* pads left as bracketed */
+        memcpy(cam + CAM_OFF_PROJ, proj, sizeof proj);
+    }
+
+    cl_fpos_override(G_CAMERA, x, y, z);
+
+    /* Round-trip log (change-gated): paste this line into
+     * OPENPETE_CAMLOCK_POSE to reproduce the view headlessly. */
+    {
+        static int32_t l[5] = {0}; static int have = 0;
+        int32_t c[5] = { (int32_t)lround(x), (int32_t)lround(y), (int32_t)lround(z),
+                         (int32_t)lround(yaw), (int32_t)lround(pitch) };
+        if (!have || memcmp(l, c, sizeof c)) {
+            have = 1; memcpy(l, c, sizeof c);
+            fprintf(stderr, "[camlock] pos=(%d, %d, %d) yaw=%d pitch=%d\n",
+                    c[0], c[1], c[2], c[3], c[4]);
+        }
+    }
 }
 
 /* ---- cutscene path-follower smoothing (title flyby & friends) ----------------
@@ -1705,6 +1874,37 @@ static void spyro_native_reextract(void* cpu_v) {
      * scene wipe can't lose a mid-VBL feed) and committed to the carry set by
      * openpete_native_scene_capture_overlay() in run.c's CANONICAL present block.
      * The reextract only RE-APPLIES it (below), on every present. */
+
+    /* Render camera lock (G): override the bracketed camera for THIS present's
+     * extraction. Runs after every other bracket so nothing re-derives from the
+     * interpolated pair we replace; the shared restore at the end of the present
+     * puts the true bytes back before the sim resumes (bracket-integrity
+     * checked), so the lock is render-only. The occlusion grid is keyed to the
+     * TRUE camera's screen rects, so culling stays suspended while locked. */
+    /* Scripted engage-at-frame (headless A/Bs): latch whatever view is live
+     * at VBL N — engaging at boot would latch a mid-load camera. */
+    {
+        static long s_cl_frame = -2;
+        if (s_cl_frame == -2) {
+            const char* e = getenv("OPENPETE_CAMLOCK_FRAME");
+            s_cl_frame = (e && *e) ? atol(e) : -1;
+        }
+        if (s_cl_frame >= 0 && !openpete_camlock_active() &&
+            openpete_frame >= (unsigned)s_cl_frame) {
+            s_cl_frame = -1;   /* one-shot */
+            openpete_camlock_toggle();
+        }
+    }
+    if (openpete_camlock_active() && cam) {
+        if (!cam_bracketed) {
+            memcpy(cam_saved, cam, CAM_BYTES);
+            cam_bracketed = 1;
+        }
+        cl_apply(cam);
+        memcpy(s_shown_cam, cam, CAM_BYTES);
+        s_shown_cam_ok = 1;
+        openpete_native_occl_suspend(2);
+    }
 
     /* Restore tick-N's transient .s render-pass scratch (cull records, colour,
      * shaded list, Spyro seg + SXY) so the read-only body feeders below find

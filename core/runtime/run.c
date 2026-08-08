@@ -28,6 +28,7 @@
 #include "openpete_native_render.h"
 #include "openpete_menu.h"
 #include "openpete_devui.h"
+#include "openpete_camlock.h"
 #include "openpete_freecam.h"
 #include "feature_registry.h"
 #include "openpete_mods.h"
@@ -1615,6 +1616,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * the [ / ] / L2 / R2 speed steps; the WASD/arrow/Space/Shift + analog
      * stick movement is level-held (latched each iteration while engaged). */
     bool prev_f_key = false;
+    bool prev_g_key = false;
     bool prev_freecam_pad_toggle = false;
     bool prev_t_key = false;
     bool prev_freecam_lb = false, prev_freecam_rb = false;
@@ -1924,7 +1926,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                  * but the latch below is skipped while the menu owns the
                  * keyboard — hold neutral here so a movement key held at
                  * menu-open doesn't keep flying the camera behind the panel. */
-                if (openpete_freecam_active()) {
+                if (openpete_freecam_active() || openpete_camlock_active()) {
                     openpete_freecam_axes ax = {0};
                     openpete_freecam_set_axes(&ax);
                 }
@@ -2279,6 +2281,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_f_key = f_k;
             prev_freecam_pad_toggle = pad_tog;
 
+            /* G: render camera lock (openpete_camlock.h) — holds/flies the
+             * PRESENTED view while the sim (cutscenes included) continues
+             * untouched. Shares the freecam's fly axes and speed step, so the
+             * two are mutually exclusive: engaging one disengages the other. */
+            bool g_k = kbd_pre && kbd_pre[SDL_SCANCODE_G];
+            if (g_k && !prev_g_key) {
+                if (!openpete_camlock_active() && openpete_freecam_active())
+                    openpete_freecam_toggle();
+                openpete_camlock_toggle();
+            }
+            prev_g_key = g_k;
+            if (openpete_freecam_active() && openpete_camlock_active())
+                openpete_camlock_toggle();   /* F engaged while locked: F wins */
+
             /* T: drop Spyro at the camera and hand the camera back to the game.
              * Latched as a one-shot request — the move needs the game fiber, so
              * freecam_native applies it (and disengages) on the next tick; the
@@ -2289,7 +2305,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (t_k && !prev_t_key) openpete_freecam_request_teleport();
             prev_t_key = t_k;
 
-            if (openpete_freecam_active()) {
+            if (openpete_freecam_active() || openpete_camlock_active()) {
                 /* Normalise a signed SDL stick axis to [-1, 1] past a small
                  * deadzone. */
                 #define FC_STICK_DZ  8000.0f

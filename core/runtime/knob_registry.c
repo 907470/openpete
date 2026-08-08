@@ -15,6 +15,7 @@
 #include "openpete.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
+#include "openpete_camlock.h"
 #include "openpete_freecam.h"
 #include "openpete_rewind.h"
 #include "features/no_lod.h"
@@ -317,6 +318,17 @@ static int freecam_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static double camlock_get(const knob_desc_t *k) { (void)k; return openpete_camlock_active() ? 1.0 : 0.0; }
+static int camlock_set(knob_desc_t *k, double v) {
+    (void)k;
+    if ((v != 0.0) != (openpete_camlock_active() != 0)) {
+        if (v != 0.0 && openpete_freecam_active())
+            openpete_freecam_toggle();   /* the two share the fly axes */
+        openpete_camlock_toggle();
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* the table                                                          */
 /* ------------------------------------------------------------------ */
@@ -496,6 +508,13 @@ static const knob_desc_t g_builtin[] = {
       "Intentionally divergent debug tool - the one non-presentation row.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "camlock", "Camera lock (render)", "Gameplay", NULL, "OPENPETE_CAMLOCK",
+      "Lock/fly the presented view while the sim keeps running (G key). "
+      "Render-only: gameplay state is untouched, so cutscenes play on "
+      "underneath - the close-up inspection tool.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      camlock_get, camlock_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* Last row of the section on purpose: the game module contributes one
      * button row per cheat through openpete_knob_add, and those land after
@@ -760,6 +779,11 @@ static const knob_desc_t g_builtin[] = {
         "Scripted continuous yaw sweep (units/tick)."),
     ENVROW_LATCHED("FREECAM_DRIFT", "Debug", "",
         "Scripted per-tick camera drift dx,dy,dz."),
+    ENVROW_LATCHED("CAMLOCK_POSE", "Debug", "",
+        "Engage the render camera lock at x,y,z,yaw,pitch (a camlock: "
+        "log line pastes verbatim)."),
+    ENVROW_LATCHED("CAMLOCK_FRAME", "Debug", "",
+        "Engage the render camera lock (latch the live view) at VBL N."),
     ENVROW_LATCHED("S3_SCALE", "Debug", "1.0",
         "S3 model-units to S1 world-units scale (default 1.0)."),
     ENVROW_LATCHED("S3_ACTOR_TEST", "Debug", "0",
@@ -1042,6 +1066,11 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = 0;
             { const char *e = getenv("OPENPETE_FREECAM");
               if (e && *e && *e != '0') k->boot_src = KNOB_SRC_ENV; }
+        } else if (!strcmp(k->id, "camlock")) {
+            k->stored_num = 0;
+            { const char *e = getenv("OPENPETE_CAMLOCK");
+              const char *p = getenv("OPENPETE_CAMLOCK_POSE");
+              if ((e && *e && *e != '0') || (p && *p)) k->boot_src = KNOB_SRC_ENV; }
         } else if (k->type == KNOB_STRING) {
             /* Path-style rows: CLI field non-NULL beats env beats default. */
             char buf[KNOB_STR_MAX];
