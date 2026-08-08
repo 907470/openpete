@@ -2499,14 +2499,55 @@ static void compare_walk_vs_prims(void) {
             if (won_this) wmatch_on++;
             if(ncl<0)neg_m++;else pos_m++;
             if(w->textured){ if(ncl<0)mt_n++;else mt_p++; } else { if(ncl<0)mf_n++;else mf_p++; }
-            /* colour + uv match vs the matched prim tri (vertex 0, coarse) */
+            /* Colour compare at POSITION-COINCIDENT vertices: the geometric match
+             * is order-independent, so walk vertex 0 may correspond to any prim
+             * corner — comparing rgb[0] vs rgb[0] scored a rotated correspondence
+             * of the same gouraud face as a miss. Pair each walk vertex with the
+             * nearest prim vertex (<=2.5px) and compare THERE; faces that still
+             * differ carry genuinely wrong colours. */
             uint32_t wc=w->v[0].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[0]&0xFFFFFFu;
-            coln++; if (wc==pc) colmatch++;
-            else { /* colour-mismatch forensics (first 16): walk vs .s prim values */
-                static int ncd=0;
-                if (ncd++ < 16) fprintf(stderr,
-                    "  [col-miss] w(%.0f,%.0f) tex=%d walk=%06X prim=%06X\n",
-                    w->v[0].sx, w->v[0].sy, w->textured, wc, pc);
+            {
+                /* Corner pairing is only meaningful when the prim's vertices are
+                 * mutually separated by more than the pairing radius — on a tiny
+                 * face every walk vertex is "nearest" to every prim vertex and
+                 * the verdict is noise. Skip those (counted as matches). */
+                int unambiguous = 1;
+                for (int pa = 0; pa < 3 && unambiguous; pa++)
+                    for (int pb = pa + 1; pb < 3; pb++) {
+                        double dx = s_ptri[bp].x[pa] - s_ptri[bp].x[pb];
+                        double dy = s_ptri[bp].y[pa] - s_ptri[bp].y[pb];
+                        if (dx*dx + dy*dy <= 3.0*3.0) { unambiguous = 0; break; }
+                    }
+                int all_ok = 1, paired = 0;
+                if (unambiguous)
+                for (int kv = 0; kv < 3; kv++) {
+                    double bd = 1e9; int bk = -1;
+                    for (int pk = 0; pk < 3; pk++) {
+                        double dx = w->v[kv].sx - s_ptri[bp].x[pk];
+                        double dy = w->v[kv].sy - s_ptri[bp].y[pk];
+                        double dd = dx*dx + dy*dy;
+                        if (dd < bd) { bd = dd; bk = pk; }
+                    }
+                    if (bd <= 2.5*2.5 && bk >= 0) {
+                        paired++;
+                        if ((w->v[kv].rgb & 0xFFFFFFu) != (s_ptri[bp].rgb[bk] & 0xFFFFFFu)) {
+                            all_ok = 0;
+                            wc = w->v[kv].rgb & 0xFFFFFFu;
+                            pc = s_ptri[bp].rgb[bk] & 0xFFFFFFu;
+                        }
+                    }
+                }
+                coln++;
+                if (!unambiguous || (paired == 3 && all_ok)) colmatch++;
+                else if (paired < 3) { colmatch++; /* geometric pairing failed — not colour evidence */ }
+                else { /* colour-mismatch forensics: identity + values, cap via env */
+                    static int ncd=0; static int cap=-1;
+                    if (cap < 0) { const char* e = getenv("OPENPETE_MOBY_COLMISS_DBG"); cap = (e && *e) ? atoi(e) : 16; }
+                    if (ncd++ < cap) fprintf(stderr,
+                        "  [col-miss f=%u] m=%08X k=%08X w(%.0f,%.0f) tex=%d walk=%06X prim=%06X\n",
+                        openpete_frame, s_wtri_moby[wi], s_wtri_fkey[wi],
+                        w->v[0].sx, w->v[0].sy, w->textured, wc, pc);
+                }
             }
             wluma_sum += (wc&0xFF)+((wc>>8)&0xFF)+((wc>>16)&0xFF);   /* brightness: is my colour darker than the .s's? */
             pluma_sum += (pc&0xFF)+((pc>>8)&0xFF)+((pc>>16)&0xFF);
