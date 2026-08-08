@@ -30,12 +30,17 @@ layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 void main()
 {
     bool ranked = vRank.x > 0.5;
-    if (ranked) {   /* ranked moby face: same-moby painter select
-                     * (rules in psx_scene_key.frag) */
+    if (ranked) {   /* ranked moby face: NEAR-TIE-scoped same-moby painter
+                     * select (rules in psx_scene_key.frag) */
         vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
         float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
         float iord  = floor(e.b * 255.0 + 0.5);
-        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) discard;
+        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) {
+            float ownerVz = e.a * 32640.0;
+            float ownVz = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
+                                       : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            if (abs(ownerVz - ownVz) < 384.0) discard;
+        }
     }
     /* Terrain KEY-RESOLVE: same contest as psx_scene_key.frag so
      * HD-replaced terrain keeps og's per-pixel face select. Ranked faces

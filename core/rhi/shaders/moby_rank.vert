@@ -25,6 +25,7 @@ layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout
 layout(location = 0) flat out vec2 vRank;
 layout(location = 1) out vec2 vUV;    /* u/w */
 layout(location = 2) out float vQ;    /* 1/w */
+layout(location = 3) out float vVz;   /* TRUE view-Z (owner-depth encode) */
 
 /* PSX-affine UV — must track the SCENE stages' selection (see
  * terrain_key.vert: a mismatched lookup stamps rank where the face's own
@@ -39,4 +40,5 @@ void main()
     vRank = inRank;
     vUV = inUV / wq;
     vQ = 1.0 / wq;
+    vVz = max(inW, 1.0);
 }

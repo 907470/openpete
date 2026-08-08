@@ -19,6 +19,7 @@ layout(push_constant) uniform PsxMaterial {
 layout(location = 0) flat in vec2 vRank;  /* x = rank (>=1), y = ordinal */
 layout(location = 1) in vec2 vUV;   /* u/w — see moby_rank.vert */
 layout(location = 2) in float vQ;   /* 1/w */
+layout(location = 3) in float vVz;  /* TRUE view-Z (owner-depth encode) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -46,5 +47,5 @@ void main()
     float r = clamp(vRank.x, 0.0, 65534.0);
     float o = clamp(vRank.y, 0.0, 255.0);
     outColor = vec4(mod(r, 256.0) / 255.0, floor(r / 256.0) / 255.0,
-                    o / 255.0, 1.0);
+                    o / 255.0, clamp(vVz / 32640.0, 0.0, 1.0));
 }

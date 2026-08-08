@@ -3124,7 +3124,10 @@ static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
             float sz = T->v[k].z;
             tv = sz < 1.0f ? OPENPETE_DEPTH_VIEWZ_SCALE * sz / (1.0f - sz) : 0.0f;
         }
-        o->x = cx; o->y = cy; o->z = 0.0f; o->w = tex ? tv : 0.0f;
+        /* w carries TRUE view-Z for every vertex: the cutout stage's UV
+         * perspective (textured) AND the owner-depth the frag encodes into
+         * the rank image alpha (the select's near-tie margin). */
+        o->x = cx; o->y = cy; o->z = 0.0f; o->w = tv;
         o->u = tex ? T->v[k].u : 0.0f;
         o->v = tex ? T->v[k].v : 0.0f;
         o->rgba = 0xFF000000u;

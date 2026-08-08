@@ -75,11 +75,22 @@ uint sample_word(int u, int v)
 void main()
 {
     bool ranked = vRank.x > 0.5;
-    if (ranked) {   /* ranked moby face: same-moby painter select */
+    if (ranked) {   /* ranked moby face: same-moby painter select.
+                     * NEAR-TIE SCOPED: og's whole-face verdict overrides
+                     * per-pixel depth only where the two same-moby surfaces
+                     * are within interpenetration range of each other — the
+                     * contour-flicker/decal class. Cleanly separated faces
+                     * keep true depth: og's deliberate relayering of those,
+                     * authored for 320x240, reads as an artifact upscaled. */
         vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
         float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
         float iord  = floor(e.b * 255.0 + 0.5);
-        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) discard;
+        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) {
+            float ownerVz = e.a * 32640.0;
+            float ownVz = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
+                                       : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            if (abs(ownerVz - ownVz) < 384.0) discard;
+        }
     }
     /* A RANKED face skips the positive-koff painter contest: rank IS og's
      * exact same-moby painter, while the key image holds same-moby per-face
