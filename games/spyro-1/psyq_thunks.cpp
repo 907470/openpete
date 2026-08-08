@@ -93,6 +93,7 @@ extern "C" {
  * notes/plans/openpete-music-wav-override.md. */
 #include "music_override.h"
 #include "features/render_paths.h"  /* --render-paths OT-walk filter */
+#include "features/moby_rank.h"     /* same-moby painter rank source (OT-walk ingest) */
 
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
@@ -617,6 +618,10 @@ void psyq_DrawOTag(CPUState* cpu) {
     g_ot_scratch_used = 0;
     g_ot_slot_count = 0;
 
+    /* Same-moby painter rank source: record this walk's geometry prims (walk
+     * position = og paint order) for the moby feeder's rank matching. */
+    openpete_mobyrank_ot_begin(openpete_frame);
+
     /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every
      * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
      * /tmp/ot-dump.txt). One row per slot, with frame as the leading column. */
@@ -904,6 +909,10 @@ void psyq_DrawOTag(CPUState* cpu) {
                 openpete_primitives_drawn++;
                 s_hist[(code_byte & 0xF0u) >> 4u]++;
                 s_total_slots++;
+                { uint8_t hi = code_byte & 0xF0u;
+                  if (hi == 0x20u || hi == 0x30u)
+                      openpete_mobyrank_ot_prim(code_byte, host + 4,
+                                                (unsigned)payload_bytes); }
             } else {
                 s_anchor_slots++;
             }
@@ -931,6 +940,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         addr = next | 0x80000000u;
     }
     if (dump) std::fflush(dump);
+    openpete_mobyrank_ot_end();
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
      * frame's render pass and consumed by the walk above. The "canon drawn" mask

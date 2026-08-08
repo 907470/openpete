@@ -3289,6 +3289,14 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
            ? pack_moby_rank_batch(scene, scene_n, full_extent, rbuf,
                                   &r_untex, rspans, &r_nspans)
            : 0;
+    { static int s_rd = -1;
+      if (s_rd < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_DBG"); s_rd = (e && *e && *e != '0'); }
+      if (s_rd && rr > 0) {
+        extern unsigned openpete_frame;
+        fprintf(stderr, "[rankpass f=%u] rr=%d untex=%d nspans=%d cutout=%d\n",
+                openpete_frame, rr/3, r_untex/3, r_nspans,
+                s_nr.moby_rank_cutout_pipe != NULL);
+      } }
     s_tk_last.scene = scene; s_tk_last.scene_n = scene_n;
     s_tk_last.full_extent = full_extent ? 1 : 0;
     s_tk_last.m = m; s_tk_last.buf = kbuf;

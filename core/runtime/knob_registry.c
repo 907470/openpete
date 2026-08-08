@@ -588,6 +588,9 @@ static const knob_desc_t g_builtin[] = {
         "Moby occlusion culling on/off (default 1; re-resolved per VBL)."),
     ENVROW_LATCHED("MOBY_OCCL_SLACK", "Debug", "1500",
         "Occlusion-grid depth slack before a rect counts hidden (default 1500)."),
+    ENVROW_LATCHED("MOBY_RANK", "Debug", "1",
+        "Same-moby painter select: og OT-chain paint ranks override per-pixel "
+        "depth between one moby's own faces (default 1; 0 = true depth only)."),
     ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
     ENVROW_LATCHED("SHADOW_BAND", "Debug", "256",

@@ -33,6 +33,7 @@
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
+#include "moby_rank.h"              /* same-moby painter rank source (OT-chain read) */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "spyro_interp_regions.h"   /* spyro_interp_moby_key — HUD-pool slot-stable identity */
 #include "render_paths.h"  /* --render-paths isolation */
@@ -3076,10 +3077,11 @@ static void push_scene_moby(void) {
               float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
               float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
               if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
-              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d",
+              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d rk=%d",
                       openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
                       w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend,
-                      s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i]);
+                      s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i],
+                      openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]));
               for (int k = 0; k < 3; k++)
                   fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
                           w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
@@ -3100,6 +3102,7 @@ static void push_scene_moby(void) {
      * mechanism end-to-end with zero runtime rank-source machinery.
      * Display-only; absent env = zero cost, zero behaviour change. */
     static int s_rankf = -1;
+    static uint32_t s_rank_moby[8192];   /* 0 = any moby (clone-safe files list the ptr) */
     static uint32_t s_rank_key[8192];
     static int      s_rank_val[8192];
     static int      s_rank_n = 0;
@@ -3109,8 +3112,14 @@ static void push_scene_moby(void) {
         if (e && *e) {
             FILE* fp = fopen(e, "r");
             if (fp) {
-                unsigned k; int r;
-                while (s_rank_n < 8192 && fscanf(fp, "%x %d", &k, &r) == 2) {
+                char line[128];
+                while (s_rank_n < 8192 && fgets(line, sizeof line, fp)) {
+                    unsigned mb, k; int r;
+                    if (sscanf(line, "%x %x %d", &mb, &k, &r) == 3) {
+                        s_rank_moby[s_rank_n] = mb;
+                    } else if (sscanf(line, "%x %d", &k, &r) == 2) {
+                        s_rank_moby[s_rank_n] = 0;
+                    } else continue;
                     s_rank_key[s_rank_n] = k; s_rank_val[s_rank_n] = r; s_rank_n++;
                 }
                 fclose(fp);
@@ -3119,7 +3128,16 @@ static void push_scene_moby(void) {
             }
         }
     }
-    uint32_t rord_moby[64]; int rord_n = 0;   /* this walk's ranked-moby ordinals */
+    /* Production rank source: consume a freshly-published OT table (matched
+     * against the PREVIOUS pose's snapshot — the pose that table carries),
+     * then snapshot THIS pose's eligible faces for the next table. Ranks
+     * apply to the current pose by (moby,fkey) identity — one tick of rank
+     * latency, og's own display latency. */
+    if (openpete_mobyrank_on()) {
+        openpete_mobyrank_match();
+        openpete_mobyrank_snap_begin(openpete_frame);
+    }
+    uint32_t rord_moby[256]; int rord_n = 0;  /* this walk's ranked-moby ordinals */
     for (int i = 0; i < s_wtri_n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
@@ -3186,21 +3204,47 @@ static void push_scene_moby(void) {
               default: break;
               }
           } }
-        if (s_rankf == 1 && t.blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0) {
+        /* Rank eligibility: regular/front-pass opaque moby faces with a true
+         * screen footprint. Mangled faces (near fixup / coordinate
+         * saturation) are excluded like they are from koff — their raster is
+         * not the true projection, so a rank stamped across one would
+         * discard content far outside the real silhouette. */
+        int rank_ok = t.blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 &&
+                      !s_wtri_mangle[i];
+        int rank = 0;
+        if (rank_ok && s_rankf == 1) {          /* forensics file OVERRIDES */
             for (int ri = 0; ri < s_rank_n; ri++) {
                 if (s_rank_key[ri] != s_wtri_fkey[i]) continue;
-                int oi;
-                for (oi = 0; oi < rord_n; oi++)
-                    if (rord_moby[oi] == s_wtri_moby[i]) break;
-                if (oi == rord_n && rord_n < 64) rord_moby[rord_n++] = s_wtri_moby[i];
-                if (oi < 64) { t.rank = (float)s_rank_val[ri]; t.mordinal = oi + 1; }
+                if (s_rank_moby[ri] && s_rank_moby[ri] != s_wtri_moby[i]) continue;
+                rank = s_rank_val[ri];
                 break;
             }
+        } else if (rank_ok && openpete_mobyrank_on()) {
+            rank = openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]);
+        }
+        if (rank_ok && openpete_mobyrank_on()) {
+            uint8_t su[3], sv[3];
+            float sxs[3], sys[3];
+            for (int k = 0; k < 3; k++) {
+                sxs[k] = s_wtri[i].v[k].sx; sys[k] = s_wtri[i].v[k].sy;
+                su[k] = (uint8_t)s_wtri[i].v[k].u; sv[k] = (uint8_t)s_wtri[i].v[k].v;
+            }
+            openpete_mobyrank_snap_face(s_wtri_moby[i], s_wtri_fkey[i], sxs, sys,
+                                        su, sv, s_wtri[i].textured,
+                                        s_wtri[i].clut_x, s_wtri[i].clut_y);
+        }
+        if (rank > 0) {
+            int oi;
+            for (oi = 0; oi < rord_n; oi++)
+                if (rord_moby[oi] == s_wtri_moby[i]) break;
+            if (oi == rord_n && rord_n < 256) rord_moby[rord_n++] = s_wtri_moby[i];
+            if (oi < 255) { t.rank = (float)rank; t.mordinal = oi + 1; }
         }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
+    if (openpete_mobyrank_on()) openpete_mobyrank_snap_end();
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
 }
 

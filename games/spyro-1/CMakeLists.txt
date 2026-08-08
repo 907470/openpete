@@ -210,6 +210,7 @@ add_executable(openpete-spyro1
     features/native_gte.c
     features/cyclorama_native.c
     features/moby_native.c
+    features/moby_rank.c
     features/spyro_native.c
     features/s3_actor_native.c
     features/mod_moby_ops.c

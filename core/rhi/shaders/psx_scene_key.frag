@@ -74,13 +74,20 @@ uint sample_word(int u, int v)
 
 void main()
 {
-    if (vRank.x > 0.5) {   /* ranked moby face: same-moby painter select */
+    bool ranked = vRank.x > 0.5;
+    if (ranked) {   /* ranked moby face: same-moby painter select */
         vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
         float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
         float iord  = floor(e.b * 255.0 + 0.5);
         if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) discard;
     }
-    if (abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters */
+    /* A RANKED face skips the positive-koff painter contest: rank IS og's
+     * exact same-moby painter, while the key image holds same-moby per-face
+     * keys with no ordinal — large same-moby faces (jaw vs chin) sit beyond
+     * the 64-world margin, so the contest would kill the rank winner while
+     * the select kills everything under it (a hole to the clear). The face
+     * still STAMPS its key, so keyed terrain keeps yielding to it. */
+    if (!ranked && abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters */
         /* Two images. Set 2 = og KEYS: every keyed face (terrain, sky
          * fans, moby faces) as its ABSOLUTE og key laid FLAT — og's
          * per-pixel OT occupancy, the painter select. Set 3 = PROP TRUE
