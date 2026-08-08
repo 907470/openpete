@@ -22,7 +22,11 @@ int openpete_mobyrank_on(void) {
     static int s_on = -1;
     if (s_on < 0) {
         const char* e = getenv("OPENPETE_MOBY_RANK");
-        s_on = (e && *e) ? (*e != '0') : 1;
+        /* Default OFF: og's whole-face relayering was authored for 320x240;
+         * upscaled, the near-tie relayered edges read as worse artifacts than
+         * the same-moby interpenetration they replace. Opt-in until the
+         * select is scoped by authored class rather than a depth margin. */
+        s_on = (e && *e) ? (*e != '0') : 0;
     }
     return s_on;
 }
