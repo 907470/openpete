@@ -529,6 +529,8 @@ static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dit
  * setter queues it and texmap_apply_pending() re-bakes all pipelines at the
  * next present boundary (rhi_rebuild_pipelines under a device idle). */
 static int s_texmap_affine  = 0;
+static int s_notex          = 0;   /* untextured lighting view (spec-const 2) */
+static int s_notex_pending  = 0;
 static int s_texmap_pending = 0;
 
 /* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
@@ -1378,6 +1380,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_set_affine_uv(s_texmap_affine);
     if (s_texmap_affine)
         OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
+
+    /* OPENPETE_NOTEX: untextured lighting view (fragment spec-constant 2) —
+     * textured scene fragments output the raw gouraud vertex colour. Debug
+     * view; live changes queue via openpete_native_set_notex. */
+    {
+        const char* e = getenv("OPENPETE_NOTEX");
+        s_notex = s_notex_pending = (e && *e && *e != '0');
+        rhi_set_notex(s_notex);
+        if (s_notex)
+            OPL_INFO_F("native", "%s", "notex: untextured lighting view ON");
+    }
 
     /* A/B compare mode shows the PsyCross reference in a second panel and delays
      * the native scene by one frame to align with that lagged reference. vk and
@@ -4834,11 +4847,17 @@ static void scene_probes(scene_tri_t* sc, int n)
             const float z = b0*T->v[0].z + b1*T->v[1].z + b2*T->v[2].z;
             const int c = T->category;
             fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] #%d cat=%d(%s) grp=%d tex=%d "
-                            "blend=%d z=%.6f (verts %.6f/%.6f/%.6f)\n",
+                            "blend=%d z=%.6f (verts %.6f/%.6f/%.6f) "
+                            "rgb=%06X/%06X/%06X xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)\n",
                     s_scene_frame, (double)spx, (double)spy, ti, c,
                     (c >= 0 && c < 14) ? CATN[c] : "?", T->group, T->textured,
                     T->blend, (double)z,
-                    (double)T->v[0].z, (double)T->v[1].z, (double)T->v[2].z);
+                    (double)T->v[0].z, (double)T->v[1].z, (double)T->v[2].z,
+                    T->v[0].rgba & 0xFFFFFFu, T->v[1].rgba & 0xFFFFFFu,
+                    T->v[2].rgba & 0xFFFFFFu,
+                    (double)T->v[0].sx, (double)T->v[0].sy,
+                    (double)T->v[1].sx, (double)T->v[1].sy,
+                    (double)T->v[2].sx, (double)T->v[2].sy);
             hits++;
             if (z < best) { best = z; bestc = c; }
         }
@@ -6193,6 +6212,24 @@ static void texmap_apply_pending(void) {
         OPL_ERROR_F("native", "texture-mapping: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
 }
 
+/* Untextured lighting view — same queued-rebuild shape as texture-mapping. */
+void openpete_native_set_notex(int on) {
+    s_notex_pending = on ? 1 : 0;
+}
+
+int openpete_native_get_notex(void) { return s_notex; }
+
+static void notex_apply_pending(void) {
+    if (s_notex_pending == s_notex || !s_nr.dev) return;
+    rhi_set_notex(s_notex_pending);
+    int fails = rhi_rebuild_pipelines(s_nr.dev);
+    s_notex = s_notex_pending;
+    OPL_INFO_F("native", "notex -> %s (pipelines re-baked)",
+               s_notex ? "untextured lighting view" : "textured");
+    if (fails)
+        OPL_ERROR_F("native", "notex: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+}
+
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
  * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
  * triangle list each frame; draw_fps_overlay draws it on the live present, or
@@ -7497,6 +7534,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     /* Queued --texture-mapping change: re-bake the pipelines OUTSIDE the
      * frame, before any command buffer records against them. No-op normally. */
     texmap_apply_pending();
+    notex_apply_pending();
 
     /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
      * + sub-tick intermediates), so it reflects the true on-screen present rate. */

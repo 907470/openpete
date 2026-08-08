@@ -2810,7 +2810,7 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
         int wcxg = (int)((wcx + ADG_OFF) / ADG_CELL); if (wcxg < 0) wcxg = 0; else if (wcxg >= ADG_W) wcxg = ADG_W - 1;
         int wcyg = (int)((wcy + ADG_OFF) / ADG_CELL); if (wcyg < 0) wcyg = 0; else if (wcyg >= ADG_H) wcyg = ADG_H - 1;
-        double best = 1e36; int bp = -1;
+        double best = 1e36, best2 = 1e36; int bp = -1, bp2 = -1;
         for (int gy = wcyg - 1; gy <= wcyg + 1; gy++) {
             if (gy < 0 || gy >= ADG_H) continue;
             for (int gx = wcxg - 1; gx <= wcxg + 1; gx++) {
@@ -2818,11 +2818,27 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
                 for (int pi = cell_head[gy * ADG_W + gx]; pi >= 0; pi = cell_next[pi]) {
                     if (fabs(s_pcx[pi] - wcx) > 32.0 || fabs(s_pcy[pi] - wcy) > 32.0) continue;   /* centroid prune */
                     double c = tri_match_cost_sq(w, &PT[pi]);
-                    if (c < best) { best = c; bp = pi; }
+                    if (c < best) { best2 = best; bp2 = bp; best = c; bp = pi; }
+                    else if (c < best2) { best2 = c; bp2 = pi; }
                 }
             }
         }
         if (bp < 0 || best > tol_sq) continue;   /* no confident match -> keep native colour */
+        /* AMBIGUITY REJECT: stacked fan slivers and a folded quad's two halves
+         * put a SECOND prim inside the adoption tolerance with different
+         * colours; sub-pixel drift then flips which one is "best" per tick and
+         * the face adopts its neighbour's (or the fold's dark back-half's)
+         * colours for that tick — a whole-poly colour strobe at tick rate.
+         * When a colour-disagreeing runner-up is also within tolerance the
+         * pairing is not evidence: keep the native colour (correct for every
+         * non-transient face; genuine transients are lone large faces). */
+        if (bp2 >= 0 && best2 <= tol_sq) {
+            const ptri *A = &PT[bp], *B = &PT[bp2];
+            int same = 1;
+            for (int k = 0; k < 3 && same; k++)
+                if ((A->rgb[k] & 0xFFFFFFu) != (B->rgb[k] & 0xFFFFFFu)) same = 0;
+            if (!same) continue;
+        }
         const ptri* P = &PT[bp];
         int changed = 0;
         for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
