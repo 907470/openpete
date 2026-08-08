@@ -15,6 +15,14 @@
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* moby og-key image */
+/* Moby og-RANK image (RGBA8): r+g*256 = the winning face's OT walk rank at
+ * this pixel (max rank wins the raster), b = that face's present-local moby
+ * ordinal. Same-moby painter select: og paints a moby's faces in walk order,
+ * so a fragment loses its pixel iff a LATER-ranked face of the SAME moby
+ * covers it — regardless of true depth. Cross-moby stays true per-pixel z
+ * (the ordinal gate). Stored depth is TRUE view-Z either way — the rank
+ * decides WHICH same-moby face exists at a pixel, never what depth it has. */
+layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
 
 layout(push_constant) uniform PsxMaterial {
     int tpage_x, tpage_y;
@@ -26,6 +34,7 @@ layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColor;
 layout(location = 2) in float vQ;
 layout(location = 3) flat in float vKoff;
+layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal */
 
 layout(location = 0) out vec4 outColor;
 
@@ -65,6 +74,12 @@ uint sample_word(int u, int v)
 
 void main()
 {
+    if (vRank.x > 0.5) {   /* ranked moby face: same-moby painter select */
+        vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
+        float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
+        float iord  = floor(e.b * 255.0 + 0.5);
+        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) discard;
+    }
     if (abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters */
         /* Two images. Set 2 = og KEYS: every keyed face (terrain, sky
          * fans, moby faces) as its ABSOLUTE og key laid FLAT — og's

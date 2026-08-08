@@ -245,6 +245,11 @@ typedef struct {
                                  * image — split from the terrain keys so the
                                  * near-band embed rule applies to moby keys
                                  * only). Implies uses_vram3.                  */
+    bool           uses_vram5;  /* fifth sampler at set 4 (the moby og-RANK
+                                 * image: per-pixel winning paint rank +
+                                 * present-local moby ordinal, RGBA8 — the
+                                 * same-moby painter select). Implies
+                                 * uses_vram4.                                 */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex — pair with the

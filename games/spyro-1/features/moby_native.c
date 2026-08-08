@@ -3076,12 +3076,13 @@ static void push_scene_moby(void) {
               float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
               float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
               if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
-              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d",
+              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d",
                       openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
-                      w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend);
+                      w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend,
+                      s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i]);
               for (int k = 0; k < 3; k++)
-                  fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%d,%d,%06X", k,
-                          w->v[k].sx, w->v[k].sy, w->v[k].vz,
+                  fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
+                          w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
                           w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
               fputc('\n', stderr);
           }
@@ -3091,6 +3092,34 @@ static void push_scene_moby(void) {
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
+    /* DEV rank override (mechanism spike): OPENPETE_MOBY_RANK_FILE names a
+     * table of "fkey rank" pairs (hex fkey, decimal rank >= 1) derived
+     * offline from an OT dump for ONE pose. A matching face feeds
+     * (rank, present-local moby ordinal) into the scene tri, which routes
+     * it through the rank image + same-moby painter select — the select
+     * mechanism end-to-end with zero runtime rank-source machinery.
+     * Display-only; absent env = zero cost, zero behaviour change. */
+    static int s_rankf = -1;
+    static uint32_t s_rank_key[8192];
+    static int      s_rank_val[8192];
+    static int      s_rank_n = 0;
+    if (s_rankf < 0) {
+        s_rankf = 0;
+        const char* e = getenv("OPENPETE_MOBY_RANK_FILE");
+        if (e && *e) {
+            FILE* fp = fopen(e, "r");
+            if (fp) {
+                unsigned k; int r;
+                while (s_rank_n < 8192 && fscanf(fp, "%x %d", &k, &r) == 2) {
+                    s_rank_key[s_rank_n] = k; s_rank_val[s_rank_n] = r; s_rank_n++;
+                }
+                fclose(fp);
+                s_rankf = s_rank_n > 0;
+                fprintf(stderr, "[moby-rank] loaded %d fkey ranks from %s\n", s_rank_n, e);
+            }
+        }
+    }
+    uint32_t rord_moby[64]; int rord_n = 0;   /* this walk's ranked-moby ordinals */
     for (int i = 0; i < s_wtri_n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
@@ -3157,6 +3186,17 @@ static void push_scene_moby(void) {
               default: break;
               }
           } }
+        if (s_rankf == 1 && t.blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0) {
+            for (int ri = 0; ri < s_rank_n; ri++) {
+                if (s_rank_key[ri] != s_wtri_fkey[i]) continue;
+                int oi;
+                for (oi = 0; oi < rord_n; oi++)
+                    if (rord_moby[oi] == s_wtri_moby[i]) break;
+                if (oi == rord_n && rord_n < 64) rord_moby[rord_n++] = s_wtri_moby[i];
+                if (oi < 64) { t.rank = (float)s_rank_val[ri]; t.mordinal = oi + 1; }
+                break;
+            }
+        }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));
         openpete_native_scene_add_tri(&t, cat, 0);

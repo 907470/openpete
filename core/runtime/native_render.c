@@ -206,6 +206,8 @@ typedef struct {
     int blend;
     float koff;     /* og OT key — see openpete_scene_tri */
     int prop;       /* authored embedded prop — see openpete_scene_tri */
+    float rank;     /* og OT paint rank — see openpete_scene_tri */
+    int mordinal;   /* present-local moby ordinal — see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) — add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -1207,6 +1209,13 @@ static struct {
     rhi_texture  *terrain_key_depth;  /* terrain og-key image (set 2) */
     rhi_texture  *moby_key_depth;     /* moby og-key image (set 3) — split so the
                                        * near-band embed rule sees moby keys only */
+    rhi_texture  *moby_rank_rt;       /* moby og-RANK image (set 4): RGBA8
+                                       * (rank lo, rank hi, moby ordinal) of the
+                                       * LAST-painted ranked face per pixel —
+                                       * the same-moby painter select input */
+    rhi_pipeline *moby_rank_pipe;     /* untextured ranked faces (moby_rank.vert/.frag) */
+    rhi_pipeline *moby_rank_cutout_pipe; /* textured: alpha-aware cutout — rank
+                                          * exists only on opaque texels */
     int           tk_w, tk_h;         /* current key-image allocations (shared dims) */
     rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth → grid (may be NULL) */
     rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL → no culling) */
@@ -1526,7 +1535,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
     /* WORLD-group variants that also stencil-MARK their coverage (W2.6-c): the
      * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
@@ -1540,7 +1549,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
     /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
      * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
@@ -1563,7 +1572,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
     /* Subtractive UNTEXTURED gouraud pipeline (3b.2, the Spyro silhouette
      * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
@@ -1641,7 +1650,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = 0,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
     /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
      * previews (portal_native.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
@@ -1685,7 +1694,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
     /* Textured WORLD-group stencil-MARK variant (W2.6-c) — most terrain is
      * textured, so the coverage mark must come from this pipe too. */
@@ -1693,7 +1702,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
      * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
@@ -1704,7 +1713,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
     /* Additive (ABR mode 1, dst = B + F) textured pipeline (3b.1): the first
      * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
@@ -1717,7 +1726,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
     /* Subtractive (ABR mode 2, dst = B - F) textured pipeline (3b.2): moby
      * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
@@ -1805,14 +1814,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
     };
     rhi_pipeline_desc hd_cutout_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "hd_tex_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .push_const_size = sizeof(hd_pc),
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
     };
     /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
@@ -1969,6 +1978,29 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (terrain_key_pipe && !terrain_key_tex_pipe)
         OPL_ERROR_F("native", "textured key cutout pipe unavailable; "
                               "textured faces key full-footprint");
+    /* Moby RANK pass (same-moby painter select): rasterise ranked moby faces
+     * with depth = their og OT walk rank into an RGBA8 (rank, ordinal) image;
+     * ranked scene fragments discard where a LATER-ranked face of the SAME
+     * moby covers the pixel. Optional (NULL → rank image stays cleared, every
+     * ranked face decodes "no cover" and resolves at true depth). */
+    rhi_pipeline_desc moby_rank_desc = {
+        .vert_spv = "moby_rank.vert.spv",
+        .frag_spv = "moby_rank.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    rhi_pipeline_desc moby_rank_cutout_desc = {
+        .vert_spv = "moby_rank.vert.spv",
+        .frag_spv = "moby_rank_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    rhi_pipeline *moby_rank_pipe = terrain_key_pipe
+        ? rhi_create_pipeline(dev, &moby_rank_desc) : NULL;
+    rhi_pipeline *moby_rank_cutout_pipe = moby_rank_pipe
+        ? rhi_create_pipeline(dev, &moby_rank_cutout_desc) : NULL;
+    if (terrain_key_pipe && !moby_rank_pipe)
+        OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     /* W2.4: the CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) — written by the native ops at op time and shadow-synced
@@ -2040,6 +2072,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.terrain_key_pipe = terrain_key_pipe;
     s_nr.terrain_key_tex_pipe = terrain_key_tex_pipe;
     s_nr.terrain_key_vb   = terrain_key_vb;
+    s_nr.moby_rank_pipe = moby_rank_pipe;
+    s_nr.moby_rank_cutout_pipe = moby_rank_cutout_pipe;
     s_nr.gouraud_add_pipe = gouraud_add_pipe;
     s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
     s_nr.portal_mask_pipe = portal_mask_pipe;
@@ -2784,6 +2818,7 @@ static void native_depth_prepass(void)
             /* Vertex colour retained for vertex-struct completeness; the shadow
              * and occlusion consumers sample the pre-pass depth only. */
             o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         m += 3;
     }
@@ -2928,20 +2963,26 @@ int openpete_native_key_resolve_on(void)
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth &&
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.moby_rank_rt &&
         s_nr.tk_w >= w && s_nr.tk_h >= h) return;
     if (w < s_nr.tk_w) w = s_nr.tk_w;
     if (h < s_nr.tk_h) h = s_nr.tk_h;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
     if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
+    if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
     s_nr.terrain_key_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth)
+    s_nr.moby_rank_rt      = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.moby_rank_rt)
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
     else {
+        /* All-or-nothing: the scene pipes' layouts sample sets 2/3/4 as one
+         * contract — a partial allocation must read as "contest off", never
+         * a half-bound draw. */
         if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
         if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
+        if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
         s_nr.tk_w = s_nr.tk_h = 0;
     }
 }
@@ -3066,6 +3107,82 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     return m;
 }
 
+/* Moby RANK batch: ranked opaque moby faces rasterised with depth = their og
+ * OT walk rank (moby_rank.vert encodes 1-(rank+1)/65536, so the LESS test
+ * keeps og's LAST-painted face per pixel) into the RGBA8 (rank, ordinal)
+ * image. Same untextured-prefix + textured-material-run layout as the key
+ * batches; textured faces cut transparent texels out of the raster (rank
+ * exists only on opaque texels — the alpha-aware key rule). */
+static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
+{
+    for (int k = 0; k < 3; k++) {
+        float cx, cy;
+        scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
+        rhi_vertex* o = &out[k];
+        float tv = T->v[k].pvz;
+        if (tv <= 0.0f) {
+            float sz = T->v[k].z;
+            tv = sz < 1.0f ? OPENPETE_DEPTH_VIEWZ_SCALE * sz / (1.0f - sz) : 0.0f;
+        }
+        o->x = cx; o->y = cy; o->z = 0.0f; o->w = tex ? tv : 0.0f;
+        o->u = tex ? T->v[k].u : 0.0f;
+        o->v = tex ? T->v[k].v : 0.0f;
+        o->rgba = 0xFF000000u;
+        o->koff = 0.0f;
+        o->sx = T->rank; o->sy = (float)T->mordinal;
+    }
+}
+
+static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
+                                int full_extent, rhi_vertex* out,
+                                int* out_untex, keytex_span_t* spans, int* nspans)
+{
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    int m = 0, tex_n = 0;
+    *nspans = 0;
+    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
+        if (scene[t].blend != 0) continue;      /* opaque only */
+        if (scene[t].rank < 0.5f) continue;     /* ranked faces only */
+        if (scene[t].textured) {
+            if (tex_n < MAX_SCENE_TRIS) s_ktex_idx[tex_n++] = t;
+            continue;
+        }
+        pack_rank_vert(&scene[t], 0, &out[m]);
+        m += 3;
+    }
+    *out_untex = m;
+    tex_mat_sort(scene, s_ktex_idx, tex_n);
+    for (int i = 0; i < tex_n && m + 3 <= SCENE_VB_VERTS; i++) {
+        const scene_tri_t* T = &scene[s_ktex_idx[i]];
+        keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
+        if (!sp || sp->mat.bpp < 0 ||
+            sp->mat.tpage_x != T->tpage_x || sp->mat.tpage_y != T->tpage_y ||
+            sp->mat.clut_x != T->clut_x || sp->mat.clut_y != T->clut_y ||
+            sp->mat.bpp != T->bpp) {
+            if (sp && sp->mat.bpp < 0) {
+                /* overflow sentinel already open: keep appending to it */
+            } else if (*nspans < KEYTEX_MAX_SPANS - 1) {
+                sp = &spans[(*nspans)++];
+                sp->first = m; sp->count = 0;
+                sp->mat.tpage_x = T->tpage_x; sp->mat.tpage_y = T->tpage_y;
+                sp->mat.clut_x = T->clut_x; sp->mat.clut_y = T->clut_y;
+                sp->mat.bpp = T->bpp;
+            } else {
+                /* table full: remainder rasters full-footprint (flat pipe) */
+                sp = &spans[(*nspans)++];
+                sp->first = m; sp->count = 0;
+                sp->mat.bpp = -1;
+            }
+        }
+        pack_rank_vert(T, sp->mat.bpp >= 0, &out[m]);
+        m += 3;
+        sp->count += 3;
+    }
+    s_render_full_extent = prev_fe;
+    return m;
+}
+
 /* The last key-pass packs (terrain + moby), recorded for the identity
  * instrument in draw_native_scene (m == -1 until a pass has run). */
 static struct {
@@ -3115,6 +3232,39 @@ static void draw_key_batch(int base, int m, int untex,
     }
 }
 
+/* Draw one packed RANK batch into the currently-open rank render pass:
+ * untextured prefix through the flat pipe, textured material runs through
+ * the alpha-aware cutout pipe. Same span discipline as draw_key_batch. */
+static void draw_rank_batch(int base, int m, int untex,
+                            const keytex_span_t* spans, int nspans)
+{
+    if (m <= 0 || !s_nr.moby_rank_pipe) return;
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
+    if (untex > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_pipe);
+        rhi_draw(s_nr.dev, (uint32_t)untex, (uint32_t)base);
+    }
+    int tex_bound = 0;
+    for (int i = 0; i < nspans; i++) {
+        if (spans[i].count <= 0) continue;
+        if (spans[i].mat.bpp < 0 || !s_nr.moby_rank_cutout_pipe) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_pipe);
+            rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
+                     (uint32_t)(base + spans[i].first));
+            tex_bound = 0;
+            continue;
+        }
+        if (!tex_bound) {
+            rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_cutout_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            tex_bound = 1;
+        }
+        rhi_push_constants(s_nr.dev, &spans[i].mat, sizeof(spans[i].mat));
+        rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
+                 (uint32_t)(base + spans[i].first));
+    }
+}
+
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
@@ -3126,12 +3276,19 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     static rhi_vertex kbuf[SCENE_VB_VERTS];
     static rhi_vertex mkbuf[SCENE_VB_VERTS];
-    static keytex_span_t kspans[KEYTEX_MAX_SPANS], mspans[KEYTEX_MAX_SPANS];
-    int k_untex = 0, m_untex = 0, k_nspans = 0, m_nspans = 0;
+    static rhi_vertex rbuf[SCENE_VB_VERTS];
+    static keytex_span_t kspans[KEYTEX_MAX_SPANS], mspans[KEYTEX_MAX_SPANS],
+                         rspans[KEYTEX_MAX_SPANS];
+    int k_untex = 0, m_untex = 0, r_untex = 0,
+        k_nspans = 0, m_nspans = 0, r_nspans = 0;
     int m  = pack_terrain_key_batch(scene, scene_n, full_extent, 0, kbuf,
                                     &k_untex, kspans, &k_nspans);
     int mm = pack_terrain_key_batch(scene, scene_n, full_extent, 1, mkbuf,
                                     &m_untex, mspans, &m_nspans);
+    int rr = (s_nr.moby_rank_rt && s_nr.moby_rank_pipe)
+           ? pack_moby_rank_batch(scene, scene_n, full_extent, rbuf,
+                                  &r_untex, rspans, &r_nspans)
+           : 0;
     s_tk_last.scene = scene; s_tk_last.scene_n = scene_n;
     s_tk_last.full_extent = full_extent ? 1 : 0;
     s_tk_last.m = m; s_tk_last.buf = kbuf;
@@ -3199,7 +3356,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     static int s_tk_base = 0;
     uint64_t serial = rhi_frame_serial(s_nr.dev);
     if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
-    if (m + mm > 0 && s_tk_base + m + mm > SCENE_VB_VERTS) {
+    if (m + mm + rr > 0 && s_tk_base + m + mm + rr > SCENE_VB_VERTS) {
         /* Ring slot exhausted (several huge batches in one frame). The
          * earlier batches are recorded but NOT yet submitted, so resetting
          * the bump offset would clobber data a recorded pass still reads at
@@ -3209,10 +3366,10 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
          * resolve at true depth), and say so loudly — a silent skip would
          * read as coverage. */
         extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d > %d): "
+        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d+%d > %d): "
                         "contest OFF for this target\n",
-                openpete_frame, s_tk_base, m, mm, (int)SCENE_VB_VERTS);
-        m = mm = 0;
+                openpete_frame, s_tk_base, m, mm, rr, (int)SCENE_VB_VERTS);
+        m = mm = rr = 0;
     }
     if (m > 0)
         rhi_update_buffer_range(s_nr.terrain_key_vb, kbuf,
@@ -3222,6 +3379,10 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_update_buffer_range(s_nr.terrain_key_vb, mkbuf,
                                 sizeof(rhi_vertex) * (size_t)(s_tk_base + m),
                                 sizeof(rhi_vertex) * (size_t)mm);
+    if (rr > 0)
+        rhi_update_buffer_range(s_nr.terrain_key_vb, rbuf,
+                                sizeof(rhi_vertex) * (size_t)(s_tk_base + m + mm),
+                                sizeof(rhi_vertex) * (size_t)rr);
     /* Even empty batches render: the cleared far depth reads as "no cover",
      * which is the correct contest input — never a stale image. */
     rhi_begin_render_target(s_nr.dev, s_nr.terrain_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -3232,7 +3393,15 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     rhi_set_viewport(s_nr.dev, vw, vh);
     draw_key_batch(s_tk_base + m, mm, m_untex, mspans, m_nspans);
     rhi_end_render_target(s_nr.dev, s_nr.moby_key_depth);
-    s_tk_base += m + mm;
+    if (s_nr.moby_rank_rt) {
+        /* Rank image: colour clears to 0 (decodes rank 0 = "no cover"), depth
+         * to far (rank -1); an empty batch still renders the clear. */
+        rhi_begin_render_target(s_nr.dev, s_nr.moby_rank_rt, 0.0f, 0.0f, 0.0f, 0.0f);
+        rhi_set_viewport(s_nr.dev, vw, vh);
+        draw_rank_batch(s_tk_base + m + mm, rr, r_untex, rspans, r_nspans);
+        rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
+    }
+    s_tk_base += m + mm + rr;
 }
 
 /* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
@@ -3248,6 +3417,8 @@ static void bind_scene_pipe(rhi_pipeline* p)
         p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe) {
         rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
+        if (s_nr.moby_rank_rt)
+            rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 4);
     }
 }
 
@@ -4885,6 +5056,7 @@ static bool draw_native_scene(bool full_extent)
                 o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
                 o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
             }
             n += 3;
         }
@@ -4917,6 +5089,7 @@ static bool draw_native_scene(bool full_extent)
                     o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                     o->u = 0.0f; o->v = 0.0f;
                     o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
                 }
                 n += 3;
             }
@@ -4988,6 +5161,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
             }
             n += 3;
         }
@@ -5005,6 +5179,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5022,6 +5197,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5041,6 +5217,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5058,6 +5235,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5077,6 +5255,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5091,6 +5270,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5112,6 +5292,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3;
     }
@@ -5135,6 +5316,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
         n += 3; af_n++;
     }
@@ -5174,6 +5356,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
             }
             runs[cur].count += 3;
             n += 3;
@@ -5261,10 +5444,17 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
             o->u = st->v[k].u; o->v = st->v[k].v;
             o->rgba = st->v[k].rgba; o->koff = st->koff;
-            /* PSX screen coord for the textured shadow decal (location 3); the
-             * scene_to_clip INPUT is the PSX screen coord. Harmless for the
-             * other textured pipes (their shaders omit location 3). */
-            o->sx = st->v[k].sx; o->sy = st->v[k].sy;
+            /* Location 3 is per-class: the textured SHADOW decal parks its PSX
+             * screen coord there (shadow_decal_tex.vert's depth-pre-pass
+             * lookup; scene_to_clip's INPUT is the PSX screen coord). Every
+             * other textured tri carries the moby paint (rank, ordinal) pair —
+             * psx_scene.vert forwards it to the same-moby painter select, and
+             * unranked tris (rank 0) keep the select off. */
+            if (st->category == OPENPETE_SCENE_SHADOW) {
+                o->sx = st->v[k].sx; o->sy = st->v[k].sy;
+            } else {
+                o->sx = st->rank; o->sy = (float)st->mordinal;
+            }
         }
     }
     n = tx_start + txtri * 3;
@@ -6065,6 +6255,7 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].sx = 0.0f; buf[n].sy = 0.0f;   /* unranked: rank select off */
         n++;
     }
     n -= n % 3;
@@ -6096,6 +6287,7 @@ static void draw_mod_overlay(void) {
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].sx = 0.0f; buf[n].sy = 0.0f;   /* unranked: rank select off */
         n++;
     }
     n -= n % 3;
@@ -7917,9 +8109,12 @@ void openpete_native_render_shutdown(void)
     if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
     if (s_nr.terrain_key_depth) rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth);
     if (s_nr.moby_key_depth)    rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);
+    if (s_nr.moby_rank_rt)      rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);
     if (s_nr.terrain_key_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.terrain_key_vb);
     if (s_nr.terrain_key_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
     if (s_nr.terrain_key_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_tex_pipe);
+    if (s_nr.moby_rank_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.moby_rank_pipe);
+    if (s_nr.moby_rank_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.moby_rank_cutout_pipe);
     if (s_nr.gouraud_sub_ztest_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_ztest_pipe);
     if (s_nr.gouraud_sub_fade_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_fade_pipe);
     if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);

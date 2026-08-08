@@ -416,6 +416,18 @@ typedef struct {
                   * yields to a prop physically within the embed bound —
                   * the class-curated "props render on top of the ground
                   * they are set into" divergence.                         */
+    float rank;  /* og OT paint RANK (walk order, >=1; 0 = unranked): the
+                  * game paints a moby's faces whole, in OT walk order —
+                  * never per-pixel between same-moby faces. Ranked opaque
+                  * faces raster (rank, ordinal) into the rank image and a
+                  * fragment loses its pixel iff a LATER-ranked face of the
+                  * SAME moby covers it. Stored depth stays TRUE per-vertex
+                  * — rank decides WHICH same-moby face exists at a pixel,
+                  * never what depth it writes. Cross-moby ordering stays
+                  * true per-pixel z (the ordinal gate).                   */
+    int mordinal;/* present-local moby ordinal (1..255) identifying "same
+                  * moby" in the rank image. Present-LOCAL only: a pool
+                  * ordinal is not an identity across presents.            */
 } openpete_scene_tri;
 
 /* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------

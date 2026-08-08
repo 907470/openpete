@@ -33,6 +33,10 @@ layout(location = 3) out float vQ;
 /* Terrain og OT key (rhi_vertex.koff) — see psx_scene.vert. */
 layout(location = 4) flat out float vKoff;
 layout(location = 5) in float inKoff;
+/* Moby og paint RANK (rhi_vertex.sx,sy) — see psx_scene.vert: x = OT walk
+ * rank (>=1; 0 = unranked), y = present-local moby ordinal. */
+layout(location = 3) in vec2 inRank;
+layout(location = 5) flat out vec2 vRank;
 
 /* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0) —
  * see psx_scene.vert: false = legacy z=vz/(vz+4096), true = screen-affine
@@ -67,4 +71,5 @@ void main()
     vScreenPSX = inUV;
     vQ = q;
     vKoff = inKoff;
+    vRank = inRank;
 }

@@ -40,6 +40,11 @@ layout(location = 4) in float inW;
  * in world units + 0.5 sentinel (0 = not keyed); keyed fragments run the
  * key-resolve contest against it. Per-face constant -> flat. */
 layout(location = 5) in float inKoff;
+/* Moby og paint RANK (rhi_vertex.sx,sy): x = the face's OT walk rank (>=1;
+ * 0 = unranked), y = the present-local moby ordinal. Ranked fragments run
+ * the same-moby painter select against the rank image (set 4). Per-face
+ * constant -> flat. */
+layout(location = 3) in vec2 inRank;
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
@@ -47,6 +52,7 @@ layout(location = 1) out vec4 vColor;
  * recover perspective-correct-in-inW values. 1.0 on unshifted vertices. */
 layout(location = 2) out float vQ;
 layout(location = 3) flat out float vKoff;
+layout(location = 4) flat out vec2 vRank;
 
 /* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0):
  * false = legacy z=vz/(vz+4096) (hyperbolic in vz, interpolated screen-linearly
@@ -77,4 +83,5 @@ void main()
     vColor = inColor * q;
     vQ = q;
     vKoff = inKoff;
+    vRank = inRank;
 }
