@@ -714,9 +714,6 @@ static const knob_desc_t g_builtin[] = {
         "Draw only LP (1) or only HP (2) tier."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
-    ENVROW_LATCHED("MOBY_FACEFLAT", "Debug", "1",
-        "Feed decal-scale moby faces flat at their mean depth (og per-face "
-        "painter; stops face-decal flicker)."),
     ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",
         "Same pull for the SHADED walk."),
     ENVROW_LATCHED("TRUE_W", "Debug", "7",
