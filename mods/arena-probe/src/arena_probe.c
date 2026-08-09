@@ -14,10 +14,29 @@
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
 
+/* Probe results, published for the overlay section below. */
+static uint32_t g_va;          /* vaddr of the 256-byte block */
+static uint32_t g_va2;         /* vaddr of the 64-byte, 64-aligned block */
+static int      g_ok = -1;     /* -1 until the probe has run */
+
+static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
+    (void)user;
+    if (g_ok < 0) {
+        ui->text_disabled("probe has not run");
+        return;
+    }
+    ui->text("block A: 0x%08X  (256 B, 16-aligned)", g_va);
+    ui->text("block B: 0x%08X  (64 B, 64-aligned)", g_va2);
+    if (g_ok) ui->text("host write -> guest read: OK");
+    else      ui->text("host write -> guest read: MISMATCH");
+    ui->text_disabled("probe runs once, at mod entry");
+}
+
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
+    api->register_ui(self, ui_draw, NULL);
 
     void* host = 0;
     uint32_t va = api->guest_alloc(self, 256, 16, &host);
@@ -40,6 +59,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     void* host2 = 0;
     uint32_t va2 = api->guest_alloc(self, 64, 64, &host2);
     if (!va2 || va2 < va + 256 || (va2 & 63u)) ok = 0;
+    g_va = va;
+    g_va2 = va2;
+    g_ok = ok;
     g_api->log(g_self, OP_MOD_LOG_INFO,
                ok ? "arena-probe: guest/host roundtrip OK @0x%08X"
                   : "arena-probe: roundtrip MISMATCH @0x%08X", va);

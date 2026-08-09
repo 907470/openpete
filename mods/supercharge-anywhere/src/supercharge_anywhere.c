@@ -44,6 +44,7 @@
 #define OFF_AIRTIME   0x9Cu   /* int m_airTime (0 == grounded)            */
 
 #define STATE_CHARGE_GROUND 0x14  /* ground-charge state                  */
+#define STATE_SUPERCHARGE   0x2C  /* == 44, the promoted state            */
 #define SUBSTATE_TRIGGER    0x40u /* bit that promotes 0x14 -> state 44   */
 
 #define GA_STATE     (OP_GADDR_g_Spyro + OFF_STATE)
@@ -77,6 +78,19 @@ static int g_debug     = 0; /* log state transitions          */
 static unsigned char g_blob[BLOB_MAX];
 static uint32_t      g_blob_len = 0;
 static int           g_have_blob = 0;
+
+/* Last values published by the tick hook, for the overlay section to read
+ * (it may not touch guest RAM itself). */
+static uint32_t g_last_state   = 0;
+static uint32_t g_last_air     = 0;
+static uint32_t g_triggers     = 0; /* charges promoted to supercharge */
+static int      g_anim_kind    = 0; /* index into g_anim_kind_name     */
+
+/* Result of ensure_supercharge_anim(): where anim 45 came from. */
+static const char* const g_anim_kind_name[] = {
+    "absent (no cache yet)", "native (ramp level)",
+    "authentic (injected)",  "aliased (fallback)"
+};
 
 /* Low-RAM park for the injected copy (allocated once, tick context). */
 static uint32_t g_park_vaddr = 0;
@@ -258,15 +272,19 @@ static void on_spyro_update(CPUState* cpu) {
     g_prev_down = down;
 
     if (g_enabled)
-        ensure_supercharge_anim();
+        g_anim_kind = ensure_supercharge_anim();
 
     g_api->base(cpu);
 
-    if (!g_enabled)
-        return;
-
+    /* Published unconditionally so the overlay status stays live while the
+     * force is switched off. */
     uint32_t st  = op_read_u32(g_api, GA_STATE);
     uint32_t air = op_read_u32(g_api, GA_AIRTIME);
+    g_last_state = st;
+    g_last_air   = air;
+
+    if (!g_enabled)
+        return;
 
     if (g_debug) {
         static uint32_t prev = 0xFFFFFFFFu;
@@ -280,8 +298,10 @@ static void on_spyro_update(CPUState* cpu) {
 
     if (st == STATE_CHARGE_GROUND && air == 0) {
         uint32_t ws = op_read_u32(g_api, GA_WALKSTATE);
-        if (!(ws & SUBSTATE_TRIGGER))
+        if (!(ws & SUBSTATE_TRIGGER)) {
             op_write_u32(g_api, GA_WALKSTATE, ws | SUBSTATE_TRIGGER);
+            g_triggers++;
+        }
     }
 }
 
@@ -291,11 +311,50 @@ static void on_level_ready(CPUState* cpu, int level_id) {
                       : (op_read_u32(g_api, anim_slot(
                              op_read_u32(g_api, OP_GADDR_g_Models),
                              ANIM_SUPERCHARGE)) ? 1 : 0);
-    static const char* kind[] = { "absent (no cache yet)", "native (ramp level)",
-                                  "authentic (injected)", "aliased (fallback)" };
+    g_anim_kind = r & 3;
     g_api->log(g_self, OP_MOD_LOG_INFO,
                "supercharge-anywhere: level %d ready; supercharge anim = %s",
-               level_id, kind[r & 3]);
+               level_id, g_anim_kind_name[g_anim_kind]);
+}
+
+/* ---- dev-overlay section ------------------------------------------------
+ * Render-pure: reads only the host-side statics the tick hook publishes,
+ * and writes the ones it consumes (the force switch, the diagnostics flag,
+ * the fallback animation index). */
+
+static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
+    (void)user;
+
+    ui->checkbox("Force supercharge", &g_enabled);
+    ui->tooltip("Every ground charge is promoted to a real supercharge. "
+                "Same switch as the toggle binding (default G).");
+
+    const char* note = g_last_state == STATE_SUPERCHARGE  ? " supercharging"
+                     : g_last_state == STATE_CHARGE_GROUND ? " ground charge"
+                     : "";
+    ui->text("Spyro: m_State %u%s, airTime %u", g_last_state, note,
+             g_last_air);
+    ui->text("charges promoted: %u", g_triggers);
+
+    ui->separator();
+
+    ui->text("animation: %s", g_anim_kind_name[g_anim_kind]);
+    if (g_have_blob) {
+        ui->text("authentic anim-45 cached: %u bytes", g_blob_len);
+        ui->tooltip("Captured from your own disc on a supercharge-ramp "
+                    "level and replayed on every other level.");
+    } else {
+        ui->text_disabled("no authentic anim cached — enter a ramp level "
+                          "once (Wizard Peak, Tree Tops) to capture it");
+    }
+
+    ui->slider_int("Fallback anim index", &g_sub_idx, 0,
+                   (int)ANIM_SUPERCHARGE - 1);
+    ui->tooltip("Locomotion animation aliased to slot 45 until the "
+                "authentic one is captured (3 = walk/run).");
+    ui->text_disabled("fallback takes effect on the next level load");
+
+    ui->checkbox("Log state transitions", &g_debug);
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
@@ -311,6 +370,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     blob_load(); /* authentic anim from a previous session, if captured */
 
     api->register_savestate_hooks(self, sca_state_save, sca_state_load);
+    api->register_ui(self, ui_draw, NULL);
 
     op_sdk_bind(api);
     OP_REGISTER_OVERRIDE_PatchInSpyroAnimations(api, self, sc_capture);

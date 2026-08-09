@@ -10,7 +10,7 @@
 id      = "raw-probe"
 name    = "Raw Probe"
 version = "0.1.0"
-api     = 2
+api     = 3
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
 tier    = "raw"
 

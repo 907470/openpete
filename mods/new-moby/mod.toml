@@ -17,7 +17,7 @@
 id      = "new-moby"
 name    = "New Moby (orbiter)"
 version = "0.1.0"
-api     = 2
+api     = 3
 tier    = "raw"   # pokes moby fields by offset; region-pinned
 
 [test]

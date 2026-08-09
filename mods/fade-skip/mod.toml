@@ -24,7 +24,7 @@
 id      = "fade-skip"
 name    = "Splash Fade Skip"
 version = "0.1.0"
-api     = 2
+api     = 3
 tier    = "raw"   # instruction-granular: raw addresses, region-pinned
 
 # Sony/SCEA logo: fade-in loop, 210-frame hold, fade-out loop.

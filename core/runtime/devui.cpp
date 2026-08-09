@@ -29,7 +29,9 @@ extern "C" {
 #include "openpete_devui.h"
 #include "openpete_knobs.h"
 #include "openpete_log.h"
+#include "openpete_mods.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -327,6 +329,172 @@ static void draw_row(knob_desc_t *k)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Mods panel                                                         */
+/* ------------------------------------------------------------------ */
+
+/* The SDK's openpete_mod_ui_t widget vtable, implemented over imgui —
+ * mods draw their section through these and never see imgui types.
+ * Callbacks run inside the mod's tree node under the render-purity
+ * guard (openpete_mods_ui_draw). */
+
+static void mui_text(const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ImGui::TextUnformatted(buf);
+}
+
+static void mui_text_disabled(const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ImGui::TextDisabled("%s", buf);
+}
+
+static int mui_button(const char *label)
+{
+    return ImGui::Button(label) ? 1 : 0;
+}
+
+static int mui_checkbox(const char *label, int *v)
+{
+    bool b = v && *v != 0;
+    if (ImGui::Checkbox(label, &b)) {
+        if (v) *v = b ? 1 : 0;
+        return 1;
+    }
+    return 0;
+}
+
+static int mui_slider_int(const char *label, int *v, int mn, int mx)
+{
+    return (v && ImGui::SliderInt(label, v, mn, mx)) ? 1 : 0;
+}
+
+static int mui_slider_float(const char *label, float *v, float mn, float mx)
+{
+    return (v && ImGui::SliderFloat(label, v, mn, mx)) ? 1 : 0;
+}
+
+static int mui_combo(const char *label, int *idx, const char *const *items,
+                     int count)
+{
+    return (idx && items && ImGui::Combo(label, idx, items, count)) ? 1 : 0;
+}
+
+static int mui_input_text(const char *label, char *buf, int cap)
+{
+    if (!buf || cap <= 0) return 0;
+    return ImGui::InputText(label, buf, (size_t)cap) ? 1 : 0;
+}
+
+static void mui_separator(void) { ImGui::Separator(); }
+static void mui_same_line(void) { ImGui::SameLine(); }
+
+static void mui_tooltip(const char *text)
+{
+    if (text && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("%s", text);
+}
+
+static const openpete_mod_ui_t s_mod_ui = {
+    mui_text,       mui_text_disabled, mui_button,    mui_checkbox,
+    mui_slider_int, mui_slider_float,  mui_combo,     mui_input_text,
+    mui_separator,  mui_same_line,     mui_tooltip,   {},
+};
+
+static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
+{
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+    ImGui::Text("%s v%s", mi->id, mi->version);
+    if (mi->sim_neutral)
+        ImGui::TextDisabled("sim-neutral observer (outside the save "
+                            "modset tag)");
+    if (!mi->entered)
+        ImGui::TextDisabled("not started yet — enabling runs the mod at "
+                            "the next tick boundary");
+    if (mi->has_assets)
+        ImGui::TextDisabled("asset overlay: music applies immediately; "
+                            "texture packs need a restart");
+    if (mi->enabled && !mi->has_ui)
+        ImGui::TextDisabled("no controls registered");
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+static bool mod_row_matches(const ImGuiTextFilter &f,
+                            const openpete_mods_menu_info_t *mi)
+{
+    if (!f.IsActive()) return true;
+    return f.PassFilter(mi->id) || f.PassFilter(mi->name);
+}
+
+static void draw_mods_section(const ImGuiTextFilter &filter)
+{
+    const int n = openpete_mods_count();
+    if (n == 0) return;
+
+    bool any = false;
+    for (int i = 0; i < n && !any; i++) {
+        openpete_mods_menu_info_t mi;
+        if (openpete_mods_menu_info(i, &mi) && mod_row_matches(filter, &mi))
+            any = true;
+    }
+    if (!any) return;
+
+    if (filter.IsActive()) ImGui::SetNextItemOpen(true);
+    if (!ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+
+    for (int i = 0; i < n; i++) {
+        openpete_mods_menu_info_t mi;
+        if (!openpete_mods_menu_info(i, &mi)) continue;
+        if (!mod_row_matches(filter, &mi)) continue;
+        ImGui::PushID(mi.id);
+
+        /* The checkbox queues through the live-toggle path; the loader
+         * applies it at the next tick boundary and the row reads the
+         * applied state back — no local shadow to go stale. */
+        bool on = mi.enabled != 0;
+        if (ImGui::Checkbox("##en", &on)) {
+            if (openpete_mods_set_mod_enabled(mi.id, on ? 1 : 0) == 0)
+                OPL_INFO_F("devui", "mod %s -> %s", mi.id,
+                           on ? "enabled" : "disabled");
+        }
+        mod_row_tooltip(&mi);
+        ImGui::SameLine();
+
+        if (mi.enabled && mi.has_ui) {
+            if (ImGui::TreeNodeEx(mi.name,
+                                  ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                mod_row_tooltip(&mi);
+                openpete_mods_ui_draw(i, &s_mod_ui);
+                ImGui::TreePop();
+            } else {
+                mod_row_tooltip(&mi);
+            }
+        } else {
+            ImGui::AlignTextToFramePadding();
+            if (mi.enabled)
+                ImGui::TextUnformatted(mi.name);
+            else
+                ImGui::TextDisabled("%s", mi.name);
+            mod_row_tooltip(&mi);
+        }
+
+        ImGui::PopID();
+    }
+}
+
 static bool row_matches(const ImGuiTextFilter &f, const knob_desc_t *k)
 {
     if (!f.IsActive()) return true;
@@ -358,6 +526,8 @@ static void draw_panel(void)
         ImGui::SetTooltip("Live rows apply immediately; grayed rows need a "
                           "restart. Right-click a row to copy it as a CLI "
                           "flag / env line.");
+
+    draw_mods_section(s_filter);
 
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);

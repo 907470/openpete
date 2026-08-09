@@ -10,7 +10,7 @@
 id      = "lib-and-client"
 name    = "Lib And Client"
 version = "0.1.0"
-api     = 2
+api     = 3
 deps    = ["demo-lib"]
 
 [test]

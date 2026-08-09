@@ -13,7 +13,7 @@
 id      = "supercharge-anywhere"
 name    = "Supercharge Anywhere"
 version = "0.3.0"
-api     = 2
+api     = 3
 
 [[binding]]
 name    = "toggle"

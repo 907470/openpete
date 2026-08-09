@@ -15,7 +15,7 @@
 id      = "mirror-level"
 name    = "Mirror Level (Artisans clone)"
 version = "0.1.0"
-api     = 2
+api     = 3
 tier    = "raw"   # reads level/load globals by address; region-pinned
 
 [test]

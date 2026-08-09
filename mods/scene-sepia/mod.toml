@@ -8,7 +8,7 @@
 id = "scene-sepia"
 name = "Scene Sepia"
 version = "0.1.0"
-api = 2
+api = 3
 sim_neutral = true
 
 [test]

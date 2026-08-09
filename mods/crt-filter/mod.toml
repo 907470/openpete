@@ -8,7 +8,7 @@
 id      = "crt-filter"
 name    = "CRT Filter"
 version = "0.1.0"
-api     = 2
+api     = 3
 sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
 
 [test]

@@ -115,6 +115,7 @@ typedef struct {
 struct openpete_mod {
     char  id[MOD_ID_MAX];
     char  version[32];
+    char  name[64];      /* manifest display name (fallback: id) */
     char  dir[MOD_PATH_MAX];
     char  data_dir[MOD_PATH_MAX + 8]; /* "<dir>/data", made on demand */
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
@@ -142,7 +143,15 @@ struct openpete_mod {
                           * what actually recompiles) */
     int   has_src;       /* 0 = binary-only/assets-only: never compiled,
                           * skipped by the hot-reload watch */
-    int   enabled;       /* live-toggle state (loaded mods start on) */
+    int   enabled;       /* live-toggle state */
+    int   boot_on;       /* in the boot enabled set (vs a deferred-entry
+                          * load-all row, which starts disabled) */
+    int   entered;       /* openpete_mod_entry has run; load-all rows
+                          * defer it to their first enable so a
+                          * boot-disabled mod runs zero code */
+    int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
+    openpete_mod_ui_fn ui_fn; /* register_ui section body (NULL = none) */
+    void* ui_user;
     void* dl;
 
     /* State-ABI descriptor (openpete_mod_stateabi symbol, resolved at
@@ -385,6 +394,19 @@ static int api_register_present_hook(openpete_mod_t* self,
     return rc;
 }
 
+/* Per-mod UI section (api v3): the callback is stored on the mod and
+ * invoked by the dev overlay's Mods panel while the mod is enabled.
+ * Registration is entry/tick context (the callback itself runs under
+ * the render-purity guard — see openpete_mods_ui_draw). */
+static int api_register_ui(openpete_mod_t* self, openpete_mod_ui_fn fn,
+                           void* user) {
+    if (!self) return -1;
+    if (purity_violation("register_ui")) return -1;
+    self->ui_fn   = fn;
+    self->ui_user = user;
+    return 0;
+}
+
 /* ---- engine services (P2 contract) ----------------------------------- */
 
 static int api_savestate_request(openpete_mod_t* self, int op,
@@ -503,6 +525,7 @@ static char s_sdk_dir[MOD_PATH_MAX];
 /* defined later in this file */
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
 static void exports_remove_owner(const char* id);
+static int mod_enter_deferred(struct openpete_mod* mod);
 
 /* Hot reload (P4, dev mode): drop a mod's cross-mod exports; importers
  * hold raw pointers into the OLD object, which stays resident (never
@@ -539,6 +562,8 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_material_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
     exports_remove_owner(mod->id);
+    mod->ui_fn   = NULL; /* re-entry re-registers the UI section */
+    mod->ui_user = NULL;
 
     mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
     char dir_copy[MOD_PATH_MAX];
@@ -627,7 +652,9 @@ static void hot_reload_poll(void) {
     if (++s_cnt % 64u) return;
     for (int i = 0; i < s_mod_count; i++) {
         struct openpete_mod* mod = &s_mods[i];
-        if (!mod->dl || !mod->has_src) continue;
+        /* Deferred-entry rows (never entered) reload nothing: no code
+         * of theirs is live; their first enable uses the boot object. */
+        if (!mod->dl || !mod->has_src || !mod->entered) continue;
         /* Key-only recompute (pure hashing, ms); the compile happens
          * inside mod_hot_reload on a real change. config.toml is watched
          * too — a config-only edit reloads against the cached object, so
@@ -680,6 +707,34 @@ int openpete_mods_is_enabled(const char* id) {
     for (int i = 0; i < s_mod_count; i++)
         if (strcmp(s_mods[i].id, id) == 0) return s_mods[i].enabled;
     return 0;
+}
+
+int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
+    if (i < 0 || i >= s_mod_count || !out) return 0;
+    const struct openpete_mod* m = &s_mods[i];
+    out->id          = m->id;
+    out->name        = m->name[0] ? m->name : m->id;
+    out->version     = m->version;
+    out->enabled     = m->enabled;
+    out->entered     = m->entered;
+    out->sim_neutral = m->sim_neutral;
+    out->has_ui      = m->ui_fn != NULL;
+    out->has_assets  = m->has_assets;
+    out->has_src     = m->has_src;
+    return 1;
+}
+
+/* Overlay-side invocation of a mod's UI section. The render-purity
+ * guard makes guest access / game calls / registration refuse inside
+ * the callback, exactly as in present hooks: widgets mutate host-side
+ * mod state, tick hooks consume it. */
+void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
+    if (i < 0 || i >= s_mod_count || !ui) return;
+    struct openpete_mod* m = &s_mods[i];
+    if (!m->ui_fn || !m->enabled) return;
+    openpete_mods_in_present = 1;
+    m->ui_fn(ui, m->ui_user);
+    openpete_mods_in_present = 0;
 }
 
 int openpete_mods_set_mod_enabled(const char* id, int on) {
@@ -738,6 +793,11 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
             OPL_ERROR_F("mods", "live toggle: no loaded mod \"%s\"", id);
             continue;
         }
+        if (on && !mod->entered && mod_enter_deferred(mod) != 0) {
+            OPL_ERROR_F("mods", "live toggle: \"%s\" failed to start — "
+                        "staying disabled", id);
+            continue;
+        }
         openpete_mods_chain_set_owner_enabled(id, on);
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_site_set_enabled(id, on);
@@ -794,17 +854,22 @@ int openpete_mods_runahead_capable(const char** offender) {
  * the running gameplay-relevant modset — "id@ver+id@ver", ids sorted,
  * sim_neutral mods excluded. Empty string = vanilla. Consumed by the
  * host memcard module to tag save cards and warn on mismatch. */
+static char s_tag[1024];
+static int  s_tag_built = 0;
+
 const char* openpete_mods_modset_tag(void) {
-    static char s_tag[1024];
-    static int  s_built = 0;
-    if (s_built) return s_tag;
-    s_built = 1;
+    if (s_tag_built) return s_tag;
+    s_tag_built = 1;
     s_tag[0] = '\0';
-    /* Sorted id order → order-independent canonical form. */
+    /* Sorted id order → order-independent canonical form. Only mods
+     * whose entry has RUN can have diverged the session — deferred-
+     * entry load-all rows join the tag at their first enable (the
+     * enable path clears s_tag_built; memcard reads the tag per
+     * check/write, so later writes carry the grown tag). */
     const struct openpete_mod* picked[MODS_MAX];
     int n = 0;
     for (int i = 0; i < s_mod_count; i++)
-        if (s_mods[i].dl && !s_mods[i].sim_neutral)
+        if (s_mods[i].dl && s_mods[i].entered && !s_mods[i].sim_neutral)
             picked[n++] = &s_mods[i];
     for (int i = 1; i < n; i++) {
         const struct openpete_mod* m = picked[i];
@@ -1038,6 +1103,7 @@ static const openpete_mod_api_t s_api = {
     .material_register   = openpete_mods_material_register,
     .read_level_data     = api_read_level_data,
     .texpack_fog_shift   = api_texpack_fog_shift,
+    .register_ui         = api_register_ui,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -1077,8 +1143,12 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
         if (ver.ok) free(ver.u.s);
         goto out;
     }
-    if (api.ok && api.u.i != (int64_t)OPENPETE_MOD_API_VERSION) {
-        OPL_ERROR_F("mods", "%s: mod \"%s\" pins api %lld, engine has %u — "
+    /* The api struct is append-only, and source mods recompile against
+     * the CURRENT staged SDK regardless — so the manifest pin is the
+     * MINIMUM api the mod's calls need, not an exact build match. Only
+     * a mod needing a newer engine refuses. */
+    if (api.ok && api.u.i > (int64_t)OPENPETE_MOD_API_VERSION) {
+        OPL_ERROR_F("mods", "%s: mod \"%s\" needs api %lld, engine has %u — "
                     "disabled", path, id.u.s, (long long)api.u.i,
                     OPENPETE_MOD_API_VERSION);
         free(id.u.s);
@@ -1091,6 +1161,15 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
     snprintf(mod->log_tag, sizeof mod->log_tag, "mod:%s", mod->id);
     free(id.u.s);
     free(ver.u.s);
+    {   /* Display name for menus; ids stay the stable identity. */
+        toml_datum_t nm = toml_string_in(t, "name");
+        if (nm.ok) {
+            snprintf(mod->name, sizeof mod->name, "%s", nm.u.s);
+            free(nm.u.s);
+        }
+        if (!mod->name[0])
+            snprintf(mod->name, sizeof mod->name, "%s", mod->id);
+    }
     /* Symbol-tier declaration: "named" (default) or "raw". Raw-tier
      * addresses (func_XXXXXXXX / bare vaddrs) are unstable across
      * decomp/recomp progress and pinned to this binary/region — warn so
@@ -1498,13 +1577,54 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
 
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 
-static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
+/* Run openpete_mod_entry + resolve the state-ABI descriptor. Shared by
+ * the boot load and the deferred first-enable path. */
+static int mod_run_entry(struct openpete_mod* mod) {
+    mod_entry_fn entry =
+        (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
+    if (!entry) {
+        OPL_ERROR_F("mods", "%s: no openpete_mod_entry symbol — disabled",
+                    mod->id);
+        return -1; /* keep the .so resident; it is inert without chains */
+    }
+    int rc = entry(&s_api, mod);
+    if (rc != 0) {
+        OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",
+                    mod->id, rc);
+        return -1;
+    }
+    mod_resolve_stateabi(mod, mod->dl);
+    mod->entered = 1;
+    return 0;
+}
+
+/* Register the mod's assets/ overlay root (in enabled/entry order —
+ * texture/music namespaces consume it). */
+static void mod_register_assets(struct openpete_mod* mod) {
+    if (!mod->has_assets) return;
+    char assets[MOD_PATH_MAX + 8];
+    snprintf(assets, sizeof assets, "%s/assets", mod->dir);
+    (void)openpete_mods_register_asset_root(assets, mod->id);
+}
+
+/* run_entry=0 = deferred-entry load (the load-all path): compile,
+ * dlopen and parse everything, but run NO mod code and register no
+ * asset root — a boot-disabled mod is inert by construction until its
+ * first enable runs mod_enter_deferred. */
+static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
+                    int run_entry) {
     char so_path[MOD_PATH_MAX];
     {
         char src_dir[MOD_PATH_MAX + 8];
         snprintf(src_dir, sizeof src_dir, "%s/src", mod->dir);
         struct stat st;
         mod->has_src = (stat(src_dir, &st) == 0 && S_ISDIR(st.st_mode));
+    }
+    {
+        char assets[MOD_PATH_MAX + 8];
+        snprintf(assets, sizeof assets, "%s/assets", mod->dir);
+        struct stat st;
+        mod->has_assets = (stat(assets, &st) == 0 && S_ISDIR(st.st_mode));
     }
     if (!mod->has_src) {
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
@@ -1513,13 +1633,15 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
             /* Pure-asset mods (textures/music only) are legal: no src/
              * and no prebuilt object means the manifest + assets/ root
              * are the whole mod. */
+            if (!run_entry) {
+                OPL_INFO_F("mods", "loaded %s v%s (assets only; disabled)",
+                           mod->id, mod->version);
+                return 0;
+            }
             OPL_INFO_F("mods", "loaded %s v%s (assets only)", mod->id,
                        mod->version);
-            char assets[MOD_PATH_MAX + 8];
-            snprintf(assets, sizeof assets, "%s/assets", mod->dir);
-            struct stat st;
-            if (stat(assets, &st) == 0 && S_ISDIR(st.st_mode))
-                (void)openpete_mods_register_asset_root(assets, mod->id);
+            mod->entered = 1;
+            mod_register_assets(mod);
             return 0;
         }
         /* Binary-only mod: the prebuilt object IS the mod — loaded
@@ -1537,34 +1659,51 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir) {
                     mod_dlerror());
         return -1;
     }
-    mod_entry_fn entry =
-        (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
-    if (!entry) {
-        OPL_ERROR_F("mods", "%s: no openpete_mod_entry symbol — disabled",
-                    mod->id);
-        return -1; /* keep the .so resident; it is inert without chains */
-    }
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
-    int rc = entry(&s_api, mod);
-    if (rc != 0) {
-        OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",
-                    mod->id, rc);
-        return -1;
+    if (!run_entry) {
+        OPL_INFO_F("mods", "loaded %s v%s (%s; entry deferred until "
+                   "enabled)", mod->id, mod->version, so_path);
+        return 0;
     }
-    mod_resolve_stateabi(mod, mod->dl);
+    if (mod_run_entry(mod) != 0) return -1;
     OPL_INFO_F("mods", "loaded %s v%s (%s)", mod->id, mod->version,
                so_path);
-    /* Asset overlay: a mod's assets/ dir joins the overlay stack in
-     * enabled order (texture/music namespaces consume it). */
-    {
-        char assets[MOD_PATH_MAX + 8];
-        snprintf(assets, sizeof assets, "%s/assets", mod->dir);
-        struct stat st;
-        if (stat(assets, &st) == 0 && S_ISDIR(st.st_mode))
-            (void)openpete_mods_register_asset_root(assets, mod->id);
+    mod_register_assets(mod);
+    return 0;
+}
+
+/* First enable of a deferred-entry mod (tick boundary): enter deps
+ * first (a lib's exports must exist before this entry imports them;
+ * deps stay disabled), then run entry and register the assets/ root.
+ * Boot-scanned asset consumers (texture pack) only see the root after
+ * a restart; per-play consumers (music) apply immediately. Late entry
+ * registers at the chain tail = highest priority — restart to slot the
+ * mod into enabled.txt order. */
+static int mod_enter_deferred(struct openpete_mod* mod) {
+    if (mod->entered) return 0;
+    for (int d = 0; d < mod->n_deps; d++) {
+        struct openpete_mod* dep = NULL;
+        for (int i = 0; i < s_mod_count; i++)
+            if (strcmp(s_mods[i].id, mod->deps[d]) == 0) {
+                dep = &s_mods[i];
+                break;
+            }
+        if (!dep) {
+            OPL_ERROR_F("mods", "%s: dependency \"%s\" is not loaded",
+                        mod->id, mod->deps[d]);
+            return -1;
+        }
+        if (mod_enter_deferred(dep) != 0) return -1;
     }
+    if (mod->dl) {
+        if (mod_run_entry(mod) != 0) return -1;
+    } else {
+        mod->entered = 1; /* assets-only: the overlay root IS the mod */
+    }
+    mod_register_assets(mod);
+    s_tag_built = 0; /* the modset tag now includes this mod if divergent */
     return 0;
 }
 
@@ -1730,6 +1869,8 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
 typedef struct {
     char id[MOD_ID_MAX];
     char dir[MOD_PATH_MAX]; /* folder, or .unpacked/<id> for zip mods */
+    int  boot_on;           /* in the enabled set (vs a deferred-entry
+                             * load-all row) */
 } mod_ref_t;
 
 /* Resolve the mods dir (opts → env → <exe>/mods), unpack zips, and
@@ -1931,7 +2072,27 @@ static int mods_discover(const openpete_options_t* opts,
             continue;
         }
         mod_ref_resolve(mods_dir, order[i], &out[n_out]);
+        out[n_out].boot_on = 1;
         n_out++;
+    }
+
+    /* Deferred-entry load-all (interactive path): every other
+     * discovered mod loads too — compiled and dlopen'd, entry deferred
+     * to its first enable — so the overlay's Mods panel can list and
+     * enable the whole directory. Scope guard: --mods/OPENPETE_MODS
+     * (every harness/CI case) and headless runs keep exact-set
+     * semantics; the no-enabled.txt fallback already enables all. */
+    if (!enabled_override && en && opts && !opts->headless) {
+        qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
+        for (int i = 0; i < n_ids && n_out < max; i++) {
+            int listed = 0;
+            for (int j = 0; j < n_out && !listed; j++)
+                if (strcmp(out[j].id, ids[i]) == 0) listed = 1;
+            if (listed) continue;
+            mod_ref_resolve(mods_dir, ids[i], &out[n_out]);
+            out[n_out].boot_on = 0;
+            n_out++;
+        }
     }
     return n_out;
 }
@@ -2084,13 +2245,14 @@ int openpete_mods_init(const openpete_options_t* opts) {
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
     snprintf(s_sdk_dir, sizeof s_sdk_dir, "%s", sdk_dir);
 
-    /* Phase A: parse all enabled manifests (no loading yet). */
+    /* Phase A: parse all discovered manifests (no loading yet). */
     struct openpete_mod pending[MODS_MAX];
     int n_pending = 0;
     for (int i = 0; i < n_refs && n_pending < MODS_MAX; i++) {
         struct openpete_mod* mod = &pending[n_pending];
         memset(mod, 0, sizeof(*mod));
         if (parse_manifest(refs[i].dir, mod) != 0) continue;
+        mod->boot_on = refs[i].boot_on;
         n_pending++;
     }
 
@@ -2098,13 +2260,18 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * enabled order. Priority = position (later = higher), so
      * above=["x"] means "must be listed AFTER x". Violations disable the
      * DECLARING mod with a move-this-mod error; relations naming mods
-     * that aren't enabled are vacuously satisfied (advisory, not dep). */
+     * that aren't enabled are vacuously satisfied (advisory, not dep).
+     * Deferred-entry load-all rows sit outside the enabled order
+     * (appended lexicographically) — relations involving one are
+     * skipped, never error-disable a mod nobody enabled. */
     {
         int keep = 0;
         for (int i = 0; i < n_pending; i++) {
             int ok_adv = 1;
             for (int a = 0; a < pending[i].n_above && ok_adv; a++) {
+                if (!pending[i].boot_on) break;
                 for (int j = 0; j < n_pending; j++) {
+                    if (!pending[j].boot_on) continue;
                     if (strcmp(pending[j].id, pending[i].above[a]) != 0)
                         continue;
                     if (j > i) {
@@ -2121,7 +2288,9 @@ int openpete_mods_init(const openpete_options_t* opts) {
                 }
             }
             for (int b = 0; b < pending[i].n_below && ok_adv; b++) {
+                if (!pending[i].boot_on) break;
                 for (int j = 0; j < n_pending; j++) {
+                    if (!pending[j].boot_on) continue;
                     if (strcmp(pending[j].id, pending[i].below[b]) != 0)
                         continue;
                     if (j < i) {
@@ -2153,9 +2322,32 @@ int openpete_mods_init(const openpete_options_t* opts) {
     tc.mods_dir  = mods_dir;
     for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
 
+    /* Entry policy: boot-enabled mods enter at load, and so do their
+     * deps (a lib's exports must exist before its client's entry
+     * imports them — the dep enters but stays disabled if it wasn't in
+     * the enabled set itself). Every other load-all row defers entry
+     * to its first enable. */
+    int must_enter[MODS_MAX] = {0};
+    {
+        int changed = 1;
+        while (changed) {
+            changed = 0;
+            for (int i = 0; i < n_pending; i++) {
+                if (!pending[i].boot_on && !must_enter[i]) continue;
+                for (int d = 0; d < pending[i].n_deps; d++) {
+                    int j = topo_find(&tc, pending[i].deps[d]);
+                    if (j >= 0 && !pending[j].boot_on && !must_enter[j]) {
+                        must_enter[j] = 1;
+                        changed = 1;
+                    }
+                }
+            }
+        }
+    }
+
     /* Phase C: build + load in topo order; a load failure cascades to
      * dependents (their imports would dangle). */
-    int loaded = 0;
+    int loaded = 0, enabled = 0;
     int load_ok[MODS_MAX] = {0};
     for (int t = 0; t < tc.n_topo; t++) {
         int i = tc.topo[t];
@@ -2172,11 +2364,14 @@ int openpete_mods_init(const openpete_options_t* opts) {
         if (s_mod_count >= MODS_MAX) break;
         struct openpete_mod* mod = &s_mods[s_mod_count];
         *mod = pending[i];
-        if (load_mod(mod, sdk_dir) != 0) continue;
-        mod->enabled = 1;
+        if (load_mod(mod, sdk_dir,
+                     pending[i].boot_on || must_enter[i]) != 0)
+            continue;
+        mod->enabled = mod->boot_on;
         load_ok[i] = 1;
         s_mod_count++;
         loaded++;
+        if (mod->enabled) enabled++;
     }
 
     /* Declared-bindings conflict scan: two enabled mods claiming the
@@ -2196,9 +2391,14 @@ int openpete_mods_init(const openpete_options_t* opts) {
                                    s_mods[j].id,
                                    s_mods[j].bindings[bj].purpose);
 
-    if (loaded > 0)
-        OPL_INFO_F("mods", "%d mod%s active (dir: %s)", loaded,
-                   loaded == 1 ? "" : "s", mods_dir);
+    if (enabled > 0)
+        OPL_INFO_F("mods", "%d mod%s active (dir: %s)", enabled,
+                   enabled == 1 ? "" : "s", mods_dir);
+    if (loaded > enabled)
+        OPL_INFO_F("mods", "%d more mod%s loaded disabled (entry "
+                   "deferred) — enable via the M-overlay Mods panel or "
+                   "the O-menu", loaded - enabled,
+                   loaded - enabled == 1 ? "" : "s");
     toggle_parse_env();
     return loaded;
 }

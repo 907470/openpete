@@ -151,6 +151,29 @@ int         openpete_mods_count(void);
 const char* openpete_mods_id(int i);
 int         openpete_mods_is_enabled(const char* id);
 
+/* Per-mod row for the dev overlay's Mods panel. Strings are loader-
+ * owned and live for the session. */
+typedef struct {
+    const char* id;
+    const char* name;    /* manifest display name (falls back to id) */
+    const char* version;
+    int enabled;         /* live-toggle state */
+    int entered;         /* openpete_mod_entry has run (deferred-entry
+                          * load-all: boot-disabled mods enter on first
+                          * enable) */
+    int sim_neutral;     /* manifest declaration (observer tier) */
+    int has_ui;          /* register_ui was called */
+    int has_assets;      /* assets/ overlay root (boot-scoped tier) */
+    int has_src;
+} openpete_mods_menu_info_t;
+int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
+
+/* Run mod i's registered UI section with the overlay's widget vtable.
+ * Sets the render-purity guard (openpete_mods_in_present) around the
+ * callback. No-op for mods without a registration / disabled mods. */
+struct openpete_mod_ui;
+void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
+
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 void openpete_mods_tick_boundary(unsigned canonical_tick);
 void openpete_mods_site_set_enabled(const char* mod_id, int on);

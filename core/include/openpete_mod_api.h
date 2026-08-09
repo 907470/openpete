@@ -71,6 +71,35 @@ typedef struct openpete_sfx_event {
 /* A level-ready callback (see on_level below). */
 typedef void (*openpete_mod_level_fn)(CPUState* cpu, int level_id);
 
+/* ── Per-mod UI (see register_ui below) ──────────────────────────────
+ * Immediate-mode widget vtable the engine's dev overlay implements —
+ * mods never see the underlying UI library. Widgets returning int
+ * report 1 when the value changed this frame (checkbox/slider/combo
+ * write through their pointer), buttons report 1 on click. tooltip()
+ * annotates the PREVIOUS widget on hover. The vtable is engine-owned
+ * and append-only, like the api struct. */
+typedef struct openpete_mod_ui {
+    void (*text)(const char* fmt, ...);          /* printf-style line   */
+    void (*text_disabled)(const char* fmt, ...); /* dimmed line         */
+    int  (*button)(const char* label);
+    int  (*checkbox)(const char* label, int* v);
+    int  (*slider_int)(const char* label, int* v, int min, int max);
+    int  (*slider_float)(const char* label, float* v, float min,
+                         float max);
+    int  (*combo)(const char* label, int* idx, const char* const* items,
+                  int count);
+    int  (*input_text)(const char* label, char* buf, int cap);
+    void (*separator)(void);
+    void (*same_line)(void);
+    void (*tooltip)(const char* text);
+    void* _reserved[8]; /* future widgets; always NULL today */
+} openpete_mod_ui_t;
+
+/* The mod's section body. Runs only while the overlay is open AND the
+ * mod is enabled; draw with `ui`, `user` is the register_ui cookie. */
+typedef void (*openpete_mod_ui_fn)(const openpete_mod_ui_t* ui,
+                                   void* user);
+
 /* Savestate participation (see register_savestate_hooks): serialize the
  * mod's own non-canonical state alongside the engine snapshot. save
  * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
@@ -242,7 +271,7 @@ typedef struct openpete_mod_material_selector {
 typedef int (*openpete_mod_material_fn)(CPUState* cpu, uint32_t moby_vaddr,
                                         void* uniform_out, uint32_t cap);
 
-#define OPENPETE_MOD_API_VERSION 2u
+#define OPENPETE_MOD_API_VERSION 3u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION */
@@ -732,6 +761,20 @@ typedef struct openpete_mod_api {
     int (*texpack_fog_shift)(openpete_mod_t* self,
                              const float scale_rgb[3],
                              const float offset_rgb[3]);
+
+    /* ── Per-mod UI section (api v3) ─────────────────────────────────
+     * Register this mod's section body for the dev overlay's Mods
+     * panel (M key, windowed runs). The overlay lists every mod with
+     * its live enable/disable toggle regardless; register_ui adds the
+     * mod's own widgets under its entry. fn runs at overlay render
+     * with the sim quiescent, RENDER-PURE by contract AND enforcement
+     * (guest access / game calls / base() / registration are refused
+     * inside — the present-hook rules): mutate host-side mod state
+     * from widgets and let tick hooks consume it. Never runs while
+     * the mod is disabled, and never headless. One registration per
+     * mod (re-register replaces). Entry/tick context. Returns 0. */
+    int (*register_ui)(openpete_mod_t* self, openpete_mod_ui_fn fn,
+                       void* user);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */
