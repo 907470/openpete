@@ -50,11 +50,13 @@ expect_log    = ["my-mod: it worked"]        # substring asserts
 ## `[[level]]` — custom levels, zero code
 
 A mod can ship a whole custom level with **no C at all**: one manifest
-block plus two files. The engine registers the level in the M-overlay's
-**Custom Levels** panel (sorted alphabetically, five per "Custom World"),
-gives it a Warp button and a slot/replace mode switch, and handles all
-the guest-side plumbing — level-slot claim, WAD TOC declaration, serving
-your files when the game streams the level, restore on disable.
+block plus two files. The engine gives the mod a section in the
+M-overlay's **Mods** list with a row per level — Warp button,
+slot/replace mode switch, and a tooltip carrying its "Custom World"
+number (levels from all mods sort alphabetically, five per world) —
+and handles all the guest-side plumbing: level-slot claim, WAD TOC
+declaration, serving your files when the game streams the level,
+restore on disable.
 
 ``` toml
 [[level]]
