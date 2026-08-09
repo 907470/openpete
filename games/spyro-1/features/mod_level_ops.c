@@ -46,6 +46,16 @@
 #define ADDR_G_HASLVLTRANS 0x800756D0u
 #define ADDR_G_LOADSTAGE   0x80075864u
 #define ADDR_G_DEMOMODE    0x80075714u /* DEMO_MODE_NONE = 0 */
+/* D_8006EF9C — per-level-index XA track (int[48]). The free slot's row
+ * (index 35) ships as track 19 = Gnasty's Loot; a claimed slot plays
+ * the DONOR's music instead. */
+#define ADDR_LEVEL_TRACK_TAB 0x8006EF9Cu
+
+static void inherit_donor_music(CPUState* cpu, int donor_index) {
+    cpu->write_word(ADDR_LEVEL_TRACK_TAB + 4u * SLOT_INDEX,
+                    cpu->read_word(ADDR_LEVEL_TRACK_TAB +
+                                   4u * (uint32_t)donor_index));
+}
 
 #define ADDR_SETOVERLAYPTRS 0x8005A470u
 #define ADDR_LOADLEVELSCENE 0x8001364Cu
@@ -89,6 +99,7 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
     for (uint32_t w = 0; w < WAD_LEVELENTRY_SZ; w += 4)
         cpu->write_word(entry_addr(SLOT_INDEX) + w,
                         cpu->read_word(entry_addr(donor_index) + w));
+    inherit_donor_music(cpu, donor_index);
     if (!s_hooks_installed) {
         if (openpete_mods_chain_add(ADDR_SETOVERLAYPTRS, alias_call,
                                     "level-registry") != 0 ||
@@ -142,6 +153,7 @@ static int ops_retarget_slot(CPUState* cpu, int donor_level_id) {
     for (uint32_t w = 0; w < WAD_LEVELENTRY_SZ; w += 4)
         cpu->write_word(entry_addr(SLOT_INDEX) + w,
                         cpu->read_word(entry_addr(donor_index) + w));
+    inherit_donor_music(cpu, donor_index);
     s_slot_donor = donor_level_id;
     return 0;
 }

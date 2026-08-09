@@ -397,7 +397,7 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 int  openpete_mods_custom_register(const char* mod_id, const char* name,
                                    const char* stem, const char* dir,
                                    const char* donor, int replace,
-                                   const char* log_tag);
+                                   const char* music, const char* log_tag);
 typedef struct {
     const char* name;   /* human name (sort key) */
     const char* owner;  /* mod id */
@@ -417,6 +417,12 @@ void openpete_mods_custom_set_mode(int i, int replace);
  * the active slot row, or an enabled declared replace row. 1 = found. */
 int  openpete_mods_custom_files_for(int level_id, const char** dir_out,
                                     const char** stem_out);
+/* Music hook: the custom song for logical level `level_id` right now
+ * (same row selection as files_for). Returns the WAV path (and its
+ * duration via dur_sec_out, may be NULL) or NULL when the level has no
+ * custom song / the file was missing at registration. */
+const char* openpete_mods_custom_music_for(int level_id,
+                                           double* dur_sec_out);
 
 int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag);

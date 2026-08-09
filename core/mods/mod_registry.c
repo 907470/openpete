@@ -16,6 +16,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -436,6 +437,8 @@ typedef struct {
     int  replace_mode;     /* 1 = serve over the donor's own entry */
     uint32_t data_size;    /* stat at registration; 0 = files missing */
     int  declared_replace; /* donor entry currently carries our length */
+    char music[1088];      /* custom song WAV, "" = none */
+    double music_sec;      /* its duration; 0 = file missing/bad */
 } custom_level_t;
 
 static custom_level_t s_customs[CUSTOM_MAX];
@@ -448,7 +451,7 @@ static int s_custom_warp = -1;         /* queued warp (real row index) */
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
-                                  const char* log_tag) {
+                                  const char* music, const char* log_tag) {
     if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
         return -1;
     if (s_custom_count >= CUSTOM_MAX) {
@@ -479,6 +482,18 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     if (!r->data_size)
         OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
                    "playable until derived", name, p);
+    r->music[0] = '\0';
+    r->music_sec = 0.0;
+    if (music && music[0]) {
+        snprintf(r->music, sizeof r->music, "%s/music/%s", dir, music);
+        r->music_sec = op_wav_probe_seconds(r->music);
+        if (r->music_sec <= 0.0) {
+            OPL_WARN_F(log_tag, "level \"%s\": music %s missing/unreadable "
+                       "— donor's track plays until derived", name,
+                       r->music);
+            r->music[0] = '\0';
+        }
+    }
     int row = s_custom_count++;
     /* The per-tick driver does all the work — make sure it's armed. */
     (void)ensure_hooked(log_tag);
@@ -545,6 +560,23 @@ int openpete_mods_custom_files_for(int level_id, const char** dir_out,
         }
     }
     return 0;
+}
+
+const char* openpete_mods_custom_music_for(int level_id,
+                                           double* dur_sec_out) {
+    const custom_level_t* r = NULL;
+    if (s_custom_slot_id && level_id == s_custom_slot_id &&
+        s_custom_active >= 0)
+        r = &s_customs[s_custom_active];
+    else
+        for (int i = 0; i < s_custom_count && !r; i++)
+            if (s_customs[i].replace_mode && s_customs[i].declared_replace &&
+                s_customs[i].donor_id == level_id)
+                r = &s_customs[i];
+    if (!r || !r->music[0] || !openpete_mods_is_enabled(r->mod_id))
+        return NULL;
+    if (dur_sec_out) *dur_sec_out = r->music_sec;
+    return r->music;
 }
 
 /* Test/dev driver: OPENPETE_CUSTOM_WARP="tick:Level Name" queues a warp

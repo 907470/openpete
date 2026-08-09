@@ -210,6 +210,41 @@ int music_override_try_start(int track_index, int start_sector)
     return 1;
 }
 
+/* Explicit-path start: one cached slot, evicted when the path changes.
+ * s.track = -1 marks path-owned playback (no table slot to invalidate). */
+static struct {
+    char       path[1088];
+    op_wav_pcm pcm;
+    int        state; /* MO_* */
+} s_path;
+
+int music_override_try_start_path(const char* path, int start_sector)
+{
+    if (!path || !path[0]) return 0;
+    music_override_init();
+    if (strcmp(s_path.path, path) != 0) {
+        if (s_path.state == MO_LOADED) op_wav_free(&s_path.pcm);
+        s_path.state = MO_UNLOADED;
+        snprintf(s_path.path, sizeof(s_path.path), "%s", path);
+    }
+    if (s_path.state == MO_UNLOADED)
+        s_path.state = op_wav_load(path, &s_path.pcm) == 0 ? MO_LOADED
+                                                           : MO_FAILED;
+    if (s_path.state != MO_LOADED) return 0;
+    if (!ensure_al()) return 0;
+
+    music_override_stop();
+    s.track  = -1;
+    s.cursor = 0;
+    s.pcm    = &s_path.pcm;
+    s.active = 1;
+    apply_gain();
+    music_override_pump();
+    OPL_INFO_F("music", "wav override active: %s (LBA %d)", path,
+               start_sector);
+    return 1;
+}
+
 int music_override_is_active(void) { return s.active; }
 
 void music_override_pump(void)
@@ -282,6 +317,9 @@ void music_override_shutdown(void)
         if (s.cache_state[i] == MO_LOADED) op_wav_free(&s.cache[i]);
         s.cache_state[i] = MO_UNLOADED;
     }
+    if (s_path.state == MO_LOADED) op_wav_free(&s_path.pcm);
+    s_path.state   = MO_UNLOADED;
+    s_path.path[0] = '\0';
     s.discovered = 0;
     s.dir[0]     = '\0';
 }

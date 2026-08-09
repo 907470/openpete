@@ -37,6 +37,18 @@ int op_wav_load(const char* path, op_wav_pcm* out)
     return 0;
 }
 
+double op_wav_probe_seconds(const char* path)
+{
+    /* SDL_LoadWAV reads the whole file; fine for a boot-time probe. */
+    op_wav_pcm pcm;
+    if (op_wav_load(path, &pcm) != 0) return 0.0;
+    double sec = pcm.sample_rate > 0
+                     ? (double)pcm.frame_count / (double)pcm.sample_rate
+                     : 0.0;
+    op_wav_free(&pcm);
+    return sec;
+}
+
 void op_wav_free(op_wav_pcm* pcm)
 {
     if (!pcm) return;

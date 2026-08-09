@@ -24,6 +24,10 @@ typedef struct {
 int  op_wav_load(const char* path, op_wav_pcm* out);
 void op_wav_free(op_wav_pcm* pcm);
 
+/* Duration in seconds of a WAV op_wav_load would accept, without keeping
+ * the PCM. 0.0 on missing/unloadable/unsupported file. */
+double op_wav_probe_seconds(const char* path);
+
 #ifdef __cplusplus
 }
 #endif

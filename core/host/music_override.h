@@ -24,6 +24,11 @@ void music_override_shutdown(void);
  * LBA — logged for identification; the playback position the game reads
  * back is owned by the game layer's virtual CD head, not by us. */
 int  music_override_try_start(int track_index, int start_sector);
+
+/* Same contract, but for an explicit WAV path instead of the track-index
+ * convention — used for content that has no stock track identity (a
+ * custom level's own song). One cached slot; a different path evicts it. */
+int  music_override_try_start_path(const char* path, int start_sector);
 void music_override_stop(void);
 int  music_override_is_active(void);
 

@@ -67,12 +67,18 @@ donor = "dark_hollow"      # whose loader/code the level runs under —
                            # lower_snake name ("cliff_town") or id (22)
 replace = true             # optional: serve over the donor's own level
                            # instead of the shared free slot
+music = "grim_garden.wav"  # optional: the level's own song, from
+                           # assets/music/ (PCM 16-bit, 44100 Hz)
 ```
 
 - `<stem>.data.bin` is the level's WAD data segment (any size);
   `<stem>.ovl.bin` is the donor's code overlay (must stay the donor's
   stock size) — omit it to run the stock overlay.
 - Pick the level your hack was authored against as `donor`.
+- Without `music`, the level plays its **donor's** track. With it, the
+  engine plays your WAV whenever the level starts its music, and sizes
+  the game's loop bookkeeping to the WAV's length. The file loads whole
+  into RAM — a few minutes of 44.1 kHz stereo is ~50 MB.
 - Multiple `[[level]]` blocks per mod are legal.
 - Custom levels share the game's one free level slot (id 65) until the
   capacity work lands, so per-level progress (gems/dragons) is shared

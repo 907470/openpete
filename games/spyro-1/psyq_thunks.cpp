@@ -92,6 +92,7 @@ extern "C" {
  * place of the XA stream when present. See
  * notes/plans/openpete-music-wav-override.md. */
 #include "music_override.h"
+#include "openpete_mods.h"          /* custom-level song lookup + SFX overlay */
 #include "features/render_paths.h"  /* --render-paths OT-walk filter */
 #include "features/moby_rank.h"     /* same-moby painter rank source (OT-walk ingest) */
 
@@ -1277,6 +1278,61 @@ static void start_music_stream(int sector) {
      * synthesizes the position the game reads from this anchor. */
     g_cdXaStartLBA = sector;
     g_cdXaStartVBL = SDL_GetAtomicInt(&openpete_vbl);
+
+    const int track = spyro_current_music_track();
+
+    /* Custom-level song ([[level]] music): resolved against the guest's
+     * level id at the moment it starts the stream. Prefer g_NextLevelId
+     * (same rule as the WAD overlay's latch): the level's first start
+     * fires inside LoadLevelScene, where the slot's donor alias has
+     * g_LevelId temporarily swapped to the DONOR — g_NextLevelId still
+     * names the slot. Loop restarts fire outside the alias, where both
+     * agree. */
+    int32_t level_id = 0;
+    memcpy(&level_id, openpete_psx_get_ram() + 0x758B4, sizeof(level_id));
+    if (level_id < 10 || level_id > 65)
+        memcpy(&level_id, openpete_psx_get_ram() + 0x7596C,
+               sizeof(level_id));
+    double mdur = 0.0;
+    const char* mfile =
+        openpete_mods_custom_music_for((int)level_id, &mdur);
+
+    /* Guest-deterministic half (snapshotted; runs during speculation):
+     * keep the guest's loop bookkeeping sane for a custom song. The
+     * track keeps the DONOR's number (inherited at slot claim), but its
+     * m_MusicTable end is stretched to the WAV's length so the guest
+     * re-issues its loop ReadS when the song actually ends — 150
+     * group-sectors per second (37.8 kHz stereo XA = 18.75 audio
+     * sectors/s under the 8-sector interleave). Restored to stock the
+     * next time the track starts without a custom song. */
+    if (track >= 0 && track < 48) {
+        uint8_t* ram = openpete_psx_get_ram();
+        const uint32_t ent = 0x774B0u + 8u + 8u * (uint32_t)track;
+        int32_t tstart = 0, tend = 0;
+        memcpy(&tstart, ram + ent, 4);
+        memcpy(&tend, ram + ent + 4u, 4);
+        static int32_t s_stock_end[48];
+        static uint8_t s_stock_known[48];
+        if (!s_stock_known[track]) {
+            s_stock_end[track] = tend;
+            s_stock_known[track] = 1;
+        }
+        if (mfile && mdur > 0.0) {
+            int32_t want = tstart + (int32_t)(mdur * 150.0 + 0.5);
+            if (tend != want) memcpy(ram + ent + 4u, &want, 4);
+        } else if (s_stock_known[track] && tend != s_stock_end[track]) {
+            memcpy(ram + ent + 4u, &s_stock_end[track], 4);
+        }
+        if (mfile) {
+            /* Pin the easter-egg swap away: the game's easter table has
+             * no row for the free slot's index 35 (an OOB read into the
+             * XA offset table), and a custom level shouldn't swap to
+             * retail songs mid-play regardless. */
+            const int32_t never = 0x7FFFFFFF;
+            memcpy(ram + 0x774B0u + 540u, &never, 4);
+        }
+    }
+
     /* Runahead lookahead: starting host audio (WAV override or XA) from a
      * speculative tick would be audible and then re-fired by the committed
      * re-run. Guest-side effects of the read roll back regardless. */
@@ -1284,9 +1340,15 @@ static void start_music_stream(int sector) {
     /* One line per track start / loop (every couple of minutes), so a
      * music report can be read off an ordinary log: the gap between two
      * of these is the loop period the guest measured. */
-    const int track = spyro_current_music_track();
     OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d",
                track, sector, s_xa_filter_chan, g_cdXaStartVBL);
+    if (mfile)
+        OPL_INFO_F("music", "custom-level song for level %d: %s (%.1fs "
+                   "loop)", (int)level_id, mfile, mdur);
+    if (mfile && music_override_try_start_path(mfile, sector)) {
+        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+        return;
+    }
     if (music_override_try_start(track, sector)) {
         if (PsyX_XA_IsActive()) PsyX_XA_Stop();
         return;
