@@ -5,10 +5,14 @@
 // overlay key is LOGICAL identity, not a path: per-level {overlay, data}
 // entries from g_WadHeader's TOC. A mod ships
 //   assets/wad/level<ID>.data.bin      (ID = logical level id, e.g. 10)
-// and every CdRead that lands inside that level's Data entry is served
-// the mod's bytes instead of the disc's (same size required in v1 —
-// resizing is P3 capacity work). The highest-priority ENABLED mod wins,
-// same single priority truth as every other namespace.
+//   assets/wad/level<ID>.ovl.bin       (optional: the level's code overlay)
+// and every CdRead that lands inside that entry is served the mod's
+// bytes instead of the disc's. Overlay overrides must match the stock
+// size (code loads into a fixed buffer); DATA overrides may be any size
+// — the serve range follows the file, and a resizing mod declares the
+// new length in the guest WAD TOC so the game actually streams it. The
+// highest-priority ENABLED mod wins, same single priority truth as
+// every other namespace.
 //
 // Mechanism: psyq_thunks snoops CdlSetloc to track the head position,
 // psyq_CdRead calls mod_wad_apply() after the drain — the guest buffer
@@ -32,6 +36,7 @@
 #include "game_extras.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"
+#include "openpete_psx.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,13 +49,40 @@
 #define SEC_RAW         2352
 #define SEC_RAW_SKEW    24   /* mode2/form1 user data offset in a raw sector */
 
+/* One servable WAD segment (a level's Overlay or Data entry). Data
+ * overrides may be a DIFFERENT size than the stock entry: the serve
+ * range extends to the override file (a level-resize mod patches the
+ * guest TOC length so the game actually asks for it — the overlay just
+ * answers whatever span the game reads). Overlay overrides stay
+ * same-size (code loaded into a fixed-size buffer). */
 typedef struct {
     int      present;       /* TOC entry valid */
-    uint32_t start_sector;  /* absolute disc sector of the Data entry */
-    uint32_t n_sectors;
-    uint32_t length;        /* entry byte length */
+    uint32_t start_sector;  /* absolute disc sector of the entry */
+    uint32_t n_sectors;     /* stock entry sectors */
+    uint32_t length;        /* stock entry byte length */
     int      latched;       /* live_root decided for the current load */
     int      live_root;     /* asset root serving this load, -1 = the disc */
+    int      serve_id;      /* logical level id this load resolved to */
+    uint32_t serve_len;     /* latched override byte length (file size) */
+} wad_seg_t;
+
+/* Guest-side words the latch consults (Spyro 1). The in-RAM WAD TOC is
+ * the serving CONTRACT: a segment serves the override of whichever
+ * LOGICAL level id is streaming it — a registered level slot's cloned
+ * entry points at its donor's sectors, so the same physical range can
+ * be one level stock and another level modded. */
+#define GVA_NEXT_LEVEL 0x800758B4u
+#define GVA_LEVEL_ID   0x8007596Cu
+#define GVA_WAD_HEADER 0x8007A6D0u
+
+static uint32_t guest_u32(uint32_t va) {
+    const uint32_t* p = (const uint32_t*)openpete_psx_to_host_ptr(va);
+    return p ? *p : 0u;
+}
+
+typedef struct {
+    wad_seg_t data;
+    wad_seg_t ovl;
 } wad_level_t;
 
 static char        s_disc_path[1024];
@@ -59,6 +91,7 @@ static wad_level_t s_levels[WAD_LEVELS];
 static FILE*       s_bin = NULL;
 static int         s_raw = 0;       /* 1 = 2352-byte raw sectors */
 static uint32_t    s_next_sector = 0;
+static uint32_t    s_wad_sector = 37;
 
 /* Savestate participation (game_state_extra): the append cursor is host
  * state the guest depends on — TOC entries written into restored guest RAM
@@ -131,46 +164,65 @@ static int level_index_to_id(int idx) {
     return (idx / 6 + 1) * 10 + idx % 6;
 }
 
-/* Build the override path level `idx` would take from asset root `root`.
- * Root indices are stable for the session (the loader only ever appends
- * roots; a disabled mod keeps its slot), so an index may be latched. */
-static int wad_override_path(int idx, int root, char* out, size_t cap,
-                             const char** owner_out) {
+/* Build the override path LOGICAL level `id` would take from asset root
+ * `root`. Root indices are stable for the session (the loader only ever
+ * appends roots; a disabled mod keeps its slot), so an index may be
+ * latched. kind: "data" or "ovl". */
+static int wad_override_path(int id, const char* kind, int root, char* out,
+                             size_t cap, const char** owner_out) {
     const char* owner = NULL;
     const char* dir = openpete_mods_asset_root(root, &owner);
     if (!dir) return -1;
-    snprintf(out, cap, "%s/wad/level%02d.data.bin", dir,
-             level_index_to_id(idx));
+    snprintf(out, cap, "%s/wad/level%02d.%s.bin", dir, id, kind);
     if (owner_out) *owner_out = owner;
     return 0;
 }
 
-/* Resolve the winning override for level `idx` against the CURRENT enabled
- * set: the highest-priority (= last-registered) asset root whose owner is
- * enabled and which ships a correctly-sized assets/wad/level<ID>.data.bin.
- * Returns that root index, or -1 for "no override — serve the disc".
- * path_out/owner_out are optional. */
-static int wad_find_override(int idx, char* path_out, size_t cap,
-                             const char** owner_out) {
+/* Resolve the winning override for LOGICAL level `id` against the CURRENT
+ * enabled set: the highest-priority (= last-registered) asset root whose
+ * owner is enabled and ships assets/wad/level<id>.<kind>.bin whose size
+ * EQUALS want_len — the length the guest WAD TOC declares for that
+ * level's entry. The guest table is the contract: a resize mod declares
+ * its new length there, and an undeclared mismatched file simply never
+ * serves. A level's files serve as a SET: an ovl only serves when the
+ * same root's data file (if present) also matches want_data_len, so a
+ * root shipping a whole level can never leak just its code overlay into
+ * a stock load of the same sectors.
+ * Returns the root index, or -1 for "no override — serve the disc". */
+static int wad_find_override(int id, const char* kind, uint32_t want_len,
+                             uint32_t want_data_len, char* path_out,
+                             size_t cap, const char** owner_out,
+                             uint32_t* len_out) {
+    int is_ovl = kind[0] == 'o';
     for (int r = openpete_mods_asset_root_count() - 1; r >= 0; r--) {
         const char* owner = NULL;
         char p[1088];
-        if (wad_override_path(idx, r, p, sizeof p, &owner) != 0) continue;
+        if (wad_override_path(id, kind, r, p, sizeof p, &owner) != 0)
+            continue;
         /* A live-disabled mod's assets must not reach the guest; the slot
          * falls through to the next enabled mod that supplies this level. */
         if (owner && owner[0] && !openpete_mods_is_enabled(owner)) continue;
         if (!owner || !owner[0]) owner = "?";
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        if ((uint32_t)st.st_size != s_levels[idx].length) {
-            OPL_WARN_F("wadmod", "%s: %s is %ld bytes but the level %d "
-                       "Data entry is %u — size must match (v1); skipped",
-                       owner, p, (long)st.st_size, level_index_to_id(idx),
-                       s_levels[idx].length);
+        if ((uint32_t)st.st_size != want_len) {
+            if (getenv("OPENPETE_WADMOD_TRACE"))
+                OPL_INFO_F("wadmod", "%s: level %d %s is %ld bytes, guest "
+                           "TOC declares %u — not serving", owner, id, kind,
+                           (long)st.st_size, want_len);
             continue;
+        }
+        if (is_ovl) {
+            char dp[1088];
+            struct stat ds;
+            if (wad_override_path(id, "data", r, dp, sizeof dp, NULL) == 0 &&
+                stat(dp, &ds) == 0 &&
+                (uint32_t)ds.st_size != want_data_len)
+                continue; /* whole-level set: data mismatched -> hold ovl */
         }
         if (path_out) snprintf(path_out, cap, "%s", p);
         if (owner_out) *owner_out = owner;
+        if (len_out) *len_out = (uint32_t)st.st_size;
         return r;
     }
     return -1;
@@ -205,6 +257,7 @@ static void wad_init(void) {
 
     const game_disc_layout_t* dl = game_get_disc_layout();
     uint32_t wad_sector = dl ? dl->wad_sector : 37;
+    s_wad_sector = wad_sector;
 
     uint8_t hdr[SEC_DATA];
     if (read_sector(wad_sector, hdr) != 0) {
@@ -213,21 +266,41 @@ static void wad_init(void) {
     }
     int usable = 0;
     for (int i = 0; i < WAD_LEVELS; i++) {
-        uint32_t off, len;
+        uint32_t oo, ol, off, len;
+        memcpy(&oo,  hdr + WAD_HDR_LEVELS + i * 16 + 0, 4);  /* m_Overlay.m_Offset */
+        memcpy(&ol,  hdr + WAD_HDR_LEVELS + i * 16 + 4, 4);  /* m_Overlay.m_Length */
         memcpy(&off, hdr + WAD_HDR_LEVELS + i * 16 + 8, 4);  /* m_Data.m_Offset */
         memcpy(&len, hdr + WAD_HDR_LEVELS + i * 16 + 12, 4); /* m_Data.m_Length */
-        if (len == 0 || (off & (SEC_DATA - 1)) != 0) continue;
-        s_levels[i].present = 1;
-        s_levels[i].start_sector = wad_sector + off / SEC_DATA;
-        s_levels[i].n_sectors = (len + SEC_DATA - 1) / SEC_DATA;
-        s_levels[i].length = len;
-        s_levels[i].live_root = -1;
-        usable++;
+        if (len && (off & (SEC_DATA - 1)) == 0) {
+            wad_seg_t* d = &s_levels[i].data;
+            d->present = 1;
+            d->start_sector = wad_sector + off / SEC_DATA;
+            d->n_sectors = (len + SEC_DATA - 1) / SEC_DATA;
+            d->length = len;
+            d->live_root = -1;
+            usable++;
+        }
+        if (ol && (oo & (SEC_DATA - 1)) == 0) {
+            wad_seg_t* o = &s_levels[i].ovl;
+            o->present = 1;
+            o->start_sector = wad_sector + oo / SEC_DATA;
+            o->n_sectors = (ol + SEC_DATA - 1) / SEC_DATA;
+            o->length = ol;
+            o->live_root = -1;
+        }
     }
+    /* Boot summary: count override FILES present for any level id the
+     * roots ship (any size — whether one serves is decided per load
+     * against the guest TOC). Purely informational. */
     int overrides = 0;
-    for (int i = 0; i < WAD_LEVELS; i++)
-        if (s_levels[i].present &&
-            wad_find_override(i, NULL, 0, NULL) >= 0) overrides++;
+    for (int id = 10; id <= 69; id++) {
+        for (int r = openpete_mods_asset_root_count() - 1; r >= 0; r--) {
+            char p[1088];
+            struct stat st;
+            if (wad_override_path(id, "data", r, p, sizeof p, NULL) == 0 &&
+                stat(p, &st) == 0) { overrides++; break; }
+        }
+    }
     OPL_INFO_F("wadmod", "WAD TOC: %d level data entries; %d override%s "
                "available", usable, overrides, overrides == 1 ? "" : "s");
     s_state = 2;
@@ -251,16 +324,25 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
         OPL_INFO_F("wadmod", "read [%u..%u)", start,
                    start + (uint32_t)sectors);
 
-    for (int i = 0; i < WAD_LEVELS; i++) {
-        wad_level_t* L = &s_levels[i];
+    for (int i = 0; i < 2 * WAD_LEVELS; i++) {
+        const char* kind = (i & 1) ? "ovl" : "data";
+        wad_seg_t* L = (i & 1) ? &s_levels[i >> 1].ovl
+                               : &s_levels[i >> 1].data;
+        int lid = level_index_to_id(i >> 1);
         if (!L->present) continue;
-        uint32_t lo = L->start_sector, hi = L->start_sector + L->n_sectors;
+        /* Serve range: an override may be LARGER than the stock entry
+         * (a level-resize mod patched the guest TOC length) — once one
+         * is latched, its file size defines the range the game may read. */
+        uint32_t range = L->n_sectors;
+        if (L->latched && L->live_root >= 0 && L->serve_len > L->length)
+            range = (L->serve_len + SEC_DATA - 1) / SEC_DATA;
+        uint32_t lo = L->start_sector, hi = L->start_sector + range;
         uint32_t a = start > lo ? start : lo;
         uint32_t b = (start + (uint32_t)sectors) < hi
                          ? (start + (uint32_t)sectors) : hi;
         if (a >= b) continue;
 
-        /* Per-load serve latch. The game streams one level's Data entry
+        /* Per-load serve latch. The game streams one level's entry
          * across a dozen separate CdReads spread over many ticks
          * (LoadLevel stages 3..11) and keeps reading the same entry
          * in-level for the dragon cutscenes, so resolving the override
@@ -274,25 +356,63 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
         char path[1088];
         const char* owner = NULL;
         if (!L->latched || start == lo) {
+            /* Which LOGICAL level is streaming this segment? Ask the
+             * guest: the id in flight (g_NextLevelId during a load,
+             * g_LevelId for in-level re-reads) names a TOC entry, and
+             * that entry pointing its offset at THIS segment makes it
+             * the identity of the load — a registered slot's cloned
+             * entry aims at its donor's sectors, so the same range can
+             * be one level stock and another level modded. The entry's
+             * length is the serve contract. Falls back to the retail
+             * identity + stock length while the guest table isn't up
+             * (boot: the TOC itself is still loading). */
+            uint32_t seg_woff = (L->start_sector - s_wad_sector) * SEC_DATA;
+            int serve_id = lid;
+            uint32_t want_len = L->length, want_dlen = 0;
+            int cand[2] = { (int)guest_u32(GVA_NEXT_LEVEL),
+                            (int)guest_u32(GVA_LEVEL_ID) };
+            for (int c = 0; c < 2; c++) {
+                int id = cand[c];
+                if (id < 10) continue;
+                int gi = (id / 10 - 1) * 6 + id % 10;
+                if (gi < 0 || gi >= WAD_LEVELS) continue;
+                uint32_t e = GVA_WAD_HEADER + 72u + (uint32_t)gi * 16u;
+                if (guest_u32(e + ((i & 1) ? 0u : 8u)) != seg_woff)
+                    continue;
+                serve_id = id;
+                want_len = guest_u32(e + ((i & 1) ? 4u : 12u));
+                want_dlen = guest_u32(e + 12u);
+                break;
+            }
+            if (!want_dlen) {
+                /* No guest resolve: the data contract is the stock len. */
+                want_dlen = s_levels[i >> 1].data.length;
+            }
+            uint32_t flen = 0;
             L->latched = 1;
-            L->live_root = wad_find_override(i, path, sizeof path, &owner);
+            L->live_root = wad_find_override(serve_id, kind, want_len,
+                                             want_dlen, path, sizeof path,
+                                             &owner, &flen);
+            L->serve_id = serve_id;
+            L->serve_len = flen;
             if (L->live_root >= 0)
-                OPL_INFO_F("wadmod", "wad overlay: level %d data served "
-                           "from %s (%s)", level_index_to_id(i), owner,
-                           path);
+                OPL_INFO_F("wadmod", "wad overlay: level %d %s served "
+                           "from %s (%s)", serve_id, kind, owner, path);
         }
         if (L->live_root < 0) continue;
-        if (wad_override_path(i, L->live_root, path, sizeof path, NULL) != 0)
+        if (wad_override_path(L->serve_id, kind, L->live_root, path,
+                              sizeof path, NULL) != 0)
             continue;
+        uint32_t slen = L->serve_len ? L->serve_len : L->length;
         if (getenv("OPENPETE_WADMOD_TRACE"))
-            OPL_INFO_F("wadmod", "level %d serve [%u..%u)",
-                       level_index_to_id(i), a, b);
+            OPL_INFO_F("wadmod", "level %d %s serve [%u..%u)", L->serve_id,
+                       kind, a, b);
         FILE* f = fopen(path, "rb");
         if (!f) continue;
         for (uint32_t s = a; s < b; s++) {
             uint32_t rel = (s - lo) * SEC_DATA;
-            uint32_t n = L->length - rel < SEC_DATA ? L->length - rel
-                                                    : SEC_DATA;
+            if (rel >= slen) break;
+            uint32_t n = slen - rel < SEC_DATA ? slen - rel : SEC_DATA;
             if (fseek(f, (long)rel, SEEK_SET) != 0) break;
             size_t got = fread(host_buf + (size_t)(s - start) * SEC_DATA,
                                1, n, f);
@@ -312,7 +432,7 @@ int spyro1_mod_wad_read_level_data(int level_id, void* buf, uint32_t cap) {
     if (s_state != 2) return -1;
     int idx = (level_id / 10 - 1) * 6 + level_id % 10;
     if (idx < 0 || idx >= WAD_LEVELS) return -1;
-    wad_level_t* L = &s_levels[idx];
+    wad_seg_t* L = &s_levels[idx].data;
     if (!L->present) return -1;
     uint32_t len = L->length;
     if (buf) {

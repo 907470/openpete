@@ -45,3 +45,6 @@ mods/*/assets/s3/
 
 # Generated mod-docs reference pages (tools/gen_mod_docs.py output)
 docs/modding/pages/reference/
+
+# Grim Garden: derived locally from the xdelta + your own disc (tools/derive.py)
+mods/grim-garden/assets/wad/
