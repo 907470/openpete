@@ -241,8 +241,15 @@ static int emit_buf(const cmd_buf_t* b, int n) {
 void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     /* Per-mod time report window: every 512 sim ticks (~17 s at 29.97),
      * counted at the canonical commit. ABOVE the draw gates — tick-hook
-     * timing must report in headless runs too. */
-    if (canonical && openpete_mods_active) {
+     * timing must report in headless runs too.
+     *
+     * Gate on mods LOADED, not openpete_mods_active (= a chain is
+     * registered): the tick boundary drains the live-toggle queue, and
+     * under deferred-entry load-all the very first enable can happen
+     * while no mod owns a chain yet — an active-gated boundary would
+     * never drain the queue, bricking every toggle. Zero mods loaded
+     * still skips everything (pristine modless run). */
+    if (canonical && openpete_mods_count() > 0) {
         static unsigned s_canonical_ticks = 0;
         static unsigned s_report_ticks = 0;
         openpete_mods_tick_boundary(++s_canonical_ticks);

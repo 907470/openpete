@@ -404,6 +404,7 @@ static int api_register_ui(openpete_mod_t* self, openpete_mod_ui_fn fn,
     if (purity_violation("register_ui")) return -1;
     self->ui_fn   = fn;
     self->ui_user = user;
+    if (fn) OPL_INFO_F(self->log_tag, "UI section registered");
     return 0;
 }
 
