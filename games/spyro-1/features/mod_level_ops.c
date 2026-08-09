@@ -31,6 +31,7 @@
 
 #include "psx_runtime.h" /* CPUState */
 #include "mod_wad_overlay.h" /* spyro1_mod_wad_read_level_data */
+#include "game_extras.h"     /* game_set_skip_to_level (title-screen route) */
 
 #define ADDR_G_WADHEADER   0x8007A6D0u
 #define WAD_LEVELENTRY_OFF 72u
@@ -44,6 +45,7 @@
 #define ADDR_G_PORTALLVLID 0x800758ACu
 #define ADDR_G_HASLVLTRANS 0x800756D0u
 #define ADDR_G_LOADSTAGE   0x80075864u
+#define ADDR_G_DEMOMODE    0x80075714u /* DEMO_MODE_NONE = 0 */
 
 #define ADDR_SETOVERLAYPTRS 0x8005A470u
 #define ADDR_LOADLEVELSCENE 0x8001364Cu
@@ -100,9 +102,24 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
 }
 
 static int ops_enter_level(CPUState* cpu, int level_id) {
-    /* Only from live gameplay — a mid-load re-trigger would corrupt the
-     * load state machine. */
-    if (cpu->read_word(ADDR_G_GAMESTATE) != 0u) return -1;
+    uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
+    /* Title screen: the --skip-to-level machinery owns this route (same
+     * hand-off the dev levelwarp uses) — it induces the demo-timeout
+     * transition at the next Press-Start window WITH the demo-replay
+     * downgrade. The cheat-path writes below would instead load the
+     * level in attract-demo mode, whose desynced input replay strobes
+     * the pause menu. */
+    if (gs == 13u) {
+        game_set_skip_to_level(level_id);
+        return 0;
+    }
+    /* Otherwise only from live NON-DEMO gameplay — a mid-load
+     * re-trigger would corrupt the load state machine, and the attract
+     * demo (GS_Playing with g_DemoMode set) would keep its input
+     * replay running inside the new level. Refusal leaves the warp
+     * queued; it fires once the demo hands back to the title screen. */
+    if (gs != 0u) return -1;
+    if (cpu->read_word(ADDR_G_DEMOMODE) != 0u) return -1;
     cpu->write_word(ADDR_G_NEXTLEVELID, (uint32_t)level_id);
     cpu->write_word(ADDR_G_PORTALLVLID, 0u);
     cpu->write_word(ADDR_G_HASLVLTRANS, 0u);
