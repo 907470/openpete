@@ -442,6 +442,9 @@ static bool mod_row_matches(const ImGuiTextFilter &f,
     return f.PassFilter(mi->id) || f.PassFilter(mi->name);
 }
 
+static bool mod_owns_custom_levels(const char *mod_id);
+static void draw_custom_level_rows(const char *mod_id);
+
 static void draw_mods_section(const ImGuiTextFilter &filter)
 {
     const int n = openpete_mods_count();
@@ -483,11 +486,13 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         mod_row_tooltip(&mi);
         ImGui::SameLine();
 
-        if (mi.enabled && mi.has_ui) {
+        const bool has_levels = mod_owns_custom_levels(mi.id);
+        if (mi.enabled && (mi.has_ui || has_levels)) {
             if (ImGui::TreeNodeEx(mi.name,
                                   ImGuiTreeNodeFlags_SpanAvailWidth)) {
                 mod_row_tooltip(&mi);
-                openpete_mods_ui_draw(i, &s_mod_ui);
+                if (mi.has_ui) openpete_mods_ui_draw(i, &s_mod_ui);
+                if (has_levels) draw_custom_level_rows(mi.id);
                 ImGui::TreePop();
             } else {
                 mod_row_tooltip(&mi);
@@ -505,25 +510,29 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
     }
 }
 
-/* Custom Levels — declarative [[level]] rows from every loaded mod,
- * alphabetical, bucketed 5 per "Custom World" (the future in-game
- * homeworlds after Gnasty's World; presentation-only until the guest
- * table capacity arc). */
-static void draw_custom_levels(void)
+/* Declarative [[level]] rows, drawn inside their owning mod's node in
+ * the Mods list. The registry's index order stays alphabetical across
+ * ALL mods — that global order is what buckets levels 5 per "Custom
+ * World" (the future in-game homeworlds after Gnasty's World), so the
+ * world number is shown per row rather than as a grouping. */
+static bool mod_owns_custom_levels(const char *mod_id)
 {
     const int n = openpete_mods_custom_count();
-    if (n == 0) return;
-    if (!ImGui::CollapsingHeader("Custom Levels",
-                                 ImGuiTreeNodeFlags_DefaultOpen))
-        return;
+    for (int i = 0; i < n; i++) {
+        openpete_mods_custom_info_t ci;
+        if (openpete_mods_custom_info(i, &ci) && !strcmp(ci.owner, mod_id))
+            return true;
+    }
+    return false;
+}
+
+static void draw_custom_level_rows(const char *mod_id)
+{
+    const int n = openpete_mods_custom_count();
     for (int i = 0; i < n; i++) {
         openpete_mods_custom_info_t ci;
         if (!openpete_mods_custom_info(i, &ci)) continue;
-        if (i % 5 == 0) {
-            if (i) ImGui::Unindent();
-            ImGui::TextDisabled("Custom World %d", 7 + i / 5);
-            ImGui::Indent();
-        }
+        if (strcmp(ci.owner, mod_id) != 0) continue;
         ImGui::PushID(i);
         const bool owner_on = openpete_mods_is_enabled(ci.owner) != 0;
         const bool playable = ci.files_ok && owner_on;
@@ -536,12 +545,10 @@ static void draw_custom_levels(void)
         ImGui::TextUnformatted(ci.name);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
             ImGui::BeginTooltip();
-            ImGui::Text("from mod %s — donor level %d", ci.owner,
+            ImGui::Text("Custom World %d — donor level %d", 7 + i / 5,
                         ci.donor_id);
             if (!ci.files_ok)
                 ImGui::TextDisabled("level files not derived yet");
-            else if (!owner_on)
-                ImGui::TextDisabled("owning mod is disabled");
             else
                 ImGui::TextDisabled(ci.replace_mode
                     ? "serves over its donor level's own entry"
@@ -558,7 +565,6 @@ static void draw_custom_levels(void)
             openpete_mods_custom_set_mode(i, mode);
         ImGui::PopID();
     }
-    ImGui::Unindent();
 }
 
 static bool row_matches(const ImGuiTextFilter &f, const knob_desc_t *k)
@@ -596,9 +602,10 @@ static void draw_panel(void)
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);
 
-    /* Mods + Custom Levels render between the config sections and the
-     * Debug* ones (or last, when no Debug section is visible — hidden
-     * debug builds, or a filter that empties them). */
+    /* The Mods section (each mod's node hosts its own UI and custom-level
+     * rows) renders between the config sections and the Debug* ones (or
+     * last, when no Debug section is visible — hidden debug builds, or a
+     * filter that empties them). */
     bool mods_drawn = false;
 
     /* Rows are grouped contiguously by section; emit a header only when the
@@ -619,7 +626,6 @@ static void draw_panel(void)
 
         if (!mods_drawn && strncmp(section, "Debug", 5) == 0) {
             draw_mods_section(s_filter);
-            draw_custom_levels();
             mods_drawn = true;
         }
 
@@ -650,10 +656,8 @@ static void draw_panel(void)
         i = end;
     }
 
-    if (!mods_drawn) {
+    if (!mods_drawn)
         draw_mods_section(s_filter);
-        draw_custom_levels();
-    }
 
     ImGui::End();
     s_open = open;
