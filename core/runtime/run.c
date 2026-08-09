@@ -1220,19 +1220,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
 
-    /* Forward CLI overrides to the per-game impl. game_on_frame applies
-     * them when the relevant in-game globals are ready. */
-    game_set_skip_to_level(opts->skip_to_level);
+    /* Skip fast-forward is windowed-only — headless is already unlocked and
+     * has nothing to show. Published before the setter below so the boot
+     * CLI skip (and every later runtime warp) arms correctly. */
+    openpete_skip_ffwd_windowed = opts->headless ? 0 : 1;
 
-    /* --skip-to-level: fast-forward the logos / title / loading / flyby with a
-     * black window (skip presents + pacer) until the target level is playable.
-     * Windowed-only — headless is already unlocked and has nothing to show; the
-     * game side clears it at GS_Playing (see openpete_skip_present_until_level). */
-    openpete_skip_present_until_level =
-        (opts->skip_to_level > 0 && !opts->headless) ? 1 : 0;
-    if (openpete_skip_present_until_level)
-        OPL_INFO_F("skip-to-level",
-                   "fast-forwarding presents until the level loads");
+    /* Forward CLI overrides to the per-game impl. game_on_frame applies
+     * them when the relevant in-game globals are ready. The setter itself
+     * arms the present fast-forward (openpete_skip_present_until_level). */
+    game_set_skip_to_level(opts->skip_to_level);
 
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it
      * the first time real draw commands hit, so host yields engage exactly

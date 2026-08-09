@@ -80,13 +80,21 @@ extern int      openpete_fast_boot_active;
  * so the logos / title / loading / level-load all fast-forward with a black
  * window instead of playing out at 60 Hz for ~25 s. Unlike fast-boot, the game
  * still yields each frame, so `openpete_frame` advances normally — bk2 input
- * timing and frame-keyed captures are unaffected. Armed at boot iff
- * --skip-to-level is set and NOT headless (headless is already unlocked and has
- * no window); the game side (game_on_frame_pre) clears it the moment the level
- * becomes playable (g_Gamestate == GS_Playing — past the black "THE ADVENTURE
- * BEGINS" flyby), or on a generous frame-cap fail-safe so a mis-induced skip can
- * never leave a permanently black window. */
+ * timing and frame-keyed captures are unaffected. Armed by
+ * game_set_skip_to_level() whenever a skip target is set while
+ * openpete_skip_ffwd_windowed says presents exist — the boot CLI flag and
+ * runtime title-screen warps (dev levelwarp, custom-level menu) alike; the
+ * game side (game_on_frame_pre) clears it the moment the level becomes
+ * playable (g_Gamestate == GS_Playing — past the black "THE ADVENTURE
+ * BEGINS" flyby), or on a frame-cap fail-safe relative to arming so a
+ * mis-induced skip can never leave a permanently black window. */
 extern int      openpete_skip_present_until_level;
+
+/* Set once by run.c before the first game_set_skip_to_level() call: 1 in a
+ * windowed run (presents exist, skips may fast-forward them), 0 headless
+ * (already unlocked; skipping presents there would break frame-keyed
+ * screenshot capture). */
+extern int      openpete_skip_ffwd_windowed;
 
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
  * `openpete_vbl` is *not* touched here — psyq_VSync owns that counter,

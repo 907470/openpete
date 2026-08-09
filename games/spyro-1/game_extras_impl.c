@@ -309,10 +309,23 @@ void openpete_diag_cone_dump(void* cpu_v,
  * already pressed Start or the timeout already fired. */
 static int s_skip_to_level    = 0;
 static int s_skip_applied     = 0;
+/* Present fast-forward stop cap, set relative to arming (a boot skip arms
+ * near frame 0, a runtime title-screen warp arms tens of thousands of
+ * frames in — an absolute cap would clear the latter instantly). */
+static uint32_t s_skip_ffwd_deadline = 0;
 
 void game_set_skip_to_level(int level_id) {
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
+    /* Fast-forward presents to the level for runtime warps exactly as for
+     * the boot CLI flag — the dev levelwarp's title route and the
+     * custom-level menu both come through here. */
+    if (level_id > 0 && openpete_skip_ffwd_windowed) {
+        openpete_skip_present_until_level = 1;
+        s_skip_ffwd_deadline = 0;
+        fprintf(stderr, "[skip-to-level] fast-forwarding presents until "
+                        "level %d loads\n", level_id);
+    }
 }
 
 /* The level id/name table lives with the dev-overlay warp feature
@@ -526,6 +539,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
                             "level use OPENPETE_CUSTOM_WARP\n",
                             s_skip_to_level);
                     s_skip_to_level = 0;
+                    /* A refused skip never induces, so the playable-edge
+                     * clear below can't fire — drop the fast-forward now
+                     * rather than leaving a black window to the cap. */
+                    openpete_skip_present_until_level = 0;
+                    s_skip_ffwd_deadline = 0;
                 } else {
                     uint32_t demo_idx = cpu->read_word(0x800757B8u);
                     uint32_t slot     = 0x8006EE7Cu + (demo_idx * 4u);
@@ -575,8 +593,12 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * can't leave a permanently black window. */
     if (openpete_skip_present_until_level) {
         uint32_t gs = cpu->read_word(0x800757D8u); /* g_Gamestate */
-        if ((s_skip_applied && gs == 0u /*GS_Playing*/) || frame_counter > 4000u) {
+        if (!s_skip_ffwd_deadline)
+            s_skip_ffwd_deadline = frame_counter + 4000u;
+        if ((s_skip_applied && gs == 0u /*GS_Playing*/) ||
+            frame_counter > s_skip_ffwd_deadline) {
             openpete_skip_present_until_level = 0;
+            s_skip_ffwd_deadline = 0;
             fprintf(stderr,
                     "[skip-to-level] level playable — presents resume at "
                     "frame=%u\n", (unsigned)frame_counter);
