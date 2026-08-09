@@ -1692,11 +1692,35 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.4f ms)",
                        tick_scale, (double)sim_period_ns / 1e6);
         }
+        /* A modset toggle changes what the timeline means: rewind history
+         * recorded under the old set must not replay into the new one, and
+         * a held runahead snapshot may predate a freshly enabled mod that
+         * declares no runahead capability. Drop both; the dirty path below
+         * re-arms runahead through its capability gate against the NEW
+         * enabled set. */
+        {
+            static unsigned s_modset_epoch = 0;
+            unsigned ep = openpete_mods_toggle_epoch();
+            if (ep != s_modset_epoch) {
+                s_modset_epoch = ep;
+                if (openpete_rewind_enabled()) {
+                    openpete_rewind_clear();
+                    OPL_INFO_F("rewind", "modset changed — history cleared");
+                }
+                if (ra_snap) {
+                    openpete_state_mem_free(ra_snap);
+                    ra_snap = NULL;
+                    OPL_INFO_F("runahead",
+                               "modset changed — re-checking capability gate");
+                }
+                s_runahead_dirty = 1;
+            }
+        }
         /* Live runahead re-arm. Arm only when every enabled mod declares a
          * runahead capability (OP_MOD_RA_PURE / OP_MOD_RA_HOST_FX) —
          * speculative re-execution of tick hooks with undeclared host side
-         * effects would double-fire them. The mod set is fixed at boot, so
-         * one successful arm (ra_snap held) never re-checks. */
+         * effects would double-fire them. Arms once and holds ra_snap until
+         * the modset epoch above disarms it. */
         if (s_runahead_dirty) {
             s_runahead_dirty = 0;
             int ra_depth = s_runahead_req;

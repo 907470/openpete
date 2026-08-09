@@ -694,6 +694,9 @@ void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 typedef struct { char id[MOD_ID_MAX]; int on; } toggle_req_t;
 static toggle_req_t s_toggle_q[16];
 static int          s_toggle_n = 0;
+static unsigned     s_toggle_epoch = 0; /* bumped per applied change */
+
+unsigned openpete_mods_toggle_epoch(void) { return s_toggle_epoch; }
 
 typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
 static toggle_sched_t s_toggle_sched[16];
@@ -793,6 +796,7 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
             OPL_ERROR_F("mods", "live toggle: no loaded mod \"%s\"", id);
             continue;
         }
+        if (mod->enabled == on) continue; /* no-op: don't bump the epoch */
         if (on && !mod->entered && mod_enter_deferred(mod) != 0) {
             OPL_ERROR_F("mods", "live toggle: \"%s\" failed to start — "
                         "staying disabled", id);
@@ -803,6 +807,7 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
         openpete_mods_site_set_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
         mod->enabled = on;
+        s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
     }

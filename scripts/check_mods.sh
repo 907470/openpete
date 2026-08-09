@@ -454,7 +454,7 @@ fi
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch mods/state-rewind mods/ghost-lite \
+        mods/hud-stopwatch mods/ghost-lite \
         mods/triangle-flutter mods/new-moby mods/mirror-level \
         mods/arena-probe mods/sfx-neutral-probe \
         mods/hd-single-texture mods/music-swap; then

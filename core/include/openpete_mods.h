@@ -176,6 +176,11 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
 
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 void openpete_mods_tick_boundary(unsigned canonical_tick);
+/* Bumped once per APPLIED toggle (state actually changed). The run loop
+ * polls it to invalidate timeline-derived state: rewind history recorded
+ * under the old modset must not replay into the new one, and runahead
+ * must re-run its capability gate against the new enabled set. */
+unsigned openpete_mods_toggle_epoch(void);
 void openpete_mods_site_set_enabled(const char* mod_id, int on);
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
 
