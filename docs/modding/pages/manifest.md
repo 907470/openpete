@@ -47,6 +47,39 @@ expect_log    = ["my-mod: it worked"]        # substring asserts
     `args = "--skip-to-level stone_hill"`, **not**
     `args = ["--skip-to-level", "stone_hill"]`.
 
+## `[[level]]` — custom levels, zero code
+
+A mod can ship a whole custom level with **no C at all**: one manifest
+block plus two files. The engine registers the level in the M-overlay's
+**Custom Levels** panel (sorted alphabetically, five per "Custom World"),
+gives it a Warp button and a slot/replace mode switch, and handles all
+the guest-side plumbing — level-slot claim, WAD TOC declaration, serving
+your files when the game streams the level, restore on disable.
+
+``` toml
+[[level]]
+name  = "Grim Garden"      # shown in the menu; also the sort key
+files = "grim_garden"      # stem: assets/levels/grim_garden.data.bin
+                           #     + assets/levels/grim_garden.ovl.bin
+donor = "dark_hollow"      # whose loader/code the level runs under —
+                           # lower_snake name ("cliff_town") or id (22)
+replace = true             # optional: serve over the donor's own level
+                           # instead of the shared free slot
+```
+
+- `<stem>.data.bin` is the level's WAD data segment (any size);
+  `<stem>.ovl.bin` is the donor's code overlay (must stay the donor's
+  stock size) — omit it to run the stock overlay.
+- Pick the level your hack was authored against as `donor`.
+- Multiple `[[level]]` blocks per mod are legal.
+- Custom levels share the game's one free level slot (id 65) until the
+  capacity work lands, so per-level progress (gems/dragons) is shared
+  between them — `replace` mode sidesteps that by taking over the
+  donor's own slot.
+- Don't commit game-derived data: ship a derivation script (an xdelta
+  applied to the user's own disc — see `grim-garden` or
+  `spyro15-cliff-town` for the pattern) that writes `assets/levels/`.
+
 ## config.toml
 
 `config.toml` (optional, next to `mod.toml`) describes what the user

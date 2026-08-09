@@ -510,18 +510,36 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
             uint32_t tsm_mode = cpu->read_word(0x80078D78u + 0x00u);
             uint32_t tsm_sub  = cpu->read_word(0x80078D78u + 0x10u);
             if (gs == 13u && tsm_mode == 0u /*TSM_Init*/ && tsm_sub == 3u) {
-                uint32_t demo_idx = cpu->read_word(0x800757B8u);
-                uint32_t slot     = 0x8006EE7Cu + (demo_idx * 4u);
-                cpu->write_word(slot, (uint32_t)s_skip_to_level);
-                cpu->write_word(0x80078D78u + 0x00u, 3u); /* m_Mode = TSM_Demo */
-                cpu->write_word(0x80078D78u + 0x04u, 0u); /* m_State = TSS_Setup */
-                cpu->write_word(0x80078D78u + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
-                s_skip_applied = 1;
-                fprintf(stderr,
-                        "[skip-to-level] induced demo-transition: level=%d "
-                        "(slot=%u) at frame=%u\n",
-                        s_skip_to_level, (unsigned)demo_idx,
-                        (unsigned)frame_counter);
+                /* Refuse targets whose guest WAD TOC entry is empty (data
+                 * len 0) — loading one chases garbage and crashes. The
+                 * free slot (id 65) only gains an entry once a custom
+                 * level's warp claims it, so it can't be skip targeted
+                 * cold; use OPENPETE_CUSTOM_WARP instead. */
+                int ti = (s_skip_to_level / 10 - 1) * 6 +
+                         s_skip_to_level % 10;
+                if (ti < 0 || ti > 35 ||
+                    !cpu->read_word(0x8007A6D0u + 72u + 16u * (uint32_t)ti +
+                                    12u)) {
+                    fprintf(stderr,
+                            "[skip-to-level] level=%d has no WAD TOC data "
+                            "(unclaimed slot?) — refusing; for a custom "
+                            "level use OPENPETE_CUSTOM_WARP\n",
+                            s_skip_to_level);
+                    s_skip_to_level = 0;
+                } else {
+                    uint32_t demo_idx = cpu->read_word(0x800757B8u);
+                    uint32_t slot     = 0x8006EE7Cu + (demo_idx * 4u);
+                    cpu->write_word(slot, (uint32_t)s_skip_to_level);
+                    cpu->write_word(0x80078D78u + 0x00u, 3u); /* m_Mode = TSM_Demo */
+                    cpu->write_word(0x80078D78u + 0x04u, 0u); /* m_State = TSS_Setup */
+                    cpu->write_word(0x80078D78u + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
+                    s_skip_applied = 1;
+                    fprintf(stderr,
+                            "[skip-to-level] induced demo-transition: "
+                            "level=%d (slot=%u) at frame=%u\n",
+                            s_skip_to_level, (unsigned)demo_idx,
+                            (unsigned)frame_counter);
+                }
             }
         } else {
             /* After TSS_Setup runs, downgrade m_DemoType from TSD_DemoLevel
