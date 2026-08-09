@@ -593,11 +593,13 @@ static void draw_panel(void)
                           "restart. Right-click a row to copy it as a CLI "
                           "flag / env line.");
 
-    draw_mods_section(s_filter);
-    draw_custom_levels();
-
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);
+
+    /* Mods + Custom Levels render between the config sections and the
+     * Debug* ones (or last, when no Debug section is visible — hidden
+     * debug builds, or a filter that empties them). */
+    bool mods_drawn = false;
 
     /* Rows are grouped contiguously by section; emit a header only when the
      * section has at least one row passing the filter + live-only toggle, so
@@ -614,6 +616,12 @@ static void draw_panel(void)
             end++;
         }
         if (!any) { i = end; continue; }
+
+        if (!mods_drawn && strncmp(section, "Debug", 5) == 0) {
+            draw_mods_section(s_filter);
+            draw_custom_levels();
+            mods_drawn = true;
+        }
 
         /* Debug* sections start collapsed; when the filter is active, force
          * every section open so matches never hide behind a header. */
@@ -640,6 +648,11 @@ static void draw_panel(void)
             }
         }
         i = end;
+    }
+
+    if (!mods_drawn) {
+        draw_mods_section(s_filter);
+        draw_custom_levels();
     }
 
     ImGui::End();
