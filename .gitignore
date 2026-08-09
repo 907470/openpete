@@ -47,4 +47,4 @@ mods/*/assets/s3/
 docs/modding/pages/reference/
 
 # Grim Garden: derived locally from the xdelta + your own disc (tools/derive.py)
-mods/grim-garden/assets/wad/
+mods/grim-garden/assets/

@@ -371,6 +371,14 @@ typedef struct {
      * install the alias hooks. Returns the claimed level id, 0 = not
      * ready yet (boot TOC not loaded) or no free slot. */
     int (*claim_slot)(CPUState* cpu, int donor_level_id);
+    /* Re-target an already-claimed slot at a new donor: re-copy the
+     * donor's TOC entry into the slot and swap the alias donor. 0 ok. */
+    int (*retarget_slot)(CPUState* cpu, int donor_level_id);
+    /* Declare `len` as a level entry's Data length in the guest WAD TOC
+     * (len 0 = restore the stock length). 0 ok, -1 = TOC not live. */
+    int (*declare_data_len)(CPUState* cpu, int level_id, uint32_t len);
+    /* lower_snake level name (or decimal id string) -> id, -1 unknown. */
+    int (*resolve_name)(const char* name);
     /* Trigger a transition into level_id from live gameplay (the
      * level-select cheat's writes). 0 = queued, -1 = not in gameplay. */
     int (*enter_level)(CPUState* cpu, int level_id);
@@ -380,6 +388,35 @@ typedef struct {
 } openpete_level_ops_t;
 
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
+
+/* ── Declarative custom levels ([[level]] manifest blocks) ───────────
+ * A mod ships assets/levels/<stem>.data.bin (+ optional .ovl.bin) and a
+ * manifest block; the registry owns slot time-sharing, guest TOC
+ * declarations and warps — no mod code involved. Rows sort by NAME
+ * (the menu's alphabetical Custom World buckets). */
+int  openpete_mods_custom_register(const char* mod_id, const char* name,
+                                   const char* stem, const char* dir,
+                                   const char* donor, int replace,
+                                   const char* log_tag);
+typedef struct {
+    const char* name;   /* human name (sort key) */
+    const char* owner;  /* mod id */
+    int donor_id;
+    int replace_mode;   /* 1 = serve over the donor's own entry */
+    int active;         /* currently owns the shared slot */
+    int level_id;       /* enterable id right now (slot id or donor), 0 = none */
+    int files_ok;       /* data file present at registration */
+} openpete_mods_custom_info_t;
+int  openpete_mods_custom_count(void);
+int  openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out);
+/* Queue a warp into row i (applies in the registry's tick driver). */
+int  openpete_mods_custom_warp(int i);
+/* Flip a row between slot (0) and replace (1) serving. */
+void openpete_mods_custom_set_mode(int i, int replace);
+/* Overlay hook: the files serving logical level `level_id` right now —
+ * the active slot row, or an enabled declared replace row. 1 = found. */
+int  openpete_mods_custom_files_for(int level_id, const char** dir_out,
+                                    const char** stem_out);
 
 int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag);

@@ -133,6 +133,11 @@ struct openpete_mod {
                         * tag. Advisory, like tier. */
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
+    /* [[level]] blocks: declarative custom levels (registered with the
+     * content registry at load; the engine owns slot/TOC/warp). */
+    struct { char name[64]; char files[64]; char donor[24]; int replace; }
+          levels[4];
+    int   n_levels;
     char  build_key[65]; /* content-hash build key (hot-reload watch) */
     char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
                           * a config edit re-enters entry without a
@@ -1305,6 +1310,34 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             if (bp.ok) free(bp.u.s);
         }
     }
+    {   /* [[level]] — declarative custom levels */
+        toml_array_t* la = toml_array_in(root, "level");
+        int nl = la ? toml_array_nelem(la) : 0;
+        for (int i = 0; i < nl && mod->n_levels < 4; i++) {
+            toml_table_t* lt = toml_table_at(la, i);
+            if (!lt) continue;
+            toml_datum_t ln = toml_string_in(lt, "name");
+            toml_datum_t lf = toml_string_in(lt, "files");
+            toml_datum_t ld = toml_string_in(lt, "donor");
+            toml_datum_t lr = toml_bool_in(lt, "replace");
+            if (ln.ok && lf.ok && ld.ok) {
+                snprintf(mod->levels[mod->n_levels].name,
+                         sizeof mod->levels[0].name, "%s", ln.u.s);
+                snprintf(mod->levels[mod->n_levels].files,
+                         sizeof mod->levels[0].files, "%s", lf.u.s);
+                snprintf(mod->levels[mod->n_levels].donor,
+                         sizeof mod->levels[0].donor, "%s", ld.u.s);
+                mod->levels[mod->n_levels].replace = lr.ok && lr.u.b;
+                mod->n_levels++;
+            } else {
+                OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
+                            "donor — skipped", path);
+            }
+            if (ln.ok) free(ln.u.s);
+            if (lf.ok) free(lf.u.s);
+            if (ld.ok) free(ld.u.s);
+        }
+    }
     rc = 0;
 out:
     toml_free(root);
@@ -1678,6 +1711,14 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         snprintf(assets, sizeof assets, "%s/assets", mod->dir);
         struct stat st;
         mod->has_assets = (stat(assets, &st) == 0 && S_ISDIR(st.st_mode));
+        for (int i = 0; i < mod->n_levels; i++)
+            (void)openpete_mods_custom_register(mod->id,
+                                                mod->levels[i].name,
+                                                mod->levels[i].files,
+                                                assets,
+                                                mod->levels[i].donor,
+                                                mod->levels[i].replace,
+                                                mod->log_tag);
     }
     if (!mod->has_src) {
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,

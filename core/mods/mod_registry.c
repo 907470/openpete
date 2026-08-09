@@ -18,7 +18,9 @@
 #include "openpete_log.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Chain plumbing (defined in mod_chain.c; deliberately not in the public
  * header — the registry is the one engine-internal chain client). */
@@ -89,6 +91,7 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
  * address; the game registers both ops structs at boot). */
 static void registry_tick(CPUState* cpu);
 static void level_slots_tick(CPUState* cpu);
+static void custom_tick(CPUState* cpu);
 static int ensure_hooked(const char* log_tag) {
     if (s_hooked) return 0;
     if (!s_ops) {
@@ -113,6 +116,7 @@ static void registry_tick(CPUState* cpu) {
     if (!s_ops) return;
 
     level_slots_tick(cpu);
+    custom_tick(cpu);
 
     int lvl = s_ops->level_id(cpu);
     /* Any live level ends an in-flight slot transition: either we arrived
@@ -135,6 +139,7 @@ static void registry_tick(CPUState* cpu) {
         h->fn(cpu, lvl);
     }
     openpete_mods_sfx_defs_apply(cpu, lvl);
+
 
     for (int i = 0; i < s_type_count; i++) {
         moby_type_t* t = &s_types[i];
@@ -409,6 +414,229 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
  *
  * Host-side statics only (the level id is the one the per-tick driver
  * last observed), so the menu thread may call it without guest access. */
+
+/* ── Declarative custom levels ([[level]] manifest blocks) ───────────
+ * Hand-authored level mods with no C: the loader registers each block
+ * here, and this driver owns everything the guest needs — the shared
+ * slot (claim/retarget to the row's donor), the guest TOC length
+ * declaration for the row's data file, replace-mode declarations on a
+ * donor's own entry, and warps. The WAD overlay asks
+ * openpete_mods_custom_files_for() which files serve a level id.
+ * v1 capacity: rows TIME-SHARE the one free slot (id 65); per-level
+ * progress on the shared index is common to all of them until the
+ * capacity arc lifts the guest tables. */
+#define CUSTOM_MAX 64
+
+typedef struct {
+    char mod_id[MOBY_OWNER_MAX];
+    char name[64];
+    char stem[64];
+    char dir[900];         /* owning mod's assets dir */
+    int  donor_id;
+    int  replace_mode;     /* 1 = serve over the donor's own entry */
+    uint32_t data_size;    /* stat at registration; 0 = files missing */
+    int  declared_replace; /* donor entry currently carries our length */
+} custom_level_t;
+
+static custom_level_t s_customs[CUSTOM_MAX];
+static int s_custom_count = 0;
+static int s_custom_order[CUSTOM_MAX]; /* alphabetical by name */
+static int s_custom_active = -1;       /* row owning the shared slot */
+static int s_custom_slot_id = 0;       /* claimed slot id (65), 0 = none */
+static int s_custom_warp = -1;         /* queued warp (real row index) */
+
+int openpete_mods_custom_register(const char* mod_id, const char* name,
+                                  const char* stem, const char* dir,
+                                  const char* donor, int replace,
+                                  const char* log_tag) {
+    if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
+        return -1;
+    if (s_custom_count >= CUSTOM_MAX) {
+        OPL_ERROR_F(log_tag, "custom-level table full (%d)", CUSTOM_MAX);
+        return -1;
+    }
+    int donor_id = 0;
+    if (s_level_ops && s_level_ops->resolve_name)
+        donor_id = s_level_ops->resolve_name(donor ? donor : "");
+    if (donor_id < 10 || donor_id > 64) {
+        OPL_ERROR_F(log_tag, "level \"%s\": donor \"%s\" is not a retail "
+                    "level (lower_snake name or id) — skipped", name,
+                    donor ? donor : "");
+        return -1;
+    }
+    custom_level_t* r = &s_customs[s_custom_count];
+    snprintf(r->mod_id, sizeof r->mod_id, "%s", mod_id);
+    snprintf(r->name, sizeof r->name, "%s", name);
+    snprintf(r->stem, sizeof r->stem, "%s", stem);
+    snprintf(r->dir, sizeof r->dir, "%s", dir);
+    r->donor_id = donor_id;
+    r->replace_mode = replace ? 1 : 0;
+    r->declared_replace = 0;
+    char p[1088];
+    struct stat st;
+    snprintf(p, sizeof p, "%s/levels/%s.data.bin", dir, stem);
+    r->data_size = stat(p, &st) == 0 ? (uint32_t)st.st_size : 0;
+    if (!r->data_size)
+        OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
+                   "playable until derived", name, p);
+    int row = s_custom_count++;
+    /* The per-tick driver does all the work — make sure it's armed. */
+    (void)ensure_hooked(log_tag);
+    /* Alphabetical order (the menu's Custom World buckets). */
+    int at = row;
+    for (int i = 0; i < row; i++)
+        if (strcasecmp(s_customs[s_custom_order[i]].name, name) > 0) {
+            at = i;
+            break;
+        }
+    for (int i = row; i > at; i--) s_custom_order[i] = s_custom_order[i - 1];
+    s_custom_order[at] = row;
+    OPL_INFO_F(log_tag, "custom level \"%s\" registered (donor %d%s)",
+               name, donor_id, replace ? ", replace" : "");
+    return 0;
+}
+
+int openpete_mods_custom_count(void) { return s_custom_count; }
+
+int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
+    if (i < 0 || i >= s_custom_count || !out) return 0;
+    const custom_level_t* r = &s_customs[s_custom_order[i]];
+    out->name = r->name;
+    out->owner = r->mod_id;
+    out->donor_id = r->donor_id;
+    out->replace_mode = r->replace_mode;
+    out->active = s_custom_active == s_custom_order[i];
+    out->level_id = r->replace_mode ? r->donor_id
+                  : (out->active ? s_custom_slot_id : 0);
+    out->files_ok = r->data_size != 0;
+    return 1;
+}
+
+int openpete_mods_custom_warp(int i) {
+    if (i < 0 || i >= s_custom_count) return -1;
+    s_custom_warp = s_custom_order[i];
+    return 0;
+}
+
+void openpete_mods_custom_set_mode(int i, int replace) {
+    if (i < 0 || i >= s_custom_count) return;
+    s_customs[s_custom_order[i]].replace_mode = replace ? 1 : 0;
+}
+
+int openpete_mods_custom_files_for(int level_id, const char** dir_out,
+                                   const char** stem_out) {
+    if (s_custom_slot_id && level_id == s_custom_slot_id &&
+        s_custom_active >= 0) {
+        const custom_level_t* r = &s_customs[s_custom_active];
+        if (openpete_mods_is_enabled(r->mod_id)) {
+            *dir_out = r->dir;
+            *stem_out = r->stem;
+            return 1;
+        }
+    }
+    for (int i = 0; i < s_custom_count; i++) {
+        const custom_level_t* r = &s_customs[i];
+        if (r->replace_mode && r->declared_replace &&
+            r->donor_id == level_id &&
+            openpete_mods_is_enabled(r->mod_id)) {
+            *dir_out = r->dir;
+            *stem_out = r->stem;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Test/dev driver: OPENPETE_CUSTOM_WARP="tick:Level Name" queues a warp
+ * into the named row at the Nth registry tick. */
+static void custom_env_schedule(unsigned tick_no) {
+    static int s_parsed = 0;
+    static unsigned s_at = 0;
+    static char s_name[64];
+    if (!s_parsed) {
+        s_parsed = 1;
+        const char* e = getenv("OPENPETE_CUSTOM_WARP");
+        if (e && *e) {
+            const char* c = strchr(e, ':');
+            if (c) {
+                s_at = (unsigned)atoi(e);
+                snprintf(s_name, sizeof s_name, "%s", c + 1);
+            }
+        }
+    }
+    if (!s_name[0] || tick_no != s_at) return;
+    for (int i = 0; i < s_custom_count; i++)
+        if (strcmp(s_customs[i].name, s_name) == 0) {
+            s_custom_warp = i;
+            OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", s_name);
+        }
+}
+
+/* Per-tick driver: keep replace declarations in sync with each row's
+ * mode + owner toggle, then consume a queued warp. */
+static void custom_tick(CPUState* cpu) {
+    static unsigned s_tickno = 0;
+    custom_env_schedule(++s_tickno);
+    if (!s_level_ops || !s_custom_count) return;
+
+    for (int i = 0; i < s_custom_count; i++) {
+        custom_level_t* r = &s_customs[i];
+        int want = r->data_size && r->replace_mode &&
+                   openpete_mods_is_enabled(r->mod_id);
+        if (want && !r->declared_replace) {
+            if (s_level_ops->declare_data_len &&
+                s_level_ops->declare_data_len(cpu, r->donor_id,
+                                              r->data_size) == 0) {
+                r->declared_replace = 1;
+                OPL_INFO_F("mods", "custom level \"%s\": replacing level "
+                           "%d (data %u)", r->name, r->donor_id,
+                           r->data_size);
+            }
+        } else if (!want && r->declared_replace) {
+            if (s_level_ops->declare_data_len &&
+                s_level_ops->declare_data_len(cpu, r->donor_id, 0) == 0) {
+                r->declared_replace = 0;
+                OPL_INFO_F("mods", "custom level \"%s\": level %d back "
+                           "to stock", r->name, r->donor_id);
+            }
+        }
+    }
+
+    if (s_custom_warp < 0) return;
+    custom_level_t* r = &s_customs[s_custom_warp];
+    if (!r->data_size || !openpete_mods_is_enabled(r->mod_id)) {
+        s_custom_warp = -1;
+        return;
+    }
+    if (r->replace_mode) {
+        if (s_level_ops->enter_level(cpu, r->donor_id) == 0)
+            s_custom_warp = -1;
+        return; /* refused = not in gameplay yet; retry next tick */
+    }
+    if (!s_custom_slot_id) {
+        int got = s_level_ops->claim_slot(cpu, r->donor_id);
+        if (!got) return; /* TOC not read yet, or the slot is another
+                           * mod's — keep retrying quietly */
+        s_custom_slot_id = got;
+    } else if (s_custom_active != (int)(r - s_customs)) {
+        if (!s_level_ops->retarget_slot ||
+            s_level_ops->retarget_slot(cpu, r->donor_id) != 0) {
+            s_custom_warp = -1;
+            return;
+        }
+    }
+    s_custom_active = (int)(r - s_customs);
+    if (s_level_ops->declare_data_len)
+        (void)s_level_ops->declare_data_len(cpu, s_custom_slot_id,
+                                            r->data_size);
+    if (s_level_ops->enter_level(cpu, s_custom_slot_id) == 0) {
+        s_slot_entering = s_custom_slot_id;
+        s_custom_warp = -1;
+        OPL_INFO_F("mods", "custom level \"%s\" entering (id %d, donor "
+                   "%d)", r->name, s_custom_slot_id, r->donor_id);
+    }
+}
+
 int openpete_mods_registry_owner_busy(const char* mod_id);
 int openpete_mods_registry_owner_busy(const char* mod_id) {
     if (!mod_id) return 0;
@@ -419,6 +647,11 @@ int openpete_mods_registry_owner_busy(const char* mod_id) {
             s_slot_entering == s->slot_id)
             return 1;
     }
+    if (s_custom_active >= 0 && s_custom_slot_id &&
+        strcmp(s_customs[s_custom_active].mod_id, mod_id) == 0 &&
+        (s_resident_level == s_custom_slot_id ||
+         s_slot_entering == s_custom_slot_id))
+        return 1;
     return 0;
 }
 

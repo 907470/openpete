@@ -115,10 +115,52 @@ static int ops_read_level_data(int level_id, void* buf, uint32_t cap) {
     return spyro1_mod_wad_read_level_data(level_id, buf, cap);
 }
 
+/* Re-aim an already-claimed slot at a new donor: re-copy the donor's
+ * TOC entry over the slot's and swap the alias donor. The custom-level
+ * registry calls this when a different level takes the shared slot. */
+static int ops_retarget_slot(CPUState* cpu, int donor_level_id) {
+    if (!s_slot_donor) return -1;
+    if (donor_level_id < 10 || donor_level_id > 64) return -1;
+    int donor_index = (donor_level_id / 10 - 1) * 6 + donor_level_id % 10;
+    for (uint32_t w = 0; w < WAD_LEVELENTRY_SZ; w += 4)
+        cpu->write_word(entry_addr(SLOT_INDEX) + w,
+                        cpu->read_word(entry_addr(donor_index) + w));
+    s_slot_donor = donor_level_id;
+    return 0;
+}
+
+/* Declare a Data length on a level's guest TOC entry (0 = restore the
+ * stock length read from the user's own disc TOC). Validated against a
+ * live table: entry 0 must be populated. */
+static int ops_declare_data_len(CPUState* cpu, int level_id, uint32_t len) {
+    if (level_id < 10 || level_id > SLOT_LEVEL_ID) return -1;
+    int index = (level_id / 10 - 1) * 6 + level_id % 10;
+    if (index < 0 || index > SLOT_INDEX) return -1;
+    if (cpu->read_word(entry_addr(0) + 12u) == 0u) return -1;
+    if (len == 0) {
+        int n = spyro1_mod_wad_read_level_data(
+            level_id == SLOT_LEVEL_ID && s_slot_donor ? s_slot_donor
+                                                      : level_id,
+            NULL, 0);
+        if (n < 0) return -1;
+        len = (uint32_t)n;
+    }
+    cpu->write_word(entry_addr(index) + 12u, len);
+    return 0;
+}
+
+int spyro1_level_resolve(const char* arg); /* levelwarp_native.c */
+static int ops_resolve_name(const char* name) {
+    return name && name[0] ? spyro1_level_resolve(name) : -1;
+}
+
 static const openpete_level_ops_t s_spyro1_level_ops = {
-    .claim_slot      = ops_claim_slot,
-    .enter_level     = ops_enter_level,
-    .read_level_data = ops_read_level_data,
+    .claim_slot       = ops_claim_slot,
+    .retarget_slot    = ops_retarget_slot,
+    .declare_data_len = ops_declare_data_len,
+    .resolve_name     = ops_resolve_name,
+    .enter_level      = ops_enter_level,
+    .read_level_data  = ops_read_level_data,
 };
 
 void spyro1_level_ops_register(void) {

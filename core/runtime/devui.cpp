@@ -505,6 +505,62 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
     }
 }
 
+/* Custom Levels — declarative [[level]] rows from every loaded mod,
+ * alphabetical, bucketed 5 per "Custom World" (the future in-game
+ * homeworlds after Gnasty's World; presentation-only until the guest
+ * table capacity arc). */
+static void draw_custom_levels(void)
+{
+    const int n = openpete_mods_custom_count();
+    if (n == 0) return;
+    if (!ImGui::CollapsingHeader("Custom Levels",
+                                 ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+    for (int i = 0; i < n; i++) {
+        openpete_mods_custom_info_t ci;
+        if (!openpete_mods_custom_info(i, &ci)) continue;
+        if (i % 5 == 0) {
+            if (i) ImGui::Unindent();
+            ImGui::TextDisabled("Custom World %d", 7 + i / 5);
+            ImGui::Indent();
+        }
+        ImGui::PushID(i);
+        const bool owner_on = openpete_mods_is_enabled(ci.owner) != 0;
+        const bool playable = ci.files_ok && owner_on;
+        if (!playable) ImGui::BeginDisabled();
+        if (ImGui::Button(ci.active ? "In slot" : "Warp"))
+            (void)openpete_mods_custom_warp(i);
+        if (!playable) ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(ci.name);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            ImGui::BeginTooltip();
+            ImGui::Text("from mod %s — donor level %d", ci.owner,
+                        ci.donor_id);
+            if (!ci.files_ok)
+                ImGui::TextDisabled("level files not derived yet");
+            else if (!owner_on)
+                ImGui::TextDisabled("owning mod is disabled");
+            else
+                ImGui::TextDisabled(ci.replace_mode
+                    ? "serves over its donor level's own entry"
+                    : "time-shares the free level slot (id 65); "
+                      "per-level progress is shared between custom "
+                      "levels until real extra worlds land");
+            ImGui::EndTooltip();
+        }
+        ImGui::SameLine();
+        int mode = ci.replace_mode;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+        static const char *k_modes[] = { "own slot", "replace donor" };
+        if (ImGui::Combo("##m", &mode, k_modes, 2))
+            openpete_mods_custom_set_mode(i, mode);
+        ImGui::PopID();
+    }
+    ImGui::Unindent();
+}
+
 static bool row_matches(const ImGuiTextFilter &f, const knob_desc_t *k)
 {
     if (!f.IsActive()) return true;
@@ -538,6 +594,7 @@ static void draw_panel(void)
                           "flag / env line.");
 
     draw_mods_section(s_filter);
+    draw_custom_levels();
 
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);

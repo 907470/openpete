@@ -64,6 +64,7 @@ typedef struct {
     int      live_root;     /* asset root serving this load, -1 = the disc */
     int      serve_id;      /* logical level id this load resolved to */
     uint32_t serve_len;     /* latched override byte length (file size) */
+    char     serve_path[1088]; /* latched override file */
 } wad_seg_t;
 
 /* Guest-side words the latch consults (Spyro 1). The in-RAM WAD TOC is
@@ -390,19 +391,43 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
             }
             uint32_t flen = 0;
             L->latched = 1;
-            L->live_root = wad_find_override(serve_id, kind, want_len,
-                                             want_dlen, path, sizeof path,
-                                             &owner, &flen);
             L->serve_id = serve_id;
+            L->live_root = -1;
+            /* Declarative custom levels first: the registry names the
+             * files serving this logical id (active slot row / declared
+             * replace row); same guest-TOC size contract. */
+            const char* cdir = NULL;
+            const char* cstem = NULL;
+            if (openpete_mods_custom_files_for(serve_id, &cdir, &cstem)) {
+                struct stat st;
+                char dp[1088];
+                snprintf(path, sizeof path, "%s/levels/%s.%s.bin", cdir,
+                         cstem, kind);
+                snprintf(dp, sizeof dp, "%s/levels/%s.data.bin", cdir,
+                         cstem);
+                struct stat ds;
+                if (stat(path, &st) == 0 && (uint32_t)st.st_size == want_len &&
+                    stat(dp, &ds) == 0 && (uint32_t)ds.st_size == want_dlen) {
+                    L->live_root = 1000; /* custom row, not an asset root */
+                    flen = (uint32_t)st.st_size;
+                    owner = "custom level";
+                }
+            }
+            if (L->live_root < 0)
+                L->live_root = wad_find_override(serve_id, kind, want_len,
+                                                 want_dlen, path,
+                                                 sizeof path, &owner,
+                                                 &flen);
             L->serve_len = flen;
-            if (L->live_root >= 0)
+            if (L->live_root >= 0) {
+                snprintf(L->serve_path, sizeof L->serve_path, "%s", path);
                 OPL_INFO_F("wadmod", "wad overlay: level %d %s served "
                            "from %s (%s)", serve_id, kind, owner, path);
+            }
         }
         if (L->live_root < 0) continue;
-        if (wad_override_path(L->serve_id, kind, L->live_root, path,
-                              sizeof path, NULL) != 0)
-            continue;
+        snprintf(path, sizeof path, "%s", L->serve_path);
+        if (!path[0]) continue;
         uint32_t slen = L->serve_len ? L->serve_len : L->length;
         if (getenv("OPENPETE_WADMOD_TRACE"))
             OPL_INFO_F("wadmod", "level %d %s serve [%u..%u)", L->serve_id,
